@@ -8,17 +8,20 @@
  *     in the sidebar.
  *
  * Both want the same sequence: pick up the latest detected payment
- * for the webContents, build the vault-backed x402 client, sign,
- * stash the signed header for the dispatcher to inject, optionally
- * grant a fresh per-origin allowance and consume against it, then
- * re-issue the original navigation. Extracting here keeps that
+ * for the webContents, have the identity core authorize and sign it
+ * (`x402.authorize`, freedom-core design 0012 "x402"; X402-2), stash the
+ * signed header for the dispatcher to inject, then re-issue the original
+ * navigation. The core checks the `x402-payment` token or the cap, charges
+ * a cap before it signs, writes the cap a payment grants, and builds the
+ * payment byte for byte as `@x402/evm` builds it, with the account's vault
+ * key. Main signs no x402 payment itself. Extracting here keeps that
  * sequence in one place and dodges a circular ipc.js ↔ intercept.js
  * dependency.
  */
 
+const crypto = require('crypto');
 const { webContents } = require('electron');
 const log = require('../logger');
-const { createX402Client } = require('./client');
 const { getActiveWalletIndex } = require('../identity-manager');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const {
@@ -32,9 +35,11 @@ const {
   hostWindowIdOf,
 } = require('./intercept');
 const { runInWindow } = require('../windows/request-window');
-const { grant: grantPermission, charge: chargeCap, refund: refundCharge } = require('./permissions');
+const { authorize: authorizePayment, settle: settlePayment } = require('./caps');
 const { tupleFromAccept } = require('./payment-utils');
-const { isUserPageId } = require('../wallet/agent-tab-custody');
+const { isUserPageId, isAgentPageId } = require('../wallet/agent-tab-custody');
+const { withVaultAccount } = require('../wallet/vault-access');
+const { discardConfirmation } = require('../wallet/signing-confirmation');
 
 // An auto-pay whose cap no longer covers it, at the moment it would be
 // signed: nothing is signed, and the charge goes to the approval card.
@@ -62,6 +67,29 @@ function refuseUnlessUserTab(webContentsId) {
 
 function isCapNotCoveredError(err) {
   return err?.code === CAP_NOT_COVERED;
+}
+
+// The core's refusals of a cap's payment (`not_authorized`): no cap covers
+// it, the tab is in Agent custody, or main couldn't attribute the request.
+const CAP_REFUSALS = new Set(['cap', 'custody', 'no_rule']);
+
+// A device account (a Ledger, a phone) keeps its key elsewhere: the core
+// signs x402 payments only with the vault's own accounts (cored 0.18.0).
+function isDeviceAccount(walletIndex) {
+  const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
+  if (typeof isHardwareWalletIndex === 'function' && isHardwareWalletIndex(walletIndex)) return true;
+  const record = typeof getWalletRecord === 'function' ? getWalletRecord(walletIndex) : null;
+  return Boolean(record && WALLET_TYPES && record.type !== WALLET_TYPES.MNEMONIC);
+}
+
+const DEVICE_REFUSED =
+  "x402 payments are signed by the browser's own wallet: a Ledger or phone account can't pay one yet";
+
+// The paying account's address, from the authorization the core signed.
+function payerOf(payload) {
+  const inner = payload?.payload;
+  const from = inner?.authorization?.from ?? inner?.permit2Authorization?.from;
+  return typeof from === 'string' ? from : null;
 }
 
 /**
@@ -108,44 +136,41 @@ function authorizationRunwaySeconds(payload) {
  * over the cap. Defaults to MANUAL — callers that aren't auto-pay should
  * omit it. The auto-pay path must pass CAP explicitly.
  *
- * `opts.selectedAccept` is the specific `accepts[]` entry to sign.
- * Multi-accept callers (detector's findCoveringPermission result, or
- * the IPC's selectedAcceptIndex resolution) pass it explicitly.
- * Detection records can also carry a `selectedAccept` field (set by
- * the auto-pay branch so its snapshot survives across the cap-locked
- * unlock-resume). Legacy callers that omit both default to
- * `accepts[0]` — preserves single-accept behavior during the WP-MA
- * migration.
+ * Which `accepts[]` entry is paid is the core's to pick under a cap (the
+ * first one a cap covers, in the seller's order, as
+ * `findCoveringPermission` picks it), and the token's under an approval
+ * (the entry its `accept_index` binds). The reply names it.
  *
  * `detection.requestShape` (captured `{ method, range }`) threads
  * through to setPendingPayment for shape-keyed FIFO bucketing.
  *
  * `opts.walletIndex` is the account to sign with: the one an approval's
- * confirmation token was checked against (x402:approve). Auto-pay omits
- * it and signs with the active account.
+ * confirmation token was minted for (x402:approve). Auto-pay omits it and
+ * signs with the active account. A device account (a Ledger, a phone)
+ * can't pay: the core signs only with the vault's own accounts.
  *
- * The cap is charged before anything is signed (#1024). An auto-pay
- * (`authorizedBy: CAP`) is signed only against a charge: the one the
- * detector took in the same turn as its coverage check (`opts.charge`),
- * or one taken here. If the cap no longer covers it, nothing is signed
- * and this throws CAP_NOT_COVERED. It throws the same for a tab that is
- * not a live one the user controls, read before the charge and again
- * just before the stash (#1044). A payment the user approved is
- * charged to a cap that covers it (the one granted with it, say) as its
- * signature is stashed, as accounting; it goes out either way. The charge
- * rides on the pending payment: it is given back if the signature is
- * withheld (intercept.js), and here if this throws before stashing it.
- * Once the header has been attached the charge stays, whatever the
- * server answers: the seller holds the signed authorization.
+ * The identity core charges a cap as it signs (#1024, design 0012
+ * `x402-at-sign`): an auto-pay (`authorizedBy: CAP`) is signed only if the
+ * core's `x402.authorize` finds a cap that covers it, outside Agent custody
+ * and for a request main attributes to a live tab, and charges it first.
+ * Otherwise nothing is signed and this throws CAP_NOT_COVERED, as it does
+ * for a tab that is not a live one the user controls, read before the core
+ * is asked and again just before the stash (#1044). A payment the user
+ * approved presents its `x402-payment` token (`opts.confirmation`, the
+ * core's), which the core spends against exactly the tab, detection, URL,
+ * entry, account and grant it binds; the core writes the cap granted with it
+ * and charges a cap that covers it, as accounting. The reservation of a
+ * charge rides on the pending payment: settled `withheld` if the signature
+ * is withheld (intercept.js), and here if this throws before stashing it,
+ * and `sent` once the header has been attached, whatever the server
+ * answers: the seller holds the signed authorization.
  *
  * @param {number} webContentsId
  * @param {{
- *   grant?: { capAmount: string, windowSeconds: number },
- *   detection?: { url: string, requirements: object, resourceType?: string, selectedAccept?: object, requestShape?: { method: string, range: string | null } },
- *   selectedAccept?: object,
+ *   detection?: { url: string, requirements: object, detectionId?: string, resourceType?: string, requestShape?: { method: string, range: string | null } },
  *   authorizedBy?: 'cap' | 'manual',
  *   walletIndex?: number,
- *   charge?: object,
+ *   confirmation?: { token: string, payload: { accept_index: number, grant?: object } },
  * }} [opts]
  */
 async function signAndQueueRetry(webContentsId, opts = {}) {
@@ -154,38 +179,43 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
   if (typeof webContentsId !== 'number' || webContentsId < 0) {
     throw new Error(`x402: invalid webContentsId: ${webContentsId}`);
   }
-  // The charge this call holds until the pending payment takes it over:
-  // one handed in, or one taken below. Given back if nothing is stashed.
-  const held = { charge: opts.charge ?? null };
+  // The reservation of a charge this call holds until the pending payment
+  // takes it over: settled `withheld` if nothing is stashed.
+  const held = { reservation: null, origin: null };
   // It runs for the window that hosts the tab (freedom-core design 0011,
-  // APS-5): with the approvals document on, a phone account's job goes to
-  // that window's sidebar, where its card or its panel's prompt was, not
-  // to whichever window has focus. An auto-pay within a cap, which asks
-  // nothing, goes there too.
+  // APS-5): an auto-pay within a cap, which asks nothing, goes there too.
   return runInWindow(hostWindowIdOf(webContentsId), async () => {
     try {
       return await signAndStash(webContentsId, opts, held);
     } catch (err) {
-      if (held.charge) refundAndTell(webContentsId, held.charge);
+      if (held.reservation) settleAndTell(webContentsId, held.reservation, held.origin);
       throw err;
     }
   });
 }
 
-function refundAndTell(webContentsId, charge) {
-  if (refundCharge(charge)) {
-    sendToHost(webContentsId, 'x402:cap-consumed', { origin: charge.origin });
-  }
+function settleAndTell(webContentsId, reservation, origin) {
+  settlePayment(reservation, 'withheld', origin).then((refunded) => {
+    if (refunded) sendToHost(webContentsId, 'x402:cap-consumed', { origin });
+  });
 }
 
 async function signAndStash(webContentsId, opts, held) {
+  const token = opts.confirmation?.token;
+  // A token not presented to the core is burnt: the request ended first.
+  let presented = false;
+  try {
+    return await authorizeAndStash(webContentsId, opts, held, () => {
+      presented = true;
+    });
+  } finally {
+    if (token && !presented) discardConfirmation(token);
+  }
+}
+
+async function authorizeAndStash(webContentsId, opts, held, presenting) {
   const detected = opts.detection ?? getDetectedPayment(webContentsId);
   if (!detected) throw new Error('No pending x402 payment for this tab');
-
-  const selectedAccept = opts.selectedAccept
-    ?? detected.selectedAccept
-    ?? detected.requirements?.accepts?.[0];
-  if (!selectedAccept) throw new Error('No accepts[] entry to sign');
 
   let origin;
   try {
@@ -195,49 +225,74 @@ async function signAndStash(webContentsId, opts, held) {
   catch { throw new Error('Refusing to pay: unparseable URL'); }
   if (!origin) throw new Error('Refusing to pay: unnormalisable origin');
 
-  const tuple = tupleFromAccept(selectedAccept);
   const authorizedBy = opts.authorizedBy ?? AUTHORIZED_BY.MANUAL;
-  // An auto-pay is for a tab the user controls now, before the cap is
-  // charged or the vault opened: one resumed after an unlock included.
-  if (authorizedBy === AUTHORIZED_BY.CAP) refuseUnlessUserTab(webContentsId);
-  // An auto-pay is charged before it is signed, with no await between
-  // the charge and the decision to sign.
-  if (authorizedBy === AUTHORIZED_BY.CAP && !held.charge) {
-    held.charge = tuple ? chargeCap(origin, tuple.chainId, tuple.asset, tuple.amount) : null;
-    if (!held.charge) throw capNotCoveredError();
-    sendToHost(webContentsId, 'x402:cap-consumed', { origin });
+  const walletIndex = opts.walletIndex ?? getActiveWalletIndex();
+  const params = {
+    account: walletIndex,
+    detection: {
+      tab: webContentsId,
+      id: detected.detectionId ?? `gen-${crypto.randomUUID()}`,
+      url: detected.url,
+    },
+    requirements: detected.requirements,
+  };
+  if (authorizedBy === AUTHORIZED_BY.CAP) {
+    // An auto-pay is for a tab the user controls now, before the core is
+    // asked: one resumed after an unlock included. The core is told the
+    // same, and refuses a cap's payment for a tab in custody.
+    refuseUnlessUserTab(webContentsId);
+    if (isDeviceAccount(walletIndex)) throw capNotCoveredError(DEVICE_REFUSED);
+    const agent = isAgentPageId(webContentsId);
+    params.authorization = { cap: { agent, attributable: agent || isUserPageId(webContentsId) } };
+  } else {
+    const confirmation = opts.confirmation;
+    if (!confirmation || typeof confirmation.token !== 'string') {
+      throw new Error('Signing was not confirmed: no confirmation token');
+    }
+    params.authorization = { token: confirmation.token };
+    params.accept_index = confirmation.payload?.accept_index;
+    if (confirmation.payload?.grant) params.grant = confirmation.payload.grant;
   }
 
-  const client = await createX402Client(opts.walletIndex ?? getActiveWalletIndex());
-  // Pre-filter `accepts[]` down to the chosen entry so the SDK's default
-  // first-of-filtered selector signs the right one. Avoids registering a
-  // custom paymentRequirementsSelector for what is effectively a one-
-  // entry choice at this point in the flow.
-  const payload = await client.createPaymentPayload({
-    ...detected.requirements,
-    accepts: [selectedAccept],
-  });
+  let reply;
+  try {
+    // Refuses a device account before the core is asked: the core would
+    // sign with the vault's key at its index, an address the user never saw.
+    reply = await withVaultAccount(walletIndex, () => {
+      presenting();
+      return authorizePayment(params);
+    });
+  } catch (err) {
+    if (authorizedBy === AUTHORIZED_BY.CAP && err?.code === 'not_authorized' && CAP_REFUSALS.has(err.data?.reason)) {
+      throw capNotCoveredError();
+    }
+    if (err?.code === 'not_authorized' || err?.code === 'forbidden') {
+      const { confirmationError } = require('../wallet/signing-confirmation');
+      throw confirmationError(err);
+    }
+    if (/another device/.test(err?.message ?? '')) throw new Error(DEVICE_REFUSED, { cause: err });
+    throw err;
+  }
+  held.reservation = typeof reply?.reservation === 'string' ? reply.reservation : null;
+  held.origin = origin;
+  if (reply?.charged) sendToHost(webContentsId, 'x402:cap-consumed', { origin });
+  if (reply?.grant && reply.grant.added === false) {
+    log.warn(`[x402:sign] grant not added (${reply.grant.reason ?? 'unknown'})`);
+  }
+  if (reply?.durable === false) {
+    log.warn('[x402:sign] the cap change may not survive a power loss yet (the flush after the rename failed)');
+  }
 
-  // The SDK stamps `validBefore = now + maxTimeoutSeconds` BEFORE it asks the
-  // signer for a signature, and on a hardware wallet that call blocks for as
-  // long as the user takes to review the EIP-712 payload on the device. A
-  // confirmation slower than the server's window (often ~60s) therefore
-  // produces a perfectly valid signature over an already-expired
-  // authorization. Dispatching it burns the charge: the facilitator refuses
-  // it, the server re-402s, the loop guard in intercept.js declines to
-  // re-sign, and a `failed` row lands in payment history after the user
-  // physically confirmed on the device.
-  //
-  // Widening the window instead (inflating `maxTimeoutSeconds` on the accept
-  // we sign) is NOT an option: for x402 v2 the client echoes the selected
-  // requirements back as `payload.accepted`, and @x402/core's server does a
-  // deep-equal against its own advertised accepts — a padded window would be
-  // rejected as a non-matching requirement.
-  //
-  // So bail before anything is stashed or navigated. The detection is still
-  // in the map and no pending payment is armed, which means the caller's
-  // error surfaces on the approval card with Pay live again — a second
-  // device prompt, but no reload and no bogus failure row.
+  const payload = reply?.payload;
+  const selectedAccept = detected.requirements?.accepts?.[reply?.accept_index];
+  if (!payload || typeof payload !== 'object' || !selectedAccept) {
+    throw new Error('The identity core gave no payment to send');
+  }
+  const tuple = tupleFromAccept(selectedAccept);
+
+  // A payment with too little life left is refused by the facilitator, and
+  // the core refuses to sign one (the 20 s runway); a stash delayed past it
+  // is dropped here, before anything is stashed or navigated.
   const runway = authorizationRunwaySeconds(payload);
   if (runway !== null && runway < MIN_AUTHORIZATION_RUNWAY_SECONDS) {
     log.warn(
@@ -249,31 +304,14 @@ async function signAndStash(webContentsId, opts, held) {
     );
   }
 
-  // And again once it is signed: the sign awaited the vault, and perhaps a
-  // device, and the tab can have gone into Agent custody meanwhile. Nothing
-  // awaits from here to the stash, so a signature made for such a tab is
-  // dropped unsent, and its charge given back.
+  // And again once it is signed: the tab can have gone into Agent custody
+  // meanwhile. Nothing awaits from here to the stash, so a signature made
+  // for such a tab is dropped unsent, and its charge given back.
   if (authorizedBy === AUTHORIZED_BY.CAP) refuseUnlessUserTab(webContentsId);
 
   const headerValue = Buffer.from(JSON.stringify(payload)).toString('base64');
   const headerName = outgoingHeaderForVersion(detected.requirements.x402Version);
   const payTo = selectedAccept.payTo ?? null;
-
-  // `grant` (create-a-cap) is an explicit user action from the approval
-  // card and happens here, at sign time, after the payment is signed.
-  if (tuple && opts.grant) {
-    try {
-      grantPermission(origin, tuple.chainId, tuple.asset, opts.grant.capAmount, opts.grant.windowSeconds);
-    } catch (err) {
-      log.warn(`[x402:sign] grant rejected: ${err.message}`);
-    }
-  }
-  // A payment the user approved counts against a cap that covers it (the
-  // one just granted with it, say). It goes out whether or not one does.
-  if (!held.charge && tuple) {
-    held.charge = chargeCap(origin, tuple.chainId, tuple.asset, tuple.amount);
-    if (held.charge) sendToHost(webContentsId, 'x402:cap-consumed', { origin });
-  }
 
   setPendingPayment(
     webContentsId,
@@ -286,15 +324,16 @@ async function signAndStash(webContentsId, opts, held) {
       asset: tuple?.asset,
       amount: tuple?.amount,
       payTo,
-      fromAddress: client.address,
+      fromAddress: payerOf(payload),
       authorizedBy,
-      charge: held.charge,
+      reservation: held.reservation,
+      charged: reply.charged === true,
     },
     detected.requestShape,
   );
-  // Stashed: the pending payment holds the charge now, and intercept.js
-  // gives it back if the signature is withheld.
-  held.charge = null;
+  // Stashed: the pending payment holds the reservation now, and
+  // intercept.js settles it.
+  held.reservation = null;
   // Only clear the map when we sourced FROM it. With a snapshot we used
   // our own copy and clearing here would erase whatever detection has
   // since taken its place (e.g. a second 402 that fired during our async
