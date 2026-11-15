@@ -300,11 +300,17 @@ class FreedomIpfsNativeNode {
     dataDir,
     maxCacheBytes = 256 * 1024 * 1024,
     requestQueueTimeoutMs = REQUEST_QUEUE_TIMEOUT_MS,
+    cacheOnly = false,
     onFailure = null,
   } = {}) {
     this.dataDir = dataDir;
     this.maxCacheBytes = maxCacheBytes;
     this.requestQueueTimeoutMs = requestQueueTimeoutMs;
+    // Cache-only (#30): the add-on's offline routing mode serves what the
+    // local store already holds and resolves IPNS/DNSLink names only from
+    // records it saved earlier. No routers, no DHT, no DNS-over-HTTPS: it
+    // opens no network connection at all.
+    this.cacheOnly = cacheOnly === true;
     this.onFailure = onFailure;
     this.nodeHandle = '0';
     this.dispatcher = null;
@@ -401,7 +407,7 @@ class FreedomIpfsNativeNode {
       ok = await asyncLifecycleExport(addon, 'nodeStartNativeGatewayOnlineAsync')(
         handle,
         DELEGATED_ROUTERS,
-        addon.constants.ROUTING_MODE_AUTO,
+        this.cacheOnly ? addon.constants.ROUTING_MODE_OFFLINE : addon.constants.ROUTING_MODE_AUTO,
         0,
         3,
         0,
@@ -417,7 +423,11 @@ class FreedomIpfsNativeNode {
     }
     this.nodeHandle = handle;
     this.startDispatcher();
-    log.info(`[IPFS] native gateway online, delegated routers: ${DELEGATED_ROUTERS}`);
+    if (this.cacheOnly) {
+      log.info('[IPFS] native gateway cache-only: serving the local store, no network');
+    } else {
+      log.info(`[IPFS] native gateway online, delegated routers: ${DELEGATED_ROUTERS}`);
+    }
     return true;
   }
 

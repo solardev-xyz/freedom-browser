@@ -453,6 +453,18 @@ const isIpfsNodeUnavailable = () => {
   // just-set intent so the friendly page shows right away. `null` means no
   // pending toggle — fall through to the committed mode/status below.
   if (state.ipfsDesiredRunning === false) return true;
+  // IPFS off still serves saved content (#30): main's cache-only node answers
+  // the load, and says so on a page when it hasn't got it. Only once the stop
+  // has settled (`stopped`, no toggle pending; a pending `false` returned
+  // above): mid-stop, main has no node to answer with, and mid-start the
+  // store changes hands.
+  if (
+    state.registry?.ipfs?.cacheOnly === true &&
+    state.currentIpfsStatus === 'stopped' &&
+    state.ipfsDesiredRunning !== true
+  ) {
+    return false;
+  }
   return (
     state.registry?.ipfs?.mode === 'disabled' ||
     state.currentIpfsStatus === 'stopped' ||

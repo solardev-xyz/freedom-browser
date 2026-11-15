@@ -12,6 +12,7 @@ let ipfsPeersCount = null;
 let ipfsBandwidth = null;
 let ipfsVersionText = null;
 let ipfsInfoPanel = null;
+let ipfsCacheNote = null;
 let ipfsStatusRow = null;
 let ipfsStatusLabel = null;
 let ipfsStatusValue = null;
@@ -296,6 +297,17 @@ export const updateIpfsToggleState = () => {
   } else {
     ipfsToggleBtn.removeAttribute('title');
   }
+
+  updateIpfsCacheNote();
+};
+
+// "Pages you've opened before still load" under a switched-off IPFS (#30).
+// Main publishes `cacheOnly` once the node has stopped on a profile whose
+// store it can serve; the switch's own state decides the rest, so the note
+// goes the moment the user switches IPFS back on.
+export const updateIpfsCacheNote = () => {
+  if (!ipfsCacheNote) return;
+  ipfsCacheNote.hidden = !(state.registry?.ipfs?.cacheOnly === true && !isIpfsEffectivelyRunning());
 };
 
 // True while the background reconcile loop is converging the backend toward the
@@ -356,6 +368,7 @@ export const initIpfsUi = () => {
   ipfsBandwidth = document.getElementById('ipfs-bandwidth');
   ipfsVersionText = document.getElementById('ipfs-version-text');
   ipfsInfoPanel = document.querySelector('.ipfs-info');
+  ipfsCacheNote = document.getElementById('ipfs-cache-note');
   ipfsStatusRow = document.getElementById('ipfs-status-row');
   ipfsStatusLabel = document.getElementById('ipfs-status-label');
   ipfsStatusValue = document.getElementById('ipfs-status-value');
@@ -396,6 +409,7 @@ export const initIpfsUi = () => {
     // Update the switch and stats panel instantly; the reconcile loop drives the
     // backend toward this target in the background and coalesces rapid clicks.
     ipfsToggleSwitch?.classList.toggle('running', desired);
+    updateIpfsCacheNote();
     if (desired) {
       startIpfsInfoPolling();
     } else {

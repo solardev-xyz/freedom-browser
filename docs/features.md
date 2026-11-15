@@ -62,6 +62,7 @@ explicitly allows multiple bundle instances so profile launching can use
 ## Integrated IPFS Native Node
 
 - **Independent Toggle**: Start and stop IPFS separately from Swarm.
+- **Saved Pages While Off**: With IPFS switched off, `ipfs://` and `ipns://` pages you've opened before still load from the local store, and the Nodes menu says so. A second copy of the node serves them in the add-on's offline routing mode: no routing services, no DHT, no DNS-over-HTTPS, so IPFS itself makes no connection; IPNS and DNSLink names resolve only from records saved earlier. An ENS or Tezos name in the address (`ipfs://name.eth`) still resolves through its usual lookup, as it does whenever such a name is opened, so that needs the network. It starts on the first such request, never at launch, and stops when IPFS is switched on. A page that isn't saved shows _Not saved on this device_ instead of a gateway error. A profile with IPFS disabled, or on an external gateway, serves nothing while off.
 - **Native Transport**: Uses the embedded `freedom-ipfs` native addon instead of a loopback Kubo process.
 - **Content Discovery**: Finds who serves a CID or IPNS name by asking two delegated routing services in parallel, `delegated-ipfs.dev` and `cid.contact`, with the DHT as a fallback. Both services see the CIDs and IPNS names you load; a profile using an external gateway asks neither.
 - **Live Diagnostics**: View native gateway stats and request progress while IPFS/IPNS pages load.
