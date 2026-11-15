@@ -70,7 +70,11 @@ const loadIpfsModule = async (options = {}) => {
     options.windowIpfs === false
       ? undefined
       : {
-          checkBinary: jest.fn().mockResolvedValue({ available: options.binaryAvailable ?? true }),
+          checkBinary: jest
+            .fn()
+            .mockResolvedValue(
+              options.binaryResult || { available: options.binaryAvailable ?? true }
+            ),
           start: jest
             .fn()
             .mockResolvedValue(options.startResult || { status: 'running', error: null }),
@@ -253,6 +257,23 @@ describe('ipfs-ui', () => {
 
     ctx.mod.updateIpfsUi('stopped');
     expect(ctx.elements.ipfsStatusRow.classList.contains('visible')).toBe(false);
+  });
+
+  test('a Linux system too old for the add-on says so on the disabled switch (#350)', async () => {
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'error',
+      binaryResult: { available: false, reason: 'glibc', hostGlibc: '2.35' },
+      statusResult: { status: 'error', error: 'freedom-ipfs native addon needs a newer glibc' },
+    });
+
+    ctx.mod.initIpfsUi();
+    await flushMicrotasks();
+
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('disabled')).toBe('true');
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('title')).toBe(
+      'Needs a newer Linux. Use an external node from Settings > Nodes.'
+    );
   });
 
   test('initializes IPFS controls, handles binary availability, and toggles start and stop', async () => {

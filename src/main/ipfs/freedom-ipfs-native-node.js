@@ -1,7 +1,11 @@
 const path = require('path');
 const { Worker } = require('worker_threads');
 const log = require('../logger');
-const { loadNativeBinding, isNativeBindingAvailable } = require('./freedom-ipfs-native-binding');
+const {
+  loadNativeBinding,
+  isNativeBindingAvailable,
+  nativeBindingLoadError,
+} = require('./freedom-ipfs-native-binding');
 
 const BUFFER_SIZE = 64 * 1024;
 const ATTEMPT_TIMEOUT_MS = 30_000;
@@ -320,6 +324,10 @@ class FreedomIpfsNativeNode {
 
   static isAvailable() {
     return isNativeBindingAvailable();
+  }
+
+  static loadError() {
+    return nativeBindingLoadError();
   }
 
   get version() {
