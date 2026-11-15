@@ -587,6 +587,7 @@ describe('vaultBackend', () => {
     });
     const { vaultBackend } = load(core);
     const key = { kind: 'account', index: 0 };
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 1 };
     await vaultBackend.status();
     await vaultBackend.generateMnemonic(128);
     await vaultBackend.validateMnemonic('abandon about');
@@ -610,17 +611,17 @@ describe('vaultBackend', () => {
     await vaultBackend.sign.soc(key, { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) });
     await vaultBackend.approval.issue({ kind: 'wallet-send', account: 0, payload: { tx: {} } });
     await vaultBackend.approval.spend({ token: 't', kind: 'intent-close', payload: {} });
-    await vaultBackend.approval.remember({ receipt: 'r' }, { origin: 'https://app.example', agent: false });
+    await vaultBackend.approval.remember({ receipt: 'r' }, { ...page, agent: false });
     await vaultBackend.approval.discard('t');
     await vaultBackend.approval.end('s');
-    await vaultBackend.approval.check({ request: {} }, { origin: 'https://app.example', agent: false });
-    await vaultBackend.approval.grant({ store: 'dapp', change: {} }, { origin: 'https://app.example', agent: false });
-    await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, { origin: 'https://app.example' });
+    await vaultBackend.approval.check({ request: {} }, { ...page, agent: false });
+    await vaultBackend.approval.grant({ store: 'dapp', change: {} }, { ...page, agent: false });
+    await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, page);
     await vaultBackend.approval.revoke({ store: 'dapp', key: 'https://app.example', what: 'grant' });
     await vaultBackend.approval.revoke({ store: 'swarm', key: 'https://app.example', what: 'grant' }, 'chrome');
-    await vaultBackend.approval.touch({ store: 'dapp' }, { origin: 'https://app.example', agent: false });
-    await vaultBackend.approval.touch({ store: 'radicle' }, { origin: 'https://app.example' });
-    await vaultBackend.approval.radicleWrite({ key: 'https://app.example' }, { origin: 'https://app.example', agent: false });
+    await vaultBackend.approval.touch({ store: 'dapp' }, { ...page, agent: false });
+    await vaultBackend.approval.touch({ store: 'radicle' }, page);
+    await vaultBackend.approval.radicleWrite({ key: 'https://app.example' }, { ...page, agent: false });
     await vaultBackend.approval.forgetAccount(0);
     await vaultBackend.approval.grants({ store: 'dapp' });
     await vaultBackend.approval.grants({ store: 'radicle' });
@@ -680,6 +681,48 @@ describe('vaultBackend', () => {
       ['approval.radicle_write', { caller: 'page', page }, undefined],
       ['swarm.sign_soc', { caller: 'page', page }, authorization],
       ['swarm.sign_soc', { caller: 'shell' }, undefined],
+    ]);
+  });
+
+  // fc-protocol's PageContext: a null origin (or any field the core can't
+  // decode) is a protocol error, and the core exits. Main never sends one.
+  test("a PageContext the core can't decode is refused invalid_argument, never sent", async () => {
+    const core = new FakeCore(() => ({}));
+    const { vaultBackend } = load(core);
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    const chunk = { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) };
+    const undecodable = [
+      { ...page, origin: null },
+      { ...page, top_origin: null },
+      { ...page, origin: undefined, top_origin: undefined },
+      { ...page, origin: 7 },
+      { ...page, frame: null },
+      { ...page, frame: -1 },
+      { ...page, navigation: undefined },
+      { ...page, navigation: 1.5 },
+      { ...page, agent: 'yes' },
+      'https://app.example',
+    ];
+    for (const bad of undecodable) {
+      for (const send of [
+        () => vaultBackend.approval.touch({ store: 'dapp', chain_id: 1 }, bad),
+        () => vaultBackend.approval.radicleWrite({ key: page.origin }, bad),
+        () => vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, { page: bad, authorization: { swarm: 'user', soc: 'raw' } }),
+      ]) {
+        await expect(send()).rejects.toMatchObject({ name: 'VaultBackendError', code: 'invalid_argument' });
+      }
+    }
+    expect(core.calls).toEqual([]);
+    // An empty origin decodes: the core answers it (from 0.18.0, with its
+    // own invalid_argument). No agent field, or a null one, decodes too:
+    // the core then lets no standing rule answer.
+    for (const good of [{ ...page, origin: '', top_origin: '' }, { ...page, agent: undefined }, { ...page, agent: null }]) {
+      await vaultBackend.approval.touch({ store: 'dapp', chain_id: 1 }, good);
+    }
+    expect(core.calls.map(({ context }) => context)).toEqual([
+      { caller: 'page', page: { ...page, origin: '', top_origin: '' } },
+      { caller: 'page', page: { ...page, agent: undefined } },
+      { caller: 'page', page: { ...page, agent: null } },
     ]);
   });
 

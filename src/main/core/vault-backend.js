@@ -56,16 +56,43 @@ function client() {
 }
 
 /**
+ * Whether `page` is a PageContext the core can decode (fc-protocol's
+ * `PageContext`): `origin` and `top_origin` strings, `frame` and
+ * `navigation` unsigned integers, `agent` a boolean or absent. The core
+ * reads any other as a protocol error and exits, failing every request in
+ * flight. A keyless document has no key to send: from cored 0.18.0 the core
+ * answers an empty `origin` `invalid_argument` on every page method but
+ * `eip1193.request`, and main sends no page method for one (the page
+ * providers refuse it first).
+ */
+function decodablePage(page) {
+  return (
+    typeof page === 'object' &&
+    typeof page.origin === 'string' &&
+    typeof page.top_origin === 'string' &&
+    Number.isSafeInteger(page.frame) &&
+    page.frame >= 0 &&
+    Number.isSafeInteger(page.navigation) &&
+    page.navigation >= 0 &&
+    (page.agent == null || typeof page.agent === 'boolean')
+  );
+}
+
+/**
  * One core request under its watchdog: from main itself (caller `shell`), or
  * for a page's request under `page` with its PageContext (freedom-core
  * designs 0011 and 0012, "PageContext"): `{ origin, top_origin, frame,
  * navigation, agent }`. `'chrome'` relays the chrome's own request (a
- * grant's narrowing from its settings: design 0012, "The model").
+ * grant's narrowing from its settings: design 0012, "The model"). A
+ * PageContext the core couldn't decode (a null `origin`, say) is refused
+ * here, `invalid_argument`, and never sent: it would end the core.
  */
 async function call(method, params = {}, page = null) {
   let context;
   if (page === 'chrome') context = { caller: 'chrome' };
-  else context = page ? { caller: 'page', page } : { caller: 'shell' };
+  else if (!page) context = { caller: 'shell' };
+  else if (decodablePage(page)) context = { caller: 'page', page };
+  else throw new VaultBackendError('invalid_argument', 'A page request needs its page’s context');
   try {
     return await client().request(method, params, context, { watchdogMs: watchdogMs(method) });
   } catch (err) {
