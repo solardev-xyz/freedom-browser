@@ -452,8 +452,6 @@ function simulatedApprovals() {
       if (!origin || typeof detection?.id !== 'string' || !Number.isSafeInteger(detection?.tab)) {
         throw coded('detection: invalid', 'invalid_argument');
       }
-      let index;
-      let reservation = null;
       let grantReply;
       if (authorization?.cap) {
         if (acceptIndex !== undefined || grant !== undefined) {
@@ -462,10 +460,10 @@ function simulatedApprovals() {
         if (authorization.cap.agent === true) throw refused('custody');
         if (authorization.cap.attributable !== true) throw refused('no_rule');
         if (x402Locked) throw new Error(VAULT_LOCKED_MESSAGE);
-        index = accepts.findIndex((accept) => covering(origin, accept));
+        const index = accepts.findIndex((accept) => covering(origin, accept));
         if (index < 0) throw refused('cap');
         // The charge comes first: nothing is signed without it.
-        reservation = chargeCap(origin, accepts[index]);
+        const reservation = chargeCap(origin, accepts[index]);
         try {
           const payload = signPayment(params, accepts[index]);
           return { payload, reservation, accept_index: index, charged: true };
@@ -482,7 +480,7 @@ function simulatedApprovals() {
           : null
       );
       if (x402Locked) throw new Error(VAULT_LOCKED_MESSAGE);
-      index = acceptIndex;
+      const index = acceptIndex;
       const payload = signPayment(params, accepts[index]);
       if (grant) {
         const tuple = tupleOf(accepts[index]);
@@ -493,7 +491,7 @@ function simulatedApprovals() {
           grantReply = { added: true };
         }
       }
-      reservation = chargeCap(origin, accepts[index]);
+      const reservation = chargeCap(origin, accepts[index]);
       return {
         payload,
         reservation,
@@ -655,7 +653,7 @@ function simulatedApprovals() {
       if (store === 'x402') {
         if (callerOf(context) === 'page') throw coded("a page doesn't revoke x402's caps", 'forbidden');
         const caps = x402Caps.get(key) || [];
-        let kept = caps;
+        let kept;
         if (what === 'grant') kept = [];
         else if (what?.cap) {
           const asset = String(what.cap.asset).toLowerCase();

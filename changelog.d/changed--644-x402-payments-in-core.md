@@ -1,0 +1,3 @@
+- x402 payments and their auto-pay caps are handled by Freedom's identity core, which checks each payment against what you approved and charges a cap before it signs ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - An auto-pay cap's amount and reset period are shown read-only for now: revoke a cap, or set a new one when you next approve a payment
+  - Ledger and phone accounts can't pay x402 yet: approve with a browser wallet account, and a site's auto-pay asks first
