@@ -658,7 +658,6 @@ describe('held payments over IPC (4b)', () => {
       const running = startIntents();
       const failed = await refusedSend(running);
       let clock = 1_000_000;
-      running.confirmations._setNow(() => clock);
       mockApprovals.setNow(() => clock);
       const { token } = await running.confirm('intent-resend', null, bindingOf(failed.intent));
       clock += running.confirmations.CONFIRMATION_TTL_MS;

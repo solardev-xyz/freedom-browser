@@ -96,11 +96,6 @@ jest.mock('../core/vault-backend', () => {
     },
   };
 });
-// An x402 cap edit is the identity core's decision (X402-2): main reads no
-// cap for one and mints no token. The cap store (x402/permissions.js) is
-// never required here.
-const mockCapStoreRead = jest.fn();
-jest.mock('../x402/permissions', () => ({ capUpdateRequest: (...args) => mockCapStoreRead(...args) }));
 // x402's payment as main's record of its detection holds it (APS-5),
 // replaced per test: the panel's prompt and its token bind this, not the
 // chrome's copy.
@@ -168,8 +163,8 @@ describe('signing handlers require a main-side confirmation', () => {
   const { startSafeSend } = require('./safe/safe-transactions');
   const confirmations = require('./signing-confirmation');
   const { toCoreTransaction, buildTransaction } = require('./signing-utils');
-  // Tokens outstanding: main's own (none mints them now) and the core's.
-  const outstanding = () => confirmations._outstandingCount() + mockApprovals.outstanding();
+  // Tokens outstanding: the core's.
+  const outstanding = () => mockApprovals.outstanding();
   // What the core signed: a token is checked as it signs (design 0012).
   let signedTxs = [];
 
@@ -1005,7 +1000,7 @@ describe('signing handlers require a main-side confirmation', () => {
 
   // X402-2: a cap's amount and window are the core's, widened only by a
   // payment's token that binds the new cap. An edit's token is refused,
-  // from any window, with no cap read and nothing minted.
+  // from any window, with nothing minted.
   test('an x402 cap edit is refused, and no token minted', async () => {
     const edit = { origin: 'https://pay.example', chainId: 8453, asset: '0xabc', capAmount: '20000000' };
     for (const event of [AUTO, {}]) {
@@ -1015,7 +1010,6 @@ describe('signing handlers require a main-side confirmation', () => {
         code: 'SIGNING_NOT_CONFIRMED',
       });
     }
-    expect(mockCapStoreRead).not.toHaveBeenCalled();
     expect(mockApprovals.calls).toEqual([]);
     expect(outstanding()).toBe(0);
   });
@@ -1090,7 +1084,6 @@ describe('signing handlers require a main-side confirmation', () => {
         code: 'SIGNING_NOT_CONFIRMED',
       });
       expect(asked).toEqual([]);
-      expect(mockCapStoreRead).not.toHaveBeenCalled();
       expect(outstanding()).toBe(0);
     });
   });

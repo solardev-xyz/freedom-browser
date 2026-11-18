@@ -65,15 +65,6 @@
  *     `x402:approve` builds the binding from main's record of the
  *     detection and takes only the entry's index and the grant from the
  *     caller.
- *   - x402-cap-update: one edit of a site's auto-pay cap (#1023): the
- *     chrome window it was confirmed in, the cap's key (origin, chainId,
- *     asset), the cap as main holds it (its amount, createdAt, expiresAt
- *     and the generation of the grant it is: a cap revoked and granted
- *     again within one second has the same createdAt) and the new amount
- *     or window, or both. Main fills in the window and the cap itself,
- *     when the token is minted and when `x402:update-permission` spends
- *     it, so a token can't change another cap, make another change, apply
- *     after the cap has changed, or be spent by another window.
  *
  * Auto-approved dApp requests carry no token: `wallet-ipc.js` evaluates the
  * stored auto-approve policy in main instead of trusting the renderer's
@@ -92,9 +83,9 @@
  * each page kind once its methods have moved to main (`wallet-ipc.js`,
  * PRQ-5).
  *
- * Tokens through the core (freedom-core design 0012, APB-1): every kind but
- * `x402-cap-update` is minted, checked and spent by the identity core
- * (`approval.issue`, `approval.spend`, `approval.discard`), never in JS: a
+ * Tokens through the core (freedom-core design 0012, APB-1): every kind is
+ * minted, checked and spent by the identity core (`approval.issue`,
+ * `approval.spend`, `approval.discard`), never in JS: a
  * wallet kind from main itself (`shell`), a page kind under `page` with the
  * request's PageContext. The core binds the request in the form it will
  * sign it (`corePayload`), so what was confirmed is what is signed: a
@@ -117,10 +108,9 @@
  * An `x402-payment` token is the core's too (X402-2): minted as `shell`,
  * and spent by the payment's own `x402.authorize`, which checks it against
  * the tab, detection, URL, entry, account and grant it binds
- * (x402/sign-flow.js). `x402-cap-update` is no longer minted: widening a cap
- * needs the core's decision, a payment's token that binds the new cap
- * (x402/caps.js), and `wallet:confirm-signing` refuses the kind. Its JS
- * issuer and spender below stay in place, unused.
+ * (x402/sign-flow.js). `x402-cap-update` is minted by no one: widening a
+ * cap needs the core's decision, a payment's token that binds the new cap
+ * (x402/caps.js), and `wallet:confirm-signing` refuses the kind.
  */
 
 const crypto = require('crypto');
@@ -144,6 +134,7 @@ const KINDS = Object.freeze({
   INTENT_CLOSE: 'intent-close',
   EXECUTOR_SEND: 'executor-send',
   X402_PAYMENT: 'x402-payment',
+  // Refused by `wallet:confirm-signing` (X402-2): nothing mints it.
   X402_CAP_UPDATE: 'x402-cap-update',
 });
 // The most hashes an intent-close binds: above the intent store's bound on
@@ -170,8 +161,6 @@ function isPageKind(kind, payload) {
 // A page token's handle: the 32 random bytes main issued, in hex.
 const HANDLE = /^[0-9a-f]{64}$/;
 
-const outstanding = new Map(); // token -> { kind, digest, expiresAt }: x402's kinds only
-
 // The kind main asked the core to mint for each token of its own, which the
 // chrome presents back with a request: token -> { kind, expiresAt }. Main
 // checks that kind against the route's before the token is presented, as its
@@ -182,7 +171,6 @@ const outstanding = new Map(); // token -> { kind, digest, expiresAt }: x402's k
 // tokens; one main no longer knows is refused, so evicting one can't skip
 // the check.
 const minted = new Map();
-let now = () => Date.now();
 
 function notConfirmed(reason) {
   const err = new Error(`Signing was not confirmed: ${reason}`);
@@ -279,38 +267,6 @@ function x402Grant(value) {
     throw new Error('Invalid grant');
   }
   return { capAmount: value.capAmount ?? null, windowSeconds: value.windowSeconds ?? null };
-}
-
-/** An atomic amount as a digit string, or null for none. */
-function digits(value, field) {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new Error(`Invalid ${field}`);
-  return value;
-}
-
-/** A positive number of seconds, or null for none. */
-function seconds(value, field) {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    throw new Error(`Invalid ${field}`);
-  }
-  return value;
-}
-
-/** An x402 cap as main holds it: which grant it is, its amount and its window. */
-function x402Cap(value) {
-  if (!value || typeof value !== 'object') throw new Error('No such auto-pay cap');
-  const capAmount = digits(value.capAmount, 'cap');
-  if (
-    capAmount === null ||
-    !Number.isSafeInteger(value.createdAt) ||
-    !Number.isSafeInteger(value.expiresAt) ||
-    !Number.isSafeInteger(value.generation) ||
-    value.generation <= 0
-  ) {
-    throw new Error('Invalid auto-pay cap');
-  }
-  return { capAmount, createdAt: value.createdAt, expiresAt: value.expiresAt, generation: value.generation };
 }
 
 /** A Safe payment's site, if it has one (a dApp's), as its permission key. */
@@ -472,22 +428,6 @@ function bindingFor(kind, accountIndex, payload) {
         grant: x402Grant(payload.grant),
       };
     }
-    case KINDS.X402_CAP_UPDATE: {
-      const origin = typeof payload?.origin === 'string' ? normalizeOrigin(payload.origin) : '';
-      if (!origin) throw new Error('An auto-pay cap needs the site it is for');
-      const capAmount = digits(payload.capAmount, 'cap');
-      const windowSeconds = seconds(payload.windowSeconds, 'window');
-      if (capAmount === null && windowSeconds === null) throw new Error('Nothing to change');
-      return {
-        window: index(payload.window, 'window'),
-        origin,
-        chainId: chain(payload.chainId),
-        asset: text(payload.asset, 'asset'),
-        current: x402Cap(payload.current),
-        capAmount,
-        windowSeconds,
-      };
-    }
     case KINDS.SAFE_MESSAGE:
       if (!payload || typeof payload.method !== 'string' || !Array.isArray(payload.params)) {
         throw new Error('Signature request is required');
@@ -500,80 +440,6 @@ function bindingFor(kind, accountIndex, payload) {
     default:
       throw new Error(`Unknown confirmation kind: ${kind}`);
   }
-}
-
-function digestFor(kind, accountIndex, payload) {
-  return sha256(stableStringify({ kind, ...bindingFor(kind, accountIndex, payload) }));
-}
-
-// The kind main minted and spent in JS before X402-2, which nothing mints now
-// (`wallet:confirm-signing` refuses it).
-const MAIN_KINDS = new Set([KINDS.X402_CAP_UPDATE]);
-const ALL_KINDS = new Set(Object.values(KINDS));
-
-/** Whether the identity core mints and spends `kind`'s tokens (APB-1). */
-function isCoreKind(kind) {
-  return ALL_KINDS.has(kind) && !MAIN_KINDS.has(kind);
-}
-
-function pruneExpired() {
-  const t = now();
-  for (const [token, entry] of outstanding) {
-    if (entry.expiresAt <= t) outstanding.delete(token);
-  }
-}
-
-// ---- main's own kinds: x402's, in JS ----
-
-/**
- * Issue one of main's own tokens (x402's kinds), at once. Throws on a
- * malformed request (nothing is issued) and for any other kind.
- *
- * @returns {{token: string, expiresAt: number}}
- */
-function issueMain(kind, accountIndex, payload) {
-  if (!MAIN_KINDS.has(kind)) throw new Error(`Not one of main's own confirmation kinds: ${kind}`);
-  const digest = digestFor(kind, accountIndex, payload);
-  pruneExpired();
-  while (outstanding.size >= MAX_OUTSTANDING) {
-    // Map iteration order is insertion order: drop the oldest.
-    outstanding.delete(outstanding.keys().next().value);
-  }
-  const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = now() + CONFIRMATION_TTL_MS;
-  outstanding.set(token, { kind, digest, expiresAt });
-  return { token, expiresAt };
-}
-
-/**
- * Spend one of main's own tokens (x402's kinds) for the request about to be
- * paid or applied. Burns the token on every presentation. Throws (code
- * SIGNING_NOT_CONFIRMED) unless the token was issued for this kind and this
- * exact request and has not expired. The core's kinds are spent by the core.
- */
-function consumeConfirmation(token, kind, accountIndex, payload) {
-  if (typeof token !== 'string' || token.length === 0) {
-    throw notConfirmed('no confirmation token');
-  }
-  const entry = outstanding.get(token);
-  outstanding.delete(token);
-  if (!MAIN_KINDS.has(kind)) throw notConfirmed('the identity core spends this confirmation');
-  if (!entry) {
-    throw notConfirmed('unknown or already used confirmation');
-  }
-  if (entry.expiresAt <= now()) {
-    throw notConfirmed('confirmation expired');
-  }
-  let digest;
-  try {
-    digest = digestFor(kind, accountIndex, payload);
-  } catch (err) {
-    throw notConfirmed(err.message);
-  }
-  if (entry.kind !== kind || entry.digest !== digest) {
-    throw notConfirmed('request differs from what was confirmed');
-  }
-  return {};
 }
 
 // ---- the core's kinds (freedom-core design 0012, APB-1) ----
@@ -836,7 +702,6 @@ async function issueCore(kind, accountIndex, payload, { page = null, handle, fee
  * @returns {Promise<{token: string, expiresAt: number}>}
  */
 async function issueConfirmation(kind, accountIndex, payload, options = {}) {
-  if (MAIN_KINDS.has(kind)) return issueMain(kind, accountIndex, payload);
   if (isPageKind(kind, payload)) throw new Error(`A page confirmation is issued for its page: ${kind}`);
   const { token, expiresAt } = await issueCore(kind, accountIndex, payload, {
     feeAcknowledged: options.feeAcknowledged,
@@ -1181,7 +1046,6 @@ async function checkStanding(page, request) {
  */
 function discardConfirmation(token) {
   if (typeof token !== 'string' || token.length === 0) return Promise.resolve();
-  outstanding.delete(token);
   minted.delete(token);
   return vault()
     .approval.discard(token)
@@ -1205,17 +1069,7 @@ async function withConfirmation(token, fn) {
 }
 
 function _reset() {
-  outstanding.clear();
   minted.clear();
-  now = () => Date.now();
-}
-
-function _setNow(fn) {
-  now = fn;
-}
-
-function _outstandingCount() {
-  return outstanding.size;
 }
 
 module.exports = {
@@ -1229,13 +1083,10 @@ module.exports = {
   checkStanding,
   confirmationError,
   corePayload,
-  isCoreKind,
   isPageKind,
   issueConfirmation,
-  issueMainConfirmation: issueMain,
   issuePageConfirmation,
   confirmationFor,
-  consumeConfirmation,
   spendConfirmation,
   finalizeReceiptOf,
   rememberDeviceSend,
@@ -1246,6 +1097,4 @@ module.exports = {
   discardConfirmation,
   withConfirmation,
   _reset,
-  _setNow,
-  _outstandingCount,
 };

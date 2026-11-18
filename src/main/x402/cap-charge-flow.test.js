@@ -782,24 +782,6 @@ describe('x402:update-permission narrows a cap through the core, and raises none
     expect(result).toMatchObject({ success: false, code: 'forbidden' });
     expect(mockCore.cap(ORIGIN, CHAIN, USDC).capAmount).toBe('5000');
   });
-
-  test("main's own x402-cap-update token changes nothing: a narrowing needs none, and a widening isn't possible", async () => {
-    const cap = await grantCap(PRICE);
-    // As main minted one before X402-2: bound to this window, this cap and
-    // this (wider) edit.
-    const edit = { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '99000000' };
-    const { token: confirmation } = confirmations.issueMainConfirmation(confirmations.KINDS.X402_CAP_UPDATE, null, {
-      window: CHROME.id,
-      ...edit,
-      current: { capAmount: cap.capAmount, createdAt: cap.createdAt, expiresAt: cap.expiresAt, generation: 1 },
-    });
-    const from = mockCore.calls.length;
-
-    await expect(update(CHROME, { ...edit, confirmation })).resolves.toMatchObject({ success: false, code: 'forbidden' });
-
-    expect(askedSince(from)).toEqual([]);
-    expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toEqual(cap);
-  });
 });
 
 // caps.js over the core: what main's sign flow and injector rely on.

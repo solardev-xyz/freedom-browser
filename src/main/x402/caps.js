@@ -26,9 +26,6 @@
  *   (`settleSent`): one whose cap was revoked, or revoked and granted
  *   again, since its charge is refused (`cap_changed`), and main withholds
  *   its header.
- *
- * x402/permissions.js, main's store before X402-2, stays in place unused: an
- * older build's reading of the file the core writes now (the rollback).
  */
 
 const { normalizeOrigin } = require('../../shared/origin-utils');

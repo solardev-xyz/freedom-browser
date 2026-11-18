@@ -26,13 +26,13 @@
  * (`replaced`), so the user sees the payment changed, with a higher fee,
  * rather than a second prompt they didn't cause.
  *
- * x402's two kinds ask here too (APS-5), so that with the document on the
+ * x402's payment asks here too (APS-5), so that with the document on the
  * chrome mints no approval at all: a 402's payment (`x402-payment`), with
  * main's record of its detection (the paid URL, the seller's entry at the
- * chosen index), the active account and the allowance granted with it; and
- * an edit of a site's auto-pay cap (`x402-cap-update`), with the cap as
- * main holds it and the change. An auto-pay within a cap asks nothing, as
- * before.
+ * chosen index), the active account and the allowance granted with it. An
+ * auto-pay within a cap asks nothing, as before. An auto-pay cap's edit asks
+ * nothing here: the pane lowers a cap through the core's narrowing, and
+ * `wallet:confirm-signing` refuses `x402-cap-update` (X402-2).
  */
 
 const PROMPT_KINDS = Object.freeze({
@@ -43,7 +43,6 @@ const PROMPT_KINDS = Object.freeze({
   'intent-close': 'wallet.intent_close',
   'executor-send': 'wallet.executor_send',
   'x402-payment': 'wallet.x402_payment',
-  'x402-cap-update': 'wallet.x402_cap_update',
 });
 
 const REJECTED = Object.freeze({ approved: false, error: 'User rejected the request', code: 'USER_REJECTED' });
@@ -143,8 +142,6 @@ function transferOf(tx) {
  *   `{ chainId, asset, amount }`, or null for a network main can't pay on
  * @param {(url: string) => string|null} [deps.x402Origin] the paid URL's
  *   origin, the key its allowance is granted under
- * @param {(origin: string, chainId: number, asset: string) => object|null} [deps.x402Cap]
- *   a site's active auto-pay cap, as main holds it
  * @param {() => number} [deps.now]
  */
 function createWalletApprovals({
@@ -158,7 +155,6 @@ function createWalletApprovals({
   tokenOf = () => null,
   x402Tuple = () => null,
   x402Origin = () => null,
-  x402Cap = () => null,
   now = () => Date.now(),
 }) {
   // A held payment's last approved resend, by intent id: the hash it bound.
@@ -275,31 +271,6 @@ function createWalletApprovals({
     };
   }
 
-  // An auto-pay cap's edit (APS-5): the cap as main holds it, and the change.
-  function x402CapView(payload) {
-    const cap = safely(x402Cap, payload.origin, payload.chainId, payload.asset);
-    if (!cap || !payload.current) throw new Error('No such auto-pay cap');
-    if (payload.windowSeconds !== null && payload.windowSeconds !== undefined && !Number.isSafeInteger(payload.windowSeconds)) {
-      throw new Error('Invalid window');
-    }
-    const windowSeconds = Number.isSafeInteger(payload.windowSeconds) ? payload.windowSeconds : null;
-    return {
-      site: textOr(cap.origin),
-      chain: chainOf(payload.chainId),
-      asset: textOr(payload.asset),
-      token: tokenView(payload.chainId, payload.asset),
-      current: {
-        capAmount: payload.current.capAmount,
-        spentAmount: decimal(cap.spentAmount) ?? '0',
-        expiresAt: payload.current.expiresAt,
-      },
-      change: {
-        capAmount: typeof payload.capAmount === 'string' ? payload.capAmount : null,
-        windowSeconds,
-        expiresAt: windowSeconds === null ? null : payload.current.createdAt + windowSeconds,
-      },
-    };
-  }
 
   /**
    * Main's view of the request, for its kind's template in the document.
@@ -368,8 +339,6 @@ function createWalletApprovals({
         };
       case 'x402-payment':
         return x402PaymentView(account, payload);
-      case 'x402-cap-update':
-        return x402CapView(payload);
       default:
         throw new Error(`wallet-approvals: no view for ${kind}`);
     }
@@ -507,8 +476,6 @@ function getWalletApprovals() {
       },
       x402Tuple: (accept) => require('../x402/payment-utils').tupleFromAccept(accept),
       x402Origin: (url) => require('../x402/intercept').originKeyForUrl(url),
-      // The cap as the identity core holds it (X402-2): main's mirror.
-      x402Cap: (origin, chainId, asset) => require('../x402/caps').getPermission(origin, chainId, asset),
     });
   }
   return shared;

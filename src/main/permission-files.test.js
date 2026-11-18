@@ -1,16 +1,14 @@
 /**
  * Main's writes of the four permission files (freedom-core design 0012, "The
- * APR-3 pin", APB-2 and APB-3). From the pin of cored-v0.14.0 on, the core
- * reads them at its checks. Main is still the only writer of
- * `x402-permissions.json`, and writes it by a temp file and a rename
- * (lib/atomic-file.js), never in place: a spy on the helper and on `fs`.
- * `dapp-permissions.json` is the core's from APB-2 (main writes it nowhere:
- * wallet/dapp-permissions.test.js), and `swarm-permissions.json` and
- * `radicle-permissions.json` from APB-3 (below): main writes none of them,
- * and each of their stores' writes goes to the core's write methods. No
- * script under scripts/ writes, renames or deletes a permission file either:
- * `npm run dapp:reset`, which deleted the dApp file, refuses from APB-2 and
- * touches nothing.
+ * APR-3 pin", APB-2, APB-3 and X402-2). From the pin of cored-v0.14.0 on, the
+ * core reads them at its checks. `dapp-permissions.json` is the core's from
+ * APB-2 (main writes it nowhere: wallet/dapp-permissions.test.js),
+ * `swarm-permissions.json` and `radicle-permissions.json` from APB-3 (below),
+ * and `x402-permissions.json` from X402-2 (x402/x402.integration.test.js):
+ * main writes none of them, and each of their stores' writes goes to the
+ * core's write methods. No script under scripts/ writes, renames or deletes
+ * a permission file either: `npm run dapp:reset`, which deleted the dApp
+ * file, refuses from APB-2 and touches nothing.
  */
 
 const fs = require('fs');
@@ -38,17 +36,14 @@ const { writeFileAtomicSync } = require('./lib/atomic-file');
 const { useSimulatedGrantCore, testPage } = require('../../test/helpers/simulated-grant-core');
 const swarm = require('./swarm/swarm-permissions');
 const radicle = require('./radicle/radicle-permissions');
-const x402 = require('./x402/permissions');
 
 const ORIGIN = 'https://app.example';
-const TOKEN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
 let tmpDir;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'permission-files-'));
   app.getPath.mockReturnValue(tmpDir);
-  for (const store of [x402]) store._resetCache();
   jest.spyOn(console, 'log').mockImplementation(() => {});
 });
 
@@ -56,69 +51,6 @@ afterEach(() => {
   jest.restoreAllMocks();
   writeFileAtomicSync.mockClear();
   fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-// Each store's writes, every one that saves the file: [file, store, writes]
-// where `writes()` returns how many saves it made.
-const STORES = [
-  [
-    'x402-permissions.json',
-    x402,
-    () => {
-      x402.grant(ORIGIN, 8453, TOKEN, '10000000', 3600);
-      const taken = x402.charge(ORIGIN, 8453, TOKEN, '1000000');
-      expect(taken).not.toBeNull();
-      expect(x402.refund(taken)).toBe(true);
-      x402.updatePermission(ORIGIN, 8453, TOKEN, { capAmount: '5000000' });
-      x402.revoke(ORIGIN, 8453, TOKEN);
-      x402.grant(ORIGIN, 8453, TOKEN, '10000000', 3600);
-      x402.revokeAllForOrigin(ORIGIN);
-      return 7;
-    },
-  ],
-];
-
-describe.each(STORES)('%s', (name, _store, writes) => {
-  test('every write is a temp file renamed over it, through the helper, never in place', () => {
-    const target = path.join(tmpDir, name);
-    const opens = jest.spyOn(fs, 'openSync');
-    const inPlace = [
-      jest.spyOn(fs, 'writeFileSync'),
-      jest.spyOn(fs, 'appendFileSync'),
-      jest.spyOn(fs, 'truncateSync'),
-      jest.spyOn(fs, 'copyFileSync'),
-    ];
-    const renames = jest.spyOn(fs, 'renameSync');
-
-    const saves = writes();
-
-    const helped = writeFileAtomicSync.mock.calls.filter(([file]) => file === target);
-    expect(helped).toHaveLength(saves);
-    const onto = renames.mock.calls.filter(([, to]) => to === target);
-    expect(onto).toHaveLength(saves);
-    for (const [from] of onto) {
-      expect(path.dirname(from)).toBe(tmpDir);
-      expect(path.basename(from).startsWith(`${name}.`)).toBe(true);
-      expect(from.endsWith('.tmp')).toBe(true);
-    }
-    for (const spy of inPlace) {
-      for (const [file] of spy.mock.calls) expect(file).not.toBe(target);
-    }
-    // Only the flush after a rename opens the target itself (on Windows,
-    // FlushFileBuffers needs the file), never before one, never to write.
-    const renamedAt = renames.mock.calls
-      .map(([, to], i) => (to === target ? renames.mock.invocationCallOrder[i] : null))
-      .filter((order) => order !== null);
-    opens.mock.calls.forEach(([file, flags], i) => {
-      if (file !== target) return;
-      expect(flags).toBe('r+');
-      expect(renamedAt.some((order) => order < opens.mock.invocationCallOrder[i])).toBe(true);
-    });
-    expect(fs.readdirSync(tmpDir).filter((entry) => entry.endsWith('.tmp'))).toEqual([]);
-    // The file is whole JSON, as JSON.stringify(…, null, 2) wrote it.
-    const text = fs.readFileSync(target, 'utf-8');
-    expect(JSON.stringify(JSON.parse(text), null, 2)).toBe(text);
-  });
 });
 
 // The files the core writes (APB-3): every write fs makes while each store

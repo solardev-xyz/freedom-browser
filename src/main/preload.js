@@ -840,9 +840,9 @@ contextBridge.exposeInMainWorld('wallet', {
   // for a single-use token bound to exactly the request the user confirmed,
   // and hands it to the signing call as `{ confirmation: token }`.
   // kind: 'wallet-send' | 'safe-send' | 'executor-send' | 'intent-resend'
-  //       | 'intent-replace' | 'intent-close' | 'x402-payment' (x402Approve)
-  //       | 'x402-cap-update'. A page's kinds are main's to confirm
-  //       (freedom-core design 0011): main refuses them here.
+  //       | 'intent-replace' | 'intent-close' | 'x402-payment' (x402Approve).
+  //       A page's kinds are main's to confirm (freedom-core design 0011):
+  //       main refuses them here, and 'x402-cap-update' (X402-2).
   // A transaction's confirmation is also its fee check's approval (design
   // 0005, A): `options.feeAcknowledged` once the user confirmed a fee above
   // the threshold again; without it, main may answer FEE_CHECK_ASK_AGAIN.

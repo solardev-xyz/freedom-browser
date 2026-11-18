@@ -999,8 +999,8 @@ jobs:
       # freedom-core design 0012, X402-2: every x402 payment through the
       # core's x402.authorize and x402.settle. #1016's token-binding cases,
       # concurrent auto-pays on one cap, sent/withheld settlement, custody,
-      # a locked vault, the pane's revoke, the rollback read of the core's
-      # x402-permissions.json, and no write to it from main.
+      # a locked vault, the pane's revoke, and no write to
+      # x402-permissions.json from main.
       - name: x402 payments (real freedom-cored)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/x402/x402.integration.test.js
