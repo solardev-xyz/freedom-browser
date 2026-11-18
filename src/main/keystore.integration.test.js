@@ -23,7 +23,10 @@
  *     before it answered; main killed between the helper's answer and
  *     `forget-done`. At the next start of another profile the drain runs, and
  *     the keychain holds none of the deleted profiles' items. Two mains
- *     draining at once both leave the file empty;
+ *     draining at once: neither item is left, each answer is ok, not_found
+ *     or (a forget racing the other's delete) the Keychain's `backend`,
+ *     which keeps the record; the file is empty after one more drain at
+ *     most, and a live profile's item stays;
  *   - main killed while a quick-unlock disable or a vault delete waits on
  *     its `forget`: the profile's next open finishes it.
  * - **Linux:** the same drain steps, with the real subcommands and a
@@ -46,7 +49,7 @@ jest.mock('./service-locks', () => ({ getLockDir: () => mockLockDir }));
 
 const { CoreClient } = require('./core/core-client');
 const { createHelperRunner, registerKeystoreShell } = require('./core/keystore-shell');
-const { drainAfterFirstWindow } = require('./keystore-drain');
+const { drainAfterFirstWindow, drainForgetFile } = require('./keystore-drain');
 const { openProfile } = require('./profile-resolver');
 const subcommands = require('./profile-subcommands');
 
@@ -102,6 +105,9 @@ const ABANDON_WALLET = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
 const PASSWORD = 'keystore-pass-1';
 const b64 = (text) => Buffer.from(text, 'utf8').toString('base64');
 const KEYCHAIN_SERVICE = 'baby.freedom.keystore';
+// The helper's answers to a forget that clear a record (0013, "Forgetting an
+// item"): Done and NotFound.
+const CLEARS = ['{"ok":true}', '{"ok":false,"error":"not_found"}'];
 
 function waitFor(predicate, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
@@ -336,7 +342,15 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
           return script('killed', `#!/bin/sh\n'${sourceBinary}' "$@" > /dev/null\nkill -9 $$\n`);
         },
         heldMarker,
-        async makeDeleted(id) {
+        // What the Keychain gives a forget that races another process's
+        // delete of the same item: `errSecInvalidRecord` (-67701), outside
+        // the helper's table, so `backend`. It keeps the record, as 0013
+        // says any answer but ok and not_found does, and a later drain finds
+        // the item gone (or the other main's forget-done drops it first).
+        racedForget: ['{"ok":false,"error":"backend","reason":"status"}'],
+        // A profile whose core made its quick-unlock item through main: the
+        // profile, and the item its secrets file names.
+        async makeLive(id) {
           const opened = launch(id);
           const identity = path.join(opened.profile.userDataDir, 'identity');
           const client = core(identity, (c) =>
@@ -352,6 +366,10 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
           const items = namedItems(identity);
           expect(items).toHaveLength(1);
           expect(this.has(items[0])).toBe(true);
+          return { opened, item: items[0] };
+        },
+        async makeDeleted(id) {
+          const { opened, item } = await this.makeLive(id);
           const { result } = await subcommands.run(
             sourceBinary,
             [
@@ -368,7 +386,7 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
             ],
             { timeoutMs: 0 }
           );
-          expect(result.forget).toEqual([{ policy: 'unattended', item: items[0] }]);
+          expect(result.forget).toEqual([{ policy: 'unattended', item }]);
           return result.forget;
         },
       };
@@ -403,11 +421,18 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
         return script('killed', `${prelude}\n${remove}\nprocess.kill(process.pid, 'SIGKILL');\n`);
       },
       heldMarker,
+      // One unlink wins, and the other finds no file: never another answer.
+      racedForget: [],
+      // An item in the stand-in store that no record names.
+      async makeLive() {
+        const item = crypto.randomBytes(16).toString('hex');
+        fs.writeFileSync(path.join(store, item), 'key');
+        return { item };
+      },
       // A deleted profile's record, as `profile delete` writes it, and its
       // item in the stand-in store.
       async makeDeleted(id) {
-        const item = crypto.randomBytes(16).toString('hex');
-        fs.writeFileSync(path.join(store, item), 'key');
+        const { item } = await this.makeLive();
         const file = fs.existsSync(forgetFile(appRoot))
           ? JSON.parse(fs.readFileSync(forgetFile(appRoot), 'utf8'))
           : { version: 1, deleted: [] };
@@ -444,6 +469,19 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
     await waitFor(() => child.out.includes(`at ${step}\n`), 60_000, `main at ${step}`);
     child.kill('SIGKILL');
     expect(await child.exited).toEqual({ code: null, signal: 'SIGKILL' });
+  }
+
+  /** What the helper answered each of a main's forgets, by item: the line,
+   * or `failed <code>` for a run that gave none. */
+  function helperAnswers(child) {
+    const answers = new Map();
+    for (const [, item, answer] of child.out.matchAll(/^answer (\S+) (.*)$/gm)) {
+      answers.set(item, answer);
+    }
+    for (const [, item, code] of child.out.matchAll(/^failed (\S+) (.*)$/gm)) {
+      answers.set(item, `failed ${code}`);
+    }
+    return answers;
   }
 
   async function ends(child) {
@@ -557,9 +595,11 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
       expect(recordedItems(appRoot)).toEqual([]);
     }, 120_000);
 
-    test("two profiles' mains draining at once both leave the file empty", async () => {
+    test("two profiles' mains draining at once: no item left, the file empty after one more drain, a live item kept", async () => {
+      const live = await store.makeLive('live');
       const items = [...(await store.makeDeleted('one')), ...(await store.makeDeleted('two'))];
-      expect(recordedItems(appRoot).sort()).toEqual(items.map((i) => i.item).sort());
+      const ids = items.map((i) => i.item).sort();
+      expect(recordedItems(appRoot).sort()).toEqual(ids);
       // Lined up before their first helper, so each has listed both items.
       const release = path.join(root, 'release');
       const mains = [0, 1].map(() =>
@@ -572,14 +612,40 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
       );
       fs.writeFileSync(release, '');
       const counts = await Promise.all(mains.map(ends));
-      // Each saw both items, and each counted both gone: one removed it, the
-      // other found it not_found.
-      expect(counts).toEqual([
-        { forgotten: 2, kept: 0 },
-        { forgotten: 2, kept: 0 },
-      ]);
-      for (const { item } of items) expect(store.has(item)).toBe(false);
+      const answers = mains.map(helperAnswers);
+
+      // Each main asked the helper about both items. Every answer is one
+      // that clears a record (ok, not_found), or the one the store gives a
+      // forget racing the other main's: nothing else.
+      expect(answers.map((byItem) => [...byItem.keys()].sort())).toEqual([ids, ids]);
+      const allowed = [...CLEARS, ...store.racedForget];
+      const unexpected = answers.flatMap((byItem) =>
+        [...byItem.values()].filter((answer) => !allowed.includes(answer))
+      );
+      expect(unexpected).toEqual([]);
+      // Each counted gone exactly the items whose answer clears a record
+      // (0013: only ok and not_found do), and kept the rest.
+      const cleared = answers.map((byItem) => ids.filter((id) => CLEARS.includes(byItem.get(id))));
+      expect(counts).toEqual(
+        cleared.map((gone) => ({ forgotten: gone.length, kept: ids.length - gone.length }))
+      );
+      // Neither item is left in the store.
+      for (const id of ids) expect(store.has(id)).toBe(false);
+      // The file keeps exactly the records no main cleared, and the next
+      // drain clears them: their forget answers not_found now.
+      const left = ids.filter((id) => !cleared.some((gone) => gone.includes(id)));
+      expect(recordedItems(appRoot).sort()).toEqual(left);
+      await expect(
+        drainForgetFile(appRoot, {
+          runner: createHelperRunner({ command: store.helper('real') }),
+          platform: 'darwin',
+          log: quietLog,
+        })
+      ).resolves.toEqual({ forgotten: left.length, kept: 0 });
       expect(recordedItems(appRoot)).toEqual([]);
+      expect(launch('home').report.forgetPending).toBe(0);
+      // No drain touched the item of a profile still in use.
+      expect(store.has(live.item)).toBe(true);
     }, 120_000);
   });
 

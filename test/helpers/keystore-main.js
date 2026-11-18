@@ -17,7 +17,9 @@
 // `before-forget-done`, or `-` for none) it writes `at <step>` and stops
 // there for good. `<step>@<file>` pauses there instead, the first time,
 // until `<file>` exists: a test lines two mains up at a step with it. A
-// drain or forget that ends writes `done <counts JSON>`;
+// drain or forget writes each helper's answer as it came, `answer <item>
+// <line>`, or `failed <item> <code>` for a run that gave none, and once it
+// ends `done <counts JSON>`;
 // `core` writes `asked` once its request has gone, and then waits.
 
 const fs = require('fs');
@@ -46,7 +48,18 @@ async function main() {
     const [stopAt, release] = stopWhere.split('@');
     let paused = false;
     const deps = {
-      runner,
+      runner: {
+        async run(request, options) {
+          try {
+            const line = await runner.run(request, options);
+            process.stdout.write(`answer ${request.item} ${line}\n`);
+            return line;
+          } catch (error) {
+            process.stdout.write(`failed ${request.item} ${error?.code}\n`);
+            throw error;
+          }
+        },
+      },
       log,
       // The drain's own steps, whatever key store the test stands up.
       platform: 'darwin',

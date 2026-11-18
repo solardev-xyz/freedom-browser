@@ -23,8 +23,12 @@
  * before the helper runs leaves the record; a helper killed or held past its
  * 10 s leaves it too; main killed between the helper's answer and
  * `forget-done` leaves a record whose next `forget` answers `not_found`. Two
- * mains draining at once do no harm: a second `forget` of an item answers
- * `not_found`, and `forget-done` for an id no longer listed changes nothing.
+ * mains draining at once do no harm: a `forget` of an item the other main
+ * removed answers `not_found`, and `forget-done` for an id no longer listed
+ * changes nothing. On the Keychain, a `forget` racing the other main's
+ * answers `ok` as well, or `backend` (`errSecInvalidRecord`, outside the
+ * helper's table), which keeps the record until the other main's
+ * `forget-done` or a later drain drops it.
  *
  * The helper runs through keystore-shell.js's runner, one at a time with the
  * core's own `shell.keystore` calls, each under `forget`'s 10 s deadline,
