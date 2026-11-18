@@ -18,12 +18,14 @@
  *   keys it in lowercase (`x402-asset-case`).
  * - **Widening a cap** needs a decision the core checks: a payment's
  *   `x402-payment` token that binds the new cap (`grant`). Main has no
- *   method that raises a cap's amount or window, and neither has the core
- *   before a narrowing method of its own (pending): the activity pane can
- *   revoke a cap, never raise one.
- *
- * x402/permissions.js, main's store before X402-2, stays in place unused: an
- * older build's reading of the file the core writes now (the rollback).
+ *   method that raises a cap's amount or window. The activity pane lowers
+ *   a cap's amount or shortens its window through the core's narrowing
+ *   (`x402.update`, cored 0.19.0), which refuses anything that isn't
+ *   strictly narrower, and revokes a cap; it never raises one.
+ * - **A cap's payment is sent** only once the core accepts `sent` for it
+ *   (`settleSent`): one whose cap was revoked, or revoked and granted
+ *   again, since its charge is refused (`cap_changed`), and main withholds
+ *   its header.
  */
 
 const { normalizeOrigin } = require('../../shared/origin-utils');
@@ -138,6 +140,54 @@ async function authorize(params) {
 }
 
 /**
+ * Narrow one cap: `x402.update { key, cap: { chain_id, asset }, cap_amount?,
+ * window_seconds? }` as the chrome (cored 0.19.0). Main refuses, unasked,
+ * a change that isn't strictly narrower than the cap as the mirror holds
+ * it, field by field; the core judges it again against its own file and
+ * refuses anything else (`forbidden`), writing nothing. The key reads as
+ * no cap while the core writes (a narrowing), then as the core answers.
+ *
+ * @param {{capAmount?: string, windowSeconds?: number}} change
+ * @returns {Promise<object>} the core's reply, `{ cap, durable? }`, or
+ *   `{ saved: false }` for a narrowing that stands unsaved
+ */
+function narrow(origin, chainId, asset, change = {}) {
+  const key = normalizeOrigin(origin);
+  if (!key) return Promise.reject(new Error('An auto-pay cap needs the site it is for'));
+  const { capAmount, windowSeconds } = change;
+  if (capAmount === undefined && windowSeconds === undefined) {
+    return Promise.reject(new Error('Nothing to change'));
+  }
+  if (capAmount !== undefined && (typeof capAmount !== 'string' || !/^(0|[1-9]\d*)$/.test(capAmount))) {
+    return Promise.reject(new Error("An auto-pay cap is a whole number of the token's smallest units"));
+  }
+  if (windowSeconds !== undefined && (!Number.isSafeInteger(windowSeconds) || windowSeconds < 1)) {
+    return Promise.reject(new Error("An auto-pay cap's window is a whole number of seconds"));
+  }
+  const cap = (mirror().get(key) || []).find((record) => record.chainId === chainId && sameAsset(record.asset, asset));
+  if (!cap) return Promise.reject(new Error('This auto-pay cap is no longer there'));
+  if (capAmount !== undefined && !(BigInt(capAmount) < BigInt(cap.capAmount))) {
+    return Promise.reject(narrowOnlyError());
+  }
+  if (windowSeconds !== undefined && !(cap.createdAt + windowSeconds < cap.expiresAt)) {
+    return Promise.reject(narrowOnlyError());
+  }
+  const params = { key, cap: { chain_id: chainId, asset } };
+  if (capAmount !== undefined) params.cap_amount = capAmount;
+  if (windowSeconds !== undefined) params.window_seconds = windowSeconds;
+  return mirror().narrow(key, params, 'chrome');
+}
+
+const NARROW_ONLY =
+  'An auto-pay cap can only be lowered here. To raise it, set a new cap when you next approve a payment.';
+
+function narrowOnlyError() {
+  const err = new Error(NARROW_ONLY);
+  err.code = 'forbidden';
+  return err;
+}
+
+/**
  * `x402.settle`: `withheld` gives a payment's charge back (main dropped its
  * header), `sent` keeps it. Resolves whether anything was given back; never
  * rejects (a reservation the core no longer holds keeps its charge, as the
@@ -156,6 +206,43 @@ async function settle(reservation, outcome, origin = null) {
   }
 }
 
+/**
+ * `x402.settle { reservation, outcome: 'sent' }` for a cap's payment, before
+ * its header is attached: the core accepts it only while the cap it was
+ * charged to stands. Resolves `{ sent: true }`, or `{ sent: false, reason }`
+ * when the core refused it or couldn't be asked: `cap_changed` (the cap was
+ * revoked, or revoked and granted again, since the charge; the reservation
+ * is spent and the charge stays where it was taken) or any other failure.
+ * Never rejects.
+ */
+async function settleSent(reservation, origin = null) {
+  if (typeof reservation !== 'string' || reservation.length === 0) return { sent: false, reason: 'no_reservation' };
+  try {
+    await vault().x402.settle({ reservation, outcome: 'sent' });
+    return { sent: true };
+  } catch (err) {
+    return { sent: false, reason: err?.data?.reason ?? err?.code ?? 'unavailable', message: err?.message };
+  } finally {
+    reread(origin);
+  }
+}
+
+/**
+ * `x402.settle { reservation, signature }`: a device's signature over the
+ * typed data `x402.authorize { device }` gave. Resolves the core's reply,
+ * `{ payload, charged, grant?, durable? }` (the reservation then waits for
+ * `sent` or `withheld`); rejects with the core's refusal (`not_authorized`,
+ * `wrong_account` or `bad_response`, with `data.refunded`: the reservation
+ * is spent). The mirror reads the seller's caps again either way.
+ */
+async function settleSignature(reservation, signature, origin = null) {
+  try {
+    return await vault().x402.settle({ reservation, signature });
+  } finally {
+    reread(origin);
+  }
+}
+
 module.exports = {
   getPermission,
   getAllPermissions,
@@ -163,5 +250,9 @@ module.exports = {
   revokeAllForOrigin,
   authorize,
   settle,
+  settleSent,
+  settleSignature,
+  narrow,
+  NARROW_ONLY,
   capKeyOf,
 };

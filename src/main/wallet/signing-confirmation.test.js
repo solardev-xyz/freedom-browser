@@ -3,14 +3,10 @@ const {
   MAX_OUTSTANDING,
   KINDS,
   NOT_CONFIRMED,
-  issueMainConfirmation,
   issueConfirmation,
   confirmationFor,
-  consumeConfirmation,
   discardConfirmation,
   _reset,
-  _setNow,
-  _outstandingCount,
 } = require('./signing-confirmation');
 
 // The core's approval tokens, simulated (test/helpers/simulated-approvals.js);
@@ -72,156 +68,6 @@ async function rejection(promise) {
   }
   throw new Error('expected a refusal');
 }
-
-// `x402-cap-update` is still main's JS kind, though nothing mints it now
-// (X402-2: `wallet:confirm-signing` refuses it; widening a cap is the core's
-// decision). Its issuer and spender stay in place, unused, and keep their
-// rules while they do.
-const EDIT = Object.freeze({
-  window: 1,
-  origin: 'https://pay.example',
-  chainId: 8453,
-  asset: '0xabc',
-  current: Object.freeze({ capAmount: '10000000', createdAt: 1000, expiresAt: 87400, generation: 7 }),
-  capAmount: '20000000',
-  windowSeconds: undefined,
-});
-
-describe("signing-confirmation: main's own kind (x402-cap-update, unused)", () => {
-  let clock;
-
-  beforeEach(() => {
-    _reset();
-    mockCore.reset();
-    clock = 1_000_000;
-    _setNow(() => clock);
-  });
-
-  afterAll(() => _reset());
-
-  test('a token applies exactly the edit it was issued for, once, and never asks the core', () => {
-    const { token, expiresAt } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    expect(token).toMatch(/^[0-9a-f]{64}$/);
-    expect(expiresAt).toBe(clock + CONFIRMATION_TTL_MS);
-    expect(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, { ...EDIT })).not.toThrow();
-    expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, EDIT)).message).toMatch(/already used/);
-    expect(mockCore.calls).toEqual([]);
-  });
-
-  test('a mismatched presentation also burns the token (no retry to probe)', () => {
-    const { token } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, { ...EDIT, window: 2 })).message)
-      .toMatch(/differs/);
-    expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, EDIT)).message).toMatch(/already used/);
-  });
-
-  test('expiry refuses; just inside the lifetime still applies', () => {
-    const stale = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    clock += CONFIRMATION_TTL_MS;
-    expect(refusal(() => consumeConfirmation(stale.token, KINDS.X402_CAP_UPDATE, null, EDIT)).message).toMatch(/expired/);
-    const fresh = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    clock += CONFIRMATION_TTL_MS - 1;
-    expect(() => consumeConfirmation(fresh.token, KINDS.X402_CAP_UPDATE, null, EDIT)).not.toThrow();
-  });
-
-  test('no token, an empty token or an unknown token refuses; a core kind is never spent or minted here', () => {
-    for (const token of [undefined, '', 'f'.repeat(64)]) {
-      expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, EDIT)).code).toBe(NOT_CONFIRMED);
-    }
-    expect(refusal(() => consumeConfirmation('a'.repeat(64), KINDS.WALLET_SEND, 3, TX)).message).toMatch(
-      /identity core spends/
-    );
-    // An x402 payment is the core's now (X402-2), as are the wallet's kinds.
-    expect(refusal(() => consumeConfirmation('a'.repeat(64), KINDS.X402_PAYMENT, 3, PAYMENT)).message).toMatch(
-      /identity core spends/
-    );
-    expect(() => issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT)).toThrow(/main's own/);
-    expect(() => issueMainConfirmation(KINDS.SIGN_MESSAGE, 0, 'pay')).toThrow(/main's own/);
-  });
-
-  test('a discarded token no longer applies', async () => {
-    const { token } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    await discardConfirmation(token);
-    expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, EDIT)).message).toMatch(/already used/);
-  });
-
-  // #1023: an edit of an auto-pay cap binds the window it was confirmed
-  // in, the cap's key, the cap as main held it, and the change.
-  describe('x402 cap edits bind the window, the cap and the change', () => {
-    test('the edit as confirmed applies, once', () => {
-      const { token } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-      // Another spelling of the same site is not a difference.
-      expect(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, {
-        ...EDIT,
-        origin: 'https://pay.example/settings',
-      })).not.toThrow();
-      expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, EDIT)).message)
-        .toMatch(/unknown or already used/);
-    });
-
-    const changes = {
-      'another window': { window: 2 },
-      'another site': { origin: 'https://other.example' },
-      'another chain': { chainId: 100 },
-      'another asset': { asset: '0xdef' },
-      'another amount': { capAmount: '30000000' },
-      'a window added': { windowSeconds: 86400 },
-      'the cap granted again': { current: { ...EDIT.current, createdAt: 2000, generation: 8 } },
-      // Revoked and granted again within one second: only the generation tells.
-      'the cap granted again in the same second': { current: { ...EDIT.current, generation: 8 } },
-      'the cap edited meanwhile': { current: { ...EDIT.current, capAmount: '15000000' } },
-      'its window moved meanwhile': { current: { ...EDIT.current, expiresAt: 99999 } },
-    };
-    for (const [name, change] of Object.entries(changes)) {
-      test(name, () => {
-        const { token } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-        expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, { ...EDIT, ...change })).code)
-          .toBe(NOT_CONFIRMED);
-      });
-    }
-
-    test('no other kind spends it', () => {
-      const { token } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-      expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, null, EDIT)).code)
-        .toBe(NOT_CONFIRMED);
-    });
-
-    test('a malformed edit is not issued a token', () => {
-      for (const [change, message] of [
-        [{ window: undefined }, /window/],
-        [{ window: -1 }, /window/],
-        [{ origin: '' }, /site/],
-        [{ chainId: 0 }, /chainId/],
-        [{ asset: '' }, /asset/],
-        [{ current: null }, /No such auto-pay cap/],
-        [{ current: { ...EDIT.current, createdAt: 'then' } }, /auto-pay cap/],
-        [{ current: { ...EDIT.current, generation: undefined } }, /auto-pay cap/],
-        [{ current: { ...EDIT.current, generation: 0 } }, /auto-pay cap/],
-        [{ current: { ...EDIT.current, generation: '7' } }, /auto-pay cap/],
-        [{ capAmount: undefined }, /Nothing to change/],
-        [{ capAmount: '1.5' }, /cap/],
-        [{ capAmount: 5 }, /cap/],
-        [{ windowSeconds: 0 }, /window/],
-        [{ windowSeconds: '86400' }, /window/],
-      ]) {
-        expect(() => issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, { ...EDIT, ...change })).toThrow(message);
-      }
-      expect(_outstandingCount()).toBe(0);
-    });
-  });
-
-  test('outstanding tokens are capped (oldest dropped) and expired ones pruned', () => {
-    const first = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    for (let i = 1; i < MAX_OUTSTANDING; i++) issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    expect(_outstandingCount()).toBe(MAX_OUTSTANDING);
-    issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    expect(_outstandingCount()).toBe(MAX_OUTSTANDING);
-    expect(refusal(() => consumeConfirmation(first.token, KINDS.X402_CAP_UPDATE, null, EDIT)).code).toBe(NOT_CONFIRMED);
-    clock += CONFIRMATION_TTL_MS;
-    issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
-    expect(_outstandingCount()).toBe(1);
-  });
-});
 
 // An x402 payment's token is the core's (X402-2): minted by `approval.issue`
 // as `shell` and spent by the payment's own `x402.authorize`, which checks
@@ -481,12 +327,12 @@ describe("signing-confirmation: the core's kinds", () => {
     // Main's own checks first, in today's words.
     expect(() => sc.corePayload(KINDS.DAPP_SEND, 3, { ...TX, origin: undefined })).toThrow(/needs the site/);
     expect(() => sc.corePayload(KINDS.WALLET_SEND, 3, { ...TX, gasLimit: 'lots' })).toThrow(/gasLimit/);
-    // An x402 payment as the core binds it (X402-2); a cap's edit is main's.
+    // An x402 payment as the core binds it (X402-2); a cap's edit has no binding.
     expect(sc.corePayload(KINDS.X402_PAYMENT, 3, PAYMENT)).toEqual({
       account: 3,
       payload: { detection: { tab: 42, id: 'req-9100', url: PAYMENT.url }, accept_index: 0, accept: PAYMENT.accept },
     });
-    expect(() => sc.corePayload(KINDS.X402_CAP_UPDATE, null, EDIT)).toThrow(/Not a core confirmation kind/);
+    expect(() => sc.corePayload(KINDS.X402_CAP_UPDATE, null, {})).toThrow(/Unknown confirmation kind/);
   });
 
   test("a wallet kind is minted by the core from main itself, with the fee's acknowledgement and a phone's send", async () => {

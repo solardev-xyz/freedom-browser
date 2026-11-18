@@ -14,9 +14,14 @@
  * navigation. The core checks the `x402-payment` token or the cap, charges
  * a cap before it signs, writes the cap a payment grants, and builds the
  * payment byte for byte as `@x402/evm` builds it, with the account's vault
- * key. Main signs no x402 payment itself. Extracting here keeps that
- * sequence in one place and dodges a circular ipc.js ↔ intercept.js
- * dependency.
+ * key. Main signs no x402 payment itself with a key. A Ledger or phone
+ * account takes the core's device path (cored 0.19.0, freedom-core #392):
+ * `x402.authorize { device }` checks the token or charges the cap and gives
+ * the typed data to sign, the device signs it (a Ledger by EIP-712, a phone
+ * through its core job, `phone.job`), and `x402.settle { reservation,
+ * signature }` checks the device's signature and gives the payment.
+ * Extracting here keeps that sequence in one place and dodges a circular
+ * ipc.js ↔ intercept.js dependency.
  */
 
 const crypto = require('crypto');
@@ -35,7 +40,11 @@ const {
   hostWindowIdOf,
 } = require('./intercept');
 const { runInWindow } = require('../windows/request-window');
-const { authorize: authorizePayment, settle: settlePayment } = require('./caps');
+const {
+  authorize: authorizePayment,
+  settle: settlePayment,
+  settleSignature,
+} = require('./caps');
 const { tupleFromAccept } = require('./payment-utils');
 const { isUserPageId, isAgentPageId } = require('../wallet/agent-tab-custody');
 const { withVaultAccount } = require('../wallet/vault-access');
@@ -73,17 +82,55 @@ function isCapNotCoveredError(err) {
 // it, the tab is in Agent custody, or main couldn't attribute the request.
 const CAP_REFUSALS = new Set(['cap', 'custody', 'no_rule']);
 
-// A device account (a Ledger, a phone) keeps its key elsewhere: the core
-// signs x402 payments only with the vault's own accounts (cored 0.18.0).
-function isDeviceAccount(walletIndex) {
+// The core's refusals of a device's signature (`x402.settle { signature }`):
+// the reservation is spent, and its charge given back (`data.refunded`).
+const SIGNATURE_REFUSALS = new Set(['wrong_account', 'bad_response']);
+
+/**
+ * The device a payment from `walletIndex` is signed on, as the core's
+ * device path names it (`x402.authorize { device: { kind, address } }`):
+ * a Ledger or a phone, its address on main's word (the account record), or
+ * null for an account of the vault's, which the core signs with. Refuses,
+ * before the core is asked, an account that can't pay: a Safe (it has no
+ * key; its owners sign through the Safe flow) and an index in the device
+ * range that no account holds any more (the vault would derive a key the
+ * user never saw there).
+ */
+function paymentDevice(walletIndex) {
   const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
-  if (typeof isHardwareWalletIndex === 'function' && isHardwareWalletIndex(walletIndex)) return true;
-  const record = typeof getWalletRecord === 'function' ? getWalletRecord(walletIndex) : null;
-  return Boolean(record && WALLET_TYPES && record.type !== WALLET_TYPES.MNEMONIC);
+  const record = getWalletRecord(walletIndex);
+  if (!record) {
+    if (isHardwareWalletIndex(walletIndex)) throw new Error('Device account no longer exists; reconnect the device');
+    return null;
+  }
+  switch (record.type) {
+    case WALLET_TYPES.MNEMONIC:
+      return null;
+    case WALLET_TYPES.LEDGER:
+      return { kind: 'ledger', address: record.address };
+    case WALLET_TYPES.REMOTE:
+      return { kind: 'phone', address: record.address };
+    case WALLET_TYPES.SAFE:
+      throw new Error("A Safe account can't pay an x402 payment: switch to one of its owners");
+    default:
+      throw new Error("This account can't pay an x402 payment");
+  }
 }
 
-const DEVICE_REFUSED =
-  "x402 payments are signed by the browser's own wallet: a Ledger or phone account can't pay one yet";
+/**
+ * The device's signature over the typed data the core gave (`typed_data`),
+ * which must hash to the core's `hash`: the signer factory checks that
+ * with the core before the device is asked, and the device's signature
+ * must recover over it (wallet/signers.js). A Ledger signs it by EIP-712
+ * on the device; a phone through its core job (`phone.job`, main's own),
+ * relayed to the window's chrome. No token goes with it: the core already
+ * checked the payment's (`x402.authorize`).
+ */
+function signOnDevice(walletIndex, device) {
+  const { getSigner } = require('../wallet/signers');
+  return getSigner(walletIndex).signTypedData(device?.typed_data, { expectedHash: device?.hash });
+}
+
 
 // The paying account's address, from the authorization the core signed.
 function payerOf(payload) {
@@ -147,7 +194,12 @@ function authorizationRunwaySeconds(payload) {
  * `opts.walletIndex` is the account to sign with: the one an approval's
  * confirmation token was minted for (x402:approve). Auto-pay omits it and
  * signs with the active account. A device account (a Ledger, a phone)
- * can't pay: the core signs only with the vault's own accounts.
+ * pays through the core's device path: the core checks the token or
+ * charges the cap first, then the device signs, then the core checks its
+ * signature (`x402.settle { reservation, signature }`). A signature the
+ * core refuses spends the reservation and gives the charge back there; a
+ * device that refuses or fails leaves the reservation to be settled
+ * `withheld` here.
  *
  * The identity core charges a cap as it signs (#1024, design 0012
  * `x402-at-sign`): an auto-pay (`authorizedBy: CAP`) is signed only if the
@@ -227,6 +279,9 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
 
   const authorizedBy = opts.authorizedBy ?? AUTHORIZED_BY.MANUAL;
   const walletIndex = opts.walletIndex ?? getActiveWalletIndex();
+  // A Ledger's or a phone's, or null for the vault's: an account that can't
+  // pay (a Safe, a device account deleted) is refused here, unasked.
+  const device = paymentDevice(walletIndex);
   const params = {
     account: walletIndex,
     detection: {
@@ -236,12 +291,12 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
     },
     requirements: detected.requirements,
   };
+  if (device) params.device = device;
   if (authorizedBy === AUTHORIZED_BY.CAP) {
     // An auto-pay is for a tab the user controls now, before the core is
     // asked: one resumed after an unlock included. The core is told the
     // same, and refuses a cap's payment for a tab in custody.
     refuseUnlessUserTab(webContentsId);
-    if (isDeviceAccount(walletIndex)) throw capNotCoveredError(DEVICE_REFUSED);
     const agent = isAgentPageId(webContentsId);
     params.authorization = { cap: { agent, attributable: agent || isUserPageId(webContentsId) } };
   } else {
@@ -254,16 +309,19 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
     if (confirmation.payload?.grant) params.grant = confirmation.payload.grant;
   }
 
+  const ask = () => {
+    // Only a token sent to the core is spent there: one the payment
+    // doesn't present (a cap's) is burnt here, as one never asked.
+    if (params.authorization.token) presenting();
+    return authorizePayment(params);
+  };
   let reply;
   try {
-    // Refuses a device account before the core is asked: the core would
-    // sign with the vault's key at its index, an address the user never saw.
-    reply = await withVaultAccount(walletIndex, () => {
-      // Only a token sent to the core is spent there: one the payment
-      // doesn't present (a cap's) is burnt here, as one never asked.
-      if (params.authorization.token) presenting();
-      return authorizePayment(params);
-    });
+    // A device's payment uses no key of the vault's, so it needs no unlock.
+    // A vault account's runs through withVaultAccount, which refuses a
+    // device's index before the core is asked: the core would sign with the
+    // vault's key at it, an address the user never saw.
+    reply = device ? await ask() : await withVaultAccount(walletIndex, ask);
   } catch (err) {
     if (authorizedBy === AUTHORIZED_BY.CAP && err?.code === 'not_authorized' && CAP_REFUSALS.has(err.data?.reason)) {
       throw capNotCoveredError();
@@ -272,12 +330,12 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
       const { confirmationError } = require('../wallet/signing-confirmation');
       throw confirmationError(err);
     }
-    if (/another device/.test(err?.message ?? '')) throw new Error(DEVICE_REFUSED, { cause: err });
     throw err;
   }
   held.reservation = typeof reply?.reservation === 'string' ? reply.reservation : null;
   held.origin = origin;
   if (reply?.charged) sendToHost(webContentsId, 'x402:cap-consumed', { origin });
+  if (device) reply = await signedByDevice(webContentsId, walletIndex, reply, held);
   if (reply?.grant && reply.grant.added === false) {
     log.warn(`[x402:sign] grant not added (${reply.grant.reason ?? 'unknown'})`);
   }
@@ -285,6 +343,8 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
     log.warn('[x402:sign] the cap change may not survive a power loss yet (the flush after the rename failed)');
   }
 
+  // The core's payment, the device's signature in it exactly as the device
+  // answered (its case and last byte) on the device path.
   const payload = reply?.payload;
   const selectedAccept = detected.requirements?.accepts?.[reply?.accept_index];
   if (!payload || typeof payload !== 'object' || !selectedAccept) {
@@ -367,6 +427,53 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
       `signature stashed for the self-307 follow-up to ${detected.url}`
     );
   }
+}
+
+/**
+ * A device's payment, after `x402.authorize { device }` answered: the
+ * device signs the core's typed data, and `x402.settle { reservation,
+ * signature }` checks the signature and gives the payment, `{ payload,
+ * charged, grant?, durable? }`, the reservation then waiting for `sent` or
+ * `withheld`. Returns the authorize reply with the payment in it.
+ *
+ * A device that refuses or fails throws, and the caller settles the
+ * reservation `withheld` (the charge goes back). A signature the core
+ * refuses (`wrong_account`, `bad_response`) has spent the reservation and
+ * given its charge back already (`data.refunded`), so nothing is left to
+ * settle.
+ */
+async function signedByDevice(webContentsId, walletIndex, reply, held) {
+  const typed = reply?.device;
+  if (!typed || typeof typed.hash !== 'string' || !typed.typed_data || !held.reservation) {
+    throw new Error('The identity core gave no payment for the device to sign');
+  }
+  const signature = await signOnDevice(walletIndex, typed);
+  let settled;
+  try {
+    settled = await settleSignature(held.reservation, signature, held.origin);
+  } catch (err) {
+    if (err?.code === 'not_authorized' && SIGNATURE_REFUSALS.has(err.data?.reason)) {
+      held.reservation = null;
+      if (err.data?.refunded === true) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
+      throw new Error(
+        err.data.reason === 'wrong_account'
+          ? 'The device signed with another account: nothing was paid'
+          : "The device's signature couldn't be read: nothing was paid",
+        { cause: err }
+      );
+    }
+    throw err;
+  }
+  // A token's payment writes its grant and charges a cap only now.
+  if (settled?.charged && !reply.charged) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
+  return {
+    payload: settled?.payload,
+    reservation: held.reservation,
+    accept_index: reply.accept_index,
+    charged: reply.charged === true || settled?.charged === true,
+    ...(settled?.grant ? { grant: settled.grant } : {}),
+    ...(settled?.durable === false || reply.durable === false ? { durable: false } : {}),
+  };
 }
 
 module.exports = {

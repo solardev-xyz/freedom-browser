@@ -203,13 +203,13 @@ jobs:
       # does, at one reviewed commit: moved on purpose when the protocol's
       # vectors, method table, Radicle vectors or key-store vectors change,
       # never with freedom-core's main. It is the commit
-      # `cored-v0.18.0` was built from. Each suite fails if a file it is
+      # `cored-v0.19.0` was built from. Each suite fails if a file it is
       # pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 4c430c4acc20d6b3b032c121300b840eecba2631
+          ref: f2a313b825f682103eeae7482b3bbcd6e29d6026
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
@@ -999,8 +999,8 @@ jobs:
       # freedom-core design 0012, X402-2: every x402 payment through the
       # core's x402.authorize and x402.settle. #1016's token-binding cases,
       # concurrent auto-pays on one cap, sent/withheld settlement, custody,
-      # a locked vault, the pane's revoke, the rollback read of the core's
-      # x402-permissions.json, and no write to it from main.
+      # a locked vault, the pane's revoke, and no write to
+      # x402-permissions.json from main.
       - name: x402 payments (real freedom-cored)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/x402/x402.integration.test.js

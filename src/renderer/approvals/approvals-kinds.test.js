@@ -315,7 +315,6 @@ describe('every view main builds fits its kind\'s schema', () => {
         'wallet.safe_send',
         'wallet.send',
         'wallet.vault_unlock',
-        'wallet.x402_cap_update',
         'wallet.x402_payment',
       ].sort()
     );
@@ -637,10 +636,9 @@ describe('the wallet\'s own kinds', () => {
   });
 });
 
-// x402's two kinds (APS-5), as `main/approvals/wallet-approvals.js` builds
-// them: a 402's payment, the seller's entry the server's choice, and an
-// auto-pay cap's edit, all main's.
-describe('x402\'s payment and cap edit', () => {
+// x402's payment (APS-5), as `main/approvals/wallet-approvals.js` builds it:
+// a 402's payment, the seller's entry the server's choice, all main's.
+describe('x402\'s payment', () => {
   const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
   const BASE = { id: 8453, name: 'Base', symbol: 'ETH' };
   const PAYMENT = {
@@ -651,14 +649,6 @@ describe('x402\'s payment and cap edit', () => {
     chain: BASE,
     token: { symbol: 'USDC', decimals: 6 },
     grant: null,
-  };
-  const CAP = {
-    site: 'https://pay.example',
-    chain: BASE,
-    asset: USDC,
-    token: { symbol: 'USDC', decimals: 6 },
-    current: { capAmount: '5000000', spentAmount: '1250000', expiresAt: 1_800_000_000 },
-    change: { capAmount: '10000000', windowSeconds: null, expiresAt: null },
   };
   // Every field the seller's 402 or the paid URL fills, hostile.
   const hostilePayment = {
@@ -674,8 +664,6 @@ describe('x402\'s payment and cap edit', () => {
       ['wallet.x402_payment', PAYMENT],
       ['wallet.x402_payment', { ...PAYMENT, grant: { capAmount: '10000000', windowSeconds: 30 * 24 * 60 * 60 }, account: { ...ACCOUNT, type: 'remote' } }],
       ['wallet.x402_payment', hostilePayment],
-      ['wallet.x402_cap_update', CAP],
-      ['wallet.x402_cap_update', { ...CAP, token: null, change: { capAmount: null, windowSeconds: 86400, expiresAt: 1_700_086_400 } }],
     ]) {
       expect(checkMessage(message(kind, view)).valid).toBe(true);
       expect(render(kind, view).form.choices()).toEqual({});
@@ -717,25 +705,6 @@ describe('x402\'s payment and cap edit', () => {
     expect(strip(shape(hostile.body))).toEqual(strip(shape(benign.body)));
   });
 
-  test('a cap\'s edit shows the cap as main holds it and the change, and warns when it widens', () => {
-    const raise = render('wallet.x402_cap_update', CAP);
-    expect(raise.heading).toBe('Change auto-pay');
-    expect(raise.approve).toBe('Save');
-    expect(raise.body.textContent).toContain('Spent so far1.25 USDC');
-    expect(raise.body.textContent).toContain('Spend cap now5 USDC');
-    expect(raise.body.textContent).toContain('New spend cap10 USDC');
-    expect(raise.body.textContent).toContain('This lets the site take more without asking.');
-    const lower = render('wallet.x402_cap_update', { ...CAP, change: { ...CAP.change, capAmount: '1000000' } });
-    expect(lower.body.textContent).toContain('This lowers what the site can take without asking.');
-    const later = render('wallet.x402_cap_update', {
-      ...CAP,
-      change: { capAmount: null, windowSeconds: 365 * 24 * 60 * 60, expiresAt: 1_900_000_000 },
-    });
-    expect(later.body.textContent).toContain('Ends now2027-01-15 08:00 UTC');
-    expect(later.body.textContent).toContain('1 year after it was granted');
-    expect(later.body.textContent).toContain('This lets the site take more without asking.');
-  });
-
   test('off its schema: an unknown field, a page\'s choice where main\'s goes, an amount not in digits, a guest named', () => {
     expect(checkMessage({ ...message('wallet.x402_payment', PAYMENT), guest: 4 }).valid).toBe(false);
     for (const [kind, view] of [
@@ -746,9 +715,6 @@ describe('x402\'s payment and cap edit', () => {
       ['wallet.x402_payment', { ...PAYMENT, token: { symbol: 'USDC', decimals: 6, logo: 'javascript:alert(1)' } }],
       ['wallet.x402_payment', { ...PAYMENT, grant: { capAmount: '10', windowSeconds: 0 } }],
       ['wallet.x402_payment', { ...PAYMENT, account: { ...ACCOUNT, type: 'Ledger <b>' } }],
-      ['wallet.x402_cap_update', { ...CAP, current: { ...CAP.current, generation: 1 } }],
-      ['wallet.x402_cap_update', { ...CAP, change: { ...CAP.change, capAmount: '-1' } }],
-      ['wallet.x402_cap_update', { ...CAP, chain: null }],
     ]) {
       expect(checkMessage(message(kind, view)).valid).toBe(false);
     }

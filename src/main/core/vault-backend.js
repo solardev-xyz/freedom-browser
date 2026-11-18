@@ -608,21 +608,38 @@ const vaultBackend = {
    * x402's payments (cored 0.18.0, design 0012 "x402"; X402-2), main's own
    * (`shell`): the core checks the `x402-payment` token or a cap, charges the
    * cap before it signs, builds the payment byte for byte as `@x402/evm`
-   * builds it and signs it with the account's vault key.
+   * builds it and signs it with the account's vault key, or, for a Ledger or
+   * phone account (`device`, cored 0.19.0), gives the typed data its device
+   * signs and checks that signature at `settle`.
    */
   x402: {
     /**
-     * `{ account, detection: { tab, id, url }, requirements, authorization:
-     * { token } | { cap: { agent, attributable } }, accept_index?, grant? }` →
-     * `{ payload, reservation, accept_index, charged, grant?, durable? }`.
+     * `{ account, device?: { kind, address }, detection: { tab, id, url },
+     * requirements, authorization: { token } | { cap: { agent, attributable } },
+     * accept_index?, grant? }` → `{ payload, reservation, accept_index,
+     * charged, grant?, durable? }`, or with `device` `{ device: { typed_data,
+     * hash }, reservation, accept_index, charged, durable? }`.
      * The payload is a signed authorization: never logged.
      */
     authorize(params) {
       return call('x402.authorize', params);
     },
-    /** `{ reservation, outcome: 'withheld' | 'sent' }` → `{ refunded, durable? }` */
+    /**
+     * `{ reservation, outcome: 'withheld' | 'sent' }` → `{ refunded, durable? }`;
+     * `{ reservation, signature }` (a device's, cored 0.19.0) →
+     * `{ payload, charged, grant?, durable? }`, the payload JSON text with
+     * the device's signature in it (never logged).
+     */
     settle(params) {
       return call('x402.settle', params);
+    },
+    /**
+     * A cap's narrowing (cored 0.19.0), the chrome's or main's own:
+     * `{ key, cap: { chain_id, asset }, cap_amount?, window_seconds? }` →
+     * `{ cap, durable? }`. Anything not strictly narrower is `forbidden`.
+     */
+    update(params, caller = 'chrome') {
+      return call('x402.update', params, caller);
     },
   },
 

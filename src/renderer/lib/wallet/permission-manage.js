@@ -20,7 +20,6 @@ import {
 } from './publisher-identity-selector.js';
 import { updateX402ConnectionBanner, disconnectX402 } from './dapp-x402.js';
 import { formatRawTokenBalance, toAtomicUnits, X402_WINDOW_OPTIONS } from './wallet-utils.js';
-import { confirmSigning } from './signing-confirmation.js';
 
 // Wallet permission management
 let dappPermsScreen;
@@ -570,20 +569,25 @@ function buildX402PermBlock(perm, asset, chain) {
   block.appendChild(buildEditDivider());
   block.appendChild(buildCapField(perm, decimals, symbol));
   block.appendChild(buildWindowField(perm));
-  if (!X402_CAP_EDITS) block.appendChild(buildCapEditNote());
+  block.appendChild(buildCapEditNote());
   return block;
 }
 
 // A cap's amount and window are the identity core's (freedom-core design
-// 0012, X402-2): main changes neither, and lowering one waits for the
-// core's narrowing update (freedom-core #392). Until then the fields show
-// the cap read-only, and a cap can be revoked or set anew with a payment.
-const X402_CAP_EDITS = false;
+// 0012, X402-2): the pane lowers either through the core's narrowing
+// (`x402.update`, cored 0.19.0), and never raises one. The fields offer
+// only a smaller amount or a shorter window, and the core refuses anything
+// that isn't strictly narrower. Raising a cap takes a payment's approval
+// that sets a new one.
+const NARROW_ONLY =
+  'An auto-pay cap can only be lowered here. To raise it, set a new cap when you next approve a payment.';
 
 function buildCapEditNote() {
   const note = document.createElement('div');
   note.className = 'x402-perm-meta';
-  note.textContent = 'To change this cap, revoke it and set a new one when you next approve a payment.';
+  note.textContent =
+    'You can lower this cap or shorten its window here; a shorter window counts from when the cap was set. ' +
+    'To raise either, set a new cap when you next approve a payment.';
   return note;
 }
 
@@ -644,7 +648,7 @@ function buildExpiryLine(perm) {
 function buildEditDivider() {
   const div = document.createElement('div');
   div.className = 'x402-perm-divider';
-  div.textContent = X402_CAP_EDITS ? 'Adjust' : 'Limits';
+  div.textContent = 'Lower';
   return div;
 }
 
@@ -661,14 +665,21 @@ function buildCapField(perm, decimals, symbol) {
   capInput.step = '1';
   capInput.className = 'x402-perm-input';
   capInput.value = atomicToWhole(perm.capAmount, decimals);
-  capInput.disabled = !X402_CAP_EDITS;
-  if (X402_CAP_EDITS) capInput.addEventListener('change', async () => {
+  // Whole units below the cap: the field offers no larger amount.
+  capInput.max = capInput.value;
+  capInput.addEventListener('change', async () => {
     const whole = capInput.value.trim();
     if (!/^\d+$/.test(whole) || whole === '0') {
       capInput.value = atomicToWhole(perm.capAmount, decimals);
       return;
     }
-    await saveX402Patch(perm, { capAmount: toAtomicUnits(whole, decimals) });
+    const capAmount = toAtomicUnits(whole, decimals);
+    if (BigInt(capAmount) >= BigInt(perm.capAmount)) {
+      capInput.value = atomicToWhole(perm.capAmount, decimals);
+      setX402PermsError(NARROW_ONLY);
+      return;
+    }
+    await saveX402Patch(perm, { capAmount });
   });
   const suffix = document.createElement('span');
   suffix.className = 'x402-perm-input-suffix';
@@ -688,16 +699,27 @@ function buildWindowField(perm) {
   const windowSelect = document.createElement('select');
   windowSelect.className = 'x402-perm-select';
   const currentWindow = perm.expiresAt - perm.createdAt;
-  for (const opt of X402_WINDOW_OPTIONS) {
+  // The current window, and only shorter ones: a narrowing never widens.
+  const known = X402_WINDOW_OPTIONS.find((opt) => opt.seconds === currentWindow);
+  const options = [
+    known ?? { label: 'Current', seconds: currentWindow },
+    ...X402_WINDOW_OPTIONS.filter((opt) => opt.seconds < currentWindow),
+  ].sort((a, b) => a.seconds - b.seconds);
+  for (const opt of options) {
     const o = document.createElement('option');
     o.value = String(opt.seconds);
     o.textContent = opt.label;
     if (opt.seconds === currentWindow) o.selected = true;
     windowSelect.appendChild(o);
   }
-  windowSelect.disabled = !X402_CAP_EDITS;
-  if (X402_CAP_EDITS) windowSelect.addEventListener('change', async () => {
-    await saveX402Patch(perm, { windowSeconds: Number(windowSelect.value) });
+  windowSelect.addEventListener('change', async () => {
+    const windowSeconds = Number(windowSelect.value);
+    if (!(windowSeconds < currentWindow)) {
+      windowSelect.value = String(currentWindow);
+      setX402PermsError(NARROW_ONLY);
+      return;
+    }
+    await saveX402Patch(perm, { windowSeconds });
   });
   windowField.appendChild(windowLabel);
   windowField.appendChild(windowSelect);
@@ -743,10 +765,10 @@ async function saveX402Patch(perm, patch) {
       asset: perm.asset,
       ...patch,
     };
-    // Main applies an edit of a cap only with a single-use confirmation
-    // minted for exactly this edit, by this window (#1023).
-    const { confirmation } = await confirmSigning('x402-cap-update', null, edit);
-    const result = await window.electronAPI.x402UpdatePermission({ ...edit, confirmation });
+    // A narrowing, the core's (`x402.update`): it can only take auto-pay
+    // away, so no confirmation is minted for it (a widening, which #1023's
+    // confirmation guarded, isn't possible here at all).
+    const result = await window.electronAPI.x402UpdatePermission(edit);
     if (!result?.success) {
       throw new Error(result?.error || 'Could not update this auto-pay cap.');
     }

@@ -121,6 +121,9 @@ const METHOD_CLASSES = Object.freeze({
   'phone.result': SESSION,
   'x402.authorize': IMMEDIATE,
   'x402.settle': IMMEDIATE,
+  // cored-v0.19.0 (freedom-core #393): the narrowing of an x402 cap, from
+  // the chrome and main (`shell`). Main sends it from X402-2b.
+  'x402.update': IMMEDIATE,
   'eip1193.request': SESSION,
   'dweb.open': SESSION,
   'dweb.verify': HEAD,

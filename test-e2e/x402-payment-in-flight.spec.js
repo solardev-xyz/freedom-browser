@@ -17,11 +17,11 @@
 // which main uses only with the panel off (the rollback): they still must
 // not cancel a payment on the device.
 //
-// X402-2: the identity core signs every x402 payment, and only with this
-// browser's own wallet (cored 0.18.0), so a Ledger can't pay one until
-// freedom-core#392 gives device accounts a path. Until then the card keeps
-// Pay off for a Ledger (the first test below), and the in-flight tests after
-// it are `fixme`: they come back with #392's device path.
+// X402-2b: a Ledger pays x402 through the identity core's device path
+// (cored 0.19.0): the core checks the payment's `x402-payment` token or
+// charges the cap, the Ledger signs the core's typed data, and the core
+// checks that signature. The card keeps Pay on for a Ledger and says every
+// payment is confirmed on it.
 
 const { test, expect, approvalsPage, decideInPanel } = require('./approvals-fixtures');
 
@@ -116,6 +116,19 @@ const DAI_ENTRY = {
   extra: { name: 'Dai Stablecoin', version: '1' },
 };
 const PAYWALL_URL = 'https://pay.example/article';
+
+// The chooser case's two entries under the core's $1 limit on a payment
+// (X402-1), so the core binds and authorizes its token: 0.25 USDC and
+// 0.3 DAI, on the card and in the 402 alike.
+const CHEAP_USDC_ENTRY = { ...USDC_ENTRY, amount: '250000' };
+const CHEAP_DAI_ENTRY = { ...DAI_ENTRY, amount: '300000000000000000' };
+const cheapAccept = (view, amount) => ({
+  ...view,
+  accept: { ...view.accept, amount },
+  tuple: { ...view.tuple, amount },
+});
+const CHEAP_USDC_ACCEPT = cheapAccept(USDC_ACCEPT, CHEAP_USDC_ENTRY.amount);
+const CHEAP_DAI_ACCEPT = cheapAccept(DAI_ACCEPT, CHEAP_DAI_ENTRY.amount);
 // The id main's detector mints for a 402 on request `id`.
 const detectionOf = (id) => `req-${id}`;
 
@@ -230,7 +243,7 @@ function cancelCounts(electronApp) {
   return electronApp.evaluate(() => globalThis.__x402Cancels);
 }
 
-test('a Ledger account is told that x402 payments from it are not available yet', async ({
+test("a Ledger account's card offers Pay and says every payment is confirmed on the Ledger", async ({
   electronApp,
   window,
 }) => {
@@ -239,32 +252,18 @@ test('a Ledger account is told that x402 payments from it are not available yet'
 
   await expect(window.locator('#sidebar-x402-approval')).toBeVisible();
   await expect(window.locator('#x402-approval-amount')).toHaveText('2.5 USDC');
-  await expect(window.locator('#x402-approval-approve')).toBeDisabled();
-  await expect(window.locator('#x402-approval-error')).toContainText(
-    "x402 payments from Ledger and phone accounts aren't available yet"
+  await expect(window.locator('#x402-approval-approve')).toBeEnabled();
+  await expect(window.locator('#x402-approval-error')).toBeHidden();
+  // Auto-pay is offered, and the card says it never skips the device.
+  await expect(window.locator('#x402-approval-ledger-note')).toBeVisible();
+  await expect(window.locator('#x402-approval-ledger-note')).toHaveText(
+    'Auto-pay skips this dialog, but every payment still needs a confirmation on your Ledger.'
   );
-  // No promise of a confirmation on the device, and no auto-pay offer.
-  await expect(window.locator('#x402-approval-ledger-note')).toBeHidden();
-  await expect(window.locator('#x402-approval-grant-row')).toBeHidden();
-  await window.screenshot({ path: 'test-results/x402-ledger-unavailable.png' });
-
-  // A click that bypasses the disabled button mints and sends nothing.
-  await window.evaluate(() => {
-    document.getElementById('x402-approval-approve').dispatchEvent(new Event('click'));
-  });
-  await window.waitForTimeout(500);
-  expect(await electronApp.evaluate(() => globalThis.__x402ApproveCalls)).toEqual([]);
-  await expect(window.locator('#x402-approval-approve')).toBeDisabled();
-
-  // The user can still decline the payment.
-  await expect(window.locator('#x402-approval-reject')).toBeEnabled();
-  await window.click('#x402-approval-reject');
-  await expect(window.locator('#sidebar-x402-approval')).toBeHidden();
-  expect(await cancelCounts(electronApp)).toEqual({ cancel: 1, reject: 0 });
+  await expect(window.locator('#x402-approval-grant-row')).toBeVisible();
+  await window.screenshot({ path: 'test-results/x402-ledger-card.png' });
 });
 
-// Back with freedom-core#392's device path (see the top of this file).
-test.fixme('a dApp request mid-payment cannot cancel an in-flight Ledger payment', async ({
+test('a dApp request mid-payment cannot cancel an in-flight Ledger payment', async ({
   electronApp,
   window,
 }) => {
@@ -317,15 +316,15 @@ test.fixme('a dApp request mid-payment cannot cancel an in-flight Ledger payment
 // re-render used to re-derive Pay as enabled — offering a second, concurrent
 // device signature for a different accept, whose failure would then release
 // the lock the first one still holds. The card must stay frozen instead.
-// Back with freedom-core#392's device path (see the top of this file). Its
-// token check then reads the core's binding: `x402-payment` is a core kind
-// since X402-2, which main's own `consumeConfirmation` doesn't hold.
-test.fixme('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
+test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   electronApp,
   window,
 }) => {
-  await stubMainIpc(electronApp, LEDGER, [USDC_ACCEPT, DAI_ACCEPT], detectionOf(4102));
-  const guestId = await openPaymentCard(electronApp, window, LEDGER, { id: 4102, entries: [USDC_ENTRY, DAI_ENTRY] });
+  await stubMainIpc(electronApp, LEDGER, [CHEAP_USDC_ACCEPT, CHEAP_DAI_ACCEPT], detectionOf(4102));
+  const guestId = await openPaymentCard(electronApp, window, LEDGER, {
+    id: 4102,
+    entries: [CHEAP_USDC_ENTRY, CHEAP_DAI_ENTRY],
+  });
 
   await expect(window.locator('#sidebar-x402-approval')).toBeVisible();
   await expect(window.locator('#x402-approval-chooser')).toBeVisible();
@@ -333,7 +332,7 @@ test.fixme('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   await expect(window.locator('#x402-approval-approve')).toBeEnabled();
 
   await window.click('#x402-approval-approve');
-  await approvePayInPanel(electronApp);
+  await approvePayInPanel(electronApp, '0.25 USDC');
   await expect(window.locator('#x402-approval-approve')).toHaveText('Confirm on your Ledger…');
 
   // The user pokes the other option while the device prompt is up.
@@ -347,7 +346,7 @@ test.fixme('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   // card never shows a selection the payment doesn't match.
   await expect(window.locator('#x402-approval-chooser-options input[value="0"]')).toBeChecked();
   await expect(window.locator('#x402-approval-chooser-options input[value="1"]')).not.toBeChecked();
-  await expect(window.locator('#x402-approval-amount')).toHaveText('2.5 USDC');
+  await expect(window.locator('#x402-approval-amount')).toHaveText('0.25 USDC');
   await window.screenshot({ path: 'test-results/x402-chooser-flip-in-flight.png' });
 
   // Even a click that bypasses the disabled button reaches no second sign.
@@ -358,32 +357,49 @@ test.fixme('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   expect(approveCalls).toHaveLength(1);
   expect(approveCalls[0].selectedAcceptIndex).toBe(0);
 
-  // The one approval carries main's token for exactly that payment, as main
-  // recorded it: the entry on the device, not the one the radio was flipped
-  // to, and only once. Checked with main's own confirmation store.
-  const spend = (payment) => electronApp.evaluate(({ app }, { confirmation, payment }) => {
+  // The one approval carries the core's token for exactly that payment, as
+  // main recorded it: the entry on the device, not the one the radio was
+  // flipped to, and only once. Checked with the core's binding: the Ledger's
+  // payment the core authorizes with it (`x402.authorize { device }`, cored
+  // 0.19.0) is that entry's, and the token is spent by it.
+  const authorize = (acceptIndex) => electronApp.evaluate(({ app }, args) => {
     const nodeRequire = process.mainModule.require.bind(process.mainModule);
     const path = nodeRequire('path');
-    const confirmations = nodeRequire(path.join(app.getAppPath(), 'src/main/wallet/signing-confirmation.js'));
-    const { getActiveWalletIndex } = nodeRequire(path.join(app.getAppPath(), 'src/main/identity-manager.js'));
-    try {
-      confirmations.consumeConfirmation(confirmation, 'x402-payment', getActiveWalletIndex(), payment);
-      return 'spent';
-    } catch (err) {
-      return err.message;
-    }
-  }, { confirmation: approveCalls[0].confirmation, payment });
-  const shown = {
-    webContentsId: guestId,
+    const { vaultBackend } = nodeRequire(path.join(app.getAppPath(), 'src/main/core/vault-backend.js'));
+    return vaultBackend.x402
+      .authorize({
+        account: args.ledger.index,
+        device: { kind: 'ledger', address: args.ledger.address },
+        detection: { tab: args.guestId, id: args.detectionId, url: args.url },
+        requirements: { x402Version: 2, resource: { url: args.url }, accepts: args.entries },
+        authorization: { token: args.confirmation },
+        accept_index: args.acceptIndex,
+      })
+      .then(
+        async (reply) => {
+          // Nothing is sent: the charge, if any, goes back.
+          await vaultBackend.x402.settle({ reservation: reply.reservation, outcome: 'withheld' });
+          return { message: reply.device?.typed_data?.message ?? null, acceptIndex: reply.accept_index };
+        },
+        (err) => ({ refused: err.data?.reason ?? err.code, message: err.message })
+      );
+  }, {
+    ledger: LEDGER,
+    guestId,
     detectionId: detectionOf(4102),
     url: PAYWALL_URL,
-    acceptIndex: 0,
-    accept: USDC_ENTRY,
-    grant: null,
-  };
+    entries: [CHEAP_USDC_ENTRY, CHEAP_DAI_ENTRY],
+    confirmation: approveCalls[0].confirmation,
+    acceptIndex,
+  });
   expect(typeof approveCalls[0].confirmation).toBe('string');
-  expect(await spend(shown)).toBe('spent');
-  expect(await spend(shown)).toMatch(/already used/);
+  const paid = await authorize(0);
+  expect(paid).toMatchObject({
+    acceptIndex: 0,
+    message: { from: LEDGER.address, to: PAY_TO, value: CHEAP_USDC_ENTRY.amount },
+  });
+  // Spent by that payment: a second use is refused.
+  expect(await authorize(0)).toMatchObject({ refused: 'unknown_token' });
 
   // The device confirms the one payment that was ever sent to it.
   await electronApp.evaluate(() => {
@@ -398,8 +414,7 @@ test.fixme('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
 // EIP-3009 authorization behind an x402 payment. The instruction the user
 // gets has to name the setting to change; "reconnect the device" is a dead
 // end. The message comes from the real main-process mapper.
-// Back with freedom-core#392's device path (see the top of this file).
-test.fixme('a blind-signing refusal tells the user which device setting to enable', async ({
+test('a blind-signing refusal tells the user which device setting to enable', async ({
   electronApp,
   window,
 }) => {
@@ -440,8 +455,7 @@ test.fixme('a blind-signing refusal tells the user which device setting to enabl
 // -32002. Driven through the REAL detector + the REAL webContents
 // 'destroyed' handler against a real tab; only get-details/approve are
 // stubbed (the sign itself needs a device).
-// Back with freedom-core#392's device path (see the top of this file).
-test.fixme('closing the paying tab mid-payment releases the sidebar instead of bricking it', async ({
+test('closing the paying tab mid-payment releases the sidebar instead of bricking it', async ({
   electronApp,
   window,
 }) => {

@@ -1542,7 +1542,7 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
     expect(await confirmed).toEqual({ token: 'token', approved: true });
   });
 
-  // APS-5: x402's payment and an auto-pay cap's edit, the same way.
+  // APS-5: x402's payment, the same way.
   test.each([
     [
       'x402-payment',
@@ -1556,11 +1556,6 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
         grant: null,
       },
     ],
-    [
-      'x402-cap-update',
-      null,
-      { window: 501, origin: 'https://pay.example', chainId: 8453, asset: TO, capAmount: '9', current: { capAmount: '5', createdAt: 1, expiresAt: 2, generation: 1 } },
-    ],
   ])('%s: the chrome can\'t decide it; the document\'s approval mints once, its rejection never', async (kind, index, payload) => {
     const env = withPageRequests();
     const { contents } = attached(env);
@@ -1570,7 +1565,6 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
       getDerivedWallets: async () => WALLETS,
       checkFees: async () => BELOW,
       checkAtApproval: async () => ({ ...BELOW, askAgain: false }),
-      x402Cap: () => ({ origin: 'https://pay.example', capAmount: '5', spentAmount: '0', createdAt: 1, expiresAt: 2 }),
     });
     const mint = jest.fn(() => ({ token: 'token' }));
     const rejected = approvals.confirm({ sender: chrome, kind, index, payload }, mint);
