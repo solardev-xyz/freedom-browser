@@ -124,6 +124,10 @@ function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {} }
     grants: new Map(),
     touched: [],
     custody: false,
+    // The names main resolved, and, while set, a promise each resolution
+    // waits on before it reads `names`.
+    resolutions: [],
+    nameHold: null,
   };
   const networks = {
     1: { name: 'Ethereum', nativeSymbol: 'ETH' },
@@ -137,6 +141,8 @@ function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {} }
     isAgentPage: () => false,
     windowIdOf: (contents) => contents.window,
     resolveEnsContent: async (name) => {
+      state.resolutions.push(name);
+      if (state.nameHold) await state.nameHold;
       const key = names.get(name);
       return key ? { type: 'ok', protocol: 'ipns', decoded: key } : { type: 'not_found' };
     },
@@ -1754,35 +1760,48 @@ describe('sends through the relay (0012 APB-4c)', () => {
       return ask;
     };
     // The core's `{ device }` for a Safe's send of `request`, with its token.
-    const safeDevice = (answer, request) => ({
+    const safeDevice = (answer, request, token = TOKEN) => ({
       device: {
         type: 'safe',
         kind: 'safe-send',
         account: SAFE,
         payload: { safe: SAFE_ADDRESS, chain_id: '100', tx: checkedTx(request) },
         handle: answer.handle,
-        token: TOKEN,
+        token,
       },
     });
+    const PENDING_EXISTS = 'A transaction is already waiting for signatures — finish or discard it first';
 
     /**
      * Main's Safe steps, stood in as safe-transactions.js runs them: the
-     * Safe's reservation, the SafeTx's start (only under that reservation,
-     * still held), its outcomes (`settle`), the site's guard on its
-     * execution, and an execution (`execute`): past the request's guard,
-     * then the executor's waits (its quote, the site's turn, its signer:
-     * `duringWait` runs among them), and the same guard again at the commit.
-     * Not for the site at all when it has no guard.
+     * Safe's reservation (refused while a SafeTx is pending, `pendingExists`,
+     * or another send holds it), the SafeTx's start (only under that
+     * reservation, still held after `startHold`), its outcomes (`settle`),
+     * the site's guard on its execution, and an execution (`execute`): past
+     * the request's guard, then the executor's waits (its quote, the site's
+     * turn, its signer: `duringWait` runs among them), and the same guard
+     * again at the commit. Not for the site at all when it has no guard.
      */
     function safeSetup() {
       const paid = payments();
-      const safe = { started: [], listeners: new Set(), guards: new Map(), reserved: new Set() };
+      const safe = {
+        started: [],
+        listeners: new Set(),
+        guards: new Map(),
+        reserved: new Set(),
+        pendingExists: false,
+        startHold: null,
+      };
       Object.assign(paid.deps, {
         reserveSafeSend: (safeIndex) => {
+          if (safe.pendingExists || safe.reserved.has(safeIndex)) {
+            throw Object.assign(new Error(PENDING_EXISTS), { code: 'SAFE_PENDING_EXISTS' });
+          }
           safe.reserved.add(safeIndex);
           return { safeIndex, release: () => safe.reserved.delete(safeIndex) };
         },
         startSafeSend: async ({ reservation, ...options }) => {
+          if (safe.startHold) await safe.startHold;
           if (reservation?.safeIndex !== options.safeIndex || !safe.reserved.has(options.safeIndex)) {
             throw new Error('Started without its reservation');
           }
@@ -2035,6 +2054,121 @@ describe('sends through the relay (0012 APB-4c)', () => {
         safe.settle({ safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: EXEC_HASH });
       });
       expect(await late.answer).toEqual({ result: EXEC_HASH });
+    });
+
+    // 0012 APB-1c, and #1245's review: one pending SafeTx per Safe, reserved
+    // before the token is spent, since the core's new Safe approval ends the
+    // pending one's. A second send is refused before it spends anything.
+    test('a Safe with a SafeTx pending, or another send holding its reservation while its SafeTx starts: a second send is refused before its token is spent, discarded unspent, and starts no SafeTx; the first starts with its own approval', async () => {
+      const { env, paid, safe } = safeSetup();
+      const SECOND_TOKEN = 'c'.repeat(64);
+      const PENDING = { error: { code: -32603, message: PENDING_EXISTS } };
+      const spent = () => paid.safes.map((confirmation) => confirmation.token);
+      // A SafeTx already pending for the Safe.
+      safe.pendingExists = true;
+      sending(env, askFor(CALL, { account: SAFE }), (answer) => safeDevice(answer, CALL, SECOND_TOKEN));
+      expect((await approveSend(env, env.tab())).answer).toEqual(PENDING);
+      expect(spent()).toEqual([]);
+      expect(safe.started).toEqual([]);
+      expect(env.state.discarded).toEqual([SECOND_TOKEN]);
+      safe.pendingExists = false;
+      // The first send holds the reservation while its SafeTx starts.
+      let start;
+      safe.startHold = new Promise((resolve) => (start = resolve));
+      sending(env, askFor(CALL, { account: SAFE }), (answer) => safeDevice(answer, CALL));
+      const first = env.tab().ask('eth_sendTransaction', [CALL]);
+      await flush();
+      env.decide(env.prompts().at(-1).handle, true, {});
+      await flush();
+      expect(safe.reserved.has(SAFE)).toBe(true);
+      expect(spent()).toEqual([TOKEN]);
+      sending(env, askFor(CALL, { account: SAFE }), (answer) => safeDevice(answer, CALL, SECOND_TOKEN));
+      expect((await approveSend(env, env.tab())).answer).toEqual(PENDING);
+      expect(spent()).toEqual([TOKEN]);
+      expect(safe.started).toEqual([]);
+      expect(env.state.discarded).toEqual([SECOND_TOKEN, SECOND_TOKEN]);
+      expect(safe.reserved.has(SAFE)).toBe(true);
+      start();
+      await flush();
+      expect(safe.started).toHaveLength(1);
+      expect(safe.started[0].approval).toEqual({ id: 'f'.repeat(32), page: paid.safes[0].page });
+      expect(safe.reserved.size).toBe(0);
+      expect(env.state.discarded).toEqual([SECOND_TOKEN, SECOND_TOKEN, TOKEN]);
+      safe.settle({ safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+      expect(await first).toEqual(REJECTED);
+    });
+
+    // The guard's `live()` checks: the request answered, its signal aborted,
+    // while its document still holds its key and its grant. Main answers it
+    // here by the SafeTx's outcome, heard first.
+    test('an execution whose guard waits on the name while the request is answered: the name comes back still holding, and the execution is refused, never entered', async () => {
+      const { env, safe } = safeSetup();
+      env.names.set(NAME, IPNS_KEY);
+      const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+      const { answer } = await safeStart(env, page);
+      const guard = safe.guards.get(SAFE_TX_HASH);
+      let resolveName;
+      env.state.nameHold = new Promise((resolve) => (resolveName = resolve));
+      const resolved = env.state.resolutions.length;
+      let entered = false;
+      let outcome = null;
+      guard(async () => {
+        entered = true;
+        return { hash: EXEC_HASH };
+      }).then(
+        () => (outcome = 'executed'),
+        (err) => (outcome = err.code)
+      );
+      await flush();
+      // The guard waits on the name.
+      expect(env.state.resolutions.slice(resolved)).toEqual([NAME]);
+      expect(outcome).toBe(null);
+      safe.settle({ safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+      expect(await answer).toEqual(REJECTED);
+      expect(safe.guards.size).toBe(0);
+      env.state.nameHold = null;
+      resolveName();
+      await flush();
+      expect(outcome).toBe('SAFE_SITE_WITHDRAWN');
+      expect(entered).toBe(false);
+    });
+
+    test('the request answered during the execution\'s waits (the quote, the signer): the guard the executor kept refuses at the commit at once, resolving no name, and nothing executes for the site', async () => {
+      const { env, safe } = safeSetup();
+      env.names.set(NAME, IPNS_KEY);
+      const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+      const { answer } = await safeStart(env, page);
+      // The executor reads the guard once, at its start, and runs it again
+      // at its commit (`guardCommit`).
+      const guard = safe.guards.get(SAFE_TX_HASH);
+      let commit;
+      const waits = new Promise((resolve) => (commit = resolve));
+      let executed = false;
+      let outcome = null;
+      guard(async () => {
+        await waits;
+        return guard(async () => {
+          executed = true;
+          return { hash: EXEC_HASH };
+        });
+      }).then(
+        () => (outcome = 'executed'),
+        (err) => (outcome = err.code)
+      );
+      await flush();
+      safe.settle({ safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+      expect(await answer).toEqual(REJECTED);
+      // A name resolution from here on would wait.
+      let resolveName;
+      env.state.nameHold = new Promise((resolve) => (resolveName = resolve));
+      const resolved = env.state.resolutions.length;
+      commit();
+      await flush();
+      expect(outcome).toBe('SAFE_SITE_WITHDRAWN');
+      expect(executed).toBe(false);
+      expect(env.state.resolutions).toHaveLength(resolved);
+      env.state.nameHold = null;
+      resolveName();
     });
   });
 });
