@@ -1803,10 +1803,13 @@ async function handleWriteFeedEntry(params, origin) {
  * against the permission-free read budget, like swarm_readData, and the
  * entry's bytes against the byte budget as they are read: an explicit
  * index's SOC is charged once read and the size its wrapped chunk's span
- * gives is reserved before the node joins it; the latest entry is reserved
- * from its declared length, or as it streams. An entry larger than the whole
- * byte budget is data_too_large, and one that does not fit what is left of
- * the window is rate_limited, without reading the rest of it.
+ * gives is reserved before the node joins it. The latest entry is read the
+ * same way, at the index the node's feed lookup names (that lookup's body is
+ * never read); when the lookup can't name one, the update chunks probed to
+ * find it are charged too (see findLatestFeedIndex in feed-service.js). An
+ * entry larger than the whole byte budget is data_too_large, and one that
+ * does not fit what is left of the window is rate_limited, without reading
+ * the rest of it.
  */
 async function handleReadFeedEntry(params, origin) {
   if (!params || typeof params !== 'object') {

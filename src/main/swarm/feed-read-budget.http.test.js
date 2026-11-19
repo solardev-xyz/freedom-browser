@@ -104,17 +104,6 @@ function streamed(size, { headers = {}, gate = null, contentLength = true, befor
   };
 }
 
-/** Start `count` reads; `settled()` says how many have answered so far. */
-function concurrentReads(count, params) {
-  let settled = 0;
-  const pending = Array.from({ length: count }, () =>
-    read(params).finally(() => {
-      settled += 1;
-    })
-  );
-  return { pending, settled: () => settled };
-}
-
 function latestHeaders(index) {
   return {
     'swarm-feed-index': FeedIndex.fromBigInt(BigInt(index)).toHex(),
@@ -273,123 +262,161 @@ describe('swarm_readFeedEntry at an explicit index', () => {
 });
 
 describe('swarm_readFeedEntry for the latest entry', () => {
-  test('returns the body with the index the node reports', async () => {
+  // The node's lookup (GET /feeds) names the latest index, and the entry is
+  // then read at that index, so the page gets the bytes the entry holds
+  // whichever way it asks (#989).
+  test('returns the entry the node names, read at its index', async () => {
+    putEntry(4, { payload: Buffer.from('latest entry') });
     latest = (_req, res) => {
-      res.writeHead(200, { 'Content-Length': 6, ...latestHeaders(4) });
-      res.end('latest');
+      res.writeHead(200, { 'Content-Length': 4, ...latestHeaders(4) });
+      res.end('body');
     };
 
     const result = await read();
 
-    expect(decoded(result).toString()).toBe('latest');
-    expect(result.result).toMatchObject({ index: 4, nextIndex: 5 });
+    expect(decoded(result).toString()).toBe('latest entry');
+    expect(result.result).toMatchObject({ encoding: 'base64', index: 4, nextIndex: 5 });
+    const [lookup] = requestsTo('/feeds/');
+    expect(lookup.headers['swarm-only-root-chunk']).toBe('true');
   });
 
-  // The node holds these bodies back until the read has answered: a refusal
-  // that comes back first was decided on the headers alone.
-  test('a declared length past the budget is data_too_large, and the body is not read', async () => {
+  test('a legacy entry is its own 40 bytes, as at its index, not the content it points to', async () => {
+    const legacy = Buffer.concat([Buffer.alloc(8, 0x01), Buffer.alloc(32, 0xcd)]);
+    putEntry(2, { payload: legacy });
+    // What Ant and Bee answer for a legacy (ts||ref) entry: the content its
+    // reference points to.
+    latest = (_req, res) => {
+      res.writeHead(200, { 'Content-Length': 12, ...latestHeaders(2) });
+      res.end('site content');
+    };
+
+    const latestRead = await read();
+    const indexedRead = await read({ index: 2 });
+
+    expect(decoded(latestRead)).toEqual(legacy);
+    expect(decoded(indexedRead)).toEqual(legacy);
+    expect(latestRead.result).toMatchObject({ index: 2, nextIndex: 3 });
+  });
+
+  test("the lookup's body is never read", async () => {
+    putEntry(0, { payload: Buffer.from('entry') });
     const hold = gate();
     latest = streamed(10 * MIB, { headers: latestHeaders(0), gate: hold.promise });
 
     const result = await read();
     hold.open();
 
+    expect(decoded(result).toString()).toBe('entry');
+    const [lookup] = requestsTo('/feeds/');
+    await lookup.done;
+    expect(lookup.aborted).toBe(true);
+    expect(lookup.bytesSent).toBeLessThan(10 * MIB);
+  });
+
+  test('a latest entry wrapping a root larger than the budget is data_too_large before any /bytes request', async () => {
+    putEntry(3, { span: 10 * MIB, join: streamed(10 * MIB) });
+    latest = (_req, res) => {
+      res.writeHead(200, { 'Content-Length': 4, ...latestHeaders(3) });
+      res.end('body');
+    };
+
+    const result = await read();
+
     expect(result.error.data).toEqual({
       reason: 'data_too_large',
       limit: BUDGET,
       actual: 10 * MIB,
     });
-    const [entry] = requestsTo('/feeds/');
-    await entry.done;
-    expect(entry.aborted).toBe(true);
+    expect(requestsTo('/bytes/')).toHaveLength(0);
   });
 
-  test('a declared length that does not fit what is left is rate_limited before the body is read', async () => {
-    latest = streamed(300 * KIB, { headers: latestHeaders(0) });
-    expect(decoded(await read())).toHaveLength(300 * KIB);
-
-    const hold = gate();
-    latest = streamed(300 * KIB, { headers: latestHeaders(0), gate: hold.promise });
-    const refused = await read();
-    hold.open();
-
-    expect(refused.error.data.reason).toBe('rate_limited');
-  });
-
-  test('a body with no declared length is cut off once it passes the budget', async () => {
-    latest = streamed(10 * MIB, { headers: latestHeaders(0), contentLength: false });
+  test('a live feed whose latest legacy content expired is read from its update chunks', async () => {
+    // Ant answers 404 for a feed whose latest legacy entry points at content
+    // that is gone; the entries themselves are still there.
+    for (const index of [0, 1, 2]) putEntry(index, { payload: Buffer.from(`entry ${index}`) });
+    latest = (_req, res) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 404, message: 'wrapped chunk cannot be retrieved' }));
+    };
 
     const result = await read();
 
-    // The size is unknown, so only the limit is reported.
-    expect(result.error.data).toEqual({ reason: 'data_too_large', limit: BUDGET });
-    const [entry] = requestsTo('/feeds/');
-    await entry.done;
-    // The node never got to send the rest.
-    expect(entry.aborted).toBe(true);
-    expect(entry.bytesSent).toBeLessThan(10 * MIB);
+    expect(decoded(result).toString()).toBe('entry 2');
+    expect(result.result).toMatchObject({ index: 2, nextIndex: 3 });
   });
 
-  test('a body with no declared length is reserved as it streams', async () => {
-    latest = streamed(300 * KIB, { headers: latestHeaders(0), contentLength: false });
-    expect(decoded(await read())).toHaveLength(300 * KIB);
+  test('a feed with a gap reads the entry the node would name', async () => {
+    // Entries 0, 1 and 3: the node steps 1, 3, 7 from index 0 and names 3.
+    for (const index of [0, 1, 3]) putEntry(index, { payload: Buffer.from(`entry ${index}`) });
+    latest = (_req, res) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 404, message: 'wrapped chunk cannot be retrieved' }));
+    };
 
-    // 212 KiB are left; the next body is refused once it passes them.
-    latest = streamed(10 * MIB, { headers: latestHeaders(0), contentLength: false });
-    const refused = await read();
+    const result = await read();
 
-    expect(refused.error.data.reason).toBe('rate_limited');
-    const second = requestsTo('/feeds/')[1];
-    await second.done;
-    expect(second.aborted).toBe(true);
-    expect(second.bytesSent).toBeLessThan(10 * MIB);
+    expect(decoded(result).toString()).toBe('entry 3');
+    expect(result.result).toMatchObject({ index: 3, nextIndex: 4 });
   });
 
-  test('120 concurrent reads hold no more than the budget', async () => {
-    const hold = gate();
-    const size = 100 * KIB;
-    latest = streamed(size, { headers: latestHeaders(0), gate: hold.promise });
+  test('an index past 2^53 is refused rather than rounded to another entry', async () => {
+    latest = (_req, res) => {
+      res.writeHead(200, {
+        'Content-Length': 4,
+        'swarm-feed-index': '003fffffffffffff',
+        'swarm-feed-index-next': '0040000000000000',
+      });
+      res.end('body');
+    };
 
-    const reads = concurrentReads(120);
-    // Each body is reserved from its declared length before it is read:
-    // five fit in 512 KiB, and the other 115 are refused on their headers,
-    // while the node still holds every body back.
-    await waitFor(() => reads.settled() === 115, { what: '115 refusals on the headers' });
-    hold.open();
-    const results = await Promise.all(reads.pending);
+    const result = await read();
 
-    const ok = results.filter((r) => r.result);
-    expect(ok).toHaveLength(Math.floor(BUDGET / size));
-    for (const r of results.filter((r) => r.error))
-      expect(r.error.data.reason).toBe('rate_limited');
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toBe(
+      'Feed index 18014398509481983 is past the largest index a page can read'
+    );
+    expect(requestsTo('/chunks/')).toHaveLength(0);
   });
 
-  test('120 concurrent reads with no declared length hold no more than the budget', async () => {
-    const hold = gate();
-    const size = 100 * KIB;
-    // Half of each body comes at once, the rest when the gate opens.
-    latest = streamed(size, {
-      headers: latestHeaders(0),
-      contentLength: false,
-      gate: hold.promise,
-      before: 50 * KIB,
-    });
+  test('the last index a page can read is read, with no next index past it', async () => {
+    putEntry(Number.MAX_SAFE_INTEGER, { payload: Buffer.from('last') });
+    latest = (_req, res) => {
+      res.writeHead(200, {
+        'Content-Length': 4,
+        'swarm-feed-index': '001fffffffffffff',
+        'swarm-feed-index-next': '0020000000000000',
+      });
+      res.end('body');
+    };
 
-    const reads = concurrentReads(120);
-    // Each piece is reserved as it arrives, so the first halves alone use up
-    // the budget: no more than ten reads (512 / 50 KiB) are still going when
-    // the rest of the bodies are sent.
-    await waitFor(() => reads.settled() >= 110, { what: 'reads refused mid-body' });
-    hold.open();
-    const results = await Promise.all(reads.pending);
+    const latestRead = await read();
+    const indexedRead = await read({ index: Number.MAX_SAFE_INTEGER });
 
-    const ok = results.filter((r) => r.result);
-    expect(ok.reduce((sum, r) => sum + decoded(r).length, 0)).toBeLessThanOrEqual(BUDGET);
-    for (const r of results.filter((r) => r.error))
-      expect(r.error.data.reason).toBe('rate_limited');
+    expect(decoded(latestRead).toString()).toBe('last');
+    expect(latestRead.result).toMatchObject({ index: Number.MAX_SAFE_INTEGER, nextIndex: null });
+    expect(indexedRead.result).toMatchObject({ index: Number.MAX_SAFE_INTEGER, nextIndex: null });
   });
 
-  test("a 404 is feed_empty, and a node error keeps bee-js's message", async () => {
+  test('the update chunks read to find the head count against the read budget', async () => {
+    // Spend all but about 2 KiB of the window on one entry.
+    putEntry(9, { span: BUDGET - 2 * KIB, join: streamed(BUDGET - 2 * KIB) });
+    expect((await read({ index: 9 })).result).toBeDefined();
+    // The head, entry 2, would fit in what is left; the full chunks the
+    // probe reads on the way there do not.
+    putEntry(0, { payload: Buffer.alloc(4096, 0x5a) });
+    putEntry(1, { payload: Buffer.alloc(4096, 0x5a) });
+    putEntry(2, { payload: Buffer.from('head') });
+    latest = (_req, res) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 404, message: 'wrapped chunk cannot be retrieved' }));
+    };
+
+    const result = await read();
+
+    expect(result.error.data.reason).toBe('rate_limited');
+  });
+
+  test("a 404 with no update chunks is feed_empty, and a node error keeps bee-js's message", async () => {
     expect((await read()).error.data.reason).toBe('feed_empty');
 
     latest = (_req, res) => {
@@ -472,56 +499,5 @@ describe('a lying or missing span', () => {
     expect(result.error).toBeDefined();
     expect(result.result).toBeUndefined();
     expect(requestsTo('/bytes/')).toHaveLength(0);
-  });
-
-  describe('a latest body that does not match its declared length', () => {
-    const realFetch = global.fetch;
-    afterEach(() => {
-      global.fetch = realFetch;
-    });
-
-    // Node's fetch itself holds a body to its Content-Length; the provider
-    // does not rely on that.
-    function answerLatestWith(declared, sent) {
-      global.fetch = jest.fn(async (url, init) => {
-        if (!String(url).includes('/feeds/')) return realFetch(url, init);
-        let left = sent;
-        const body = new ReadableStream({
-          pull(controller) {
-            if (left === 0) return controller.close();
-            const n = Math.min(left, 16 * KIB);
-            left -= n;
-            controller.enqueue(new Uint8Array(n));
-          },
-        });
-        return {
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          headers: new Headers({ 'content-length': String(declared), ...latestHeaders(0) }),
-          body,
-        };
-      });
-    }
-
-    test('a body longer than declared is cut off at the declared length', async () => {
-      answerLatestWith(10, 10 * MIB);
-
-      const result = await read();
-
-      expect(result.error.message).toBe(
-        'Node sent more than the 10 bytes it declared for the feed entry'
-      );
-    });
-
-    test('a body shorter than declared is refused', async () => {
-      answerLatestWith(1000, 10);
-
-      const result = await read();
-
-      expect(result.error.message).toBe(
-        'Node sent 10 of the 1000 bytes it declared for the feed entry'
-      );
-    });
   });
 });
