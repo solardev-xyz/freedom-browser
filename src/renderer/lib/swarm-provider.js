@@ -361,6 +361,24 @@ async function handleActRequest(params, permissionKey, webview) {
 async function handleFeedSigningRequest(method, params, permissionKey, autoApproveType, webview) {
   await requirePermission(permissionKey);
 
+  // What the prompt shows for swarm_deriveSharedSecrets comes from main's
+  // own check of the request (describeSharedSecretsRequest): one main would
+  // refuse (no keys, too many, a malformed or off-curve key) gets main's
+  // -32602 and no prompt, so the user is never asked to approve a request
+  // that cannot succeed.
+  let promptParams = params;
+  if (method === 'swarm_deriveSharedSecrets') {
+    const described = await window.swarmPermissions.describeSharedSecretsRequest(params);
+    if (!described?.valid) {
+      throw {
+        code: -32602,
+        message: described?.message || 'Invalid parameters',
+        data: { reason: described?.reason || 'invalid_params', ...described?.data },
+      };
+    }
+    promptParams = { publicKeys: described.publicKeys };
+  }
+
   const [hasFeedAccess, vaultStatus] = await Promise.all([
     window.swarmFeedStore?.hasFeedGrant?.(permissionKey),
     window.identity?.getStatus?.(),
@@ -370,7 +388,7 @@ async function handleFeedSigningRequest(method, params, permissionKey, autoAppro
 
   if (!hasFeedAccess) {
     await new Promise((resolve, reject) => {
-      showSwarmFeedApproval(permissionKey, params, resolve, reject, { method, autoApproveType });
+      showSwarmFeedApproval(permissionKey, promptParams, resolve, reject, { method, autoApproveType });
     });
   } else {
     // A locked vault does not stand in for the per-operation approval: only
@@ -383,7 +401,7 @@ async function handleFeedSigningRequest(method, params, permissionKey, autoAppro
       !isAgentHeld(webview);
     if (!autoApproved) {
       await new Promise((resolve, reject) => {
-        showSwarmFeedApproval(permissionKey, params, resolve, reject, { method, autoApproveType });
+        showSwarmFeedApproval(permissionKey, promptParams, resolve, reject, { method, autoApproveType });
       });
     } else if (vaultLocked) {
       await showVaultUnlock(permissionKey);

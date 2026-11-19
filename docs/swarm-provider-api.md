@@ -739,7 +739,9 @@ one prompt, so wrap a group key for every member in one call.
 
 Use it as key material, not as a key: derive keys from it with a KDF and a
 context of your own. A key that is not a point on secp256k1 is
-`invalid_public_key` with its `index`.
+`invalid_public_key` with its `index`. The whole list is checked before the
+prompt: a request that would be refused (no keys, more than 256, a malformed
+or off-curve key) gets its `-32602` without one.
 
 It also lets a page use Swarm's access control (ACT) with the site's key,
 building and reading the grantee data itself with the chunk methods. Bee and

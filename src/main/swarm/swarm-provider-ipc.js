@@ -35,6 +35,7 @@ const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPermission, hasMessagingGrant, hasActGrant, onRevoke } = require('./swarm-permissions');
 const { validateActRequest } = require('./act-request');
+const { validateSharedSecretsRequest, MAX_SHARED_SECRET_KEYS } = require('./shared-secrets-request');
 const { openActShare } = require('./act-service');
 // Required on first use: private-windows.js pulls in the app logger and
 // BrowserWindow, which most of this module's callers (and tests) never need.
@@ -99,9 +100,8 @@ const LIMITS = {
   defaultTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   minTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   maxSubscriptions: 32,
-  // Public keys per swarm_deriveSharedSecrets call: enough to wrap a group
-  // key for a large community in one approval.
-  maxSharedSecretKeys: 256,
+  // Public keys per swarm_deriveSharedSecrets call (shared-secrets-request.js).
+  maxSharedSecretKeys: MAX_SHARED_SECRET_KEYS,
 };
 
 const SPEC_VERSION = '1.0';
@@ -1585,51 +1585,19 @@ async function handleGetEncryptionKey(origin) {
   }
 }
 
-// A compressed (33-byte) or uncompressed (65-byte) secp256k1 public key,
-// with or without 0x. Length is bounded before the regexp sees it (#478).
-function parsePublicKey(value) {
-  const hex = normalizeAddress(value);
-  if (hex.length !== 66 && hex.length !== 130) return null;
-  if (!/^(0[23][0-9a-fA-F]{64}|04[0-9a-fA-F]{128})$/.test(hex)) return null;
-  return `0x${hex.toLowerCase()}`;
-}
-
 /**
  * Handle swarm_deriveSharedSecrets: ECDH between the site's encryption key
  * and each given public key. Returns each shared point's x coordinate, the
  * input of Bee's and Ant's ACT session keys, so a page can do ACT itself.
+ * The request is checked by shared-secrets-request.js, the same check the
+ * consent prompt is gated on.
  */
 async function handleDeriveSharedSecrets(params, origin) {
-  if (!params || typeof params !== 'object') {
-    return invalidParams('params is required');
+  const checked = validateSharedSecretsRequest(params);
+  if (!checked.ok) {
+    return invalidParams(checked.message, checked.reason, checked.data);
   }
-
-  const optionsError = validateEmptyOptions(params.options);
-  if (optionsError) return optionsError;
-
-  const { publicKeys } = params;
-  if (!Array.isArray(publicKeys) || publicKeys.length === 0) {
-    return invalidParams('publicKeys must be a non-empty array', 'invalid_public_key');
-  }
-  if (publicKeys.length > LIMITS.maxSharedSecretKeys) {
-    return invalidParams(
-      `publicKeys may hold at most ${LIMITS.maxSharedSecretKeys} keys`,
-      'payload_too_large',
-      { limit: LIMITS.maxSharedSecretKeys, actual: publicKeys.length }
-    );
-  }
-  const parsed = [];
-  for (let index = 0; index < publicKeys.length; index += 1) {
-    const publicKey = parsePublicKey(publicKeys[index]);
-    if (!publicKey) {
-      return invalidParams(
-        'each public key must be a hex secp256k1 public key, compressed (66 characters) or uncompressed (130)',
-        'invalid_public_key',
-        { index }
-      );
-    }
-    parsed.push(publicKey);
-  }
+  const parsed = checked.value.publicKeys;
 
   if (!hasFeedGrant(origin)) {
     return feedNotGranted();

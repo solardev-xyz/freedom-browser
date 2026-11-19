@@ -500,6 +500,106 @@ describe('feed writes with a locked vault', () => {
   });
 });
 
+describe('swarm_deriveSharedSecrets is checked by main before its prompt', () => {
+  let setupSwarmProvider;
+  let showSwarmFeedApproval;
+  let showVaultUnlock;
+  const KEY = `02${'ab'.repeat(32)}`;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmFeedApproval, showVaultUnlock } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({ origin: 'app.eth', autoApprove: {} });
+    window.swarmPermissions.getAutoApprove = jest.fn().mockResolvedValue(false);
+    window.swarmPermissions.describeSharedSecretsRequest = jest.fn();
+    window.swarmFeedStore = { hasFeedGrant: jest.fn().mockResolvedValue(true) };
+    window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }) };
+    window.swarmProvider.execute.mockResolvedValue({ result: { sharedSecrets: ['x'] } });
+    showSwarmFeedApproval.mockImplementation((_key, _params, resolve) => resolve());
+    showVaultUnlock.mockResolvedValue();
+  });
+
+  afterAll(() => {
+    delete window.swarmFeedStore;
+    delete window.identity;
+    delete window.swarmPermissions.describeSharedSecretsRequest;
+    delete window.swarmPermissions.getAutoApprove;
+  });
+
+  const derive = async (params) => {
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 7, method: 'swarm_deriveSharedSecrets', params });
+    for (let i = 0; i < 6; i += 1) await flush();
+    return webview;
+  };
+
+  test.each([
+    [{ hasFeedAccess: true, autoApprove: false }],
+    [{ hasFeedAccess: true, autoApprove: true }],
+    [{ hasFeedAccess: false, autoApprove: false }],
+  ])('a request main refuses gets its -32602 and no prompt or unlock (%o)', async ({ hasFeedAccess, autoApprove }) => {
+    window.swarmFeedStore.hasFeedGrant.mockResolvedValue(hasFeedAccess);
+    window.swarmPermissions.getAutoApprove.mockResolvedValue(autoApprove);
+    window.identity.getStatus.mockResolvedValue({ isUnlocked: false });
+    window.swarmPermissions.describeSharedSecretsRequest.mockResolvedValue({
+      valid: false,
+      reason: 'payload_too_large',
+      message: 'publicKeys may hold at most 256 keys',
+      data: { limit: 256, actual: 1000 },
+    });
+    const params = { publicKeys: new Array(1000).fill(KEY) };
+
+    const webview = await derive(params);
+
+    expect(window.swarmPermissions.describeSharedSecretsRequest).toHaveBeenCalledWith(params);
+    expect(showSwarmFeedApproval).not.toHaveBeenCalled();
+    expect(showVaultUnlock).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview).at(-1)[1]).toEqual({
+      id: 7,
+      result: null,
+      error: {
+        code: -32602,
+        message: 'publicKeys may hold at most 256 keys',
+        data: { reason: 'payload_too_large', limit: 256, actual: 1000 },
+      },
+    });
+  });
+
+  test('a valid request is prompted with main\'s canonical keys and executed as sent', async () => {
+    window.swarmPermissions.describeSharedSecretsRequest.mockResolvedValue({
+      valid: true,
+      publicKeys: [`0x${KEY}`],
+    });
+    const params = { publicKeys: [KEY.toUpperCase()] };
+
+    const webview = await derive(params);
+
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+    expect(showSwarmFeedApproval.mock.calls[0][1]).toEqual({ publicKeys: [`0x${KEY}`] });
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_deriveSharedSecrets', params, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+    expect(responsesSentTo(webview).at(-1)[1]).toEqual({ id: 7, result: { sharedSecrets: ['x'] }, error: null });
+  });
+
+  test('other signing methods are not sent through the shared-secrets check', async () => {
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 8, method: 'swarm_getEncryptionKey', params: {} });
+    for (let i = 0; i < 6; i += 1) await flush();
+    expect(window.swarmPermissions.describeSharedSecretsRequest).not.toHaveBeenCalled();
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('swarm_openAct (#648)', () => {
   let setupSwarmProvider;
   let showSwarmActApproval;
