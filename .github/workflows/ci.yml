@@ -1037,6 +1037,22 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # freedom-core design 0012, APB-5a: in a tab the Agent holds, a page's
+      # connect and signatures go to eip1193.request with agent: true, and the
+      # Agent's sheet answers the core's eth.connect and eth.sign on a handle
+      # main opens for it. Against the binary: the core writes the grant or
+      # signs on the sheet's approve, alwaysAllow false relayed; a decline,
+      # a withdrawn sheet and the agent's own refusal sign nothing; custody
+      # that begins or ends between the request and its prompt shows the
+      # user's prompt; the record's deadline closes the sheet (expired); a
+      # Ledger's { device } checks custody before the device; and main calls
+      # no approval.issue and no approval.grant.
+      - name: Agent's sheet answers the core's prompts (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-agent-answers.integration.test.js
+        env:
+          FREEDOM_CORED_APPROVALS_TEST: '1'
+
       # freedom-core design 0012, PHN-2: a phone's signatures and payments as
       # the core's jobs, through main's bridge and the phone's backend, with
       # a fake chrome and a local JSON-RPC node. bridge.test.js's and

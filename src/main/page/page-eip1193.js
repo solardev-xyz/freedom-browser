@@ -87,6 +87,21 @@
  *         prompt (`feeAskAgain`).
  *       - `vault.unlock` with reason "send" (APB-4c): a rule's send while
  *         the vault is locked, as for a signature.
+ *     In a tab the Agent holds (APB-5a, design 0012 "The Agent's answer"),
+ *     an `eth.connect` or `eth.sign` whose echoed `page.agent` is true, for
+ *     a tab still in custody when the prompt arrives (A7-9), goes to the
+ *     Agent's sheet instead, through the agent service (`agentPrompt`), on a
+ *     handle main opens for its decision on the request's record
+ *     (`context.agentPrompt`): in the document's wallet slot, under the
+ *     record's deadline, with the watchdog held. The sheet shows the core's
+ *     view (A7-10); its approve is relayed after main's checks with the
+ *     account it picked, one of those offered, and `alwaysAllow: false`;
+ *     its decline is `approve: false`, a sheet withdrawn `closed`, and the
+ *     agent service's own refusal (A7-3) a closed prompt with the page
+ *     getting its error. Custody is read again as a signature's approve is
+ *     answered (A7-6), and the agent service hears the page's answer after
+ *     it. One it doesn't take is the user's prompt, for the same prompt id;
+ *     a `vault.unlock` or an `eth.send` (until APB-5b) never goes to it.
  *   - **`approval.recheck { request, page }`:** `{ live, agent }`, read
  *     now, with nothing awaited: whether the request is still open and its
  *     document still holds its key, and whether the Agent holds its tab. A
