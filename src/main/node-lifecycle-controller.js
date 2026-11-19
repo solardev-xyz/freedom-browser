@@ -205,5 +205,6 @@ module.exports = {
   RUNNING_STATES,
   STOPPED_STATES,
   chainIdForService,
+  defaultDependencies,
   expectedState,
 };

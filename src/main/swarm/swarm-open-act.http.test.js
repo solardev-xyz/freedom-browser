@@ -47,6 +47,11 @@ jest.mock('../private/private-windows', () => ({
   classifyWebContents: (webContents) => webContents?.kind ?? 'unknown',
 }));
 jest.mock('./gsoc-miner', () => ({ mineSigner: jest.fn(), joinJob: jest.fn() }));
+// Ant's lifecycle (#988): the node is settled, as in pss-send.http.test.js.
+jest.mock('../ant-manager', () => ({
+  waitForNodeSettled: async () => true,
+  isNodeSettled: () => true,
+}));
 jest.mock('./subscription-registry', () => ({ configure: jest.fn(), cancelByOrigin: jest.fn() }));
 jest.mock('./publish-setup-service', () => ({ getPublishReadiness: async () => ({ ok: true }) }));
 jest.mock('./publish-service', () => ({}));
