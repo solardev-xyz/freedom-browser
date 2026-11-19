@@ -521,6 +521,7 @@ describe('preload', () => {
       [exposures.publishSetup, 'watch', ['node-card', true], IPC.SWARM_SETUP_WATCH, ['node-card', true]],
       [exposures.publishSetup, 'getPlans', [], IPC.SWARM_SETUP_GET_PLANS, []],
       [exposures.publishSetup, 'getExtendOptions', ['ab'.repeat(32), 20], IPC.SWARM_SETUP_GET_EXTEND_OPTIONS, ['ab'.repeat(32), 20]],
+      [exposures.publishSetup, 'quote', [{ kind: 'buy', depth: 23, days: 45 }], IPC.SWARM_SETUP_QUOTE, [{ kind: 'buy', depth: 23, days: 45 }]],
       [exposures.publishSetup, 'arm', [{ kind: 'buy', planId: 'starter' }], IPC.SWARM_SETUP_ARM, [{ kind: 'buy', planId: 'starter' }]],
       [exposures.publishSetup, 'cancel', [7], IPC.SWARM_SETUP_CANCEL, [7]],
       [exposures.publishSetup, 'dismiss', [7], IPC.SWARM_SETUP_CANCEL, [7, { dismiss: true }]],
