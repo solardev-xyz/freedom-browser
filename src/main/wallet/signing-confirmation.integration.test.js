@@ -2700,15 +2700,19 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
   // APR-7: a page's dApp grant comes only from the core's own prompt. An
   // account change (or any dApp grant) asked under `page`, for a key the
   // core holds no grant for or one it does, is refused before the change.
-  test("a dApp grant asked under `page`, an account change for a key the core holds no grant for or any other: refused, the core writes nothing, and main's copy has none", async () => {
+  test("a dApp grant asked under `page` (connect, account, signing, transaction), for a key the core holds no grant for or one it does: refused, the core writes nothing, and main's copy has none", async () => {
     const fourth = 'https://fourth.example';
     const page = { ...PAGE, origin: fourth, top_origin: fourth };
     const before = fs.readFileSync(file(), 'utf8');
+    const recordsBefore = await coreRecords();
+    // All four dApp changes. A `transaction` rule is refused by APR-7's
+    // check, before the older "only with a confirmed send" refusal.
     const changes = [
       [page, { op: 'account', account: 1 }],
       [page, { op: 'connect', account: 1, chain_id: 100 }],
       [PAGE, { op: 'account', account: 1 }],
       [PAGE, { op: 'signing' }],
+      [PAGE, { op: 'transaction' }],
     ];
     for (const [asking, change] of changes) {
       await expect(fixtures.grantAsPage({ store: 'dapp', change }, asking)).rejects.toMatchObject({
@@ -2716,7 +2720,8 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
         message: expect.stringMatching(/only from the core's own prompt/),
       });
     }
-    expect((await coreRecords()).map((record) => record.origin)).not.toContain(fourth);
+    expect(await coreRecords()).toEqual(recordsBefore);
+    expect(recordsBefore.map((record) => record.origin)).not.toContain(fourth);
     expect(permissions.getPermission(fourth)).toBeNull();
     expect(fs.readFileSync(file(), 'utf8')).toBe(before);
   });
