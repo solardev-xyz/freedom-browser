@@ -216,7 +216,7 @@ function defaultDependencies() {
     getAutoApprove: (key, type) => permissions().getAutoApprove(key, type),
     updateLastUsed: (key, page) => permissions().updateLastUsed(key, { page }),
     validateRid: (rid) => require('../radicle-manager').validateAndNormalizeRid(rid),
-    inCustody: (guest) => require('./page-signing').guestInCustody(guest),
+    inCustody: (guest) => require('./page-custody').guestInCustody(guest),
     hasSigningGrant: (key) => permissions().hasSigningGrant(key),
     grantSigning: (key, page) => permissions().grantSigning(key, { page }),
     setAutoApprove: (key, type, enabled, page) => permissions().setAutoApprove(key, type, enabled, { page }),

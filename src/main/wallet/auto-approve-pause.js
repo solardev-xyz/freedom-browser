@@ -13,8 +13,9 @@
  *
  * Transactions only: message signing pays nothing, and its auto-approve is
  * unchanged. Every reading of a transaction rule is main's own, for a page's
- * send, and consults this (page/page-sends.js: the rule's choice, and the
- * silent send in its turn), so none can skip the pause.
+ * send, and consults this (the pause main sends the core as `world.paused`
+ * for the rule's choice, page/page-eip1193.js, and the silent send in its
+ * turn, page/page-core-sends.js), so none can skip the pause.
  *
  * Every dApp send of a site takes the site's turn, one at a time, from
  * before the pause is read until its payment is committed to the records

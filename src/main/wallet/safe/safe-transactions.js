@@ -100,7 +100,7 @@ const settledListeners = new Set();
  * Hear each pending SafeTx's outcome as main records it: `{ safeIndex,
  * safeTxHash, outcome: 'executed', hash }` once its execution lands, or
  * `{ safeIndex, safeTxHash, outcome: 'discarded' }` once it is discarded.
- * A page's Safe send waits on this for its answer (page/page-sends.js),
+ * A page's Safe send waits on this for its answer (page/page-core-sends.js),
  * whichever screen executed or discarded it. Returns the way to stop.
  *
  * @param {(event: object) => void} listener

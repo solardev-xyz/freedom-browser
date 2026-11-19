@@ -31,7 +31,7 @@
  * board: a send's SafeTx waits (parked, as before), a message is cancelled.
  *
  * Once the threshold is met, main completes a message (the caller,
- * `page-signing.js`) or executes a send. An executor's fee the fee check
+ * `page-devices.js`) or executes a send. An executor's fee the fee check
  * stops for is asked in the panel as `wallet.executor_send`, from the offer
  * main itself made, and asked again above the threshold
  * (`wallet-approvals.js`). A failed execution shows the board with the

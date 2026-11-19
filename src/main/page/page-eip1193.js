@@ -89,7 +89,7 @@
  */
 
 const { ShellError } = require('../core/service-client');
-const { txOf, selectorOf } = require('./page-sends');
+const { txOf, selectorOf } = require('./page-core-sends');
 
 // What the chrome's getCurrentChainId falls back to (`page-ethereum.js`).
 const FALLBACK_CHAIN_ID = 100;

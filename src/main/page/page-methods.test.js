@@ -271,6 +271,8 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
     // Main's own Ethereum events: a moved method's (PRQ-4), and the chain
     // switcher's and a grant's changes (PRQ-6).
     add('ethereum', read('main/page/page-ethereum.js'), /context\.sendEvent\([A-Za-z]+, '([A-Za-z]+)'/g);
+    // A switch's chainChanged, sent as the core selects the chain (APB-4a).
+    add('ethereum', read('main/page/page-eip1193.js'), /context\.sendEvent\([A-Za-z]+, '([A-Za-z]+)'/g);
     add('ethereum', read('main/page/page-events.js'), /sendAll\(targets, '([A-Za-z]+)'/g);
     add('swarm', read('main/swarm/swarm-provider-ipc.js'), /event: '([A-Za-z]+)'/g);
     // Main's own Swarm events, for a page's requests through main (PRQ-7b).

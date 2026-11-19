@@ -4,12 +4,13 @@
 // "rejected" (EIP-1193 4001) may send the request again, and the phone could
 // pay twice, so the site must hear that the outcome is unknown.
 //
-// Real on both sides of IPC: main's send dispatcher for a page's request
-// (freedom-core design 0011, PRQ-5b: page/page-sends.js, with the user's
-// approval of its prompt and main's own issuer), transaction service, phone
-// signer and bridge; the renderer's session broker (over a scripted openlv
-// session). Mocked: chain data, the quote, permissions, and the phone itself;
-// simulated: the identity core's phone jobs (design 0012, PHN-2), whose
+// Real on both sides of IPC: main's step for the identity core's `{ device }`
+// answer to a phone account's send (freedom-core design 0012, APB-4c:
+// page/page-core-sends.js), transaction service, phone signer and bridge;
+// the renderer's session broker (over a scripted openlv session). Mocked:
+// chain data, permissions, and the phone itself; simulated: the core's
+// decision (the transaction it prepared, and the token it minted once the
+// user approved its prompt) and its phone jobs (design 0012, PHN-2), whose
 // judgement of the answer decides (the real core's runs in
 // main/wallet/remote/phone-jobs.integration.test.js).
 
@@ -70,8 +71,9 @@ jest.mock('../../../main/networks/chain-data', () => ({
 }));
 jest.mock('../../../main/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../../../main/wallet/signers', () => ({ getSigner: (index) => mockSigners[index] }));
-// The identity core's approval tokens (design 0012, APB-1), simulated: main's
-// issuer mints through it.
+// The identity core's approval tokens (design 0012, APB-1), simulated: the
+// core mints the send's token as it decides, and main discards it once the
+// send ends.
 const mockApprovals = require('../../../../test/helpers/simulated-approvals').simulatedApprovals();
 jest.mock('../../../main/core/vault-backend', () => ({
   vaultBackend: {
@@ -133,14 +135,9 @@ jest.mock('../../../main/wallet/provider-manager', () => ({ testProvider: jest.f
 jest.mock('better-sqlite3', () => require('../../../../test/helpers/fake-better-sqlite3-payments'));
 jest.mock('../../../main/wallet/dapp-permissions', () => ({
   getPermission: (site) => (site === 'https://app.example' ? { walletIndex: 4 } : null),
-  // The site's "Always allow" covers the auto-approved test's contract call.
-  isTransactionAutoApproved: () => mockAutoApprove,
-  addTransactionAutoApprove: jest.fn(),
-  getSigningAutoApprove: () => false,
 }));
 
 let mockSigners;
-let mockAutoApprove = false;
 
 // Anvil/Hardhat-default test key: well known, never funded on mainnet.
 const PHONE = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
@@ -297,63 +294,73 @@ async function startPhone({ answer, holdRequestSent = null, holdAbort = false } 
 }
 
 /**
- * The site asks for a payment, and main's dispatcher serves it: the user
- * approves main's prompt (or, with `ruled`, the site's rule answers it), and
- * main's issuer mints and spends the token before the phone is asked.
- * `answer` is the page's answer, once main has one.
+ * The site asks for a payment, and the identity core decides it (design
+ * 0012, APB-4c): the user approved the core's prompt, so the core hands main
+ * `{ device }` for the phone account, with the transaction it prepared and
+ * the token it minted for it. Main's `page-core-sends.js` runs the send: the
+ * site's turn, the name, the grant and the document's key, then the core's
+ * phone job, which spends the token, before the phone is asked. `call` makes
+ * the payment a contract call. `answer` is the page's answer, once main has
+ * one.
  */
-async function start(options = {}) {
+async function start({ call = false, ...options } = {}) {
   const phone = await startPhone(options);
-  const confirmations = require('../../../main/wallet/signing-confirmation');
-  const { createSendDispatchers } = require('../../../main/page/page-sends');
+  const { createCoreSends } = require('../../../main/page/page-core-sends');
   const permissions = require('../../../main/wallet/dapp-permissions');
-  const dispatch = createSendDispatchers(
+  const sends = createCoreSends(
     {
       getPermission: permissions.getPermission,
       updateLastUsed: jest.fn(),
       walletList: async () => [{ index: PHONE_INDEX, name: 'Phone', address: PHONE.address, type: 'remote' }],
-      chainIdOf: () => 100,
-      chainName: () => 'Gnosis',
-      networks: () => ({ 100: { name: 'Gnosis', nativeSymbol: 'xDAI' } }),
-      agentAnswer: async () => null,
     },
-    {
-      inCustody: () => false,
-      isVaultUnlocked: async () => true,
-      // The site's rule, as the identity core reads it (design 0012).
-      checkStanding: async () => (mockAutoApprove ? { covered: true, reason: null } : { covered: false, reason: 'no_rule' }),
-      rulePaused: async () => false,
-      estimateGas: async () => ({ gasLimit: '21000' }),
-      getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000', effectiveGasPrice: '1000000000' }),
-    }
-  )['ethereum:eth_sendTransaction'];
-  const prompts = [];
-  let approved = null;
+    { inCustody: () => false }
+  );
   const page = { origin: SITE, top_origin: SITE, frame: 1, navigation: 1, agent: false };
+  const asked = call
+    ? { to: '0x' + '22'.repeat(20), data: '0x095ea7b3' + '00'.repeat(64) }
+    : { to: '0x' + '22'.repeat(20), value: '0x1' };
   const context = {
     requester: { key: SITE, guest: 31, window: 7, navigation: 1, chain: null },
     method: 'eth_sendTransaction',
-    params: [
-      mockAutoApprove
-        ? { to: '0x' + '22'.repeat(20), data: '0x095ea7b3' + '00'.repeat(64) }
-        : { to: '0x' + '22'.repeat(20), value: '0x1' },
-    ],
+    params: [asked],
     nameHolds: async () => true,
     holdsKey: () => true,
-    prompt: async (spec) => {
-      prompts.push(spec);
-      approved = 'a'.repeat(64);
-      return { approve: true, choices: { alwaysAllow: false, feeAcknowledged: false } };
-    },
     pageContext: () => page,
-    confirm: (kind, index, payload, options) =>
-      confirmations.issuePageConfirmation(kind, index, payload, { handle: approved, context: page }, options),
-    spend: (confirmation) => confirmation,
     signal: new AbortController().signal,
     leaveWalletSlot: () => {},
   };
+  // The core's prepared transaction, in `sign.transaction`'s form with no
+  // nonce: the page's fields on Gnosis, with the core's gas limit and fee.
+  // The phone picks its own nonce and fee all the same.
+  const tx = {
+    type: 0,
+    chain_id: '100',
+    to: asked.to,
+    value: BigInt(asked.value ?? 0).toString(),
+    data: asked.data ?? '0x',
+    gas_limit: '21000',
+    gas_price: '1000000000',
+  };
+  const handle = 'a'.repeat(64);
+  const { token } = await mockApprovals.approval.issue(
+    { kind: 'dapp-send', account: PHONE_INDEX, payload: { tx }, handle },
+    page
+  );
+  // As page-eip1193.js hands it on, checked against the request: "Always
+  // allow" unticked.
+  const device = {
+    type: 'remote',
+    kind: 'dapp-send',
+    account: PHONE_INDEX,
+    payload: { tx },
+    handle,
+    token,
+    remember: false,
+  };
   const site = { state: 'pending' };
-  const answer = dispatch(context).then((value) => Object.assign(site, { state: 'answered', value }));
+  const answer = sends
+    .device(context, device, page)
+    .then((value) => Object.assign(site, { state: 'answered', value }));
   if (options.holdRequestSent) {
     await until(() => phone.phoneGot().length === 1, 'the network switch');
     await settle();
@@ -362,7 +369,7 @@ async function start(options = {}) {
     await until(() => phone.phoneGot().length === 2, 'the payment request on the phone');
     expect(phone.phoneGot()).toEqual(['wallet_switchEthereumChain', 'eth_sendTransaction']);
   }
-  return { ...phone, prompts, site, answer };
+  return { ...phone, site, answer };
 }
 
 beforeEach(() => {
@@ -374,7 +381,6 @@ beforeEach(() => {
 afterEach(() => {
   jest.restoreAllMocks();
   jest.useRealTimers();
-  mockAutoApprove = false;
   delete global.window;
   delete global.document;
   fs.rmSync(mockUserData, { recursive: true, force: true });
@@ -393,8 +399,6 @@ const answeredWith = async (ctx) => {
 describe("a site's answer when its phone payment's outcome is unknown (D13)", () => {
   test('the user stops waiting: the site hears the outcome is unknown, never 4001', async () => {
     const ctx = await start();
-    // Main's prompt was approved, and the phone asked only then.
-    expect(ctx.prompts.map((prompt) => prompt.kind)).toEqual(['eth.send']);
     ctx.broker.cancelJob(ctx.jobs.find((event) => event.phase === 'qr').jobId);
     expect(await answeredWith(ctx)).toEqual({ error: SITE_UNKNOWN });
   });
@@ -490,18 +494,21 @@ describe("the phone's error answers to a payment on it (787-M2)", () => {
     }
   );
 
-  test('a payment the rule answered: the page hears unknown from an internal error', async () => {
-    mockAutoApprove = true;
-    const ctx = await start({ answer: async () => INTERNAL });
-    expect(ctx.prompts).toEqual([]);
+  // A contract call, which the site's rule answered on main's own route
+  // before APB-4d. The core's rule answers no device's send (design 0012,
+  // APR-5e-2), so a phone's contract call is prompted and comes as
+  // `{ device }` too: the same answers hold for a payment that carries data.
+  test('a contract call: the page hears unknown from an internal error', async () => {
+    const ctx = await start({ call: true, answer: async () => INTERNAL });
     expect(ctx.phoneGot()).toEqual(['wallet_switchEthereumChain', 'eth_sendTransaction']);
     expect(await answeredWith(ctx)).toEqual({ error: SITE_UNKNOWN });
   });
 
-  test("a payment the rule answered: the phone's own rejection is the user's", async () => {
-    mockAutoApprove = true;
-    const ctx = await start({ answer: async () => ({ error: { code: 4001, message: 'User denied.' } }) });
-    expect(ctx.prompts).toEqual([]);
+  test("a contract call: the phone's own rejection is the user's", async () => {
+    const ctx = await start({
+      call: true,
+      answer: async () => ({ error: { code: 4001, message: 'User denied.' } }),
+    });
     expect(await answeredWith(ctx)).toEqual({ error: REJECTED });
   });
 });

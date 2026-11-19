@@ -1218,18 +1218,15 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
               },
               request
             )),
-          // Main's own signing path for a tab the Agent doesn't hold (a
-          // site's standing rule, APB-1b): the real signers and the core's
-          // `approval.check`; the message's view made here, without the IPC
-          // module.
-          signing: {
-            inCustody,
-            isVaultUnlocked: async () => true,
-            messageView: (message) => {
-              const { messageToBytes, normalizeMessage, signsRawHash } = require('./signing-utils');
-              return { hex: '0x' + messageToBytes(normalizeMessage(message)).toString('hex'), rawHash: signsRawHash(message) };
+          // The identity core's dispatcher (design 0012, APB-4), which a
+          // request in a tab the Agent holds never reaches: the agent's
+          // route answers it in main until APR-7.
+          relay: {
+            request: async () => {
+              throw new Error('a request in a tab the Agent holds reached the core\'s dispatcher');
             },
           },
+          signing: { inCustody },
           sends: { inCustody },
         }),
         chromeWindowOf: (contents) => (contents?.id === 501 ? 1 : null),
@@ -1634,7 +1631,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       };
       // The step held, and how to tell the request has reached it: the
       // device queue held by another device task (the request queued once
-      // its token's spend, or the core's verdict, has settled), the
+      // its token's spend has settled), the
       // transport's open, or the device's address check.
       const HOLDS = {
         'the device queue': (settled) => {
@@ -1732,41 +1729,6 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             expect(calls.filter((call) => call.method.startsWith('sign.'))).toEqual([]);
             // The device is free for the next.
             await expect(require('./ledger/transport').withEthApp(async () => 'free')).resolves.toBe('free');
-          }
-        });
-
-        test("a site's signing rule on a Ledger (APB-1b): revoked there sends no signing APDU; unchanged, one", async () => {
-          for (const revoke of [true, false]) {
-            calls.length = 0;
-            deviceAsked = [];
-            await permissions.grantPermission(SITE, LEDGER_INDEX, 100, pageOf(SITE));
-            await permissions.setSigningAutoApprove(SITE, true, pageOf(SITE));
-            const tab = agentTab({ held: false });
-            // The core's verdict for the choice, then again just before the
-            // signer (APB-1b): the device session comes after the second.
-            const hold = HOLDS[held](settledCall('approval.check', 2));
-            const asking = tab.ask('personal_sign', ['0x68656c6c6f', DEVICE_ADDRESS]);
-            ledgerHolds.push(hold);
-            await hold.reached;
-            // The rule answered (no prompt, no Agent), and the device session waits.
-            expect({ revoke, approvals, asked: deviceAsked }).toEqual({ revoke, approvals: [], asked: [] });
-            if (revoke) await permissions.setSigningAutoApprove(SITE, false);
-            hold.release();
-            await hold.done;
-            const answer = await asking;
-            if (revoke) {
-              expect(answer).toEqual({
-                error: { code: -32603, message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules" },
-              });
-              expect(deviceAsked).toEqual([]);
-            } else {
-              expect(require('ethers').verifyMessage('hello', answer.result)).toBe(DEVICE_ADDRESS);
-              expect(deviceAsked).toEqual([['ledger', 'signMessage']]);
-            }
-            // The core's verdict: for the choice, just before the signer, and
-            // inside the device session, last.
-            expect(calls.filter((call) => call.method === 'approval.check')).toHaveLength(3);
-            await permissions.setSigningAutoApprove(SITE, false);
           }
         });
       });

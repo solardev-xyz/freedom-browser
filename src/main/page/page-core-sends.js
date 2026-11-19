@@ -43,28 +43,23 @@
  * in the send's turn just before the signature, and after a signer's wait
  * before the signed bytes are recorded or sent (the core resolves no name
  * for a send in cored 0.20.0). Once a payment that passed that gate has
- * gone out, its hash is the requesting document's (`page-sends.js`'s
- * header, D13); a write under the key after it (the last use, a device's
- * rule) waits on the name again.
+ * gone out, its hash is the requesting document's (D13: the hash is a public
+ * fact about a payment the user approved for this request, and a site told
+ * nothing of a payment made could pay again); a write under the key after it
+ * (the last use, a device's rule) waits on the name again.
  *
  * The token is a bearer secret: it goes only to the core's spend or
  * signature, is never logged or put in an error, and never reaches a
  * renderer. Main discards it once the step ends, spent or not.
  *
- * The send's steps after the decision are main's own route's
- * (`page-sends.js`), shared with it until APB-4d removes that route.
+ * The send's steps after the decision (`sendDappPayment`) and the
+ * transaction's form checks (`txOf`, which `page-ethereum.js` and
+ * `page-eip1193.js` read from here) came from main's own route,
+ * `page-sends.js`, which APB-4d removed once nothing called it.
  */
 
 const { NOT_CONFIRMED } = require('../wallet/signing-confirmation');
-const { guestInCustody } = require('./page-signing');
-const {
-  sendDappPayment,
-  failure,
-  reportRule,
-  reportPhoneRuleWaits,
-  withdrawn,
-  safeDisplay,
-} = require('./page-sends');
+const { guestInCustody } = require('./page-custody');
 
 const INTERNAL_ERROR_CODE = -32603;
 const NO_ADDRESS = Object.freeze({ code: 4100, message: 'This page has no address to connect from yet' });
@@ -87,7 +82,243 @@ const ACCOUNT_GONE = Object.freeze({ code: INTERNAL_ERROR_CODE, message: 'The co
 const RULE_REASONS = new Set(['no_rule', 'not_exposed', 'rate_limited', 'fee_check', 'warning']);
 const VAULT_TYPES = new Set([undefined, null, 'mnemonic']);
 
+// A phone account's payment whose answer was lost may have been sent (D13):
+// never 4001, which says nothing happened, so the site doesn't pay twice.
+// The chrome's SITE_OUTCOME_UNKNOWN (intent-texts.js), word for word.
+const OUTCOME_UNKNOWN = Object.freeze({
+  code: INTERNAL_ERROR_CODE,
+  message: "The payment's outcome is unknown: it may have been sent. Check the wallet before retrying.",
+  data: Object.freeze({ outcome: 'unknown' }),
+});
+
+const PHONE_OUTCOME_UNKNOWN = 'REMOTE_OUTCOME_UNKNOWN';
+// A device's own "declined" is the user's rejection.
+const DEVICE_REJECTIONS = new Set(['LEDGER_USER_REJECTED', 'REMOTE_USER_REJECTED', 'REMOTE_USER_CANCELLED']);
+
+const ERC20_TRANSFER_SELECTOR = '0xa9059cbb';
+
 const error = (base) => ({ error: { ...base, ...(base.data ? { data: { ...base.data } } : {}) } });
+
+function redacted(message) {
+  try {
+    return require('../wallet/rpc-errors').redactRpcText(message) || 'Transaction failed';
+  } catch {
+    return 'Transaction failed';
+  }
+}
+
+/** A send's failure, as the page hears it. */
+function failure(err, fallback = 'Transaction failed') {
+  if (err?.code === PHONE_OUTCOME_UNKNOWN) return error(OUTCOME_UNKNOWN);
+  if (DEVICE_REJECTIONS.has(err?.code)) return error(USER_REJECTED);
+  const message = typeof err?.message === 'string' && err.message ? err.message : fallback;
+  return { error: { code: INTERNAL_ERROR_CODE, message: redacted(message) } };
+}
+
+function notConfirmed(reason) {
+  const err = new Error(`Signing was not confirmed: ${reason}`);
+  err.code = NOT_CONFIRMED;
+  return err;
+}
+
+/** The 4-byte function selector of `data`, or null for a plain transfer. */
+function selectorOf(data) {
+  return typeof data === 'string' && /^0x[0-9a-fA-F]{8}/.test(data) ? data.slice(0, 10).toLowerCase() : null;
+}
+
+/**
+ * What the core said of the contract rule a flagged send asked for (the
+ * `sign.transaction` reply's `rule`, design 0012, API, or a device send's
+ * `approval.remember` reply's), logged as today's rule writes are: written;
+ * written but not durable; or not written, with the core's reason.
+ */
+function reportRule(key, rule) {
+  if (rule?.added === true) {
+    if (rule.durable === false) {
+      console.warn(`[PageSends] contract rule saved for ${key}, but it may not survive a power loss yet`);
+    }
+    return;
+  }
+  console.error(`[PageSends] contract rule not saved for ${key}: ${rule?.reason || 'no reply'}`);
+}
+
+/**
+ * A phone send's "Always allow" the core holds until its payment's
+ * transaction shows and matches (design 0012, "A phone payment's rule"):
+ * written then, in the same run of the core, and reported with its
+ * `phone.checked` (tx-recorder.js); dropped on a mismatch, a day's end or
+ * a restart.
+ */
+function reportPhoneRuleWaits(key, sent) {
+  if (sent?.phoneCheck === 'unverified' || sent?.phoneCheck === 'unknown') {
+    console.warn(`[PageSends] contract rule for ${key} waits until the phone's payment is checked`);
+    return;
+  }
+  reportRule(key, null);
+}
+
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+// Bytes: pairs of hex digits.
+const HEX_DATA = /^0x(?:[0-9a-fA-F]{2})*$/;
+
+/** A quantity as a decimal string, or null when absent. Throws on any other value. */
+function quantityOf(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' && !(typeof value === 'number' && Number.isSafeInteger(value))) {
+    throw new Error(`Invalid transaction ${field}`);
+  }
+  let n;
+  try {
+    n = BigInt(value);
+  } catch {
+    throw new Error(`Invalid transaction ${field}`);
+  }
+  if (n < 0n) throw new Error(`Invalid transaction ${field}`);
+  return n.toString();
+}
+
+/**
+ * The page's transaction, checked for form (design 0011, "What a prompt
+ * shows"): `to` an address (a contract creation can't be sent, as before),
+ * `value` a quantity, `data` hex, and the page's own `gas`, the gas limit
+ * used if the estimate gives none. Every other field is the wallet's.
+ */
+function txOf(params) {
+  const raw = Array.isArray(params) ? params[0] : undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Transaction parameters are required');
+  if (typeof raw.to !== 'string' || !ADDRESS.test(raw.to)) {
+    throw new Error('The transaction needs a recipient address (to)');
+  }
+  const data = raw.data === undefined || raw.data === null || raw.data === '' ? '0x' : raw.data;
+  if (typeof data !== 'string' || !HEX_DATA.test(data)) throw new Error('Invalid transaction data');
+  return {
+    to: raw.to,
+    value: quantityOf(raw.value, 'value') ?? '0',
+    data,
+    gas: quantityOf(raw.gas, 'gas'),
+  };
+}
+
+/** Main's form of a checked transaction, as the agent service gets it. */
+function agentTxOf(tx) {
+  return { to: tx.to, value: tx.value, data: tx.data, ...(tx.gas ? { gas: tx.gas } : {}) };
+}
+
+/** The record context of a dApp payment: an ERC-20 transfer's recipient and amount. */
+function decodeErc20Transfer(data) {
+  if (typeof data !== 'string') return null;
+  const hex = data.toLowerCase();
+  if (!hex.startsWith(ERC20_TRANSFER_SELECTOR) || hex.length < 138) return null;
+  const recipient = hex.slice(10, 74);
+  const amount = hex.slice(74, 138);
+  if (!/^[0-9a-f]{64}$/.test(recipient) || !/^[0-9a-f]{64}$/.test(amount)) return null;
+  return { toAddress: `0x${recipient.slice(24)}`, amount: BigInt(`0x${amount}`).toString(10) };
+}
+
+/** The payment-history facts of a dApp send, as the chrome built them (`buildDappTxContext`). */
+function paymentContext(tx) {
+  const decoded = decodeErc20Transfer(tx.data);
+  if (!decoded) return {};
+  return {
+    asset: String(tx.to).toLowerCase(),
+    toAddress: decoded.toAddress,
+    amount: decoded.amount,
+    metadata: { erc20Method: 'transfer' },
+  };
+}
+
+/** A Safe board's presentation of a dApp's SafeTx, as the chrome built it (`buildSafeDappDisplay`). */
+function safeDisplay(tx, site) {
+  const decoded = decodeErc20Transfer(tx.data);
+  const short = (address) => `${address.slice(0, 6)}…${address.slice(-4)}`;
+  if (decoded) {
+    return {
+      site,
+      asset: String(tx.to).toLowerCase(),
+      toAddress: decoded.toAddress,
+      amount: decoded.amount,
+      label: `sending tokens to ${short(decoded.toAddress)}`,
+    };
+  }
+  if (!tx.data || tx.data === '0x') return { site, asset: null, toAddress: tx.to, amount: tx.value };
+  return { site, asset: null, toAddress: tx.to, amount: tx.value, label: `a contract call to ${short(tx.to)}` };
+}
+
+function defaultPaymentDependencies() {
+  return {
+    takeSiteTurn: (site, options) => require('../wallet/auto-approve-pause').takeSiteTurn(site, options),
+    sitePaymentWaiting: (site) => require('../wallet/auto-approve-pause').sitePaymentWaiting(site),
+    getSigner: (walletIndex, authorized) => require('../wallet/signers').getSigner(walletIndex, authorized),
+    signAndRecord: (tx, signer, context, options) =>
+      require('../wallet/tx-recorder').signAndRecord(tx, signer, context, options),
+  };
+}
+
+/**
+ * A refusal a send's guard throws, with the page's answer: nothing is
+ * signed, or nothing signed is recorded or sent. Its code passes through the
+ * transaction service unchanged (`toSendError`).
+ */
+function withdrawn(answer) {
+  return Object.assign(new Error('The request was withdrawn before its payment was sent'), {
+    code: 'INTENT_WITHDRAWN',
+    answer,
+  });
+}
+
+/**
+ * A dApp's payment, once main has authorized it: signed and sent by the
+ * account's own signer (a Ledger in main, a phone through main's bridge),
+ * and recorded under the site it is for.
+ *
+ * D12 (`auto-approve-pause.js`): the site's sends take turns until each
+ * one's payment is committed. A send the rule answers (`silent`) doesn't
+ * wait for one: with another of the site's payments under way it is paused,
+ * and in its turn it stops if one of the site's payments is waiting. A send
+ * the user confirmed waits for its turn and goes on.
+ *
+ * Two guards, each of which runs its effect itself, in the same run as its
+ * last checks, or throws `withdrawn(answer)`:
+ *   - `guard(send)`, in the send's turn, just before the signature;
+ *   - `afterSignature(commit)`, after the signer's wait (a Ledger, the core)
+ *     and before the signed bytes are recorded and sent
+ *     (`signAndSendTransaction`'s `guardCommit`). A phone signs and
+ *     broadcasts in one step: its payment has no such point.
+ *
+ * `authorized()`, read as the send signs, gives what its signer presents
+ * to the identity core (design 0012): the request's confirmation, or the
+ * page's PageContext for a rule's answer (`signers.js`).
+ *
+ * @returns {Promise<object>} what `signAndRecord` answered. Throws when the
+ *   send fails or a guard withdraws it.
+ */
+async function sendDappPayment(
+  { walletIndex, tx, site, silent = false, guard = null, afterSignature = null, authorized = null },
+  deps = {}
+) {
+  const { takeSiteTurn, sitePaymentWaiting, getSigner, signAndRecord } = { ...defaultPaymentDependencies(), ...deps };
+  const paused = () => notConfirmed('auto-approve is paused while a payment this site requested is waiting');
+  let release = null;
+  try {
+    try {
+      release = await takeSiteTurn(site, { wait: !silent });
+    } catch (err) {
+      throw silent && err?.code === 'SITE_TURN_BUSY' ? paused() : err;
+    }
+    if (silent && (await sitePaymentWaiting(site))) throw paused();
+    const send = () =>
+      signAndRecord(
+        tx,
+        getSigner(walletIndex, authorized ? authorized() : undefined),
+        { kind: 'dapp-send', origin: site, ...paymentContext(tx) },
+        { walletIndex, onCommitted: release, guardCommit: afterSignature }
+      );
+    return await (guard ? guard(send) : send());
+  } finally {
+    release?.();
+  }
+}
+
 
 /**
  * The core's transaction (`sign.transaction`'s form, no nonce) in main's
@@ -521,4 +752,4 @@ function createCoreSends(shared, deps = {}) {
   return { pay, device, discard };
 }
 
-module.exports = { createCoreSends, mainTxOf };
+module.exports = { createCoreSends, mainTxOf, sendDappPayment, txOf, agentTxOf, selectorOf };

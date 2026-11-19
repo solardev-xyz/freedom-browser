@@ -700,7 +700,7 @@ describe('signing handlers require a main-side confirmation', () => {
     // Main reads custody live for a page's request before any standing rule
     // answers it (freedom-core design 0011, page/page-sends.js and
     // page/page-signing.js): the tab's custody, as main reads it.
-    const { guestInCustody } = require('../page/page-signing');
+    const { guestInCustody } = require('../page/page-custody');
     const ruleMayAnswer = () => !guestInCustody(12);
 
     try {
