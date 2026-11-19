@@ -273,7 +273,6 @@ describeIfBinary('page signatures through the real freedom-cored\'s eip1193.requ
         relay: env.relay,
         identityWalletEnabled: () => true,
         permissionsLoaded: async () => {},
-        agentWalletRequest: async () => ({ handled: false }),
         signing: { inCustody: () => false },
         deviceDeps: {
           walletList: async () => wallets,

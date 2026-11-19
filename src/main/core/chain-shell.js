@@ -169,6 +169,28 @@ async function readPage(url, { hop, lookup, signal, max, charge }) {
   }
 }
 
+// The E2E harness's stand-in for the network behind the chain thread's RPC
+// exchanges (test-harness.js, only under FREEDOM_TEST_MODE), as naming's
+// (naming-shell.js): inert until the harness enables it, and then used only
+// while a spec has set a hop. A spec answers the core's own chain reads
+// with it: from APB-4c the core prepares a page's send itself (its estimate
+// and its fee quote), so a stand-in for main's quote no longer reaches it.
+const testHooks = {};
+
+/**
+ * Test only: the E2E harness's hooks (test-harness.js, under
+ * FREEDOM_TEST_MODE). `setHop` answers every RPC exchange in the network's
+ * place, as `deps.hop` does in unit tests (null puts the network back).
+ */
+function enableChainShellTestHooks() {
+  testHooks.enabled = true;
+  return {
+    setHop: (hop) => {
+      testHooks.hop = typeof hop === 'function' ? hop : undefined;
+    },
+  };
+}
+
 /**
  * Registers the executors on `client`, for the chain thread's requests.
  *
@@ -180,7 +202,9 @@ async function readPage(url, { hop, lookup, signal, max, charge }) {
  *   (chain-broadcasts.js); test seams: hop, lookup
  */
 function registerChainShell(client, config, deps = {}) {
-  const hop = deps.hop || makeHop();
+  const network = deps.hop || makeHop();
+  const hop = (url, init) =>
+    testHooks.enabled === true && typeof testHooks.hop === 'function' ? testHooks.hop(url, init) : network(url, init);
   const broadcasts = deps.broadcasts || null;
   // A redirect's DNS check (RPC and Blockscout): the lookups a cancel or a
   // deadline left running keep their slots until they settle.
@@ -259,6 +283,7 @@ function registerChainShell(client, config, deps = {}) {
 
 module.exports = {
   registerChainShell,
+  enableChainShellTestHooks,
   bodyReply,
   isChainRequest,
   chainHandler,

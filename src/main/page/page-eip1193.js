@@ -87,21 +87,25 @@
  *         prompt (`feeAskAgain`).
  *       - `vault.unlock` with reason "send" (APB-4c): a rule's send while
  *         the vault is locked, as for a signature.
- *     In a tab the Agent holds (APB-5a, design 0012 "The Agent's answer"),
- *     an `eth.connect` or `eth.sign` whose echoed `page.agent` is true, for
- *     a tab still in custody when the prompt arrives (A7-9), goes to the
- *     Agent's sheet instead, through the agent service (`agentPrompt`), on a
- *     handle main opens for its decision on the request's record
- *     (`context.agentPrompt`): in the document's wallet slot, under the
- *     record's deadline, with the watchdog held. The sheet shows the core's
- *     view (A7-10); its approve is relayed after main's checks with the
- *     account it picked, one of those offered, and `alwaysAllow: false`;
- *     its decline is `approve: false`, a sheet withdrawn `closed`, and the
+ *     In a tab the Agent holds (APB-5, design 0012 "The Agent's answer"),
+ *     an `eth.connect`, `eth.sign` or `eth.send` whose echoed `page.agent`
+ *     is true, for a tab still in custody when the prompt arrives (A7-9),
+ *     goes to the Agent's sheet instead, through the agent service
+ *     (`agentPrompt`), on a handle main opens for its decision on the
+ *     request's record (`context.agentPrompt`): in the document's wallet
+ *     slot, under the record's deadline, with the watchdog held. The sheet
+ *     shows the core's view (A7-10); its approve is relayed after main's
+ *     checks with the account it picked, one of those offered,
+ *     `alwaysAllow: false` and, for a send, `feeAcknowledged: false`; its
+ *     decline is `approve: false`, a sheet withdrawn `closed`, and the
  *     agent service's own refusal (A7-3) a closed prompt with the page
- *     getting its error. Custody is read again as a signature's approve is
- *     answered (A7-6), and the agent service hears the page's answer after
- *     it. One it doesn't take is the user's prompt, for the same prompt id;
- *     a `vault.unlock` or an `eth.send` (until APB-5b) never goes to it.
+ *     getting its error. A send whose fee the check stops is never the
+ *     sheet's to approve (A7-5): the page gets the fee check's error, the
+ *     core a closed prompt, `feeAskAgain`'s included. Custody is read again
+ *     as a signature's or a send's approve is answered, and in main's steps
+ *     after a `{ send }` or a `{ device }` (A7-6); the agent service hears
+ *     the page's answer after it. One it doesn't take is the user's prompt,
+ *     for the same prompt id; a `vault.unlock` never goes to it.
  *   - **`approval.recheck { request, page }`:** `{ live, agent }`, read
  *     now, with nothing awaited: whether the request is still open and its
  *     document still holds its key, and whether the Agent holds its tab. A
@@ -119,6 +123,7 @@
 
 const { ShellError, REQUIREMENT_UNMET } = require('../core/service-client');
 const { txOf, selectorOf } = require('./page-core-sends');
+const { feeCheckError, FEE_CHECK_ASK_AGAIN } = require('../wallet/fee-check');
 
 // What the chrome's getCurrentChainId falls back to (`page-ethereum.js`).
 const FALLBACK_CHAIN_ID = 100;
@@ -182,10 +187,9 @@ const REVEALS = new Set(['eth_accounts', 'eth_requestAccounts', 'personal_sign',
 // older one drops `transport_key` and checks nothing.
 const NAMES_CORE = Object.freeze([0, 21, 0]);
 // The core's prompts the Agent's sheet answers in a tab it holds (design
-// 0012, "The Agent's answer", APB-5a): a connect and a signature. A send
-// stays on the agent's own route until APB-5b, and anything else, a
-// `vault.unlock` included, is the user's prompt.
-const SHEET_KINDS = new Set(['eth.connect', 'eth.sign']);
+// 0012, "The Agent's answer", APB-5): a connect, a signature and a send.
+// Anything else, a `vault.unlock` included, is the user's prompt.
+const SHEET_KINDS = new Set(['eth.connect', 'eth.sign', 'eth.send']);
 // Custody ended between the sheet's approve and main's answer (A7-6), in
 // the agent route's words.
 const CUSTODY_LOST = Object.freeze({
@@ -416,6 +420,18 @@ function sendShown(view, choices) {
 }
 
 /**
+ * The error a send's view gives when its fee check stops it (design 0012,
+ * A7-5): a fee above the threshold, or asked again at the approve
+ * (`feeAskAgain`). Today's text: "The network fee is N× today's network
+ * fee. Confirm it again to send." Null when the check lets it through.
+ */
+function feeStopped(view) {
+  if (view.feeCheck?.above !== true && view.feeAskAgain !== true) return null;
+  const { message } = feeCheckError(FEE_CHECK_ASK_AGAIN, { ratio: view.feeCheck?.ratio ?? '?' });
+  return { code: INTERNAL_ERROR_CODE, message };
+}
+
+/**
  * @param {object} [deps] injected for tests; each defaults to main's own.
  */
 function createEip1193Relay(deps = {}) {
@@ -540,6 +556,12 @@ function createEip1193Relay(deps = {}) {
   // again, and the key held in the same run.
   async function documentHolds(context) {
     return (await context.nameHolds({ keyless: { error: { ...NO_ADDRESS } } })) && context.holdsKey();
+  }
+
+  // The same for a send, with no keyless answer set on the record: once a
+  // send that passed main's gate has gone out, its hash is the page's.
+  async function sendHolds(context) {
+    return (await context.nameHolds()) && context.holdsKey();
   }
 
   /**
@@ -681,11 +703,22 @@ function createEip1193Relay(deps = {}) {
       return { error: { ...SEND_MISMATCH } };
     }
     if (checked.token) entry.context.traceCoreToken?.('minted', checked.kind);
+    let answer;
     try {
-      return await step(checked, entry.page);
+      // Custody is checked again in the send's steps for an approve the
+      // Agent's sheet gave (A7-6).
+      answer = await step(checked, entry.page, { agent: entry.sheet === true });
     } catch (err) {
       return failure(err);
     }
+    // The payment's record, which the agent service hears with the page's
+    // answer for its receipt; the page gets the hash alone.
+    if (isPlainObject(answer) && 'paymentId' in answer) {
+      const { paymentId, ...page } = answer;
+      if (entry.sheet === true) entry.paymentId = paymentId;
+      return page;
+    }
+    return answer;
   }
 
   // Main's device step for a checked `{ device }`, or the page's error.
@@ -771,6 +804,7 @@ function createEip1193Relay(deps = {}) {
     // answer, which the agent service hears after it.
     entry.sheet = false;
     entry.heard = null;
+    entry.paymentId = undefined;
     let key = null;
     let answer;
     let reply = null;
@@ -809,7 +843,9 @@ function createEip1193Relay(deps = {}) {
       else entry.granted.reject(new Error('no grant written'));
     }
     const final = entry.override ? { error: { ...entry.override } } : answer;
-    entry.heard?.(final);
+    entry.heard?.(
+      entry.paymentId !== undefined && final.result !== undefined ? { ...final, paymentId: entry.paymentId } : final
+    );
     return final;
   }
 
@@ -1001,14 +1037,15 @@ function createEip1193Relay(deps = {}) {
   }
 
   /**
-   * The Agent's sheet answering the core's connect or signature prompt
-   * (design 0012, "The Agent's answer", APB-5a), on a handle main opens for
-   * its decision on the request's record (`agentPrompt`): the sheet shows
-   * the core's view (A7-10), the agent service's own refusals answer
-   * without the sheet (A7-3), and its approve goes to the core after main's
-   * checks, as the user's would: the sheet's account for a connect, one of
-   * those offered; "Always allow" never. The agent service not taking it
-   * leaves the prompt to the user's, `user`, for the same prompt id.
+   * The Agent's sheet answering the core's connect, signature or send
+   * prompt (design 0012, "The Agent's answer", APB-5), on a handle main
+   * opens for its decision on the request's record (`agentPrompt`): the
+   * sheet shows the core's view (A7-10), the agent service's own refusals
+   * answer without the sheet (A7-3, and A7-5's fee check), and its approve
+   * goes to the core after main's checks, as the user's would: the sheet's
+   * account for a connect, one of those offered; "Always allow" and a
+   * fee's confirmation never. The agent service not taking it leaves the
+   * prompt to the user's, `user`, for the same prompt id.
    */
   async function sheetAsk(entry, prompt, kind, shown, user) {
     const { context } = entry;
@@ -1060,22 +1097,44 @@ function createEip1193Relay(deps = {}) {
       }
       return connectAnswer(entry, prompt, decision);
     }
+    const send = kind === 'eth.send';
+    // A send whose fee the check stops is never the sheet's to approve
+    // (A7-5): the agent service refuses it without asking, and an approve
+    // that came all the same is the same refusal, never relayed with a
+    // fee unconfirmed for the core to ask again.
+    const stopped = send ? feeStopped(shown.view) : null;
+    if (stopped) {
+      entry.override = stopped;
+      return { prompt: id, closed: 'cancelled' };
+    }
     const world = await worldFor(context, entry.method);
     // Name-revalidated, as the user's approve: the document still holding
-    // its key, its name resolved again.
-    if (!(await documentHolds(context))) {
+    // its key, its name resolved again. A send sets no keyless answer
+    // (`sendAsk`): once it has gone, its hash is the page's.
+    if (!(await (send ? sendHolds(context) : documentHolds(context)))) {
       entry.override = { ...NO_ADDRESS };
       return { prompt: id, closed: 'cancelled' };
     }
     // Custody as main answers the approve (A7-6), read in the same run as
-    // the answer: the core signs at once on it.
+    // the answer: the core signs or mints at once on it.
     if (!read(() => context.pageContext().agent === true, false)) {
       entry.override = { ...CUSTODY_LOST };
       return { prompt: id, closed: 'cancelled' };
     }
     entry.approved = decision.handle;
     entry.sheet = true;
-    return { prompt: id, handle: decision.handle, approve: true, choices: { alwaysAllow: false }, world };
+    if (!send) return { prompt: id, handle: decision.handle, approve: true, choices: { alwaysAllow: false }, world };
+    // The fee the sheet showed, for the `{ send }` or `{ device }` it leads
+    // to; "Always allow" never ticked.
+    entry.approvedFee = shown.view.fee;
+    entry.remember = false;
+    return {
+      prompt: id,
+      handle: decision.handle,
+      approve: true,
+      choices: { alwaysAllow: false, feeAcknowledged: false },
+      world,
+    };
   }
 
   // A rule's unlock (APB-4b): the user's approve goes to the core as it is,
@@ -1131,7 +1190,7 @@ function createEip1193Relay(deps = {}) {
     // the record (`nameHolds`' option), as on main's own route: a refusal
     // answers 4100 itself, and once a send that passed main's gate has gone
     // out, its hash is the page's even if the name moves after it.
-    if (!((await context.nameHolds()) && context.holdsKey())) {
+    if (!(await sendHolds(context))) {
       entry.override = { ...NO_ADDRESS };
       return { prompt: id, closed: 'cancelled' };
     }

@@ -51,6 +51,13 @@
  * nothing of a payment made could pay again); a write under the key after it
  * (the last use, a device's rule) waits on the name again.
  *
+ * For a send the Agent's sheet approved, in a tab it holds (design 0012,
+ * "The Agent's answer", A7-6), main also checks that the Agent still holds
+ * the tab, where the agent's own route checked it: in the send's turn just
+ * before the signature, as the signer's last step right before the core or
+ * the device is asked (`beforeSign`), and after the signer's wait before the
+ * signed bytes are recorded or sent. A Safe's is never the sheet's (A7-3).
+ *
  * The token is a bearer secret: it goes only to the core's spend or
  * signature, is never logged or put in an error, and never reaches a
  * renderer. Main discards it once the step ends, spent or not.
@@ -78,6 +85,11 @@ const RULE_GONE = Object.freeze({
   message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules",
 });
 const ACCOUNT_GONE = Object.freeze({ code: INTERNAL_ERROR_CODE, message: 'The connected account is no longer available' });
+// Custody ended after the sheet's approve (A7-6), in the agent route's words.
+const CUSTODY_LOST = Object.freeze({
+  code: INTERNAL_ERROR_CODE,
+  message: 'Signing was not confirmed: the Agent no longer holds this tab',
+});
 // The core's refusals of a rule's signature that mean the rule no longer
 // answers it. The reference sent a fee or a rate the core no longer allowed
 // to the prompt; after `{ send }` the core's request is over, so the page
@@ -204,11 +216,6 @@ function txOf(params) {
     data,
     gas: quantityOf(raw.gas, 'gas'),
   };
-}
-
-/** Main's form of a checked transaction, as the agent service gets it. */
-function agentTxOf(tx) {
-  return { to: tx.to, value: tx.value, data: tx.data, ...(tx.gas ? { gas: tx.gas } : {}) };
 }
 
 /** The record context of a dApp payment: an ERC-20 transfer's recipient and amount. */
@@ -480,17 +487,38 @@ function createCoreSends(shared, deps = {}) {
    * the core's signature, a spend then the device, the core's phone job).
    * The site's turn is waited for; just before the signature, and after a
    * signer's wait, the name, the grant and the document's key, in the same
-   * run as the effect.
+   * run as the effect. `agent`: the Agent's sheet approved it, so custody
+   * is read there too, and as the signer's last step (A7-6).
    */
-  async function confirmed(context, { account, type, tx, confirmation, remember }) {
+  async function confirmed(context, { account, type, tx, confirmation, remember, agent = false }) {
     const { requester, signal } = context;
+    // The Agent still holds the tab, read now; unknown counts as lost.
+    const agentHolds = () => {
+      try {
+        return context.pageContext().agent === true;
+      } catch {
+        return false;
+      }
+    };
     const stillHeld = (spending) => async (run) => {
       if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
       if (!grantExposes(requester.key, account)) throw withdrawn(error(NOT_CONNECTED));
       if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
+      if (agent && !agentHolds()) throw withdrawn(error(CUSTODY_LOST));
       if (spending) context.traceCoreToken?.('spent', confirmation.kind);
       return run();
     };
+    // The signer's last step, after its own waits (the fee, the nonce, a
+    // device's spend), right before the core or the device is asked: a
+    // refusal the signers pass on unchanged (`SIGNING_NOT_CONFIRMED`), its
+    // message the page's.
+    const beforeSign = agent
+      ? async () => {
+          if (!agentHolds()) {
+            throw Object.assign(new Error(CUSTODY_LOST.message), { code: NOT_CONFIRMED, answer: error(CUSTODY_LOST) });
+          }
+        }
+      : null;
     let coreRule = null;
     // A Ledger's finalize receipt, erased when the request ends before the
     // flow does, as on main's own route.
@@ -516,6 +544,7 @@ function createCoreSends(shared, deps = {}) {
             afterSignature: stillHeld(false),
             authorized: () => ({
               confirmation,
+              ...(beforeSign ? { beforeSign } : {}),
               onRule: (rule) => {
                 coreRule = rule;
               },
@@ -536,6 +565,11 @@ function createCoreSends(shared, deps = {}) {
       if (remember && type === 'ledger') await rememberDeviceSend(context, account, sent, () => receipt);
       else if (remember && type === 'remote' && !coreRule) reportPhoneRuleWaits(requester.key, sent);
       else if (remember) reportRule(requester.key, coreRule);
+      // The payment's record, for the Agent's receipt only: main's relay
+      // keeps it from the page (`page-eip1193.js`).
+      if (agent && sent?.paymentId !== undefined && sent.paymentId !== null) {
+        return { result: sent.hash, paymentId: sent.paymentId };
+      }
       return { result: sent.hash };
     } finally {
       signal.removeEventListener('abort', eraseReceipt);
@@ -618,9 +652,10 @@ function createCoreSends(shared, deps = {}) {
    * A `{ send }` the relay checked against its request: `{ kind, account,
    * tx, handle, token, remember }` for an approved send, or `{ kind,
    * account, tx, standing: true }` for a rule's. `page` is the PageContext
-   * main sent the request under.
+   * main sent the request under; `agent`, that the Agent's sheet approved
+   * it (A7-6).
    */
-  async function pay(context, send, page) {
+  async function pay(context, send, page, { agent = false } = {}) {
     const account = await listed(send.account);
     if (!account || !VAULT_TYPES.has(account.type)) {
       discard(send.token);
@@ -633,6 +668,7 @@ function createCoreSends(shared, deps = {}) {
       tx: send.tx,
       confirmation: { token: send.token, kind: send.kind, handle: send.handle, page },
       remember: send.remember === true,
+      agent: agent === true,
     });
   }
 
@@ -759,9 +795,10 @@ function createCoreSends(shared, deps = {}) {
   /**
    * A device's send, from a `{ device }` the relay checked against its
    * request: `{ type, kind, account, payload, handle, token, remember }`,
-   * and `page`, the PageContext main sent the request under.
+   * `page`, the PageContext main sent the request under, and `agent`, that
+   * the Agent's sheet approved it (A7-6).
    */
-  async function device(context, checked, page) {
+  async function device(context, checked, page, { agent = false } = {}) {
     const account = await listed(checked.account);
     if (!account || account.type !== checked.type) {
       discard(checked.token);
@@ -782,10 +819,11 @@ function createCoreSends(shared, deps = {}) {
         page,
       },
       remember: checked.remember === true,
+      agent: agent === true,
     });
   }
 
   return { pay, device, discard };
 }
 
-module.exports = { createCoreSends, mainTxOf, sendDappPayment, txOf, agentTxOf, selectorOf };
+module.exports = { createCoreSends, mainTxOf, sendDappPayment, txOf, selectorOf };

@@ -182,7 +182,6 @@ describeIfBinary('page requests through the real freedom-cored\'s eip1193.reques
         relay: env.relay,
         identityWalletEnabled: () => true,
         permissionsLoaded: async () => {},
-        agentWalletRequest: async () => ({ handled: false }),
       }),
       setTimer: () => ({}),
       clearTimer: () => {},

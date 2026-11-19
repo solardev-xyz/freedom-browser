@@ -78,11 +78,13 @@ describe('Freedom agent runtime', () => {
     expect(unregister).toHaveBeenCalledTimes(1);
   });
 
-  // freedom-core design 0011, PRQ-4: main offers a page's connect from a tab
-  // the agent may hold to the agent service, by the guest it attested.
-  test('a page request main attested reaches the agent service for the tab bound to its guest, only while Agent is on', async () => {
+  // freedom-core design 0012, APB-5: the identity core's prompt for a
+  // page's request in a tab the agent may hold goes to the agent service,
+  // by the guest main attested; the agent's own route for the request
+  // itself is gone.
+  test("the core's prompt for a page request main attested reaches the agent service for the tab bound to its guest, only while Agent is on", async () => {
     const { loadSettings } = require('../settings-store');
-    const service = { handleWalletRequest: jest.fn(async () => ({ handled: true, result: ['0x1'] })), dispose: jest.fn() };
+    const service = { handleWalletPrompt: jest.fn(async () => ({ handled: true, decision: { approve: true, walletIndex: 0 } })), dispose: jest.fn() };
     FreedomAgentService.mockImplementation(() => service);
     registerFreedomAgentIpc.mockReturnValue(jest.fn());
     AgentManagedWorkspaceStore.mockImplementation(() => ({
@@ -108,18 +110,19 @@ describe('Freedom agent runtime', () => {
       isTrustedSender: jest.fn(),
       automationTabIdForGuest,
     });
-    const request = { method: 'eth_requestAccounts', params: [], chainId: 100 };
+    expect(runtime.handlePageWalletRequest).toBeUndefined();
+    const request = { kind: 'eth.connect', method: 'eth_requestAccounts', params: [], chainId: 100, view: { chain: { id: 100 } } };
     const pageRequest = { attested: { key: 'https://app.example', transportKey: 'https://app.example' }, signal: new AbortController().signal };
     loadSettings.mockReturnValue({ enableAi: false });
-    expect(await runtime.handlePageWalletRequest(11, request, pageRequest)).toEqual({ handled: false });
+    expect(await runtime.handlePageWalletPrompt(11, request, pageRequest)).toEqual({ handled: false });
     loadSettings.mockReturnValue({ enableAi: true });
-    expect(await runtime.handlePageWalletRequest(12, request, pageRequest)).toEqual({ handled: false });
-    expect(await runtime.handlePageWalletRequest(11, null, pageRequest)).toEqual({ handled: false });
+    expect(await runtime.handlePageWalletPrompt(12, request, pageRequest)).toEqual({ handled: false });
+    expect(await runtime.handlePageWalletPrompt(11, null, pageRequest)).toEqual({ handled: false });
     // Only a request main attested.
-    expect(await runtime.handlePageWalletRequest(11, request)).toEqual({ handled: false });
-    expect(service.handleWalletRequest).not.toHaveBeenCalled();
-    expect(await runtime.handlePageWalletRequest(11, request, pageRequest)).toEqual({ handled: true, result: ['0x1'] });
-    expect(service.handleWalletRequest).toHaveBeenCalledWith('tab_1', request, pageRequest);
+    expect(await runtime.handlePageWalletPrompt(11, request)).toEqual({ handled: false });
+    expect(service.handleWalletPrompt).not.toHaveBeenCalled();
+    expect(await runtime.handlePageWalletPrompt(11, request, pageRequest)).toEqual({ handled: true, decision: { approve: true, walletIndex: 0 } });
+    expect(service.handleWalletPrompt).toHaveBeenCalledWith('tab_1', request, pageRequest);
     loadSettings.mockReturnValue({ enableAi: false });
   });
 

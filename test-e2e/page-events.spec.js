@@ -21,6 +21,8 @@ const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { serveCoreNaming, coreResolved } = require('./core-naming-fixtures');
+const { approvalsPage, chromeWindowId } = require('./approvals-fixtures');
+const { connectByPrompt } = require('./dapp-prompts');
 const { PROVENANCE_HEADER, encodeOnchainProvenance } = require('../src/main/onchain/onchain-app-protocol');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -289,8 +291,8 @@ const watchAll = (electronApp) =>
 const heard = (electronApp) => electronApp.evaluate(() => globalThis.__pe.heard.slice());
 const clearHeard = (electronApp) => electronApp.evaluate(() => (globalThis.__pe.heard.length = 0));
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
-const sentTo = async (electronApp, event) =>
-  (await trace(electronApp)).filter((e) => e.kind === 'event-sent' && e.event === event).map((e) => e.guest);
+const sentTo = async (electronApp, event, since = 0) =>
+  (await trace(electronApp)).slice(since).filter((e) => e.kind === 'event-sent' && e.event === event).map((e) => e.guest);
 const liveNavigation = (electronApp, guest) =>
   electronApp.evaluate(
     (_electron, id) => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.liveDocuments().find((doc) => doc.guest === id)?.navigation ?? null,
@@ -331,18 +333,6 @@ async function reloadInPlace(electronApp, win, guest, url) {
   ).toBe(processBefore);
 }
 
-const mainModule = (electronApp, file, method, ...args) =>
-  electronApp.evaluate((_electron, a) => {
-    return process.mainModule.require(`${a.root}/${a.file}`)[a.method](...a.args);
-  }, { root: repoRoot, file, method, args });
-// Written by the identity core, under the page's PageContext (design 0012,
-// APB-2).
-const pageOf = (key) => ({ origin: key, top_origin: key, frame: 1, navigation: 1, agent: false });
-const grant = (electronApp, key, walletIndex = 0) =>
-  mainModule(electronApp, 'src/main/wallet/dapp-permissions', 'grantPermission', key, walletIndex, 100, pageOf(key));
-// The agent's connect changes a grant's account this way.
-const changeAccount = (electronApp, key, walletIndex) =>
-  mainModule(electronApp, 'src/main/wallet/dapp-permissions', 'updateWalletIndex', key, walletIndex, pageOf(key));
 // The chrome's own disconnect, as the banner and the permissions screen run it.
 const disconnect = (win, key) =>
   win.evaluate(async (k) => (await import('./lib/wallet/dapp-connect.js')).disconnectDapp(k), key);
@@ -470,14 +460,20 @@ test('accountsChanged goes from main to every live page of the key when its gran
   const wallets = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets;
   const first = wallets.find((w) => w.index === 0).address;
   const second = wallets.find((w) => w.index === SECOND.index).address;
-  await grant(electronApp, KEY_A);
-  await grant(electronApp, KEY_B);
-  await grant(electronApp, NAME);
   await listen(electronApp, win);
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
+  // Each site connects from the identity core's own prompt, in its own
+  // visible tab, as a user connects it (design 0012: main writes no grant).
+  const connect = (url, account) => connectByPrompt(electronApp, (js) => inTab(win, url, js), { account, windowId, panel });
+  const showTab = (id) => win.locator(`[data-test="tab"][data-tab-id="${id}"]`).click();
+  const connected = (account) => [['accountsChanged', [account]], ['connect', { chainId: '0x64' }]];
 
   const one = await openHere(win, electronApp, `${KEY_A}/one`);
+  expect(await connect(`${KEY_A}/one`, 'Main Wallet')).toBe(first);
   const two = await newTab(win, electronApp, `${KEY_A}/two`);
   const other = await newTab(win, electronApp, `${KEY_B}/`);
+  expect(await connect(`${KEY_B}/`, 'Main Wallet')).toBe(first);
   // A DNS name over IPNS, connected under its name: the chrome binds it.
   await win.locator('[data-test="new-tab-btn"]').click();
   const address = win.locator('[data-test="address-input"]');
@@ -486,6 +482,7 @@ test('accountsChanged goes from main to every live page of the key when its gran
   await address.press('Enter');
   await ready(win, NAMED_URL);
   const named = await guestOf(win, NAMED_URL);
+  expect(await connect(NAMED_URL, 'Main Wallet')).toBe(first);
   await expect.poll(() => ask(win, NAMED_URL, 'eth_accounts')).toEqual({ ok: [first] });
   // The core checked the name, which serves the page's key.
   expect(await coreResolved(electronApp)).toContain(NAME);
@@ -495,40 +492,62 @@ test('accountsChanged goes from main to every live page of the key when its gran
   const hidden = await openHere(privateWin, electronApp, `${KEY_A}/secret`);
   expect(await inTab(privateWin, `${KEY_A}/secret`, 'typeof window.ethereum')).toBe('undefined');
   await watchAll(electronApp);
+  // What the connects told their own pages is page-connect.spec's: from
+  // here the pages keep only what follows.
+  for (const url of [`${KEY_A}/one`, `${KEY_B}/`, NAMED_URL]) await inTab(win, url, 'window.__events = []; true');
+  const since = (await trace(electronApp)).length;
+  const keyA = [[win, `${KEY_A}/one`], [win, `${KEY_A}/two`], [win2, `${KEY_A}/x`]];
 
-  // The grant's account changes (as the agent's connect changes it): every
-  // live page of the key, in both windows, hears the new account.
-  await changeAccount(electronApp, KEY_A, SECOND.index);
-  for (const [w, url] of [[win, `${KEY_A}/one`], [win, `${KEY_A}/two`], [win2, `${KEY_A}/x`]]) {
-    await expect.poll(() => eventsOf(w, url)).toEqual([['accountsChanged', [second]]]);
-  }
+  // The grant's account changes: the chrome's disconnect, and a connect
+  // again with the other account from the site's prompt (nothing else moves
+  // a grant's account since the Agent's sheet answers the core's own
+  // prompts, design 0012 A7-1). Every live page of the key, in both
+  // windows, hears both, and the page that asked its connect too.
+  await disconnect(win, KEY_A);
+  for (const [w, url] of keyA) await expect.poll(() => eventsOf(w, url)).toEqual([['accountsChanged', []]]);
+  await showTab(1);
+  expect(await connect(`${KEY_A}/one`, SECOND.name)).toBe(second);
+  const moved = [['accountsChanged', []], ['accountsChanged', [second]]];
+  await expect.poll(() => eventsOf(win, `${KEY_A}/one`)).toEqual([['accountsChanged', []], ...connected(second)]);
+  for (const [w, url] of keyA.slice(1)) await expect.poll(() => eventsOf(w, url)).toEqual(moved);
 
   // The chrome's disconnect revokes it: main tells every live page of the
   // key, and the chrome tells none.
   await disconnect(win, KEY_A);
-  for (const [w, url] of [[win, `${KEY_A}/one`], [win, `${KEY_A}/two`], [win2, `${KEY_A}/x`]]) {
-    await expect.poll(() => eventsOf(w, url)).toEqual([['accountsChanged', [second]], ['accountsChanged', []]]);
+  await expect
+    .poll(() => eventsOf(win, `${KEY_A}/one`))
+    .toEqual([['accountsChanged', []], ...connected(second), ['accountsChanged', []]]);
+  for (const [w, url] of keyA.slice(1)) {
+    await expect.poll(() => eventsOf(w, url)).toEqual([...moved, ['accountsChanged', []]]);
   }
   expect(await ask(win, `${KEY_A}/one`, 'eth_accounts')).toEqual({ ok: [] });
   // Not another key's page, nor the name's, nor the private window's page,
   // which never said hello.
   expect(await eventsOf(win, `${KEY_B}/`)).toEqual([]);
   expect(await eventsOf(win, NAMED_URL)).toEqual([]);
-  expect((await sentTo(electronApp, 'accountsChanged')).sort()).toEqual([one, two, elsewhere, one, two, elsewhere].sort());
+  expect((await sentTo(electronApp, 'accountsChanged', since)).sort()).toEqual(
+    [one, two, elsewhere, one, two, elsewhere, one, two, elsewhere].sort()
+  );
+  expect(await sentTo(electronApp, 'connect', since)).toEqual([one]);
   expect(await liveNavigation(electronApp, hidden)).toBeNull();
   // Main frames only, each with its nonce: the iframe in page two heard
   // nothing.
   const reports = await heard(electronApp);
   expect(reports.filter((r) => !r.top || r.guest === other || r.guest === named || r.guest === hidden)).toEqual([]);
-  expect(reports.every((r) => r.nonce && r.provider === 'ethereum' && r.event === 'accountsChanged')).toBe(true);
-  expect(reports).toHaveLength(6);
+  expect(reports.every((r) => r.nonce && r.provider === 'ethereum')).toBe(true);
+  expect(reports.map((r) => r.event).sort()).toEqual([...Array(9).fill('accountsChanged'), 'connect']);
 
-  // The name's grant changes while the name answers its IPNS key: main
-  // resolves it again, then tells the page.
+  // The name's grant goes while the name answers its IPNS key: main
+  // resolves it again, then tells the page. Connected again with the other
+  // account, from its tab's prompt, the page hears that too.
   await electronApp.evaluate(() => (globalThis.__resolved = []));
-  await changeAccount(electronApp, NAME, SECOND.index);
-  await expect.poll(() => eventsOf(win, NAMED_URL)).toEqual([['accountsChanged', [second]]]);
+  await disconnect(win, NAME);
+  await expect.poll(() => eventsOf(win, NAMED_URL)).toEqual([['accountsChanged', []]]);
   expect(await electronApp.evaluate(() => globalThis.__resolved.slice())).toEqual([NAME]);
+  await showTab(4);
+  expect(await connect(NAMED_URL, SECOND.name)).toBe(second);
+  const namedHeard = [['accountsChanged', []], ...connected(second)];
+  await expect.poll(() => eventsOf(win, NAMED_URL)).toEqual(namedHeard);
   // The name moves to other content; its grant is then revoked: main
   // resolves the name, finds it moved, and sends nothing.
   await electronApp.evaluate((_electron, key) => {
@@ -540,33 +559,35 @@ test('accountsChanged goes from main to every live page of the key when its gran
     .poll(async () => (await trace(electronApp)).filter((e) => e.kind === 'event-refused' && e.guest === named).map((e) => [e.event, e.reason]))
     .toEqual([['accountsChanged', 'name-moved']]);
   expect(await electronApp.evaluate(() => globalThis.__resolved.slice())).toEqual([NAME]);
-  expect(await eventsOf(win, NAMED_URL)).toEqual([['accountsChanged', [second]]]);
-  expect((await heard(electronApp)).filter((r) => r.guest === named)).toHaveLength(1);
+  expect(await eventsOf(win, NAMED_URL)).toEqual(namedHeard);
+  expect((await heard(electronApp)).filter((r) => r.guest === named)).toHaveLength(namedHeard.length);
 
   // PRQ-2's race: main checks page one's record, its send is held, page one
   // reloads in its process, and the send goes to the new document, whose
   // preload drops it.
-  await grant(electronApp, KEY_A);
+  await showTab(1);
+  expect(await connect(`${KEY_A}/one`, 'Main Wallet')).toBe(first);
+  const elsewhereHeard = [...moved, ['accountsChanged', []], ['accountsChanged', [first]]];
+  await expect.poll(() => eventsOf(win2, `${KEY_A}/x`)).toEqual(elsewhereHeard);
   const oldNavigation = await liveNavigation(electronApp, one);
+  const sentToOld = async () =>
+    (await trace(electronApp)).filter((e) => e.kind === 'event-sent' && e.guest === one && e.navigation === oldNavigation).length;
+  const heardByOne = async () => (await heard(electronApp)).filter((r) => r.guest === one).length;
+  const sentBefore = await sentToOld();
+  const heardBefore = await heardByOne();
   await holdNextSendTo(electronApp, one);
   await disconnect(win, KEY_A);
   await expect.poll(() => electronApp.evaluate(() => typeof globalThis.__pe.release)).toBe('function');
   await reloadInPlace(electronApp, win, one, `${KEY_A}/one`);
   await releaseSend(electronApp);
-  await expect
-    .poll(async () => (await trace(electronApp)).filter((e) => e.kind === 'event-sent' && e.guest === one && e.navigation === oldNavigation).length)
-    .toBe(3);
-  await expect.poll(() => eventsOf(win2, `${KEY_A}/x`)).toEqual([
-    ['accountsChanged', [second]],
-    ['accountsChanged', []],
-    ['accountsChanged', []],
-  ]);
-  await expect.poll(async () => (await heard(electronApp)).filter((r) => r.guest === one).length).toBe(3);
+  await expect.poll(sentToOld).toBe(sentBefore + 1);
+  await expect.poll(() => eventsOf(win2, `${KEY_A}/x`)).toEqual([...elsewhereHeard, ['accountsChanged', []]]);
+  await expect.poll(heardByOne).toBe(heardBefore + 1);
   expect(await eventsOf(win, `${KEY_A}/one`)).toEqual([]);
   // The new document hears the next change.
-  await grant(electronApp, KEY_A);
+  expect(await connect(`${KEY_A}/one`, 'Main Wallet')).toBe(first);
   await disconnect(win, KEY_A);
-  await expect.poll(() => eventsOf(win, `${KEY_A}/one`)).toEqual([['accountsChanged', []]]);
+  await expect.poll(() => eventsOf(win, `${KEY_A}/one`)).toEqual([...connected(first), ['accountsChanged', []]]);
   await win2.close();
   await privateWin.close();
 });

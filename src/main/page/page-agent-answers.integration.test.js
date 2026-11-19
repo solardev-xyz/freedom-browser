@@ -121,6 +121,9 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
   let vaultBackend;
   let relay;
   let env;
+  // Whether this core offers "Always allow" on a prompt in custody: see
+  // `aprSevenCore`.
+  let custodyOffersAlways;
   // Test seams on main's handlers for the core's requests: `before` runs
   // first, `cross` may change main's answer; `answers` keeps main's answers
   // to `approval.request`.
@@ -221,7 +224,38 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
     });
     await core.start();
     await vaultBackend.importVault('testpass1', ABANDON);
+    custodyOffersAlways = !(await aprSevenCore());
   });
+
+  /**
+   * Whether the core has APR-7 (freedom-core #409): it offers a prompt in
+   * custody (`agent: true`) `alwaysAllow: [false]` only, where cored 0.21.0
+   * offers `[false, true]` and the sheet never picks `true`. Both report
+   * 0.21.0 in their hello, so the version can't tell them apart; APR-7 also
+   * refuses main's own page `approval.issue` (`forbidden`), which 0.21.0
+   * still takes, and that tells them apart. A probe token 0.21.0 mints is
+   * discarded at once.
+   */
+  async function aprSevenCore() {
+    const site = key('9');
+    const request = sc.corePayload('sign-message', 0, MESSAGE);
+    const params = { kind: 'sign-message', payload: request.payload, handle: 'f'.repeat(64) };
+    if (request.account !== undefined) params.account = request.account;
+    try {
+      const { token } = await vaultBackend.approval.issue(params, {
+        origin: site,
+        top_origin: site,
+        frame: 1,
+        navigation: 1,
+        agent: false,
+      });
+      await sc.discardConfirmation(token);
+      return false;
+    } catch (err) {
+      if (err?.code === 'forbidden') return true;
+      throw err;
+    }
+  }
 
   afterAll(async () => {
     await core.stop();
@@ -255,7 +289,6 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
         relay,
         identityWalletEnabled: () => true,
         permissionsLoaded: async () => {},
-        agentWalletRequest: async () => ({ handled: false }),
         deviceDeps: {
           walletList: async () => wallets,
           getSigner: (_index, authorized) => ledger(authorized),
@@ -358,8 +391,9 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
       kind: 'eth.sign',
       view: { method: 'personal_sign', account: { index: 0, address: VAULT_ACCOUNT }, message: { hex: MESSAGE, rawHash: false } },
     });
-    // A core before APR-7 offers "Always allow" in custody; the sheet never picks it.
-    expect(seams.asked[0].choices).toEqual({ alwaysAllow: [false, true] });
+    // A core before APR-7 offers "Always allow" in custody, and the sheet
+    // never picks it; from APR-7 the core offers only `false` there.
+    expect(seams.asked[0].choices).toEqual({ alwaysAllow: custodyOffersAlways ? [false, true] : [false] });
     expect(seams.answers[0]).toMatchObject({
       prompt: seams.asked[0].prompt,
       handle: expect.stringMatching(HANDLE),

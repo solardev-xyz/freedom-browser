@@ -1133,7 +1133,7 @@ class FreedomAgentService {
     this.cancelAgentDownloads = options.cancelAgentDownloads || (() => 0);
     if (
       options.walletController !== undefined &&
-      typeof options.walletController?.handleRequest !== 'function'
+      typeof options.walletController?.answerPrompt !== 'function'
     ) {
       throw new TypeError('FreedomAgentService requires a valid Agent wallet controller');
     }
@@ -1699,45 +1699,12 @@ class FreedomAgentService {
   }
 
   /**
-   * A page's wallet request from a tab of the active run. `pageRequest`,
-   * from main for a request it attested (freedom-core design 0011, PRQ-4):
-   * `attested` (the key the request acts under, and the page's transport
-   * key), `signal` (aborted when main answers the request: its approval is
-   * withdrawn), `beforeEffect`/`effectAllowed`, which the effect waits on,
-   * `pageToken`, main's issuer for the send's page-kind token, and
-   * `pageContext`, the document's PageContext, under which the identity
-   * core writes the grant's last use (freedom-core design 0012, APB-2).
-   * Only a send comes here (APB-5a: a connect or a signature is the core's,
-   * its prompt answered through `handleWalletPrompt`).
-   */
-  async handleWalletRequest(tabId, payload, pageRequest = null) {
-    const run = this.#walletRunFor(tabId);
-    if (!run) return { handled: false };
-    const pageState = this.controller.getPageState?.(tabId);
-    if (!pageState?.url) return { handled: false };
-
-    const delegationSignal = run.scopedController?.getTabController?.(tabId)?.delegationSignal;
-    const signal = pageRequest?.signal
-      ? AbortSignal.any([delegationSignal || run.workspaceAbortController?.signal, pageRequest.signal].filter(Boolean))
-      : delegationSignal;
-    const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload, signal, pageRequest);
-    // The run and its browser actions wait for the whole request, the
-    // Agent's steering after it included; the page's answer doesn't. From
-    // the controller's effect to main's answer nothing waits on anything
-    // but this chain, so main's deadline or the page's close can't land
-    // between an effect and its answer (freedom-core design 0011, PRQ-6).
-    const whole = handling.then(({ steering }) => steering, () => undefined);
-    run.pendingWalletRequests.add(whole);
-    run.scopedController?.setExternalApprovalBarrier?.(whole);
-    void whole.finally(() => run.pendingWalletRequests.delete(whole));
-    return (await handling).answer;
-  }
-
-  /**
-   * The identity core's prompt for a page's connect or signature in a tab
-   * of the active run (freedom-core design 0012, "The Agent's answer",
-   * APB-5a): the Agent's sheet decides, and main answers the core with the
-   * decision. `prompt` is main's (`{ kind, method, params, chainId, view }`,
+   * The identity core's prompt for a page's connect, signature or send in a
+   * tab of the active run (freedom-core design 0012, "The Agent's answer",
+   * APB-5): the Agent's sheet decides, and main answers the core with the
+   * decision. A page's wallet request no longer comes here itself: the
+   * agent's own route, which answered it before the core was asked, was
+   * removed in APB-5b. `prompt` is main's (`{ kind, method, params, chainId, view }`,
    * the core's view); `pageRequest` has `attested`, `signal` (aborted when
    * the handle main opened for the decision closes: the sheet is
    * withdrawn) and `answered`, the page's answer once main gave it, which
@@ -1747,7 +1714,7 @@ class FreedomAgentService {
    */
   async handleWalletPrompt(tabId, prompt, pageRequest = null) {
     const run = this.#walletRunFor(tabId);
-    if (!run || !pageRequest?.attested || typeof this.walletController.answerPrompt !== 'function') {
+    if (!run || !pageRequest?.attested) {
       return { handled: false };
     }
     const pageState = this.controller.getPageState?.(tabId);
@@ -1757,8 +1724,9 @@ class FreedomAgentService {
       ? AbortSignal.any([delegationSignal || run.workspaceAbortController?.signal, pageRequest.signal].filter(Boolean))
       : delegationSignal;
     const handling = this.#handleActiveWalletPrompt(run, tabId, pageState, prompt, signal, pageRequest);
-    // As for a request: the run waits for the whole of it, the page's answer
-    // and the steering after it included; main's answer to the core doesn't.
+    // The run and its browser actions wait for the whole of it, the page's
+    // answer and the Agent's steering after it included; main's answer to
+    // the core doesn't (freedom-core design 0011, PRQ-6).
     const whole = handling.then(({ finished }) => finished, () => undefined);
     run.pendingWalletRequests.add(whole);
     run.scopedController?.setExternalApprovalBarrier?.(whole);
@@ -3354,48 +3322,6 @@ class FreedomAgentService {
       ? { handled: true, error: outcome.error }
       : { handled: true, decision: outcome.decision };
     return { answer, finished };
-  }
-
-  async #handleActiveWalletRequest(run, tabId, pageState, payload, signal, pageRequest = null) {
-    const activity = this.#startWalletActivity(run, tabId, pageState);
-    const outcome = await this.walletController.handleRequest(
-      {
-        tabId,
-        pageUrl: pageState.url,
-        conversationId: run.conversationId,
-        requestApproval: (request) => this.#requestApproval(run, request, null, signal),
-        ...(pageRequest?.attested && {
-          attested: pageRequest.attested,
-          beforeEffect: pageRequest.beforeEffect,
-          effectAllowed: pageRequest.effectAllowed,
-          pageToken: pageRequest.pageToken,
-          pageContext: pageRequest.pageContext,
-        }),
-      },
-      payload
-    );
-    const succeeded = outcome?.handled === true && !outcome.error;
-    const event = outcome?.receipt
-      ? { status: 'completed', wallet: outcome.receipt.wallet }
-      : outcome?.errorCode === ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
-        ? {
-            status: 'declined',
-            method: typeof payload?.method === 'string' ? payload.method : '',
-            origin: getPermissionKey(pageState.url) || '',
-          }
-        : null;
-    // Started now, and not waited on before the page's answer
-    // (`handleWalletRequest`).
-    const steering = this.#finishWalletActivity(run, activity, succeeded, outcome?.errorCode, event);
-
-    return {
-      answer: {
-        handled: outcome?.handled === true,
-        ...(outcome?.result !== undefined && { result: outcome.result }),
-        ...(outcome?.error && { error: outcome.error }),
-      },
-      steering,
-    };
   }
 
   async #requestApproval(run, request, reviewerRuntime = null, signal = null) {

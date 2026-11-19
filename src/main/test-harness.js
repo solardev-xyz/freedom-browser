@@ -549,6 +549,12 @@ function resetFixtures() {
   }
 }
 
+// The Agent wallet controller's chain and send stand-ins, for its own
+// direct transfer (`wallet_transfer`), which still quotes and sends through
+// the controller. An Agent-held page's send doesn't come here since APB-5b:
+// the identity core quotes it and page-core-sends sends it, and a spec
+// stands in for those where they read the chain (the chain shell's hop,
+// `__FREEDOM_TEST_CHAIN__`) and send (tx-recorder).
 function createAgentWalletTestOptions() {
   if (!TEST_MODE_ENABLED) return undefined;
   const gnoAddress = '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb';
@@ -1368,6 +1374,10 @@ function installTestHarness({ defaultSession, agentRuntime }) {
   // with its own naming (0012 APR-5f), and its reads come to main's naming
   // shell.
   globalThis.__FREEDOM_TEST_NAMING__ = require('./core/naming-shell').enableNamingShellTestHooks();
+  // The chain thread's exchanges, likewise: the identity core prepares a
+  // page's send itself (0012 APB-4c), so a spec that sends answers the
+  // core's estimate and fee quote here.
+  globalThis.__FREEDOM_TEST_CHAIN__ = require('./core/chain-shell').enableChainShellTestHooks();
   exposeGlobalShim(agentRuntime);
   return true;
 }

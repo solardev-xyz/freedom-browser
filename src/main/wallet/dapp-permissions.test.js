@@ -27,7 +27,6 @@ jest.mock('../core/vault-backend', () => ({ vaultBackend: { approval: mockApprov
 
 const {
   getPermission,
-  grantPermission,
   revokePermission,
   revokePermissionsForWalletIndex,
   getAllPermissions,
@@ -35,11 +34,11 @@ const {
   getSigningAutoApprove,
   setSigningAutoApprove,
   updateLastUsed,
-  updateWalletIndex,
   onGrantChanged,
   attachCore,
   whenLoaded,
   refreshPermissions,
+  refreshGrant,
   registerDappPermissionsIpc,
   _resetCache,
 } = require('./dapp-permissions');
@@ -57,7 +56,28 @@ const pageFor = (key, extra = {}) => ({
   agent: false,
   ...extra,
 });
-const grant = (key, walletIndex = 0, chainId = 1) => grantPermission(key, walletIndex, chainId, pageFor(key));
+// A connect the core wrote from an approve answer to its own prompt (design
+// 0012, APB-4 and APB-5; main writes none), and main's copy reading it.
+const grant = async (key, walletIndex = 0, chainId = 1) => {
+  const origin = sharedOriginUtils.normalizeOrigin(key);
+  const before = mockApprovals.dapp.entry(origin);
+  mockApprovals.dapp.seed(origin, {
+    origin,
+    connectedAt: before?.connectedAt ?? 1,
+    lastUsed: before?.lastUsed ?? 1,
+    walletIndex,
+    chainId,
+    autoApprove: before?.autoApprove ?? { signing: false, transactions: [] },
+  });
+  await refreshGrant(origin);
+  return getPermission(origin);
+};
+// "Always allow" on the core's signing prompt: Q9's limited rule, which the
+// core writes, and main's copy reading it.
+const signingRule = async (key) => {
+  mockApprovals.dapp.entries.get(key).autoApprove.limited = { signing: { grantedAt: 1 }, transactions: [] };
+  await refreshGrant(key);
+};
 const storage = (applied) =>
   Object.assign(new Error('The permission file could not be written'), { code: 'storage', data: { store: 'dapp', applied } });
 
@@ -120,52 +140,42 @@ describe('dapp-permissions — origin normalization consistency', () => {
 });
 
 describe('dapp-permissions — every write goes to the identity core (APB-2)', () => {
-  test('a connect is written by the core under the page, for its own key, and read back', async () => {
+  // APR-7 refuses `approval.grant` for the dApp store under `page`: main
+  // sends none (APB-5b). A connect, its account and a signing rule are the
+  // core's, from an approve answer to its own prompt.
+  test('main writes no connect, account or signing rule of a page: none under `page`, none at all', async () => {
+    const permissions = require('./dapp-permissions');
+    expect(permissions.grantPermission).toBeUndefined();
+    expect(permissions.updateWalletIndex).toBeUndefined();
     const written = await grant(SITE, 3, 100);
     expect(written).toMatchObject({ origin: SITE, walletIndex: 3, chainId: 100 });
-    expect(lastWrite()).toEqual({
-      method: 'approval.grant',
-      params: { store: 'dapp', change: { op: 'connect', account: 3, chain_id: 100 } },
-      page: pageFor(SITE),
-    });
+    for (const page of [pageFor(SITE), null, undefined]) {
+      expect(await setSigningAutoApprove(SITE, true, page)).toBe(false);
+    }
+    expect(writes()).toEqual([]);
+    expect(mockApprovals.calls.some((call) => call.method === 'approval.grant')).toBe(false);
     expect(getPermission(SITE)).toEqual(mockApprovals.dapp.entry(SITE));
     expect(getAllPermissions()).toEqual([mockApprovals.dapp.entry(SITE)]);
   });
 
-  test("a page's write for another key than its own is refused before the core is asked", async () => {
-    await expect(grantPermission(SITE, 0, 1, pageFor('https://other.example'))).rejects.toThrow(/own page/);
-    await expect(grantPermission(SITE, 0, 1, null)).rejects.toThrow(/own page/);
-    await expect(updateWalletIndex(SITE, 0, pageFor('https://other.example'))).rejects.toThrow(/own page/);
-    expect(await setSigningAutoApprove(SITE, true, null)).toBe(false);
+  test("a page's last use for another key than its own is refused before the core is asked", async () => {
+    expect(await updateLastUsed(SITE, 1, pageFor('https://other.example'))).toBe(false);
     expect(await updateLastUsed(SITE, 1, null)).toBe(false);
     expect(writes()).toEqual([]);
   });
 
-  test('the account, the last use and the chain: under the page', async () => {
+  test('the last use and the chain: under the page', async () => {
     await grant(SITE, 0, 1);
-    expect(await updateWalletIndex(SITE, 4, pageFor(SITE))).toBe(true);
-    expect(getPermission(SITE).walletIndex).toBe(4);
     expect(await updateLastUsed(SITE, 10, pageFor(SITE))).toBe(true);
-    expect(mockApprovals.calls.slice(-2).map(({ method, params, page }) => ({ method, params, page }))).toEqual([
-      { method: 'approval.grant', params: { store: 'dapp', change: { op: 'account', account: 4 } }, page: pageFor(SITE) },
+    expect(mockApprovals.calls.slice(-1).map(({ method, params, page }) => ({ method, params, page }))).toEqual([
       { method: 'approval.touch', params: { store: 'dapp', chain_id: 10 }, page: pageFor(SITE) },
     ]);
     expect(mockApprovals.dapp.entry(SITE).chainId).toBe(10);
   });
 
-  test('"Always allow" for signing is Q9\'s limited rule, written under the page; turning it off is the chrome\'s', async () => {
+  test("a signing rule the core wrote is turned off as the chrome's", async () => {
     await grant(SITE);
-    expect(await setSigningAutoApprove(SITE, true, pageFor(SITE))).toBe(true);
-    expect(lastWrite()).toMatchObject({
-      method: 'approval.grant',
-      params: { store: 'dapp', change: { op: 'signing' } },
-      page: pageFor(SITE),
-    });
-    expect(mockApprovals.dapp.entry(SITE).autoApprove).toEqual({
-      signing: false,
-      transactions: [],
-      limited: { signing: { grantedAt: expect.any(Number) }, transactions: [] },
-    });
+    await signingRule(SITE);
     expect(await setSigningAutoApprove(SITE, false)).toBe(true);
     expect(lastWrite()).toEqual({
       method: 'approval.revoke',
@@ -173,26 +183,6 @@ describe('dapp-permissions — every write goes to the identity core (APB-2)', (
       page: 'chrome',
     });
     expect(mockApprovals.dapp.entry(SITE).autoApprove.limited.signing).toBeNull();
-  });
-
-  // The core answers `{ grant: null }` when the key holds no grant (removed
-  // behind main's copy): nothing was written, so the change fails, as a
-  // connect not recorded does, and main's copy drops the stale grant.
-  test('an account change the core answers with no grant rejects, and main\'s copy drops the grant', async () => {
-    await grant(SITE, 0, 1);
-    mockApprovals.dapp.entries.delete(SITE);
-    await expect(updateWalletIndex(SITE, 4, pageFor(SITE))).rejects.toThrow('The account change was not recorded');
-    expect(lastWrite()).toEqual({
-      method: 'approval.grant',
-      params: { store: 'dapp', change: { op: 'account', account: 4 } },
-      page: pageFor(SITE),
-    });
-    expect(getPermission(SITE)).toBeNull();
-    expect(logs.error).toHaveBeenCalledWith(expect.stringContaining('the core holds no grant'));
-    // A reply with nothing in it is no write either.
-    await grant(SITE, 0, 1);
-    jest.spyOn(mockApprovals.approval, 'grant').mockResolvedValueOnce({});
-    await expect(updateWalletIndex(SITE, 4, pageFor(SITE))).rejects.toThrow('The account change was not recorded');
   });
 
   test('a contract rule is removed by its call, today\'s and the limited one, as the chrome\'s', async () => {
@@ -245,9 +235,9 @@ describe('dapp-permissions — every write goes to the identity core (APB-2)', (
     );
     registerDappPermissionsIpc();
     await grant(SITE);
-    await updateWalletIndex(SITE, 1, pageFor(SITE));
+    await grant(SITE, 1);
     await updateLastUsed(SITE, 10, pageFor(SITE));
-    await setSigningAutoApprove(SITE, true, pageFor(SITE));
+    await signingRule(SITE);
     await setSigningAutoApprove(SITE, false);
     await removeTransactionAutoApprove(SITE, TOKEN, APPROVE, 100);
     await ipcHandlers['dapp:revoke-permission']({}, SITE);
@@ -258,31 +248,16 @@ describe('dapp-permissions — every write goes to the identity core (APB-2)', (
       for (const [file] of spy.mock.calls) expect(String(file)).not.toMatch(/dapp-permissions\.json/);
     }
     expect(writes().map((call) => call.method)).toEqual([
-      'approval.grant',
-      'approval.grant',
       'approval.touch',
-      'approval.grant',
       'approval.revoke',
       'approval.revoke',
       'approval.revoke',
-      'approval.grant',
       'approval.forget_account',
     ]);
   });
 });
 
 describe("dapp-permissions — a failed write, as the core reports it (design 0012, \"A failed write\")", () => {
-  test('a widening that failed is not applied: the connect rejects, and main\'s copy has no grant', async () => {
-    jest.spyOn(mockApprovals.approval, 'grant').mockRejectedValueOnce(storage(false));
-    await expect(grant(SITE)).rejects.toMatchObject({ code: 'storage' });
-    expect(getPermission(SITE)).toBeNull();
-    expect(logs.error).toHaveBeenCalledWith(expect.stringContaining('Failed to save permissions'), expect.anything());
-    // A rule that failed: not on.
-    await grant(SITE);
-    jest.spyOn(mockApprovals.approval, 'grant').mockRejectedValueOnce(storage(false));
-    expect(await setSigningAutoApprove(SITE, true, pageFor(SITE))).toBe(false);
-  });
-
   test('a narrowing that failed stands, not saved: the revoke holds in main\'s copy, logged as unsaved', async () => {
     await grant(SITE);
     jest.spyOn(mockApprovals.approval, 'revoke').mockRejectedValueOnce(storage(true));
@@ -304,12 +279,13 @@ describe("dapp-permissions — a failed write, as the core reports it (design 00
   });
 
   test('applied but not durable (`durable: false`) is warned about, and stands', async () => {
-    const original = mockApprovals.approval.grant;
-    jest.spyOn(mockApprovals.approval, 'grant').mockImplementationOnce(async (...args) => ({
+    await grant(SITE);
+    const original = mockApprovals.approval.touch;
+    jest.spyOn(mockApprovals.approval, 'touch').mockImplementationOnce(async (...args) => ({
       ...(await original(...args)),
       durable: false,
     }));
-    await grant(SITE);
+    expect(await updateLastUsed(SITE, 10, pageFor(SITE))).toBe(true);
     expect(getPermission(SITE)).not.toBeNull();
     expect(logs.warn).toHaveBeenCalledWith(expect.stringContaining('may not survive a power loss'));
   });
@@ -385,7 +361,7 @@ describe('dapp-permissions — the chrome writes no grant and sets no rule (0011
 
   test('dapp:set-signing-auto-approve is refused for setting a rule; clearing one is main\'s own', async () => {
     await grant(SITE);
-    await setSigningAutoApprove(SITE, true, pageFor(SITE));
+    await signingRule(SITE);
     for (const enabled of [true, 'yes', 1, undefined]) {
       expect(() => ipcHandlers['dapp:set-signing-auto-approve']({}, SITE, enabled)).toThrow(/signing prompt/);
     }
@@ -395,7 +371,7 @@ describe('dapp-permissions — the chrome writes no grant and sets no rule (0011
 
   test("the chrome's reads ask the core, as it holds the store now", async () => {
     await grant(SITE);
-    await setSigningAutoApprove(SITE, true, pageFor(SITE));
+    await signingRule(SITE);
     await updateLastUsed(SITE, 42, pageFor(SITE));
     const read = await ipcHandlers['dapp:get-permission']({}, SITE);
     expect(read).toEqual(mockApprovals.dapp.entry(SITE));
@@ -441,14 +417,14 @@ describe('dapp-permissions — a revoked grant or a changed account is told (001
 
   test('an account change is told with the new account, and only when it changes', async () => {
     await grant(SITE, 0);
-    await updateWalletIndex(SITE, 0, pageFor(SITE));
-    await updateWalletIndex(SITE, 3, pageFor(SITE));
+    await grant(SITE, 0);
+    await grant(SITE, 3);
     expect(told).toEqual([{ key: SITE, walletIndex: 3 }]);
   });
 
   test('a grant written, its rules and its last use are not told here', async () => {
     await grant(SITE, 0);
-    await setSigningAutoApprove(SITE, true, pageFor(SITE));
+    await signingRule(SITE);
     await updateLastUsed(SITE, 5, pageFor(SITE));
     expect(told).toEqual([]);
   });

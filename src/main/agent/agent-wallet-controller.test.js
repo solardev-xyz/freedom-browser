@@ -83,141 +83,7 @@ function createHarness(options = {}) {
   };
 }
 
-function request(method, params = []) {
-  return {
-    method,
-    params,
-    displayUrl: 'https://app.example/swap',
-    permissionKey: 'https://app.example',
-    chainId: 100,
-  };
-}
-
-function context(requestApproval = jest.fn(async () => 'approved')) {
-  return {
-    tabId: 'tab_test',
-    pageUrl: 'https://app.example/swap',
-    conversationId: 'conversation_test',
-    requestApproval,
-  };
-}
-
 const ADDRESS = '0x1111111111111111111111111111111111111111';
-
-// A page's request main attested, with the document's PageContext, under
-// which the identity core writes its grant's last use (freedom-core design
-// 0012, APB-2).
-const SITE_PAGE = Object.freeze({
-  origin: 'https://app.example',
-  top_origin: 'https://app.example',
-  frame: 1,
-  navigation: 1,
-  agent: true,
-});
-
-/**
- * Main's issuer for the Agent's decision (`page-requests.js` `agentToken`,
- * freedom-core design 0012): `mint` the request's page-kind token, `present`
- * it to the signature (main's checks, the live PageContext), `holds` reads
- * the decision again (the request, its document, the agent's custody),
- * `discard` it after. Each call is recorded in `calls`, in order;
- * `onPresent` and `onHolds` run as main's checks would, and may throw to
- * refuse.
- */
-function fakePageToken({ onPresent = null, onHolds = null } = {}) {
-  const calls = [];
-  let minted = 0;
-  return {
-    calls,
-    mint: jest.fn(async (kind, walletIndex, payload, options) => {
-      minted += 1;
-      calls.push(['mint', kind, walletIndex]);
-      return {
-        token: `token-${minted}`,
-        kind,
-        account: walletIndex,
-        handle: 'a'.repeat(64),
-        ...(kind === 'sign-typed-data' ? { hash: '0xboundhash' } : {}),
-        options,
-      };
-    }),
-    present: jest.fn((confirmation) => {
-      calls.push(['present', confirmation.token]);
-      onPresent?.(confirmation);
-      return { confirmation: { ...confirmation, page: { origin: 'https://app.example', agent: true } } };
-    }),
-    holds: jest.fn((confirmation) => {
-      calls.push(['holds', confirmation.token]);
-      onHolds?.(confirmation);
-    }),
-    discard: jest.fn((confirmation) => {
-      calls.push(['discard', confirmation?.token]);
-    }),
-  };
-}
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
-/**
- * A signer as `signers.js` runs one for the Agent's token (Codex on #1246):
- * its own wait (the address, the core's hash, a device's spend), which a
- * test holds (`reached` once it waits, `release` to go on), then the
- * caller's last check (`beforeSign`), then the core or the device, recorded
- * in `asked`.
- */
-function heldSigner() {
-  const reached = deferred();
-  const released = deferred();
-  const asked = [];
-  const step = (method, result) => async function signed(...args) {
-    reached.resolve();
-    await released.promise;
-    await this.authorized.beforeSign();
-    asked.push([method, ...args]);
-    return result;
-  };
-  return {
-    reached: reached.promise,
-    release: released.resolve,
-    asked,
-    getSigner: (index, authorized) => ({
-      authorized,
-      signMessage: step('signMessage', '0xsignature'),
-      signTypedData: step('signTypedData', '0xtyped'),
-      signTransaction: step('signTransaction', '0xsigned'),
-    }),
-  };
-}
-
-// The issuer's decision, which a test ends: `holds` then refuses.
-function custodyToken() {
-  const decision = { custody: true };
-  const pageToken = fakePageToken({
-    onHolds: () => {
-      if (!decision.custody) throw new Error('Signing was not confirmed: the Agent no longer holds this tab');
-    },
-  });
-  return { decision, pageToken };
-}
-
-// A page's request main attested, with its issuer for the Agent's decision.
-function attestedPage(requestApproval = jest.fn(async () => 'approved'), extra = {}) {
-  return {
-    ...context(requestApproval),
-    attested: { key: 'https://app.example', transportKey: 'https://app.example' },
-    beforeEffect: jest.fn(async () => true),
-    effectAllowed: jest.fn(() => true),
-    pageToken: fakePageToken(),
-    pageContext: () => SITE_PAGE,
-    ...extra,
-  };
-}
 
 describe('AgentWalletController', () => {
   describe('direct transfers', () => {
@@ -380,434 +246,8 @@ describe('AgentWalletController', () => {
   // its key, and the checks its effect waits on. A connect or a signature
   // in a tab the Agent holds goes to the identity core since APB-5a, whose
   // prompt the Agent's sheet answers (`answerPrompt`, below).
-  describe('a request main attested', () => {
-    const IPNS = 'ipns://k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
-    const PAGE = Object.freeze({ origin: 'example.com', top_origin: 'example.com', frame: 1, navigation: 2, agent: true });
-    const attestedContext = (gate = {}, approval = jest.fn(async () => 'approved')) => ({
-      ...context(approval),
-      pageUrl: `${IPNS}/docs`,
-      attested: { key: 'example.com', transportKey: IPNS },
-      beforeEffect: gate.beforeEffect || jest.fn(async () => true),
-      effectAllowed: gate.effectAllowed || jest.fn(() => true),
-      pageToken: gate.pageToken || fakePageToken(),
-      // The document's PageContext, under which the identity core writes the
-      // grant's last use (freedom-core design 0012, APB-2).
-      pageContext: () => PAGE,
-    });
-
-    test.each(['eth_requestAccounts', 'personal_sign', 'eth_signTypedData_v4'])(
-      '%s is not the agent route\'s since APB-5a: not handled, nothing asked',
-      async (method) => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const approval = jest.fn(async () => 'approved');
-        const gate = { pageToken: fakePageToken() };
-        const params = method === 'personal_sign' ? ['0x68656c6c6f', ADDRESS] : method === 'eth_signTypedData_v4' ? [ADDRESS, '{}'] : [];
-        await expect(
-          harness.controller.handleRequest(attestedContext(gate, approval), { method, params, chainId: 100 })
-        ).resolves.toEqual({ handled: false });
-        expect(approval).not.toHaveBeenCalled();
-        expect(gate.pageToken.mint).not.toHaveBeenCalled();
-        expect(harness.dependencies.getSigner).not.toHaveBeenCalled();
-        expect(harness.dependencies.identityManager.getDerivedWallets).not.toHaveBeenCalled();
-      }
-    );
-    // PRQ-5b: a send comes attested too, and is sent only once main's
-    // checks pass, just before it.
-    describe('eth_sendTransaction main attested', () => {
-      const send = {
-        method: 'eth_sendTransaction',
-        params: [{ to: '0x3333333333333333333333333333333333333333', value: '0x1' }],
-        chainId: 100,
-      };
-
-      test("sends under main's key once main's checks pass", async () => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true) };
-        const provider = await harness.controller.handleRequest(attestedContext(gate), send);
-        expect(provider).toMatchObject({ handled: true, result: expect.stringMatching(/^0x/) });
-        expect(provider.receipt.wallet.origin).toBe('example.com');
-        expect(harness.dependencies.getPermission).toHaveBeenCalledWith('example.com');
-        expect(harness.dependencies.signAndRecord).toHaveBeenCalledTimes(1);
-        expect(harness.dependencies.signAndRecord.mock.calls[0][2]).toMatchObject({ origin: 'example.com' });
-        // Before the mint, after it, and again before the grant's last use
-        // (this service asks no signer and commits through no guard).
-        expect(gate.beforeEffect).toHaveBeenCalledTimes(3);
-        expect(gate.effectAllowed).toHaveBeenCalledTimes(3);
-        expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100, PAGE);
-      });
-
-      // Design 0012 (APB-1d): the Agent's approval mints the page's
-      // dapp-send token for this transaction through main's issuer, and the
-      // send's signer presents it, in the same run as main's last checks.
-      test.each([
-        ['a vault account', 'mnemonic', false],
-        ['a phone account', 'remote', true],
-      ])('%s: the send presents the dapp-send token the Agent\'s decision minted', async (_label, type, phone) => {
-        const harness = createHarness({
-          permission: { walletIndex: 0, chainId: 100 },
-          wallets: [{ index: 0, name: 'Main Wallet', address: '0x1111111111111111111111111111111111111111', type }],
-        });
-        const pageToken = fakePageToken();
-        const order = [];
-        harness.dependencies.getSigner.mockImplementation((index, authorized) => {
-          order.push(['signer', authorized?.confirmation?.token]);
-          return harness.signer;
-        });
-        harness.dependencies.signAndRecord.mockImplementation(async () => {
-          order.push(['send']);
-          return { hash: '0xtransaction' };
-        });
-        const provider = await harness.controller.handleRequest(attestedContext({ pageToken }), send);
-        expect(provider).toMatchObject({ handled: true, result: '0xtransaction' });
-        expect(pageToken.mint).toHaveBeenCalledWith(
-          'dapp-send',
-          0,
-          expect.objectContaining({
-            to: send.params[0].to,
-            value: '0x1',
-            gasLimit: '24000',
-            gasPrice: '1000000000',
-            chainId: 100,
-            origin: 'example.com',
-          }),
-          { phone }
-        );
-        expect(pageToken.calls).toEqual([
-          ['mint', 'dapp-send', 0],
-          ['holds', 'token-1'],
-          ['present', 'token-1'],
-          ['discard', 'token-1'],
-        ]);
-        expect(order).toEqual([['signer', 'token-1'], ['send']]);
-        expect(harness.dependencies.getSigner).toHaveBeenCalledWith(0, {
-          confirmation: expect.objectContaining({ token: 'token-1', kind: 'dapp-send', page: expect.objectContaining({ agent: true }) }),
-          beforeSign: expect.any(Function),
-        });
-      });
-
-      test.each([
-        ['the name moves', (gate) => gate.beforeEffect.mockResolvedValueOnce(false), 'no longer open'],
-        ['the page leaves its key', (gate) => gate.effectAllowed.mockReturnValueOnce(false), 'no longer open'],
-        ['the agent leaves the tab', (_gate, decision) => (decision.custody = false), 'no longer holds this tab'],
-        ['its grant moves to another account', (_gate, _decision, harness) => harness.dependencies.getPermission.mockReturnValue({ walletIndex: 7 }), 'no longer connected'],
-      ])("when %s during the transaction service's or the signer's wait: the signer's last step refuses, nothing signed or sent", async (_label, change, refused) => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const { decision, pageToken } = custodyToken();
-        const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true), pageToken };
-        const signer = heldSigner();
-        harness.dependencies.getSigner.mockImplementation(signer.getSigner);
-        const committed = [];
-        harness.dependencies.signAndRecord.mockImplementation(async (tx, chosen, _record, options) => {
-          const raw = await chosen.signTransaction(tx);
-          await options.guardCommit(async () => committed.push(raw));
-          return { hash: '0xhash' };
-        });
-        const pending = harness.controller.handleRequest(attestedContext(gate), send);
-        await signer.reached;
-        change(gate, decision, harness);
-        signer.release();
-        const provider = await pending;
-        expect(provider).toMatchObject({ handled: true, error: { code: -32603, message: expect.stringContaining(refused) } });
-        expect(signer.asked).toEqual([]);
-        expect(committed).toEqual([]);
-        expect(pageToken.calls.at(-1)).toEqual(['discard', 'token-1']);
-      });
-
-      test('the name moving while the token is minted: nothing presented, signed or sent, the token burnt', async () => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
-        const pageToken = fakePageToken();
-        const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect, pageToken }), send);
-        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
-        expect(pageToken.calls).toEqual([
-          ['mint', 'dapp-send', 0],
-          ['discard', 'token-1'],
-        ]);
-        expect(harness.dependencies.getSigner).not.toHaveBeenCalled();
-        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-      });
-
-      test('the grant gone during the mint: nothing presented or sent, the token burnt', async () => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const pageToken = fakePageToken();
-        const mint = pageToken.mint.getMockImplementation();
-        pageToken.mint.mockImplementation(async (...args) => {
-          const minted = await mint(...args);
-          harness.dependencies.getPermission.mockReturnValue(null);
-          return minted;
-        });
-        const provider = await harness.controller.handleRequest(attestedContext({ pageToken }), send);
-        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
-        expect(pageToken.present).not.toHaveBeenCalled();
-        expect(pageToken.calls.at(-1)).toEqual(['discard', 'token-1']);
-        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-      });
-
-      // Codex on #1191: a signer can outlast a name move, the page's going or
-      // its grant's change, so main's gates run again after the signature and
-      // before the signed bytes are recorded or sent, and commit them.
-      test('after the signature, before the commit: main\'s gates and the grant again, and the guard commits', async () => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const committed = [];
-        let between = () => {};
-        harness.dependencies.signAndRecord.mockImplementation(async (tx, _signer, _context, options) => {
-          between();
-          await options.guardCommit(async () => committed.push(tx));
-          return { hash: '0xhash' };
-        });
-        let custody = true;
-        const gate = {
-          beforeEffect: jest.fn(async () => true),
-          effectAllowed: jest.fn(() => true),
-        };
-        const pageToken = () =>
-          fakePageToken({
-            onHolds: () => {
-              if (!custody) throw new Error('Signing was not confirmed: the Agent no longer holds this tab');
-            },
-          });
-        await expect(harness.controller.handleRequest(attestedContext({ ...gate, pageToken: pageToken() }), send)).resolves.toMatchObject({
-          handled: true,
-          result: '0xhash',
-        });
-        expect(committed).toHaveLength(1);
-        // Before the mint, after it, after the signature, and before the
-        // last use.
-        expect(gate.beforeEffect).toHaveBeenCalledTimes(4);
-        expect(gate.effectAllowed).toHaveBeenCalledTimes(4);
-        for (const [label, change] of [
-          ['main answered, or the name moved', () => gate.beforeEffect.mockResolvedValueOnce(false)],
-          ['the page left its key', () => gate.effectAllowed.mockReturnValueOnce(false)],
-          ['the grant moved to another account', () => harness.dependencies.getPermission.mockReturnValue({ walletIndex: 7 })],
-          ['the agent left the tab', () => (custody = false)],
-        ]) {
-          committed.length = 0;
-          custody = true;
-          harness.dependencies.getPermission.mockReturnValue({ walletIndex: 0, chainId: 100 });
-          between = change;
-          const provider = await harness.controller.handleRequest(attestedContext({ ...gate, pageToken: pageToken() }), send);
-          expect({ label, provider }).toMatchObject({ label, provider: { handled: true, error: { code: -32603 } } });
-          expect({ label, committed }).toEqual({ label, committed: [] });
-        }
-      });
-
-      test('an attested send is refused before the signer when the grant no longer exposes the account', async () => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        // The grant goes while main's gate resolves the name.
-        const gate = {
-          beforeEffect: jest.fn(async () => {
-            harness.dependencies.getPermission.mockReturnValue(null);
-            return true;
-          }),
-          effectAllowed: jest.fn(() => true),
-        };
-        const provider = await harness.controller.handleRequest(attestedContext(gate), send);
-        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
-        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-      });
-
-      test("the name moving during the send: sent, but the grant's last use untouched", async () => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        // Holds before the mint and after it; moved once sent.
-        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValue(false);
-        const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect }), send);
-        expect(provider).toMatchObject({ handled: true, result: expect.stringMatching(/^0x/) });
-        expect(harness.dependencies.signAndRecord).toHaveBeenCalledTimes(1);
-        expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
-      });
-
-      test.each([
-        ['main has answered the request, or the name moved', { beforeEffect: jest.fn(async () => false) }],
-        ['the page left its key in the run of the send', { effectAllowed: jest.fn(() => false) }],
-      ])('sends nothing when %s', async (_name, gate) => {
-        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const provider = await harness.controller.handleRequest(attestedContext(gate), send);
-        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
-        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-        expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
-      });
-    });
-  });
-
-  test('returns EIP-1193 rejection and a typed Agent cancellation when a send is declined', async () => {
-    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-    const pageToken = fakePageToken();
-    const provider = await harness.controller.handleRequest(
-      attestedPage(jest.fn(async () => 'declined'), { pageToken }),
-      request('eth_sendTransaction', [{ to: '0x3333333333333333333333333333333333333333', value: '0x1' }])
-    );
-
-    expect(provider).toMatchObject({
-      handled: true,
-      error: { code: 4001, message: 'User rejected the request' },
-    });
-    expect(provider.errorCode).toBe(ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER);
-    expect(pageToken.mint).not.toHaveBeenCalled();
-    expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-  });
-
-  test('rejects transaction data that cannot be displayed in full', async () => {
-    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-    const approval = jest.fn();
-    const result = await harness.controller.handleRequest(attestedPage(approval), request('eth_sendTransaction', [{
-      to: '0x3333333333333333333333333333333333333333', data: '0x' + 'ab'.repeat(35000),
-    }]));
-    expect(result.errorCode).toBe('INVALID_ARGUMENT');
-    expect(approval).not.toHaveBeenCalled();
-    expect(harness.dependencies.estimateGas).not.toHaveBeenCalled();
-  });
-
-  test('shows estimated transaction details and broadcasts the exact approved payload', async () => {
-    const wallet = {
-      index: 0,
-      name: 'Main Wallet',
-      address: '0x1111111111111111111111111111111111111111',
-      type: 'mnemonic',
-    };
-    const harness = createHarness({
-      permission: { walletIndex: 0, chainId: 100, autoApprove: { transactions: ['ignored'] } },
-      wallets: [wallet],
-    });
-    const approval = jest.fn(async () => 'approved');
-    const txParams = {
-      from: wallet.address,
-      to: '0x3333333333333333333333333333333333333333',
-      value: '0xde0b6b3a7640000',
-      data: '0xabcdef12',
-    };
-
-    const provider = await harness.controller.handleRequest(
-      attestedPage(approval),
-      request('eth_sendTransaction', [txParams])
-    );
-
-    expect(provider).toMatchObject({ handled: true, result: '0xtransaction' });
-    expect(provider.receipt).toEqual({
-      wallet: expect.objectContaining({
-        action: 'broadcast',
-        transactionHash: '0xtransaction',
-        paymentId: 'payment_test',
-      }),
-    });
-    expect(approval).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'wallet_transaction',
-        wallet: expect.objectContaining({
-          value: '1.0 xDAI',
-          requiresUnlock: true,
-          data: '0xabcdef12',
-        }),
-      })
-    );
-    expect(harness.dependencies.signAndRecord).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: txParams.to,
-        value: txParams.value,
-        data: txParams.data,
-        gasLimit: '24000',
-        gasPrice: '1000000000',
-        chainId: 100,
-      }),
-      expect.any(Object),
-      { kind: 'dapp-send', origin: 'https://app.example' },
-      { guardCommit: expect.any(Function) }
-    );
-  });
-
-  test.each([{}, { type: 'legacy', gasPrice: '0' }])('refuses missing or zero fee quotes before transaction approval: %j', async gasPrices => {
-    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-    harness.dependencies.getGasPrices.mockResolvedValue(gasPrices);
-    const approval = jest.fn(async () => 'approved');
-    const result = await harness.controller.handleRequest(attestedPage(approval), request('eth_sendTransaction', [{
-      from: '0x1111111111111111111111111111111111111111',
-      to: '0x3333333333333333333333333333333333333333', value: '0x1', data: '0xabcdef12',
-    }]));
-    expect(result.errorCode).toBe('POLICY_DENIED');
-    expect(approval).not.toHaveBeenCalled();
-    expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-  });
-
-  // A typed-data's chain is the sheet's to refuse (`answerPrompt`, below).
-  test('refuses a conflicting explicit chain before eth_sendTransaction approval', async () => {
-    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-    const approve = jest.fn(async () => 'approved');
-    const params = [{ from: ADDRESS, to: ADDRESS, value: '0x0', chainId: '0x1' }];
-    const result = await harness.controller.handleRequest(attestedPage(approve), request('eth_sendTransaction', params));
-    expect(result).toMatchObject({ handled: true, errorCode: ERROR_CODES.POLICY_DENIED });
-    expect(approve).not.toHaveBeenCalled();
-    expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-  });
-
-  test('keeps the approved transaction network when provider selection changes while waiting', async () => {
-    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-    const input = request('eth_sendTransaction', [{
-      to: '0x3333333333333333333333333333333333333333', value: '0x0', chainId: '0x64',
-    }]);
-    const approve = jest.fn(async displayed => {
-      expect(displayed.wallet.chainId).toBe(100);
-      expect(displayed.origin).toBe('https://app.example');
-      input.chainId = 1;
-      return 'approved';
-    });
-    await expect(harness.controller.handleRequest(attestedPage(approve), input)).resolves.toMatchObject({ result: '0xtransaction' });
-    expect(harness.dependencies.signAndRecord.mock.calls[0][0].chainId).toBe(100);
-  });
-
-  // Design 0012 (APB-1d): a page's send goes under its page, with the token
-  // the Agent's decision mints through main's issuer. One main didn't
-  // attest, or gave no issuer for, has no page to sign under: refused before
-  // the Agent is asked, and nothing signs as main's own.
-  test('an eth_sendTransaction main did not attest, or gave no issuer for, is refused before approval or signer', async () => {
-    const params = [{ to: '0x3333333333333333333333333333333333333333', value: '0x1' }];
-    for (const unattested of [
-      context(jest.fn(async () => 'approved')),
-      attestedPage(jest.fn(async () => 'approved'), { pageToken: undefined }),
-      attestedPage(jest.fn(async () => 'approved'), { pageToken: { mint: async () => ({}) } }),
-      // An issuer that can't read the decision again at the signer's last
-      // step (Codex on #1246).
-      attestedPage(jest.fn(async () => 'approved'), {
-        pageToken: { mint: async () => ({}), present: () => ({}), discard: () => {} },
-      }),
-    ]) {
-      const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-      const result = await harness.controller.handleRequest(unattested, request('eth_sendTransaction', params));
-      expect(result).toMatchObject({ handled: true, errorCode: ERROR_CODES.POLICY_DENIED });
-      expect(unattested.requestApproval).not.toHaveBeenCalled();
-      expect(harness.dependencies.getSigner).not.toHaveBeenCalled();
-      expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-    }
-  });
-
-  test('does not intercept an unarmed page, a connect or a signature, and refuses a mismatched page identity', async () => {
-    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-    const send = () => request('eth_sendTransaction', [{ to: '0x3333333333333333333333333333333333333333', value: '0x1' }]);
-    await expect(harness.controller.handleRequest(null, send())).resolves.toEqual({ handled: false });
-    // A connect or a signature is the identity core's since APB-5a, attested
-    // or not.
-    for (const method of ['eth_requestAccounts', 'personal_sign', 'eth_signTypedData_v4']) {
-      const approval = jest.fn(async () => 'approved');
-      await expect(harness.controller.handleRequest(context(approval), request(method))).resolves.toEqual({ handled: false });
-      await expect(harness.controller.handleRequest(attestedPage(approval), request(method))).resolves.toEqual({ handled: false });
-      expect(approval).not.toHaveBeenCalled();
-    }
-
-    const mismatch = send();
-    mismatch.displayUrl = 'https://evil.example';
-    await expect(harness.controller.handleRequest(context(), mismatch)).resolves.toEqual({
-      handled: true,
-      error: { code: 4100, message: 'Wallet request origin did not match the page' },
-      errorCode: ERROR_CODES.POLICY_DENIED,
-    });
-    expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
-  });
 });
 
-// freedom-core design 0012, "The Agent's answer" (APB-5a): in a tab the
-// Agent holds, the identity core's eth.connect and eth.sign prompt is the
-// Agent's sheet's. Main hands it the core's view (`page-eip1193.js`
-// `connectShown`/`signShown`), and the sheet decides on it; the agent's own
-// refusals (A7-3) answer without the sheet. Nothing here writes a grant,
-// mints a token or signs: the core does, on main's answer.
 describe('answerPrompt: the Agent\'s sheet on the identity core\'s prompt', () => {
   const LEDGER_ADDRESS = '0x2222222222222222222222222222222222222222';
   const SAFE_ADDRESS = '0x3333333333333333333333333333333333333333';
@@ -864,12 +304,36 @@ describe('answerPrompt: the Agent\'s sheet on the identity core\'s prompt', () =
     return { kind: 'eth.sign', method, params: params ?? defaults, chainId: 100, view };
   }
 
+  const RECIPIENT = '0x4444444444444444444444444444444444444444';
+  // Main's prompt for the core's eth.send, `view` as `sendShown` gives it:
+  // the core's prepared transaction, its quote and its fee check.
+  function sendPrompt({ account = VAULT, params, view = {} } = {}) {
+    return {
+      kind: 'eth.send',
+      method: 'eth_sendTransaction',
+      params: params ?? [{ from: account.address, to: RECIPIENT, value: '0x2386f26fc10000' }],
+      chainId: 100,
+      view: {
+        account,
+        chain: { ...CHAIN, symbol: 'xDAI' },
+        tx: { to: RECIPIENT, value: '10000000000000000', data: '0x' },
+        fee: { gasLimit: '21000', maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', estimate: '21000000000000' },
+        feeCheck: { maxCost: '42000000000000', comparable: true, ratio: '1', above: false, oneEndpoint: false, basis: 'base-fee', autoApprove: true },
+        feeAskAgain: false,
+        alwaysAllow: false,
+        ...view,
+      },
+    };
+  }
+
   // An answer that asked nothing of the sheet, nor of main's own stores.
   function expectNothingAsked(harness, approval) {
     expect(approval).not.toHaveBeenCalled();
     expect(harness.dependencies.identityManager.getDerivedWallets).not.toHaveBeenCalled();
     expect(harness.dependencies.getPermission).not.toHaveBeenCalled();
     expect(harness.dependencies.getSigner).not.toHaveBeenCalled();
+    expect(harness.dependencies.estimateGas).not.toHaveBeenCalled();
+    expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
   }
 
   describe('a connect', () => {
@@ -1082,6 +546,119 @@ describe('answerPrompt: the Agent\'s sheet on the identity core\'s prompt', () =
   });
 
   // A7-3: the agent's own refusals, each before the sheet is asked.
+  describe('a send (APB-5b)', () => {
+    test("the sheet shows the core's quote on the core's account and chain, and its approve is the decision", async () => {
+      const harness = createHarness();
+      const approval = jest.fn(async () => 'approved');
+      const outcome = await harness.controller.answerPrompt(sheetContext(approval), sendPrompt());
+      expect(approval).toHaveBeenCalledWith({
+        operation: 'browser_wallet_action',
+        tabId: 'tab_test',
+        origin: 'https://app.example',
+        destinationOrigin: 'https://app.example',
+        action: 'wallet_transaction',
+        label: 'Send a wallet transaction',
+        wallet: {
+          kind: 'transaction',
+          chainId: 100,
+          chainName: 'Gnosis Chain',
+          account: VAULT,
+          to: RECIPIENT,
+          value: '0.01 xDAI',
+          // The core's gas limit times its fee cap: 21,000 × 2 gwei.
+          maxFee: '0.000042 xDAI',
+          data: '',
+          requiresUnlock: true,
+        },
+      });
+      expect(outcome).toMatchObject({ handled: true, decision: { approve: true } });
+      // Main estimates, prices and signs nothing: the core quoted it, and
+      // mints and hands main the send on the approve.
+      expectNothingAsked(harness, jest.fn());
+      expect(outcome.receiptOf({ result: `0x${'ab'.repeat(32)}` })).toEqual({
+        wallet: { action: 'broadcast', origin: 'https://app.example', chainId: 100, transactionHash: `0x${'ab'.repeat(32)}` },
+      });
+      // With the payment's record main's send step kept for it, as the
+      // agent route's receipt had it.
+      expect(outcome.receiptOf({ result: `0x${'ab'.repeat(32)}`, paymentId: 'payment_7' })).toEqual({
+        wallet: {
+          action: 'broadcast',
+          origin: 'https://app.example',
+          chainId: 100,
+          transactionHash: `0x${'ab'.repeat(32)}`,
+          paymentId: 'payment_7',
+        },
+      });
+      expect(outcome.receiptOf({ error: { code: 4001, message: 'User rejected the request' } })).toBeNull();
+    });
+
+    test("the sheet shows the core's view, not the page's params: its recipient, amount, data and fee", async () => {
+      const harness = createHarness();
+      const approval = jest.fn(async () => 'approved');
+      const data = `0xa9059cbb${'00'.repeat(64)}`;
+      await harness.controller.answerPrompt(
+        sheetContext(approval),
+        sendPrompt({
+          params: [{ to: RECIPIENT, value: '0x1', data: '0x' }],
+          view: {
+            tx: { to: ADDRESS, value: '0', data },
+            fee: { gasLimit: '60000', gasPrice: '3000000000', estimate: '1' },
+          },
+        })
+      );
+      expect(approval.mock.calls[0][0].wallet).toMatchObject({
+        to: ADDRESS,
+        value: '0.0 xDAI',
+        maxFee: '0.00018 xDAI',
+        data,
+      });
+    });
+
+    test('a decline, or a sheet withdrawn, is the decision; a Ledger needs no unlock', async () => {
+      const harness = createHarness();
+      const declined = await harness.controller.answerPrompt(sheetContext(jest.fn(async () => 'declined')), sendPrompt());
+      expect(declined.decision).toEqual({ approve: false });
+      const withdrawn = await harness.controller.answerPrompt(sheetContext(jest.fn(async () => 'withdrawn')), sendPrompt());
+      expect(withdrawn.decision).toEqual({ closed: true });
+      const approval = jest.fn(async () => 'approved');
+      const ledger = await harness.controller.answerPrompt(sheetContext(approval), sendPrompt({ account: LEDGER }));
+      expect(ledger.decision).toEqual({ approve: true });
+      expect(approval.mock.calls[0][0].wallet).toMatchObject({ account: LEDGER, requiresUnlock: false });
+    });
+
+    test.each([
+      ['another `from`', { params: [{ from: LEDGER_ADDRESS, to: RECIPIENT }] }, 'Transaction sender does not match the connected wallet'],
+      ['another `chainId`', { params: [{ to: RECIPIENT, chainId: '0x1' }] }, 'Transaction chain does not match the approved wallet network'],
+      ['no `to`', { params: [{ value: '0x1' }] }, 'Transaction parameters are incomplete'],
+      ['data over 65,536 characters', { params: [{ to: RECIPIENT, data: `0x${'00'.repeat(32_768)}` }] }, 'Use valid transaction data no larger than the approval display limit.'],
+      ['no fee (a failed quote)', { view: { fee: null, feeCheck: null } }, 'Freedom could not determine the maximum transaction fee. Try again before approving.'],
+      ['a zero fee', { view: { fee: { gasLimit: '21000', gasPrice: '0', estimate: '0' } } }, 'Freedom could not determine the maximum transaction fee. Try again before approving.'],
+    ])("the agent's own refusal (A7-3): %s, without the sheet", async (_name, prompt, message) => {
+      const harness = createHarness();
+      const approval = jest.fn();
+      const outcome = await harness.controller.answerPrompt(sheetContext(approval), sendPrompt(prompt));
+      expect(outcome).toMatchObject({ handled: true, error: { code: -32603, message } });
+      expectNothingAsked(harness, approval);
+    });
+
+    // A7-5: the sheet confirms no fee, so a fee the core's check stops is
+    // never its to approve; the page gets today's text.
+    test.each([
+      ['above the threshold', { feeCheck: { comparable: true, ratio: '3.5', above: true } }],
+      ['asked again at the approve', { feeCheck: { comparable: true, ratio: '3.5', above: true, askAgain: true }, feeAskAgain: true }],
+    ])('a fee the check stops (A7-5): %s, refused without the sheet', async (_name, view) => {
+      const harness = createHarness();
+      const approval = jest.fn();
+      const outcome = await harness.controller.answerPrompt(sheetContext(approval), sendPrompt({ view }));
+      expect(outcome).toEqual({
+        handled: true,
+        error: { code: -32603, message: "The network fee is 3.5× today's network fee. Confirm it again to send." },
+        errorCode: ERROR_CODES.POLICY_DENIED,
+      });
+      expectNothingAsked(harness, approval);
+    });
+  });
+
   describe('the agent\'s own refusals, without the sheet (A7-3)', () => {
     test('a request over 131,072 characters', async () => {
       const harness = createHarness();
@@ -1226,11 +803,11 @@ describe('answerPrompt: the Agent\'s sheet on the identity core\'s prompt', () =
       await expect(harness.controller.answerPrompt(context, connectPrompt())).resolves.toEqual({ handled: false });
     }
     const vaultUnlock = { kind: 'vault.unlock', method: 'personal_sign', params: [], chainId: 100, view: { account: VAULT, reason: 'sign' } };
-    const send = { kind: 'eth.send', method: 'eth_sendTransaction', params: [{}], chainId: 100, view: { account: VAULT, chain: CHAIN } };
     const crossed = [
       null,
       vaultUnlock,
-      send,
+      { ...sendPrompt(), method: 'personal_sign' },
+      { ...sendPrompt(), view: { ...sendPrompt().view, chain: { id: '100' } } },
       { ...connectPrompt(), method: 'personal_sign' },
       { ...signPrompt('personal_sign'), method: 'eth_requestAccounts' },
       { ...signPrompt('personal_sign'), method: 'eth_sign' },
@@ -1297,11 +874,25 @@ describe('unsupported Agent wallet signing', () => {
     }
   );
 
-  test('rejects a Safe eth_sendTransaction before approval or signer access', async () => {
+  test('rejects a Safe eth_sendTransaction before the sheet or signer access (A7-3)', async () => {
     const { controller, dependencies } = createHarness({ wallets: [safe], permission: { walletIndex: safe.index } });
     const approve = jest.fn();
-    const result = await controller.handleRequest(context(approve), request('eth_sendTransaction'));
-    expect(result).toMatchObject({ handled: true, error: { message: expect.stringContaining('unavailable for this wallet type') } });
+    const result = await controller.answerPrompt(sheet(approve), {
+      kind: 'eth.send',
+      method: 'eth_sendTransaction',
+      params: [{ to: safe.address }],
+      chainId: 100,
+      view: {
+        account: safe,
+        chain: { id: 100, name: 'Gnosis Chain', symbol: 'xDAI' },
+        tx: { to: safe.address, value: '0', data: '0x' },
+        fee: { paidBy: 'executor' },
+        feeCheck: null,
+        feeAskAgain: false,
+        alwaysAllow: false,
+      },
+    });
+    expect(result).toMatchObject({ handled: true, error: { code: -32603, message: expect.stringContaining('unavailable for this wallet type') } });
     expect(approve).not.toHaveBeenCalled();
     expect(dependencies.getSigner).not.toHaveBeenCalled();
     expect(dependencies.signAndRecord).not.toHaveBeenCalled();

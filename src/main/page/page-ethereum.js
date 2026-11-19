@@ -16,14 +16,15 @@
  * takes through the site's turn, the nonce, the record and the broadcast
  * (`page-core-sends.js`).
  *
+ * In a tab the Agent holds, every request goes to the core like any page's,
+ * and the Agent's sheet answers the core's prompt for a connect, a
+ * signature or a send (design 0012, "The Agent's answer", APB-5;
+ * `page-eip1193.js`). The agent's own route, which answered them before the
+ * core was asked, minting their tokens and writing their grants through
+ * main, was removed in APB-5.
+ *
  * Main keeps what the core doesn't hold:
  *
- *   - The agent's route for a send in a tab it holds (until APB-5b): the
- *     agent service answers it within the request, with its own approval,
- *     and the core is asked only when the agent doesn't take it. A connect
- *     or a signature in such a tab goes to the core like any page's, and the
- *     Agent's sheet answers the core's prompt for it (design 0012, "The
- *     Agent's answer", APB-5a; `page-eip1193.js`).
  *   - A DNS name over IPNS where main holds the step (design 0012,
  *     APR-5f): the core checks the name itself at each of the reference's
  *     checks of `eth_accounts`, the connect, the switch, the signatures and
@@ -33,8 +34,8 @@
  *     `eth_accounts`). Main checks it again only after the steps it holds:
  *     a send's after the site's turn, after the signature and before the
  *     writes after it (`page-core-sends.js`), a Safe's before each
- *     execution, a device's signature after the device signs
- *     (`page-devices.js`), and the agent's route.
+ *     execution, and a device's signature after the device signs
+ *     (`page-devices.js`).
  *   - A new grant's events (PRQ-6), queued in the key's order at the write.
  *   - Binary params, refused before any JSON.
  *   - A send's form (`txOf`), checked first, in custody or not.
@@ -47,13 +48,12 @@
 const { ETHEREUM_RPC_READS } = require('./page-methods');
 const { guestInCustody } = require('./page-custody');
 const { createDeviceSigning } = require('./page-devices');
-const { createCoreSends, txOf, agentTxOf } = require('./page-core-sends');
+const { createCoreSends, txOf } = require('./page-core-sends');
 
 // What the chrome's getCurrentChainId falls back to: Gnosis.
 const FALLBACK_CHAIN_ID = 100;
 
 const INVALID_PARAMS = Object.freeze({ code: -32602, message: 'Invalid parameters' });
-const NO_ADDRESS = Object.freeze({ code: 4100, message: 'This page has no address to connect from yet' });
 
 /** The methods this dispatcher serves: PRQ-3's reads. */
 const ETHEREUM_READ_METHODS = Object.freeze(['eth_chainId', 'net_version', 'eth_accounts', ...ETHEREUM_RPC_READS]);
@@ -75,21 +75,9 @@ const ETHEREUM_PAGE_METHODS = Object.freeze([
   ...ETHEREUM_SEND_METHODS,
 ]);
 
-// How main reaches the agent service for a send in a tab it holds (index.js
-// sets it once the agent runtime exists): `(guestId, request, { signal,
-// attested, beforeEffect, effectAllowed, pageToken }) => ({ handled,
-// result, error })`, `{ handled: false }` for a tab the agent doesn't hold.
-let agentWalletRoute = null;
-
-/** index.js: the agent service's wallet route, for the tabs it holds. */
-function setAgentWalletRoute(route) {
-  agentWalletRoute = typeof route === 'function' ? route : null;
-}
-
 function defaultDependencies() {
   return {
     identityWalletEnabled: () => require('../settings-store').loadSettings()?.enableIdentityWallet === true,
-    selectedChainOf: (windowId) => require('../wallet/selected-chain').selectedChainOf(windowId),
     getPermission: (key) => require('../wallet/dapp-permissions').getPermission(key),
     getDerivedWallets: () => require('../identity-manager').getDerivedWallets(),
     // The dApp grants, which the identity core writes for a page's key under
@@ -97,8 +85,6 @@ function defaultDependencies() {
     // answers `getPermission` once it has been read the first time.
     updateLastUsed: (key, chainId, page) => require('../wallet/dapp-permissions').updateLastUsed(key, chainId, page),
     permissionsLoaded: () => require('../wallet/dapp-permissions').whenLoaded(),
-    agentWalletRequest: async (guestId, request, options) =>
-      (agentWalletRoute ? agentWalletRoute(guestId, request, options) : { handled: false }),
   };
 }
 
@@ -137,12 +123,10 @@ function createEthereumDispatchers(deps = {}) {
   const devices = deps.devices || createDeviceSigning(deps.deviceDeps);
   const {
     identityWalletEnabled,
-    selectedChainOf,
     getPermission,
     getDerivedWallets,
     updateLastUsed: touchGrant,
     permissionsLoaded,
-    agentWalletRequest,
   } = { ...defaultDependencies(), ...deps };
 
   // A page's last use (and chain) of its grant, written by the core under
@@ -156,23 +140,6 @@ function createEthereumDispatchers(deps = {}) {
     }
   }
 
-  // The chain a window's pages read, but its onchain apps.
-  function windowChainOf(windowId) {
-    let selected;
-    try {
-      selected = selectedChainOf(windowId);
-    } catch {
-      selected = null;
-    }
-    return Number.isSafeInteger(selected) && selected > 0 ? selected : FALLBACK_CHAIN_ID;
-  }
-
-  // The chain this page reads: what the chrome's getCurrentChainId answered.
-  function chainIdOf(requester) {
-    if (Number.isSafeInteger(requester.chain) && requester.chain > 0) return requester.chain;
-    return windowChainOf(requester.window);
-  }
-
   const hex = (chainId) => `0x${chainId.toString(16)}`;
 
   async function walletList() {
@@ -182,51 +149,6 @@ function createEthereumDispatchers(deps = {}) {
     } catch {
       return [];
     }
-  }
-
-  // A send in a tab the agent holds (until APB-5b): the agent service
-  // answers, with its own approval. Custody is read live, at this request.
-  // The agent's approval runs inside the request's life
-  // (`walletOperation`): it holds the document's one wallet slot, and it is
-  // withdrawn when main answers the request (its deadline, its document
-  // gone). The agent acts under the attested key, which for a DNS name over
-  // IPNS is the name. Its send is a page's (design 0012, APB-1): the Agent's
-  // decision mints the request's page-kind token through main's issuer, and
-  // the signer presents it under `page`, with the PageContext read live
-  // (`agent: true`), and reads the decision again (`agentToken.holds`, the
-  // name before it) as its last step, right before the core or the device
-  // is asked; no standing rule answers it, and none goes as `shell`.
-  // `params` are the dispatcher's checked form of the request's.
-  async function agentAnswer(context, keyless, params) {
-    const { requester, method } = context;
-    const operation = await context.walletOperation(async ({ signal, open }) => {
-      try {
-        return await agentWalletRequest(
-          requester.guest,
-          { method, params, chainId: chainIdOf(requester) },
-          {
-            signal,
-            attested: { key: requester.key, transportKey: requester.transportKey },
-            // The document's PageContext, under which the core writes the
-            // grant's last use after the agent's send (design 0012, APB-2).
-            pageContext: () => context.pageContext(),
-            beforeEffect: async () => open() && (await context.nameHolds(keyless)) && open(),
-            effectAllowed: () => open() && context.holdsKey(),
-            // A page request the Agent answers is a page request (design
-            // 0012): its decision mints the request's page-kind token
-            // through main's issuer, and its signature presents it under
-            // `page` with `agent: true`, never as main's own.
-            pageToken: context.agentToken,
-          }
-        );
-      } catch {
-        return null;
-      }
-    });
-    if (operation.error) return { error: operation.error };
-    const outcome = operation.done;
-    if (!outcome || typeof outcome !== 'object' || outcome.handled !== true) return null;
-    return outcome.error ? { error: outcome.error } : { result: outcome.result };
   }
 
   // A new grant's events (today's, from the chrome's connect): the account
@@ -291,7 +213,7 @@ function createEthereumDispatchers(deps = {}) {
 
   // The connect: the core's, which checks a bound document's name itself
   // (APR-5f), in custody or not. In a tab the Agent holds, its sheet
-  // answers the core's prompt (APB-5a, `page-eip1193.js`).
+  // answers the core's prompt (APB-5, `page-eip1193.js`).
   function coreRequestAccounts(context) {
     return viaCore(context, { announce: announceNewGrant });
   }
@@ -310,7 +232,7 @@ function createEthereumDispatchers(deps = {}) {
     }
   }
 
-  // The signatures (APB-4b): the core's, in custody or not (APB-5a: in a
+  // The signatures (APB-4b): the core's, in custody or not (APB-5: in a
   // tab the Agent holds, its sheet answers the core's prompt). The core
   // checks a bound document's name itself (APR-5f), and a device's
   // signature is checked again after the device signs (`page-devices.js`),
@@ -322,38 +244,31 @@ function createEthereumDispatchers(deps = {}) {
     });
   }
 
-  // The sends (APB-4c): main's agent route before the core's. The core
-  // checks a bound document's name itself (APR-5f-2), and main again in the
-  // send's turn, after the signature and before the writes after it
-  // (`page-core-sends.js`).
+  // The sends (APB-4c): the core's, in custody or not (APB-5: in a tab the
+  // Agent holds, its sheet answers the core's prompt). The core checks a
+  // bound document's name itself (APR-5f-2), and main again in the send's
+  // turn, after the signature and before the writes after it, with custody
+  // for a send the sheet approved (A7-6, `page-core-sends.js`).
   async function coreSend(context) {
     const { requester } = context;
     // The core answers `4900` with the switch off, then `4100` with no key.
     if (!requester.key || !identityWalletEnabled()) return viaCore(context, { params: context.params });
-    // The agent's route reads main's copy of the grants.
+    // Main's steps after the core's answer read main's copy of the grants.
     await permissionsLoaded();
     // The transaction's form first, in custody or not, as main's route
-    // checked it: the agent gets only main's form of a well-formed one.
-    let tx;
+    // checked it.
     try {
-      tx = txOf(context.params);
+      txOf(context.params);
     } catch (err) {
       return { error: { code: -32602, message: err.message } };
-    }
-    // A tab the agent holds: its route, after its own check of the name.
-    if (custody(requester.guest, sendDeps.inCustody)) {
-      if (!(await context.nameHolds())) return { error: { ...NO_ADDRESS } };
-      const agent = await agentAnswer(context, {}, [agentTxOf(tx)]);
-      // Refused because the name moved: the keyless answer. Sent: the hash.
-      if (agent) return agent.error && !context.holdsKey() ? { error: { ...NO_ADDRESS } } : agent;
     }
     // After `{ send }` or `{ device }` main checks the name itself, in the
     // send's turn and after a signer's wait (`page-core-sends.js`). Once a
     // payment has gone, its hash is the page's.
     return viaCore(context, {
       params: context.params,
-      send: (send, page) => coreSends.pay(context, send, page),
-      device: (device, page) => coreSends.device(context, device, page),
+      send: (send, page, how) => coreSends.pay(context, send, page, how),
+      device: (device, page, how) => coreSends.device(context, device, page, how),
     });
   }
 
@@ -380,5 +295,4 @@ module.exports = {
   ETHEREUM_PAGE_METHODS,
   FALLBACK_CHAIN_ID,
   createEthereumDispatchers,
-  setAgentWalletRoute,
 };

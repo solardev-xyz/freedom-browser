@@ -16,6 +16,7 @@ const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { serveCoreNaming, coreResolved, coreReads, clearCoreNamingCaches } = require('./core-naming-fixtures');
 const { PROVENANCE_HEADER, encodeOnchainProvenance } = require('../src/main/onchain/onchain-app-protocol');
+const { connectByPrompt } = require('./dapp-prompts');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -155,16 +156,7 @@ const selectChain = (win, chainId) =>
   }, chainId);
 
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
-
-// A connection, written in main as main writes one: the chrome's own grant
-// write is refused from PRQ-4.
-// By the identity core, under the page's PageContext (design 0012, APB-2).
-const grant = (electronApp, key) =>
-  electronApp.evaluate((_electron, args) =>
-    process.mainModule
-      .require(`${args.root}/src/main/wallet/dapp-permissions`)
-      .grantPermission(args.key, 0, 100, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
-  { root: repoRoot, key });
+const grantOf = (win, key) => win.evaluate((k) => window.dappPermissions.getPermission(k), key);
 
 /** Count every request a page sends the chrome on the old path, in every tab. */
 const watchOldPath = (win) =>
@@ -250,11 +242,13 @@ test('the Ethereum reads go to main, with the chrome\'s answers: the selected ch
 
   expect(await win.evaluate((pw) => window.identity.unlock(pw), VAULT_PASSWORD)).toMatchObject({ success: true });
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
-  await grant(electronApp, DAPP);
 
-  // A connected dApp: Gnosis, the switcher's default, and its account.
+  // A connected dApp (from the identity core's own prompt, as a user
+  // connects it; design 0012): Gnosis, the switcher's default, and its
+  // account.
   await openIn(win, `${DAPP}/`);
   await watchOldPath(win);
+  expect(await connectByPrompt(electronApp, (js) => inTab(win, DAPP, js))).toBe(account);
   expect(await ask(win, DAPP, 'eth_chainId')).toEqual({ ok: '0x64' });
   expect(await ask(win, DAPP, 'net_version')).toEqual({ ok: '100' });
   expect(await ask(win, DAPP, 'eth_accounts')).toEqual({ ok: [account] });
@@ -355,8 +349,6 @@ test('a DNS name over IPNS: eth_accounts answers until the name moves off its ke
 
   expect(await win.evaluate((pw) => window.identity.unlock(pw), VAULT_PASSWORD)).toMatchObject({ success: true });
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
-  // Connected under its name, as the chrome keys it.
-  await grant(electronApp, NAME);
 
   await openIn(win, `ens://${NAME}`, `ipns://${IPNS_KEY}`);
   await watchOldPath(win);
@@ -365,6 +357,10 @@ test('a DNS name over IPNS: eth_accounts answers until the name moves off its ke
     true
   );
   const url = `ipns://${IPNS_KEY}`;
+  // Connected under its name, as the chrome keys it, from the core's own
+  // prompt.
+  expect(await connectByPrompt(electronApp, (js) => inTab(win, url, js))).toBe(account);
+  expect(await grantOf(win, NAME)).toMatchObject({ origin: NAME, walletIndex: 0 });
   const resolved = () => electronApp.evaluate(() => globalThis.__resolved.slice());
   await electronApp.evaluate(() => (globalThis.__resolved = []));
   // The core checks the name, which still serves the page's key: the account.

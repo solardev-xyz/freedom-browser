@@ -1,0 +1,4 @@
+- In a tab the Agent controls, a site's transaction requests now go through the same identity core checks as any other site, and the Agent's approval card answers them ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - The card shows the transaction and network fee the wallet will send, as the identity core prepared them
+  - The Agent's sends now take turns with the site's other payments, as any site's do
+  - A send whose network fee is well above today's is refused in Agent-controlled tabs, with the same message as before; the card never confirms such a fee

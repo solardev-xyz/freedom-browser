@@ -74,14 +74,17 @@
  * The page kinds (freedom-core design 0011, "Approval tokens"): the kinds
  * that serve a page's request, `dapp-send`, `sign-message`,
  * `sign-typed-data`, `safe-message` and a `safe-send` that names a site.
- * Their tokens come from main's own issuer (`issuePageConfirmation`), which
- * the page dispatcher calls on the user's approval of a prompt main showed
- * for a live request; the token never leaves main. A page token binds the
- * prompt's handle and the requesting document (its PageContext: the
- * attested key, the frame and the document's number), so a token answers
- * one prompt of one document. The chrome's `wallet:confirm-signing` refuses
- * each page kind once its methods have moved to main (`wallet-ipc.js`,
- * PRQ-5).
+ * Since APB-5b (freedom-core design 0012) main mints none of them: main
+ * relays a page's request to the identity core (`eip1193.request`,
+ * `page/page-eip1193.js`), shows the core's own prompt, and answers it with
+ * the user's (or the Agent's sheet's) decision; the core mints the token
+ * for that prompt and hands it to main in a `{ send }` or `{ device }`, or
+ * presents it to its own `sign.*`. Main has no page issuer, and the token
+ * never leaves main for a renderer. A page token binds the prompt's handle
+ * and the requesting document (its PageContext: the attested key, the frame
+ * and the document's number), so a token answers one prompt of one
+ * document. The chrome's `wallet:confirm-signing` refuses each page kind
+ * (`wallet-ipc.js`, PRQ-5).
  *
  * Tokens through the core (freedom-core design 0012, APB-1): every kind is
  * minted, checked and spent by the identity core (`approval.issue`,
@@ -156,9 +159,6 @@ function isPageKind(kind, payload) {
   if (PAGE_KIND_SET.has(kind)) return true;
   return kind === KINDS.SAFE_SEND && payload?.origin !== undefined && payload?.origin !== null;
 }
-
-// A page token's handle: the 32 random bytes main issued, in hex.
-const HANDLE = /^[0-9a-f]{64}$/;
 
 // The kind main asked the core to mint for each token of its own, which the
 // chrome presents back with a request: token -> { kind, expiresAt }. Main
@@ -656,16 +656,18 @@ function corePayload(kind, accountIndex, payload, { chainId, remember } = {}) {
  *   handle?: string, page?: object, intent?: {id: string}}} Confirmation
  */
 
-async function issueCore(kind, accountIndex, payload, { page = null, handle, feeAcknowledged, phone, chainId, remember } = {}) {
-  const request = corePayload(kind, accountIndex, payload, { chainId, remember });
+// Main's own mint, as `shell` (design 0012): a page kind is the core's to
+// mint, on an approve answer to its own prompt (APB-5; APR-7 refuses `page`
+// here).
+async function issueCore(kind, accountIndex, payload, { feeAcknowledged, phone } = {}) {
+  const request = corePayload(kind, accountIndex, payload);
   const params = { kind, payload: request.payload };
   if (request.account !== undefined) params.account = request.account;
-  if (handle !== undefined) params.handle = handle;
   if (feeAcknowledged === true) params.fee_ack = true;
   if (phone === true) params.phone = true;
   let reply;
   try {
-    reply = await vault().approval.issue(params, page);
+    reply = await vault().approval.issue(params);
   } catch (err) {
     // The core's own fee check at minting (design 0012, "The fee check"):
     // above its threshold, the user confirms the fee again first.
@@ -675,17 +677,7 @@ async function issueCore(kind, accountIndex, payload, { page = null, handle, fee
     }
     throw confirmationError(err);
   }
-  const confirmation = { token: reply.token, kind, payload: request.payload };
-  if (request.account !== undefined) confirmation.account = request.account;
-  if (handle !== undefined) confirmation.handle = handle;
-  if (page) confirmation.page = page;
-  return {
-    token: reply.token,
-    expiresAt: Date.now() + (Number(reply.expires_in_ms) || 0),
-    confirmation,
-    ...(typeof reply.hash === 'string' ? { hash: reply.hash, view: reply.view } : {}),
-    ...(reply.fee_check ? { feeCheck: feeVerdict(reply.fee_check) } : {}),
-  };
+  return { token: reply.token, expiresAt: Date.now() + (Number(reply.expires_in_ms) || 0) };
 }
 
 /**
@@ -721,46 +713,6 @@ function rememberKind(token, kind, expiresAt) {
   }
   while (minted.size >= MAX_OUTSTANDING) minted.delete(minted.keys().next().value);
   minted.set(token, { kind, expiresAt });
-}
-
-/**
- * Main's own issuer for a page's request (design 0011, "Approval tokens"):
- * a token of a page kind, minted by the core under `page` with the
- * requesting document's PageContext and the prompt's handle (design 0012).
- * The page dispatcher calls it only on the user's approval of a prompt main
- * showed for a live request record, with the account and payload from the
- * request main holds (`page-requests.js`). Rejects for any other kind.
- *
- * @param {{handle: string, context: object}} page the prompt's handle and
- *   the document's PageContext (`{ origin, top_origin, frame, navigation,
- *   agent }`)
- * @param {object} [options] `chainId`: the page's chain, for typed data;
- *   for a dApp send, `feeAcknowledged` (the user confirmed a fee above the
- *   threshold again), `phone` (a phone account's, whose fee it picks) and
- *   `remember` ("Always allow" ticked: the core says at the signature
- *   whether it wrote the rule, `rule`)
- * @returns {Promise<Confirmation & {hash?: string, view?: object}>}
- */
-async function issuePageConfirmation(kind, accountIndex, payload, page, options = {}) {
-  if (!isPageKind(kind, payload)) throw new Error(`Not a page confirmation kind: ${kind}`);
-  if (typeof page?.handle !== 'string' || !HANDLE.test(page.handle)) {
-    throw new Error('A page confirmation needs its handle');
-  }
-  if (!page.context || typeof page.context.origin !== 'string' || !page.context.origin) {
-    throw new Error('A page confirmation needs its page');
-  }
-  const issued = await issueCore(kind, accountIndex, payload, {
-    page: page.context,
-    handle: page.handle,
-    chainId: options.chainId,
-    feeAcknowledged: options.feeAcknowledged,
-    phone: options.phone,
-    remember: kind === KINDS.DAPP_SEND && options.remember === true,
-  });
-  return {
-    ...issued.confirmation,
-    ...(issued.hash !== undefined ? { hash: issued.hash, view: issued.view } : {}),
-  };
 }
 
 /**
@@ -1057,7 +1009,6 @@ module.exports = {
   corePayload,
   isPageKind,
   issueConfirmation,
-  issuePageConfirmation,
   confirmationFor,
   spendConfirmation,
   finalizeReceiptOf,

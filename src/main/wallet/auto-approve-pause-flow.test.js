@@ -22,6 +22,8 @@ const mockFeeQuote = jest.fn();
 // The fee check's evidence (design 0005, A): B's combined quote, as the
 // fee quote's own, from two endpoints.
 const mockFeeReference = jest.fn();
+const { mintPageToken } = require('../../../test/helpers/page-tokens');
+
 jest.mock('electron', () => ({
   app: { getPath: () => mockUserData },
   ipcMain: { handle: jest.fn(), removeHandler: jest.fn() },
@@ -305,10 +307,9 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   // the requester's key; the chrome gets none at all.
   test('codex r2: a dapp confirmation without a site is refused', async () => {
     const running = await start();
-    const confirmations = require('./signing-confirmation');
     for (const origin of [undefined, null, '']) {
       await expect(
-        confirmations.issuePageConfirmation('dapp-send', 0, { ...running.tx, origin }, { handle: 'c'.repeat(64), context: pageOf(SWAP) })
+        mintPageToken('dapp-send', 0, { ...running.tx, origin }, { handle: 'c'.repeat(64), context: pageOf(SWAP) })
       ).rejects.toThrow('A dApp payment needs the site it is for');
       const minted = await running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, {
         ...running.tx,
@@ -505,8 +506,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
       running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, { ...running.tx, origin: SWAP })
     ).resolves.toMatchObject({ success: false });
     // A page token is for one site: minted for swap, it can't send for plain.
-    const confirmations = require('./signing-confirmation');
-    const confirmation = await confirmations.issuePageConfirmation('dapp-send', 0, { ...running.tx, origin: SWAP }, {
+    const confirmation = await mintPageToken('dapp-send', 0, { ...running.tx, origin: SWAP }, {
       handle: 'd'.repeat(64),
       context: pageOf(SWAP),
     });
@@ -524,7 +524,10 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   // rule, page/page-signing.js), which the pause never touches.
   test("message signing isn't paused: it pays nothing", async () => {
     const running = await start();
-    await running.permissions.setSigningAutoApprove(SWAP, true, pageOf(SWAP));
+    // "Always allow" on the core's signing prompt: Q9's limited rule, which
+    // the core writes (design 0012, APB-4b; main writes none, APB-5b).
+    mockApprovals.dapp.entries.get(SWAP).autoApprove.limited = { signing: { grantedAt: Date.now() }, transactions: [] };
+    await running.permissions.refreshGrant(SWAP);
     refusedOnce();
     await running.autoSend(SWAP);
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
