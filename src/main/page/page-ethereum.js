@@ -67,11 +67,20 @@
  * route for a tab it holds, a DNS name's resolution over IPNS (before the
  * key is used and after the last wait, as above), a new grant's events,
  * and binary params refused before any JSON. The routes above stay the
- * reference, which signatures and sends still take until APB-4b and APB-4c.
+ * reference, which sends still take until APB-4c.
+ *
+ * The signatures go to the core as well (APB-4b): the core shows its own
+ * `eth.sign` prompt through main, or a rule answers it (with a locked
+ * vault's `vault.unlock` first), and signs a vault account's itself. A
+ * Ledger's, a phone's or a Safe's comes back as `{ device }`, which main
+ * spends as its own route did (`page-devices.js`). Main keeps the agent's
+ * route for a tab it holds, and checks the name again after the signature,
+ * withholding it from a document whose name moved.
  */
 
 const { ETHEREUM_RPC_READS } = require('./page-methods');
-const { SIGNING_METHODS, createSigningDispatchers } = require('./page-signing');
+const { SIGNING_METHODS, createSigningDispatchers, guestInCustody } = require('./page-signing');
+const { createDeviceSigning } = require('./page-devices');
 const { SEND_METHODS, createSendDispatchers } = require('./page-sends');
 
 // What the chrome's getCurrentChainId falls back to: Gnosis.
@@ -186,6 +195,8 @@ function createEthereumDispatchers(deps = {}) {
   const sendDeps = deps.sends || {};
   // The identity core's dispatcher, for the methods it answers (APB-4a).
   const relay = deps.relay || null;
+  // Main's device steps for the core's `{ device }` answers (APB-4b).
+  const devices = relay ? deps.devices || createDeviceSigning(deps.deviceDeps) : null;
   const {
     identityWalletEnabled,
     selectedChainOf,
@@ -590,6 +601,42 @@ function createEthereumDispatchers(deps = {}) {
     return viaCore(context, { params: context.params });
   }
 
+  // Whether the agent holds the requester's tab now; unknown counts as held.
+  function custody(guest) {
+    try {
+      return (signingDeps.inCustody || guestInCustody)(guest) === true;
+    } catch {
+      return true;
+    }
+  }
+
+  // The signatures (APB-4b): main's agent route and name checks around the
+  // core's, as main's own route (`page-signing.js`) ordered them.
+  async function coreSign(context) {
+    const { requester } = context;
+    // The core answers `4900` with the switch off, then `4100` with no key.
+    if (!requester.key || !identityWalletEnabled()) return viaCore(context, { params: context.params });
+    // The agent's route reads main's copy of the grants.
+    await permissionsLoaded();
+    const keyless = { keyless: { error: { ...NO_ADDRESS } } };
+    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
+    // A tab the agent holds: the agent service answers, within the request,
+    // until APR-7. Only a tab in custody is offered to it.
+    const agent = custody(requester.guest) ? await agentAnswer(context, keyless) : null;
+    if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
+    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
+    const answer = await viaCore(context, {
+      params: context.params,
+      device: (device, page) => devices.sign(context, device, page),
+    });
+    // After the signature's wait: the name again, and the key. A name that
+    // moved gets no signature.
+    if (answer.result !== undefined && (!(await context.nameHolds(keyless)) || !context.holdsKey())) {
+      return { error: { ...NO_ADDRESS } };
+    }
+    return answer;
+  }
+
   const serve = (answer) => async (context) => {
     if (!identityWalletEnabled()) return { error: { ...DISCONNECTED } };
     // Main's copy of the grants, read from the core the first time.
@@ -622,6 +669,7 @@ function createEthereumDispatchers(deps = {}) {
     for (const method of ETHEREUM_RPC_READS) dispatchers[`ethereum:${method}`] = coreRead;
     dispatchers['ethereum:eth_requestAccounts'] = coreRequestAccounts;
     dispatchers['ethereum:wallet_switchEthereumChain'] = coreSwitchChain;
+    for (const method of SIGNING_METHODS) dispatchers[`ethereum:${method}`] = coreSign;
   }
   return dispatchers;
 }
