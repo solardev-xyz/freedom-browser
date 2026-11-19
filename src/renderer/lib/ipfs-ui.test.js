@@ -796,3 +796,22 @@ describe('ipfs-ui', () => {
     expect(ctx.elements.ipfsToggleSwitch.classList.contains('running')).toBe(false);
   });
 });
+
+describe('services.css disabled-toggle hover (#350)', () => {
+  // Only the IPFS switch takes hover while greyed, so its tooltip can explain
+  // why. The Myotis toggles share `.ipfs-toggle` and must stay pointer-inert.
+  const css = require('fs').readFileSync(
+    require('path').join(__dirname, '../styles/services.css'),
+    'utf8'
+  );
+  const rulesSettingAuto = [
+    ...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g),
+  ]
+    .filter(([, , body]) => /pointer-events:\s*auto/.test(body))
+    .map(([, selector]) => selector.trim());
+
+  test('only #ipfs-toggle-btn re-enables pointer events when disabled', () => {
+    const disabledRules = rulesSettingAuto.filter((sel) => /\.disabled\b/.test(sel));
+    expect(disabledRules).toEqual(['#ipfs-toggle-btn.disabled']);
+  });
+});

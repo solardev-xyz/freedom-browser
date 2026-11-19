@@ -298,8 +298,10 @@
 
 /* The greyed IPFS switch explains itself on hover: on a Linux system too old
    for the add-on (#350) its tooltip is the menu's only explanation. The
-   button's `disabled` attribute and the click guard keep it inert. */
-.ipfs-toggle.disabled {
+   button's `disabled` attribute and the click guard keep it inert. Scoped to
+   the IPFS button by id: the two Myotis toggles reuse `.ipfs-toggle` and stay
+   fully pointer-inert when disabled. */
+#ipfs-toggle-btn.disabled {
   pointer-events: auto;
   cursor: default;
 }
