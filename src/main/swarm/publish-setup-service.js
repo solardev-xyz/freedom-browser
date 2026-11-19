@@ -163,6 +163,15 @@ const STEPS_BEFORE_PAYMENT = Object.freeze({
     'verify the chequebook before depositing into it',
   ],
 });
+// A step antd wraps around steps of its own, `<step>: <inner step>: <cause>`:
+// a deposit's top-up (FundingError::Deposit around chequebook_store.rs's
+// top_up_chequebook) re-reads the chequebook and the wallet, then sends the
+// transfer (`deposit into chequebook: deposit transfer: rpc: http: …`). Its
+// inner steps are classed like the outer ones; these are the inner reads that
+// come before the transfer.
+const WRAPPED_STEPS_BEFORE_PAYMENT = Object.freeze({
+  'deposit into chequebook': ['read chequebook deposit', 'read wallet xBZZ'],
+});
 // The swap and the one-time deployment of its helper. A failed one may
 // still be pending, and antd reads only the mined balance, so trying again
 // at once could swap twice. Its xBZZ stays in the node wallet.
@@ -192,10 +201,17 @@ function classifyChainFailure(res, kind) {
   const { message } = res;
   if (/transaction reverted/i.test(message)) return 'failed';
   const split = message.indexOf(': ');
-  const step = split === -1 ? message : message.slice(0, split);
-  const cause = split === -1 ? '' : message.slice(split + 2);
+  let step = split === -1 ? message : message.slice(0, split);
+  let cause = split === -1 ? '' : message.slice(split + 2);
+  let beforePayment = STEPS_BEFORE_PAYMENT[kind];
+  if (Object.hasOwn(WRAPPED_STEPS_BEFORE_PAYMENT, step)) {
+    beforePayment = WRAPPED_STEPS_BEFORE_PAYMENT[step];
+    const inner = cause.indexOf(': ');
+    step = inner === -1 ? cause : cause.slice(0, inner);
+    cause = inner === -1 ? '' : cause.slice(inner + 2);
+  }
   const dropped = /^(?:rpc: )?http: /.test(cause);
-  if (STEPS_BEFORE_PAYMENT[kind]?.includes(step)) return dropped ? 'retry' : 'failed';
+  if (beforePayment?.includes(step)) return dropped ? 'retry' : 'failed';
   const unmined = /^(?:rpc: )?transaction never mined\b/.test(cause);
   if (!dropped && !unmined) return 'failed';
   if (SWAP_STEPS.includes(step)) return 'swap';

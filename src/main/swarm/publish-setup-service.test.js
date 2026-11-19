@@ -1592,10 +1592,36 @@ describe('a dropped Gnosis Chain connection (#992)', () => {
     // A deposit reads these again after its transfer.
     ['deposit', 'read settlement deposit: http: error sending request for url (x)', 'uncertain'],
     ['deposit', 'read swap price: http: error sending request for url (x)', 'uncertain'],
+    // antd wraps the top-up's own steps (chequebook_store.rs's
+    // top_up_chequebook): its reads come before the transfer, the
+    // transfer is the payment.
     [
       'deposit',
-      'deposit into chequebook: rpc: http: error sending request for url (x)',
+      'deposit into chequebook: read chequebook deposit: http: error sending request for url (x)',
+      'retry',
+    ],
+    ['deposit', 'deposit into chequebook: read wallet xBZZ: http: connection closed', 'retry'],
+    ['deposit', 'deposit into chequebook: read wallet xBZZ: decode: bad hex', 'failed'],
+    [
+      'deposit',
+      'deposit into chequebook: deposit transfer: rpc: http: error sending request for url (x)',
       'uncertain',
+    ],
+    [
+      'deposit',
+      'deposit into chequebook: deposit transfer: transaction never mined: 0xab (timeout 60s)',
+      'unmined',
+    ],
+    [
+      'deposit',
+      'deposit into chequebook: deposit transfer: rpc: rpc: insufficient funds for gas * price + value',
+      'failed',
+    ],
+    ['deposit', 'deposit into chequebook: deposit transfer: transaction reverted: 0x0', 'failed'],
+    [
+      'deposit',
+      'deposit into chequebook: could not verify the chequebook before depositing into it: factory.deployedContracts eth_call: http: reset',
+      'failed',
     ],
   ])('a %s that fails with "%s" is %s', (kind, message, expected) => {
     expect(classifyChainFailure(fail(502, message), kind)).toBe(expected);
@@ -1859,6 +1885,37 @@ describe('a dropped Gnosis Chain connection (#992)', () => {
     await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
     expect(api.extendStorage).toHaveBeenCalledTimes(1);
     expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+  });
+
+  test('a deposit whose transfer lost its connection may still go through, and is not sent again', async () => {
+    const { service, api } = setup();
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ sufficientFunds: true })));
+    api.topUpSettlementDeposit.mockResolvedValue(
+      droppedTx('deposit into chequebook: deposit transfer')
+    );
+    service.arm({ kind: 'deposit' });
+    await settle();
+    expect(service.getState().operation).toMatchObject({ phase: 'failed', uncertain: true });
+    expect(service.getState().operation.error).toMatch(
+      /check the chequebook deposit before you top it up again\.$/
+    );
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+  });
+
+  test('a deposit whose own re-read before the transfer dropped is tried again on its own', async () => {
+    const { service, api } = setup();
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ sufficientFunds: true })));
+    api.topUpSettlementDeposit.mockResolvedValue(
+      droppedRead('deposit into chequebook: read wallet xBZZ')
+    );
+    service.arm({ kind: 'deposit' });
+    await settle();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * MAX_TRANSIENT_RETRIES);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(MAX_TRANSIENT_RETRIES + 1);
+    expect(service.getState().operation).toMatchObject({ phase: 'failed' });
+    expect(service.getState().operation.uncertain).toBeFalsy();
+    expect(service.getState().operation.error).toMatch(/the connection to Gnosis Chain dropped/);
   });
 
   test('a dropped read while extending, before paying, is retried with the extend label', async () => {
