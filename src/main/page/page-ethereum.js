@@ -58,6 +58,16 @@
  *
  * Every method answers `4900` while the Identity & Wallet switch is off,
  * as the chrome did. The chrome has no path of its own for them (PRQ-9).
+ *
+ * The identity core's dispatcher (design 0012, APB-4a): with a `relay`
+ * (`page-eip1193.js`, which main's own dispatchers get), the reads, the
+ * connect and the switch go to the core's `eip1193.request`, and the core
+ * asks main for the connect's prompt, the document's recheck and the
+ * switch's selection. Main keeps what the core doesn't hold: the agent's
+ * route for a tab it holds, a DNS name's resolution over IPNS (before the
+ * key is used and after the last wait, as above), a new grant's events,
+ * and binary params refused before any JSON. The routes above stay the
+ * reference, which signatures and sends still take until APB-4b and APB-4c.
  */
 
 const { ETHEREUM_RPC_READS } = require('./page-methods');
@@ -174,6 +184,8 @@ function holdsBinary(params) {
 function createEthereumDispatchers(deps = {}) {
   const signingDeps = deps.signing || {};
   const sendDeps = deps.sends || {};
+  // The identity core's dispatcher, for the methods it answers (APB-4a).
+  const relay = deps.relay || null;
   const {
     identityWalletEnabled,
     selectedChainOf,
@@ -379,16 +391,22 @@ function createEthereumDispatchers(deps = {}) {
   // the key's other documents hear it however the request ended; the
   // document that asked hears it only if its answer was the account, not
   // "Request timed out" or nothing at all.
+  //
+  // With the core's dispatcher (APB-4a) the grant's account is the core's
+  // answer: `account` is null, and `written` resolves with it.
   function announceNewGrant(context, account, chainId, written = Promise.resolve()) {
     const { requester } = context;
     context.inGrantOrder(requester.key, async () => {
       // The core writes the grant (design 0012, APB-2): none written, none
       // told.
+      let told;
       try {
-        await written;
+        told = await written;
       } catch {
         return;
       }
+      if (account === null) account = told;
+      if (typeof account !== 'string' || !account) return;
       const answered = await context.whenAnswered();
       const others = context
         .liveDocuments()
@@ -528,6 +546,50 @@ function createEthereumDispatchers(deps = {}) {
     return { result: null };
   }
 
+  // The identity core's dispatcher (APB-4a, `page-eip1193.js`): the same
+  // methods, and main's checks around them.
+  const viaCore = (context, options) => relay.request(context, options);
+
+  async function coreRead(context) {
+    // As `read`: no binary data reaches the JSON.
+    if (holdsBinary(context.params || [])) return { error: { ...INVALID_PARAMS } };
+    context.copied('ethereum:chain-request');
+    return viaCore(context, { params: context.params });
+  }
+
+  async function coreAccounts(context) {
+    const { requester } = context;
+    const named = Boolean(requester.key) && identityWalletEnabled();
+    // Name-revalidated, as `accounts`: before the core reads the grant, and
+    // after its answer.
+    const keyless = { keyless: { result: [] } };
+    if (named && !(await context.nameHolds(keyless))) return { result: [] };
+    const answer = await viaCore(context);
+    if (named && !(await context.nameHolds(keyless))) return { result: [] };
+    return answer;
+  }
+
+  async function coreRequestAccounts(context) {
+    const { requester } = context;
+    // The core answers `4900` with the switch off, then `4100` with no key.
+    if (!requester.key || !identityWalletEnabled()) return viaCore(context);
+    // The agent's route reads main's copy of the grants.
+    await permissionsLoaded();
+    const keyless = { keyless: { error: { ...NO_ADDRESS } } };
+    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
+    // The agent's route stays main's until APR-7: the core is asked only
+    // when the agent doesn't take the request.
+    const agent = await agentAnswer(context, keyless);
+    if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
+    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
+    return viaCore(context, { announce: announceNewGrant });
+  }
+
+  async function coreSwitchChain(context) {
+    context.copied('ethereum:eip1193-request');
+    return viaCore(context, { params: context.params });
+  }
+
   const serve = (answer) => async (context) => {
     if (!identityWalletEnabled()) return { error: { ...DISCONNECTED } };
     // Main's copy of the grants, read from the core the first time.
@@ -553,6 +615,14 @@ function createEthereumDispatchers(deps = {}) {
     sendDeps
   );
   for (const [route, dispatch] of Object.entries(sends)) dispatchers[route] = serve(dispatch);
+  if (relay) {
+    dispatchers['ethereum:eth_chainId'] = (context) => viaCore(context);
+    dispatchers['ethereum:net_version'] = (context) => viaCore(context);
+    dispatchers['ethereum:eth_accounts'] = coreAccounts;
+    for (const method of ETHEREUM_RPC_READS) dispatchers[`ethereum:${method}`] = coreRead;
+    dispatchers['ethereum:eth_requestAccounts'] = coreRequestAccounts;
+    dispatchers['ethereum:wallet_switchEthereumChain'] = coreSwitchChain;
+  }
   return dispatchers;
 }
 

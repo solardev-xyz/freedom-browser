@@ -264,7 +264,7 @@ describe('CoreClient', () => {
     expect(error.message).toBe('Vault is locked');
   });
 
-  // freedom-core design 0012, APR-3: the pinned core (0.19.0, as every core
+  // freedom-core design 0012, APR-3: the pinned core (0.20.0, as every core
   // from 0.14.0) requires `grant_root`, the permission files' directory; APB-2
   // moves the dApp file to the core and APB-3 Swarm's and Radicle's
   // (`grant_moved`): x402's too, from X402-2.
@@ -407,6 +407,46 @@ describe('CoreClient', () => {
     runTimers(RESTART_DELAYS_MS[0]);
     await client.whenReady();
     expect(children).toHaveLength(2);
+  });
+
+  test('a held watchdog counts only the time outside its holds (0012 Steps, APB-4a)', async () => {
+    const WATCHDOG = 135_000;
+    let clock = 0;
+    const { client, children, runTimers, timers } = makeClient([helloHandler()], { now: () => clock });
+    await client.start();
+    let sent = null;
+    const hung = client
+      .request('eip1193.request', {}, { caller: 'shell' }, {
+        watchdogMs: WATCHDOG,
+        onSent: (id, generation) => {
+          sent = { id, generation };
+        },
+      })
+      .catch((e) => e);
+    await tick();
+    expect(sent).toEqual({ id: children[0].requests.at(-1).id, generation: client.current.number });
+    const live = () => timers.filter((t) => !t.cleared && t.fn && t.ms !== RESTART_DELAYS_MS[0]);
+    // 100 s outside a prompt, then a prompt held (twice over) for an hour.
+    clock = 100_000;
+    const release = client.holdWatchdog(sent.generation, sent.id);
+    const again = client.holdWatchdog(sent.generation, sent.id);
+    expect(live().filter((t) => t.ms === WATCHDOG)).toEqual([]);
+    clock = 3_700_000;
+    release();
+    release();
+    expect(live().filter((t) => t.ms === 35_000)).toEqual([]);
+    again();
+    // What it had left: 35 s.
+    expect(live().filter((t) => t.ms === 35_000)).toHaveLength(1);
+    // Another process's number, or another id, holds nothing.
+    client.holdWatchdog(sent.generation + 1, sent.id)();
+    client.holdWatchdog(sent.generation, sent.id + 1)();
+    expect(children[0].killed).toBeNull();
+    runTimers(35_000);
+    expect(children[0].killed).toBe('SIGKILL');
+    expect((await hung).code).toBe('core_unavailable');
+    // Settled: a hold does nothing.
+    client.holdWatchdog(sent.generation, sent.id)();
   });
 
   test('exit codes that mean "do not retry" fail without restarting', async () => {
