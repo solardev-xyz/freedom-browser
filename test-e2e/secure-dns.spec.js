@@ -147,19 +147,49 @@ test('a failed save says so, whichever control made it', async ({ window, electr
   await expect(page.locator('#secure-dns-custom-row')).toBeVisible();
   await expect(page.locator('#secure-dns-provider')).toHaveValue('custom');
   await expect(page.locator('#secure-dns-custom')).toHaveValue(CUSTOM);
+  // And the row still says which provider is in use meanwhile.
+  const status = page.locator('#secure-dns-custom-status');
+  const waiting = (name) =>
+    `Enter the provider's address to switch to it. ${name} stays in use until then.`;
+  await expect(status).toHaveText(waiting('Quad9'));
   await page.screenshot({ path: test.info().outputPath('secure-dns-save-failed.png') });
 
-  // A save that goes through clears it.
+  // A save that goes through clears it. The repaint after it keeps the
+  // unsaved address and the in-use line: nothing else holds what was typed.
+  await page.evaluate(() => document.activeElement?.blur());
   await electronApp.evaluate(() => {
     globalThis.__secureDnsSaveResult = true;
   });
   await page.selectOption('#secure-dns-mode', 'secure');
   await expect(saveStatus).toHaveText('');
   await expect(saveStatus).toBeHidden();
+  await expect(page.locator('#secure-dns-custom-row')).toBeVisible();
+  await expect(page.locator('#secure-dns-custom')).toHaveValue(CUSTOM);
+  await expect(status).toHaveText(waiting('Quad9'));
   expect(await applied(electronApp)).toEqual({
     secureDnsMode: 'automatic',
     secureDnsServers: [QUAD9],
   });
+
+  // A Secure DNS change saved in another window clears a failed save's error
+  // here too (the controls now show what is stored), and the draft row follows
+  // the provider now in use.
+  await electronApp.evaluate(() => {
+    globalThis.__secureDnsSaveResult = false;
+  });
+  await page.selectOption('#secure-dns-mode', 'off');
+  await expect(saveStatus).toHaveText(failed);
+  const elsewhere = await page.evaluate(() => window.freedomAPI.getSettings());
+  await electronApp.evaluate(
+    ({ webContents }, settings) => {
+      for (const wc of webContents.getAllWebContents()) wc.send('settings:updated', settings);
+    },
+    { ...elsewhere, secureDnsProvider: 'cloudflare' }
+  );
+  await expect(saveStatus).toHaveText('');
+  await expect(page.locator('#secure-dns-provider')).toHaveValue('custom');
+  await expect(page.locator('#secure-dns-custom')).toHaveValue(CUSTOM);
+  await expect(status).toHaveText(waiting('Cloudflare'));
 });
 
 // Look `host` up through Chromium with its net log running, and return the

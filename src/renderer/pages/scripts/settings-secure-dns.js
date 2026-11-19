@@ -120,6 +120,9 @@ if (typeof module === 'object' && module.exports) {
 
     let stored = null;
     let draftCustom = false;
+    // The field holds an address the page refused (shown with its error
+    // until the field is rewritten or the address fixed).
+    let customInvalid = false;
 
     const setStatus = (message, kind) => {
       els.status.textContent = message || '';
@@ -134,11 +137,22 @@ if (typeof module === 'object' && module.exports) {
       els.saveStatus.className = message ? 'rpc-status error' : 'rpc-status';
     };
     const view = () => secureDnsView(stored, { draftCustom });
-    const paint = ({ keepCustomInput = false } = {}) => {
+    // Every repaint rebuilds the custom row's status from state, so a
+    // repaint (a Mode save, a broadcast) can't leave the row open with no
+    // word on which provider is still in use. While Custom is a draft, the
+    // field holds the only copy of what the user typed (nothing is stored
+    // yet), so it is never rewritten from the stored settings.
+    const paint = () => {
       if (!stored) return;
-      renderSecureDns(els, view(), {
-        keepCustomInput: keepCustomInput || document.activeElement === els.custom,
-      });
+      const keepCustomInput = draftCustom || document.activeElement === els.custom;
+      const v = renderSecureDns(els, view(), { keepCustomInput });
+      if (!keepCustomInput || !v.customVisible) {
+        customInvalid = false;
+        els.custom.removeAttribute('aria-invalid');
+      }
+      if (customInvalid) setStatus(secureDnsInvalidMessage(v), 'error');
+      else if (draftCustom) setStatus(secureDnsWaitingMessage(v));
+      else setStatus('');
     };
 
     const save = async (patch) => {
@@ -160,7 +174,7 @@ if (typeof module === 'object' && module.exports) {
       } catch {
         // Keep the last known settings; the next broadcast repaints.
       }
-      paint({ keepCustomInput: !ok && 'secureDnsCustomTemplate' in patch });
+      paint();
       return ok;
     };
 
@@ -170,6 +184,7 @@ if (typeof module === 'object' && module.exports) {
 
     els.provider.addEventListener('change', () => {
       const choice = els.provider.value;
+      customInvalid = false;
       els.custom.removeAttribute('aria-invalid');
       setStatus('');
       if (choice !== 'custom') {
@@ -183,7 +198,6 @@ if (typeof module === 'object' && module.exports) {
       }
       draftCustom = true;
       paint();
-      setStatus(secureDnsWaitingMessage(view()));
       els.custom.focus();
     });
 
@@ -191,10 +205,12 @@ if (typeof module === 'object' && module.exports) {
     els.custom.addEventListener('change', () => {
       const value = els.custom.value.trim();
       if (!isValidDohTemplate(value)) {
+        customInvalid = true;
         els.custom.setAttribute('aria-invalid', 'true');
         setStatus(secureDnsInvalidMessage(view()), 'error');
         return;
       }
+      customInvalid = false;
       els.custom.removeAttribute('aria-invalid');
       setStatus('');
       els.custom.value = value;
@@ -203,6 +219,16 @@ if (typeof module === 'object' && module.exports) {
 
     freedomAPI.onSettingsUpdated?.((settings) => {
       if (!settings) return;
+      // A Secure DNS change saved elsewhere (another window) supersedes a
+      // failed save here: what the controls now show is what is stored. And
+      // once Custom is the stored provider, the draft is moot.
+      const changed =
+        !stored ||
+        ['secureDnsMode', 'secureDnsProvider', 'secureDnsCustomTemplate'].some(
+          (key) => settings[key] !== stored[key]
+        );
+      if (changed) setSaveStatus('');
+      if (settings.secureDnsProvider === 'custom') draftCustom = false;
       stored = settings;
       paint();
     });
