@@ -1169,12 +1169,30 @@ function sendAsk(id, page, { account = 0, fee = FEE, again = false, prompt = PRO
 
 /**
  * Main's payment steps, stood in: the site's turn, the signer it builds,
- * and the transaction service, which adds the nonce (7) as main does
- * (`buildTransaction`, then the core's form) and runs main's guard after
- * the "signature".
+ * the transaction service, which adds the nonce (7) as main does
+ * (`buildTransaction`, then the core's form), runs main's guard after the
+ * "signature" around the journal and broadcast (`committed`), and says
+ * whether it recorded the send; and the core's `approval.check` for a
+ * rule's send (`rule`: its answer, or a function giving it; covered when
+ * null).
  */
 function payments() {
-  const paid = { turns: [], signed: [], remembered: [], safes: [], busy: false, waiting: false, refuse: null, during: null };
+  const paid = {
+    turns: [],
+    signed: [],
+    committed: [],
+    remembered: [],
+    safes: [],
+    checks: [],
+    busy: false,
+    waiting: false,
+    refuse: null,
+    during: null,
+    failAfterSign: null,
+    afterCommit: null,
+    recorded: true,
+    rule: null,
+  };
   paid.deps = {
     takeSiteTurn: async (site, { wait }) => {
       paid.turns.push([site, wait]);
@@ -1191,9 +1209,19 @@ function payments() {
       if (authorized.confirmation?.account === LEDGER) authorized.onReceipt({ receipt: RECEIPT, page: authorized.confirmation.page });
       paid.signed.push({ index: signer.index, authorized, presented, tx, context });
       await paid.during?.();
-      if (options.guardCommit) await options.guardCommit(async () => ({}));
+      if (paid.failAfterSign) throw paid.failAfterSign;
+      const commit = async () => {
+        paid.committed.push(presented);
+        return {};
+      };
+      await (options.guardCommit ? options.guardCommit(commit) : commit());
       options.onCommitted?.();
-      return { hash: SEND_HASH, recorded: true };
+      await paid.afterCommit?.();
+      return { hash: SEND_HASH, recorded: paid.recorded };
+    },
+    checkStanding: async (page, request) => {
+      paid.checks.push({ page, request });
+      return (typeof paid.rule === 'function' ? paid.rule() : paid.rule) ?? { covered: true, reason: null };
     },
     rememberDeviceSend: async (held) => {
       paid.remembered.push({ ...held });
@@ -1522,5 +1550,178 @@ describe('sends through the relay (0012 APB-4c)', () => {
       [view, { ...choices, other: [false] }],
     ];
     for (const [v, c] of bad) expect(() => sendShown(v, c)).toThrow();
+  });
+
+  // Round 1 of #1283's review, and main's checks in 0012's APR-5f bullet.
+  const NOT_CONNECTED = { code: 4100, message: 'Not connected. Call eth_requestAccounts first.' };
+  const RULE_GONE = {
+    code: -32603,
+    message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules",
+  };
+  const ACCOUNT_GONE = { code: -32603, message: 'The connected account is no longer available' };
+  const ruleSend = () => ({ send: { kind: 'dapp-send', account: 0, tx: CORE_TX, standing: true } });
+  const deviceSendOf = (type, account) => (answer) => ({
+    device: { type, kind: 'dapp-send', account, payload: { tx: CORE_TX }, handle: answer.handle, token: TOKEN },
+  });
+
+  test('a grant revoked or moved after the approve, as the core returns { send }, or during the signature: nothing is signed, or nothing signed is recorded or sent; a rule\'s send likewise', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    const grantChanges = [() => env.state.grants.delete('*'), () => env.state.grants.set('*', { walletIndex: 1 })];
+    for (const change of grantChanges) {
+      env.state.grants.set('*', { walletIndex: 0 });
+      sending(env, sendAsk, (answer) => {
+        change();
+        return tokenSend(answer);
+      });
+      expect((await approveSend(env, page)).answer).toEqual({ error: NOT_CONNECTED });
+    }
+    expect(paid.turns).toEqual([
+      [KEY_A, true],
+      [KEY_A, true],
+    ]);
+    expect(paid.signed).toEqual([]);
+    // Revoked while the core signed: withdrawn before the journal.
+    env.state.grants.set('*', { walletIndex: 0 });
+    paid.during = async () => env.state.grants.delete('*');
+    sending(env, sendAsk, (answer) => tokenSend(answer));
+    expect((await approveSend(env, page)).answer).toEqual({ error: NOT_CONNECTED });
+    expect(paid.signed).toHaveLength(1);
+    expect(paid.committed).toEqual([]);
+    expect(env.state.discarded).toEqual([TOKEN, TOKEN, TOKEN]);
+    // A rule's send: its grant gone as the core answers, or while it signs.
+    paid.during = null;
+    for (const change of grantChanges) {
+      env.state.grants.set('*', { walletIndex: 0 });
+      env.core.script = async () => {
+        change();
+        return ruleSend();
+      };
+      expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ error: RULE_GONE });
+    }
+    expect(paid.signed).toHaveLength(1);
+    env.state.grants.set('*', { walletIndex: 0 });
+    env.core.script = async () => ruleSend();
+    paid.during = async () => env.state.grants.delete('*');
+    expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ error: RULE_GONE });
+    expect(paid.signed).toHaveLength(2);
+    expect(paid.committed).toEqual([]);
+    expect(env.state.touched).toEqual([]);
+  });
+
+  test('a Ledger\'s send with "Always allow": one not recorded, or one that fails after the device signed, presents no receipt and writes no rule; a recorded one presents it', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    env.state.grants.set('*', { walletIndex: LEDGER });
+    sending(env, (id, pc) => sendAsk(id, pc, { account: LEDGER }), deviceSendOf('ledger', LEDGER));
+    paid.recorded = false;
+    expect((await approveSend(env, page, { alwaysAllow: true })).answer).toEqual({ result: SEND_HASH });
+    expect(paid.committed).toHaveLength(1);
+    expect(paid.remembered).toEqual([]);
+    paid.recorded = true;
+    paid.failAfterSign = new Error('The broadcast failed');
+    expect((await approveSend(env, page, { alwaysAllow: true })).answer).toEqual({
+      error: { code: -32603, message: 'The broadcast failed' },
+    });
+    expect(paid.signed).toHaveLength(2);
+    expect(paid.committed).toHaveLength(1);
+    expect(paid.remembered).toEqual([]);
+    paid.failAfterSign = null;
+    expect((await approveSend(env, page, { alwaysAllow: true })).answer).toEqual({ result: SEND_HASH });
+    expect(paid.remembered).toEqual([{ receipt: RECEIPT, page: env.core.sent.at(-1).context.page }]);
+    expect(env.state.discarded).toEqual([TOKEN, TOKEN, TOKEN]);
+  });
+
+  test('a device\'s send answered for another type than main\'s wallet record (a Ledger\'s as a phone\'s, a phone\'s as a Ledger\'s, the vault\'s as a Ledger\'s): no turn, no spend, no device, its token discarded', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    const crossed = [
+      [LEDGER, 'remote'],
+      [PHONE, 'ledger'],
+      [0, 'ledger'],
+    ];
+    for (const [account, type] of crossed) {
+      env.state.grants.set('*', { walletIndex: account });
+      sending(env, (id, pc) => sendAsk(id, pc, { account }), deviceSendOf(type, account));
+      expect((await approveSend(env, page)).answer).toEqual({ error: ACCOUNT_GONE });
+    }
+    expect(paid.turns).toEqual([]);
+    expect(paid.signed).toEqual([]);
+    expect(env.state.discarded).toEqual([TOKEN, TOKEN, TOKEN]);
+  });
+
+  test('a rule\'s send reads the site\'s rule again (approval.check under the PageContext read live, not paused) just before the signature and after it: one the core no longer answers sends nothing; after the signature, the rate its own slot spent and its fee stand', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    env.core.script = async () => ruleSend();
+    expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ result: SEND_HASH });
+    const request = {
+      kind: 'transaction',
+      account: 0,
+      accountType: 'mnemonic',
+      payload: { to: CALL.to, value: '0', data: CALL.data, chainId: 100, gasLimit: '21000', gasPrice: '1000000000' },
+      paused: false,
+    };
+    const checked = { page: env.core.sent.at(-1).context.page, request };
+    expect(paid.checks).toEqual([checked, checked]);
+    expect(paid.committed).toHaveLength(1);
+    // Before the signature: no rule, the rate spent, a failed check, custody.
+    const before = [
+      [{ covered: false, reason: 'no_rule' }, { error: RULE_GONE }],
+      [{ covered: false, reason: 'rate_limited' }, { error: RULE_GONE }],
+      [{ covered: false, reason: 'fee_check' }, { error: RULE_GONE }],
+      [
+        () => {
+          throw new Error('The core is gone');
+        },
+        { error: RULE_GONE },
+      ],
+      [{ covered: false, reason: 'custody' }, { error: { code: 4100, message: 'The origin is not authorized for this operation', data: { reason: 'agent_custody' } } }],
+    ];
+    for (const [rule, answer] of before) {
+      paid.rule = rule;
+      expect(await page.ask('eth_sendTransaction', [CALL])).toEqual(answer);
+    }
+    expect(paid.signed).toHaveLength(1);
+    // After it: a rule revoked or the grant's account gone while the core
+    // signed is withdrawn before the journal; the rate and the fee stand.
+    paid.rule = null;
+    for (const reason of ['no_rule', 'not_exposed', 'warning']) {
+      paid.during = async () => {
+        paid.rule = { covered: false, reason };
+      };
+      expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ error: RULE_GONE });
+      paid.rule = null;
+    }
+    expect(paid.signed).toHaveLength(4);
+    expect(paid.committed).toHaveLength(1);
+    expect(env.state.touched).toHaveLength(1);
+    for (const reason of ['rate_limited', 'fee_check']) {
+      paid.during = async () => {
+        paid.rule = { covered: false, reason };
+      };
+      expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ result: SEND_HASH });
+      paid.rule = null;
+    }
+    expect(paid.committed).toHaveLength(3);
+    expect(env.state.touched).toHaveLength(3);
+  });
+
+  test('a name moved off its IPNS key after the broadcast: the hash is the page\'s, with no last use for a rule\'s send and no receipt for a Ledger\'s', async () => {
+    const { env, paid } = sendSetup();
+    env.names.set(NAME, IPNS_KEY);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    env.core.script = async () => ruleSend();
+    paid.afterCommit = async () => env.names.set(NAME, OTHER_IPNS_KEY);
+    expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ result: SEND_HASH });
+    expect(paid.committed).toHaveLength(1);
+    expect(env.state.touched).toEqual([]);
+    env.names.set(NAME, IPNS_KEY);
+    const ledgerPage = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    env.state.grants.set('*', { walletIndex: LEDGER });
+    sending(env, (id, pc) => sendAsk(id, pc, { account: LEDGER }), deviceSendOf('ledger', LEDGER));
+    expect((await approveSend(env, ledgerPage, { alwaysAllow: true })).answer).toEqual({ result: SEND_HASH });
+    expect(paid.committed).toHaveLength(2);
+    expect(paid.remembered).toEqual([]);
   });
 });
