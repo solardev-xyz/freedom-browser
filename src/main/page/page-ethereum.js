@@ -22,14 +22,17 @@
  *     answers a connect, a signature or a send in that tab within the
  *     request, with its own approval, and the core is asked only when the
  *     agent doesn't take the request.
- *   - A DNS name over IPNS (until the browser sends `transport_key`, cored
- *     0.21.0): the name is resolved again before the key is first used and
- *     after the last wait, and a name that no longer answers the document's
- *     IPNS key answers as a keyless document's would ("This page has no
- *     address to connect from yet", or `[]` for `eth_accounts`). A send's
- *     name is checked again in its turn, just before the signature and after
- *     a signer's wait (`page-core-sends.js`); a signature that comes back
- *     after the name moved is withheld.
+ *   - A DNS name over IPNS where main holds the step (design 0012,
+ *     APR-5f): the core checks the name itself at each of the reference's
+ *     checks of `eth_accounts`, the connect, the switch, the signatures and
+ *     the sends, under the `transport_key` main's relay sends (APB-4e,
+ *     cored 0.21.0), and answers as a keyless document's once it moved
+ *     ("This page has no address to connect from yet", or `[]` for
+ *     `eth_accounts`). Main checks it again only after the steps it holds:
+ *     a send's after the site's turn, after the signature and before the
+ *     writes after it (`page-core-sends.js`), a Safe's before each
+ *     execution, a device's signature after the device signs
+ *     (`page-devices.js`), and the agent's route.
  *   - A new grant's events (PRQ-6), queued in the key's order at the write.
  *   - Binary params, refused before any JSON.
  *   - A send's form (`txOf`), checked first, in custody or not.
@@ -299,18 +302,6 @@ function createEthereumDispatchers(deps = {}) {
     return viaCore(context, { params: context.params });
   }
 
-  async function coreAccounts(context) {
-    const { requester } = context;
-    const named = Boolean(requester.key) && identityWalletEnabled();
-    // Name-revalidated: before the core reads the grant, and
-    // after its answer.
-    const keyless = { keyless: { result: [] } };
-    if (named && !(await context.nameHolds(keyless))) return { result: [] };
-    const answer = await viaCore(context);
-    if (named && !(await context.nameHolds(keyless))) return { result: [] };
-    return answer;
-  }
-
   async function coreRequestAccounts(context) {
     const { requester } = context;
     // The core answers `4900` with the switch off, then `4100` with no key.
@@ -318,12 +309,13 @@ function createEthereumDispatchers(deps = {}) {
     // The agent's route reads main's copy of the grants.
     await permissionsLoaded();
     const keyless = { keyless: { error: { ...NO_ADDRESS } } };
+    // The agent's route stays main's until APR-7, with its own name checks:
+    // before the agent is offered the request, and before its effect. The
+    // core is asked only when the agent doesn't take the request, and
+    // checks the name itself (APR-5f).
     if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
-    // The agent's route stays main's until APR-7: the core is asked only
-    // when the agent doesn't take the request.
     const agent = await agentAnswer(context, keyless);
     if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
-    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
     return viaCore(context, { announce: announceNewGrant });
   }
 
@@ -341,35 +333,35 @@ function createEthereumDispatchers(deps = {}) {
     }
   }
 
-  // The signatures (APB-4b): main's agent route and name checks around the
-  // core's, as main's own route ordered them before APB-4d.
+  // The signatures (APB-4b): main's agent route before the core's. The
+  // core checks a bound document's name itself (APR-5f), and a device's
+  // signature is checked again after the device signs (`page-devices.js`).
   async function coreSign(context) {
     const { requester } = context;
     // The core answers `4900` with the switch off, then `4100` with no key.
     if (!requester.key || !identityWalletEnabled()) return viaCore(context, { params: context.params });
     // The agent's route reads main's copy of the grants.
     await permissionsLoaded();
-    const keyless = { keyless: { error: { ...NO_ADDRESS } } };
-    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
     // A tab the agent holds: the agent service answers, within the request,
-    // until APR-7. Only a tab in custody is offered to it.
-    const agent = custody(requester.guest) ? await agentAnswer(context, keyless) : null;
-    if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
-    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
-    const answer = await viaCore(context, {
+    // until APR-7, after its own check of the name. Only a tab in custody
+    // is offered to it, read in the run that sends the core its
+    // PageContext otherwise.
+    if (custody(requester.guest)) {
+      const keyless = { keyless: { error: { ...NO_ADDRESS } } };
+      if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
+      const agent = await agentAnswer(context, keyless);
+      if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
+    }
+    return viaCore(context, {
       params: context.params,
       device: (device, page) => devices.sign(context, device, page),
     });
-    // After the signature's wait: the name again, and the key. A name that
-    // moved gets no signature.
-    if (answer.result !== undefined && (!(await context.nameHolds(keyless)) || !context.holdsKey())) {
-      return { error: { ...NO_ADDRESS } };
-    }
-    return answer;
   }
 
-  // The sends (APB-4c): main's agent route and name checks around the
-  // core's, as main's own route ordered them before APB-4d.
+  // The sends (APB-4c): main's agent route before the core's. The core
+  // checks a bound document's name itself (APR-5f-2), and main again in the
+  // send's turn, after the signature and before the writes after it
+  // (`page-core-sends.js`).
   async function coreSend(context) {
     const { requester } = context;
     // The core answers `4900` with the switch off, then `4100` with no key.
@@ -384,11 +376,13 @@ function createEthereumDispatchers(deps = {}) {
     } catch (err) {
       return { error: { code: -32602, message: err.message } };
     }
-    if (!(await context.nameHolds())) return { error: { ...NO_ADDRESS } };
-    const agent = custody(requester.guest, sendDeps.inCustody) ? await agentAnswer(context, {}, [agentTxOf(tx)]) : null;
-    // Refused because the name moved: the keyless answer. Sent: the hash.
-    if (agent) return agent.error && !context.holdsKey() ? { error: { ...NO_ADDRESS } } : agent;
-    if (!(await context.nameHolds())) return { error: { ...NO_ADDRESS } };
+    // A tab the agent holds: its route, after its own check of the name.
+    if (custody(requester.guest, sendDeps.inCustody)) {
+      if (!(await context.nameHolds())) return { error: { ...NO_ADDRESS } };
+      const agent = await agentAnswer(context, {}, [agentTxOf(tx)]);
+      // Refused because the name moved: the keyless answer. Sent: the hash.
+      if (agent) return agent.error && !context.holdsKey() ? { error: { ...NO_ADDRESS } } : agent;
+    }
     // After `{ send }` or `{ device }` main checks the name itself, in the
     // send's turn and after a signer's wait (`page-core-sends.js`). Once a
     // payment has gone, its hash is the page's.
@@ -402,7 +396,9 @@ function createEthereumDispatchers(deps = {}) {
   const dispatchers = {
     'ethereum:eth_chainId': (context) => viaCore(context),
     'ethereum:net_version': (context) => viaCore(context),
-    'ethereum:eth_accounts': coreAccounts,
+    // The core checks a bound document's name before it reads the grant
+    // and before an account goes out (APR-5f).
+    'ethereum:eth_accounts': (context) => viaCore(context),
     'ethereum:eth_requestAccounts': coreRequestAccounts,
     'ethereum:wallet_switchEthereumChain': coreSwitchChain,
   };

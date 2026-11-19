@@ -14,6 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
+const { serveCoreNaming, coreResolved, coreReads, clearCoreNamingCaches } = require('./core-naming-fixtures');
 const { PROVENANCE_HEADER, encodeOnchainProvenance } = require('../src/main/onchain/onchain-app-protocol');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -321,13 +322,16 @@ test('the Ethereum reads go to main, with the chrome\'s answers: the selected ch
   await win.screenshot({ path: test.info().outputPath('page-eth-reads.png') });
 });
 
-test('a DNS name over IPNS: eth_accounts answers until the name moves off its key, then []; its reads answer with no resolution (0011 PRQ-3)', async ({
+test('a DNS name over IPNS: eth_accounts answers until the name moves off its key, then []; its reads answer with no resolution (0011 PRQ-3, 0012 APR-5f)', async ({
   electronApp,
   window: win,
   harness,
 }) => {
   test.setTimeout(120_000);
-  // Main resolves the bound name itself; the harness stands in for ENS.
+  // One mutable name → key map. Main binds the name at the commit with its
+  // own resolution, which the harness stands in for; the identity core
+  // checks it at eth_accounts with its own naming, whose reads main's
+  // naming shell hands to core-naming-fixtures' hop (0012 APR-5f).
   await electronApp.evaluate((_electron, args) => {
     globalThis.__names = { [args.name]: args.key };
     globalThis.__resolved = [];
@@ -337,6 +341,7 @@ test('a DNS name over IPNS: eth_accounts answers until the name moves off its ke
       return decoded ? { type: 'ok', protocol: 'ipns', decoded } : { type: 'not_found' };
     });
   }, { name: NAME, key: IPNS_KEY });
+  await serveCoreNaming(electronApp, [IPNS_KEY, OTHER_IPNS_KEY]);
   // The chrome's own resolution, which loads the key.
   await harness.setEnsFixture(NAME, {
     type: 'ok',
@@ -360,28 +365,41 @@ test('a DNS name over IPNS: eth_accounts answers until the name moves off its ke
     true
   );
   const url = `ipns://${IPNS_KEY}`;
+  const resolved = () => electronApp.evaluate(() => globalThis.__resolved.slice());
+  await electronApp.evaluate(() => (globalThis.__resolved = []));
+  // The core checks the name, which still serves the page's key: the account.
   expect(await ask(win, url, 'eth_accounts')).toEqual({ ok: [account] });
+  expect(await coreResolved(electronApp)).toEqual([NAME]);
+  expect(await resolved()).toEqual([]);
 
-  // The name moves to other content.
+  // The name moves to other content, and naming's cached answer goes.
   await electronApp.evaluate((_electron, key) => {
     globalThis.__names['example.com'] = key;
     globalThis.__resolved = [];
+    globalThis.__coreResolved = [];
   }, OTHER_IPNS_KEY);
-  const resolved = () => electronApp.evaluate(() => globalThis.__resolved.slice());
+  await clearCoreNamingCaches(electronApp);
 
   // The permission-free reads answer on, resolving nothing.
   await selectChain(win, NO_RPC_CHAIN);
   expect(await ask(win, url, 'eth_chainId')).toEqual({ ok: '0x7a69' });
   expect(await ask(win, url, 'net_version')).toEqual({ ok: String(NO_RPC_CHAIN) });
   expect(await ask(win, url, 'eth_blockNumber')).toEqual({ code: expect.any(Number), message: NO_RPC });
-  expect(await resolved()).toEqual([]);
+  expect(await coreResolved(electronApp)).toEqual([]);
 
-  // eth_accounts checks the name, finds it moved, and answers [].
+  // eth_accounts: the core checks the name, finds it moved, and answers [].
   expect(await ask(win, url, 'eth_accounts')).toEqual({ ok: [] });
-  expect(await resolved()).toEqual([NAME]);
-  // The binding has ended: the page is keyless now, and resolves nothing.
+  expect(await coreResolved(electronApp)).toEqual([NAME]);
+  // The binding has ended: the page is keyless now, and resolves nothing,
+  // even with nothing cached. The raw count, since a repeated lookup of the
+  // same name wouldn't change `coreResolved`.
+  const readsAfterMove = await coreReads(electronApp);
+  await clearCoreNamingCaches(electronApp);
   expect(await ask(win, url, 'eth_accounts')).toEqual({ ok: [] });
   expect(await ask(win, url, 'eth_chainId')).toEqual({ ok: '0x7a69' });
-  expect(await resolved()).toEqual([NAME]);
+  expect(await coreReads(electronApp)).toBe(readsAfterMove);
+  expect(await coreResolved(electronApp)).toEqual([NAME]);
+  // Main resolved nothing after the commit: the checks are the core's.
+  expect(await resolved()).toEqual([]);
   expect(await oldPath(win)).toEqual([]);
 });

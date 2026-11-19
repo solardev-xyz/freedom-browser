@@ -729,6 +729,11 @@ describe('vaultBackend', () => {
       { ...page, navigation: undefined },
       { ...page, navigation: 1.5 },
       { ...page, agent: 'yes' },
+      // cored 0.21.0 exits on a transport key that isn't a string or null.
+      { ...page, transport_key: 7 },
+      { ...page, transport_key: false },
+      { ...page, transport_key: ['ipns://k51'] },
+      { ...page, transport_key: { key: 'ipns://k51' } },
       'https://app.example',
     ];
     for (const bad of undecodable) {
@@ -744,14 +749,20 @@ describe('vaultBackend', () => {
     // An empty origin decodes: the core answers it (from 0.18.0, with its
     // own invalid_argument). No agent field, or a null one, decodes too:
     // the core then lets no standing rule answer.
-    for (const good of [{ ...page, origin: '', top_origin: '' }, { ...page, agent: undefined }, { ...page, agent: null }]) {
+    // A transport key absent, null or a string decodes (cored 0.21.0).
+    const named = { ...page, origin: 'docs.example.org', top_origin: 'docs.example.org', transport_key: 'ipns://k51abc' };
+    const goods = [
+      { ...page, origin: '', top_origin: '' },
+      { ...page, agent: undefined },
+      { ...page, agent: null },
+      named,
+      { ...page, transport_key: null },
+      { ...page, transport_key: undefined },
+    ];
+    for (const good of goods) {
       await vaultBackend.approval.touch({ store: 'dapp', chain_id: 1 }, good);
     }
-    expect(core.calls.map(({ context }) => context)).toEqual([
-      { caller: 'page', page: { ...page, origin: '', top_origin: '' } },
-      { caller: 'page', page: { ...page, agent: undefined } },
-      { caller: 'page', page: { ...page, agent: null } },
-    ]);
+    expect(core.calls.map(({ context }) => context)).toEqual(goods.map((good) => ({ caller: 'page', page: good })));
   });
 
   // A Safe approval lives in the memory of the core process that gave it

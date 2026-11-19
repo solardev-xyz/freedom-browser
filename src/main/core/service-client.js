@@ -228,6 +228,10 @@ const STATE = {
   FAILED: 'failed',
 };
 
+// A request whose `requires` the process it would be written to doesn't
+// meet: refused in main, nothing written (see send).
+const REQUIREMENT_UNMET = 'requirement_unmet';
+
 class CoreError extends Error {
   /**
    * @param {string} code - fc-protocol error code, or `core_unavailable`
@@ -393,6 +397,17 @@ function cancelled() {
   return new CoreError('cancelled', 'Cancelled');
 }
 
+/** Whether process `gen` meets a request's `requires`: its own hello, once
+ * ready, answers true. No hello, or a throw, doesn't. */
+function meets(gen, requires) {
+  if (!gen.ready || !gen.hello) return false;
+  try {
+    return requires(gen.hello) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** A handler's failure as a reply's error: a ShellError's code, cancelled
  * once the signal aborted, and otherwise `internal`, never its text. */
 function shellErrorBody(err, signal) {
@@ -476,6 +491,7 @@ class Generation {
     this.helloTimer = null;
     this.ready = false; // a valid handshake completed while live
     this.readyAt = null; // when (`now()`) the handshake completed
+    this.hello = null; // its handshake's result, once ready (`requires`)
     // A start step answered with an error (`endsOnError`): the process ends
     // after it, and its exit 0 is no crash.
     this.stepFailed = false;
@@ -650,12 +666,17 @@ class ServiceClient extends EventEmitter {
    * @param {AbortSignal|null} [options.signal] - cancels it (see requestTo)
    * @param {Function|null} [options.onSent] - `(id, generation)` once it is
    *   written (see requestTo)
+   * @param {Function|null} [options.requires] - `(hello) => boolean`, the
+   *   process the request may go to, checked against the hello of the one
+   *   it is written to as it is written (see requestTo). One waiting for
+   *   readiness is checked against the next process's hello, never the one
+   *   that exited.
    */
   async request(
     method,
     params = {},
     context = { caller: 'chrome' },
-    { watchdogMs = null, signal = null, onSent = null } = {}
+    { watchdogMs = null, signal = null, onSent = null, requires = null } = {}
   ) {
     if (this.state !== STATE.READY) {
       // Requests waiting for readiness are bounded like those in flight:
@@ -681,7 +702,12 @@ class ServiceClient extends EventEmitter {
         this.waitingBytes -= size;
       }
     }
-    return this.send(this.current, method, params, context, { watchdogMs, signal, onSent });
+    return this.send(this.current, method, params, context, {
+      watchdogMs,
+      signal,
+      onSent,
+      requires,
+    });
   }
 
   /**
@@ -729,6 +755,15 @@ class ServiceClient extends EventEmitter {
    * generation's number, which the process's own requests about this one
    * name (design 0009, `shell.dweb_get`'s `for`). It must not throw.
    *
+   * `requires(hello)` is what the process must be for the request: it runs
+   * with the hello of the very process the frame is written to, in the same
+   * synchronous run as the write, so a request can't pass on one process's
+   * hello and go to another's (the client's own `hello` is the exited
+   * process's until it is retired). Anything but true, or a throw, sends
+   * nothing, and the request fails `requirement_unmet`. A request is never
+   * written again to another process: one cut off by an exit fails
+   * unavailable.
+   *
    * `endsOnError` marks a start step (freedom-core design 0008, Errors):
    * the process answers its error and then exits 0. Once the process has
    * answered it with an error, the generation is ending: main sends it
@@ -748,6 +783,7 @@ class ServiceClient extends EventEmitter {
       fence = null,
       onSent = null,
       endsOnError = false,
+      requires = null,
     } = {}
   ) {
     if (!this.serves(gen)) return Promise.reject(this.unavailable());
@@ -758,6 +794,7 @@ class ServiceClient extends EventEmitter {
       fence,
       onSent,
       endsOnError,
+      requires,
     });
   }
 
@@ -986,6 +1023,7 @@ class ServiceClient extends EventEmitter {
     if (this.stopRequested || gen !== this.current) return;
     gen.ready = true;
     gen.readyAt = this.now();
+    gen.hello = hello;
     this.hello = hello;
     this.state = STATE.READY;
     this.emit('ready', hello);
@@ -1248,6 +1286,7 @@ class ServiceClient extends EventEmitter {
       stream = false,
       onSent = null,
       endsOnError = false,
+      requires = null,
     } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
@@ -1295,6 +1334,14 @@ class ServiceClient extends EventEmitter {
     if (signal?.aborted) return refuse(cancelled());
     if (!control && gen.writeBytes + frame.length > MAX_WRITE_BYTES) {
       return refuse(new CoreError('busy', 'Too much data in flight'));
+    }
+    // The process this frame is written to must be what the request
+    // requires: its own hello, read in this run, which writes the frame
+    // without yielding (see requestTo).
+    if (requires && !meets(gen, requires)) {
+      return refuse(
+        new CoreError(REQUIREMENT_UNMET, `The ${this.service.noun} can't take this request`)
+      );
     }
     // After everything that ran the caller's code, and before anything is
     // taken or written.
@@ -2052,12 +2099,19 @@ class ServiceClient extends EventEmitter {
   /** `callStream` to the ready process `gen` names, as `requestTo`. */
   requestStreamTo(gen, method, params = {}, context = { caller: 'shell' }, options = {}) {
     if (!this.serves(gen)) return Promise.reject(this.unavailable());
-    const { watchdogMs = null, signal = null, fence = null, onSent = null } = options;
+    const {
+      watchdogMs = null,
+      signal = null,
+      fence = null,
+      onSent = null,
+      requires = null,
+    } = options;
     return this.send(gen, method, params, context, {
       watchdogMs,
       signal,
       fence,
       onSent,
+      requires,
       stream: true,
     });
   }
@@ -2638,6 +2692,7 @@ class ServiceClient extends EventEmitter {
 module.exports = {
   ServiceClient,
   CoreError,
+  REQUIREMENT_UNMET,
   JsonParams,
   JsonText,
   ShellError,

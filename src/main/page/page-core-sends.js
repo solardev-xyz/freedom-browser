@@ -42,8 +42,10 @@
  *
  * Main checks an IPNS-served page's name itself, where the reference did:
  * in the send's turn just before the signature, and after a signer's wait
- * before the signed bytes are recorded or sent (the core resolves no name
- * for a send in cored 0.20.0). Once a payment that passed that gate has
+ * before the signed bytes are recorded or sent. From cored 0.21.0 the core
+ * resolves the name for a send too, at its own checks up to the token it
+ * hands main, but the signature and the broadcast come after those, in
+ * main. Once a payment that passed that gate has
  * gone out, its hash is the requesting document's (D13: the hash is a public
  * fact about a payment the user approved for this request, and a site told
  * nothing of a payment made could pay again); a write under the key after it

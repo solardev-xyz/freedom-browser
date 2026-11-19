@@ -1363,6 +1363,11 @@ function installTestHarness({ defaultSession, agentRuntime }) {
   // The approvals documents (0011 APS-1), on unless FREEDOM_APPROVALS_DOCUMENT=0:
   // each window's panel and what main did with it.
   globalThis.__FREEDOM_TEST_APPROVALS__ = enableApprovalsTestHooks();
+  // Naming's exchanges with the network (freedom-core design 0004), which a
+  // spec may answer itself: the identity core checks a DNS name over IPNS
+  // with its own naming (0012 APR-5f), and its reads come to main's naming
+  // shell.
+  globalThis.__FREEDOM_TEST_NAMING__ = require('./core/naming-shell').enableNamingShellTestHooks();
   exposeGlobalShim(agentRuntime);
   return true;
 }

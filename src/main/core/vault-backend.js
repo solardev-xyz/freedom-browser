@@ -58,9 +58,10 @@ function client() {
 /**
  * Whether `page` is a PageContext the core can decode (fc-protocol's
  * `PageContext`): `origin` and `top_origin` strings, `frame` and
- * `navigation` unsigned integers, `agent` a boolean or absent. The core
- * reads any other as a protocol error and exits, failing every request in
- * flight. A keyless document has no key to send: from cored 0.18.0 the core
+ * `navigation` unsigned integers, `agent` a boolean or absent, and
+ * `transport_key` (cored 0.21.0, for a DNS name over IPNS) a string or
+ * absent. The core reads any other as a protocol error and exits, failing
+ * every request in flight. A keyless document has no key to send: from cored 0.18.0 the core
  * answers an empty `origin` `invalid_argument` on every page method but
  * `eip1193.request`, and main sends no page method for one (the page
  * providers refuse it first).
@@ -74,7 +75,8 @@ function decodablePage(page) {
     page.frame >= 0 &&
     Number.isSafeInteger(page.navigation) &&
     page.navigation >= 0 &&
-    (page.agent == null || typeof page.agent === 'boolean')
+    (page.agent == null || typeof page.agent === 'boolean') &&
+    (page.transport_key == null || typeof page.transport_key === 'string')
   );
 }
 
@@ -82,7 +84,7 @@ function decodablePage(page) {
  * One core request under its watchdog: from main itself (caller `shell`), or
  * for a page's request under `page` with its PageContext (freedom-core
  * designs 0011 and 0012, "PageContext"): `{ origin, top_origin, frame,
- * navigation, agent }`. `'chrome'` relays the chrome's own request (a
+ * navigation, agent, transport_key? }`. `'chrome'` relays the chrome's own request (a
  * grant's narrowing from its settings: design 0012, "The model"). A
  * PageContext the core couldn't decode (a null `origin`, say) is refused
  * here, `invalid_argument`, and never sent: it would end the core.

@@ -910,3 +910,83 @@ describe('the executors', () => {
     expect(prefetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("the E2E harness's hop (test-harness.js, under FREEDOM_TEST_MODE)", () => {
+  // A fresh module, its hooks not yet enabled, over a network that fails.
+  function fresh() {
+    let shell;
+    const netGatewayFetch = jest.fn(async () => {
+      throw new Error('no network here');
+    });
+    jest.isolateModules(() => {
+      jest.doMock('../ipfs/gateway-transport', () => ({
+        ...jest.requireActual('../ipfs/gateway-transport'),
+        netGatewayFetch,
+      }));
+      shell = require('./naming-shell');
+    });
+    const register = (deps = {}) => {
+      const handlers = new Map();
+      shell.registerNamingShell(
+        { handle: (method, fn) => handlers.set(method, fn) },
+        {
+          endpointUrl: () => 'https://a.rpc.example',
+          generations: { ens: 2, tezos: 1, lifecycle: 0 },
+        },
+        { wait: async () => {}, prefetch: jest.fn(), ...deps }
+      );
+      return (params) =>
+        Promise.resolve().then(() =>
+          handlers.get('shell.rpc')(
+            { endpoint: 'e1', body: BODY, generations: { ens: 2 }, deadline_ms: 1000, ...params },
+            { signal: new AbortController().signal }
+          )
+        );
+    };
+    return { shell, netGatewayFetch, register };
+  }
+  const reply = (text) => async () => ({ status: 200, headers: {}, body: Buffer.from(text) });
+
+  test('is inert until the harness enables it and a spec sets one; the network is used otherwise', async () => {
+    const { shell, netGatewayFetch, register } = fresh();
+    const rpc = register();
+    await expect(rpc()).rejects.toBeTruthy();
+    expect(netGatewayFetch).toHaveBeenCalled();
+    netGatewayFetch.mockClear();
+
+    const hooks = shell.enableNamingShellTestHooks();
+    // Enabled, with no hop set: still the network.
+    await expect(rpc()).rejects.toBeTruthy();
+    expect(netGatewayFetch).toHaveBeenCalled();
+    netGatewayFetch.mockClear();
+
+    const hop = jest.fn(reply('{"from":"spec"}'));
+    hooks.setHop(hop);
+    await expect(rpc()).resolves.toEqual({
+      status: 200,
+      body: Buffer.from('{"from":"spec"}').toString('base64'),
+    });
+    expect(hop).toHaveBeenCalledWith(
+      'https://a.rpc.example',
+      expect.objectContaining({ method: 'POST', body: BODY })
+    );
+    expect(netGatewayFetch).not.toHaveBeenCalled();
+
+    // Unset: the network again.
+    hooks.setHop(undefined);
+    await expect(rpc()).rejects.toBeTruthy();
+    expect(netGatewayFetch).toHaveBeenCalled();
+  });
+
+  test("a unit test's own hop wins over a spec's", async () => {
+    const { shell, register } = fresh();
+    const spec = jest.fn(reply('{"from":"spec"}'));
+    shell.enableNamingShellTestHooks().setHop(spec);
+    const rpc = register({ hop: reply('{"from":"deps"}') });
+    await expect(rpc()).resolves.toEqual({
+      status: 200,
+      body: Buffer.from('{"from":"deps"}').toString('base64'),
+    });
+    expect(spec).not.toHaveBeenCalled();
+  });
+});

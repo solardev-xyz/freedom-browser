@@ -20,6 +20,7 @@ const { createPageRequests, GONE } = require('./page-requests');
 const { CLASS, methodRow, ETHEREUM_RPC_READS } = require('./page-methods');
 const { ETHEREUM_READ_METHODS, ETHEREUM_PAGE_METHODS, createEthereumDispatchers } = require('./page-ethereum');
 const { createEip1193Relay } = require('./page-eip1193');
+const { CoreError, REQUIREMENT_UNMET } = require('../core/service-client');
 const { createPageEvents } = require('./page-events');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { AgentWalletController } = require('../agent/agent-wallet-controller');
@@ -185,20 +186,49 @@ const eventFrom = (guest) => ({ sender: guest, senderFrame: guest.mainFrame });
  * `4200`, or `4100` for a keyless document as the core does, which the tests
  * of main's gates read as the core's answer.
  */
-function standInCore(state, grantPermission, relayOf) {
+function standInCore(state, grantPermission, relayOf, names) {
   let lastId = 0;
   const core = {
+    // A core that checks a bound document's name itself (cored 0.21.0).
+    hello: { core_version: '0.21.0' },
     // Every request main sent, with the PageContext it went under.
     sent: [],
     // The origins whose grant the core read.
     grantReads: [],
+    // The names the core checked itself (APR-5f), and the documents whose
+    // binding a moved name ended.
+    nameChecks: [],
+    ended: new Set(),
     request: async (method, body, context, options) => {
+      // The client's check of the process it writes to (`requires`).
+      if (options.requires && !options.requires(core.hello)) {
+        throw new CoreError(REQUIREMENT_UNMET, "The identity core can't take this request");
+      }
       const id = ++lastId;
       core.sent.push({ id, method: body.method, params: body.params, page: context.page });
       options.onSent(id, GENERATION);
       if (options.signal?.aborted) throw Object.assign(new Error('Cancelled'), { code: 'cancelled' });
       return answer(id, body, context.page, options.signal);
     },
+  };
+
+  // The core's own check of a bound document's name (cored 0.21.0,
+  // APR-5f): its naming reads the names main's does. A name that moved ends
+  // the document's binding, and the document's later checks resolve
+  // nothing.
+  async function nameServes(page) {
+    if (!page.transport_key || page.transport_key === page.origin) return true;
+    const doc = [page.origin, page.transport_key, page.frame, page.navigation].join(' ');
+    if (core.ended.has(doc)) return false;
+    core.nameChecks.push(page.origin);
+    await null;
+    const serves = page.transport_key === `ipns://${names.get(page.origin)}`;
+    if (!serves) core.ended.add(doc);
+    return serves;
+  }
+  const checked = async (page, times) => {
+    for (let i = 0; i < times; i += 1) if (!(await nameServes(page))) return false;
+    return true;
   };
 
   function grantedAccount(page, world) {
@@ -244,15 +274,20 @@ function standInCore(state, grantPermission, relayOf) {
       return { result: `${method}@${chainId}` };
     }
     if (method === 'eth_accounts') {
+      // Before the grant is read, and before the account goes out.
+      if (!(await checked(page, 1))) return { result: [] };
       const account = grantedAccount(page, world);
+      if (account && !(await checked(page, 1))) return { result: [] };
       return { result: account ? [account] : [] };
     }
     if (method === 'eth_requestAccounts') {
       if (!page.origin) return NO_ADDRESS;
+      if (!(await checked(page, 2))) return NO_ADDRESS;
       const account = grantedAccount(page, world);
       return account ? { result: [account] } : connect(id, page, world, chainId, signal);
     }
     if (!page.origin) return NO_ADDRESS;
+    if (!(await checked(page, 2))) return NO_ADDRESS;
     return STAND_IN_REFUSAL;
   }
 
@@ -260,7 +295,7 @@ function standInCore(state, grantPermission, relayOf) {
 }
 
 /** Main's backends and the dispatchers' deps, all in memory, over main's relay. */
-function backends({ wallets = CONNECT_WALLETS } = {}) {
+function backends({ wallets = CONNECT_WALLETS, names = new Map() } = {}) {
   const state = {
     enabled: true,
     // Main's copy of the grants, which the core writes.
@@ -302,7 +337,7 @@ function backends({ wallets = CONNECT_WALLETS } = {}) {
     state.permissions.set(key, { origin: key, walletIndex, chainId });
   });
   let relay = null;
-  const core = standInCore(state, grantPermission, () => relay);
+  const core = standInCore(state, grantPermission, () => relay, names);
   relay = createEip1193Relay({
     coreClient: () => core,
     watchdogMs: () => 135_000,
@@ -367,7 +402,7 @@ function setup({ resolveEnsContent, agentContext = false, wallets } = {}) {
         return key ? { type: 'ok', protocol: 'ipns', decoded: key } : { type: 'not_found' };
       }),
   });
-  const { state, deps, core, signer, grantPermission } = backends({ wallets });
+  const { state, deps, core, signer, grantPermission } = backends({ wallets, names });
   const sent = [];
   const timers = [];
   const trace = [];
@@ -525,6 +560,9 @@ describe("main's part around the core's dispatcher (0012 APB-4d)", () => {
     expect(env.copies).toHaveLength(1);
   });
 
+  // The core checks a bound document's name itself (cored 0.21.0, APR-5f),
+  // under the `transport_key` main's relay sends: main resolves it only at
+  // the commit, and for the steps it holds.
   describe('a DNS name over IPNS', () => {
     function named() {
       const env = setup();
@@ -535,21 +573,22 @@ describe("main's part around the core's dispatcher (0012 APB-4d)", () => {
       return { env, page };
     }
 
-    test('eth_accounts answers the name\'s account, checking the name before the core reads the grant and after its answer', async () => {
+    test('eth_accounts goes to the core with the binding, which checks the name before it reads the grant and before the account goes out; main resolves nothing after the commit', async () => {
       const { env, page } = named();
       expect(await page.ask('eth_accounts')).toEqual({ result: [ACCOUNT] });
-      // The commit's check, then one before the core's request and one
-      // after its answer.
-      expect(env.resolutions).toEqual([NAME, NAME, NAME]);
-      // The core read the name's grant.
+      // The commit's check, main's only.
+      expect(env.resolutions).toEqual([NAME]);
+      expect(env.core.sent.at(-1).page).toMatchObject({ origin: NAME, transport_key: `ipns://${IPNS_KEY}` });
+      expect(env.core.nameChecks).toEqual([NAME, NAME]);
       expect(env.core.grantReads).toEqual([NAME]);
     });
 
-    test('once the name moves off the IPNS key, eth_accounts answers [] and the binding ends; reads still answer, with no resolution', async () => {
+    test('once the name moves off the IPNS key, the core answers eth_accounts [] and ends its binding; reads still answer, checking nothing; main resolves nothing', async () => {
       const { env, page } = named();
       expect(await page.ask('eth_accounts')).toEqual({ result: [ACCOUNT] });
       env.names.set(NAME, OTHER_IPNS_KEY);
       env.resolutions.length = 0;
+      env.core.nameChecks.length = 0;
 
       // The permission-free reads go to the core under the key as it
       // stands, resolving nothing.
@@ -557,39 +596,30 @@ describe("main's part around the core's dispatcher (0012 APB-4d)", () => {
       expect(await page.ask('net_version')).toEqual({ result: '100' });
       expect(await page.ask('eth_blockNumber')).toEqual({ result: 'eth_blockNumber@100' });
       expect(env.state.reads.at(-1).origin).toBe(NAME);
-      expect(env.resolutions).toEqual([]);
+      expect(env.core.nameChecks).toEqual([]);
 
       env.core.grantReads.length = 0;
-      const asked = env.core.sent.length;
       expect(await page.ask('eth_accounts')).toEqual({ result: [] });
-      expect(env.resolutions).toEqual([NAME]);
-      // Answered before the core was asked.
-      expect(env.core.sent).toHaveLength(asked);
-      expect(env.trace.filter((e) => e.kind === 'name-checked').at(-1)).toMatchObject({ holds: false });
-
-      // The binding has ended: the document is keyless now, so its next
-      // eth_accounts resolves nothing, not even the IPNS key's own, and
-      // goes to the core with the empty origin, which reads no grant; its
-      // reads go under the empty origin too.
-      expect(await page.ask('eth_accounts')).toEqual({ result: [] });
-      expect(env.resolutions).toEqual([NAME]);
-      expect(env.core.sent.at(-1).page.origin).toBe('');
+      expect(env.core.nameChecks).toEqual([NAME]);
       expect(env.core.grantReads).toEqual([]);
-      expect(await page.ask('eth_chainId')).toEqual({ result: '0x64' });
-      expect(await page.ask('eth_blockNumber')).toEqual({ result: 'eth_blockNumber@100' });
-      expect(env.state.reads.at(-1).origin).toBe('');
+      // The core's binding has ended: its next check resolves nothing.
+      // Main isn't told, so the document still sends its binding.
+      expect(await page.ask('eth_accounts')).toEqual({ result: [] });
+      expect(env.core.nameChecks).toEqual([NAME]);
+      expect(env.core.sent.at(-1).page).toMatchObject({ origin: NAME, transport_key: `ipns://${IPNS_KEY}` });
+      expect(env.resolutions).toEqual([]);
 
-      // Even with the name answering again, a reload on the same key is
-      // bound only by a fresh page:bind-name.
+      // A new document binds again, from main's check at its commit.
       env.names.set(NAME, IPNS_KEY);
       page.guest.commit(`ipns://${IPNS_KEY}/docs`);
+      await flush();
       const reloaded = env.greet(page.guest);
-      expect(await reloaded.ask('eth_accounts')).toEqual({ result: [SECOND] });
-      expect(env.core.grantReads.at(-1)).toBe(`ipns://${IPNS_KEY}`);
+      expect(await reloaded.ask('eth_accounts')).toEqual({ result: [ACCOUNT] });
+      expect(env.resolutions).toEqual([NAME]);
     });
 
-    // Main's wallet list is read for the core's world while the request
-    // is out, between main's two checks.
+    // Main's wallet list is read for the core's world before the request
+    // goes out: the core's checks come after it.
     test('a name that moves while the wallets are read answers []', async () => {
       const { env, page } = named();
       env.state.derive = async () => {
@@ -599,87 +629,22 @@ describe("main's part around the core's dispatcher (0012 APB-4d)", () => {
       expect(await page.ask('eth_accounts')).toEqual({ result: [] });
     });
 
-    test('a frame that moved off its IPNS key during the resolution answers []', async () => {
-      let release;
-      const env = setup({
-        resolveEnsContent: async () => {
-          if (release === undefined) return { type: 'ok', protocol: 'ipns', decoded: IPNS_KEY };
-          await new Promise((resolve) => {
-            release = resolve;
-          });
-          return { type: 'ok', protocol: 'ipns', decoded: IPNS_KEY };
-        },
-      });
-      env.state.permissions.set(NAME, { walletIndex: 0 });
-      const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    // An account the core answered goes out only while main still holds
+    // the key: main's own check of the name, for a step it holds, may end
+    // its binding while the core's answer is on its way.
+    test('an account whose binding main ended while the core answered is withheld: []', async () => {
+      const { env, page } = named();
       await flush();
-      release = null;
-      const answer = page.ask('eth_accounts');
-      await flush();
-      // The frame now shows another site, whose commit main hasn't seen yet.
-      page.guest.mainFrame.url = `ipns://${OTHER_IPNS_KEY}/`;
-      release();
-      expect(await answer).toEqual({ result: [] });
-    });
-
-    describe('concurrent checks of one name', () => {
-      // Every resolution waits until the test answers it, in order.
-      function held() {
-        const pending = [];
-        const env = setup({
-          resolveEnsContent: (name) =>
-            new Promise((resolve) => {
-              pending.push({ name, answer: (decoded) => resolve({ type: 'ok', protocol: 'ipns', decoded }) });
-            }),
-        });
-        env.state.permissions.set(NAME, { origin: NAME, walletIndex: 0, chainId: 100 });
-        const page = env.tab(`ipns://${IPNS_KEY}/docs`, { bind: NAME });
-        return { env, page, pending };
-      }
-
-      // Two eth_accounts, each at its last check, after the commit's and
-      // each one's first have answered the bound key.
-      async function atFinalChecks() {
-        const { env, page, pending } = held();
-        pending.shift().answer(IPNS_KEY);
-        await flush();
-        const a = page.ask('eth_accounts');
-        const b = page.ask('eth_accounts');
-        await flush();
-        expect(pending).toHaveLength(2);
-        for (const first of pending.splice(0)) first.answer(IPNS_KEY);
-        await flush();
-        expect(pending).toHaveLength(2);
-        return { env, page, pending, a, b };
-      }
-
-      test('the first answering the bound key and the second elsewhere, in the same turn: both answer []', async () => {
-        const { pending, a, b } = await atFinalChecks();
-        const [first, second] = pending.splice(0);
-        first.answer(IPNS_KEY);
-        second.answer(OTHER_IPNS_KEY);
-        expect({ a: await a, b: await b }).toEqual({ a: { result: [] }, b: { result: [] } });
-      });
-
-      test('the other order, in the same turn: both answer []', async () => {
-        const { pending, a, b } = await atFinalChecks();
-        const [first, second] = pending.splice(0);
-        second.answer(OTHER_IPNS_KEY);
-        first.answer(IPNS_KEY);
-        expect({ a: await a, b: await b }).toEqual({ a: { result: [] }, b: { result: [] } });
-      });
-
-      test('a request answered before the name is found moved keeps its answer; the later one gets []', async () => {
-        const { page, pending, a, b } = await atFinalChecks();
-        const [first, second] = pending.splice(0);
-        first.answer(IPNS_KEY);
-        expect(await a).toEqual({ result: [ACCOUNT] });
-        second.answer(OTHER_IPNS_KEY);
-        expect(await b).toEqual({ result: [] });
-        // The binding has ended: the next request resolves nothing.
-        expect(await page.ask('eth_accounts')).toEqual({ result: [] });
-        expect(pending).toEqual([]);
-      });
+      const request = env.core.request;
+      env.core.request = async (...args) => {
+        const answer = await request(...args);
+        env.names.set(NAME, OTHER_IPNS_KEY);
+        const [requester] = env.documents.liveDocuments().filter((doc) => doc.guest === page.guest.id);
+        expect(await env.documents.recheckName(requester)).toEqual({ ok: false, resolved: true });
+        return answer;
+      };
+      expect(await page.ask('eth_accounts')).toEqual({ result: [] });
+      expect(env.trace.filter((entry) => entry.kind === 'name-lost')).toHaveLength(1);
     });
 
     test('the chrome may bind a name only for a guest it hosts', () => {
@@ -779,15 +744,32 @@ describe("main's part around the core's dispatcher (0012 APB-4d)", () => {
       }
       const lastNameCheck = (env) => env.trace.filter((entry) => entry.kind === 'name-checked').at(-1);
 
-      test.each(METHODS)('outside custody, %s from a name that moved off its IPNS key answers 4100, and the core is never asked', async (method) => {
+      // A connect is offered to the agent's route, which decides custody
+      // itself: main checks the name before it, as the agent's route's own.
+      test('outside custody, eth_requestAccounts from a name that moved off its IPNS key answers 4100 from main\'s check before the agent\'s route, and the core is never asked', async () => {
         const { env, page } = bound();
         await flush();
         env.names.set(NAME, OTHER_IPNS_KEY);
-        expect(await ASKS[method](page)).toEqual(NO_ADDRESS);
+        expect(await ASKS.eth_requestAccounts(page)).toEqual(NO_ADDRESS);
         expect(env.core.sent).toEqual([]);
         expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
-        // The binding has ended.
         expect(lastNameCheck(env)).toMatchObject({ holds: false });
+      });
+
+      // A signature or a send outside custody is never the agent's: main
+      // resolves nothing, and the core checks the name itself (APR-5f).
+      test.each(GATED)('outside custody, %s from a name that moved off its IPNS key goes to the core with the binding, resolving nothing in main, and the core\'s keyless 4100 reaches the page', async (method) => {
+        const { env, page } = bound();
+        await flush();
+        env.names.set(NAME, OTHER_IPNS_KEY);
+        env.resolutions.length = 0;
+        expect(await ASKS[method](page)).toEqual(NO_ADDRESS);
+        expect(env.resolutions).toEqual([]);
+        expect(env.core.sent.map((request) => [request.method, request.page.transport_key])).toEqual([
+          [method, `ipns://${IPNS_KEY}`],
+        ]);
+        expect(env.core.nameChecks).toEqual([NAME]);
+        expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
       });
 
       test.each(METHODS)('in custody, %s from a name that moved off its IPNS key is never offered to the agent, nor sent to the core', async (method) => {
@@ -801,18 +783,24 @@ describe("main's part around the core's dispatcher (0012 APB-4d)", () => {
       });
 
       // The agent's route declines a tab it no longer holds: main then asks
-      // the core, but only after checking the name again.
-      test.each(METHODS)('%s whose name moves while the agent declines it (its custody ended) answers 4100, and the core is never asked', async (method) => {
+      // the core with the binding, which checks the name itself.
+      test.each(METHODS)('%s whose name moves while the agent declines it (its custody ended) goes to the core with the binding, and the core\'s keyless 4100 reaches the page', async (method) => {
         const { env, page } = bound({ custody: true });
         env.state.agent = async () => {
           env.state.custody.delete(page.guest.id);
           env.names.set(NAME, OTHER_IPNS_KEY);
           return { handled: false };
         };
+        await flush();
+        env.resolutions.length = 0;
         expect(await ASKS[method](page)).toEqual(NO_ADDRESS);
         expect(env.deps.agentWalletRequest).toHaveBeenCalledTimes(1);
-        expect(env.core.sent).toEqual([]);
-        expect(lastNameCheck(env)).toMatchObject({ holds: false });
+        // Main's one check, before the agent's route.
+        expect(env.resolutions).toEqual([NAME]);
+        expect(env.core.sent.map((request) => [request.method, request.page.transport_key])).toEqual([
+          [method, `ipns://${IPNS_KEY}`],
+        ]);
+        expect(env.core.nameChecks).toEqual([NAME]);
       });
     });
   });
