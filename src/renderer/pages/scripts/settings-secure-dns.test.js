@@ -128,6 +128,16 @@ describe('Settings → Privacy and security → Secure DNS', () => {
   });
 });
 
+// Chromium checks the URL a template expands to, so an address whose
+// `{?dns}` sits where it removes or moves the host is flagged inline rather
+// than accepted here and then dropped by main (#472 R2-F1).
+test.each(['https://{?dns}', 'https://{?dns}.example/q', 'https://a{?dns}.example/'])(
+  'isValidDohTemplate refuses %j once expanded',
+  (input) => {
+    expect(isValidDohTemplate(input)).toBe(false);
+  }
+);
+
 // The page decides what to say inline; main decides what is stored. The two
 // checks have to agree, or the page would call an address fine that main
 // then silently keeps out (or the other way round).
@@ -157,6 +167,15 @@ describe('isValidDohTemplate parity (renderer vs main)', () => {
     'https://doh.example.org/dns-query#x',
     'https://doh.example.org/dns query',
     'https://doh.example.org/{name}',
+    'https://doh.example.org/dns-query{?dns',
+    'https://doh.example.org{?dns}',
+    'https://doh.example.org/q?x=1{?dns}',
+    'https://doh.example.org/{?dns}/x',
+    // Refused once expanded (#472 R2-F1): no host, or a host the query moves.
+    'https://{?dns}',
+    'https://{?dns}.example/q',
+    'https://a{?dns}.example/',
+    'https://doh.{?dns}example.org/q',
     `https://doh.example.org/${'a'.repeat(2048)}`,
     '',
     null,

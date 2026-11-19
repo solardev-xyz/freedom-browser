@@ -88,6 +88,18 @@ test('Secure DNS settings reach the resolver as they are changed', async ({
     secureDnsMode: 'secure',
     secureDnsServers: [MULLVAD],
   });
+  // Reads as host `{` but expands to `https://`, which Chromium refuses: the
+  // page flags it like main does instead of letting the save vanish.
+  await enterCustom(page, 'https://{?dns}');
+  await expect(page.locator('#secure-dns-custom')).toHaveAttribute('aria-invalid', 'true');
+  await expect(status).toHaveText(
+    "That isn't an https:// address Freedom can use. Mullvad stays in use."
+  );
+  await expect(page.locator('#secure-dns-provider')).toHaveValue('custom');
+  expect(await applied(electronApp)).toEqual({
+    secureDnsMode: 'secure',
+    secureDnsServers: [MULLVAD],
+  });
 
   await enterCustom(page, CUSTOM);
   await expect

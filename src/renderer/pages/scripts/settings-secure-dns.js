@@ -30,20 +30,28 @@ const SECURE_DNS_DEFAULT_PROVIDER = 'quad9';
 // The page's copy of the main process's check (normalizeDohTemplate in
 // src/main/secure-dns.js): an https:// URL with a host, no credentials,
 // fragment or whitespace, and no template variable but RFC 8484's `{?dns}`.
-// settings-secure-dns.test.js holds the two to the same answers.
+// Like main (and Chromium), it checks the URL the template expands to, not
+// the template's own text: `{?dns}` expanded to nothing and to a query, the
+// same https host both ways, so `https://{?dns}` (host `{` as typed, no host
+// once expanded) is refused here too. settings-secure-dns.test.js holds the
+// two to the same answers.
 function isValidDohTemplate(value) {
   if (typeof value !== 'string') return false;
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > 2048 || /\s/.test(trimmed)) return false;
   if (/[{}]/.test(trimmed.replace('{?dns}', ''))) return false;
-  let url;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== 'https:' || !url.hostname) return false;
-  return !url.username && !url.password && !url.hash;
+  const expand = (dns) => {
+    try {
+      return new URL(trimmed.replace('{?dns}', dns));
+    } catch {
+      return null;
+    }
+  };
+  const bare = expand('');
+  const withQuery = expand('?dns=AAAB');
+  if (!bare || !withQuery) return false;
+  if (bare.protocol !== 'https:' || !bare.hostname || bare.host !== withQuery.host) return false;
+  return !bare.username && !bare.password && !bare.hash && !withQuery.hash;
 }
 
 // What the panel shows for the stored settings, plus an unsaved choice of
