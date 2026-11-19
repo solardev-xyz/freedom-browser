@@ -76,6 +76,13 @@ launch opens unchanged.
 - The Nodes panel shows external/shared status when connected to an external node
 - Freedom does not stop external nodes on quit
 
+## Passkeys
+
+- **Windows:** sites get Windows' own passkey dialog, the one Edge and Chrome use. It offers a phone (by QR code) and a security key (checked on a Freedom 0.8.9 nightly build). Passkeys stored on the PC (Windows Hello) should show up too on an account with a PIN, used at the machine rather than over Remote Desktop; that part is untested.
+- **macOS:** passkeys need entitlements and Apple developer-account setup the app doesn't have yet ([#5](https://github.com/solardev-xyz/freedom-browser/issues/5)).
+- **Linux:** only a USB security key that needs no PIN can work, and that is untested. Any other request (a key with a PIN, a phone, a passkey stored on the computer or in a password manager) shows no prompt. It fails after about three minutes when the site sets a short timeout, can fail at once when a key asks for its PIN, and can stay pending for hours when the site sets no timeout at all. Sites may still offer passkeys, because Chromium reports phone sign-in as available whenever a Bluetooth adapter is present. The gaps are in Electron and the Linux desktop ([#733](https://github.com/solardev-xyz/freedom-browser/issues/733)).
+- **`bzz://`, `ipfs://` and ENS pages, on every platform:** passkeys fail at once with a `SecurityError`. Chromium only allows them on `https` pages, `localhost` and extensions.
+
 ## ENS resolution not working
 
 - Verify internet connectivity
