@@ -404,35 +404,51 @@ describe('approval.request for eth.connect (0012 APB-4a)', () => {
     expect(answers[1]).toMatchObject({ prompt: PROMPT, handle: shown.handle, approve: true });
   });
 
-  test('crossed requests are refused: another document\'s page, an unknown request, a malformed prompt id or view, a connect for another method', async () => {
+  test('crossed requests are refused: another document\'s page, an unknown request, another process, a malformed prompt id or view, a connect for another method', async () => {
     const env = setup();
     const page = env.tab();
     const other = env.tab(`${KEY_B}/`, { front: false });
     const refusals = [];
+    // Each try is refused at once; one that opened a prompt would wait.
+    const attempt = (ask, generation = GENERATION) =>
+      Promise.race([
+        env.relay.approvalRequest(ask, { generation }).then(() => 'answered', (err) => err.code),
+        flush().then(() => 'opened'),
+      ]);
+    let answer;
     env.core.script = async ({ id, page: pc }) => {
+      if (id === 1) {
+        // A connect prompt for a request that isn't a connect.
+        refusals.push(await attempt(connectAsk(id, pc)));
+        return { result: '0x64' };
+      }
       const otherPage = { ...pc, origin: KEY_B, top_origin: KEY_B };
       const tries = [
         connectAsk(id, otherPage),
+        connectAsk(id, { ...pc, navigation: pc.navigation + 1 }),
         connectAsk(id + 100, pc),
         { ...connectAsk(id, pc), prompt: 'C'.repeat(32) },
         { ...connectAsk(id, pc), choices: { walletIndex: [1, 0] } },
         { ...connectAsk(id, pc), extra: true },
         { ...connectAsk(id, pc), kind: 'swarm.connect' },
       ];
-      for (const ask of tries) {
-        await env.relay.approvalRequest(ask, { generation: GENERATION }).then(
-          () => refusals.push('answered'),
-          (err) => refusals.push(err.code)
-        );
-      }
+      for (const ask of tries) refusals.push(await attempt(ask));
       // Another process's request of the same id.
-      await env.relay.approvalRequest(connectAsk(id, pc), { generation: GENERATION + 1 }).catch((err) => refusals.push(err.code));
-      return { result: '0x64' };
+      refusals.push(await attempt(connectAsk(id, pc), GENERATION + 1));
+      // The core's own ask still opens its prompt.
+      answer = await env.relay.approvalRequest(connectAsk(id, pc), { generation: GENERATION });
+      return { result: [ACCOUNT] };
     };
     expect(await page.ask('eth_chainId', [])).toEqual({ result: '0x64' });
-    // A connect prompt for a request that isn't a connect.
-    expect(refusals).toEqual(Array(7).fill('invalid_argument'));
-    expect(env.prompts()).toEqual([]);
+    const asked = page.ask('eth_requestAccounts', []);
+    await flush();
+    await flush();
+    expect(refusals).toEqual(Array(9).fill('invalid_argument'));
+    const [shown] = env.prompts();
+    expect(env.prompts()).toHaveLength(1);
+    expect(await env.decide(shown.handle, true, { walletIndex: 0 })).toEqual({ ok: true });
+    expect(await asked).toEqual({ result: [ACCOUNT] });
+    expect(answer).toMatchObject({ prompt: PROMPT, handle: shown.handle, approve: true });
     expect(other.guest.events).toEqual([]);
   });
 
