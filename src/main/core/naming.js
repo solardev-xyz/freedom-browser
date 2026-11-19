@@ -61,9 +61,11 @@ function namingSettingsChanged() {
 
 /** Every cached ENS resolution dropped (clearEnsResolutionCaches): the
  * core clears its content, address and reverse caches and advances its
- * lifecycle, as `naming.availability` does (design 0004, Configuration). */
+ * lifecycle, as `naming.availability` does (design 0004, Configuration).
+ * Settles once the core has answered, or failed to. */
 function namingCachesCleared() {
-  if (config) config.availability().catch(() => {});
+  if (config) return config.availability().catch(() => {});
+  return Promise.resolve();
 }
 
 module.exports = {

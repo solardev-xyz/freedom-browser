@@ -353,6 +353,34 @@ function answer({ status, body }) {
   return { status, body: body.toString('base64') };
 }
 
+// The E2E harness's stand-in for the network behind naming's exchanges
+// (test-harness.js, only under FREEDOM_TEST_MODE): inert until the harness
+// enables it, and then used only while a spec has set a hop.
+const testHooks = {};
+
+function testableHop(hop) {
+  return (url, init) =>
+    testHooks.enabled === true && typeof testHooks.hop === 'function'
+      ? testHooks.hop(url, init)
+      : hop(url, init);
+}
+
+/**
+ * Test only: the E2E harness's hooks (test-harness.js, under
+ * FREEDOM_TEST_MODE). `setHop` answers every exchange in the network's
+ * place, as `deps.hop` does in unit tests; `cachesCleared` drops naming's
+ * caches as clearEnsResolutionCaches does, and settles once the core has.
+ */
+function enableNamingShellTestHooks() {
+  testHooks.enabled = true;
+  return {
+    setHop: (hop) => {
+      testHooks.hop = typeof hop === 'function' ? hop : undefined;
+    },
+    cachesCleared: () => require('./naming').namingCachesCleared(),
+  };
+}
+
 /**
  * Registers the executors on `client`.
  *
@@ -362,7 +390,7 @@ function answer({ status, body }) {
  * @param {object} [deps] - test seams: hop, lookup, prefetch, now, random, wait
  */
 function registerNamingShell(client, config, deps = {}) {
-  const hop = deps.hop || makeHop();
+  const hop = deps.hop || testableHop(makeHop());
   // A redirect's DNS check, its lookups bounded while they run.
   const lookup = boundLookups(deps.lookup || dns.promises.lookup);
   const prefetch = deps.prefetch || prefetchGatewayUrl;
@@ -490,6 +518,7 @@ function registerNamingShell(client, config, deps = {}) {
 
 module.exports = {
   registerNamingShell,
+  enableNamingShellTestHooks,
   withDeadline,
   unlessAborted,
   MAX_ABANDONED,

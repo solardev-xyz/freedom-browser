@@ -20,6 +20,7 @@ const fs = require('fs');
 const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
+const { serveCoreNaming, coreResolved } = require('./core-naming-fixtures');
 const { PROVENANCE_HEADER, encodeOnchainProvenance } = require('../src/main/onchain/onchain-app-protocol');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -435,7 +436,10 @@ test('accountsChanged goes from main to every live page of the key when its gran
   harness,
 }) => {
   test.setTimeout(240_000);
-  // Main resolves the bound name itself; the harness stands in for ENS.
+  // One mutable name → key map. Main resolves the bound name itself for its
+  // events, which the harness stands in for; the identity core checks it at
+  // eth_accounts with its own naming, whose reads main's naming shell hands
+  // to core-naming-fixtures' hop (0012 APR-5f).
   await electronApp.evaluate((_electron, args) => {
     globalThis.__names = { [args.name]: args.key };
     globalThis.__resolved = [];
@@ -445,6 +449,7 @@ test('accountsChanged goes from main to every live page of the key when its gran
       return decoded ? { type: 'ok', protocol: 'ipns', decoded } : { type: 'not_found' };
     });
   }, { name: NAME, key: IPNS_KEY });
+  await serveCoreNaming(electronApp, [IPNS_KEY, OTHER_IPNS_KEY]);
   await harness.setEnsFixture(NAME, {
     type: 'ok',
     name: NAME,
@@ -482,6 +487,8 @@ test('accountsChanged goes from main to every live page of the key when its gran
   await ready(win, NAMED_URL);
   const named = await guestOf(win, NAMED_URL);
   await expect.poll(() => ask(win, NAMED_URL, 'eth_accounts')).toEqual({ ok: [first] });
+  // The core checked the name, which serves the page's key.
+  expect(await coreResolved(electronApp)).toContain(NAME);
   const win2 = await secondWindow(win, electronApp);
   const elsewhere = await openHere(win2, electronApp, `${KEY_A}/x`);
   const privateWin = await privateWindow(electronApp);

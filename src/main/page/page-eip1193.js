@@ -5,7 +5,7 @@
  * design 0012, "fc-eip1193 and approval.request"; steps APB-4a to APB-4c).
  *
  * `page-ethereum.js` hands a page's request here for the methods the core
- * answers from cored 0.20.0: the reads (`eth_chainId`, `net_version`,
+ * answers (cored 0.20.0 and later): the reads (`eth_chainId`, `net_version`,
  * `eth_accounts` and the 23 read-only methods), the connect
  * (`eth_requestAccounts`), `wallet_switchEthereumChain`, and the
  * signatures (`personal_sign`, `eth_signTypedData_v4`, APB-4b), and the

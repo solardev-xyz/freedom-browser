@@ -249,7 +249,7 @@ function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {}, 
   return { requests, relay, core, state, names, tab, prompts, closed, decide, sent };
 }
 
-// The core's connect prompt for request `id`, as cored 0.20.0 asks it.
+// The core's connect prompt for request `id`, as cored 0.20.0 and later ask it.
 const connectAsk = (id, page, prompt = PROMPT) => ({
   request: id,
   prompt,
@@ -702,7 +702,7 @@ const DEVICE_WALLETS = [
 ];
 const accountOf = (index) => DEVICE_WALLETS.find((wallet) => wallet.index === index);
 
-// The core's eth.sign prompt for request `id`, as cored 0.20.0 asks it.
+// The core's eth.sign prompt for request `id`, as cored 0.20.0 and later ask it.
 function signAsk(id, page, { method = 'personal_sign', account = 0, offered = [false, true], prompt = PROMPT } = {}) {
   const view = { method, account: accountOf(account), chain: { id: 100, name: 'Gnosis Chain' } };
   if (method === 'personal_sign') view.message = { hex: MESSAGE, rawHash: false };
@@ -1189,7 +1189,7 @@ const RECEIPT = 'e'.repeat(32);
 const SEND_MISMATCH = { code: -32603, message: "The identity core's send doesn't match the request" };
 const DEVICE_MISMATCH = { code: -32603, message: "The identity core's device answer doesn't match the request" };
 
-// The core's eth.send prompt for request `id`, as cored 0.20.0 asks it.
+// The core's eth.send prompt for request `id`, as cored 0.20.0 and later ask it.
 function sendAsk(id, page, { account = 0, fee = FEE, again = false, prompt = PROMPT, above = false } = {}) {
   const safe = accountOf(account).type === 'safe';
   return {
