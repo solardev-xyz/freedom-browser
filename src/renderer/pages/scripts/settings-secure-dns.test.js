@@ -67,6 +67,7 @@ describe('Settings → Privacy and security → Secure DNS', () => {
   test('every mode has its own line, and Strict says what it costs', () => {
     expect(Object.keys(SECURE_DNS_MODE_HELP)).toEqual(['automatic', 'secure', 'off']);
     expect(SECURE_DNS_MODE_HELP.secure).toMatch(/won't load/);
+    expect(SECURE_DNS_MODE_HELP.secure).toMatch(/only your network's DNS knows/);
     expect(SECURE_DNS_MODE_HELP.automatic).toMatch(/network's DNS/);
   });
 

@@ -12,7 +12,8 @@
 const SECURE_DNS_MODE_HELP = {
   automatic:
     "If the provider can't be reached, Freedom uses your network's DNS, so Wi-Fi sign-in pages keep working.",
-  secure: "Sites won't load while the provider can't be reached, Wi-Fi sign-in pages included.",
+  secure:
+    "Sites won't load while the provider can't be reached, Wi-Fi sign-in pages included. Names only your network's DNS knows, like a router or NAS on your local network, won't load either.",
   off: "Sites are looked up through your network's DNS, which your network provider can see.",
 };
 
@@ -113,6 +114,7 @@ if (typeof module === 'object' && module.exports) {
       customRow: byId('secure-dns-custom-row'),
       custom: byId('secure-dns-custom'),
       status: byId('secure-dns-custom-status'),
+      saveStatus: byId('secure-dns-status'),
     };
     if (Object.values(els).some((el) => !el)) return;
 
@@ -123,10 +125,20 @@ if (typeof module === 'object' && module.exports) {
       els.status.textContent = message || '';
       els.status.className = kind ? `rpc-status ${kind}` : 'rpc-status';
     };
+    // A failed save goes in the mode row's status line, which is always
+    // shown: the custom row's own line is hidden unless the provider is
+    // Custom, and the read-back repaint below puts the controls back to what
+    // is stored, so the error is all that says the change didn't take.
+    const setSaveStatus = (message) => {
+      els.saveStatus.textContent = message || '';
+      els.saveStatus.className = message ? 'rpc-status error' : 'rpc-status';
+    };
     const view = () => secureDnsView(stored, { draftCustom });
-    const paint = () => {
+    const paint = ({ keepCustomInput = false } = {}) => {
       if (!stored) return;
-      renderSecureDns(els, view(), { keepCustomInput: document.activeElement === els.custom });
+      renderSecureDns(els, view(), {
+        keepCustomInput: keepCustomInput || document.activeElement === els.custom,
+      });
     };
 
     const save = async (patch) => {
@@ -136,7 +148,11 @@ if (typeof module === 'object' && module.exports) {
       } catch {
         ok = false;
       }
-      if (!ok) setStatus("Couldn't save the change. Try again.", 'error');
+      setSaveStatus(ok ? '' : "Couldn't save the change. Try again.");
+      // A custom address is a draft until it is stored: on success Custom is
+      // the stored provider, and on failure the row stays open with what the
+      // user typed, ready to try again.
+      if (ok && patch.secureDnsProvider === 'custom') draftCustom = false;
       // Read back what main kept: it leaves an invalid value out, and an
       // unchanged save broadcasts nothing.
       try {
@@ -144,7 +160,7 @@ if (typeof module === 'object' && module.exports) {
       } catch {
         // Keep the last known settings; the next broadcast repaints.
       }
-      paint();
+      paint({ keepCustomInput: !ok && 'secureDnsCustomTemplate' in patch });
       return ok;
     };
 
@@ -162,7 +178,6 @@ if (typeof module === 'object' && module.exports) {
         return;
       }
       if (isValidDohTemplate(stored?.secureDnsCustomTemplate)) {
-        draftCustom = false;
         save({ secureDnsProvider: 'custom' });
         return;
       }
@@ -182,7 +197,6 @@ if (typeof module === 'object' && module.exports) {
       }
       els.custom.removeAttribute('aria-invalid');
       setStatus('');
-      draftCustom = false;
       els.custom.value = value;
       save({ secureDnsProvider: 'custom', secureDnsCustomTemplate: value });
     });

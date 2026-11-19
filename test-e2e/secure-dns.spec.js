@@ -111,6 +111,57 @@ test('Secure DNS settings reach the resolver as they are changed', async ({
   });
 });
 
+// A save main refuses (a disk or permission error) must say so where it can
+// be seen. The read-back repaint puts the controls back to what is stored, and
+// the custom row, with its own status line, is hidden unless the provider is
+// Custom, so the error goes in a line that is always shown.
+test('a failed save says so, whichever control made it', async ({ window, electronApp }) => {
+  const page = await openSecureDns(window, electronApp);
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__secureDnsSaveResult = false;
+    ipcMain.removeHandler('settings:save');
+    ipcMain.handle('settings:save', () => globalThis.__secureDnsSaveResult);
+  });
+  const saveStatus = page.locator('#secure-dns-status');
+  const failed = "Couldn't save the change. Try again.";
+  await expect(saveStatus).toBeHidden();
+
+  // Mode: the select snaps back, and the error is in view with Quad9 chosen.
+  await page.selectOption('#secure-dns-mode', 'secure');
+  await expect(saveStatus).toHaveText(failed);
+  await expect(saveStatus).toBeVisible();
+  await expect(page.locator('#secure-dns-mode')).toHaveValue('automatic');
+  await expect(page.locator('#secure-dns-custom-row')).toBeHidden();
+
+  // Provider: the same.
+  await page.selectOption('#secure-dns-provider', 'mullvad');
+  await expect(page.locator('#secure-dns-provider')).toHaveValue('quad9');
+  await expect(saveStatus).toBeVisible();
+
+  // A first custom address: the row stays open with what was typed, so it can
+  // be tried again, rather than closing on the stored provider.
+  await page.selectOption('#secure-dns-provider', 'custom');
+  await enterCustom(page, CUSTOM);
+  await expect(saveStatus).toHaveText(failed);
+  await expect(saveStatus).toBeVisible();
+  await expect(page.locator('#secure-dns-custom-row')).toBeVisible();
+  await expect(page.locator('#secure-dns-provider')).toHaveValue('custom');
+  await expect(page.locator('#secure-dns-custom')).toHaveValue(CUSTOM);
+  await page.screenshot({ path: test.info().outputPath('secure-dns-save-failed.png') });
+
+  // A save that goes through clears it.
+  await electronApp.evaluate(() => {
+    globalThis.__secureDnsSaveResult = true;
+  });
+  await page.selectOption('#secure-dns-mode', 'secure');
+  await expect(saveStatus).toHaveText('');
+  await expect(saveStatus).toBeHidden();
+  expect(await applied(electronApp)).toEqual({
+    secureDnsMode: 'automatic',
+    secureDnsServers: [QUAD9],
+  });
+});
+
 // Look `host` up through Chromium with its net log running, and return the
 // answer plus every logged event, by name.
 async function lookUpLogged(electronApp, host, logPath) {

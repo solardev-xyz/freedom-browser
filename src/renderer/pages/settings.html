@@ -975,6 +975,10 @@
         display: none;
       }
 
+      #secure-dns-status:empty {
+        display: none;
+      }
+
       .secure-dns-custom-field {
         margin-top: 8px;
       }
@@ -1641,6 +1645,9 @@
                   If the provider can't be reached, Freedom uses your network's DNS, so Wi-Fi
                   sign-in pages keep working.
                 </p>
+                <!-- A failed save, whichever control made it. Here and not in the
+                     custom row, which is hidden unless the provider is Custom. -->
+                <p class="rpc-status" id="secure-dns-status" role="status" aria-live="polite"></p>
               </div>
               <div class="row-control">
                 <select

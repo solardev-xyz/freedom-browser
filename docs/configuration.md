@@ -142,6 +142,8 @@ Never commit provider keys or put them directly in documentation, issue reports,
 | Strict    | DNS over HTTPS only; sites don't load while the provider can't be reached, Wi-Fi sign-in pages too |
 | Off       | Your network's DNS                                                                                 |
 
+Strict also means names that only your network's DNS can answer stop resolving: an intranet site, a router or NAS name such as `router.lan`, or an external IPFS gateway set up by such a name (`http://nas.lan:8080`), since the public provider has never heard of them. Address a local gateway by its IP address instead, or use Automatic.
+
 Strict has two exceptions: the provider's own hostname is looked up through the system's DNS, because Chromium has to find the provider before it can use it; and when Chromium's network service crashes and is replaced, a lookup made before Freedom hands the setting to the new one (at once, on the next turn of the event loop) uses Electron's defaults.
 
 The providers are Quad9 (`https://dns.quad9.net/dns-query`, which refuses known malware and phishing domains), Cloudflare (`https://cloudflare-dns.com/dns-query`) and Mullvad (`https://dns.mullvad.net/dns-query`), or **Custom**: any `https://` DNS-over-HTTPS address, optionally with the RFC 8484 `{?dns}` variable. A change applies at once, with no restart. The profile's `settings.json` keeps the choice as `secureDnsMode` (`automatic`, `secure` or `off`), `secureDnsProvider` and `secureDnsCustomTemplate`; only the Settings page may change them.
