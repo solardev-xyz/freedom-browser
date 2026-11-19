@@ -106,9 +106,13 @@ async function serveCoreNaming(electronApp, keys) {
 const coreResolved = (electronApp) =>
   electronApp.evaluate(() => [...new Set(globalThis.__coreResolved)]);
 
+/** How many reads the core's naming has made through the hop so far: a
+ * lookup repeated for a name already seen shows here, not in `coreResolved`. */
+const coreReads = (electronApp) => electronApp.evaluate(() => globalThis.__coreResolved.length);
+
 /** Naming's caches dropped, so the core's next check of a name resolves it
  * through the hop again (as it would once the cached answer expired). */
 const clearCoreNamingCaches = (electronApp) =>
   electronApp.evaluate(() => globalThis.__FREEDOM_TEST_NAMING__.cachesCleared());
 
-module.exports = { serveCoreNaming, coreResolved, clearCoreNamingCaches, ipnsContenthash };
+module.exports = { serveCoreNaming, coreResolved, coreReads, clearCoreNamingCaches, ipnsContenthash };

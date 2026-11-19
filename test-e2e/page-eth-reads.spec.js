@@ -14,7 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
-const { serveCoreNaming, coreResolved, clearCoreNamingCaches } = require('./core-naming-fixtures');
+const { serveCoreNaming, coreResolved, coreReads, clearCoreNamingCaches } = require('./core-naming-fixtures');
 const { PROVENANCE_HEADER, encodeOnchainProvenance } = require('../src/main/onchain/onchain-app-protocol');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -391,10 +391,13 @@ test('a DNS name over IPNS: eth_accounts answers until the name moves off its ke
   expect(await ask(win, url, 'eth_accounts')).toEqual({ ok: [] });
   expect(await coreResolved(electronApp)).toEqual([NAME]);
   // The binding has ended: the page is keyless now, and resolves nothing,
-  // even with nothing cached.
+  // even with nothing cached. The raw count, since a repeated lookup of the
+  // same name wouldn't change `coreResolved`.
+  const readsAfterMove = await coreReads(electronApp);
   await clearCoreNamingCaches(electronApp);
   expect(await ask(win, url, 'eth_accounts')).toEqual({ ok: [] });
   expect(await ask(win, url, 'eth_chainId')).toEqual({ ok: '0x7a69' });
+  expect(await coreReads(electronApp)).toBe(readsAfterMove);
   expect(await coreResolved(electronApp)).toEqual([NAME]);
   // Main resolved nothing after the commit: the checks are the core's.
   expect(await resolved()).toEqual([]);
