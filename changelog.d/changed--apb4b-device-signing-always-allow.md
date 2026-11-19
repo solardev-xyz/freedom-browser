@@ -1,0 +1,1 @@
+- A site's signature request from a Ledger, phone or multi-owner (Safe) account no longer offers "Always allow". The identity core can't see whether the device signed, so it never sets a signing rule for one, and each such request shows its prompt
