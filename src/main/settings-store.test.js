@@ -441,6 +441,17 @@ describe('settings-store', () => {
     // The address in use can't be cleared out from under it.
     expect(mod.saveSettings({ secureDnsCustomTemplate: '' })).toBe(true);
     expect(persisted().secureDnsCustomTemplate).toBe(custom);
+    // Nor by a save whose new provider is itself refused.
+    expect(mod.saveSettings({ secureDnsProvider: 'google', secureDnsCustomTemplate: '' })).toBe(
+      true
+    );
+    expect(persisted()).toMatchObject({
+      secureDnsProvider: 'custom',
+      secureDnsCustomTemplate: custom,
+    });
+    // An address Chromium would refuse once expanded is not stored.
+    expect(mod.saveSettings({ secureDnsCustomTemplate: 'https://{?dns}' })).toBe(true);
+    expect(persisted().secureDnsCustomTemplate).toBe(custom);
   });
 
   test('saveSettings rebuilds the adblock engine only when an adblock key changes', () => {

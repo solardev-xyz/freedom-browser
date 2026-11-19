@@ -25,6 +25,9 @@ describe('secure DNS (#472)', () => {
       ['https://doh.example.org/dns-query{?dns}', 'https://doh.example.org/dns-query{?dns}'],
       ['https://192.168.1.2:8443/dns-query', 'https://192.168.1.2:8443/dns-query'],
       ['https://[2620:fe::fe]/dns-query', 'https://[2620:fe::fe]/dns-query'],
+      ['https://doh.example.org{?dns}', 'https://doh.example.org{?dns}'],
+      ['https://doh.example.org/q?x=1{?dns}', 'https://doh.example.org/q?x=1{?dns}'],
+      ['https://doh.example.org/{?dns}/x', 'https://doh.example.org/{?dns}/x'],
     ])('accepts %j', (input, expected) => {
       expect(mod.normalizeDohTemplate(input)).toBe(expected);
     });
@@ -38,6 +41,12 @@ describe('secure DNS (#472)', () => {
       ['https://doh.example.org/dns query', 'whitespace'],
       ['https://doh.example.org/{name}', 'another template variable'],
       ['https://doh.example.org/dns-query{?dns', 'an unbalanced brace'],
+      // Chromium checks the expanded template: the first two expand to no
+      // host and Electron 45.2.1 refuses them; the third it takes, but its
+      // host would change with the query, so this stays stricter there.
+      ['https://{?dns}', 'no host once expanded'],
+      ['https://{?dns}.example/q', 'the variable in the host'],
+      ['https://doh.{?dns}example.org/q', 'the variable in the host'],
       [`https://doh.example.org/${'a'.repeat(2048)}`, 'too long'],
       ['', 'empty'],
       [null, 'not a string'],
@@ -169,6 +178,20 @@ describe('secure DNS (#472)', () => {
           secureDnsCustomTemplate: '',
         })
       ).toBe('');
+      // ...but not when that save's provider is refused: custom stays, so
+      // its address does too.
+      expect(
+        value('secureDnsCustomTemplate', '', usingCustom, {
+          secureDnsProvider: 'google',
+          secureDnsCustomTemplate: '',
+        })
+      ).toBeUndefined();
+      expect(
+        value('secureDnsCustomTemplate', '', usingCustom, {
+          secureDnsProvider: 'custom',
+          secureDnsCustomTemplate: '',
+        })
+      ).toBeUndefined();
     });
 
     test('keys it does not own are left alone', () => {

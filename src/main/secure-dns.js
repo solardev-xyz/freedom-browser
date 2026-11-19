@@ -14,8 +14,13 @@
  * - the bundled nodes (Swarm, IPFS, Radicle, Myotis), separate processes
  *   with their own resolvers.
  *
- * `.onion` names reach no resolver here: the Tor PAC hands them to Arti's
- * SOCKS5 proxy, which resolves them inside Tor (tor-proxy.js). Loopback
+ * While Tor runs, `.onion` names reach no resolver here: the Tor PAC hands
+ * them to Arti's SOCKS5 proxy, which resolves them inside Tor (tor-proxy.js),
+ * and after a failed Tor start the PAC stays and they fail closed. With Tor
+ * off (never started, or stopped on purpose) they go DIRECT, and Chromium
+ * looks them up like any other name: through this DoH server, or the
+ * system's DNS in Off or an Automatic fallback (probed on Electron 45.2.1;
+ * Chromium does not refuse `.onion` itself). Loopback
  * names (`localhost`, `*.localhost`) and IP literals are answered locally.
  *
  * The pure half (modes, providers, the custom-address check, the resolver
@@ -59,20 +64,30 @@ const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key
  * with a host, no credentials, no fragment, no whitespace, and no URI
  * template variable other than RFC 8484's `{?dns}` (Chromium refuses any
  * other).
+ *
+ * Chromium checks the URL the template expands to, not the template's own
+ * text, so this does too: `{?dns}` expanded to nothing and to a query, the
+ * same https host both ways. `https://{?dns}` reads as host `{` to a plain
+ * URL parser, but expands to `https://`, which Chromium refuses (probed on
+ * Electron 45.2.1, as is `https://{?dns}.example/q`).
  */
 function normalizeDohTemplate(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > MAX_TEMPLATE_LENGTH || /\s/.test(trimmed)) return null;
   if (/[{}]/.test(trimmed.replace('{?dns}', ''))) return null;
-  let url;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== 'https:' || !url.hostname) return null;
-  if (url.username || url.password || url.hash) return null;
+  const expand = (dns) => {
+    try {
+      return new URL(trimmed.replace('{?dns}', dns));
+    } catch {
+      return null;
+    }
+  };
+  const bare = expand('');
+  const withQuery = expand('?dns=AAAB');
+  if (!bare || !withQuery) return null;
+  if (bare.protocol !== 'https:' || !bare.hostname || bare.host !== withQuery.host) return null;
+  if (bare.username || bare.password || bare.hash || withQuery.hash) return null;
   return trimmed;
 }
 
@@ -103,9 +118,15 @@ function secureDnsSaveValue(key, value, { previous = {}, incoming = {} } = {}) {
 
   if (key === 'secureDnsCustomTemplate') {
     if (value === '') {
-      const providerAfter = hasOwn(incoming, 'secureDnsProvider')
-        ? incoming.secureDnsProvider
-        : previous.secureDnsProvider;
+      // The provider this save leaves stored: the incoming one only if it
+      // is accepted, else the stored one stays.
+      const acceptedProvider = hasOwn(incoming, 'secureDnsProvider')
+        ? secureDnsSaveValue('secureDnsProvider', incoming.secureDnsProvider, {
+            previous,
+            incoming,
+          })
+        : undefined;
+      const providerAfter = acceptedProvider ?? previous.secureDnsProvider;
       return providerAfter === CUSTOM_PROVIDER ? undefined : '';
     }
     return normalizeDohTemplate(value) ?? undefined;
