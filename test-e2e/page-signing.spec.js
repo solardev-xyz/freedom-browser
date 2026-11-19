@@ -2,10 +2,13 @@
 // PRQ-5a): `personal_sign` and `eth_signTypedData_v4` go from the app's
 // preload to main on `page:request`. Main shows the signing prompt as a
 // handle, the window's approvals panel renders it and answers it (design
-// 0011, APS-2; the chrome's decision is refused), and main's own issuer mints
-// the approval's token for that handle and the requester's key and spends
-// it. The chrome mints no page token and claims no site's rule: main reads
-// the rule itself, and asks for the vault's unlock first when it is locked.
+// 0011, APS-2; the chrome's decision is refused). Since APB-5b (freedom-core
+// design 0012) the prompt is the identity core's: main relays the page's
+// `eip1193.request`, shows the core's prompt, and the core mints the
+// approval's token for that prompt and the requester's PageContext when the
+// panel approves, and spends it at the signature; main has no page issuer.
+// The chrome mints no page token and claims no site's rule: the core reads
+// the rule, and main asks for the vault's unlock first when it is locked.
 
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -15,6 +18,7 @@ const { verifyMessage, verifyTypedData } = require('ethers');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { approvalsPage, approvalsState, chromeWindowId, decideInPanel, panelArmed } = require('./approvals-fixtures');
+const { connectByPrompt } = require('./dapp-prompts');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -142,14 +146,6 @@ const guestOf = (win, url) =>
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
 const grantOf = (win, key) => win.evaluate((k) => window.dappPermissions.getPermission(k), key);
 
-// A connection, written as main writes one (PRQ-4): by the identity core,
-// under the page's PageContext (design 0012, APB-2).
-const grant = (electronApp, key) =>
-  electronApp.evaluate((_electron, args) =>
-    process.mainModule
-      .require(`${args.root}/src/main/wallet/dapp-permissions`)
-      .grantPermission(args.key, 0, 100, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
-  { root: repoRoot, key });
 // A signing rule stored for the site: Q9's limited one "Always allow" writes
 // (APB-2), or today's flag.
 const signingRuleOf = (grant) => grant?.autoApprove?.signing === true || Boolean(grant?.autoApprove?.limited?.signing);
@@ -190,9 +186,11 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
   await harness.setContentFixture(`${KEY_B}/`, page('dapp b'));
   expect(await win.evaluate((pw) => window.identity.unlock(pw), VAULT_PASSWORD)).toMatchObject({ success: true });
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
-  await grant(electronApp, KEY_A);
   await openIn(win, `${KEY_A}/`);
   const guest = await guestOf(win, KEY_A);
+  // Connected from the identity core's own prompt, as a user connects it
+  // (design 0012: main writes no grant).
+  expect(await connectByPrompt(electronApp, (js) => inTab(win, KEY_A, js))).toBe(account);
 
   // The chrome mints no page token, and claims no site's rule.
   const forged = await win.evaluate(
@@ -264,7 +262,7 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
   const messageSignature = (await outcome(win, KEY_A, 'message')).ok;
   expect(verifyMessage('Hello, Freedom', messageSignature)).toBe(account);
   await expect.poll(() => panelShows(electronApp, windowId)).toBeNull();
-  // Main's issuer minted one token for that record and spent it.
+  // The core minted one token for that record's prompt and spent it.
   const recordOf = async (method) =>
     (await trace(electronApp)).filter((e) => e.kind === 'recorded' && e.guest === guest && e.method === method).at(-1).id;
   const messageRecord = await recordOf('personal_sign');
@@ -274,7 +272,7 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
     ['token-spent', 'sign-message'],
   ]);
 
-  // eth_signTypedData_v4, with "always allow": main sets the site's rule
+  // eth_signTypedData_v4, with "always allow": the core sets the site's rule
   // for the requester's key once the signature is made.
   await start(win, KEY_A, 'typed', 'eth_signTypedData_v4', [account, JSON.stringify(TYPED)]);
   await expectPanel(panel, 'Sign Message', KEY_A);
@@ -340,6 +338,7 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
     .filter((e) => e.kind === 'recorded' && e.guest === guest && e.method !== 'eth_chainId')
     .map((e) => e.method);
   expect(methods).toEqual([
+    'eth_requestAccounts',
     'personal_sign',
     'eth_signTypedData_v4',
     'personal_sign',

@@ -17,6 +17,7 @@ const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
+const { connectByPrompt, signingRuleByPrompt } = require('./dapp-prompts');
 
 const repoRoot = path.resolve(__dirname, '..');
 // The JS identity stack is the core's now; its frozen reference writes the
@@ -122,25 +123,6 @@ function request(win, url, id, method, params = []) {
 
 const outcome = (win, url, id) => inTab(win, url, `window.__r && window.__r[${JSON.stringify(id)}]`);
 
-// A connection, written as main writes one (freedom-core design 0011,
-// PRQ-4): by the identity core, under the page's PageContext (design 0012,
-// APB-2); the chrome's own grant write is refused.
-const grant = (electronApp, key) =>
-  electronApp.evaluate((_electron, args) =>
-    process.mainModule
-      .require(`${args.root}/src/main/wallet/dapp-permissions`)
-      .grantPermission(args.key, 0, 100, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
-  { root: repoRoot, key });
-// A site's signing rule, as main sets it from a prompt's "always allow"
-// (PRQ-5a): Q9's limited rule, which the core writes (APB-2); the chrome may
-// only clear one.
-const signingRule = (electronApp, key) =>
-  electronApp.evaluate((_electron, args) =>
-    process.mainModule
-      .require(`${args.root}/src/main/wallet/dapp-permissions`)
-      .setSigningAutoApprove(args.key, true, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
-  { root: repoRoot, key });
-
 async function openIn(win, url) {
   const address = win.locator('[data-test="address-input"]');
   await address.click();
@@ -168,14 +150,15 @@ test('a background tab is attributed to its own site, never the visible one', as
   expect(unlock.success).toBe(true);
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
 
-  // The trusted dApp: connected, signatures auto-approved.
-  await grant(electronApp, TRUSTED_KEY);
-  await signingRule(electronApp, TRUSTED_KEY);
-
-  // Tab 1: the trusted dApp. Tab 2: the other site. Back to tab 1, so the
-  // other site sits in a background tab while the address bar shows the
+  // Tab 1: the trusted dApp, connected and its signatures auto-approved,
+  // each from the identity core's own prompt as a user sets them (design
+  // 0012: main writes neither). Tab 2: the other site. Back to tab 1, so
+  // the other site sits in a background tab while the address bar shows the
   // trusted dApp.
   await openIn(win, TRUSTED_URL);
+  const inTrusted = (js) => inTab(win, TRUSTED_URL, js);
+  expect(await connectByPrompt(electronApp, inTrusted)).toBe(account);
+  await signingRuleByPrompt(electronApp, inTrusted, account);
   await win.locator('[data-test="new-tab-btn"]').click();
   await openIn(win, OTHER_URL);
   await win.locator('[data-test="tab"][data-tab-id="1"]').click();
@@ -208,10 +191,14 @@ test('a background tab is attributed to its own site, never the visible one', as
   // rule with, for the background tab's guest or its own.
   expect(await win.evaluate(() => typeof window.wallet.signMessage)).toBe('undefined');
 
-  // Once the other site is connected (no auto-approve), its signature needs
-  // a prompt, which waits for its tab (PRQ-5a, as connecting does from
-  // PRQ-4) and names the other site, not the visible one.
-  await grant(electronApp, OTHER_KEY);
+  // Once the other site is connected (no auto-approve; from its own tab's
+  // prompt), its signature needs a prompt, which waits for its tab (PRQ-5a,
+  // as connecting does from PRQ-4) and names the other site, not the
+  // visible one.
+  await win.locator('[data-test="tab"][data-tab-id="2"]').click();
+  expect(await connectByPrompt(electronApp, (js) => inTab(win, OTHER_URL, js), { windowId })).toBe(account);
+  await win.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expect(win.locator('[data-test="address-input"]')).toHaveValue(TRUSTED_URL);
   await request(win, OTHER_URL, 'sig2', 'personal_sign', [MESSAGE, account]);
   await expect(win.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/has-wallet-prompt/, { timeout: 15_000 });
   expect(await panelShows()).toBeNull();

@@ -1,12 +1,15 @@
 // Sends through main, in real Electron (freedom-core design 0011, step
 // PRQ-5b): `eth_sendTransaction` goes from the app's preload to main on
-// `page:request`. Main quotes the fee and judges it, shows the send prompt as
-// a handle, the window's approvals panel renders it and answers it (design
-// 0011, APS-2; the chrome's decision is refused), and main's own issuer mints
-// the dapp-send token for that handle and the requester's key and spends it.
+// `page:request`. The send prompt shows as a handle (the fee quoted and
+// judged), the window's approvals panel renders it and answers it (design
+// 0011, APS-2; the chrome's decision is refused). Since APB-5b (freedom-core
+// design 0012) the prompt is the identity core's: main relays the page's
+// `eip1193.request`, shows the core's prompt, and the core mints the
+// dapp-send token for that prompt and the requester's PageContext when the
+// panel approves, and spends it at the signature; main has no page issuer.
 // The chrome mints no dapp-send token, none for a site's Safe send, and
-// claims no site's rule: main reads the contract rule itself, records it for
-// the requester's key, and asks for the vault's unlock first when it is
+// claims no site's rule: the core reads the contract rule and records it for
+// the requester's key, and main asks for the vault's unlock first when it is
 // locked.
 //
 // No chain runs here: main's quote and its signAndRecord are replaced in
@@ -38,6 +41,7 @@ const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { approvalsPage, approvalsState, chromeWindowId, decideInPanel, panelArmed } = require('./approvals-fixtures');
 const { startFeeRpcStub } = require('./fee-rpc-stub');
+const { connectByPrompt } = require('./dapp-prompts');
 const { Wallet } = require('ethers');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -194,14 +198,6 @@ const guestOf = (win, url) =>
   }, url);
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
 
-// A connection, written as main writes one (PRQ-4): by the identity core,
-// under the page's PageContext (design 0012, APB-2).
-const grant = (electronApp, key, walletIndex = 0) =>
-  electronApp.evaluate((_electron, args) =>
-    process.mainModule
-      .require(`${args.root}/src/main/wallet/dapp-permissions`)
-      .grantPermission(args.key, args.walletIndex, 100, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
-  { root: repoRoot, key, walletIndex });
 // Whether the site holds Q9's limited contract rule for the call, as the
 // core, which writes it as it signs a flagged send (APB-2), holds it.
 const ruleCovers = (electronApp, key) =>
@@ -328,9 +324,11 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   await fakeLedger(electronApp);
   expect(await win.evaluate((pw) => window.identity.unlock(pw), VAULT_PASSWORD)).toMatchObject({ success: true });
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
-  await grant(electronApp, KEY_A);
   await openIn(win, `${KEY_A}/`);
   const guest = await guestOf(win, KEY_A);
+  // Connected from the identity core's own prompt, as a user connects it
+  // (design 0012: main writes no grant).
+  expect(await connectByPrompt(electronApp, (js) => inTab(win, KEY_A, js))).toBe(account);
 
   // The chrome mints no dapp-send token, none for a site's Safe send, and
   // claims no site's contract rule.
@@ -467,9 +465,11 @@ test('sends through main: its prompt and fee check, its own token, the contract 
 
   // A Ledger account: once approved, the panel says where to confirm and
   // Reject is no way out, until main has the device's answer.
-  await grant(electronApp, KEY_C, LEDGER.index);
   await win.locator('[data-test="new-tab-btn"]').click();
   await openIn(win, `${KEY_C}/`);
+  expect(
+    await connectByPrompt(electronApp, (js) => inTab(win, KEY_C, js), { account: LEDGER.name, panel, windowId })
+  ).toBe(LEDGER.address);
   await electronApp.evaluate(() => {
     globalThis.__holdDevice = new Promise((resolve) => {
       globalThis.__releaseDevice = resolve;
@@ -533,5 +533,5 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   const methods = (await trace(electronApp))
     .filter((e) => e.kind === 'recorded' && e.guest === guest && e.method !== 'eth_chainId')
     .map((e) => e.method);
-  expect(methods).toEqual(Array(5).fill('eth_sendTransaction'));
+  expect(methods).toEqual(['eth_requestAccounts', ...Array(5).fill('eth_sendTransaction')]);
 });
