@@ -1911,30 +1911,6 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       await expect(notConfirmed(owner(approval).signTypedData(safeMessage(digest)))).resolves.toBe('unknown_token');
     });
 
-    test("a Safe message a site's rule answers: approval.spend { standing } under the page, judged by the core", async () => {
-      const permissions = require('./dapp-permissions');
-      const request = { method: 'personal_sign', params: ['0x68656c6c6f', SAFE_ADDRESS] };
-      try {
-        // No rule for the Safe: refused, no approval.
-        await permissions.grantPermission(SITE, SAFE_INDEX, 100, PAGE);
-        await expect(notConfirmed(sc.spendStandingSafeMessage(PAGE, SAFE_INDEX, request))).resolves.toBe('no_rule');
-        await permissions.setSigningAutoApprove(SITE, true, PAGE);
-        // In custody: the rule never answers.
-        await expect(notConfirmed(sc.spendStandingSafeMessage({ ...PAGE, agent: true }, SAFE_INDEX, request))).resolves.toBe('custody');
-        const approval = await sc.spendStandingSafeMessage(PAGE, SAFE_INDEX, request);
-        expect(approval).toEqual({ id: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE });
-        expect(calls.find((call) => call.method === 'approval.spend' && call.params.standing)).toMatchObject({
-          context: { caller: 'page', page: PAGE },
-          params: { standing: {}, kind: 'safe-message', account: SAFE_INDEX, payload: { safe: SAFE_ADDRESS, chain_id: '100' } },
-        });
-        const digest = hashMessage(require('ethers').getBytes('0x68656c6c6f'));
-        await expect(owner(approval).signTypedData(safeMessage(digest))).resolves.toMatch(/^0x[0-9a-f]{130}$/);
-        await vaultBackend.approval.end(approval.id, PAGE);
-      } finally {
-        await permissions.revokePermission(SITE);
-      }
-    });
-
     // cored 0.16.0 (design 0012, APR-4b): main's word signs no Safe's
     // signature. Without its Safe approval or a token that binds it, an
     // owner's SafeTx or SafeMessage and an executor's execTransaction are

@@ -443,26 +443,6 @@ describe("signing-confirmation: the core's kinds", () => {
     const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
     expect(sc.safeAuthorization({ id: spent.approval.id, page })).toEqual({ authorization: { safe: spent.approval.id }, page });
   });
-
-  test("a Safe message a site's rule answers spends { standing } under its page, for the page's Safe approval", async () => {
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
-    const request = { method: 'personal_sign', params: ['0x68', '0x' + 'aa'.repeat(20)] };
-    const spend = jest.spyOn(mockCore.approval, 'spend').mockResolvedValue({ bound: true, safe: 'c3'.repeat(16) });
-    try {
-      await expect(sc.spendStandingSafeMessage(page, 9, request)).resolves.toEqual({ id: 'c3'.repeat(16), page });
-      expect(spend).toHaveBeenCalledWith(
-        { standing: {}, kind: KINDS.SAFE_MESSAGE, account: 9, payload: expect.objectContaining({ method: 'personal_sign' }) },
-        page
-      );
-      spend.mockRejectedValueOnce(
-        Object.assign(new Error('no standing rule covers this request'), { code: 'not_authorized', data: { reason: 'custody' } })
-      );
-      await expect(sc.spendStandingSafeMessage(page, 9, request)).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', reason: 'custody' });
-      await expect(sc.spendStandingSafeMessage(null, 9, request)).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
-    } finally {
-      spend.mockRestore();
-    }
-  });
 });
 
 // A device send's "Always allow" (cored 0.16.0, design 0012 "A device send's

@@ -27,16 +27,6 @@ const { forSenderWindow } = require('../windows/request-window');
 const { getSigner } = require('./signers');
 const { isVaultLockedError } = require('./vault-errors');
 const {
-  signsRawHash,
-  normalizeMessage,
-  messageToBytes,
-  normalizeTypedData,
-  toCoreTypedData,
-  typedDataViewOptions,
-  typedDataWarnings,
-} = require('./signing-utils');
-const { vaultBackend } = require('../core/vault-backend');
-const {
   KINDS: CONFIRM_KINDS,
   NOT_CONFIRMED,
   isPageKind,
@@ -125,41 +115,6 @@ function notAuthorized(reason) {
   const err = new Error(`Signing was not confirmed: ${reason}`);
   err.code = NOT_CONFIRMED;
   return err;
-}
-
-/**
- * A dApp's typed data through the identity core (freedom-core design
- * 0002, #88): its digest and the core's view of exactly what is signed,
- * with the dApp's primaryType as it came and its active chain compared and
- * reported. Refused like any malformed typed data when the view wouldn't
- * fit one reply.
- *
- * @returns {Promise<{hash: string, view: object, warnings: string[]}>}
- */
-async function typedDataViewFor(typedData, chainId) {
-  const normalized = normalizeTypedData(typedData);
-  if (!normalized || typeof normalized !== 'object') {
-    throw new Error('Typed data is required');
-  }
-  const { hash, view } = await vaultBackend.typedDataView(
-    toCoreTypedData(normalized),
-    typedDataViewOptions(normalized, chainId)
-  );
-  return { hash, view, warnings: typedDataWarnings(view) };
-}
-
-/**
- * What a dApp's personal_sign signs, for the approval screen (#88): the
- * bytes main sends to the core, from the same strictly validated hex, and
- * whether they are a raw 32-byte value (#89). A message that isn't a
- * string can't be shown, so it is refused before the prompt.
- */
-function messageViewFor(message) {
-  if (typeof message !== 'string') {
-    throw new Error('The message to sign must be text or 0x-prefixed hex');
-  }
-  const bytes = messageToBytes(normalizeMessage(message));
-  return { hex: '0x' + bytes.toString('hex'), rawHash: signsRawHash(message) };
 }
 
 /**
@@ -815,7 +770,5 @@ module.exports = {
   CHROME_REFUSED_KINDS,
   authorizeSigning,
   buildTxRecordContext,
-  messageViewFor,
   registerWalletIpc,
-  typedDataViewFor,
 };

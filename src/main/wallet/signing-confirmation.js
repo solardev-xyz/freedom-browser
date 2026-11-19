@@ -94,8 +94,7 @@
  * signature (Ledger, phone), and the kinds that sign nothing (a held
  * intent's resend and close, a Safe's send and message, whose owners sign
  * later) spend theirs through `approval.spend` (`spendConfirmation`). A
- * Safe's spend gives a Safe approval (`spendSafeConfirmation`; a Safe
- * message a site's rule answers, `spendStandingSafeMessage`), which each
+ * Safe's spend gives a Safe approval (`spendSafeConfirmation`), which each
  * vault owner's signature and the executor's present as `{ safe }`
  * (`safeAuthorization`; `safe/safe-approvals.js` holds them). A
  * presented token is burnt whatever the outcome, as before, and main
@@ -900,33 +899,6 @@ async function spendSafeConfirmation(confirmation) {
 }
 
 /**
- * A Safe message a site's signing rule answers (design 0012, API): no token,
- * `approval.spend { standing, kind: 'safe-message', account, payload }`
- * under `page` with the request's PageContext. The core judges the rule
- * for the Safe's grant itself (custody, the rule, the message's warnings,
- * on the Safe's chain) and gives a Safe approval the page holds. Rejects
- * (SIGNING_NOT_CONFIRMED, the core's `reason` kept) when no rule answers.
- *
- * @param {object} page the request's PageContext
- * @param {number} safeIndex
- * @param {{method: string, params: Array}} request the page's request
- * @returns {Promise<{id: string, page: object}>}
- */
-async function spendStandingSafeMessage(page, safeIndex, request) {
-  if (!page || typeof page.origin !== 'string' || !page.origin) throw notConfirmed('a standing rule answers only a page');
-  const { account, payload } = corePayload(KINDS.SAFE_MESSAGE, safeIndex, request);
-  let spent;
-  try {
-    spent = await vault().approval.spend({ standing: {}, kind: KINDS.SAFE_MESSAGE, account, payload }, page);
-  } catch (err) {
-    throw confirmationError(err);
-  }
-  const approval = safeApprovalOf(spent, page);
-  if (!approval) throw notConfirmed('the core gave no Safe approval');
-  return approval;
-}
-
-/**
  * What a Safe's owner or executor signature presents (design 0012, API):
  * `{ safe }`, the approval's id, under the caller kind it was recorded for:
  * a page's under `page` with its recorded PageContext, the wallet's as main
@@ -1091,7 +1063,6 @@ module.exports = {
   finalizeReceiptOf,
   rememberDeviceSend,
   spendSafeConfirmation,
-  spendStandingSafeMessage,
   safeAuthorization,
   signingAuthorization,
   discardConfirmation,
