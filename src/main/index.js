@@ -551,6 +551,7 @@ const { registerRadicleProviderIpc } = require('./radicle/radicle-provider-ipc')
 const { registerPageRequestsIpc } = require('./page/page-requests');
 const { registerApprovalsIpc } = require('./approvals/approvals-document');
 const { setAgentWalletRoute } = require('./page/page-ethereum');
+const { setAgentPromptRoute } = require('./page/page-eip1193');
 const { registerSelectedChainIpc } = require('./wallet/selected-chain');
 const { registerPageEvents } = require('./page/page-events');
 const { registerFeedStoreIpc } = require('./swarm/feed-store');
@@ -806,11 +807,16 @@ async function bootstrap() {
   // turns it off in a development build), each window's approvals document
   // shows main's prompts and takes the decisions (0011 APS-1).
   registerApprovalsIpc();
-  // A page's connect from a tab the agent holds goes to the agent service,
-  // as the chrome's agent route took it before (0011 PRQ-4).
+  // A page's send from a tab the agent holds goes to the agent service
+  // (0011 PRQ-5b, until 0012 APB-5b), and the identity core's prompt for a
+  // connect or a signature in such a tab to the Agent's sheet (APB-5a).
   setAgentWalletRoute(
     (guestId, request, options) =>
       agentRuntime?.handlePageWalletRequest?.(guestId, request, options) ?? { handled: false }
+  );
+  setAgentPromptRoute(
+    (guestId, prompt, options) =>
+      agentRuntime?.handlePageWalletPrompt?.(guestId, prompt, options) ?? { handled: false }
   );
   registerSelectedChainIpc();
   // The chain switcher's chainChanged, and accountsChanged when a grant is

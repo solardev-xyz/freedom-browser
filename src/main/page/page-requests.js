@@ -85,10 +85,16 @@
  * (design 0012, APB-4): the core mints and spends its approval token, and
  * main only traces it (`context.traceCoreToken`).
  *
- * A request the Agent answers, in a tab it holds (design 0012, "A page
- * request the Agent answers"), is a page request too: the Agent's decision,
- * made within the record's wallet operation (`walletOperation`), mints the
- * request's page-kind token through main's issuer (`context.agentToken`),
+ * A connect or a signature in a tab the Agent holds goes to the core like
+ * any page's, and the Agent's sheet answers the core's prompt on a handle
+ * main opens for its decision (design 0012, "The Agent's answer", APB-5a:
+ * `context.agentPrompt`).
+ *
+ * A send the Agent answers, in a tab it holds (design 0012, "A page request
+ * the Agent answers"; until APB-5b), is a page request too: the Agent's
+ * decision, made within the record's wallet operation (`walletOperation`),
+ * mints the request's page-kind token through main's issuer
+ * (`context.agentToken`),
  * under `page` with the record's PageContext (`agent: true`) and a handle
  * main draws for that decision, and its signature presents it under `page`
  * with the PageContext read again then. Whether that decision still holds
@@ -169,14 +175,11 @@ const MAX_PASSWORD_LENGTH = 1024;
 // A handle: 32 random bytes, made by main.
 const HANDLE_BYTES = 32;
 
-// The page kinds the Agent's decision mints (design 0012, "A page request
-// the Agent answers"): it answers a page's sends, messages and typed data
-// for the accounts it signs with, and no Safe's (`agent-wallet-controller.js`).
-const AGENT_KINDS = new Set([
-  signingConfirmation.KINDS.DAPP_SEND,
-  signingConfirmation.KINDS.SIGN_MESSAGE,
-  signingConfirmation.KINDS.SIGN_TYPED_DATA,
-]);
+// The page kind the Agent's decision mints through main's issuer (design
+// 0012, "A page request the Agent answers"): a page's send, until APB-5b.
+// Its signatures are the core's, minted on the sheet's approve answer to
+// the core's own prompt (APB-5a, `agentPrompt`).
+const AGENT_KINDS = new Set([signingConfirmation.KINDS.DAPP_SEND]);
 
 // The reasons a handle closes (design 0011, "The prompt protocol").
 const CLOSED = Object.freeze({
@@ -475,6 +478,9 @@ function createPageRequests({
       operating: false,
       agentMinted: false,
       agentHandle: null,
+      // While the Agent's sheet decides on the record's handle
+      // (`agentPrompt`): aborted when that handle closes.
+      sheet: null,
     };
     record.reply = new Promise((resolve) => {
       record.resolve = resolve;
@@ -570,6 +576,8 @@ function createPageRequests({
     if (!handle || handles.get(handle) !== record) return false;
     handles.delete(handle);
     record.handleClosed = reason;
+    // The Agent's sheet deciding on this handle is withdrawn (`agentPrompt`).
+    record.sheet?.abort();
     const closed = Object.freeze({ handle, window: record.window, guest: record.requester.guest, reason });
     trace({ kind: 'handle-closed', id: record.id, reason });
     prompts.closed(handle, reason);
@@ -717,6 +725,7 @@ function createPageRequests({
       // goes to the identity core (design 0012), never as main's own.
       pageContext: () => pageContextOf(record),
       walletOperation: (run) => walletOperation(record, run),
+      agentPrompt: (spec) => agentPrompt(record, spec),
       leaveWalletSlot: () => leaveWalletSlot(record),
       // Aborted when main answers the record: for a dispatcher that waits on
       // something outside main's prompts.
@@ -1238,6 +1247,94 @@ function createPageRequests({
       record.operating = false;
       if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
     }
+  }
+
+  /**
+   * The Agent's sheet deciding on the identity core's prompt for this
+   * record, in a tab the Agent holds (design 0012, "The Agent's answer",
+   * APB-5): a 0011 handle on the record, which keeps the core's prompt id
+   * (`corePrompt`), in the document's one wallet slot, as main's own prompt
+   * is. The handle is not shown in the approvals document, so the record's
+   * deadline keeps running: at it, the handle closes (`expired`) and the
+   * sheet is withdrawn.
+   *
+   * `run({ signal, open })` asks the agent service: `signal` aborts when the
+   * handle closes (the core's cancel, the document gone, the deadline) or
+   * main answers the record. It resolves with `{ handled: false }` when the
+   * agent service doesn't take the prompt, `{ refused: error }` when it
+   * refuses it without asking the sheet, `{ approve: true, choices }` or
+   * `{ approve: false }` for the sheet's decision, or `{ closed: true }` for
+   * a sheet withdrawn.
+   *
+   * Settles with `{ handled: false }` (the handle closed, the slot free, for
+   * the user's prompt to take the same prompt id), `{ error }` (`-32002`
+   * while the slot is taken), `{ closed: reason }`, or the decision named
+   * with the handle it was made on and the prompt id: `{ approve, choices,
+   * handle, prompt, from: 'agent' }`, or `{ refused, handle, prompt }`. An
+   * approve keeps the slot for the record until main answers it, as an
+   * approved prompt does.
+   */
+  async function agentPrompt(record, { corePrompt, run } = {}) {
+    if (typeof corePrompt !== 'string' || typeof run !== 'function') throw new Error('page-requests: a sheet needs a core prompt');
+    if (record.answered) return { closed: CLOSED.CANCELLED };
+    if (record.handle && handles.get(record.handle) === record) {
+      throw new Error('page-requests: a record prompts one prompt at a time');
+    }
+    if (walletSlotTaken(record)) {
+      trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
+      return { error: { ...PROMPT_PENDING } };
+    }
+    const handle = openHandle(record);
+    if (!handle) return { closed: CLOSED.CANCELLED };
+    record.corePrompt = corePrompt;
+    const sheet = new AbortController();
+    record.sheet = sheet;
+    walletOperations.set(record.key, record);
+    const answered = abortSignalOf(record);
+    const signal = AbortSignal.any([sheet.signal, answered]);
+    trace({ kind: 'sheet-opened', id: record.id });
+    let outcome;
+    try {
+      outcome = await run({ signal, open: () => !record.answered && handles.get(handle) === record });
+    } catch {
+      outcome = { closed: true };
+    } finally {
+      if (record.sheet === sheet) record.sheet = null;
+    }
+    const named = { handle, prompt: corePrompt };
+    const free = () => {
+      if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
+    };
+    // Closed meanwhile (the core's cancel, the document gone, the deadline):
+    // that is the answer, whatever the sheet said after.
+    if (handles.get(handle) !== record || record.answered) {
+      free();
+      trace({ kind: 'sheet-closed', id: record.id, reason: record.handleClosed || CLOSED.CANCELLED });
+      return { closed: record.handleClosed || CLOSED.CANCELLED };
+    }
+    if (outcome?.approve === true && isPlainObject(outcome.choices)) {
+      record.approved = handle;
+      closeHandle(record, CLOSED.DECIDED);
+      trace({ kind: 'sheet-decided', id: record.id, approve: true });
+      return Object.freeze({ approve: true, choices: Object.freeze({ ...outcome.choices }), from: 'agent', ...named });
+    }
+    free();
+    if (outcome?.approve === false) {
+      closeHandle(record, CLOSED.DECIDED);
+      trace({ kind: 'sheet-decided', id: record.id, approve: false });
+      return Object.freeze({ approve: false, choices: Object.freeze({}), from: 'agent', ...named });
+    }
+    closeHandle(record, CLOSED.CANCELLED);
+    if (outcome?.handled === false) {
+      trace({ kind: 'sheet-declined', id: record.id });
+      return { handled: false };
+    }
+    if (isPlainObject(outcome?.refused)) {
+      trace({ kind: 'sheet-refused', id: record.id });
+      return Object.freeze({ refused: { ...outcome.refused }, ...named });
+    }
+    trace({ kind: 'sheet-closed', id: record.id, reason: CLOSED.CANCELLED });
+    return { closed: CLOSED.CANCELLED };
   }
 
   // The record's signal, aborted once main answers it.

@@ -5,12 +5,7 @@ const { AutomationError, ERROR_CODES } = require('../automation/contract/errors'
 const { getPermissionKey, isEnsHost } = require('../../shared/origin-utils');
 const identityManager = require('../identity-manager');
 const tokenRegistry = require('../token-registry');
-const {
-  getPermission,
-  grantPermission,
-  updateLastUsed,
-  updateWalletIndex,
-} = require('../wallet/dapp-permissions');
+const { getPermission, updateLastUsed } = require('../wallet/dapp-permissions');
 const { getChain } = require('../wallet/chains');
 const { getAllBalances, clearBalanceCache } = require('../wallet/balance-service');
 const { resolveEnsAddress } = require('../ens-resolver');
@@ -23,30 +18,26 @@ const {
 const { signAndRecord, KINDS } = require('../wallet/tx-recorder');
 const { getSigner } = require('../wallet/signers');
 
-const PRIVILEGED_METHODS = new Set([
-  'eth_requestAccounts',
-  'eth_sendTransaction',
-  'personal_sign',
-  'eth_signTypedData_v4',
-]);
+// The page methods main hands to the agent's own route, attested
+// (freedom-core design 0011): a send (PRQ-5b), until APB-5b. A connect or a
+// signature in a tab the Agent holds goes to the identity core, whose prompt
+// the Agent's sheet answers (design 0012, "The Agent's answer", APB-5a:
+// `answerPrompt`).
+const PRIVILEGED_METHODS = new Set(['eth_sendTransaction']);
 
-// The methods main serves for a page and hands to the agent attested
-// (freedom-core design 0011): connecting (PRQ-4), messages and typed data
-// (PRQ-5a), and sends (PRQ-5b).
-const ATTESTED_METHODS = new Set([
-  'eth_requestAccounts',
-  'personal_sign',
-  'eth_signTypedData_v4',
-  'eth_sendTransaction',
-]);
+// The page kind the Agent's decision on a send mints (freedom-core design
+// 0012, "A page request the Agent answers"), as main's issuer names it.
+const SEND_TOKEN_KIND = 'dapp-send';
 
-// The page kinds the Agent's decision mints (freedom-core design 0012, "A
-// page request the Agent answers"), as main's issuer names them.
-const PAGE_TOKEN_KINDS = Object.freeze({
-  personal_sign: 'sign-message',
-  eth_signTypedData_v4: 'sign-typed-data',
-  eth_sendTransaction: 'dapp-send',
+// The core's prompts the Agent's sheet answers, with the page methods each
+// serves (APB-5a).
+const PROMPT_METHODS = Object.freeze({
+  'eth.connect': new Set(['eth_requestAccounts']),
+  'eth.sign': new Set(['personal_sign', 'eth_signTypedData_v4']),
 });
+// The longest request, and the longest payload the sheet shows in full.
+const MAX_REQUEST_CHARS = 131_072;
+const MAX_PAYLOAD_CHARS = 65_536;
 
 /**
  * Main's issuer for the Agent's decision on a page request it attested
@@ -128,6 +119,55 @@ function exactTypedData(value) {
   }
 }
 
+/** A `personal_sign` message's bytes as UTF-8 text, or null (`approvals-kinds.js`'s `messageText`). */
+function messageText(hex) {
+  if (typeof hex !== 'string' || !/^0x(?:[0-9a-fA-F]{2})*$/.test(hex)) return null;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(hex.slice(2), 'hex'));
+  } catch {
+    return null;
+  }
+}
+
+const TYPED_WARNINGS = Object.freeze({
+  'named-type':
+    'The site named a different type of data than the one shown here. This shows what is signed, but another wallet could sign something different for this request.',
+  'chain-mismatch': 'This data is for another chain than the site is on.',
+  'chain-absent': 'This data names no chain. The signature is valid on every chain where the contract it is for exists.',
+});
+
+/**
+ * What the sheet shows of a signature: the identity core's view of what its
+ * token binds (design 0012, A7-10), as the user's prompt shows it. A
+ * message as text where its bytes are UTF-8, else its bytes in hex; typed
+ * data as the core's parsed view, with its hash, the fields the site sent
+ * that aren't signed, and the core's warnings.
+ */
+function signatureSummary(view) {
+  if (view.method === 'personal_sign') {
+    const text = view.message.rawHash ? null : messageText(view.message.hex);
+    const lines = [text === null ? view.message.hex : text];
+    if (view.message.rawHash) {
+      lines.push('', "Warning: this signs a raw 32-byte value. It can authorize things this screen can't show.");
+    }
+    return lines.join('\n');
+  }
+  const typed = view.typedData;
+  const shown = typed.view || {};
+  const lines = [
+    `Domain: ${JSON.stringify(shown.domain ?? {}, null, 2)}`,
+    `${typeof shown.primary_type === 'string' ? shown.primary_type : 'Message'}: ${JSON.stringify(shown.message ?? null, null, 2)}`,
+    `Hash: ${typed.hash}`,
+  ];
+  if (Array.isArray(shown.ignored) && shown.ignored.length > 0) {
+    lines.push(`Not signed, though the site sent it: ${shown.ignored.join(', ')}`);
+  }
+  for (const warning of typed.warnings) {
+    if (TYPED_WARNINGS[warning]) lines.push(`Warning: ${TYPED_WARNINGS[warning]}`);
+  }
+  return lines.join('\n');
+}
+
 function abortIfRequested(signal) {
   if (signal?.aborted) {
     throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The wallet transfer was cancelled');
@@ -150,9 +190,7 @@ class AgentWalletController {
   constructor(options = {}) {
     this.identity = options.identityManager || identityManager;
     this.getPermission = options.getPermission || getPermission;
-    this.grantPermission = options.grantPermission || grantPermission;
     this.updateLastUsed = options.updateLastUsed || updateLastUsed;
-    this.updateWalletIndex = options.updateWalletIndex || updateWalletIndex;
     this.getChain = options.getChain || getChain;
     this.estimateGas = options.estimateGas || estimateGas;
     this.getGasPrices = options.getGasPrices || getGasPrices;
@@ -388,6 +426,157 @@ class AgentWalletController {
     }
   }
 
+  /**
+   * The Agent's sheet answering the identity core's prompt for a page's
+   * connect or signature in a tab the Agent holds (freedom-core design 0012,
+   * "The Agent's answer", APB-5a). Main asks it from its handler of the
+   * core's `approval.request`, on a handle it opened for the sheet's
+   * decision, and answers the core with that decision; the core then writes
+   * the grant, or mints the token and signs, or hands main `{ device }`.
+   *
+   * `context`: the run's (`tabId`, `pageUrl`, `requestApproval`) and main's
+   * (`attested`: the key the request acts under and the page's transport
+   * key). `prompt`: `{ kind, method, params, chainId, view }`, `view` the
+   * core's as main shows it (`page-eip1193.js`), which the sheet shows: what
+   * the token will bind, not the page's params (A7-10).
+   *
+   * The agent's own refusals answer without the sheet (A7-3): a request over
+   * 131,072 characters, a page this run sees on another transport, a Safe's
+   * account, a signature for another address, typed data for another chain,
+   * or a payload too large to show in full.
+   *
+   * @returns {Promise<object>} `{ handled: false }` for a prompt it doesn't
+   *   take; `{ handled: true, error, errorCode }` for a refusal; or
+   *   `{ handled: true, decision, receiptOf }`, `decision` `{ approve: true,
+   *   walletIndex? }`, `{ approve: false }` or `{ closed: true }` (the sheet
+   *   withdrawn), and `receiptOf(answer)` the Agent's receipt for the page's
+   *   answer, or null.
+   */
+  async answerPrompt(context, prompt) {
+    if (
+      !context ||
+      typeof context !== 'object' ||
+      typeof context.tabId !== 'string' ||
+      typeof context.pageUrl !== 'string' ||
+      typeof context.requestApproval !== 'function' ||
+      !context.attested
+    ) {
+      return { handled: false };
+    }
+    if (!prompt || typeof prompt !== 'object' || !PROMPT_METHODS[prompt.kind]?.has(prompt.method)) {
+      return { handled: false };
+    }
+    const { view, method } = prompt;
+    const chainId = view?.chain?.id;
+    if (!view || typeof view !== 'object' || !Number.isSafeInteger(chainId)) return { handled: false };
+    const refuse = (code, message, errorCode) => ({ handled: true, error: providerError(code, message), errorCode });
+    let serialized;
+    try {
+      serialized = JSON.stringify({ method, params: prompt.params, chainId: prompt.chainId });
+    } catch {
+      return refuse(-32602, 'Wallet request is too large', ERROR_CODES.INVALID_ARGUMENT);
+    }
+    if (serialized.length > MAX_REQUEST_CHARS) {
+      return refuse(-32602, 'Wallet request is too large', ERROR_CODES.INVALID_ARGUMENT);
+    }
+    // It acts under main's key (a DNS name over IPNS keeps its name), on the
+    // page this run sees on the same transport.
+    const pageKey = getPermissionKey(context.pageUrl);
+    const { key, transportKey } = context.attested;
+    if (typeof key !== 'string' || !key || !pageKey || pageKey !== transportKey) {
+      return refuse(4100, 'Wallet request origin did not match the page', ERROR_CODES.POLICY_DENIED);
+    }
+    const chainName = bounded(view.chain.name, 80);
+    const request = {
+      operation: 'browser_wallet_action',
+      tabId: context.tabId,
+      origin: key,
+      destinationOrigin: key,
+    };
+
+    if (prompt.kind === 'eth.connect') {
+      const wallets = (Array.isArray(view.accounts) ? view.accounts : []).map(safeWallet).filter(Boolean);
+      if (wallets.length === 0) {
+        return refuse(-32603, 'No wallet account is available', ERROR_CODES.CAPABILITY_UNAVAILABLE);
+      }
+      const offered = wallets.map((wallet) => wallet.index);
+      const defaultWalletIndex = offered.includes(view.defaultIndex) ? view.defaultIndex : offered[0];
+      const decision = await this.#decide(context, {
+        ...request,
+        action: 'wallet_connection',
+        label: 'Connect a wallet account',
+        wallet: { kind: 'connection', chainId, chainName, wallets, defaultWalletIndex, requiresUnlock: false },
+      });
+      return {
+        handled: true,
+        decision: decision.approve === true ? { approve: true, walletIndex: decision.walletIndex ?? defaultWalletIndex } : decision,
+        receiptOf: (answer) =>
+          Array.isArray(answer?.result) && typeof answer.result[0] === 'string'
+            ? { wallet: { action: 'connected', origin: key, chainId, account: answer.result[0] } }
+            : null,
+      };
+    }
+
+    const account = safeWallet(view.account);
+    if (!account) {
+      return refuse(-32603, 'The connected wallet is unavailable', ERROR_CODES.CAPABILITY_UNAVAILABLE);
+    }
+    try {
+      assertSupportedSigningWallet(account);
+    } catch (error) {
+      return refuse(-32603, error.message, error.code);
+    }
+    const personal = method === 'personal_sign';
+    const params = Array.isArray(prompt.params) ? prompt.params : [];
+    const claimedAddress = personal ? params[1] : params[0];
+    if (typeof claimedAddress === 'string' && claimedAddress.toLowerCase() !== account.address.toLowerCase()) {
+      return refuse(-32603, 'Signature account does not match the connected wallet', ERROR_CODES.POLICY_DENIED);
+    }
+    const exactPayload = personal ? (typeof params[0] === 'string' ? params[0] : '') : exactTypedData(params[1]);
+    if (!exactPayload || exactPayload.length > MAX_PAYLOAD_CHARS) {
+      return refuse(-32603, 'The signature payload is invalid or too large to review safely', ERROR_CODES.INVALID_ARGUMENT);
+    }
+    if (!personal) {
+      const domainChain = JSON.parse(exactPayload)?.domain?.chainId;
+      if (domainChain !== undefined && Number(domainChain) !== chainId) {
+        return refuse(-32603, 'Typed-data chain does not match the approved wallet network', ERROR_CODES.POLICY_DENIED);
+      }
+    }
+    const decision = await this.#decide(context, {
+      ...request,
+      action: 'wallet_signature',
+      label: personal ? 'Sign a message' : 'Sign typed data',
+      wallet: {
+        kind: 'signature',
+        chainId,
+        chainName,
+        account,
+        signatureType: personal ? 'Personal message' : 'EIP-712 typed data',
+        summary: signatureSummary(view),
+        requiresUnlock: account.type === 'mnemonic',
+      },
+    });
+    return {
+      handled: true,
+      decision: decision.approve === true ? { approve: true } : decision,
+      // The signature itself stays out of the receipt.
+      receiptOf: (answer) =>
+        typeof answer?.result === 'string'
+          ? { wallet: { action: 'signed', origin: key, chainId, signatureType: method } }
+          : null,
+    };
+  }
+
+  // The sheet's decision, as main relays it: approved (with the account a
+  // connect picked), declined, or withdrawn.
+  async #decide(context, request) {
+    const decision = normalizeDecision(await context.requestApproval(request));
+    if (decision.status === 'approved') {
+      return { approve: true, ...(decision.walletIndex !== undefined && { walletIndex: decision.walletIndex }) };
+    }
+    return decision.status === 'withdrawn' ? { closed: true } : { approve: false };
+  }
+
   async handleRequest(context, payload) {
     if (
       !context ||
@@ -407,7 +596,7 @@ class AgentWalletController {
     } catch {
       return { handled: false };
     }
-    if (serialized.length > 131_072) {
+    if (serialized.length > MAX_REQUEST_CHARS) {
       return {
         handled: true,
         error: providerError(-32602, 'Wallet request is too large'),
@@ -423,10 +612,9 @@ class AgentWalletController {
     };
     let permissionKey;
     if (context.attested) {
-      // A request main attested (freedom-core design 0011, PRQ-4 and
-      // PRQ-5a): it acts under main's key (a DNS name over IPNS keeps its
-      // name), on the page this run sees on the same transport.
-      if (!ATTESTED_METHODS.has(payload.method)) return { handled: false };
+      // A request main attested (freedom-core design 0011, PRQ-5b): it acts
+      // under main's key (a DNS name over IPNS keeps its name), on the page
+      // this run sees on the same transport.
       const { key, transportKey } = context.attested;
       if (typeof key !== 'string' || !key || !pageKey || pageKey !== transportKey) return originMismatch;
       permissionKey = key;
@@ -474,88 +662,6 @@ class AgentWalletController {
     }
     const permission = this.getPermission(permissionKey);
 
-    if (payload.method === 'eth_requestAccounts') {
-      // The grant is the identity core's to write, under the page's own
-      // PageContext (freedom-core design 0012, APB-2): only a page's request
-      // main attested has one. Refused before the approval otherwise.
-      if (!context.attested || typeof context.pageContext !== 'function') {
-        throw new AutomationError(
-          ERROR_CODES.POLICY_DENIED,
-          'A wallet connection is written only for a page’s own request'
-        );
-      }
-      const defaultWalletIndex = permission?.walletIndex ?? this.identity.getActiveWalletIndex();
-      const decision = await this.#approve(context, {
-        action: 'wallet_connection',
-        operation: 'browser_wallet_action',
-        tabId: context.tabId,
-        origin: permissionKey,
-        destinationOrigin: permissionKey,
-        label: 'Connect a wallet account',
-        wallet: {
-          kind: 'connection',
-          chainId,
-          chainName: bounded(chain.name, 80),
-          wallets,
-          defaultWalletIndex,
-          requiresUnlock: false,
-        },
-      });
-      const selected = wallets.find((wallet) => wallet.index === decision.walletIndex);
-      if (!selected) {
-        throw new AutomationError(
-          ERROR_CODES.INVALID_ARGUMENT,
-          'The selected wallet is unavailable'
-        );
-      }
-      // A request main attested writes only while main still holds it: not
-      // answered (its deadline, its page gone), the name checked again, and
-      // the page still under its key in the same run as the write.
-      // The write goes to the identity core in that run, under the page's
-      // PageContext (design 0012, APB-2), and the connect answers once it is
-      // written: one that fails (a widening whose write failed isn't
-      // applied) fails the request.
-      await this.#underMain(context, () => {
-        const page = context.pageContext();
-        const current = this.getPermission(permissionKey);
-        let grant;
-        let written;
-        if (current) {
-          grant = current.walletIndex !== selected.index ? 'updated' : 'unchanged';
-          written =
-            grant === 'updated'
-              ? Promise.resolve(this.updateWalletIndex(permissionKey, selected.index, page))
-              : Promise.resolve(true);
-          Promise.resolve(this.updateLastUsed(permissionKey, chainId, page)).catch(() => {});
-        } else {
-          grant = 'created';
-          written = Promise.resolve(this.grantPermission(permissionKey, selected.index, chainId, page));
-        }
-        // What this write did, decided here, told to main in the same run
-        // (freedom-core design 0011, PRQ-6): main queues a created grant's
-        // events at this write, in the key's order, sent once it is written.
-        if (typeof context.grantWritten === 'function') {
-          try {
-            context.grantWritten({ grant, walletIndex: selected.index, account: selected.address, chainId, written });
-          } catch {
-            // Main's events never undo the write.
-          }
-        }
-        return written;
-      });
-      return {
-        providerResult: [selected.address],
-        receipt: {
-          wallet: {
-            action: 'connected',
-            origin: permissionKey,
-            chainId,
-            account: selected.address,
-          },
-        },
-      };
-    }
-
     if (!permission) {
       throw new AutomationError(
         ERROR_CODES.POLICY_DENIED,
@@ -571,9 +677,9 @@ class AgentWalletController {
     }
 
     assertSupportedSigningWallet(wallet);
-    // A page's signature or send is the page's (design 0012, APB-1): it
-    // goes under `page` with the token the Agent's decision mints through
-    // main's issuer, never as main's own. A request main didn't attest, or
+    // A page's send is the page's (design 0012, APB-1): it goes under
+    // `page` with the token the Agent's decision mints through main's
+    // issuer, never as main's own. A request main didn't attest, or
     // one it gave no issuer for, has no page to sign under: refused before
     // anything is asked.
     if (!context.attested || !pageTokenOf(context)) {
@@ -582,10 +688,7 @@ class AgentWalletController {
         'A page’s wallet request signs only through Freedom’s page dispatcher'
       );
     }
-    if (payload.method === 'eth_sendTransaction') {
-      return this.#sendTransaction(context, payload, permissionKey, chain, wallet);
-    }
-    return this.#sign(context, payload, permissionKey, chain, wallet);
+    return this.#sendTransaction(context, payload, permissionKey, chain, wallet);
   }
 
   async #sendTransaction(context, payload, permissionKey, chain, wallet) {
@@ -683,7 +786,7 @@ class AgentWalletController {
       return this.#withPageToken(
         context,
         {
-          kind: PAGE_TOKEN_KINDS.eth_sendTransaction,
+          kind: SEND_TOKEN_KIND,
           walletIndex: wallet.index,
           payload: { ...tx, origin: permissionKey },
           options: { phone: wallet.type === 'remote' },
@@ -709,94 +812,6 @@ class AgentWalletController {
           chainId,
           transactionHash: result.hash,
           ...(result.paymentId && { paymentId: result.paymentId }),
-        },
-      },
-    };
-  }
-
-  async #sign(context, payload, permissionKey, chain, wallet) {
-    const personal = payload.method === 'personal_sign';
-    const message = personal && typeof payload.params?.[0] === 'string' ? payload.params[0] : '';
-    const typedData = personal ? null : payload.params?.[1];
-    const claimedAddress = personal ? payload.params?.[1] : payload.params?.[0];
-    if (
-      typeof claimedAddress === 'string' &&
-      claimedAddress.toLowerCase() !== wallet.address.toLowerCase()
-    ) {
-      throw new AutomationError(
-        ERROR_CODES.POLICY_DENIED,
-        'Signature account does not match the connected wallet'
-      );
-    }
-    const exactPayload = personal ? message : exactTypedData(typedData);
-    if (!exactPayload || exactPayload.length > 65_536) {
-      throw new AutomationError(
-        ERROR_CODES.INVALID_ARGUMENT,
-        'The signature payload is invalid or too large to review safely'
-      );
-    }
-    if (!personal) {
-      const domainChain = JSON.parse(exactPayload)?.domain?.chainId;
-      if (domainChain !== undefined && Number(domainChain) !== chain.chainId) {
-        throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'Typed-data chain does not match the approved wallet network');
-      }
-    }
-    await this.#approve(context, {
-      action: 'wallet_signature',
-      operation: 'browser_wallet_action',
-      tabId: context.tabId,
-      origin: permissionKey,
-      destinationOrigin: permissionKey,
-      label: personal ? 'Sign a message' : 'Sign typed data',
-      wallet: {
-        kind: 'signature',
-        chainId: chain.chainId,
-        chainName: bounded(chain.name, 80),
-        account: wallet,
-        signatureType: personal ? 'Personal message' : 'EIP-712 typed data',
-        summary: exactPayload,
-        requiresUnlock: wallet.type === 'mnemonic',
-      },
-    });
-    // A request main attested signs only while main still holds it: not
-    // answered (its deadline, its page gone), the name checked again, the
-    // page still under its key and the tab still the agent's: before the
-    // mint, after it, and as the signer's last step, after its own waits
-    // (the address, the core's hash and spend for a device), right before
-    // the core or the device is asked. The signature presents the page's
-    // token the Agent's approval minted (design 0012): a message's bytes,
-    // or typed data viewed on the page's chain, whose hash the core bound
-    // is the one it signs.
-    const signature = await this.#underMain(context, () =>
-      this.#withPageToken(
-        context,
-        {
-          kind: PAGE_TOKEN_KINDS[payload.method],
-          walletIndex: wallet.index,
-          payload: personal ? message : typedData,
-          options: personal ? {} : { chainId: chain.chainId },
-        },
-        (authorized, confirmation) => {
-          const signer = this.getSigner(wallet.index, authorized());
-          return personal
-            ? signer.signMessage(message)
-            : signer.signTypedData(typedData, { expectedHash: confirmation.hash });
-        }
-      )
-    );
-    // A grant held under the attested key is touched only while main still
-    // holds the request after the signature's wait, checked the same way.
-    // The signature itself reaches the page only while its name holds, which
-    // main checks when it answers.
-    await this.#underMain(context, () => this.#touch(context, permissionKey, chain.chainId), { required: false });
-    return {
-      providerResult: signature,
-      receipt: {
-        wallet: {
-          action: 'signed',
-          origin: permissionKey,
-          chainId: chain.chainId,
-          signatureType: personal ? 'personal_sign' : 'eth_signTypedData_v4',
         },
       },
     };
