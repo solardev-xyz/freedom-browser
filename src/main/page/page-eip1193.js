@@ -867,8 +867,11 @@ function createEip1193Relay(deps = {}) {
     const id = typeof decision.prompt === 'string' ? decision.prompt : prompt;
     if (context.approvalsDocument && decision.from !== 'approvals') return { prompt: id, closed: 'cancelled' };
     // Name-revalidated: once the user has approved, the document must still
-    // hold its key, or the core mints nothing.
-    if (!(await documentHolds(context))) {
+    // hold its key, or the core mints nothing. No keyless answer is set on
+    // the record (`nameHolds`' option), as on main's own route: a refusal
+    // answers 4100 itself, and once a send that passed main's gate has gone
+    // out, its hash is the page's even if the name moves after it.
+    if (!((await context.nameHolds()) && context.holdsKey())) {
       entry.override = { ...NO_ADDRESS };
       return { prompt: id, closed: 'cancelled' };
     }

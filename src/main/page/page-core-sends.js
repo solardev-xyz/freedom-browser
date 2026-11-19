@@ -27,8 +27,9 @@
  *     site's rule answers (`pay`): the site's turn without waiting, refused
  *     while another of the site's payments is under way or waiting (D12's
  *     text); the signature under `{ standing: { paused: false } }`, which the
- *     core judges and counts again; then, after the broadcast, the key's last
- *     use (`approval.touch`).
+ *     core judges and counts again, with the rule read again by main
+ *     (`approval.check`) just before it and after it, before the journal;
+ *     then, after the broadcast, the key's last use (`approval.touch`).
  *   - **A device's send** (`device`): a Ledger's (`ledger`) as a vault
  *     send, with its token spent through the core (`approval.spend`) before
  *     the device is asked, and, for "Always allow", the finalize receipt
@@ -80,6 +81,10 @@ const ACCOUNT_GONE = Object.freeze({ code: INTERNAL_ERROR_CODE, message: 'The co
 // to the prompt; after `{ send }` the core's request is over, so the page
 // hears that the rule didn't cover it, with nothing signed.
 const RULE_REASONS = new Set(['no_rule', 'not_exposed', 'rate_limited', 'fee_check', 'warning']);
+// What a rule's own signature settled, read again after it: the rate, whose
+// slot the signature spent (the burst's last send reads as past it), and
+// the fee, fixed in the signed bytes the core judged as it signed.
+const SIGNATURE_SETTLED = new Set(['rate_limited', 'fee_check']);
 const VAULT_TYPES = new Set([undefined, null, 'mnemonic']);
 
 // A phone account's payment whose answer was lost may have been sent (D13):
@@ -345,6 +350,7 @@ function defaultDependencies() {
     signAndRecord: (tx, signer, context, options) =>
       require('../wallet/tx-recorder').signAndRecord(tx, signer, context, options),
     inCustody: guestInCustody,
+    checkStanding: (page, request) => require('../wallet/signing-confirmation').checkStanding(page, request),
     rememberDeviceSend: (held) => require('../wallet/signing-confirmation').rememberDeviceSend(held),
     discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
     spendSafe: (confirmation) => require('../wallet/signing-confirmation').spendSafeConfirmation(confirmation),
@@ -539,13 +545,41 @@ function createCoreSends(shared, deps = {}) {
    * A send the site's rule answered, with no token: the site's turn without
    * waiting (D12), and the signature under `{ standing }`, which the core
    * judges again as it signs. Just before it, and after the signature,
-   * the name, custody read live, the grant and the document's key.
+   * the name, the site's rule as the core reads it now, custody read live,
+   * the grant and the document's key (`page-sends.js`'s `ruleStillAnswers`).
    */
   async function standing(context, { account, tx }) {
     const { requester } = context;
-    const stillAnswers = async (run) => {
+    const payload = mainTxOf(tx);
+    // The site's rule for this send (`approval.check`, which counts nothing),
+    // under the PageContext read live, not paused: its turn is the send's
+    // own. A refusal's answer, or null while the rule answers. Before the
+    // signature the core decides it again as it signs; after it, what the
+    // signature settled stands. A check that fails is a refusal.
+    const ruleRefusal = async (signed) => {
+      let still;
+      try {
+        still = await d.checkStanding(context.pageContext(), {
+          kind: 'transaction',
+          account,
+          accountType: 'mnemonic',
+          payload: mainTxOf(tx),
+          paused: false,
+        });
+      } catch {
+        still = null;
+      }
+      if (still?.covered === true) return null;
+      if (still?.reason === 'custody') return AGENT_CUSTODY;
+      if (signed && SIGNATURE_SETTLED.has(still?.reason)) return null;
+      return RULE_GONE;
+    };
+    const stillAnswers = (signed) => async (run) => {
       if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
+      const refused = await ruleRefusal(signed);
+      // From here to the effect, one run.
       if (custody(requester.guest)) throw withdrawn(error(AGENT_CUSTODY));
+      if (refused) throw withdrawn(error(refused));
       if (!grantExposes(requester.key, account)) throw withdrawn(error(RULE_GONE));
       if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
       return run();
@@ -555,11 +589,11 @@ function createCoreSends(shared, deps = {}) {
       sent = await sendDappPayment(
         {
           walletIndex: account,
-          tx: mainTxOf(tx),
+          tx: payload,
           site: requester.key,
           silent: true,
-          guard: stillAnswers,
-          afterSignature: stillAnswers,
+          guard: stillAnswers(false),
+          afterSignature: stillAnswers(true),
           // Not paused: its turn is the send's own, which a paused site
           // doesn't get (`sendDappPayment`). The PageContext read live, so
           // a tab the Agent took meanwhile is the core's refusal too.

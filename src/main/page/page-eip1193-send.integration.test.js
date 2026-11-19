@@ -202,13 +202,20 @@ describeIfBinary('page sends through the real freedom-cored\'s eip1193.request (
   // `sign.transaction` and its authorization (the token left out), each
   // signature made, each refusal's reason, each token spent (the token left
   // out), each phone job opened, each Safe send started, each receipt
-  // presented, and each last use written. `edit` changes the transaction
-  // main presents; `alter` the confirmation a device spends.
+  // presented, each last use written, each signed send main's guard let
+  // through to the journal and broadcast (`committed`), and each answer of
+  // the core's `approval.check` to main's rule read for a rule's send.
+  // `edit` changes the transaction main presents; `alter` the confirmation
+  // a device spends; `afterSign` runs once a signature is made, before
+  // main's guard after it.
   const paid = {
     replies: [],
     turns: [],
     presented: [],
     signed: [],
+    committed: [],
+    ruleChecks: [],
+    afterSign: null,
     refused: [],
     spends: [],
     jobs: [],
@@ -274,7 +281,11 @@ describeIfBinary('page sends through the real freedom-cored\'s eip1193.request (
     if (index === LEDGER_INDEX) signed = await ledgerSigned(built, authorized);
     else signed = await vaultSigned(index, built, authorized);
     paid.signed.push(signed);
-    if (options.guardCommit) await options.guardCommit(async () => {});
+    await paid.afterSign?.();
+    const commit = async () => {
+      paid.committed.push(signed.hash);
+    };
+    await (options.guardCommit ? options.guardCommit(commit) : commit());
     options.onCommitted?.();
     return { hash: signed.hash, recorded: true };
   }
@@ -480,6 +491,12 @@ describeIfBinary('page sends through the real freedom-cored\'s eip1193.request (
           sitePaymentWaiting: async () => false,
           getSigner: (index, authorized) => ({ index, authorized }),
           signAndRecord,
+          // The real core's reading of the site's rule.
+          checkStanding: async (page, request) => {
+            const answer = await sc.checkStanding(page, request);
+            paid.ruleChecks.push(answer);
+            return answer;
+          },
           rememberDeviceSend: (held) => {
             paid.remembered.push(held.page);
             return sc.rememberDeviceSend(held);
@@ -776,6 +793,51 @@ describeIfBinary('page sends through the real freedom-cored\'s eip1193.request (
     expect(await paused.answer).toEqual({ error: REJECTED });
     expect(paid.signed).toHaveLength(2);
     expect(paid.touched).toHaveLength(1);
+  });
+
+  test('a rule\'s send, its rule read again around the core\'s signature (approval.check): the burst\'s fifth goes out though its own slot spent the rate, and the sixth is asked; a rule revoked between the signature and the journal sends nothing', async () => {
+    const site = key('g');
+    const page = await env.connected(`${site}/app`, 0);
+    expect((await env.send(page, { alwaysAllow: true })).answer.result).toMatch(HASH);
+    // R-6's burst of five, each counted by its signature under { standing }.
+    for (let sent = 0; sent < 5; sent += 1) {
+      const ruled = await page.ask('eth_sendTransaction', [CALL]);
+      expect(ruled.result).toBe(paid.signed.at(-1).hash);
+    }
+    expect(paid.committed).toHaveLength(6);
+    expect(paid.touched).toHaveLength(5);
+    // Before and after each signature: the fifth's after reads the rate its
+    // own slot spent, which stands.
+    expect(paid.ruleChecks).toHaveLength(10);
+    expect(paid.ruleChecks.slice(0, 9)).toEqual(Array(9).fill({ covered: true, reason: null }));
+    expect(paid.ruleChecks[9]).toEqual({ covered: false, reason: 'rate_limited' });
+    // The sixth is past the rate: the core asks, and a reject signs nothing.
+    const sixth = env.asking(page, 'eth_sendTransaction', [CALL]);
+    const shown = await sixth.prompt();
+    expect(shown.kind).toBe('eth.send');
+    expect(await env.decide(shown.handle, false)).toEqual({ ok: true });
+    expect(await sixth.answer).toEqual({ error: REJECTED });
+    expect(paid.signed).toHaveLength(6);
+
+    // Another site's rule, revoked by the chrome while the core signs: the
+    // signature is made, but main's read after it withholds it.
+    const other = key('h');
+    const otherPage = await env.connected(`${other}/app`, 0);
+    expect((await env.send(otherPage, { alwaysAllow: true })).answer.result).toMatch(HASH);
+    const committed = paid.committed.length;
+    paid.afterSign = () =>
+      vaultBackend.approval.revoke(
+        { store: 'dapp', key: other, what: { transaction: { to: CONTRACT, selector: SELECTOR, chain_id: 100 } } },
+        'chrome'
+      );
+    expect(await otherPage.ask('eth_sendTransaction', [CALL])).toEqual({
+      error: { code: -32603, message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules" },
+    });
+    expect(paid.signed).toHaveLength(8);
+    expect(paid.committed).toHaveLength(committed);
+    expect(paid.ruleChecks.at(-2)).toEqual({ covered: true, reason: null });
+    expect(paid.ruleChecks.at(-1).covered).toBe(false);
+    expect(paid.touched).toHaveLength(5);
   });
 
   test('a Ledger\'s send: { device } with the core\'s payload, spent through the core before the device signs, and its receipt presented with approval.remember writes the rule; an altered payload\'s spend is refused, nothing signed', async () => {
