@@ -1010,6 +1010,20 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # freedom-core design 0012, APB-4c: a page's eth_sendTransaction through
+      # the core's eip1193.request, which prepares the send from a local
+      # JSON-RPC node, asks main's eth.send prompt or answers it by the site's
+      # rule, and hands main { send } or { device }. Main adds the nonce and
+      # nothing else: any other field changed is the core's mismatch, with
+      # nothing signed; a crossed answer sends nothing; a fee asked again is a
+      # new prompt; world.paused sends a rule's send to its prompt; each
+      # device's spend binds the core's payload.
+      - name: Page sends through eip1193 (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-eip1193-send.integration.test.js
+        env:
+          FREEDOM_CORED_APPROVALS_TEST: '1'
+
       # freedom-core design 0012, PHN-2: a phone's signatures and payments as
       # the core's jobs, through main's bridge and the phone's backend, with
       # a fake chrome and a local JSON-RPC node. bridge.test.js's and
