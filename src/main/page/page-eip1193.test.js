@@ -85,6 +85,9 @@ const eventFrom = (guest) => ({ sender: guest, senderFrame: guest.mainFrame });
 function standInCore() {
   let lastId = 0;
   const core = {
+    // The hello of the process main sends to: a core that checks a bound
+    // document's name itself (cored 0.21.0, APR-5f).
+    hello: { core_version: '0.21.0' },
     sent: [],
     holds: [],
     released: [],
@@ -214,11 +217,16 @@ function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {} }
     }
     guest.commit(url);
     const n = nonce();
-    expect(requests.hello(eventFrom(guest), { nonce: n }).ok).toBe(true);
+    const greeted = requests.hello(eventFrom(guest), { nonce: n });
+    expect(greeted.ok).toBe(true);
     if (front) requests.foreground({ sender: { id: 500 + window } }, { guest: guest.id });
     return {
       guest,
       ask: (method, params) => requests.request(eventFrom(guest), { nonce: n, provider: 'ethereum', method, params }),
+      // Main's own check of the document's name, as one of the steps main
+      // holds makes it (a send's turn, a device's signature): a name that
+      // moved ends main's binding.
+      mainChecks: (key) => documents.recheckName({ guest: guest.id, navigation: greeted.navigation, nonce: n, key }),
     };
   }
 
@@ -631,18 +639,31 @@ describe('approval.recheck and eip1193.select_chain (0012 APB-4a)', () => {
     expect(env.state.selections).toEqual([]);
     expect(page.guest.events).toEqual([]);
 
-    // A name that moved since the recheck: nothing selected, and main's 4100.
+    // A bound document whose key main no longer holds by the selection
+    // (main's own check of the name, for a step it holds, ended its
+    // binding): main's recheck reads it, resolving nothing, and nothing is
+    // selected, with main's 4100.
     env.names.set(NAME, IPNS_KEY);
     const named = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    await flush();
+    const rechecks = [];
     env.core.script = async ({ id, page: pc }) => {
+      rechecks.push(await env.relay.approvalRecheck({ request: id, page: pc }, { generation: GENERATION }));
       env.names.set(NAME, OTHER_IPNS_KEY);
-      await env.relay.approvalRecheck({ request: id, page: pc }, { generation: GENERATION });
+      await named.mainChecks(NAME);
+      const resolved = env.state.resolutions.length;
+      rechecks.push(await env.relay.approvalRecheck({ request: id, page: pc }, { generation: GENERATION }));
+      expect(env.state.resolutions).toHaveLength(resolved);
       await env.relay
         .selectChain({ request: id, page: pc, chain_id: 1 }, { generation: GENERATION })
         .then(() => outcomes.push('selected'), (err) => outcomes.push(err.code));
       return { error: { code: -32603, message: 'mismatch' } };
     };
     expect(await named.ask('wallet_switchEthereumChain', [{ chainId: '0x1' }])).toEqual({ error: NO_ADDRESS });
+    expect(rechecks).toEqual([
+      { live: true, agent: false },
+      { live: false, agent: false },
+    ]);
     expect(outcomes.at(-1)).toBe('invalid_argument');
     expect(env.state.selections).toEqual([]);
   });
@@ -915,28 +936,34 @@ describe('signatures through the relay (0012 APB-4b)', () => {
     expect(answers).toEqual([{ prompt: PROMPT, closed: 'cancelled' }]);
   });
 
-  test('a name moved off its IPNS key while the core made a vault signature: main withholds it, and the page gets main\'s 4100', async () => {
+  test('a vault signature: the core checks the name after it (APR-5f), so main resolves nothing after its answer; one whose binding main ended meanwhile is withheld with main\'s 4100', async () => {
     const env = setup();
     env.names.set(NAME, IPNS_KEY);
-    // From main's prompt: approved with the name in place, which moves
-    // while the core signs.
+    // From main's prompt: approved with the name in place; the core's
+    // signature goes to the page with no resolution of main's after it.
     const prompted = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    await flush();
+    let resolved;
     const answers = asking(env, signAsk, () => {
-      env.names.set(NAME, OTHER_IPNS_KEY);
+      resolved = env.state.resolutions.length;
       return { result: '0x01' };
     });
     const asked = prompted.ask('personal_sign', [MESSAGE, ACCOUNT]);
     await flush();
     const [shown] = env.prompts();
     expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
-    expect(await asked).toEqual({ error: NO_ADDRESS });
+    expect(await asked).toEqual({ result: '0x01' });
+    expect(env.state.resolutions).toHaveLength(resolved);
     expect(answers).toEqual([expect.objectContaining({ prompt: PROMPT, handle: shown.handle, approve: true })]);
-    // A rule's signature, with no prompt: the name moves while the core
-    // signs.
-    env.names.set(NAME, IPNS_KEY);
+    expect(env.core.sent.at(-1).context.page.transport_key).toBe(`ipns://${IPNS_KEY}`);
+    // A rule's signature, with no prompt, while main's own check of the
+    // name (a step main holds) finds it moved and ends main's binding: the
+    // core's signature is withheld.
     const ruled = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    await flush();
     env.core.script = async () => {
       env.names.set(NAME, OTHER_IPNS_KEY);
+      await ruled.mainChecks(NAME);
       return { result: '0x03' };
     };
     expect(await ruled.ask('eth_signTypedData_v4', [ACCOUNT, '{}'])).toEqual({ error: NO_ADDRESS });
@@ -2170,5 +2197,195 @@ describe('sends through the relay (0012 APB-4c)', () => {
       env.state.nameHold = null;
       resolveName();
     });
+  });
+});
+
+// ---- APB-4e: `transport_key` for a DNS name over IPNS (cored 0.21.0) ----
+
+describe('transport_key for a DNS name over IPNS (0012 APR-5f, APB-4e)', () => {
+  const TRANSPORT = `ipns://${IPNS_KEY}`;
+  const NAME_CHECKED = [
+    ['eth_accounts', [], { result: [] }],
+    ['eth_requestAccounts', [], { error: NO_ADDRESS }],
+    ['personal_sign', [MESSAGE, ACCOUNT], { error: NO_ADDRESS }],
+    ['eth_signTypedData_v4', [ACCOUNT, TYPED], { error: NO_ADDRESS }],
+    ['wallet_switchEthereumChain', [{ chainId: '0x1' }], { error: NO_ADDRESS }],
+    ['eth_sendTransaction', [{ to: ACCOUNT, value: '0x1' }], { error: NO_ADDRESS }],
+  ];
+
+  async function bound(env) {
+    env.names.set(NAME, IPNS_KEY);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    await flush();
+    return page;
+  }
+
+  test('sent only for a bound document: not for another key, a keyless document, or an IPNS key whose name check failed at its commit', async () => {
+    const env = setup();
+    env.core.script = async () => ({ result: [] });
+    const named = await bound(env);
+    const keyed = env.tab();
+    const keyless = env.tab('data:text/html,<h1>keyless</h1>');
+    env.names.set('unbound.example', OTHER_IPNS_KEY);
+    const unverified = env.tab(`ipns://${IPNS_KEY}/x`, { bind: 'unbound.example' });
+    await flush();
+    for (const page of [named, keyed, keyless, unverified]) await page.ask('eth_accounts', []);
+    expect(env.core.sent.map(({ context }) => context.page)).toEqual([
+      { origin: NAME, top_origin: NAME, frame: expect.any(Number), navigation: expect.any(Number), agent: false, transport_key: TRANSPORT },
+      { origin: KEY_A, top_origin: KEY_A, frame: expect.any(Number), navigation: expect.any(Number), agent: false },
+      { origin: '', top_origin: '', frame: expect.any(Number), navigation: expect.any(Number), agent: false },
+      { origin: TRANSPORT, top_origin: TRANSPORT, frame: expect.any(Number), navigation: expect.any(Number), agent: false },
+    ]);
+    // The reads carry it too, and the core checks no name for them.
+    await named.ask('eth_chainId', []);
+    expect(env.core.sent.at(-1).context.page.transport_key).toBe(TRANSPORT);
+  });
+
+  test('the echo: the core\'s page with the transport key main sent is accepted; a missing, null or other one for a bound page, or one for a page sent none, is crossed', async () => {
+    const env = setup();
+    const named = await bound(env);
+    const keyed = env.tab();
+    const outcomes = [];
+    const tryAll = (pages) => async ({ id }) => {
+      for (const pc of pages) {
+        await Promise.all([
+          env.relay.approvalRecheck({ request: id, page: pc }, { generation: GENERATION }),
+          env.relay.selectChain({ request: id, page: pc, chain_id: 1 }, { generation: GENERATION }),
+          env.relay.approvalRequest(connectAsk(id, pc), { generation: GENERATION }),
+        ].map((p) => p.then(() => 'ok', (err) => err.code))).then((codes) => outcomes.push(codes));
+      }
+      return { result: [] };
+    };
+    // A bound page: the echo must carry the transport key exactly.
+    env.core.script = async (args) => {
+      const sent = args.page;
+      const { transport_key: _dropped, ...without } = sent;
+      return tryAll([
+        { ...without },
+        { ...sent, transport_key: null },
+        { ...sent, transport_key: `ipns://${OTHER_IPNS_KEY}` },
+        { ...sent, transport_key: NAME },
+      ])(args);
+    };
+    await named.ask('wallet_switchEthereumChain', [{ chainId: '0x1' }]);
+    expect(outcomes.splice(0)).toEqual(Array(4).fill(['invalid_argument', 'invalid_argument', 'invalid_argument']));
+    // A page sent none: an echoed transport key is crossed.
+    env.core.script = async (args) => tryAll([{ ...args.page, transport_key: TRANSPORT }])(args);
+    await keyed.ask('wallet_switchEthereumChain', [{ chainId: '0x1' }]);
+    expect(outcomes.splice(0)).toEqual([['invalid_argument', 'invalid_argument', 'invalid_argument']]);
+    expect(env.state.selections).toEqual([]);
+    expect(env.prompts()).toEqual([]);
+    // The echo as sent, a copy: the recheck answers, and the switch selects.
+    env.core.script = async ({ id, page: pc }) => {
+      expect(pc.transport_key).toBe(TRANSPORT);
+      outcomes.push(await env.relay.approvalRecheck({ request: id, page: { ...pc } }, { generation: GENERATION }));
+      outcomes.push(await env.relay.selectChain({ request: id, page: { ...pc }, chain_id: 1 }, { generation: GENERATION }));
+      return { result: null };
+    };
+    expect(await named.ask('wallet_switchEthereumChain', [{ chainId: '0x1' }])).toEqual({ result: null });
+    expect(outcomes).toEqual([{ live: true, agent: false }, {}]);
+    expect(env.state.selections).toEqual([[1, 1]]);
+  });
+
+  describe('the version gate: a bound document\'s name-checked requests go only to a core from 0.21.0', () => {
+    test.each(NAME_CHECKED)('a 0.20.0 core: %s answers as a keyless document\'s, and nothing is sent', async (method, params, keyless) => {
+      const env = setup();
+      env.core.hello = { core_version: '0.20.0' };
+      const page = await bound(env);
+      expect(await page.ask(method, params)).toEqual(keyless);
+      expect(env.core.sent).toEqual([]);
+      expect(env.prompts()).toEqual([]);
+    });
+
+    test.each(NAME_CHECKED)('a 0.21.0 core: %s goes to the core with the binding', async (method, params) => {
+      const env = setup();
+      env.core.script = async () => ({ result: 'answered' });
+      const page = await bound(env);
+      await page.ask(method, params);
+      expect(env.core.sent.map(({ params: body, context }) => [body.method, context.page.transport_key])).toEqual([
+        [method, TRANSPORT],
+      ]);
+    });
+
+    test('on an older core the reads still go, and so does everything with the switch off (the core answers 4900 before any name)', async () => {
+      const env = setup();
+      env.core.hello = { core_version: '0.20.0' };
+      env.core.script = async ({ params }) => (params.method === 'eth_chainId' ? { result: '0x64' } : { error: { code: 4900, message: 'Disconnected' } });
+      const page = await bound(env);
+      expect(await page.ask('eth_chainId', [])).toEqual({ result: '0x64' });
+      env.state.enabled = false;
+      expect(await page.ask('eth_requestAccounts', [])).toEqual({ error: { code: 4900, message: 'Disconnected' } });
+      expect(env.core.sent.map(({ params: body }) => body.method)).toEqual(['eth_chainId', 'eth_requestAccounts']);
+      // An unbound document is never gated.
+      env.state.enabled = true;
+      env.core.script = async () => ({ result: [] });
+      expect(await env.tab().ask('eth_accounts', [])).toEqual({ result: [] });
+    });
+
+    test.each([
+      ['0.21.0', true],
+      ['0.21.1', true],
+      ['0.22.0-rc.1', true],
+      ['1.0.0', true],
+      ['0.21.0+build.7', true],
+      ['0.21.0-rc.1', false],
+      ['0.20.9', false],
+      ['0.9.99', false],
+      ['00.21.0', false],
+      ['0.21', false],
+      ['v0.21.0', false],
+      ['dev', false],
+    ])('core_version %s counts as checking names: %s', async (version, routed) => {
+      const env = setup();
+      env.core.hello = { core_version: version };
+      env.core.script = async () => ({ result: ['sent'] });
+      const page = await bound(env);
+      expect(await page.ask('eth_accounts', [])).toEqual({ result: routed ? ['sent'] : [] });
+      expect(env.core.sent).toHaveLength(routed ? 1 : 0);
+    });
+
+    test('a client not ready yet: its hello once ready decides; one that never gets ready fails closed', async () => {
+      const env = setup();
+      env.core.script = async () => ({ result: ['sent'] });
+      const page = await bound(env);
+      env.core.hello = null;
+      env.core.whenReady = async () => {
+        env.core.hello = { core_version: '0.21.0' };
+        return env.core.hello;
+      };
+      expect(await page.ask('eth_accounts', [])).toEqual({ result: ['sent'] });
+      env.core.hello = null;
+      env.core.whenReady = async () => {
+        throw Object.assign(new Error('unavailable'), { code: 'unavailable' });
+      };
+      expect(await page.ask('eth_accounts', [])).toEqual({ result: [] });
+      // No hello and no way to wait for one.
+      env.core.whenReady = undefined;
+      expect(await page.ask('eth_accounts', [])).toEqual({ result: [] });
+      expect(env.core.sent).toHaveLength(1);
+    });
+  });
+
+  test('a key that differs from a transport key of any other form gets the keyless answers, and nothing is sent', async () => {
+    const env = setup();
+    const page = env.tab();
+    let context;
+    env.core.script = async () => ({ result: ['sent'] });
+    // A document's record whose key and transport key differ, the transport
+    // key not `ipns://` and letters and digits: no binding main can send.
+    const fake = (method, transportKey) => ({
+      method,
+      requester: { key: NAME, topKey: NAME, transportKey, window: 1, guest: page.guest.id },
+      pageContext: () => ({ frame: 1, navigation: 2, agent: false }),
+      signal: new AbortController().signal,
+      keylessOnceUnheld: () => {},
+    });
+    for (const transportKey of [`ipns://${IPNS_KEY}/x`, 'ipns://', `https://${NAME}`, null]) {
+      context = fake('eth_accounts', transportKey);
+      expect(await env.relay.request(context)).toEqual({ result: [] });
+      context = fake('personal_sign', transportKey);
+      expect(await env.relay.request(context, { params: [MESSAGE, ACCOUNT] })).toEqual({ error: NO_ADDRESS });
+    }
+    expect(env.core.sent).toEqual([]);
   });
 });

@@ -676,6 +676,12 @@ function createPageRequests({
       params,
       isCurrent: () => documents.isCurrent(record.requester),
       nameHolds: (options) => nameHolds(record, options),
+      // What the request answers if its document no longer holds its key
+      // when main answers it, as `nameHolds`' option sets it, with nothing
+      // resolved: for an answer the identity core checked the name for.
+      keylessOnceUnheld: (keyless) => {
+        if (keyless !== undefined && record.keyless === undefined) record.keyless = keyless;
+      },
       holdsKey: () => documents.holdsKey(record.requester),
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),

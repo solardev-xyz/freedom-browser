@@ -1024,6 +1024,19 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # freedom-core design 0012, APR-5f (cored 0.21.0), browser APB-4e: a
+      # DNS name over IPNS. Main sends the document's transport_key, and the
+      # core resolves the name itself through main's naming shell (a scripted
+      # node). Against the binary: a name that still serves its IPNS key
+      # connects, signs and switches, with the transport key in every echoed
+      # page; one that moved, or that the core can't resolve, gets keyless
+      # answers with no prompt and nothing written.
+      - name: Page names over IPNS through eip1193 (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-eip1193-names.integration.test.js
+        env:
+          FREEDOM_CORED_APPROVALS_TEST: '1'
+
       # freedom-core design 0012, PHN-2: a phone's signatures and payments as
       # the core's jobs, through main's bridge and the phone's backend, with
       # a fake chrome and a local JSON-RPC node. bridge.test.js's and

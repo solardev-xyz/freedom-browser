@@ -20,6 +20,16 @@
  *     window's, the wallets as main lists them, the registry's networks
  *     (each one's name, whether it has a source, and its native symbol),
  *     the active account, and, for a send only (APB-4c), D12's pause.
+ *   - **A DNS name over IPNS** (APB-4e, cored 0.21.0's APR-5f): the
+ *     PageContext carries the document's `transport_key` (`ipns://` and
+ *     the IPNS key), and the core resolves the name itself at each of the
+ *     reference's checks, answering as a keyless document's once it moved.
+ *     Main sends no `transport_key` for any other document. A core whose
+ *     hello is older than 0.21.0 would drop it and check nothing, so a
+ *     bound document's `eth_accounts`, connect, switch, signature or send
+ *     goes to the core only from 0.21.0, and otherwise answers as a keyless
+ *     document's (`[]`, or `4100`). The core echoes `transport_key` in
+ *     `page`, and main compares it with what it sent.
  *   - **Its answer** is the page's: `{ result }` or `{ error }`, with the
  *     EIP-1193 code main gave before. `{ device }` (APB-4b) is main's to act
  *     on, and never reaches a page: a signature's goes to main's device
@@ -75,9 +85,10 @@
  *       - `vault.unlock` with reason "send" (APB-4c): a rule's send while
  *         the vault is locked, as for a signature.
  *   - **`approval.recheck { request, page }`:** `{ live, agent }`, read
- *     now: whether the request is still open and its document still holds
- *     its key (a DNS name over IPNS resolved again), and whether the Agent
- *     holds its tab.
+ *     now, with nothing awaited: whether the request is still open and its
+ *     document still holds its key, and whether the Agent holds its tab. A
+ *     DNS name over IPNS is the core's to resolve: it checks the name after
+ *     main's recheck, then asks main once more (cored 0.21.0, APR-5f).
  *   - **`eip1193.select_chain { request, page, chain_id }`:** a switch's
  *     selection, for the chain the page asked for and nothing else: main
  *     selects it for the request's window and sends `chainChanged` as its
@@ -131,6 +142,27 @@ const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const HEX = /^0x(?:[0-9a-fA-F]{2})*$/;
 const PAGE_FIELDS = Object.freeze(['origin', 'top_origin', 'frame', 'navigation', 'agent']);
+// What the core echoes of a PageContext: its fields, and `transport_key`
+// where main sent one (cored 0.21.0, APR-5f), never a null.
+const ECHO_FIELDS = new Set([...PAGE_FIELDS, 'transport_key']);
+// A DNS name over IPNS: the document's transport key, `ipns://` and the
+// IPNS key's letters and digits (design 0011's binding).
+const IPNS_TRANSPORT = /^ipns:\/\/[A-Za-z0-9]+$/;
+// The methods the core checks a bound document's name for (design 0012,
+// APR-5f and APR-5f-2): never the reads, `eth_chainId` or `net_version`.
+const NAME_CHECKED = new Set([
+  'eth_accounts',
+  'eth_requestAccounts',
+  'personal_sign',
+  'eth_signTypedData_v4',
+  'wallet_switchEthereumChain',
+  'eth_sendTransaction',
+]);
+// The answers that reveal what a key holds: an account, a signature.
+const REVEALS = new Set(['eth_accounts', 'eth_requestAccounts', 'personal_sign', 'eth_signTypedData_v4']);
+// The first core that checks a bound document's name itself (APR-5f): an
+// older one drops `transport_key` and checks nothing.
+const NAMES_CORE = Object.freeze([0, 21, 0]);
 const SELECT_KEYS = new Set(['request', 'page', 'chain_id']);
 const RECHECK_KEYS = new Set(['request', 'page']);
 const PROMPT_KEYS = new Set(['request', 'prompt', 'page', 'kind', 'view', 'choices']);
@@ -146,6 +178,37 @@ function isPlainObject(value) {
 
 function hasOnlyKeys(value, keys) {
   return Object.keys(value).every((key) => keys.has(key));
+}
+
+/**
+ * Whether a core of `version` (its hello's `core_version`) checks a bound
+ * document's name itself: 0.21.0 or later, as `major.minor.patch` with
+ * build metadata allowed. A pre-release of 0.21.0, or anything else, counts
+ * as older.
+ */
+function checksNames(version) {
+  const parts = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(
+    typeof version === 'string' ? version : ''
+  );
+  if (!parts) return false;
+  const base = parts.slice(1, 4).map(Number);
+  for (let i = 0; i < 3; i += 1) {
+    if (base[i] !== NAMES_CORE[i]) return base[i] > NAMES_CORE[i];
+  }
+  return parts[4] === undefined;
+}
+
+/**
+ * A document's name binding: its transport key for a DNS name over IPNS
+ * (its key differs from its transport key, which is `ipns://` and letters
+ * and digits), `null` for a document with no binding, and `false` for a key
+ * that differs from a transport key of any other form, which no check can
+ * pass.
+ */
+function bindingOf(requester) {
+  const { key, transportKey } = requester;
+  if (!key || key === transportKey) return null;
+  return typeof transportKey === 'string' && IPNS_TRANSPORT.test(transportKey) ? transportKey : false;
 }
 
 const positive = (value) => (Number.isSafeInteger(value) && value > 0 ? value : null);
@@ -384,18 +447,44 @@ function createEip1193Relay(deps = {}) {
     return world;
   }
 
-  /** The document's PageContext, with the empty origin for one with no key. */
+  /**
+   * The document's PageContext, with the empty origin for one with no key,
+   * and for a DNS name over IPNS its transport key (APR-5f), under which
+   * the core checks the name itself. Omitted for any other document.
+   */
   function pageOf(context) {
     const { requester } = context;
     const page = context.pageContext();
-    return {
+    const out = {
       origin: requester.key || '',
       top_origin: requester.topKey || requester.key || '',
       frame: page.frame,
       navigation: page.navigation,
       agent: page.agent === true,
     };
+    const binding = bindingOf(requester);
+    if (binding) out.transport_key = binding;
+    return out;
   }
+
+  /**
+   * Whether the core this request goes to checks a bound document's name
+   * (APR-5f): its hello's `core_version`, read once the client is ready, in
+   * the run that sends the request. Unknown counts as no.
+   */
+  async function namesChecked(client) {
+    if (!client.hello && typeof client.whenReady === 'function') {
+      try {
+        await client.whenReady();
+      } catch {
+        return false;
+      }
+    }
+    return checksNames(client.hello?.core_version);
+  }
+
+  // What a keyless document gets for a method whose name the core checks.
+  const keylessAnswer = (method) => (method === 'eth_accounts' ? { result: [] } : { error: { ...NO_ADDRESS } });
 
   async function vaultOpen() {
     try {
@@ -619,6 +708,17 @@ function createEip1193Relay(deps = {}) {
     if (!client) return { error: { code: INTERNAL_ERROR_CODE, message: 'The identity core is not running' } };
     const page = pageOf(context);
     const world = await worldFor(context, method);
+    // A bound document's name is the core's to check (APR-5f): only a core
+    // that checks it gets the request. Otherwise, or for a binding no check
+    // can pass, it answers as a keyless document's would, failing closed.
+    const binding = bindingOf(context.requester);
+    if (binding !== null && world.enabled === true && NAME_CHECKED.has(method)) {
+      if (!binding || !(await namesChecked(client))) return keylessAnswer(method);
+      // An account or a signature reaches the page only while main still
+      // holds the key when it answers: main's own checks of the name, for
+      // the steps it holds, may end the binding meanwhile (`nameHolds`).
+      if (REVEALS.has(method)) context.keylessOnceUnheld?.(keylessAnswer(method));
+    }
     const body = { method, world };
     if (params !== undefined) body.params = params;
     const entry = { context, method, page, params, world, client, announce, id: null, generation: null };
@@ -673,8 +773,11 @@ function createEip1193Relay(deps = {}) {
     const entry = running.get(`${generation}:${params.request}`);
     if (!entry) throw invalid();
     const page = params.page;
-    if (!isPlainObject(page) || !hasOnlyKeys(page, new Set(PAGE_FIELDS))) throw invalid();
+    if (!isPlainObject(page) || !hasOnlyKeys(page, ECHO_FIELDS)) throw invalid();
     if (!PAGE_FIELDS.every((field) => page[field] === entry.page[field])) throw invalid();
+    // The transport key echoed as main sent it: a missing, null or other
+    // one for a bound page is crossed, and so is one for a page sent none.
+    if (page.transport_key !== entry.page.transport_key) throw invalid();
     return entry;
   }
 
@@ -931,17 +1034,15 @@ function createEip1193Relay(deps = {}) {
     }
   }
 
+  // Main's recheck, answered from what main holds now, with nothing
+  // awaited: the request still open, its document current and holding its
+  // key. A bound document's name is the core's to check, before and after
+  // its first recheck, and its last recheck follows that lookup (APR-5f).
   async function approvalRecheck(params, { generation } = {}) {
     const entry = runningFor(params, generation, RECHECK_KEYS);
     const { context } = entry;
-    const live =
-      !context.signal.aborted &&
-      context.isCurrent() &&
-      context.holdsKey() &&
-      (await context.nameHolds()) &&
-      !context.signal.aborted &&
-      context.holdsKey();
-    return { live: live === true, agent: context.pageContext().agent === true };
+    const live = !context.signal.aborted && context.isCurrent() && context.holdsKey();
+    return { live, agent: context.pageContext().agent === true };
   }
 
   // The chain the page asked for, as main's own switch read it.
@@ -968,7 +1069,8 @@ function createEip1193Relay(deps = {}) {
     const pinned = positive(requester.chain);
     if (pinned && chainId !== pinned) throw invalid();
     if (context.signal.aborted || !context.isCurrent()) throw invalid();
-    // The name rechecked moments ago; the key held at the effect itself.
+    // The core checked a bound name after main's recheck (APR-5f); the key
+    // held at the effect itself.
     if (!context.holdsKey()) {
       entry.override = { ...NO_ADDRESS };
       throw invalid();
