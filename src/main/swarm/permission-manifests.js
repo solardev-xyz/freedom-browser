@@ -33,7 +33,10 @@ const CAPABILITY_KEYS = ['publish', 'feeds', 'signing', 'messaging'];
 const CAPABILITY_META = {
   publish: { label: 'Publish content', detail: 'Use your postage stamps and bandwidth.' },
   feeds: { label: 'Manage feeds', detail: 'Create and update app feeds without repeated approval.' },
-  signing: { label: 'Sign Swarm content', detail: 'Use an app-scoped publisher identity.' },
+  signing: {
+    label: 'Sign Swarm content',
+    detail: 'Use an app-scoped publisher identity and this site’s encryption key.',
+  },
   messaging: { label: 'Send and receive messages', detail: 'Use PSS and GSOC messaging.' },
 };
 const PROJECTIONS = {
