@@ -119,12 +119,24 @@ function streamBody(entry, { total = Infinity, chunkBytes = CHUNK_BYTES, end = t
  * with an unsatisfied-range `Content-Range` (`bytes` star slash size), a stale
  * `If-Range` → the whole 200, several ranges → 206 `multipart/byteranges`, a
  * matching `If-None-Match` → 304. HEAD gets the headers only (Node's server
- * drops the body).
+ * drops the body). `headAcceptRanges: false` answers HEAD the way Ant does
+ * (antd v0.5.77, observed 2026-11-11): `Content-Length` but no
+ * `Accept-Ranges`, and any `Range` ignored.
  */
-function rangeResponder({ content, etag, contentType = 'application/octet-stream' }) {
+function rangeResponder({
+  content,
+  etag,
+  contentType = 'application/octet-stream',
+  headAcceptRanges = true,
+}) {
   const size = content.length;
   return function respond(req, res) {
     const base = { ETag: etag, 'Accept-Ranges': 'bytes', 'Content-Type': contentType };
+    if (req.method === 'HEAD' && !headAcceptRanges) {
+      res.writeHead(200, { ETag: etag, 'Content-Type': contentType, 'Content-Length': size });
+      res.end();
+      return;
+    }
     if (req.headers['if-none-match'] === etag) {
       res.writeHead(304, { ETag: etag });
       res.end();

@@ -13,6 +13,13 @@
  * `messaging` is the messaging-tier grant (PSS/GSOC subscribe + send +
  * identity disclosure); `autoApprove.messaging` additionally skips the
  * per-send prompt for granted origins.
+ *
+ * `act` holds the publishers this origin may open ACT shares from without a
+ * prompt (#648): `{ [compressed publisher key]: { grantedAt } }`. It is per
+ * publisher on purpose: the node's ACT key is one identity for every site,
+ * so a per-site flag would hand everything ever shared with the user to any
+ * site allowed once. It lives in the origin's record, so disconnecting the
+ * origin drops it with everything else.
  */
 
 const { app, ipcMain } = require('electron');
@@ -21,6 +28,13 @@ const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { withOriginLock } = require('./origin-mutation-lock');
+const { normalizeActPublisher } = require('./act-publisher');
+const { validateActRequest } = require('./act-request');
+// Required on first use: private-windows.js pulls in the app logger and
+// BrowserWindow, which most of this module's callers (and tests) never need.
+function isPrivateSender(event) {
+  return require('../private/private-sender').isPrivateSender(event);
+}
 
 const PERMISSIONS_FILE = 'swarm-permissions.json';
 
@@ -276,6 +290,106 @@ function hasMessagingGrant(origin) {
 }
 
 /**
+ * Let an origin open ACT shares from one publisher without asking ("always
+ * allow" on the ACT prompt). Needs the origin's connection grant.
+ * @param {string} origin
+ * @param {string} publisher - any spelling normalizeActPublisher accepts
+ * @returns {boolean} True if stored
+ */
+function grantActPublisher(origin, publisher) {
+  const normalized = normalizeActPublisher(publisher);
+  if (!normalized) return false;
+  const permissions = loadPermissions();
+  const key = normalizeOrigin(origin);
+  if (!permissions[key]) return false;
+
+  if (!permissions[key].act || typeof permissions[key].act !== 'object') {
+    permissions[key].act = {};
+  }
+  permissions[key].act[normalized.publicKey] = { grantedAt: Date.now() };
+  permissionsCache = permissions;
+  savePermissions();
+  console.log('[SwarmPermissions] ACT publisher allowed for:', key);
+  return true;
+}
+
+/**
+ * @returns {boolean} True if a stored grant was removed
+ */
+function revokeActPublisher(origin, publisher) {
+  const normalized = normalizeActPublisher(publisher);
+  if (!normalized) return false;
+  const permissions = loadPermissions();
+  const key = normalizeOrigin(origin);
+  const grants = permissions[key]?.act;
+  if (!grants || !Object.hasOwn(grants, normalized.publicKey)) return false;
+
+  delete grants[normalized.publicKey];
+  if (Object.keys(grants).length === 0) delete permissions[key].act;
+  permissionsCache = permissions;
+  savePermissions();
+  console.log('[SwarmPermissions] ACT publisher removed for:', key);
+  return true;
+}
+
+/**
+ * Whether `origin` may open ACT shares from `publisher` without a prompt.
+ * False for a malformed publisher and for an origin with no connection.
+ */
+function hasActGrant(origin, publisher) {
+  const normalized = normalizeActPublisher(publisher);
+  if (!normalized) return false;
+  const grants = getPermission(origin)?.act;
+  return !!grants && typeof grants === 'object' && Object.hasOwn(grants, normalized.publicKey);
+}
+
+/**
+ * The publishers an origin may open ACT shares from without a prompt.
+ * @returns {{ publicKey: string, address: string, grantedAt: number }[]}
+ */
+function getActGrants(origin) {
+  const grants = getPermission(origin)?.act;
+  if (!grants || typeof grants !== 'object') return [];
+  const out = [];
+  for (const [publicKey, entry] of Object.entries(grants)) {
+    const normalized = normalizeActPublisher(publicKey);
+    if (!normalized) continue;
+    out.push({ ...normalized, grantedAt: Number(entry?.grantedAt) || 0 });
+  }
+  return out.sort((a, b) => b.grantedAt - a.grantedAt);
+}
+
+/**
+ * What the ACT prompt shows for a swarm_openAct request: main's own
+ * validation of the whole request (act-request.js, the same check
+ * swarm-provider-ipc.js runs before executing), its canonical values, and
+ * whether a rule for this publisher already exists. The prompt shows only
+ * these, never the page's text, and is not shown at all for a request main
+ * would refuse.
+ * @returns {{ valid: false, reason: string, message: string }
+ *   | { valid: true, request: Object, publicKey: string, address: string, granted: boolean }}
+ */
+function describeActRequest(origin, params) {
+  const checked = validateActRequest(params);
+  if (!checked.ok) {
+    return {
+      valid: false,
+      reason: checked.reason,
+      message: checked.message,
+      ...(checked.option && { option: checked.option }),
+    };
+  }
+  const request = checked.value;
+  return {
+    valid: true,
+    request,
+    publicKey: request.publisher,
+    address: request.address,
+    granted: hasActGrant(origin, request.publisher),
+  };
+}
+
+/**
  * Register IPC handlers for Swarm permissions.
  */
 function registerSwarmPermissionsIpc() {
@@ -319,6 +433,26 @@ function registerSwarmPermissionsIpc() {
     return withOriginLock(origin, () => revokeMessaging(origin));
   });
 
+  // A private window gets no lasting ACT grant (#648). It has no
+  // window.swarm to ask from, so this refusal is defence in depth; an
+  // unclassifiable sender counts as private (private-sender.js).
+  ipcMain.handle(IPC.SWARM_GRANT_ACT, (event, origin, publisher) => {
+    if (isPrivateSender(event)) return false;
+    return withOriginLock(origin, () => grantActPublisher(origin, publisher));
+  });
+
+  ipcMain.handle(IPC.SWARM_REVOKE_ACT, (_event, origin, publisher) => {
+    return withOriginLock(origin, () => revokeActPublisher(origin, publisher));
+  });
+
+  ipcMain.handle(IPC.SWARM_GET_ACT_GRANTS, (_event, origin) => {
+    return getActGrants(origin);
+  });
+
+  ipcMain.handle(IPC.SWARM_DESCRIBE_ACT_REQUEST, (_event, origin, params) => {
+    return describeActRequest(origin, params);
+  });
+
   console.log('[SwarmPermissions] IPC handlers registered');
 }
 
@@ -338,6 +472,11 @@ module.exports = {
   grantMessaging,
   revokeMessaging,
   hasMessagingGrant,
+  grantActPublisher,
+  revokeActPublisher,
+  hasActGrant,
+  getActGrants,
+  describeActRequest,
   onRevoke,
   onManifestMutation,
   registerSwarmPermissionsIpc,

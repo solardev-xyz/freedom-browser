@@ -287,6 +287,31 @@ This is the sequence [#387](https://github.com/solardev-xyz/freedom-browser/pull
     `connectedPeers`, and `lastSyncedBlock` advancing). Shut it down with
     SIGTERM and delete the temp dir afterwards.
 
+11. **Re-run the `bzz://` range matrix against that node** before shutting it
+    down. Single-range reads are a kept contract (`docs/protocols/swarm.md`,
+    _Byte ranges on `bzz://`_), and the tests pin the handler against a fake
+    node shaped like Ant v0.5.77, so only this step notices the real node
+    drifting. Pick any file that is live on Swarm today (an image under a
+    well-known ENS site's root does; resolve the name's contenthash first) of
+    at least a few KiB, and check:
+
+    ```
+    U=http://127.0.0.1:<port>/bzz/<ref>/<path>
+    curl -s -o full "$U"; S=$(wc -c < full)
+    curl -s -D - -o /dev/null -H 'Range: bytes=0-0' "$U"        # 206, Content-Range: bytes 0-0/S
+    curl -s -D - -o part -H 'Range: bytes=4096-8191' "$U"       # 206, 4096 bytes, the right ones
+    curl -s -D - -o /dev/null -H "Range: bytes=$((S-5))-$((S+5000))" "$U"  # 206, clamped to S-1
+    curl -s -D - -o /dev/null -H "Range: bytes=$S-" "$U"        # 416, Content-Range: bytes */S
+    curl -s -I "$U"                                             # 200, Content-Length: S
+    ```
+
+    Compare `part` against the same bytes of `full`
+    (`cmp part <(tail -c +4097 full | head -c 4096)`). If the
+    node's answer changed (a HEAD that now carries `Accept-Ranges`, a
+    multi-range request that is now refused), update the fake's Ant shape in
+    `test/helpers/fake-http-node.js` (`rangeResponder`'s `headAcceptRanges`),
+    `dweb-range-electron-probe.js`, and the doc's table together.
+
 ### What the PR description is expected to contain
 
 - **Real command output**, pasted — not a summary of what passed.

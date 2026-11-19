@@ -33,7 +33,14 @@
 const { ipcMain, webContents } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
-const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissions');
+const { getPermission, hasMessagingGrant, hasActGrant, onRevoke } = require('./swarm-permissions');
+const { validateActRequest } = require('./act-request');
+const { openActShare } = require('./act-service');
+// Required on first use: private-windows.js pulls in the app logger and
+// BrowserWindow, which most of this module's callers (and tests) never need.
+function isPrivateSender(event) {
+  return require('../private/private-sender').isPrivateSender(event);
+}
 const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
@@ -54,6 +61,7 @@ const {
   readDataRoot,
   readData,
   writeSingleOwnerChunk,
+  publishSignedSingleOwnerChunk,
   readSingleOwnerChunk,
   getSignerAddress,
 } = require('./chunk-service');
@@ -64,7 +72,12 @@ const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { isNoUsableBatchError } = require('./batch-errors');
-const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
+const {
+  getDerivedKeys,
+  getPublisherKey,
+  getUserWalletKey,
+  getFreedomSigningAddresses,
+} = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 const log = require('electron-log');
@@ -163,6 +176,7 @@ const KNOWN_METHODS = [
   'swarm_readChunk',
   'swarm_readData',
   'swarm_writeSingleOwnerChunk',
+  'swarm_publishSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
   'swarm_getMessagingIdentity',
@@ -170,6 +184,7 @@ const KNOWN_METHODS = [
   'swarm_unsubscribe',
   'swarm_sendPss',
   'swarm_sendGsoc',
+  'swarm_openAct',
 ];
 
 // Tag ownership: tagUid → origin. Session-scoped, not persisted.
@@ -217,6 +232,7 @@ const AUTO_APPROVABLE_METHODS = new Set([
   'swarm_publishData',
   'swarm_publishFiles',
   'swarm_publishChunk',
+  'swarm_publishSingleOwnerChunk',
   'swarm_createFeed',
   'swarm_updateFeed',
   'swarm_writeFeedEntry',
@@ -224,6 +240,9 @@ const AUTO_APPROVABLE_METHODS = new Set([
   'swarm_getSigningIdentity',
   'swarm_sendPss',
   'swarm_sendGsoc',
+  // Its "always allow" is per publisher (#648), but it is still a rule
+  // answering for the user, so an Agent-held tab is prompted instead.
+  'swarm_openAct',
 ]);
 
 function agentCustodyRefusal(sender, method, meta) {
@@ -382,6 +401,20 @@ function reservePermissionFreeReadBytes(origin, bytes) {
 }
 
 /**
+ * The read budget as feed-service meters a feed read (readFeedPayload):
+ * what came off the network is charged, what is about to be read is
+ * reserved first, and an entry larger than the whole byte budget is refused
+ * as data_too_large.
+ */
+function permissionFreeReadMeter(origin) {
+  return {
+    maxBytes: getReadBudget(origin).maxBytes,
+    charge: (bytes) => consumePermissionFreeReadBudget(origin, { bytes }),
+    reserve: (bytes) => reservePermissionFreeReadBytes(origin, bytes),
+  };
+}
+
+/**
  * Execute a Swarm provider method.
  * @param {string} method
  * @param {*} params
@@ -391,9 +424,12 @@ function reservePermissionFreeReadBytes(origin, bytes) {
  *   Freedom's own code). swarm_subscribe uses webContentsId to target
  *   message delivery at the webview; the IPC handler checks both fields
  *   against Agent custody first (agentCustodyRefusal).
+ * @param {{ sender?: Electron.WebContents }} [context] - main's own view of
+ *   the request: the IPC sender, for checks that must not rest on the
+ *   renderer's word (swarm_openAct refuses a private window's).
  * @returns {{ result?, error? }}
  */
-async function executeSwarmMethod(method, params, origin, meta) {
+async function executeSwarmMethod(method, params, origin, meta, context = {}) {
   try {
     if (!method || typeof method !== 'string') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'Method is required' } };
@@ -470,6 +506,12 @@ async function executeSwarmMethod(method, params, origin, meta) {
       return result;
     }
 
+    if (method === 'swarm_publishSingleOwnerChunk') {
+      const result = await handlePublishSingleOwnerChunk(params, normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
     if (method === 'swarm_getUploadStatus') {
       return handleGetUploadStatus(params, normalizedOrigin);
     }
@@ -526,6 +568,10 @@ async function executeSwarmMethod(method, params, origin, meta) {
       return handleUnsubscribe(params, normalizedOrigin);
     }
 
+    if (method === 'swarm_openAct') {
+      return handleOpenAct(params, normalizedOrigin, meta, context.sender);
+    }
+
     return { error: ERRORS.INTERNAL_ERROR };
   } catch (err) {
     log.error('[SwarmProvider] executeSwarmMethod failed:', err.message);
@@ -558,6 +604,10 @@ async function handleGetCapabilities(origin) {
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
+        // swarm_publishSingleOwnerChunk: a SOC the page signed (#647).
+        pageSignedSingleOwnerChunks: true,
+        // swarm_openAct: content shared with this node through ACT (#648).
+        actShares: true,
       },
       limits: {
         maxDataBytes: LIMITS.maxDataBytes,
@@ -648,7 +698,9 @@ async function handlePublishData(params, origin) {
 
 // Windows device names: a path segment named one of these (any case, with or
 // without an extension, trailing dots/spaces ignored) opens the device instead
-// of a file in the temp directory publishFilesFromContent writes to.
+// of a file on Windows. publishFiles no longer writes the files to disk
+// (#1052), but these paths stay refused: a site that uses them can't be saved
+// to a Windows disk, and the paths a page may publish stay what they were.
 const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i;
 
 function isWindowsReservedName(segment) {
@@ -693,8 +745,8 @@ function validateVirtualPath(p) {
       return { valid: false, message: '"." and ".." segments are not allowed' };
     }
     // Win32 path normalization trims a trailing dot or space from every
-    // segment, so 'foo.' would land on 'foo' (silently overwriting it in the
-    // temp directory) and '.. ' would trim toward '..'.
+    // segment, so 'foo.' would land on 'foo' (silently overwriting it once
+    // saved to a Windows disk) and '.. ' would trim toward '..'.
     if (/[. ]$/.test(seg)) {
       return { valid: false, message: 'Path segments may not end in a dot or space' };
     }
@@ -725,7 +777,7 @@ function normalizeBytes(bytes) {
 }
 
 /**
- * Handle swarm_publishFiles: validate, enforce limits, write to temp dir, publish.
+ * Handle swarm_publishFiles: validate, enforce limits, publish the files as a collection.
  */
 async function handlePublishFiles(params, origin) {
   if (!params || typeof params !== 'object') {
@@ -1102,6 +1154,204 @@ async function handleWriteSingleOwnerChunk(params, origin) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] writeSingleOwnerChunk failed for ${origin}:`, err.message);
     return nodeWriteError(err);
+  }
+}
+
+/**
+ * Handle swarm_publishSingleOwnerChunk: publish a Single Owner Chunk the page
+ * signed itself, stamped by the node (#647). Connection tier, like
+ * swarm_publishChunk: no Freedom key is used, so the feed/signing grant is
+ * not needed. The signature must recover to `owner` for this identifier and
+ * chunk before anything is stamped.
+ *
+ * An owner that is one of Freedom's own signing addresses (the Ant node key,
+ * a wallet account) is refused (SW-1, #950): a page can ask a wallet account
+ * for a `personal_sign` of 32 bytes, which is exactly a SOC signature, and
+ * would then write raw SOCs, another site's feed entries included, as that
+ * shared owner. App-scoped publisher keys sign only Freedom's own writes, so
+ * under one a page can publish only a chunk already signed for the network.
+ */
+async function handlePublishSingleOwnerChunk(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  const owner = normalizeAddress(params.owner);
+  if (!/^[0-9a-fA-F]{40}$/.test(owner)) {
+    return invalidParams('owner must be a valid 40-character hex address', 'invalid_owner');
+  }
+
+  const identifierError = validateHexString(params.identifier, 32, 'invalid_identifier', 'identifier');
+  if (identifierError) return identifierError;
+
+  const signatureError = validateHexString(params.signature, 65, 'invalid_signature', 'signature', {
+    allow0xPrefix: true,
+  });
+  if (signatureError) return signatureError;
+
+  const { payload, error } = validateChunkPayload(params.data);
+  if (error) return { error };
+
+  const span = validateSpan(params.span);
+  if (!span.ok) {
+    return invalidParams('span must be a non-negative unsigned 64-bit integer', 'invalid_span');
+  }
+
+  let held;
+  try {
+    held = await getFreedomSigningAddresses();
+  } catch (err) {
+    log.error(`[SwarmProvider] Freedom signing addresses unavailable for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: 'Could not check the owner against Freedom identities' } };
+  }
+  if (held.addresses.has(owner.toLowerCase())) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message: 'The owner is one of Freedom\'s own identities; use swarm_writeSingleOwnerChunk or a feed method',
+        data: { reason: 'freedom_identity' },
+      },
+    };
+  }
+  if (!held.complete) {
+    return {
+      error: {
+        ...ERRORS.INTERNAL_ERROR,
+        message: `${VAULT_LOCKED_MESSAGE}: an account address is not known while the vault is locked`,
+        data: { reason: 'vault_locked' },
+      },
+    };
+  }
+
+  const preFlight = await checkSwarmPreFlight();
+  if (!preFlight.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+  }
+
+  let historyEntry = null;
+  try {
+    const result = await publishSignedSingleOwnerChunk({
+      owner,
+      identifier: params.identifier,
+      signature: params.signature,
+      data: payload,
+      span: span.value,
+      onVerified: () => {
+        historyEntry = addEntry({
+          type: 'soc',
+          name: 'Signed SOC chunk',
+          status: 'uploading',
+          origin,
+          bytesSize: payload.length,
+        });
+      },
+    });
+    updateEntry(historyEntry.id, {
+      status: 'completed',
+      reference: result.reference,
+      batchIdUsed: result.batchIdUsed,
+    });
+    return {
+      result: {
+        reference: result.reference,
+        owner: result.owner,
+        identifier: result.identifier,
+      },
+    };
+  } catch (err) {
+    if (err.reason === 'invalid_signature') {
+      return invalidParams(err.message, 'invalid_signature');
+    }
+    if (historyEntry) updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
+    log.error(`[SwarmProvider] publishSingleOwnerChunk failed for ${origin}:`, err.message);
+    return nodeWriteError(err);
+  }
+}
+
+/**
+ * Handle swarm_openAct (#648): open content shared with this node through
+ * ACT. The node decrypts with its own key; Freedom only passes it the share's
+ * coordinates, after checking the user's consent for this (origin,
+ * publisher) pair:
+ *
+ * - the renderer reports `meta.approval: 'user'` when the user approved this
+ *   call in the ACT prompt, which names the publisher;
+ * - anything else (an "always allow" rule answered, or no meta at all) needs
+ *   a stored grant for exactly this origin and publisher. A grant for one
+ *   publisher opens nothing from another: the node's key is one identity for
+ *   every site, so a per-site grant would expose everything ever shared with
+ *   the user.
+ *
+ * A private window's sender is refused outright (private windows get no
+ * provider and no lasting grant), as is one main cannot classify.
+ *
+ * The bytes are charged to the origin's read budget (connected origins only
+ * reach this method, so 5 MiB per 60 s window): a declared length is
+ * reserved before the body is read, an undeclared one as it streams.
+ */
+async function handleOpenAct(params, origin, meta, sender) {
+  if (isPrivateSender({ sender })) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message: 'ACT content cannot be opened from a private window',
+        data: { reason: 'private_window' },
+      },
+    };
+  }
+
+  // The same check, and the same canonical values, as the consent prompt
+  // was given (swarm-permissions.js describeActRequest).
+  const request = validateActRequest(params);
+  if (!request.ok) {
+    return invalidParams(request.message, request.reason, request.option ? { option: request.option } : {});
+  }
+  const share = request.value;
+
+  if (meta?.approval !== 'user' && !hasActGrant(origin, share.publisher)) {
+    return notAuthorized('act_not_granted');
+  }
+
+  const budgetError = consumePermissionFreeReadBudget(origin, { requests: 1 });
+  if (budgetError) return budgetError;
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+  }
+
+  try {
+    const result = await openActShare(
+      {
+        reference: share.reference,
+        publisher: share.publisher,
+        historyAddress: share.historyAddress,
+        timestamp: share.timestamp,
+        path: share.path,
+      },
+      permissionFreeReadMeter(origin)
+    );
+    return { result };
+  } catch (err) {
+    if (err.reason === 'refused') return err.refusal;
+    if (err.reason === 'data_too_large') {
+      return invalidParams(err.message, 'data_too_large', {
+        limit: err.limit,
+        ...(err.actual !== undefined && { actual: err.actual }),
+      });
+    }
+    if (err.reason === 'act_not_found' || err.reason === 'content_not_found') {
+      return invalidParams(err.message, err.reason);
+    }
+    if (err.reason === 'invalid_params') return invalidParams(err.message);
+    if (err.reason === 'node-stopped') {
+      return { error: { ...ERRORS.NODE_UNAVAILABLE, message: err.message, data: { reason: 'node-stopped' } } };
+    }
+    log.error(`[SwarmProvider] openAct failed for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
 }
 
@@ -1539,9 +1789,12 @@ async function handleWriteFeedEntry(params, origin) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'index_already_exists' } } };
     }
 
-    // Translate SOC payload size errors
-    if (err.message && (err.message.includes('too large') || err.message.includes('payload size'))) {
-      return { error: { ...ERRORS.INVALID_PARAMS, message: 'Payload exceeds maximum SOC size', data: { reason: 'payload_too_large' } } };
+    // The page's payload, refused by feed-service. Matched by reason, not by
+    // text: a node's malformed answer can read "payload size … exceeds" too,
+    // and that is the node's failure, a retryable -32603 (#1054). The only
+    // payload it refuses is an empty one, so its own text is the message.
+    if (err.reason === 'payload_too_large') {
+      return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'payload_too_large' } } };
     }
 
     log.error(`[SwarmProvider] writeFeedEntry failed for ${origin}:`, err.message);
@@ -1551,7 +1804,14 @@ async function handleWriteFeedEntry(params, origin) {
 
 /**
  * Handle swarm_readFeedEntry: validate, resolve topic/owner, read feed entry.
- * Does NOT require feed grant or vault — read-only operation.
+ * Does NOT require feed grant or vault — read-only operation. One request
+ * against the permission-free read budget, like swarm_readData, and the
+ * entry's bytes against the byte budget as they are read: an explicit
+ * index's SOC is charged once read and the size its wrapped chunk's span
+ * gives is reserved before the node joins it; the latest entry is reserved
+ * from its declared length, or as it streams. An entry larger than the whole
+ * byte budget is data_too_large, and one that does not fit what is left of
+ * the window is rate_limited, without reading the rest of it.
  */
 async function handleReadFeedEntry(params, origin) {
   if (!params || typeof params !== 'object') {
@@ -1633,23 +1893,25 @@ async function handleReadFeedEntry(params, origin) {
   }
 
   try {
-    const result = await readFeedPayload(resolvedOwner, resolvedTopic, index);
-
-    const base64Data = result.payload.toString('base64');
-    const byteBudgetError = consumePermissionFreeReadBudget(origin, {
-      bytes: result.payload.length,
-    });
-    if (byteBudgetError) return byteBudgetError;
+    // The entry's bytes are paid for as they are read, before they are held.
+    const result = await readFeedPayload(resolvedOwner, resolvedTopic, index, permissionFreeReadMeter(origin));
 
     return {
       result: {
-        data: base64Data,
+        data: result.payload.toString('base64'),
         encoding: 'base64',
         index: result.index,
         nextIndex: result.nextIndex,
       },
     };
   } catch (err) {
+    if (err.refusal) return err.refusal;
+    if (err.reason === 'data_too_large') {
+      return invalidParams(err.message, 'data_too_large', {
+        limit: err.limit,
+        ...(err.actual !== undefined && { actual: err.actual }),
+      });
+    }
     if (err.reason === 'feed_empty') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'feed_empty' } } };
     }
@@ -2261,7 +2523,7 @@ function registerSwarmProviderIpc() {
   ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};
     return agentCustodyRefusal(event?.sender, method, meta) ||
-      executeSwarmMethod(method, params, origin, meta);
+      executeSwarmMethod(method, params, origin, meta, { sender: event?.sender });
   });
 
   log.info('[SwarmProvider] IPC handler registered');

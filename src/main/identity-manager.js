@@ -25,6 +25,12 @@ const { getActiveProfile } = require('./profile-resolver');
 const keystorePassword = require('./swarm/ant-keystore-password');
 const { withPrivateDir } = require('./private-files');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
+const { verifiedDeployedMark, verifiedDeployments } = require('./wallet/safe/deployed-mark');
+const {
+  REMOTE_ERROR_CODES,
+  createRemoteError,
+  createAccountUncheckedError,
+} = require('./wallet/remote/errors');
 const {
   currentVaultEpoch,
   advanceVaultEpoch,
@@ -1307,17 +1313,56 @@ const DEVICE_LABELS = {
   [WALLET_TYPES.SAFE]: 'Safe',
 };
 
+/**
+ * Whether a device record's device has shown that it holds the record's
+ * address.
+ *
+ * Ledger records (#1065): main reads the address back from the device
+ * when an account is added, so a new record starts `matched`. Records
+ * added before that took the chrome's word for the address and start
+ * `unchecked`: the first Ledger connected with them checks them, and a
+ * device that doesn't match makes them `mismatched`.
+ *
+ * Phone records (#1078): main has the phone sign a fresh challenge as the
+ * account before adding it, so a new record starts `matched`. Records
+ * added before that start `unchecked`. The next time the phone answers
+ * for one (a check from Wallet Settings, or any phone signature main
+ * verifies) it becomes `matched`, or `mismatched` when the phone answers
+ * from another account.
+ *
+ * A mismatched record is kept and shown as such; a later match makes it
+ * `matched`. Only a `matched` record can own a new Safe.
+ */
+const ADDRESS_CHECK = {
+  UNCHECKED: 'unchecked',
+  MATCHED: 'matched',
+  MISMATCHED: 'mismatched',
+};
+
+/** The device record types that carry an address check. */
+const ADDRESS_CHECKED_TYPES = new Set([WALLET_TYPES.LEDGER, WALLET_TYPES.REMOTE]);
+
+function addressCheckOf(record) {
+  return record.addressCheck === ADDRESS_CHECK.MATCHED ||
+    record.addressCheck === ADDRESS_CHECK.MISMATCHED
+    ? record.addressCheck
+    : ADDRESS_CHECK.UNCHECKED;
+}
+
 /** Type-specific record fields to expose through the record seams. */
 function extraRecordFields(record) {
   const fields = {};
   if (record.path) {
     fields.path = record.path;
   }
+  if (ADDRESS_CHECKED_TYPES.has(record.type)) {
+    fields.addressCheck = addressCheckOf(record);
+  }
   if (record.type === WALLET_TYPES.SAFE) {
     fields.owners = record.owners;
     fields.threshold = record.threshold;
     fields.saltNonce = record.saltNonce;
-    fields.deployed = record.deployed || {};
+    fields.deployed = verifiedDeployments(record.deployed);
   }
   return fields;
 }
@@ -1488,6 +1533,77 @@ async function getDerivedWallets() {
 }
 
 /**
+ * The addresses Freedom-held keys a page could get a signature from sign as:
+ * the Ant node key and every wallet account (mnemonic and device accounts
+ * alike, since `personal_sign` of 32 bytes is a Single Owner Chunk
+ * signature). Readable while the vault is locked, from vault-meta.json.
+ *
+ * App-scoped publisher keys are not listed: they sign nothing but SOC
+ * digests of Freedom's own writes, and need the mnemonic to derive.
+ *
+ * @returns {Promise<{ addresses: Set<string>, complete: boolean }>}
+ *   lower-case bare-hex addresses; `complete` is false when an account's
+ *   address is not known (a locked vault with an older record, or a vault
+ *   whose vault-meta.json is missing or unreadable).
+ */
+async function getFreedomSigningAddresses() {
+  const addresses = new Set();
+  const add = (address) => {
+    if (typeof address === 'string' && address) {
+      addresses.add(address.replace(/^0x/i, '').toLowerCase());
+    }
+  };
+  const keys = getDerivedKeys();
+  add(keys?.beeWallet?.address);
+  add(keys?.userWallet?.address);
+
+  const meta = getVaultMeta();
+  if (!meta) {
+    // No vault holds no identity. A vault whose meta is missing or
+    // unreadable lists accounts nowhere else, so the list is not complete.
+    return { addresses, complete: !(await hasVault()) };
+  }
+
+  let complete = true;
+  add(meta.addresses?.beeWallet);
+  add(meta.addresses?.userWallet);
+  if (!keys && !meta.addresses?.beeWallet) complete = false;
+
+  for (const wallet of await getDerivedWallets()) {
+    if (wallet.address) add(wallet.address);
+    else complete = false;
+  }
+  return { addresses, complete };
+}
+
+/**
+ * Refuse a device account address that is malformed or already in the
+ * wallet list, or a wallet list that doesn't exist yet.
+ *
+ * @returns {Object} The vault meta
+ */
+function assertDeviceWalletAddable(type, address) {
+  const label = DEVICE_LABELS[type];
+  const { isAddress } = require('ethers');
+  if (typeof address !== 'string' || !isAddress(address)) {
+    throw new Error(`Invalid ${label} account address`);
+  }
+
+  const meta = getVaultMeta();
+  if (!meta) {
+    throw new Error('No vault found');
+  }
+
+  const duplicate = getWalletList(meta).find(
+    (wallet) => wallet.address && wallet.address.toLowerCase() === address.toLowerCase()
+  );
+  if (duplicate) {
+    throw new Error(`This account is already in your wallet list as "${duplicate.name}"`);
+  }
+  return meta;
+}
+
+/**
  * Add a device account (Ledger, phone) to the wallet list.
  *
  * The address comes from the device when the account is added and is
@@ -1502,24 +1618,8 @@ async function getDerivedWallets() {
  */
 async function addDeviceWallet(type, name, address, extra = {}) {
   const label = DEVICE_LABELS[type];
-  const { isAddress } = require('ethers');
-  if (typeof address !== 'string' || !isAddress(address)) {
-    throw new Error(`Invalid ${label} account address`);
-  }
-
-  const meta = getVaultMeta();
-  if (!meta) {
-    throw new Error('No vault found');
-  }
-
+  const meta = assertDeviceWalletAddable(type, address);
   const wallets = getWalletList(meta);
-
-  const duplicate = wallets.find(
-    (wallet) => wallet.address && wallet.address.toLowerCase() === address.toLowerCase()
-  );
-  if (duplicate) {
-    throw new Error(`This account is already in your wallet list as "${duplicate.name}"`);
-  }
 
   const newIndex = nextHardwareWalletIndex(meta, wallets);
   const sameTypeCount = wallets.filter((w) => w.type === type).length;
@@ -1544,27 +1644,192 @@ async function addDeviceWallet(type, name, address, extra = {}) {
 /**
  * Add a Ledger hardware-wallet account.
  *
+ * The address and path come from the chrome, which read them from the
+ * device during discovery. Main doesn't take its word for the address: it
+ * asks the attached device for the address at that path (without showing
+ * it on the device) and refuses the account unless the two are the same
+ * (#1065), so a compromised chrome can't list an address the user's
+ * Ledger doesn't hold.
+ *
  * @param {string} name - Display name ('' → auto "Ledger N")
  * @param {string} address - Checksummed address read from the device
  * @param {string} path - Derivation path in device format (e.g. "44'/60'/0'/0/0")
- * @returns {Promise<{index: number, name: string, address: string, type: string, path: string}>}
+ * @returns {Promise<{index: number, name: string, address: string, type: string, path: string, addressCheck: string}>}
  */
 async function addLedgerWallet(name, address, path) {
   if (typeof path !== 'string' || !path) {
     throw new Error('Missing derivation path for Ledger account');
   }
-  return addDeviceWallet(WALLET_TYPES.LEDGER, name, address, { path });
+  const { isAddress } = require('ethers');
+  if (typeof address !== 'string' || !isAddress(address)) {
+    throw new Error('Invalid Ledger account address');
+  }
+  const { readAddresses } = require('./wallet/ledger/transport');
+  const { LEDGER_ERROR_CODES, createLedgerError } = require('./wallet/ledger/errors');
+  const [onDevice] = await readAddresses([path]);
+  if (typeof onDevice !== 'string' || onDevice.toLowerCase() !== address.toLowerCase()) {
+    throw createLedgerError(LEDGER_ERROR_CODES.ADDRESS_MISMATCH);
+  }
+  return addDeviceWallet(WALLET_TYPES.LEDGER, name, address, {
+    path,
+    addressCheck: ADDRESS_CHECK.MATCHED,
+  });
+}
+
+/**
+ * Ledger records no device has matched yet (`unchecked` or
+ * `mismatched`), for the check that runs when a Ledger is connected.
+ *
+ * @returns {Array<{index: number, name: string, address: string, path: string, addressCheck: string}>}
+ */
+function getLedgerRecordsToCheck() {
+  const meta = getVaultMeta();
+  if (!meta) {
+    return [];
+  }
+  return getWalletList(meta)
+    .filter((wallet) => wallet.type === WALLET_TYPES.LEDGER)
+    .map((wallet) => getWalletRecord(wallet.index, meta))
+    .filter((record) => record.addressCheck !== ADDRESS_CHECK.MATCHED);
+}
+
+/**
+ * Record what a device said about a Ledger record: whether it derives the
+ * record's address at the record's path. A `matched` record stays
+ * matched: a device that doesn't match it later is another Ledger, and
+ * signing checks the device every time anyway. Never deletes a record.
+ *
+ * @param {number} index - Wallet index of the Ledger record
+ * @param {boolean} matched
+ * @returns {string|null} The record's check state, or null if it isn't a Ledger record
+ */
+function recordLedgerAddressCheck(index, matched) {
+  return recordAddressCheck(WALLET_TYPES.LEDGER, index, matched);
 }
 
 /**
  * Add a remote (phone / other device) account, signing over openlv.
  *
+ * The address comes from the chrome, which relays the phone's answer to
+ * eth_requestAccounts. Main doesn't take its word for it (#1078): it has
+ * the phone sign a fresh challenge as the account and refuses the account
+ * unless the signature recovers to it, so a compromised chrome can't list
+ * an address no key behind the phone session answers for. No answer
+ * (timeout, cancel, rejection) adds nothing either.
+ *
  * @param {string} name - Display name ('' → auto "Phone N")
  * @param {string} address - Address the phone reported via eth_requestAccounts
- * @returns {Promise<{index: number, name: string, address: string, type: string}>}
+ * @returns {Promise<{index: number, name: string, address: string, type: string, addressCheck: string}>}
  */
 async function addRemoteWallet(name, address) {
-  return addDeviceWallet(WALLET_TYPES.REMOTE, name, address);
+  // Malformed and duplicate addresses are refused before the phone is asked.
+  assertDeviceWalletAddable(WALLET_TYPES.REMOTE, address);
+  const { proveRemoteAccount } = require('./wallet/remote/account-proof');
+  let matched;
+  try {
+    matched = await proveRemoteAccount(address);
+  } catch (err) {
+    const unproven = createRemoteError(REMOTE_ERROR_CODES.ADDRESS_UNPROVEN);
+    unproven.cause = err;
+    throw unproven;
+  }
+  if (!matched) {
+    throw createRemoteError(REMOTE_ERROR_CODES.ADDRESS_MISMATCH);
+  }
+  return addDeviceWallet(WALLET_TYPES.REMOTE, name, address, {
+    addressCheck: ADDRESS_CHECK.MATCHED,
+  });
+}
+
+/**
+ * Check an existing phone record on the phone (#1078): the phone signs a
+ * fresh challenge as the account, and the outcome is kept on the record.
+ * No answer leaves the record as it was.
+ *
+ * @param {number} index - Wallet index of the phone record
+ * @returns {Promise<{index: number, name: string, address: string, type: string, addressCheck: string}>}
+ */
+async function checkRemoteWallet(index) {
+  const record = getWalletRecord(index);
+  if (!record || record.type !== WALLET_TYPES.REMOTE) {
+    throw new Error(`Wallet ${index} is not a phone account`);
+  }
+  const { proveRemoteAccount } = require('./wallet/remote/account-proof');
+  const matched = await proveRemoteAccount(record.address, index);
+  return { ...record, addressCheck: recordRemoteAddressCheck(index, matched) };
+}
+
+/**
+ * Record what a device's answer showed about a device record: whether it
+ * answered as the record's address. A `matched` record stays matched: a
+ * later answer from another account is that device on another account,
+ * and every signature is checked against the record anyway. Never
+ * deletes a record.
+ *
+ * @param {string} type - A type in ADDRESS_CHECKED_TYPES
+ * @param {number} index - Wallet index of the record
+ * @param {boolean} matched
+ * @returns {string|null} The record's check state, or null if it isn't such a record
+ */
+function recordAddressCheck(type, index, matched) {
+  const meta = getVaultMeta();
+  if (!meta) {
+    return null;
+  }
+  const wallets = getWalletList(meta);
+  const record = wallets.find((w) => w.index === index && w.type === type);
+  if (!record) {
+    return null;
+  }
+  const next =
+    matched || addressCheckOf(record) === ADDRESS_CHECK.MATCHED
+      ? ADDRESS_CHECK.MATCHED
+      : ADDRESS_CHECK.MISMATCHED;
+  if (record.addressCheck !== next) {
+    record.addressCheck = next;
+    saveVaultMeta({ ...meta, derivedWallets: wallets });
+  }
+  return next;
+}
+
+/** What the phone's answer showed about a phone record (see recordAddressCheck). */
+function recordRemoteAddressCheck(index, matched) {
+  return recordAddressCheck(WALLET_TYPES.REMOTE, index, matched);
+}
+
+/**
+ * Safe owners whose address their device must have proven (#1065,
+ * #1078): in a 1-of-2 Safe an owner address planted by the chrome would
+ * control the funds alone. Each entry builds the refusal for a record that is
+ * `unchecked` or `mismatched`.
+ */
+const SAFE_OWNER_ADDRESS_CHECKS = {
+  [WALLET_TYPES.LEDGER]: createLedgerAccountUncheckedError,
+  [WALLET_TYPES.REMOTE]: createAccountUncheckedError,
+};
+
+/** The refusal for a Ledger Safe owner no device has matched (#1065). */
+function createLedgerAccountUncheckedError(name, { mismatched = false } = {}) {
+  const { LEDGER_ERROR_CODES } = require('./wallet/ledger/errors');
+  const err = new Error(
+    mismatched
+      ? `"${name}" can't own a Safe: the Ledger last connected doesn't hold it. Connect the Ledger that does and open Connect Hardware Wallet, then try again.`
+      : `"${name}" can't own a Safe until it has been checked on its Ledger. Connect that Ledger and open Connect Hardware Wallet, then try again.`
+  );
+  err.code = LEDGER_ERROR_CODES.ACCOUNT_UNCHECKED;
+  return err;
+}
+
+function assertSafeOwnerAddressChecked(record) {
+  const refuse = SAFE_OWNER_ADDRESS_CHECKS[record.type];
+  if (!refuse) {
+    return;
+  }
+  const state = addressCheckOf(record);
+  if (state === ADDRESS_CHECK.MATCHED) {
+    return;
+  }
+  throw refuse(record.name, { mismatched: state === ADDRESS_CHECK.MISMATCHED });
 }
 
 /**
@@ -1606,6 +1871,7 @@ async function addSafeWallet(name, { address, owners, threshold, saltNonce }) {
     if (record.type === WALLET_TYPES.SAFE) {
       throw new Error('A Safe cannot own another Safe');
     }
+    assertSafeOwnerAddressChecked(record);
   }
   if (typeof saltNonce !== 'string' || !/^\d+$/.test(saltNonce)) {
     throw new Error('Invalid Safe salt nonce');
@@ -1623,6 +1889,10 @@ async function addSafeWallet(name, { address, owners, threshold, saltNonce }) {
  * Record that a Safe's contract is now live on a chain. Deployment state
  * is the ONLY mutable part of a safe record — init params stay frozen.
  *
+ * The caller must have verified the deployment (#1066): the mark says so
+ * (wallet/safe/deployed-mark.js), and replaces a mark of a release before
+ * #1066 on that chain.
+ *
  * @param {number} index - Wallet index of the safe record
  * @param {number} chainId
  */
@@ -1636,7 +1906,7 @@ async function markSafeDeployed(index, chainId) {
   if (!record || record.type !== WALLET_TYPES.SAFE) {
     throw new Error(`Wallet ${index} is not a Safe account`);
   }
-  record.deployed = { ...(record.deployed || {}), [chainId]: true };
+  record.deployed = { ...(record.deployed || {}), [chainId]: verifiedDeployedMark() };
   saveVaultMeta({ ...meta, derivedWallets: wallets });
 }
 
@@ -2160,7 +2430,7 @@ function registerIdentityIpc() {
       const wallet = await addLedgerWallet(name, address, path);
       return { success: true, wallet };
     } catch (err) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, code: err.code };
     }
   });
 
@@ -2170,7 +2440,17 @@ function registerIdentityIpc() {
       const wallet = await addRemoteWallet(name, address);
       return { success: true, wallet };
     } catch (err) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, code: err.code };
+    }
+  });
+
+  // Check an existing phone account on the phone (#1078)
+  ipcMain.handle('wallet:check-remote-wallet', async (_event, index) => {
+    try {
+      const wallet = await checkRemoteWallet(index);
+      return { success: true, wallet };
+    } catch (err) {
+      return { success: false, error: err.message, code: err.code };
     }
   });
 
@@ -2236,11 +2516,17 @@ module.exports = {
   isHardwareWalletIndex,
   getWalletRecord,
   getDerivedWallets,
+  getFreedomSigningAddresses,
   getActiveWalletIndex,
   setActiveWalletIndex,
   createDerivedWallet,
   addLedgerWallet,
+  getLedgerRecordsToCheck,
+  recordLedgerAddressCheck,
   addRemoteWallet,
+  ADDRESS_CHECK,
+  checkRemoteWallet,
+  recordRemoteAddressCheck,
   addSafeWallet,
   markSafeDeployed,
   renameDerivedWallet,

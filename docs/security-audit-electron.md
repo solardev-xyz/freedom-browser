@@ -380,6 +380,17 @@ of `/bzz/` with them is unconfirmed.
 - Allowlist forwarded headers (`Range`, `If-*`, `Accept*`).
 - Reject encoded separators in the path.
 
+**ACT since then.** Ant does implement ACT (freedom-hq/ant#30), and `bzz:`
+still forwards no `Swarm-Act*` header. Pages open ACT shares only through
+`window.swarm.openAct`
+([#648](https://github.com/solardev-xyz/freedom-browser/issues/648)): main
+sends the ACT headers itself (`src/main/swarm/act-service.js`), and only
+after the user approved that call, in a prompt naming the publisher, or an
+"always allow" rule stored for that one site and publisher. Main normalises
+the publisher key and re-checks the rule; a private window's request is
+refused and it can store no rule. The node decrypts with its own key, which
+Freedom never reads.
+
 ### O-3 Gateway-form `ipfs:` URLs share one origin
 
 **Medium** · `src/main/ipfs/ipfs-protocol.js:182-218`, `:361-387`

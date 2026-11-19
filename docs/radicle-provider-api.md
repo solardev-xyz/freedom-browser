@@ -75,6 +75,15 @@ provider:
 | -32602 | Invalid params (`data.reason` gives a machine-readable cause)          |
 | -32603 | Internal error                                                         |
 
+An error that comes from the Radicle add-on carries a fixed message for its
+kind, never the add-on's own text, which can name files in the user's
+profile: `not found`, `repository data too large to serve here`,
+`request cancelled`, or else `the read failed`, `the write failed`, or
+`Internal error` for a failure outside a read or a write. A seed status's
+`lastError`, `progress.reason` and `recentAttempts[].error` follow the same
+rule, with `the fetch failed` for a failure of no other kind. The code and
+`data.reason` are decided on the add-on's text, as before.
+
 `data.reason` values include: `invalid_rid`, `invalid_id`, `invalid_title`,
 `invalid_body`, `not_seeded`, `repo_not_found`, `announce_failed`,
 `payload_too_large`. A signed write main refuses carries `4100` with

@@ -251,3 +251,227 @@ describe('createLedgerBackend / signTypedData', () => {
     });
   });
 });
+
+/**
+ * #1063: the device's answer is never trusted. Each kind refuses, with
+ * LEDGER_BAD_SIGNATURE and no result, a signature from another key, one
+ * with the wrong `v`, and one over something other than what was asked.
+ */
+describe('createLedgerBackend / every signature is recovered against the account', () => {
+  // Another well-known test key: the "wrong device" answers with it.
+  const otherWallet = new Wallet('0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a');
+  const BAD = { code: 'LEDGER_BAD_SIGNATURE', message: expect.stringMatching(/doesn't match this request/) };
+
+  /** The same r/s with the other parity. */
+  function flipV(deviceSig) {
+    const v = typeof deviceSig.v === 'string' ? Number.parseInt(deviceSig.v, 16) : deviceSig.v;
+    const flipped = v === 0 || v === 1 ? 1 - v : v % 2 === 0 ? v - 1 : v + 1;
+    return {
+      ...deviceSig,
+      v: typeof deviceSig.v === 'string' ? flipped.toString(16).padStart(2, '0') : flipped,
+    };
+  }
+
+  describe('transactions', () => {
+    const TX_1559 = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '1000',
+      gasLimit: '21000',
+      maxFeePerGas: '2000000000',
+      maxPriorityFeePerGas: '1000000000',
+      nonce: 7,
+      chainId: 8453,
+      type: 2,
+    };
+    const TX_LEGACY = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '1000',
+      gasLimit: '21000',
+      gasPrice: '7',
+      nonce: 3,
+      chainId: 100,
+      type: 0,
+    };
+
+    async function deviceTxSig(wallet, tx) {
+      const signed = Transaction.from(await wallet.signTransaction(tx));
+      return toDeviceSig(signed.signature, { vAsHexString: true });
+    }
+
+    test.each([
+      ['type 2', TX_1559],
+      ['legacy', TX_LEGACY],
+    ])('%s: the honest signature passes and recovers to the account', async (_label, tx) => {
+      mockEth.signTransaction.mockResolvedValue(await deviceTxSig(deviceWallet, tx));
+      const raw = await createLedgerBackend(RECORD).signTransaction(tx);
+      expect(Transaction.from(raw).from).toBe(deviceWallet.address);
+    });
+
+    test.each([
+      ['type 2', TX_1559],
+      ['legacy', TX_LEGACY],
+    ])('%s: a signature from another key is refused', async (_label, tx) => {
+      mockEth.signTransaction.mockResolvedValue(await deviceTxSig(otherWallet, tx));
+      await expect(createLedgerBackend(RECORD).signTransaction(tx)).rejects.toMatchObject(BAD);
+    });
+
+    test.each([
+      ['type 2', TX_1559],
+      ['legacy', TX_LEGACY],
+    ])('%s: the wrong v is refused', async (_label, tx) => {
+      mockEth.signTransaction.mockResolvedValue(flipV(await deviceTxSig(deviceWallet, tx)));
+      await expect(createLedgerBackend(RECORD).signTransaction(tx)).rejects.toMatchObject(BAD);
+    });
+
+    test('legacy: a v for another chain is refused', async () => {
+      const sig = await deviceTxSig(deviceWallet, TX_LEGACY);
+      const parity = (Number.parseInt(sig.v, 16) - 35) % 2;
+      mockEth.signTransaction.mockResolvedValue({ ...sig, v: (1 * 2 + 35 + parity).toString(16) });
+      await expect(createLedgerBackend(RECORD).signTransaction(TX_LEGACY)).rejects.toMatchObject(BAD);
+    });
+
+    test('a v that is no parity at all is refused', async () => {
+      const sig = await deviceTxSig(deviceWallet, TX_1559);
+      mockEth.signTransaction.mockResolvedValue({ ...sig, v: '05' });
+      await expect(createLedgerBackend(RECORD).signTransaction(TX_1559)).rejects.toMatchObject(BAD);
+    });
+
+    test.each([
+      ['type 2', TX_1559],
+      ['legacy', TX_LEGACY],
+    ])('%s: the account\'s signature over another transaction is refused', async (_label, tx) => {
+      const other = { ...tx, value: '1000000000000000000' };
+      mockEth.signTransaction.mockResolvedValue(await deviceTxSig(deviceWallet, other));
+      await expect(createLedgerBackend(RECORD).signTransaction(tx)).rejects.toMatchObject(BAD);
+    });
+  });
+
+  describe('personal messages', () => {
+    const MESSAGE = 'Sign in to example.org';
+    const deviceMessageSig = (wallet, message) =>
+      toDeviceSig(wallet.signingKey.sign(hashMessage(message)));
+
+    test('a signature from another key is refused', async () => {
+      mockEth.signPersonalMessage.mockResolvedValue(deviceMessageSig(otherWallet, MESSAGE));
+      await expect(createLedgerBackend(RECORD).signMessage(MESSAGE)).rejects.toMatchObject(BAD);
+    });
+
+    test('the wrong v is refused', async () => {
+      mockEth.signPersonalMessage.mockResolvedValue(flipV(deviceMessageSig(deviceWallet, MESSAGE)));
+      await expect(createLedgerBackend(RECORD).signMessage(MESSAGE)).rejects.toMatchObject(BAD);
+    });
+
+    test('the account\'s signature over another message is refused', async () => {
+      mockEth.signPersonalMessage.mockResolvedValue(deviceMessageSig(deviceWallet, 'Send everything'));
+      await expect(createLedgerBackend(RECORD).signMessage(MESSAGE)).rejects.toMatchObject(BAD);
+    });
+
+    test('a v that is no parity at all is refused', async () => {
+      const sig = deviceMessageSig(deviceWallet, MESSAGE);
+      mockEth.signPersonalMessage.mockResolvedValue({ ...sig, v: 5 });
+      await expect(createLedgerBackend(RECORD).signMessage(MESSAGE)).rejects.toMatchObject(BAD);
+    });
+
+    test('an r that is no signature at all is refused', async () => {
+      const sig = deviceMessageSig(deviceWallet, MESSAGE);
+      mockEth.signPersonalMessage.mockResolvedValue({ ...sig, r: '00'.repeat(32) });
+      await expect(createLedgerBackend(RECORD).signMessage(MESSAGE)).rejects.toMatchObject(BAD);
+    });
+  });
+
+  describe('typed data', () => {
+    const domain = { name: 'Mail', version: '1', chainId: 1, verifyingContract: '0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC' };
+    const types = { Mail: [{ name: 'contents', type: 'string' }] };
+    const message = { contents: 'Hello, Bob!' };
+    const deviceTypedSig = (wallet, msg = message) =>
+      toDeviceSig(wallet.signingKey.sign(TypedDataEncoder.hash(domain, types, msg)));
+    const cases = (answer) => [
+      ['field by field', () => mockEth.signEIP712Message.mockResolvedValue(answer())],
+      [
+        'the hashed fallback',
+        () => {
+          const noFullSupport = Object.assign(new Error('INS not supported'), { statusCode: 0x6d00 });
+          mockEth.signEIP712Message.mockRejectedValue(noFullSupport);
+          mockEth.signEIP712HashedMessage.mockResolvedValue(answer());
+        },
+      ],
+    ];
+
+    test.each(cases(() => deviceTypedSig(otherWallet)))(
+      '%s: a signature from another key is refused',
+      async (_label, arrange) => {
+        arrange();
+        await expect(createLedgerBackend(RECORD).signTypedData({ domain, types, message }))
+          .rejects.toMatchObject(BAD);
+      }
+    );
+
+    test.each(cases(() => flipV(deviceTypedSig(deviceWallet))))(
+      '%s: the wrong v is refused',
+      async (_label, arrange) => {
+        arrange();
+        await expect(createLedgerBackend(RECORD).signTypedData({ domain, types, message }))
+          .rejects.toMatchObject(BAD);
+      }
+    );
+
+    test.each(cases(() => ({ ...deviceTypedSig(deviceWallet), v: 5 })))(
+      '%s: a v that is no parity at all is refused',
+      async (_label, arrange) => {
+        arrange();
+        await expect(createLedgerBackend(RECORD).signTypedData({ domain, types, message }))
+          .rejects.toMatchObject(BAD);
+      }
+    );
+
+    test.each(cases(() => deviceTypedSig(deviceWallet, { contents: 'Hello, Mallory!' })))(
+      '%s: the account\'s signature over other typed data is refused',
+      async (_label, arrange) => {
+        arrange();
+        await expect(createLedgerBackend(RECORD).signTypedData({ domain, types, message }))
+          .rejects.toMatchObject(BAD);
+      }
+    );
+  });
+});
+
+/**
+ * #1065: a record added before main read addresses back from the device
+ * is checked by the first device that signs for it, and can't sign until
+ * one matches it.
+ */
+describe('createLedgerBackend / the device check is kept on the record', () => {
+  const UNCHECKED = { ...RECORD, addressCheck: 'unchecked' };
+
+  beforeEach(() => {
+    mockEth.signPersonalMessage.mockImplementation(async (_path, messageHex) =>
+      toDeviceSig(deviceWallet.signingKey.sign(hashMessage(Buffer.from(messageHex, 'hex')))));
+  });
+
+  test('a device that holds the address passes the check, and then signs', async () => {
+    const onAddressCheck = jest.fn();
+    const signature = await createLedgerBackend(UNCHECKED, { onAddressCheck }).signMessage('hi');
+    expect(verifyMessage('hi', signature)).toBe(deviceWallet.address);
+    expect(onAddressCheck).toHaveBeenCalledWith(true);
+    expect(onAddressCheck.mock.invocationCallOrder[0])
+      .toBeLessThan(mockEth.signPersonalMessage.mock.invocationCallOrder[0]);
+  });
+
+  test('a device that holds another address fails the check, and nothing is signed', async () => {
+    mockEth.getAddress.mockResolvedValue({ address: '0x0000000000000000000000000000000000000bad' });
+    const onAddressCheck = jest.fn();
+    await expect(createLedgerBackend(UNCHECKED, { onAddressCheck }).signMessage('hi'))
+      .rejects.toMatchObject({ code: 'LEDGER_WRONG_DEVICE' });
+    expect(onAddressCheck).toHaveBeenCalledWith(false);
+    expect(mockEth.signPersonalMessage).not.toHaveBeenCalled();
+  });
+
+  test('a failure to keep the check does not change the outcome', async () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const onAddressCheck = jest.fn(() => {
+      throw new Error('disk full');
+    });
+    const signature = await createLedgerBackend(UNCHECKED, { onAddressCheck }).signMessage('hi');
+    expect(verifyMessage('hi', signature)).toBe(deviceWallet.address);
+  });
+});
