@@ -1,0 +1,4 @@
+- In a tab the Agent controls, a site's wallet connection and signature requests now go through the same identity core checks as any other site, and the Agent's approval card answers them ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - The card shows what will be signed as the wallet sees it: a message as text, or as bytes when it isn't text, and typed data with its hash and any warnings, rather than the site's raw request
+  - A site that is already connected gets its connected account without a new card. To change the account, disconnect the site and connect again
+  - A site that isn't connected gets "Not connected" (code 4100) for a signature, as in any other tab
