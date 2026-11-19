@@ -29,6 +29,12 @@
  * document's name again itself (a DNS name over IPNS) and that it still
  * holds its key, and withholds the signature otherwise.
  *
+ * For an approve the Agent's sheet gave, in a tab it holds (design 0012,
+ * "The Agent's answer", A7-6), main also checks that the Agent still holds
+ * the tab, where the agent's own route checked it: before the token is
+ * presented, and as the signer's last step, right before the device is
+ * asked (`beforeSign`). A Safe's is never the sheet's (A7-3).
+ *
  * The token is a bearer secret: it goes only to the core's spend, is never
  * logged or put in an error, and never reaches a renderer. Main discards it
  * once the step ends, spent or not.
@@ -39,6 +45,8 @@ const NO_ADDRESS = Object.freeze({ code: 4100, message: 'This page has no addres
 const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
 // A device's own "declined" is the user's rejection.
 const DEVICE_REJECTIONS = new Set(['LEDGER_USER_REJECTED', 'REMOTE_USER_REJECTED', 'REMOTE_USER_CANCELLED']);
+// Custody ended after the sheet's approve (A7-6), in the agent route's words.
+const CUSTODY_LOST = 'Signing was not confirmed: the Agent no longer holds this tab';
 
 const error = (base) => ({ error: { ...base } });
 
@@ -104,9 +112,10 @@ function createDeviceSigning(deps = {}) {
     return found && found.type === type ? found : null;
   }
 
-  // A Ledger's or a phone's signature, with the core's token.
-  async function deviceSignature(context, device, confirmation) {
-    const signer = getSigner(device.account, { confirmation });
+  // A Ledger's or a phone's signature, with the core's token, and the
+  // caller's last check, if any, right before the device is asked.
+  async function deviceSignature(context, device, confirmation, beforeSign) {
+    const signer = getSigner(device.account, beforeSign ? { confirmation, beforeSign } : { confirmation });
     if (device.kind === 'sign-message') return signer.signMessage(device.payload.message);
     // The page's typed data, which the core hashes again: it must hash to
     // what the token bound, or nothing is spent or signed.
@@ -182,12 +191,23 @@ function createDeviceSigning(deps = {}) {
    * Answer the page from the device, for a `{ device }` the relay checked
    * against its request (`page-eip1193.js`): `{ type, kind, account,
    * payload, expectedHash?, handle, token }`, and `page`, the PageContext
-   * main sent the request under.
+   * main sent the request under. `agent`: the Agent's sheet approved it, so
+   * custody is checked again (A7-6).
    *
    * @returns {Promise<{result: string}|{error: object}>}
    */
-  async function sign(context, device, page) {
+  async function sign(context, device, page, { agent = false } = {}) {
     const { token } = device;
+    // The Agent still holds the tab, read now; unknown counts as lost.
+    const held = () => {
+      let holds;
+      try {
+        holds = context.pageContext().agent === true;
+      } catch {
+        holds = false;
+      }
+      if (!holds) throw new Error(CUSTODY_LOST);
+    };
     // The token as `signers.js` and the Safe's spend present it.
     const confirmation = {
       token,
@@ -200,6 +220,13 @@ function createDeviceSigning(deps = {}) {
     try {
       if (!(await deviceAccount(device.account, device.type))) {
         return { error: { code: INTERNAL_ERROR_CODE, message: 'The connected account is no longer available' } };
+      }
+      if (agent) {
+        try {
+          held();
+        } catch (err) {
+          return failure(err);
+        }
       }
       context.traceCoreToken?.('spent', device.kind);
       if (device.type === 'safe') {
@@ -214,7 +241,7 @@ function createDeviceSigning(deps = {}) {
       }
       let signature;
       try {
-        signature = await deviceSignature(context, device, confirmation);
+        signature = await deviceSignature(context, device, confirmation, agent ? async () => held() : null);
       } catch (err) {
         return failure(err);
       }

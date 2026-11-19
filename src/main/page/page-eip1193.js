@@ -87,6 +87,21 @@
  *         prompt (`feeAskAgain`).
  *       - `vault.unlock` with reason "send" (APB-4c): a rule's send while
  *         the vault is locked, as for a signature.
+ *     In a tab the Agent holds (APB-5a, design 0012 "The Agent's answer"),
+ *     an `eth.connect` or `eth.sign` whose echoed `page.agent` is true, for
+ *     a tab still in custody when the prompt arrives (A7-9), goes to the
+ *     Agent's sheet instead, through the agent service (`agentPrompt`), on a
+ *     handle main opens for its decision on the request's record
+ *     (`context.agentPrompt`): in the document's wallet slot, under the
+ *     record's deadline, with the watchdog held. The sheet shows the core's
+ *     view (A7-10); its approve is relayed after main's checks with the
+ *     account it picked, one of those offered, and `alwaysAllow: false`;
+ *     its decline is `approve: false`, a sheet withdrawn `closed`, and the
+ *     agent service's own refusal (A7-3) a closed prompt with the page
+ *     getting its error. Custody is read again as a signature's approve is
+ *     answered (A7-6), and the agent service hears the page's answer after
+ *     it. One it doesn't take is the user's prompt, for the same prompt id;
+ *     a `vault.unlock` or an `eth.send` (until APB-5b) never goes to it.
  *   - **`approval.recheck { request, page }`:** `{ live, agent }`, read
  *     now, with nothing awaited: whether the request is still open and its
  *     document still holds its key, and whether the Agent holds its tab. A
@@ -166,6 +181,18 @@ const REVEALS = new Set(['eth_accounts', 'eth_requestAccounts', 'personal_sign',
 // The first core that checks a bound document's name itself (APR-5f): an
 // older one drops `transport_key` and checks nothing.
 const NAMES_CORE = Object.freeze([0, 21, 0]);
+// The core's prompts the Agent's sheet answers in a tab it holds (design
+// 0012, "The Agent's answer", APB-5a): a connect and a signature. A send
+// stays on the agent's own route until APB-5b, and anything else, a
+// `vault.unlock` included, is the user's prompt.
+const SHEET_KINDS = new Set(['eth.connect', 'eth.sign']);
+// Custody ended between the sheet's approve and main's answer (A7-6), in
+// the agent route's words.
+const CUSTODY_LOST = Object.freeze({
+  code: INTERNAL_ERROR_CODE,
+  message: 'Signing was not confirmed: the Agent no longer holds this tab',
+});
+const ACCOUNT_UNAVAILABLE = Object.freeze({ code: INTERNAL_ERROR_CODE, message: 'The selected wallet is unavailable' });
 const SELECT_KEYS = new Set(['request', 'page', 'chain_id']);
 const RECHECK_KEYS = new Set(['request', 'page']);
 const PROMPT_KEYS = new Set(['request', 'prompt', 'page', 'kind', 'view', 'choices']);
@@ -222,6 +249,17 @@ const positive = (value) => (Number.isSafeInteger(value) && value > 0 ? value : 
 const hex = (chainId) => `0x${chainId.toString(16)}`;
 const invalid = () => new ShellError('invalid_argument');
 
+// How main reaches the agent service for a core's prompt in a tab it holds
+// (index.js sets it once the agent runtime exists): `(guestId, prompt,
+// { signal, attested, answered }) => ({ handled, decision, error })`,
+// `{ handled: false }` when the agent service doesn't take it.
+let agentPromptRoute = null;
+
+/** index.js: the agent service's answer to the core's prompts, for the tabs it holds. */
+function setAgentPromptRoute(route) {
+  agentPromptRoute = typeof route === 'function' ? route : null;
+}
+
 function defaultDependencies() {
   return {
     coreClient: () => require('../core/core-process').getCoreClient(),
@@ -237,6 +275,8 @@ function defaultDependencies() {
     discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
     selectChainForPage: (windowId, chainId) =>
       require('../wallet/selected-chain').selectChainForPage(windowId, chainId),
+    agentPrompt: async (guestId, prompt, options) =>
+      (agentPromptRoute ? agentPromptRoute(guestId, prompt, options) : { handled: false }),
   };
 }
 
@@ -392,6 +432,7 @@ function createEip1193Relay(deps = {}) {
     selectChainForPage,
     isVaultUnlocked,
     discardToken,
+    agentPrompt,
   } = { ...defaultDependencies(), ...deps };
 
   // `${generation}:${id}` -> the request main sent the core, while it runs.
@@ -656,7 +697,9 @@ function createEip1193Relay(deps = {}) {
     }
     entry.context.traceCoreToken?.('minted', checked.kind);
     try {
-      return await step(checked, entry.page);
+      // Custody is checked again in the device's step for an approve the
+      // Agent's sheet gave (A7-6).
+      return await step(checked, entry.page, { agent: entry.sheet === true });
     } catch (err) {
       return failure(err);
     }
@@ -724,6 +767,10 @@ function createEip1193Relay(deps = {}) {
     entry.approved = null;
     entry.approvedFee = null;
     entry.remember = false;
+    // Whether the Agent's sheet gave the approve (APB-5a), and the page's
+    // answer, which the agent service hears after it.
+    entry.sheet = false;
+    entry.heard = null;
     let key = null;
     let answer;
     let reply = null;
@@ -761,7 +808,9 @@ function createEip1193Relay(deps = {}) {
       if (account && !entry.override) entry.granted.resolve(account);
       else entry.granted.reject(new Error('no grant written'));
     }
-    return entry.override ? { error: { ...entry.override } } : answer;
+    const final = entry.override ? { error: { ...entry.override } } : answer;
+    entry.heard?.(final);
+    return final;
   }
 
   // The request a core's request names, with the PageContext main sent.
@@ -811,7 +860,8 @@ function createEip1193Relay(deps = {}) {
     return null;
   }
 
-  // Main's answer to the core for its connect prompt's decision.
+  // Main's answer to the core for its connect prompt's decision, the user's
+  // or the Agent's sheet's.
   async function connectAnswer(entry, prompt, decision) {
     const { context } = entry;
     const done = unapproved(entry, prompt, decision);
@@ -918,6 +968,116 @@ function createEip1193Relay(deps = {}) {
     };
   }
 
+  /**
+   * Whether the Agent's sheet answers the core's prompt of `kind` (design
+   * 0012, "Which prompts"; A7-9): a connect or a signature whose echoed
+   * PageContext says the Agent held the tab when main sent the request
+   * (`runningFor` has checked the echo against what main sent), and the tab
+   * still in custody now, as the prompt arrives. Anything else, a
+   * `vault.unlock` included, is the user's prompt.
+   */
+  function sheetAnswers(entry, kind) {
+    if (!SHEET_KINDS.has(kind) || entry.page.agent !== true) return false;
+    return read(() => entry.context.pageContext().agent === true, false);
+  }
+
+  // What the agent service hears of the page's answer, once main gave it:
+  // a result the page didn't get (its name moved, its document gone) is
+  // heard as the page's keyless answer.
+  function heardBy(entry) {
+    const final = new Promise((resolve) => {
+      entry.heard = resolve;
+    });
+    return final.then(async (answer) => {
+      if (answer.result === undefined) return answer;
+      let outcome;
+      try {
+        outcome = await entry.context.whenAnswered();
+      } catch {
+        outcome = null;
+      }
+      return outcome?.ok === true ? answer : { error: { ...NO_ADDRESS } };
+    });
+  }
+
+  /**
+   * The Agent's sheet answering the core's connect or signature prompt
+   * (design 0012, "The Agent's answer", APB-5a), on a handle main opens for
+   * its decision on the request's record (`agentPrompt`): the sheet shows
+   * the core's view (A7-10), the agent service's own refusals answer
+   * without the sheet (A7-3), and its approve goes to the core after main's
+   * checks, as the user's would: the sheet's account for a connect, one of
+   * those offered; "Always allow" never. The agent service not taking it
+   * leaves the prompt to the user's, `user`, for the same prompt id.
+   */
+  async function sheetAsk(entry, prompt, kind, shown, user) {
+    const { context } = entry;
+    const { requester } = context;
+    const answered = heardBy(entry);
+    const decision = await context.agentPrompt({
+      corePrompt: prompt,
+      run: async ({ signal }) => {
+        const outcome = await agentPrompt(
+          requester.guest,
+          {
+            kind,
+            method: entry.method,
+            params: context.params,
+            chainId: shown.view.chain.id,
+            view: shown.view,
+          },
+          { signal, attested: { key: requester.key, transportKey: requester.transportKey }, answered }
+        );
+        if (!isPlainObject(outcome) || outcome.handled !== true) return { handled: false };
+        if (isPlainObject(outcome.error)) {
+          const { code, message } = outcome.error;
+          return { refused: { code, message } };
+        }
+        const picked = outcome.decision;
+        if (picked?.approve === true) {
+          return { approve: true, choices: kind === 'eth.connect' ? { walletIndex: picked.walletIndex } : {} };
+        }
+        return picked?.approve === false ? { approve: false } : { closed: true };
+      },
+    });
+    if (decision.handled === false) {
+      entry.heard = null;
+      return user();
+    }
+    if (decision.refused) {
+      // The agent's own refusal (A7-3): the page gets its error, the core a
+      // closed prompt, and nothing is written or signed.
+      entry.override = { ...decision.refused };
+      return { prompt: decision.prompt, closed: 'cancelled' };
+    }
+    const done = unapproved(entry, prompt, decision);
+    if (done) return done;
+    const id = decision.prompt;
+    if (kind === 'eth.connect') {
+      if (!shown.offered.has(decision.choices.walletIndex)) {
+        entry.override = { ...ACCOUNT_UNAVAILABLE };
+        return { prompt: id, closed: 'cancelled' };
+      }
+      return connectAnswer(entry, prompt, decision);
+    }
+    const world = await worldFor(context, entry.method);
+    // Name-revalidated, as the user's approve: the document still holding
+    // its key, its name resolved again.
+    if (!(await documentHolds(context))) {
+      entry.override = { ...NO_ADDRESS };
+      return { prompt: id, closed: 'cancelled' };
+    }
+    // Custody as main answers the approve (A7-6), read in the same run as
+    // the answer: the core signs at once on it.
+    if (!read(() => context.pageContext().agent === true, false)) {
+      entry.override = { ...CUSTODY_LOST };
+      return { prompt: id, closed: 'cancelled' };
+    }
+    entry.approved = decision.handle;
+    entry.sheet = true;
+    return { prompt: id, handle: decision.handle, approve: true, choices: { alwaysAllow: false }, world };
+  }
+
   // A rule's unlock (APB-4b): the user's approve goes to the core as it is,
   // as main's own route went on to the signature. The core rechecks the
   // document, and a vault still locked refuses the signature (-32603 "Vault
@@ -990,24 +1150,25 @@ function createEip1193Relay(deps = {}) {
     };
   }
 
-  // The prompt main opens for a core's request of `kind`, its view checked.
+  // The prompt main opens for a core's request of `kind`, its view checked:
+  // the view as main shows it, and the user's prompt for it.
   function askFor(entry, prompt, { kind, view, choices }) {
     const { method } = entry;
     if (kind === 'eth.connect' && method === 'eth_requestAccounts') {
       const shown = connectShown(view, choices);
-      return () => connectAsk(entry, prompt, shown);
+      return { shown, user: () => connectAsk(entry, prompt, shown) };
     }
     if (kind === 'eth.sign' && SIGN_KINDS[method]) {
       const shown = signShown(view, choices, method);
-      return () => signAsk(entry, prompt, shown);
+      return { shown, user: () => signAsk(entry, prompt, shown) };
     }
     if (kind === 'eth.send' && method === SEND_METHOD) {
       const shown = sendShown(view, choices);
-      return () => sendAsk(entry, prompt, shown);
+      return { shown, user: () => sendAsk(entry, prompt, shown) };
     }
     if (kind === 'vault.unlock' && UNLOCK_REASONS[method]) {
       const shown = unlockShown(view, choices, method);
-      return () => unlockAsk(entry, prompt, shown);
+      return { shown, user: () => unlockAsk(entry, prompt, shown) };
     }
     throw invalid();
   }
@@ -1016,9 +1177,12 @@ function createEip1193Relay(deps = {}) {
     const entry = runningFor(params, generation, PROMPT_KEYS);
     const { prompt } = params;
     if (typeof prompt !== 'string' || !PROMPT_ID.test(prompt)) throw invalid();
-    const ask = askFor(entry, prompt, params);
+    const { shown, user } = askFor(entry, prompt, params);
     if (signal?.aborted) return { prompt, closed: 'cancelled' };
     const { context } = entry;
+    // Custody read again as the prompt arrives (A7-9): the Agent's sheet
+    // answers only a request the Agent held both then and when main sent it.
+    const ask = sheetAnswers(entry, params.kind) ? () => sheetAsk(entry, prompt, params.kind, shown, user) : user;
     // No overall deadline while main answers its prompt.
     const release = entry.client.holdWatchdog?.(entry.generation, entry.id) || (() => {});
     const onAbort = () => context.cancelPrompt(prompt);
@@ -1131,6 +1295,7 @@ module.exports = {
   createEip1193Relay,
   getEip1193Relay,
   attachEip1193,
+  setAgentPromptRoute,
   connectShown,
   signShown,
   unlockShown,

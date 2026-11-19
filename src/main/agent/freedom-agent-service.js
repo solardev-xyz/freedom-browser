@@ -1704,26 +1704,15 @@ class FreedomAgentService {
    * `attested` (the key the request acts under, and the page's transport
    * key), `signal` (aborted when main answers the request: its approval is
    * withdrawn), `beforeEffect`/`effectAllowed`, which the effect waits on,
-   * and `grantWritten`, which the controller tells what a connect's grant
-   * write did, in the write's own run (PRQ-6); `pageContext`, the
-   * document's PageContext, under which the identity core writes that grant
-   * (freedom-core design 0012, APB-2).
+   * `pageToken`, main's issuer for the send's page-kind token, and
+   * `pageContext`, the document's PageContext, under which the identity
+   * core writes the grant's last use (freedom-core design 0012, APB-2).
+   * Only a send comes here (APB-5a: a connect or a signature is the core's,
+   * its prompt answered through `handleWalletPrompt`).
    */
   async handleWalletRequest(tabId, payload, pageRequest = null) {
-    const run = this.activeRun;
-    if (
-      !this.walletController ||
-      !run ||
-      run.finished ||
-      run.stopRequested ||
-      run.pauseRequested ||
-      run.status !== 'running' ||
-      typeof tabId !== 'string' ||
-      (run.scopedController?.getTabController?.(tabId) || run.scopedController)?.getActiveTabId?.() !== tabId ||
-      !this.#conversationHasTab(this.conversation, tabId)
-    ) {
-      return { handled: false };
-    }
+    const run = this.#walletRunFor(tabId);
+    if (!run) return { handled: false };
     const pageState = this.controller.getPageState?.(tabId);
     if (!pageState?.url) return { handled: false };
 
@@ -1742,6 +1731,58 @@ class FreedomAgentService {
     run.scopedController?.setExternalApprovalBarrier?.(whole);
     void whole.finally(() => run.pendingWalletRequests.delete(whole));
     return (await handling).answer;
+  }
+
+  /**
+   * The identity core's prompt for a page's connect or signature in a tab
+   * of the active run (freedom-core design 0012, "The Agent's answer",
+   * APB-5a): the Agent's sheet decides, and main answers the core with the
+   * decision. `prompt` is main's (`{ kind, method, params, chainId, view }`,
+   * the core's view); `pageRequest` has `attested`, `signal` (aborted when
+   * the handle main opened for the decision closes: the sheet is
+   * withdrawn) and `answered`, the page's answer once main gave it, which
+   * the run's activity and its trusted result wait for. Answers
+   * `{ handled: false }` when the run isn't active on that tab, so the
+   * user's prompt takes it.
+   */
+  async handleWalletPrompt(tabId, prompt, pageRequest = null) {
+    const run = this.#walletRunFor(tabId);
+    if (!run || !pageRequest?.attested || typeof this.walletController.answerPrompt !== 'function') {
+      return { handled: false };
+    }
+    const pageState = this.controller.getPageState?.(tabId);
+    if (!pageState?.url) return { handled: false };
+    const delegationSignal = run.scopedController?.getTabController?.(tabId)?.delegationSignal;
+    const signal = pageRequest.signal
+      ? AbortSignal.any([delegationSignal || run.workspaceAbortController?.signal, pageRequest.signal].filter(Boolean))
+      : delegationSignal;
+    const handling = this.#handleActiveWalletPrompt(run, tabId, pageState, prompt, signal, pageRequest);
+    // As for a request: the run waits for the whole of it, the page's answer
+    // and the steering after it included; main's answer to the core doesn't.
+    const whole = handling.then(({ finished }) => finished, () => undefined);
+    run.pendingWalletRequests.add(whole);
+    run.scopedController?.setExternalApprovalBarrier?.(whole);
+    void whole.finally(() => run.pendingWalletRequests.delete(whole));
+    return (await handling).answer;
+  }
+
+  // The active run, when it holds `tabId` and may take its wallet request.
+  #walletRunFor(tabId) {
+    const run = this.activeRun;
+    if (
+      !this.walletController ||
+      !run ||
+      run.finished ||
+      run.stopRequested ||
+      run.pauseRequested ||
+      run.status !== 'running' ||
+      typeof tabId !== 'string' ||
+      (run.scopedController?.getTabController?.(tabId) || run.scopedController)?.getActiveTabId?.() !== tabId ||
+      !this.#conversationHasTab(this.conversation, tabId)
+    ) {
+      return null;
+    }
+    return run;
   }
 
   async start(options) {
@@ -3206,7 +3247,8 @@ class FreedomAgentService {
     }
   }
 
-  async #handleActiveWalletRequest(run, tabId, pageState, payload, signal, pageRequest = null) {
+  // A wallet action's activity item, started now.
+  #startWalletActivity(run, tabId, pageState) {
     const toolCallId = `wallet_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const progress = activityProgress(OPERATIONS.WALLET_ACTION, {
       origin: pageState.url,
@@ -3233,7 +3275,89 @@ class FreedomAgentService {
       operation: OPERATIONS.WALLET_ACTION,
       ...progress,
     });
+    return { toolCallId, progress, activityItem };
+  }
 
+  // A wallet action's end: its activity item finished, and the Agent told
+  // the trusted result (`event`), not waited on. Returns the steering.
+  #finishWalletActivity(run, { toolCallId, progress, activityItem }, succeeded, errorCode, event) {
+    activityItem.status = succeeded ? 'succeeded' : 'failed';
+    if (errorCode && AUTOMATION_ERROR_CODE_SET.has(errorCode)) activityItem.errorCode = errorCode;
+    this.#emit(run, {
+      type: 'tool_finished',
+      toolCallId,
+      operation: OPERATIONS.WALLET_ACTION,
+      status: succeeded ? 'succeeded' : 'failed',
+      ...progress,
+      ...(activityItem.errorCode && { errorCode: activityItem.errorCode }),
+    });
+    if (!event || this.activeRun !== run || run.finished || run.stopRequested || run.acceptingGuidance === false || run.session.isStreaming === false) {
+      return null;
+    }
+    try {
+      return Promise.resolve(
+        run.session.steer(`Freedom wallet event (trusted browser result): ${JSON.stringify(event)}`)
+      ).catch(() => undefined);
+    } catch {
+      // The page still receives the authoritative provider result. A later
+      // snapshot remains available if Pi's current turn has already ended.
+      return null;
+    }
+  }
+
+  // The core's prompt answered by the Agent's sheet (`handleWalletPrompt`):
+  // `answer` for main at once, and `finished` once the page's answer is in.
+  async #handleActiveWalletPrompt(run, tabId, pageState, prompt, signal, pageRequest) {
+    const activity = this.#startWalletActivity(run, tabId, pageState);
+    const outcome = await this.walletController.answerPrompt(
+      {
+        tabId,
+        pageUrl: pageState.url,
+        conversationId: run.conversationId,
+        requestApproval: (request) => this.#requestApproval(run, request, null, signal),
+        attested: pageRequest.attested,
+      },
+      prompt
+    );
+    if (outcome?.handled !== true) {
+      return { answer: { handled: false }, finished: Promise.resolve(this.#finishWalletActivity(run, activity, false, null, null)) };
+    }
+    const decision = outcome.error ? null : outcome.decision;
+    const declined = Boolean(decision) && decision.approve !== true;
+    // What the run hears follows the page's answer: a receipt for its
+    // result, "declined" for the sheet's decline, and nothing more for a
+    // refusal or a failure.
+    const finished = Promise.resolve(pageRequest.answered).then(
+      (pageAnswer) => {
+        const receipt = pageAnswer?.result !== undefined ? outcome.receiptOf?.(pageAnswer) : null;
+        const errorCode = receipt
+          ? null
+          : outcome.error
+            ? outcome.errorCode
+            : declined
+              ? ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
+              : ERROR_CODES.INTERNAL_ERROR;
+        const event = receipt
+          ? { status: 'completed', wallet: receipt.wallet }
+          : declined
+            ? {
+                status: 'declined',
+                method: typeof prompt?.method === 'string' ? prompt.method : '',
+                origin: getPermissionKey(pageState.url) || '',
+              }
+            : null;
+        return this.#finishWalletActivity(run, activity, Boolean(receipt), errorCode, event);
+      },
+      () => this.#finishWalletActivity(run, activity, false, ERROR_CODES.INTERNAL_ERROR, null)
+    );
+    const answer = outcome.error
+      ? { handled: true, error: outcome.error }
+      : { handled: true, decision: outcome.decision };
+    return { answer, finished };
+  }
+
+  async #handleActiveWalletRequest(run, tabId, pageState, payload, signal, pageRequest = null) {
+    const activity = this.#startWalletActivity(run, tabId, pageState);
     const outcome = await this.walletController.handleRequest(
       {
         tabId,
@@ -3244,7 +3368,6 @@ class FreedomAgentService {
           attested: pageRequest.attested,
           beforeEffect: pageRequest.beforeEffect,
           effectAllowed: pageRequest.effectAllowed,
-          grantWritten: pageRequest.grantWritten,
           pageToken: pageRequest.pageToken,
           pageContext: pageRequest.pageContext,
         }),
@@ -3252,19 +3375,6 @@ class FreedomAgentService {
       payload
     );
     const succeeded = outcome?.handled === true && !outcome.error;
-    activityItem.status = succeeded ? 'succeeded' : 'failed';
-    if (outcome?.errorCode && AUTOMATION_ERROR_CODE_SET.has(outcome.errorCode)) {
-      activityItem.errorCode = outcome.errorCode;
-    }
-    this.#emit(run, {
-      type: 'tool_finished',
-      toolCallId,
-      operation: OPERATIONS.WALLET_ACTION,
-      status: succeeded ? 'succeeded' : 'failed',
-      ...progress,
-      ...(activityItem.errorCode && { errorCode: activityItem.errorCode }),
-    });
-
     const event = outcome?.receipt
       ? { status: 'completed', wallet: outcome.receipt.wallet }
       : outcome?.errorCode === ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
@@ -3276,17 +3386,7 @@ class FreedomAgentService {
         : null;
     // Started now, and not waited on before the page's answer
     // (`handleWalletRequest`).
-    let steering = null;
-    if (event && this.activeRun === run && !run.finished && !run.stopRequested && run.acceptingGuidance !== false && run.session.isStreaming !== false) {
-      try {
-        steering = Promise.resolve(
-          run.session.steer(`Freedom wallet event (trusted browser result): ${JSON.stringify(event)}`)
-        ).catch(() => undefined);
-      } catch {
-        // The page still receives the authoritative provider result. A later
-        // snapshot remains available if Pi's current turn has already ended.
-      }
-    }
+    const steering = this.#finishWalletActivity(run, activity, succeeded, outcome?.errorCode, event);
 
     return {
       answer: {

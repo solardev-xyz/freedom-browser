@@ -221,6 +221,17 @@ function createFreedomAgentRuntime(options = {}) {
       if (!pageRequest?.attested) return { handled: false };
       return service.handleWalletRequest(tabId, request, pageRequest);
     },
+    // The identity core's prompt for a page's connect or signature in a tab
+    // the agent may hold (freedom-core design 0012, "The Agent's answer",
+    // APB-5a): the Agent's sheet decides it, or `{ handled: false }` for a
+    // tab it doesn't hold, which leaves it to the user's prompt.
+    async handlePageWalletPrompt(guestWebContentsId, prompt, pageRequest = {}) {
+      if (!isEnabled()) return { handled: false };
+      const tabId = options.automationTabIdForGuest?.(guestWebContentsId);
+      if (!tabId || !prompt || typeof prompt !== 'object' || Array.isArray(prompt)) return { handled: false };
+      if (!pageRequest?.attested) return { handled: false };
+      return service.handleWalletPrompt(tabId, prompt, pageRequest);
+    },
     providerStore,
     providerResolver,
     historyStore,

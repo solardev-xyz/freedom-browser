@@ -18,10 +18,12 @@
  *
  * Main keeps what the core doesn't hold:
  *
- *   - The agent's route for a tab it holds (until APR-7): the agent service
- *     answers a connect, a signature or a send in that tab within the
- *     request, with its own approval, and the core is asked only when the
- *     agent doesn't take the request.
+ *   - The agent's route for a send in a tab it holds (until APB-5b): the
+ *     agent service answers it within the request, with its own approval,
+ *     and the core is asked only when the agent doesn't take it. A connect
+ *     or a signature in such a tab goes to the core like any page's, and the
+ *     Agent's sheet answers the core's prompt for it (design 0012, "The
+ *     Agent's answer", APB-5a; `page-eip1193.js`).
  *   - A DNS name over IPNS where main holds the step (design 0012,
  *     APR-5f): the core checks the name itself at each of the reference's
  *     checks of `eth_accounts`, the connect, the switch, the signatures and
@@ -73,11 +75,10 @@ const ETHEREUM_PAGE_METHODS = Object.freeze([
   ...ETHEREUM_SEND_METHODS,
 ]);
 
-// How main reaches the agent service for a tab it holds (index.js sets it
-// once the agent runtime exists): `(guestId, request, { signal, attested,
-// beforeEffect, effectAllowed, grantWritten, pageContext, pageToken }) => ({ handled,
-// result, error })`,
-// `{ handled: false }` for a tab the agent doesn't hold.
+// How main reaches the agent service for a send in a tab it holds (index.js
+// sets it once the agent runtime exists): `(guestId, request, { signal,
+// attested, beforeEffect, effectAllowed, pageToken }) => ({ handled,
+// result, error })`, `{ handled: false }` for a tab the agent doesn't hold.
 let agentWalletRoute = null;
 
 /** index.js: the agent service's wallet route, for the tabs it holds. */
@@ -183,23 +184,20 @@ function createEthereumDispatchers(deps = {}) {
     }
   }
 
-  // A tab the agent holds: the agent service answers, with its own
-  // approval, as it did through the chrome (`offerAgentWalletRequest`).
-  // Custody is read live, at this request. The agent's approval runs inside
-  // the request's life (`walletOperation`): it holds the document's one
-  // wallet slot, it is withdrawn when main answers the request (its
-  // deadline, its document gone), and the grant the agent writes waits on
-  // main: the request still open, the name checked again, and the document
-  // still holding the key in the same run as the write. The agent acts
-  // under the attested key, which for a DNS name over IPNS is the name. Its
-  // signature or send is a page's (design 0012, APB-1): the Agent's decision
-  // mints the request's page-kind token through main's issuer, and the
-  // signer presents it under `page`, with the PageContext read live
+  // A send in a tab the agent holds (until APB-5b): the agent service
+  // answers, with its own approval. Custody is read live, at this request.
+  // The agent's approval runs inside the request's life
+  // (`walletOperation`): it holds the document's one wallet slot, and it is
+  // withdrawn when main answers the request (its deadline, its document
+  // gone). The agent acts under the attested key, which for a DNS name over
+  // IPNS is the name. Its send is a page's (design 0012, APB-1): the Agent's
+  // decision mints the request's page-kind token through main's issuer, and
+  // the signer presents it under `page`, with the PageContext read live
   // (`agent: true`), and reads the decision again (`agentToken.holds`, the
   // name before it) as its last step, right before the core or the device
   // is asked; no standing rule answers it, and none goes as `shell`.
-  // `params` are the request's own, or the dispatcher's checked form of them.
-  async function agentAnswer(context, keyless, params = context.params) {
+  // `params` are the dispatcher's checked form of the request's.
+  async function agentAnswer(context, keyless, params) {
     const { requester, method } = context;
     const operation = await context.walletOperation(async ({ signal, open }) => {
       try {
@@ -210,7 +208,7 @@ function createEthereumDispatchers(deps = {}) {
             signal,
             attested: { key: requester.key, transportKey: requester.transportKey },
             // The document's PageContext, under which the core writes the
-            // grant the agent's connect decides (design 0012, APB-2).
+            // grant's last use after the agent's send (design 0012, APB-2).
             pageContext: () => context.pageContext(),
             beforeEffect: async () => open() && (await context.nameHolds(keyless)) && open(),
             effectAllowed: () => open() && context.holdsKey(),
@@ -219,16 +217,6 @@ function createEthereumDispatchers(deps = {}) {
             // through main's issuer, and its signature presents it under
             // `page` with `agent: true`, never as main's own.
             pageToken: context.agentToken,
-            // What the agent's own write did, told inside its guarded run
-            // (PRQ-6): a grant it created gets main's new-grant events,
-            // queued at that write. One it updated is told by the grant
-            // store (`page-events.js`), and one it left as it was by no one.
-            grantWritten: (effect) => {
-              if (effect?.grant !== 'created' || typeof effect.account !== 'string' || !effect.account) return;
-              const chainId =
-                Number.isSafeInteger(effect.chainId) && effect.chainId > 0 ? effect.chainId : chainIdOf(requester);
-              announceNewGrant(context, effect.account, chainId, effect.written);
-            },
           }
         );
       } catch {
@@ -244,8 +232,7 @@ function createEthereumDispatchers(deps = {}) {
   // A new grant's events (today's, from the chrome's connect): the account
   // to every live document of the key, `connect` to the one that asked.
   // Called at the write itself, in the same run, by the core's connect
-  // (through the relay's `announce`) or by the agent's (`grantWritten`), and
-  // queued there in the key's order with
+  // (through the relay's `announce`), and queued there in the key's order with
   // its other grant events (PRQ-6, `page-events.js`): a revocation made
   // after the write is heard after them, even while a name's resolution
   // holds them. They go out once main has answered the request, as the
@@ -254,8 +241,8 @@ function createEthereumDispatchers(deps = {}) {
   // document that asked hears it only if its answer was the account, not
   // "Request timed out" or nothing at all.
   //
-  // For the core's connect (APB-4a) the grant's account is the core's
-  // answer: `account` is null, and `written` resolves with it.
+  // The grant's account is the core's answer: `account` is null, and
+  // `written` resolves with it.
   function announceNewGrant(context, account, chainId, written = Promise.resolve()) {
     const { requester } = context;
     context.inGrantOrder(requester.key, async () => {
@@ -302,20 +289,10 @@ function createEthereumDispatchers(deps = {}) {
     return viaCore(context, { params: context.params });
   }
 
-  async function coreRequestAccounts(context) {
-    const { requester } = context;
-    // The core answers `4900` with the switch off, then `4100` with no key.
-    if (!requester.key || !identityWalletEnabled()) return viaCore(context);
-    // The agent's route reads main's copy of the grants.
-    await permissionsLoaded();
-    const keyless = { keyless: { error: { ...NO_ADDRESS } } };
-    // The agent's route stays main's until APR-7, with its own name checks:
-    // before the agent is offered the request, and before its effect. The
-    // core is asked only when the agent doesn't take the request, and
-    // checks the name itself (APR-5f).
-    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
-    const agent = await agentAnswer(context, keyless);
-    if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
+  // The connect: the core's, which checks a bound document's name itself
+  // (APR-5f), in custody or not. In a tab the Agent holds, its sheet
+  // answers the core's prompt (APB-5a, `page-eip1193.js`).
+  function coreRequestAccounts(context) {
     return viaCore(context, { announce: announceNewGrant });
   }
 
@@ -333,28 +310,15 @@ function createEthereumDispatchers(deps = {}) {
     }
   }
 
-  // The signatures (APB-4b): main's agent route before the core's. The
-  // core checks a bound document's name itself (APR-5f), and a device's
-  // signature is checked again after the device signs (`page-devices.js`).
-  async function coreSign(context) {
-    const { requester } = context;
-    // The core answers `4900` with the switch off, then `4100` with no key.
-    if (!requester.key || !identityWalletEnabled()) return viaCore(context, { params: context.params });
-    // The agent's route reads main's copy of the grants.
-    await permissionsLoaded();
-    // A tab the agent holds: the agent service answers, within the request,
-    // until APR-7, after its own check of the name. Only a tab in custody
-    // is offered to it, read in the run that sends the core its
-    // PageContext otherwise.
-    if (custody(requester.guest)) {
-      const keyless = { keyless: { error: { ...NO_ADDRESS } } };
-      if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
-      const agent = await agentAnswer(context, keyless);
-      if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
-    }
+  // The signatures (APB-4b): the core's, in custody or not (APB-5a: in a
+  // tab the Agent holds, its sheet answers the core's prompt). The core
+  // checks a bound document's name itself (APR-5f), and a device's
+  // signature is checked again after the device signs (`page-devices.js`),
+  // with custody for one the sheet approved (A7-6).
+  function coreSign(context) {
     return viaCore(context, {
       params: context.params,
-      device: (device, page) => devices.sign(context, device, page),
+      device: (device, page, how) => devices.sign(context, device, page, how),
     });
   }
 

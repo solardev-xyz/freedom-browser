@@ -3038,7 +3038,6 @@ describe('FreedomAgentService', () => {
       attested: { key: 'https://app.example', transportKey: 'https://app.example' },
       beforeEffect: jest.fn(async () => true),
       effectAllowed: jest.fn(() => true),
-      grantWritten: jest.fn(),
       // Main's issuer for the Agent's decision (design 0012, APB-1d).
       pageToken: { mint: jest.fn(), present: jest.fn(), discard: jest.fn() },
       pageContext: jest.fn(() => ({ origin: 'https://app.example' })),
@@ -3055,7 +3054,6 @@ describe('FreedomAgentService', () => {
       attested: pageRequest.attested,
       beforeEffect: pageRequest.beforeEffect,
       effectAllowed: pageRequest.effectAllowed,
-      grantWritten: pageRequest.grantWritten,
       pageToken: pageRequest.pageToken,
       pageContext: pageRequest.pageContext,
     });
@@ -3109,7 +3107,6 @@ describe('FreedomAgentService', () => {
         attested: { key: 'https://app.example', transportKey: 'https://app.example' },
         beforeEffect: jest.fn(async () => true),
         effectAllowed: jest.fn(() => true),
-        grantWritten: jest.fn(),
       }
     );
     // The answer arrives while the steering is still held.
@@ -3129,6 +3126,129 @@ describe('FreedomAgentService', () => {
 
     fake.prompt.resolve();
     await service.waitForIdle();
+  });
+
+  // freedom-core design 0012, "The Agent's answer" (APB-5a): the core's
+  // prompt for a connect or a signature in a tab the run holds. Main gets
+  // the sheet's decision at once; the run hears the page's answer after it.
+  describe("the core's prompt, answered by the Agent's sheet (0012 APB-5a)", () => {
+    const scoped = (barriers = []) => ({
+      execute: jest.fn(),
+      prepareResume: jest.fn(async () => ({ ok: true })),
+      getActiveTabId: jest.fn(() => 'tab_assigned'),
+      getWorkspaceState: jest.fn(() => ({ tabIds: ['tab_assigned'], activeTabId: 'tab_assigned' })),
+      setExternalApprovalBarrier: jest.fn((promise) => barriers.push(promise)),
+    });
+    const start = async (fake, walletController, barriers) => {
+      const { service } = createService(fake, {
+        controller: {
+          execute: jest.fn(),
+          getPageState: jest.fn(() => ({ tabId: 'tab_assigned', url: 'https://app.example/swap', navigationId: 4 })),
+        },
+        createControllerScope: jest.fn(async () => scoped(barriers)),
+        walletController,
+      });
+      const events = [];
+      service.subscribe((event) => events.push(event));
+      await service.start(startOptions());
+      return { service, events };
+    };
+    const PROMPT = { kind: 'eth.sign', method: 'personal_sign', params: ['0x68', '0x1'], chainId: 100, view: {} };
+    const attested = { key: 'https://app.example', transportKey: 'https://app.example' };
+    const flushAsync = async () => {
+      for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    test("the sheet's approve goes to main at once; the activity, the receipt and the barrier wait for the page's answer", async () => {
+      const fake = createFakeSession();
+      const barriers = [];
+      let seen = null;
+      const walletController = {
+        handleRequest: jest.fn(),
+        answerPrompt: jest.fn(async (context, prompt) => {
+          seen = { context, prompt };
+          expect(await context.requestApproval({ action: 'wallet_signature', tabId: context.tabId })).toBeTruthy();
+          return {
+            handled: true,
+            decision: { approve: true },
+            receiptOf: (answer) => (answer.result ? { wallet: { action: 'signed', origin: attested.key, chainId: 100 } } : null),
+          };
+        }),
+      };
+      const { service, events } = await start(fake, walletController, barriers);
+      let hear;
+      const answered = new Promise((resolve) => (hear = resolve));
+      const response = service.handleWalletPrompt('tab_assigned', PROMPT, { signal: new AbortController().signal, attested, answered });
+      await flushAsync();
+      const requested = events.find((event) => event.type === 'approval_requested');
+      expect(requested).toMatchObject({ action: 'wallet_signature' });
+      expect(await service.decideApproval('run_test', requested.approvalId, true)).toBe(true);
+      await expect(response).resolves.toEqual({ handled: true, decision: { approve: true } });
+      expect(seen.prompt).toBe(PROMPT);
+      expect(seen.context).toMatchObject({ tabId: 'tab_assigned', pageUrl: 'https://app.example/swap', attested });
+      // Nothing heard yet: the page's answer isn't in.
+      expect(events.some((event) => event.type === 'tool_finished')).toBe(false);
+      expect(fake.session.steer).not.toHaveBeenCalled();
+      expect(barriers).toHaveLength(1);
+      let barrierDone = false;
+      barriers[0].then(() => (barrierDone = true));
+      await flushAsync();
+      expect(barrierDone).toBe(false);
+      hear({ result: '0xsig' });
+      await barriers[0];
+      expect(events.filter((event) => event.type === 'tool_finished')).toEqual([
+        expect.objectContaining({ status: 'succeeded' }),
+      ]);
+      expect(fake.session.steer).toHaveBeenCalledWith(expect.stringContaining('"action":"signed"'));
+      expect(fake.session.steer.mock.calls[0][0]).not.toContain('0xsig');
+
+      fake.prompt.resolve();
+      await service.waitForIdle();
+    });
+
+    test("a decline is heard as declined once the page has its 4001; a refusal as a failure, with no event", async () => {
+      const fake = createFakeSession();
+      const outcomes = [
+        { handled: true, decision: { approve: false }, receiptOf: () => null },
+        { handled: true, error: { code: -32603, message: 'Signature account does not match the connected wallet' }, errorCode: 'POLICY_DENIED' },
+      ];
+      const walletController = { handleRequest: jest.fn(), answerPrompt: jest.fn(async () => outcomes.shift()) };
+      const barriers = [];
+      const { service, events } = await start(fake, walletController, barriers);
+      await expect(
+        service.handleWalletPrompt('tab_assigned', PROMPT, { attested, answered: Promise.resolve({ error: { code: 4001, message: 'User rejected the request' } }) })
+      ).resolves.toEqual({ handled: true, decision: { approve: false } });
+      await barriers[0];
+      expect(events.filter((event) => event.type === 'tool_finished').at(-1)).toMatchObject({
+        status: 'failed',
+        errorCode: 'WALLET_REQUEST_CANCELLED_BY_USER',
+      });
+      expect(fake.session.steer).toHaveBeenCalledWith(expect.stringContaining('"status":"declined"'));
+      fake.session.steer.mockClear();
+      await expect(
+        service.handleWalletPrompt('tab_assigned', PROMPT, { attested, answered: Promise.resolve({ error: { code: -32603, message: 'x' } }) })
+      ).resolves.toEqual({ handled: true, error: { code: -32603, message: 'Signature account does not match the connected wallet' } });
+      await barriers[1];
+      expect(events.filter((event) => event.type === 'tool_finished').at(-1)).toMatchObject({ status: 'failed', errorCode: 'POLICY_DENIED' });
+      expect(fake.session.steer).not.toHaveBeenCalled();
+
+      fake.prompt.resolve();
+      await service.waitForIdle();
+    });
+
+    test('a tab the run does not hold, or a prompt main did not attest, is left to the user', async () => {
+      const fake = createFakeSession();
+      const walletController = { handleRequest: jest.fn(), answerPrompt: jest.fn() };
+      const { service } = createService(fake, { walletController });
+      await expect(service.handleWalletPrompt('tab_assigned', PROMPT, { attested })).resolves.toEqual({ handled: false });
+      await service.start(startOptions());
+      await expect(service.handleWalletPrompt('tab_assigned', PROMPT, { attested })).resolves.toEqual({ handled: false });
+      await expect(service.handleWalletPrompt('tab_assigned', PROMPT, {})).resolves.toEqual({ handled: false });
+      expect(walletController.answerPrompt).not.toHaveBeenCalled();
+
+      fake.prompt.resolve();
+      await service.waitForIdle();
+    });
   });
 
   test('leaves wallet requests from inactive or unrelated tabs to the human wallet flow', async () => {

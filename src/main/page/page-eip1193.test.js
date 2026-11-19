@@ -447,12 +447,14 @@ describe('approval.request for eth.connect (0012 APB-4a)', () => {
     await flush();
     expect(env.core.sent).toHaveLength(2);
     go();
-    // Once a prompt is open, main's own route refuses a third before the core.
+    // Once a prompt is open, a third goes to the core too (no agent route
+    // runs before it since APB-5a), and its prompt is busy.
     await flush();
     expect(await page.ask('eth_requestAccounts', [])).toEqual({
       error: { code: -32002, message: 'Another wallet request is already pending' },
     });
-    expect(env.core.sent).toHaveLength(2);
+    expect(env.core.sent).toHaveLength(3);
+    expect(answers[3]).toEqual({ prompt: OTHER_PROMPT, busy: true });
     expect(await second).toEqual({ error: { code: -32002, message: 'Another wallet request is already pending' } });
     expect(answers[2]).toEqual({ prompt: OTHER_PROMPT, busy: true });
     const [shown] = env.prompts();
