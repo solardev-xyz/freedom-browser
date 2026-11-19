@@ -1930,6 +1930,68 @@ describe('a dropped Gnosis Chain connection (#992)', () => {
   });
 });
 
+describe('a dropped connection on a deposit of a chosen amount (#992)', () => {
+  const AMOUNT = '1000000000000000'; // 0.1 xBZZ
+  const URL_TEXT = 'error sending request for url (http://127.0.0.1:53211/ant-chain/[redacted])';
+  const droppedRead = (step) => fail(502, `${step}: http: ${URL_TEXT}`);
+  const withSettlement = (api) =>
+    api.getNode.mockResolvedValue(
+      ok({ beeMode: 'light', settlement: { supported: true, swapSwitch: true } })
+    );
+  const wallet = (wei) => ok(depositBody({ needsTopUp: false, walletXdaiWei: wei }));
+
+  test('a wallet that grew during the wait is not swapped on the retry', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(wallet('100000000000000000'));
+    api.topUpSettlementDeposit.mockResolvedValue(droppedRead('read xDAI balance'));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation.phase).toBe('executing');
+
+    api.getSettlementDeposit.mockResolvedValue(wallet('900000000000000000'));
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      error: expect.stringMatching(/more xDAI than when you chose/),
+    });
+  });
+
+  test('a wallet still within what the screen showed is retried and deposits', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(wallet('100000000000000000'));
+    api.topUpSettlementDeposit
+      .mockResolvedValueOnce(droppedRead('read xDAI balance'))
+      .mockResolvedValueOnce(ok(depositBody({ needsTopUp: false })));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(2);
+    expect(service.getState().operation).toMatchObject({
+      phase: 'done',
+      result: { deposit: true },
+    });
+  });
+
+  test('a wallet that cannot be read before the retry spends a retry, never the write', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(wallet('100000000000000000'));
+    api.topUpSettlementDeposit.mockResolvedValue(droppedRead('read xDAI balance'));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+
+    api.getSettlementDeposit.mockResolvedValue(fail(502, `read xDAI balance: http: ${URL_TEXT}`));
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * MAX_TRANSIENT_RETRIES);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation).toMatchObject({ phase: 'failed' });
+    expect(service.getState().operation.error).toMatch(/the connection to Gnosis Chain dropped/);
+  });
+});
+
 describe('extend and deposit', () => {
   test('extends by days, and resizes with a depth, passing the quoted amount', async () => {
     const { service, api } = setup();

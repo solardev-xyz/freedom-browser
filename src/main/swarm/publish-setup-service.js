@@ -1366,24 +1366,7 @@ function createPublishSetupService({
     const chainFailure = classifyChainFailure(res, current.kind);
     if (chainFailure === 'retry') {
       log.warn(`[PublishSetup] ${label}: lost Gnosis Chain before paying: ${res.message}`);
-      if (disposed) return;
-      if (current.transientRetries >= MAX_TRANSIENT_RETRIES) {
-        failOperation(current, droppedBeforePaymentMessage(label));
-        return;
-      }
-      // Still `executing`, so the screen keeps saying the purchase is on its
-      // way and nothing can arm or cancel meanwhile. The quote timer carries
-      // the wait: whatever stops quoting (a result, a new arm, dispose) stops
-      // it too.
-      current.transientRetries += 1;
-      current.executed = false;
-      clearQuoteTimer();
-      quoteTimer = setTimeout(() => {
-        quoteTimer = null;
-        if (!disposed && operation === current && current.phase === 'executing') {
-          void execute(current);
-        }
-      }, TRANSIENT_RETRY_MS);
+      scheduleTransientRetry(current, label);
       return;
     }
 
@@ -1420,6 +1403,55 @@ function createPublishSetupService({
 
     log.warn(`[PublishSetup] ${label} failed: ${res.status} ${res.message || ''}`);
     failOperation(current, antStorageApi.describeAntError(res, label));
+  }
+
+  function scheduleTransientRetry(current, label) {
+    if (disposed) return;
+    if (current.transientRetries >= MAX_TRANSIENT_RETRIES) {
+      failOperation(current, droppedBeforePaymentMessage(label));
+      return;
+    }
+    // Still `executing`, so the screen keeps saying the purchase is on its
+    // way and nothing can arm or cancel meanwhile. The quote timer carries
+    // the wait: whatever stops quoting (a result, a new arm, dispose) stops
+    // it too.
+    current.transientRetries += 1;
+    current.executed = false;
+    clearQuoteTimer();
+    quoteTimer = setTimeout(() => {
+      quoteTimer = null;
+      if (!disposed && operation === current && current.phase === 'executing') {
+        void retryWrite(current, label);
+      }
+    }, TRANSIENT_RETRY_MS);
+  }
+
+  /**
+   * The write again, after a dropped connection stopped it before paying. A
+   * chosen-amount deposit with no xDAI figure yet is still on its first write,
+   * the one that may spend only the xDAI the deposit screen showed
+   * (requoteAmountDeposit): read the wallet again and hold it to that cap, so
+   * xDAI that arrived during the wait is not swapped unseen.
+   */
+  async function retryWrite(current, label) {
+    if (current.params.amountPlur && current.xdaiNeededWei == null) {
+      const res = await fetchQuote(current);
+      if (disposed || operation !== current || current.phase !== 'executing') return;
+      const wallet = res.ok ? toBigInt(res.data?.walletXdaiWei) : null;
+      if (wallet === null || wallet < 0n) {
+        log.warn(
+          `[PublishSetup] ${label}: could not read the node wallet before trying again: ${res.status ?? ''} ${res.message || ''}`
+        );
+        scheduleTransientRetry(current, label);
+        return;
+      }
+      if (wallet > current.params.walletSpendCapWei) {
+        failOperation(current, WALLET_GREW_MESSAGE);
+        return;
+      }
+      current.walletXdaiWei = wallet;
+    }
+    await execute(current);
   }
 
   async function requote(current) {
