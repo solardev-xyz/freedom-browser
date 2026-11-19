@@ -77,7 +77,6 @@ jest.mock('../approvals/wallet-approvals', () => {
 });
 // The identity core's typed_data.hash (freedom-core design 0002, #88),
 // simulated with ethers: the digest and the view, with its reports.
-const mockCoreViews = [];
 // Its approval tokens (design 0012, APB-1), simulated too.
 const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
 jest.mock('../core/vault-backend', () => {
@@ -86,13 +85,10 @@ jest.mock('../core/vault-backend', () => {
   return {
     vaultBackend: {
       approval: mockApprovals.approval,
-      typedDataView: jest.fn(async (data, options) => {
-        mockCoreViews.push([data, options]);
-        return {
-          hash: TypedDataEncoder.hash(data.domain, data.types, data.message),
-          view: simulatedView(data, options),
-        };
-      }),
+      typedDataView: jest.fn(async (data, options) => ({
+        hash: TypedDataEncoder.hash(data.domain, data.types, data.message),
+        view: simulatedView(data, options),
+      })),
     },
   };
 });
@@ -110,7 +106,7 @@ jest.mock('./auto-approve-pause', () => ({
   sitePaymentWaiting: jest.fn(async () => false),
 }));
 
-const { buildTxRecordContext, messageViewFor, registerWalletIpc, typedDataViewFor } = require('./wallet-ipc');
+const { buildTxRecordContext, registerWalletIpc } = require('./wallet-ipc');
 const { ipcMain, webContents } = require('electron');
 const { getBalancesWithCache } = require('./balance-service');
 
@@ -374,11 +370,6 @@ describe('signing handlers require a main-side confirmation', () => {
     primaryType: 'Order',
     message: { a: 1 },
   };
-  const TYPED_HASH = require('ethers').TypedDataEncoder.hash(
-    TYPED.domain,
-    { Order: TYPED.types.Order },
-    TYPED.message
-  );
 
   // freedom-core design 0011, PRQ-5a: a page's personal_sign and typed data,
   // from a Safe account too, are served by main (page/page-signing.js),
@@ -576,78 +567,6 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
-  // freedom-core #88: typed data is signed only as the core's view showed
-  // it, bound to its hash, and a warned request always needs its prompt.
-  // Main's own prompt shows these views (page/page-signing.js).
-  describe('typed data and its view', () => {
-    const withData = (changes) => ({ ...TYPED, ...changes });
-
-    test('typed data the core refuses gets no view', async () => {
-      const { vaultBackend } = require('../core/vault-backend');
-      vaultBackend.typedDataView.mockRejectedValueOnce(
-        Object.assign(new Error('invalid typed data: too large to show in one reply'), { code: 'invalid_argument' })
-      );
-      await expect(typedDataViewFor(TYPED, 100)).rejects.toMatchObject({ code: 'invalid_argument' });
-    });
-
-    test("the view passes the dApp's primaryType as it came, and its chain", async () => {
-      mockCoreViews.length = 0;
-      for (const primaryType of ['Order', 'Other', true, false, null, 7, ['Order'], { Order: [] }]) {
-        await typedDataViewFor(withData({ primaryType }), 100);
-      }
-      const { primaryType: _dropped, ...noPrimaryType } = TYPED;
-      await typedDataViewFor(noPrimaryType, 100);
-      // A JSON string from the dApp is parsed: its values keep their types.
-      await typedDataViewFor(JSON.stringify(withData({ primaryType: null })), 1);
-      expect(mockCoreViews.map(([, options]) => options)).toEqual([
-        { primaryType: 'Order', chainId: 100 },
-        { primaryType: 'Other', chainId: 100 },
-        { primaryType: true, chainId: 100 },
-        { primaryType: false, chainId: 100 },
-        { primaryType: null, chainId: 100 },
-        { primaryType: 7, chainId: 100 },
-        { primaryType: ['Order'], chainId: 100 },
-        { primaryType: { Order: [] }, chainId: 100 },
-        { chainId: 100 },
-        { primaryType: null, chainId: 1 },
-      ]);
-      // The core gets the data without EIP712Domain and primaryType.
-      expect(mockCoreViews[0][0]).toEqual({
-        domain: TYPED.domain,
-        types: { Order: TYPED.types.Order },
-        message: TYPED.message,
-      });
-    });
-
-    test('the view reports what the approval screen warns about', async () => {
-      const view = (data, chainId) => typedDataViewFor(data, chainId);
-      await expect(view(TYPED, 100)).resolves.toMatchObject({ hash: TYPED_HASH, warnings: [] });
-      await expect(view(withData({ primaryType: 'Other' }), 100)).resolves.toMatchObject({ warnings: ['named-type'] });
-      await expect(view(withData({ primaryType: true }), 100)).resolves.toMatchObject({ warnings: ['named-type'] });
-      await expect(view(TYPED, 1)).resolves.toMatchObject({ warnings: ['chain-mismatch'] });
-      await expect(view(withData({ domain: { name: 'App' } }), 100)).resolves.toMatchObject({
-        warnings: ['chain-absent'],
-      });
-      // Without a chain or a primaryType: unknown, never a match, no warning.
-      const { primaryType: _dropped, ...noPrimaryType } = TYPED;
-      const unknown = await view(noPrimaryType, undefined);
-      expect(unknown.view).toMatchObject({ named_type: 'unknown', chain: 'unknown' });
-      expect(unknown.warnings).toEqual([]);
-    });
-
-    test('personal_sign is shown from the bytes main signs', () => {
-      expect(messageViewFor('0x68656c6c6f')).toEqual({ hex: '0x68656c6c6f', rawHash: false });
-      expect(messageViewFor('0x48454C4C4F')).toEqual({ hex: '0x48454c4c4f', rawHash: false });
-      expect(messageViewFor('hé')).toEqual({ hex: '0x68c3a9', rawHash: false });
-      expect(messageViewFor('0x' + 'ab'.repeat(32))).toMatchObject({ rawHash: true });
-      expect(messageViewFor('z'.repeat(32))).toMatchObject({ rawHash: true, hex: '0x' + '7a'.repeat(32) });
-      // What signing would refuse, or can't show, fails before any prompt.
-      for (const bad of ['0x41zz42', '0x123', ['0x00'], null]) {
-        expect(() => messageViewFor(bad)).toThrow();
-      }
-    });
-  });
-
   // Audit M1: the user's own tab a run adopts is driven like the tabs it
   // creates, so it must be held in Agent custody the same way.
   test('a run that adopts the user tab with "Allow website interactions" cannot use dApp auto-approve rules until the user takes it back', async () => {
@@ -700,7 +619,7 @@ describe('signing handlers require a main-side confirmation', () => {
     // Main reads custody live for a page's request before any standing rule
     // answers it (freedom-core design 0011, page/page-sends.js and
     // page/page-signing.js): the tab's custody, as main reads it.
-    const { guestInCustody } = require('../page/page-signing');
+    const { guestInCustody } = require('../page/page-custody');
     const ruleMayAnswer = () => !guestInCustody(12);
 
     try {

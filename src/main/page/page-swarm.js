@@ -420,7 +420,7 @@ function defaultDependencies() {
     decideManifest: (key, token, outcome, guard) => manifests().decidePageManifest(key, token, outcome, guard),
     releaseManifest: (token) => manifests().releasePageManifest(token),
     guestContents: (id) => require('electron').webContents.fromId(id),
-    inCustody: (guest) => require('./page-signing').guestInCustody(guest),
+    inCustody: (guest) => require('./page-custody').guestInCustody(guest),
     endDocumentSubscriptions: (document) => provider().endDocumentSubscriptions(document),
     endDocumentSubscription: (document, id) => provider().endDocumentSubscription(document, id),
     isVaultUnlocked: () => require('../identity-manager').isVaultUnlocked(),

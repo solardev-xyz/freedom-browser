@@ -106,7 +106,7 @@ const METHOD_CLASSES = Object.freeze({
   'approval.radicle_write': IMMEDIATE,
   'approval.grants': IMMEDIATE,
   'approval.forget_account': IMMEDIATE,
-  // Sent by page-sends.js once a device's flagged send is recorded.
+  // Sent by page-core-sends.js once a device's flagged send is recorded.
   'approval.remember': IMMEDIATE,
   // cored-v0.18.0 (design 0012): the phone payment jobs (PHN-1), which every
   // caller may send; x402's authorization and settlement under the core's

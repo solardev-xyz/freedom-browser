@@ -180,7 +180,7 @@ async function heldDeployment(running, safeAddress = '0x' + '5a'.repeat(20)) {
 
 // A wallet send's confirmation binds the account active when it was
 // confirmed. A dApp's send is main's (freedom-core design 0011,
-// page/page-sends.js), which builds its record context itself and names no
+// page/page-core-sends.js), which builds its record context itself and names no
 // intent key: the wallet's own send is the renderer's route left.
 async function authorize(running, walletIndex, tx) {
   mockActiveIndex = walletIndex;
@@ -535,7 +535,7 @@ describe('held payments over IPC (4b)', () => {
       throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
     });
     // A page's send, as main makes it once it has authorized it.
-    const { sendDappPayment } = require('../page/page-sends');
+    const { sendDappPayment } = require('../page/page-core-sends');
     const failed = await sendDappPayment({ walletIndex: 1, tx: call(100), site: SITE }).then(
       (sent) => ({ success: true, ...sent }),
       (err) => ({ success: false, error: err.message, ...require('./intent-ipc').intentFailure(err) })

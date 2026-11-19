@@ -81,18 +81,14 @@
  * effect, isn't raced by another, unless the record gives it up while it
  * waits with nothing to show (`leaveWalletSlot`).
  *
- * Main's own issuer (PRQ-5, design 0011 "Approval tokens"): a page kind's
- * approval token is minted only for a live record whose prompt the user has
- * just approved (`context.confirm`), bound to that prompt's handle and the
- * requester's attested key, with the account and payload the dispatcher
- * holds. The dispatcher spends it itself (`context.spend`), after checking
- * the document again: a token for a document that has gone is refused and
- * burnt. An approval mints one token.
+ * A page's own request is decided through the identity core's dispatcher
+ * (design 0012, APB-4): the core mints and spends its approval token, and
+ * main only traces it (`context.traceCoreToken`).
  *
  * A request the Agent answers, in a tab it holds (design 0012, "A page
  * request the Agent answers"), is a page request too: the Agent's decision,
  * made within the record's wallet operation (`walletOperation`), mints the
- * request's page-kind token through the same issuer (`context.agentToken`),
+ * request's page-kind token through main's issuer (`context.agentToken`),
  * under `page` with the record's PageContext (`agent: true`) and a handle
  * main draws for that decision, and its signature presents it under `page`
  * with the PageContext read again then. Whether that decision still holds
@@ -464,12 +460,10 @@ function createPageRequests({
       // Aborted when the record is answered, for a wallet operation it runs
       // (`walletOperation`).
       aborter: null,
-      // The handle of the prompt the user last approved, until main's issuer
-      // mints its one token (`confirm`), and the handle that token is for.
+      // The handle of the prompt the user last approved: the Agent's
+      // decision mints nothing after it (`agentMint`). And the handle of the
+      // token the Agent's decision minted, until it is spent (`spend`).
       approved: null,
-      // Where that approval came from: the chrome, or the window's approvals
-      // document (APS-2).
-      approvedFrom: null,
       tokenHandle: null,
       // The identity core's id for the prompt the record's handle shows, if
       // the core asked for it (design 0012, APR-5).
@@ -599,10 +593,7 @@ function createPageRequests({
   function decidedEntry(entry) {
     const { record } = entry;
     if (entry.decided?.approve === true && !record.answered) {
-      if (!BOARD_KINDS.has(entry.kind)) {
-        record.approved = entry.handle;
-        record.approvedFrom = entry.decided.from;
-      }
+      if (!BOARD_KINDS.has(entry.kind)) record.approved = entry.handle;
       if (WALLET_KINDS.has(entry.kind) && !walletOperations.has(record.key)) walletOperations.set(record.key, record);
     }
     closeHandle(record, CLOSED.DECIDED);
@@ -697,8 +688,8 @@ function createPageRequests({
       // APR-5): the record's open handle closes, cancelled, if its record
       // keeps that prompt id.
       // A token the identity core minted for the record's approval, or
-      // spent, as main's own issuer traced its own (`confirm`, `spend`):
-      // `phase` is `minted` or `spent`. The token itself never comes here.
+      // spent, traced as the Agent's are (`agentMint`, `spend`): `phase` is
+      // `minted` or `spent`. The token itself never comes here.
       traceCoreToken: (phase, kind) =>
         (phase === 'minted' || phase === 'spent') &&
         trace({ kind: `token-${phase}`, id: record.id, token: kind, by: 'core' }),
@@ -707,8 +698,6 @@ function createPageRequests({
       // The open prompt's content changed: it shows again with this view.
       updatePrompt: (view) =>
         Boolean(record.handle) && handles.get(record.handle) === record && prompts.update(record.handle, view),
-      confirm: (kind, accountIndex, payload, options) => confirm(record, kind, accountIndex, payload, options),
-      spend: (confirmation) => spend(record, confirmation),
       // The Agent's decision on this request, in a tab it holds (design
       // 0012): its page-kind token, minted and presented under `page`, and
       // whether the decision still holds at the signer's last step.
@@ -1047,51 +1036,12 @@ function createPageRequests({
   }
 
   /**
-   * Main's own issuer (design 0011, "Approval tokens"): a token of a page
-   * kind, for this live record only, on the approval of the prompt the user
-   * just decided, minted by the identity core under `page` for the
-   * requesting document (its PageContext) and that prompt's handle (design
-   * 0012, APB-1). The account and payload are the dispatcher's, from the
-   * request main holds. One approval mints one token. Rejects
-   * (`SIGNING_NOT_CONFIRMED`) with nothing minted otherwise. The token never
-   * leaves main: the dispatcher spends it (`spend`).
-   *
-   * @param {object} [options] as `issuePageConfirmation`'s: `chainId` for
-   *   typed data, `feeAcknowledged` and `phone` for a dApp send
-   * @returns {Promise<object>} the confirmation (`signing-confirmation.js`),
-   *   with the core's `hash` and `view` for typed data
-   */
-  async function confirm(record, kind, accountIndex, payload, options = {}) {
-    const handle = record.approved;
-    if (record.answered || !handle || !documents.isCurrent(record.requester) || !record.requester.key) {
-      throw notConfirmed('no live request approved by the user');
-    }
-    // With the approvals document on, a page token only on its decision.
-    if (approvals && record.approvedFrom !== 'approvals') {
-      throw notConfirmed('not approved in the approvals document');
-    }
-    if (!signingConfirmation.isPageKind(kind, payload)) throw new Error(`Not a page confirmation kind: ${kind}`);
-    record.approved = null;
-    record.approvedFrom = null;
-    const confirmation = await signingConfirmation.issuePageConfirmation(
-      kind,
-      accountIndex,
-      payload,
-      { handle, context: pageContextOf(record) },
-      options
-    );
-    record.tokenHandle = handle;
-    trace({ kind: 'token-minted', id: record.id, token: kind });
-    return confirmation;
-  }
-
-  /**
-   * The record's confirmation, for the signature it is about to present it
-   * to: the document checked again first, in the same run as the signature
-   * that follows, and the token burnt if the document has gone or no longer
-   * holds its key. The core spends it there, for this document and handle
-   * only. A device's signature spends it through the core instead
-   * (`signers.js`).
+   * The record's confirmation (the Agent's, `agentPresent`), for the
+   * signature it is about to present it to: the document checked again
+   * first, in the same run as the signature that follows, and the token
+   * burnt if the document has gone or no longer holds its key. The core
+   * spends it there, for this document and handle only. A device's
+   * signature spends it through the core instead (`signers.js`).
    */
   function spend(record, confirmation) {
     if (record.answered || !documents.isCurrent(record.requester) || !documents.holdsKey(record.requester)) {

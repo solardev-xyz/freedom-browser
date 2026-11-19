@@ -1270,9 +1270,7 @@ describe('no room for the panel, with page-requests', () => {
   });
 });
 
-describe('APS-3b: the Safe boards show in the document, the chrome decides none, and page tokens come only from it', () => {
-  const signingConfirmation = require('../wallet/signing-confirmation');
-
+describe('APS-3b: the Safe boards show in the document, and the chrome decides none', () => {
   test('both board kinds go to the document; the chrome\'s decision is refused for each; the dispatcher knows the document is on', async () => {
     const seen = [];
     const decisions = [];
@@ -1310,40 +1308,6 @@ describe('APS-3b: the Safe boards show in the document, the chrome decides none,
     expect(decisions.map(([kind, decision]) => [kind, decision.approve, decision.from])).toEqual([
       ['eth.safe_message', false, 'approvals'],
       ['eth.safe_send', false, 'approvals'],
-    ]);
-  });
-
-  test('a board\'s approval in the document mints no page token: only the request\'s own approval does', async () => {
-    const minted = [];
-    const mint = (context) => context.confirm('sign-message', 0, '0x00');
-    const env = withPageRequests({
-      dispatch: async (context) => {
-        for (const kind of ['eth.safe_message', 'eth.safe_send', 'test.prompt']) {
-          const decision = await context.prompt({ kind, view: kind === 'test.prompt' ? VIEW : { step: 'collect' } });
-          try {
-            minted.push([kind, decision.approve, typeof (await mint(context)).token]);
-          } catch (err) {
-            minted.push([kind, decision.approve, err.code]);
-          }
-        }
-        return { result: 'done' };
-      },
-    });
-    const { contents } = attached(env);
-    const answer = env.tab().ask(VIEW);
-    await flush();
-    for (let i = 0; i < 3; i += 1) {
-      const shown = contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1].handle;
-      env.docs.shown(eventFrom(contents), { handle: shown, revision: sentRevision(contents) });
-      env.advance(INPUT_DELAY_MS);
-      env.docs.decide(eventFrom(contents), { handle: shown, approve: true });
-      await flush();
-    }
-    expect(await answer).toEqual({ result: 'done' });
-    expect(minted).toEqual([
-      ['eth.safe_message', true, signingConfirmation.NOT_CONFIRMED],
-      ['eth.safe_send', true, signingConfirmation.NOT_CONFIRMED],
-      ['test.prompt', true, 'string'],
     ]);
   });
 });

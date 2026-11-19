@@ -1,11 +1,13 @@
 // D12 through main's real paths: the identity core's reading of a site's
-// contract rule (Q9's limited rule, then the pause main reads, for
-// page/page-sends.js, simulated here from the dApp store the core holds
-// from APB-2), a page's
-// send as main makes it (page/page-sends.js: the silent send a rule answers,
-// and one the user confirmed), and main's dispatcher with its prompt, with
-// the real permissions store, intent store, payment history and transaction
-// service. Chain data and signers are mocked.
+// contract rule (Q9's limited rule, then the pause main reads, simulated
+// here from the dApp store the core holds from APB-2), and a page's send as
+// main makes it once the core has decided it (page/page-core-sends.js's
+// `sendDappPayment`: the silent send a rule answers, and one the user
+// confirmed), with the real permissions store, intent store, payment
+// history and transaction service. Chain data and signers are mocked. Which
+// send the rule answers and which the prompt asks is the core's
+// (`eip1193.request` with `world.paused`, design 0012, APB-4c), tested with
+// the relay (page/page-eip1193*.test.js).
 
 const fs = require('fs');
 const os = require('os');
@@ -76,10 +78,6 @@ const PLAIN = 'https://plain.example'; // connected, no "Always allow"
 const CONTRACT = '0x' + '66'.repeat(20);
 const SELECTOR = '0xabcdef12';
 const CHAIN = 1;
-
-// The transaction a page asks for: no gas or fees of its own.
-const PAGE_TX = { to: CONTRACT, data: SELECTOR };
-const REJECTED = { error: { code: 4001, message: 'User rejected the request' } };
 
 const signerFor = (wallet) => ({
   getAddress: jest.fn(async () => wallet.address),
@@ -153,8 +151,7 @@ async function start() {
   const { transactionAutoApprovePaused } = require('./auto-approve-pause');
   require('./wallet-ipc').registerWalletIpc();
   const handlers = Object.fromEntries(ipcMain.handle.mock.calls);
-  const { sendDappPayment, createSendDispatchers } = require('../page/page-sends');
-  const confirmations = require('./signing-confirmation');
+  const { sendDappPayment } = require('../page/page-core-sends');
 
   // The site's contract rule, as the identity core judges it from the dApp
   // store it holds (design 0012, APB-2): the grant exposing the account,
@@ -180,59 +177,11 @@ async function start() {
     gasPrice: '1000000000',
   };
   const index = { [SWAP]: 0, [OTHER]: 1, [PLAIN]: 0 };
-  const wallets = [
-    { index: 0, name: 'Alice', address: ALICE.address, type: 'mnemonic' },
-    { index: 1, name: 'Bob', address: BOB.address, type: 'mnemonic' },
-  ];
-
-  // Main's dispatcher, with a request record of its own: the site's key, a
-  // name that holds, a document that holds its key, main's issuer for the
-  // approval, and the prompt's decision the test gives.
-  const dispatch = createSendDispatchers(
-    {
-      getPermission: permissions.getPermission,
-      updateLastUsed: (context, chainId) =>
-        permissions.updateLastUsed(context.requester.key, chainId, context.pageContext()),
-      walletList: async () => wallets,
-      chainIdOf: () => CHAIN,
-      chainName: () => 'Ethereum',
-      networks: () => ({ [CHAIN]: { name: 'Ethereum', nativeSymbol: 'ETH' } }),
-      agentAnswer: async () => null,
-    },
-    { inCustody: () => false, isVaultUnlocked: async () => true }
-  )['ethereum:eth_sendTransaction'];
-  const prompts = [];
-  function pageAsks(site, txParams, decision = { approve: true, choices: {} }) {
-    let approved = null;
-    const handle = (n) => n.toString(16).padStart(64, '0');
-    const context = {
-      requester: { key: site, guest: 1, window: 1, navigation: 1, chain: null },
-      method: 'eth_sendTransaction',
-      params: [txParams],
-      nameHolds: async () => true,
-      holdsKey: () => true,
-      prompt: async (spec) => {
-        prompts.push({ site, ...spec });
-        approved = decision.approve ? handle(prompts.length) : null;
-        return decision;
-      },
-      pageContext: () => pageOf(site),
-      // Main's issuer, with the dispatcher's options ("Always allow" among them).
-      confirm: (kind, accountIndex, payload, options) =>
-        confirmations.issuePageConfirmation(kind, accountIndex, payload, { handle: approved, context: pageOf(site) }, options),
-      spend: (confirmation) => confirmation,
-      signal: new AbortController().signal,
-      leaveWalletSlot: () => {},
-    };
-    return dispatch(context);
-  }
 
   return {
     tx,
     permissions,
     handlers,
-    prompts,
-    pageAsks,
     store: require('./intent-store').getIntentStore(),
     // Main's own reading of the site's rule (page/page-sends.js: its match,
     // then the pause): true sends silently, false shows the prompt.
@@ -283,15 +232,11 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
     expect(running.store.get(refused.intentId).state).toBe('held');
 
-    // The site asks again: main reads its rule as paused, and shows its
-    // prompt instead…
+    // The site asks again: main reads its rule as paused, and a silent send
+    // that read the rule before the pause is refused in its turn, with
+    // nothing signed.
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
     const before = signed();
-    await expect(running.pageAsks(SWAP, PAGE_TX, { approve: false })).resolves.toEqual(REJECTED);
-    expect(running.prompts.map((prompt) => prompt.kind)).toEqual(['eth.send']);
-    expect(signed()).toBe(before);
-    // …and a silent send that read the rule before the pause is refused in
-    // its turn, with nothing signed.
     await expect(running.autoSend(SWAP)).resolves.toMatchObject({
       success: false,
       code: 'SIGNING_NOT_CONFIRMED',
@@ -313,9 +258,6 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
       block: 100,
     });
     await expect(running.autoApproves(SWAP)).resolves.toBe(true);
-    // Main's dispatcher sends under it again, with no prompt.
-    await expect(running.pageAsks(SWAP, PAGE_TX)).resolves.toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
-    expect(running.prompts).toHaveLength(1);
   });
 
   test('a payment sent and not yet mined waits too; once mined, the rule applies again', async () => {
@@ -348,8 +290,6 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   test('a site without "Always allow" is unchanged: the prompt, waiting or not', async () => {
     const running = await start();
     await expect(running.autoApproves(PLAIN)).resolves.toBe(false);
-    await expect(running.pageAsks(PLAIN, PAGE_TX, { approve: false })).resolves.toEqual(REJECTED);
-    expect(running.prompts.map((prompt) => prompt.kind)).toEqual(['eth.send']);
     expect(signed()).toBe(0);
 
     refusedOnce();
@@ -591,85 +531,5 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     expect(mockApprovals.dapp.signingRule(SWAP)).toBe(true);
     expect(running.permissions.getSigningAutoApprove(SWAP)).toBe(true);
   });
-
-  // Q9 (design 0012, APB-2): today's rule, with no time, answers nothing
-  // once the core writes the dApp file; "Always allow" at the prompt it
-  // shows writes the limited rule, which answers, and the pause still holds.
-  test("today's unlimited rule prompts; the limited rule its prompt gives answers, paused as any", async () => {
-    const running = await start();
-    const TODAY = 'https://today.example';
-    mockApprovals.dapp.seed(TODAY, {
-      origin: TODAY,
-      connectedAt: 1,
-      lastUsed: 1,
-      walletIndex: 0,
-      chainId: CHAIN,
-      autoApprove: { signing: false, transactions: [{ to: CONTRACT, selector: SELECTOR, chainId: CHAIN, maxValue: '0' }] },
-    });
-    await running.permissions.refreshPermissions();
-    await expect(running.autoApproves(TODAY)).resolves.toBe(false);
-    const confirmed = await running.pageAsks(TODAY, PAGE_TX, { approve: true, choices: { alwaysAllow: true } });
-    expect(confirmed).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
-    expect(running.prompts).toHaveLength(1);
-    // The limited rule, and today's for the same call cleared in the same write.
-    expect(mockApprovals.dapp.entry(TODAY).autoApprove.transactions).toEqual([]);
-    expect(mockApprovals.dapp.entry(TODAY).autoApprove.limited.transactions).toEqual([
-      { to: CONTRACT, selector: SELECTOR, chainId: CHAIN, maxValue: '0', grantedAt: expect.any(Number) },
-    ]);
-    // Its own payment waits: paused until it is mined; then the rule answers.
-    await expect(running.autoApproves(TODAY)).resolves.toBe(false);
-    await mine(confirmed.result);
-    await expect(running.autoApproves(TODAY)).resolves.toBe(true);
-    await expect(running.pageAsks(TODAY, PAGE_TX)).resolves.toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
-    expect(running.prompts).toHaveLength(1);
-  });
 });
 
-// "Always allow" for a transaction, through main's dispatcher
-// (page/page-sends.js): the rule is recorded for the requester's key, from
-// the send the user confirmed on main's prompt, and covers its call with no
-// more value than that send's.
-describe('"Always allow" binds the confirmed send\'s value and site', () => {
-  const PAYABLE = '0x' + '77'.repeat(20);
-  const CENT = '0x2386f26fc10000'; // 0.01 ETH
-  const TWO_CENTS = '0x470de4df820000';
-  const ALWAYS = { approve: true, choices: { alwaysAllow: true, feeAcknowledged: false } };
-
-  test('a rule from a send of 0.01 ETH signs that call for 0.01 ETH, and asks for more', async () => {
-    const running = await start();
-    const payment = { to: PAYABLE, value: CENT, data: SELECTOR };
-    // PLAIN has no rule: main prompts, and "always allow" records one.
-    const confirmed = await running.pageAsks(PLAIN, payment, ALWAYS);
-    expect(confirmed).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
-    expect(running.prompts).toHaveLength(1);
-    await mine(confirmed.result);
-
-    const ask = (value) => running.autoApproves(PLAIN, { to: PAYABLE, value });
-    await expect(ask(CENT)).resolves.toBe(true);
-    await expect(ask(TWO_CENTS)).resolves.toBe(false);
-
-    // The same call for 0.01 ETH: sent under the rule, with no prompt.
-    const same = await running.pageAsks(PLAIN, payment);
-    expect(same).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
-    expect(running.prompts).toHaveLength(1);
-    await mine(same.result);
-    // For more: main's prompt again.
-    await expect(running.pageAsks(PLAIN, { ...payment, value: TWO_CENTS }, { approve: false })).resolves.toEqual(REJECTED);
-    expect(running.prompts).toHaveLength(2);
-    expect(signed()).toBe(2);
-  });
-
-  test("a confirmed send for one site records no rule for another site", async () => {
-    const running = await start();
-    const payment = { to: PAYABLE, data: SELECTOR };
-    await expect(running.pageAsks(PLAIN, payment, ALWAYS)).resolves.toEqual({ result: expect.any(String) });
-    // The rule is the requester's: PLAIN's, never SWAP's, on the same account.
-    expect(running.ruled(PLAIN, PAYABLE)).toBe(true);
-    expect(running.ruled(SWAP, PAYABLE)).toBe(false);
-    // Without "always allow", none.
-    await expect(running.pageAsks(SWAP, payment, { approve: true, choices: { alwaysAllow: false } })).resolves.toEqual({
-      result: expect.any(String),
-    });
-    expect(running.ruled(SWAP, PAYABLE)).toBe(false);
-  });
-});

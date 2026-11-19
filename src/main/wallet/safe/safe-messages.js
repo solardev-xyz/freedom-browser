@@ -23,7 +23,7 @@
  * pages that navigated away or closed are dropped automatically.
  *
  * A session main opens for a page's request (freedom-core design 0011,
- * PRQ-5: `page/page-signing.js`, `{ owner: 'main' }`) is never resumed by
+ * PRQ-5: `page/page-devices.js`, `{ owner: 'main' }`) is never resumed by
  * another start, and only main completes it: the chrome's signing board
  * collects its device signatures with the session token, and main hands the
  * signature to the page that asked.

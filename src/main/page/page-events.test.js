@@ -118,7 +118,18 @@ function setup() {
     },
   });
   const permissions = new Map();
+  // The identity core's dispatcher (design 0012, APB-4), as far as these
+  // tests reach: `eth_accounts` answers the grant's account, or [] for a
+  // keyless document or none. Main's name checks around it are its own.
+  const relay = {
+    request: async (context) => {
+      const grant = context.requester.key ? permissions.get(context.requester.key) : null;
+      const wallet = grant ? wallets.find((candidate) => candidate.index === grant.walletIndex) : null;
+      return { result: wallet ? [wallet.address] : [] };
+    },
+  };
   const dispatchers = createEthereumDispatchers({
+    relay,
     identityWalletEnabled: () => true,
     getPermission: (key) => permissions.get(key) || null,
     getDerivedWallets: async () => wallets,
