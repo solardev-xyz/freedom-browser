@@ -1724,4 +1724,317 @@ describe('sends through the relay (0012 APB-4c)', () => {
     expect(paid.committed).toHaveLength(2);
     expect(paid.remembered).toEqual([]);
   });
+
+  // Round 1 of #1284's review: the payment facts main records for a send
+  // the core decided, and a Safe's SafeTx past its start (its board, its
+  // outcome, and the site's guard on its execution), which only the deleted
+  // route's tests (page-sends.test.js) covered.
+  describe("the payment facts main records, and a Safe's SafeTx after its start", () => {
+    const SAFE_TX_HASH = `0x${'ef'.repeat(32)}`;
+    const EXEC_HASH = `0x${'12'.repeat(32)}`;
+    const GONE = { gone: true };
+    const REJECTED = { error: { code: 4001, message: 'User rejected the request' } };
+    // An ERC-20 transfer, on CALL's (checksummed) token, of more than 2^53
+    // units to a mixed-case recipient.
+    const RECIPIENT = 'aBcDeF0123456789aBcDeF0123456789aBcDeF01';
+    const AMOUNT = 10n ** 24n + 7n;
+    const TRANSFER = {
+      to: CALL.to,
+      value: '0x0',
+      data: `0xa9059cbb${'0'.repeat(24)}${RECIPIENT}${AMOUNT.toString(16).padStart(64, '0')}`,
+    };
+    // A plain payment of 0.01 xDAI.
+    const PAYMENT = { to: SECOND, value: '0x2386f26fc10000', data: '0x' };
+    // A request's transaction as main checked it (`txOf`).
+    const checkedTx = (request) => ({ to: request.to, value: BigInt(request.value).toString(), data: request.data });
+    // The core's eth.send prompt for `request`.
+    const askFor = (request, options = {}) => (id, pc) => {
+      const ask = sendAsk(id, pc, options);
+      ask.view.tx = checkedTx(request);
+      return ask;
+    };
+    // The core's `{ device }` for a Safe's send of `request`, with its token.
+    const safeDevice = (answer, request) => ({
+      device: {
+        type: 'safe',
+        kind: 'safe-send',
+        account: SAFE,
+        payload: { safe: SAFE_ADDRESS, chain_id: '100', tx: checkedTx(request) },
+        handle: answer.handle,
+        token: TOKEN,
+      },
+    });
+
+    /**
+     * Main's Safe steps, stood in as safe-transactions.js runs them: the
+     * Safe's reservation, the SafeTx's start (only under that reservation,
+     * still held), its outcomes (`settle`), the site's guard on its
+     * execution, and an execution (`execute`): past the request's guard,
+     * then the executor's waits (its quote, the site's turn, its signer:
+     * `duringWait` runs among them), and the same guard again at the commit.
+     * Not for the site at all when it has no guard.
+     */
+    function safeSetup() {
+      const paid = payments();
+      const safe = { started: [], listeners: new Set(), guards: new Map(), reserved: new Set() };
+      Object.assign(paid.deps, {
+        reserveSafeSend: (safeIndex) => {
+          safe.reserved.add(safeIndex);
+          return { safeIndex, release: () => safe.reserved.delete(safeIndex) };
+        },
+        startSafeSend: async ({ reservation, ...options }) => {
+          if (reservation?.safeIndex !== options.safeIndex || !safe.reserved.has(options.safeIndex)) {
+            throw new Error('Started without its reservation');
+          }
+          safe.started.push(options);
+          return { safeIndex: options.safeIndex, safeTxHash: SAFE_TX_HASH, threshold: 2, collected: 1, status: 'awaiting' };
+        },
+        onSafeSendSettled: (listener) => {
+          safe.listeners.add(listener);
+          return () => safe.listeners.delete(listener);
+        },
+        guardSiteSafeSend: (safeTxHash, guard) => {
+          safe.guards.set(safeTxHash, guard);
+          return () => {
+            if (safe.guards.get(safeTxHash) === guard) safe.guards.delete(safeTxHash);
+          };
+        },
+        siteWithdrawn: () => Object.assign(new Error('withdrawn'), { code: 'SAFE_SITE_WITHDRAWN' }),
+        safeBoards: () => null,
+      });
+      safe.settle = (event) => {
+        for (const listener of [...safe.listeners]) listener(event);
+      };
+      safe.execute = async ({ hash = EXEC_HASH, duringWait = null } = {}) => {
+        const guard = safe.guards.get(SAFE_TX_HASH);
+        if (!guard) return { executed: false, guarded: false };
+        let executed = false;
+        try {
+          await guard(async () => {
+            await new Promise((resolve) => setImmediate(resolve));
+            duringWait?.();
+            return guard(async () => {
+              executed = true;
+              safe.settle({ safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash });
+              return { hash };
+            });
+          });
+        } catch (err) {
+          return { executed, refused: err.code };
+        }
+        return { executed };
+      };
+      const env = setup({ coreSendDeps: paid.deps });
+      env.state.wallets = DEVICE_WALLETS;
+      env.state.grants.set('*', { walletIndex: SAFE });
+      return { env, paid, safe };
+    }
+
+    // The page's send of `request` from the Safe, approved. Resolves once
+    // its SafeTx has started and its board shows, with the page's answer
+    // and the approve's page:decide still pending.
+    async function safeStart(env, page, request = CALL) {
+      sending(env, askFor(request, { account: SAFE }), (answer) => safeDevice(answer, request));
+      const answer = page.ask('eth_sendTransaction', [request]);
+      await flush();
+      const decided = env.decide(env.prompts().at(-1).handle, true, {});
+      await flush();
+      await flush();
+      const board = env.prompts().at(-1);
+      expect(board.kind).toBe('eth.safe_send');
+      return { answer, decided, board };
+    }
+    const pending = async (promise) => {
+      let settled = false;
+      promise.then(() => {
+        settled = true;
+      });
+      await flush();
+      return !settled;
+    };
+
+    test('an ERC-20 transfer the core sends is recorded as one, an approved send\'s and a rule\'s: the token, the recipient and the amount in the payment history; a contract call records only the site', async () => {
+      const { env, paid } = sendSetup();
+      const page = env.tab();
+      const tx = { ...CORE_TX, data: TRANSFER.data };
+      sending(env, askFor(TRANSFER), (answer) => tokenSend(answer, 0, tx));
+      expect((await approveSend(env, page, {}, [TRANSFER])).answer).toEqual({ result: SEND_HASH });
+      env.core.script = async () => ({ send: { kind: 'dapp-send', account: 0, tx, standing: true } });
+      expect(await page.ask('eth_sendTransaction', [TRANSFER])).toEqual({ result: SEND_HASH });
+      sending(env, sendAsk, (answer) => tokenSend(answer));
+      expect((await approveSend(env, page)).answer).toEqual({ result: SEND_HASH });
+      const transfer = {
+        kind: 'dapp-send',
+        origin: KEY_A,
+        asset: CALL.to.toLowerCase(),
+        toAddress: `0x${RECIPIENT.toLowerCase()}`,
+        amount: AMOUNT.toString(),
+        metadata: { erc20Method: 'transfer' },
+      };
+      expect(paid.signed.map((signed) => signed.context)).toEqual([transfer, transfer, { kind: 'dapp-send', origin: KEY_A }]);
+      expect(paid.committed).toHaveLength(3);
+    });
+
+    test('a Safe\'s SafeTx starts for the requester\'s key, from the Safe approval its token gave, with the board\'s display of a contract call, an ERC-20 transfer and a plain payment; a discarded one answers 4001', async () => {
+      const { env, paid, safe } = safeSetup();
+      const page = env.tab();
+      const cases = [
+        [CALL, { site: KEY_A, asset: null, toAddress: CALL.to, amount: '0', label: 'a contract call to 0x8335…2913' }],
+        [
+          TRANSFER,
+          {
+            site: KEY_A,
+            asset: CALL.to.toLowerCase(),
+            toAddress: `0x${RECIPIENT.toLowerCase()}`,
+            amount: AMOUNT.toString(),
+            label: 'sending tokens to 0xabcd…ef01',
+          },
+        ],
+        [PAYMENT, { site: KEY_A, asset: null, toAddress: SECOND, amount: '10000000000000000' }],
+      ];
+      for (const [request, display] of cases) {
+        const { answer, board } = await safeStart(env, page, request);
+        const pc = env.core.sent.at(-1).context.page;
+        expect(paid.safes.at(-1)).toMatchObject({ token: TOKEN, kind: 'safe-send', account: SAFE, page: pc });
+        expect(safe.started.at(-1)).toEqual({
+          safeIndex: SAFE,
+          tx: checkedTx(request),
+          display,
+          chainId: 100,
+          approval: { id: 'f'.repeat(32), page: pc },
+        });
+        expect(Object.keys(safe.started.at(-1).display)).toEqual(Object.keys(display));
+        expect(board.view).toMatchObject({ safeIndex: SAFE, state: { safeTxHash: SAFE_TX_HASH } });
+        expect(safe.reserved.size).toBe(0);
+        safe.settle({ safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+        expect(await answer).toEqual(REJECTED);
+      }
+      expect(safe.started).toHaveLength(3);
+      expect(safe.guards.size).toBe(0);
+      expect(safe.listeners.size).toBe(0);
+    });
+
+    test('another SafeTx\'s outcome, or another Safe\'s, is not this one\'s; executed past the site\'s guard, the page gets the execution\'s hash, and the guard, the listener and the board end with the request', async () => {
+      const { env, safe } = safeSetup();
+      const page = env.tab();
+      const { answer, decided, board } = await safeStart(env, page);
+      safe.settle({ safeIndex: SAFE, safeTxHash: `0x${'99'.repeat(32)}`, outcome: 'executed', hash: '0xother' });
+      safe.settle({ safeIndex: SAFE + 1, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: '0xother' });
+      expect(await pending(answer)).toBe(true);
+      expect(await safe.execute()).toEqual({ executed: true });
+      expect(await answer).toEqual({ result: EXEC_HASH });
+      expect(await decided).toEqual({ ok: true });
+      expect(safe.guards.size).toBe(0);
+      expect(safe.listeners.size).toBe(0);
+      expect(env.closed().map((c) => c.handle)).toContain(board.handle);
+    });
+
+    test('a board the user leaves parks the SafeTx: the page waits without its document\'s wallet slot, so the document may ask again; executed later, the page gets the hash', async () => {
+      const { env, safe } = safeSetup();
+      const page = env.tab();
+      const { answer, decided, board } = await safeStart(env, page);
+      const left = env.decide(board.handle, false);
+      expect(await pending(answer)).toBe(true);
+      asking(env, (id, pc) => signAsk(id, pc, { account: SAFE }), () => ({ result: '0x5afe' }));
+      const signed = page.ask('personal_sign', [MESSAGE, SAFE_ADDRESS]);
+      await flush();
+      expect(env.prompts().at(-1).kind).toBe('eth.sign');
+      expect(await env.decide(env.prompts().at(-1).handle, false)).toEqual({ ok: true });
+      expect(await signed).toEqual(REJECTED);
+      expect(await safe.execute()).toEqual({ executed: true });
+      expect(await answer).toEqual({ result: EXEC_HASH });
+      expect(await left).toEqual({ ok: true });
+      expect(await decided).toEqual({ ok: true });
+    });
+
+    test('a document that navigates while its SafeTx waits: the request goes, and with it the guard, so a later execution isn\'t for the site', async () => {
+      const { env, safe } = safeSetup();
+      const page = env.tab();
+      const { answer } = await safeStart(env, page);
+      page.guest.commit(`${KEY_A}/next`);
+      expect(await answer).toEqual(GONE);
+      await flush();
+      expect(safe.listeners.size).toBe(0);
+      expect(safe.guards.size).toBe(0);
+      expect(await safe.execute()).toEqual({ executed: false, guarded: false });
+    });
+
+    test('parked, and its name moves before it executes: not executed for the site, and the keyless answer', async () => {
+      const { env, safe } = safeSetup();
+      env.names.set(NAME, IPNS_KEY);
+      const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+      const { answer, board } = await safeStart(env, page);
+      env.decide(board.handle, false);
+      await flush();
+      env.names.set(NAME, OTHER_IPNS_KEY);
+      expect(await safe.execute()).toEqual({ executed: false, refused: 'SAFE_SITE_WITHDRAWN' });
+      expect(await answer).toEqual({ error: NO_ADDRESS });
+      expect(safe.guards.size).toBe(0);
+    });
+
+    test('parked, and its grant revoked or moved to another account before it executes: not executed for the site, and the keyless answer', async () => {
+      const { env, safe } = safeSetup();
+      const page = env.tab();
+      for (const change of [() => env.state.grants.delete('*'), () => env.state.grants.set('*', { walletIndex: 0 })]) {
+        env.state.grants.set('*', { walletIndex: SAFE });
+        const { answer, board } = await safeStart(env, page);
+        env.decide(board.handle, false);
+        await flush();
+        change();
+        expect(await safe.execute()).toEqual({ executed: false, refused: 'SAFE_SITE_WITHDRAWN' });
+        expect(await answer).toEqual({ error: NO_ADDRESS });
+        expect(safe.guards.size).toBe(0);
+      }
+    });
+
+    test('its name moves during the execution\'s waits (the quote, the signer): refused at the commit, nothing executed for the site', async () => {
+      const { env, safe } = safeSetup();
+      env.names.set(NAME, IPNS_KEY);
+      const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+      const { answer } = await safeStart(env, page);
+      expect(await safe.execute({ duringWait: () => env.names.set(NAME, OTHER_IPNS_KEY) })).toEqual({
+        executed: false,
+        refused: 'SAFE_SITE_WITHDRAWN',
+      });
+      expect(await answer).toEqual({ error: NO_ADDRESS });
+    });
+
+    test('a name or grant that moves as the core answers starts no SafeTx and spends nothing; an honest name, parked, executes later; one that moves after its execution still hears its hash', async () => {
+      const { env, paid, safe } = safeSetup();
+      const named = () => {
+        env.names.set(NAME, IPNS_KEY);
+        return env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+      };
+      const moves = [
+        [() => env.names.set(NAME, OTHER_IPNS_KEY), NO_ADDRESS],
+        [() => env.state.grants.delete('*'), NOT_CONNECTED],
+      ];
+      for (const [move, refusal] of moves) {
+        const page = named();
+        env.state.grants.set('*', { walletIndex: SAFE });
+        sending(env, askFor(CALL, { account: SAFE }), (answer) => {
+          move();
+          return safeDevice(answer, CALL);
+        });
+        expect((await approveSend(env, page)).answer).toEqual({ error: refusal });
+      }
+      expect(paid.safes).toEqual([]);
+      expect(safe.started).toEqual([]);
+      expect(env.state.discarded).toEqual([TOKEN, TOKEN]);
+      env.state.grants.set('*', { walletIndex: SAFE });
+      const honest = named();
+      const parked = await safeStart(env, honest);
+      env.decide(parked.board.handle, false);
+      await flush();
+      expect(await safe.execute()).toEqual({ executed: true });
+      expect(await parked.answer).toEqual({ result: EXEC_HASH });
+      // Executed past the guard, and the name moves before main hears of it.
+      const late = await safeStart(env, honest);
+      await safe.guards.get(SAFE_TX_HASH)(async () => {
+        env.names.set(NAME, OTHER_IPNS_KEY);
+        safe.settle({ safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: EXEC_HASH });
+      });
+      expect(await late.answer).toEqual({ result: EXEC_HASH });
+    });
+  });
 });
