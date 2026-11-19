@@ -703,13 +703,22 @@ function createEip1193Relay(deps = {}) {
       return { error: { ...SEND_MISMATCH } };
     }
     if (checked.token) entry.context.traceCoreToken?.('minted', checked.kind);
+    let answer;
     try {
       // Custody is checked again in the send's steps for an approve the
       // Agent's sheet gave (A7-6).
-      return await step(checked, entry.page, { agent: entry.sheet === true });
+      answer = await step(checked, entry.page, { agent: entry.sheet === true });
     } catch (err) {
       return failure(err);
     }
+    // The payment's record, which the agent service hears with the page's
+    // answer for its receipt; the page gets the hash alone.
+    if (isPlainObject(answer) && 'paymentId' in answer) {
+      const { paymentId, ...page } = answer;
+      if (entry.sheet === true) entry.paymentId = paymentId;
+      return page;
+    }
+    return answer;
   }
 
   // Main's device step for a checked `{ device }`, or the page's error.
@@ -795,6 +804,7 @@ function createEip1193Relay(deps = {}) {
     // answer, which the agent service hears after it.
     entry.sheet = false;
     entry.heard = null;
+    entry.paymentId = undefined;
     let key = null;
     let answer;
     let reply = null;
@@ -833,7 +843,9 @@ function createEip1193Relay(deps = {}) {
       else entry.granted.reject(new Error('no grant written'));
     }
     const final = entry.override ? { error: { ...entry.override } } : answer;
-    entry.heard?.(final);
+    entry.heard?.(
+      entry.paymentId !== undefined && final.result !== undefined ? { ...final, paymentId: entry.paymentId } : final
+    );
     return final;
   }
 

@@ -565,6 +565,11 @@ function createCoreSends(shared, deps = {}) {
       if (remember && type === 'ledger') await rememberDeviceSend(context, account, sent, () => receipt);
       else if (remember && type === 'remote' && !coreRule) reportPhoneRuleWaits(requester.key, sent);
       else if (remember) reportRule(requester.key, coreRule);
+      // The payment's record, for the Agent's receipt only: main's relay
+      // keeps it from the page (`page-eip1193.js`).
+      if (agent && sent?.paymentId !== undefined && sent.paymentId !== null) {
+        return { result: sent.hash, paymentId: sent.paymentId };
+      }
       return { result: sent.hash };
     } finally {
       signal.removeEventListener('abort', eraseReceipt);

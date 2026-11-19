@@ -188,6 +188,10 @@ function standInCore(state, relayOf) {
     viewMessage: null,
     // What a test changes in a send's view (its fee check).
     sendView: null,
+    // A send's approve answered as the core does (APB-4c) when a test sets
+    // it: a vault account's `{ send }` or a Ledger's `{ device }`, with the
+    // token the core minted for main's handle.
+    handsSend: false,
     request: async (method, body, context, options) => {
       core.calls.push(method);
       if (method !== 'eip1193.request') throw new Error(`The stand-in core takes no ${method}`);
@@ -303,7 +307,13 @@ function standInCore(state, relayOf) {
         },
         choices: { alwaysAllow: [false, true], feeAcknowledged: [false, true] },
       });
-      return decision.approve === true ? NOT_SENT : refusal(decision);
+      if (decision.approve !== true) return refusal(decision);
+      if (!core.handsSend) return NOT_SENT;
+      const tx = { type: 0, chain_id: '100', to: TRANSFER.to, value: '10000000000000000', data: '0x', gas_limit: '21000', gas_price: '1000000000' };
+      const token = { kind: 'dapp-send', account: account.index, handle: decision.handle, token: 'tok' };
+      return account.type === 'ledger'
+        ? { device: { type: 'ledger', ...token, payload: { tx } } }
+        : { send: { ...token, tx } };
     }
     return { error: { code: 4200, message: `The stand-in core answers no ${method}` } };
   }
@@ -343,6 +353,14 @@ function setup() {
     signed: [],
     discarded: [],
     deviceWait: null,
+    // A send's steps (`page-core-sends.js`): the site's turns taken, the
+    // signers built and what they signed, the sends committed, and a wait
+    // a test sets at the site's turn, the transaction service's own wait or
+    // after the signature.
+    turns: [],
+    sendSigners: [],
+    committed: [],
+    sendWait: {},
   };
   let relay = null;
   const core = standInCore(state, () => relay);
@@ -371,8 +389,6 @@ function setup() {
     getDerivedWallets: async () => state.wallets,
     updateLastUsed: jest.fn(),
     permissionsLoaded: async () => {},
-    // The agent's own route, for a send in custody (until APB-5b).
-    agentWalletRequest: jest.fn(async () => ({ handled: false })),
     signing: { inCustody: (guestId) => state.custody.has(guestId) },
     sends: { inCustody: (guestId) => state.custody.has(guestId) },
     deviceDeps: {
@@ -392,7 +408,40 @@ function setup() {
       },
       discardToken: (token) => state.discarded.push(token),
     },
-    coreSendDeps: { discardToken: (token) => state.discarded.push(token) },
+    // A send's steps as main runs them: the site's turn (D12), a signer as
+    // `signers.js` builds one (the core's token, and the caller's last
+    // check, `beforeSign`, right before the core or the device is asked),
+    // and the transaction service's sign-and-record with its guard at the
+    // commit (`tx-recorder.js`).
+    coreSendDeps: {
+      discardToken: (token) => state.discarded.push(token),
+      takeSiteTurn: async (site, options) => {
+        state.turns.push([site, options]);
+        await state.sendWait.turn?.();
+        return () => {};
+      },
+      sitePaymentWaiting: async () => false,
+      getSigner: (index, authorized) => {
+        state.sendSigners.push([index, authorized]);
+        return {
+          signTransaction: async () => {
+            if (authorized?.beforeSign) await authorized.beforeSign();
+            state.signed.push(['transaction', index]);
+            return '0xraw';
+          },
+        };
+      },
+      signAndRecord: async (tx, signer, _context, options) => {
+        await state.sendWait.service?.();
+        const raw = await signer.signTransaction(tx);
+        await state.sendWait.afterSign?.();
+        await options.guardCommit(async () => {
+          state.committed.push(raw);
+        });
+        options.onCommitted?.();
+        return { hash: `0x${'ab'.repeat(32)}`, recorded: true, paymentId: 'payment_7' };
+      },
+    },
   };
   const sent = [];
   const timers = [];
@@ -515,7 +564,11 @@ const ASKS = {
 };
 const METHODS = Object.keys(ASKS);
 const SIGNATURES = ['personal_sign', 'eth_signTypedData_v4'];
-const kindOf = (method) => (method === 'eth_requestAccounts' ? 'eth.connect' : 'eth.sign');
+// And a send (APB-5b), where the routing is the same.
+ASKS.eth_sendTransaction = (page) => page.ask('eth_sendTransaction', [TRANSFER]);
+const PROMPTED = [...METHODS, 'eth_sendTransaction'];
+const KINDS = { eth_requestAccounts: 'eth.connect', eth_sendTransaction: 'eth.send' };
+const kindOf = (method) => KINDS[method] ?? 'eth.sign';
 // A site connected for the signatures; a connect asks with no grant.
 const ready = (env, method) => {
   if (method !== 'eth_requestAccounts') env.connect();
@@ -538,11 +591,10 @@ describe("a tab the Agent holds: its sheet answers the core's connect and signat
       const page = env.tab(DAPP, { custody: true });
       const answer = ASKS[method](page);
       await until(() => asks.length === 1);
-      // The core's, like any page's: main's own agent route never took it.
+      // The core's, like any page's (main has no agent route since APB-5b).
       expect(env.core.sent).toEqual([
         expect.objectContaining({ method, page: expect.objectContaining({ origin: KEY_A, agent: true }) }),
       ]);
-      expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
       const [asked] = env.core.asked;
       expect(asked.kind).toBe(kindOf(method));
       const [ask] = asks;
@@ -751,7 +803,7 @@ describe("a tab the Agent holds: its sheet answers the core's connect and signat
   });
 
   describe("the user's prompt, for the same prompt id, when the sheet doesn't answer it", () => {
-    test.each(METHODS)("%s the agent service doesn't take: the user's prompt shows, and its decision answers the core's prompt id", async (method) => {
+    test.each(PROMPTED)("%s the agent service doesn't take: the user's prompt shows, and its decision answers the core's prompt id", async (method) => {
       const env = setup();
       ready(env, method);
       const page = env.tab(DAPP, { custody: true });
@@ -769,7 +821,7 @@ describe("a tab the Agent holds: its sheet answers the core's connect and signat
       expect(asked.answer).toEqual({ prompt: asked.prompt, handle: shown.handle, approve: false, choices: {} });
     });
 
-    test.each(METHODS)('%s sent outside custody (agent: false), with custody begun before the prompt: the user\'s prompt, never the sheet', async (method) => {
+    test.each(PROMPTED)('%s sent outside custody (agent: false), with custody begun before the prompt: the user\'s prompt, never the sheet', async (method) => {
       const env = setup();
       ready(env, method);
       const page = env.tab(DAPP);
@@ -785,7 +837,7 @@ describe("a tab the Agent holds: its sheet answers the core's connect and signat
       expect(env.core.asked[0].answer).toMatchObject({ prompt: env.core.asked[0].prompt, handle: shown.handle });
     });
 
-    test.each(METHODS)('%s sent in custody (agent: true), with custody gone before the prompt: the user\'s prompt, never the sheet', async (method) => {
+    test.each(PROMPTED)('%s sent in custody (agent: true), with custody gone before the prompt: the user\'s prompt, never the sheet', async (method) => {
       const env = setup();
       ready(env, method);
       const page = env.tab(DAPP, { custody: true });
@@ -838,7 +890,6 @@ describe("a tab the Agent holds: its sheet answers the core's connect and signat
       const answer = page.ask('eth_sendTransaction', [TRANSFER]);
       await until(() => asks.length === 1);
       expect(env.core.sent[0]).toMatchObject({ method: 'eth_sendTransaction', page: expect.objectContaining({ agent: true }) });
-      expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
       const [asked] = env.core.asked;
       expect(asked.kind).toBe('eth.send');
       // The sheet gets the core's view: its quote, not the page's params.
@@ -902,7 +953,109 @@ describe("a tab the Agent holds: its sheet answers the core's connect and signat
     });
   });
 
+  describe("a send's steps after the sheet's approve (APB-5b): the site's turn, custody read again (A7-6, A7-7)", () => {
+    // A connected site whose send the sheet approves, and the core answers
+    // with a `{ send }` (a vault account) or a `{ device }` (a Ledger).
+    function approvedSend(walletIndex = 0) {
+      const env = setup();
+      env.connect(KEY_A, walletIndex);
+      env.core.handsSend = true;
+      const asks = env.sheet();
+      const page = env.tab(DAPP, { custody: true });
+      const answer = page.ask('eth_sendTransaction', [TRANSFER]);
+      return { env, asks, page, answer };
+    }
+    const HASH = `0x${'ab'.repeat(32)}`;
+
+    test("held throughout: the site's turn taken (waiting, as any page's), the core's token on the sheet's handle with main's last check, the hash to the page and, with the payment's record, to the agent service", async () => {
+      const { env, asks, answer } = approvedSend();
+      await until(() => asks.length === 1);
+      asks[0].resolve({ handled: true, decision: { approve: true } });
+      // The page gets the hash alone.
+      expect(await answer).toEqual({ result: HASH });
+      const [asked] = env.core.asked;
+      expect(asked.answer).toMatchObject({ approve: true, choices: { alwaysAllow: false, feeAcknowledged: false } });
+      expect(env.state.turns).toEqual([[KEY_A, { wait: true }]]);
+      expect(env.state.sendSigners).toEqual([
+        [
+          0,
+          expect.objectContaining({
+            confirmation: expect.objectContaining({ token: 'tok', kind: 'dapp-send', handle: asked.answer.handle }),
+            beforeSign: expect.any(Function),
+          }),
+        ],
+      ]);
+      expect(env.state.committed).toEqual(['0xraw']);
+      expect(env.state.discarded).toEqual(['tok']);
+      // The agent service hears the page's answer and the payment's record.
+      await expect(asks[0].options.answered).resolves.toEqual({ result: HASH, paymentId: 'payment_7' });
+    });
+
+    test.each([
+      ["in the site's turn, before the signer is built", 'turn', { signers: 0, signed: 0 }],
+      ["at the transaction service's wait: the signer's last step", 'service', { signers: 1, signed: 0 }],
+      ['after the signature, before the commit', 'afterSign', { signers: 1, signed: 1 }],
+    ])("custody lost %s: the page gets main's refusal, nothing committed, the token burnt", async (_label, at, made) => {
+      const { env, asks, page, answer } = approvedSend();
+      env.state.sendWait[at] = () => env.state.custody.delete(page.guest.id);
+      await until(() => asks.length === 1);
+      asks[0].resolve({ handled: true, decision: { approve: true } });
+      expect(await answer).toEqual(CUSTODY_LOST);
+      expect(env.state.sendSigners).toHaveLength(made.signers);
+      expect(env.state.signed).toHaveLength(made.signed);
+      expect(env.state.committed).toEqual([]);
+      expect(env.state.discarded).toEqual(['tok']);
+      await expect(asks[0].options.answered).resolves.toEqual(CUSTODY_LOST);
+    });
+
+    test("a page's send outside custody: no custody check in its steps (the user's prompt approved it)", async () => {
+      const env = setup();
+      env.connect();
+      env.core.handsSend = true;
+      const page = env.tab(DAPP);
+      env.state.sendWait.service = () => env.state.custody.add(page.guest.id);
+      const answer = page.ask('eth_sendTransaction', [TRANSFER]);
+      await until(() => env.prompts().length === 1);
+      expect(await env.decide(env.prompts()[0].handle, true)).toEqual({ ok: true });
+      expect(await answer).toEqual({ result: HASH });
+      expect(env.state.sendSigners[0][1]).not.toHaveProperty('beforeSign');
+    });
+
+    test.each([
+      ['held throughout: the Ledger signs', null, { result: HASH }],
+      ["lost at the transaction service's wait, before the device is asked", 'service', CUSTODY_LOST],
+    ])("a Ledger's send, the core's { device } after the sheet's approve, custody %s", async (_label, at, expected) => {
+      const { env, asks, page, answer } = approvedSend(LEDGER_INDEX);
+      if (at) env.state.sendWait[at] = () => env.state.custody.delete(page.guest.id);
+      await until(() => asks.length === 1);
+      // A device's account: "Always allow" isn't offered.
+      asks[0].resolve({ handled: true, decision: { approve: true } });
+      expect(await answer).toEqual(expected);
+      expect(env.state.sendSigners).toEqual([
+        [LEDGER_INDEX, expect.objectContaining({ confirmation: expect.objectContaining({ kind: 'dapp-send', token: 'tok' }), beforeSign: expect.any(Function) })],
+      ]);
+      expect(env.state.signed).toEqual(at ? [] : [['transaction', LEDGER_INDEX]]);
+      expect(env.state.committed).toEqual(at ? [] : ['0xraw']);
+    });
+  });
+
   describe("the document's one wallet slot", () => {
+    test('a send while the sheet decides a signature: -32002, the core hears busy, and the sheet is asked once', async () => {
+      const env = setup();
+      env.connect();
+      const asks = env.sheet();
+      const page = env.tab(DAPP, { custody: true });
+      const first = ASKS.personal_sign(page);
+      await until(() => asks.length === 1);
+      expect(await ASKS.eth_sendTransaction(page)).toEqual(PENDING);
+      expect(env.core.asked[1]).toMatchObject({ kind: 'eth.send', answer: { prompt: env.core.asked[1].prompt, busy: true } });
+      expect(env.agentPrompt).toHaveBeenCalledTimes(1);
+      asks[0].resolve({ handled: false });
+      await until(() => env.prompts().length === 1);
+      expect(await env.decide(env.prompts()[0].handle, false)).toEqual({ ok: true });
+      expect(await first).toEqual(REJECTED);
+    });
+
     test('a second request while the sheet decides: -32002, the core hears busy, and the sheet is asked once', async () => {
       const env = setup();
       env.connect();

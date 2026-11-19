@@ -615,9 +615,19 @@ class AgentWalletController {
     return {
       handled: true,
       decision: decision.approve === true ? { approve: true } : decision,
+      // The page's answer, with the payment's record main kept from the
+      // page (`paymentId`), as the agent route's receipt had it.
       receiptOf: (answer) =>
         typeof answer?.result === 'string'
-          ? { wallet: { action: 'broadcast', origin: key, chainId, transactionHash: answer.result } }
+          ? {
+              wallet: {
+                action: 'broadcast',
+                origin: key,
+                chainId,
+                transactionHash: answer.result,
+                ...(answer.paymentId !== undefined && answer.paymentId !== null && { paymentId: answer.paymentId }),
+              },
+            }
           : null,
     };
   }

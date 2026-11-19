@@ -255,7 +255,6 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
         relay,
         identityWalletEnabled: () => true,
         permissionsLoaded: async () => {},
-        agentWalletRequest: async () => ({ handled: false }),
         deviceDeps: {
           walletList: async () => wallets,
           getSigner: (_index, authorized) => ledger(authorized),

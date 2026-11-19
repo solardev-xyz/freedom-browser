@@ -970,16 +970,18 @@ jobs:
           FREEDOM_CORED_PROFILE_TEST: '1'
 
       # Approval tokens through the same binary (freedom-core design 0012,
-      # APB-1): main mints every kind but x402's with approval.issue, a
-      # wallet kind as shell and a page kind under page with its PageContext
-      # and handle; a signature the core makes presents its token to sign.*,
-      # which spends it, and the kinds that sign nothing here spend theirs
-      # with approval.spend. signing-confirmation.test.js's cases against
-      # the binary, with a spy on main's calls: none of the permission
-      # files' write methods. In a tab the Agent holds, a send still mints
-      # through the agent route (APB-1d, until APB-5b); a signature is the
-      # core's eth.sign prompt, answered by the Agent's sheet (APB-5a), and
-      # custody is read again at the approve and as a device's last step.
+      # APB-1): main mints its own wallet kinds with approval.issue as shell;
+      # a page kind is the core's, minted on an approve answer to its own
+      # prompt (APB-4, APB-5), so the page-token cases take theirs from a
+      # test fixture. A signature the core makes presents its token to
+      # sign.*, which spends it, and the kinds that sign nothing here spend
+      # theirs with approval.spend. signing-confirmation.test.js's cases
+      # against the binary, with a spy on main's calls: none of the
+      # permission files' write methods, and no approval.issue and no dApp
+      # approval.grant under page. In a tab the Agent holds, a signature or
+      # a send is the core's eth.sign or eth.send prompt, answered by the
+      # Agent's sheet (APB-5a, APB-5b), and custody is read again at the
+      # approve and as a signer's last step.
       - name: Approval tokens (real freedom-cored)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/wallet/signing-confirmation.integration.test.js

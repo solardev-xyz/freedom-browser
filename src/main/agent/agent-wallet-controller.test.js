@@ -578,6 +578,17 @@ describe('answerPrompt: the Agent\'s sheet on the identity core\'s prompt', () =
       expect(outcome.receiptOf({ result: `0x${'ab'.repeat(32)}` })).toEqual({
         wallet: { action: 'broadcast', origin: 'https://app.example', chainId: 100, transactionHash: `0x${'ab'.repeat(32)}` },
       });
+      // With the payment's record main's send step kept for it, as the
+      // agent route's receipt had it.
+      expect(outcome.receiptOf({ result: `0x${'ab'.repeat(32)}`, paymentId: 'payment_7' })).toEqual({
+        wallet: {
+          action: 'broadcast',
+          origin: 'https://app.example',
+          chainId: 100,
+          transactionHash: `0x${'ab'.repeat(32)}`,
+          paymentId: 'payment_7',
+        },
+      });
       expect(outcome.receiptOf({ error: { code: 4001, message: 'User rejected the request' } })).toBeNull();
     });
 

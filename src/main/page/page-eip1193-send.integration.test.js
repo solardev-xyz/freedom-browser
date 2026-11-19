@@ -467,7 +467,6 @@ describeIfBinary('page sends through the real freedom-cored\'s eip1193.request (
         relay: env.relay,
         identityWalletEnabled: () => true,
         permissionsLoaded: async () => {},
-        agentWalletRequest: async () => ({ handled: false }),
         getDerivedWallets: async () => wallets,
         // Main's copy of the grants: the core's file, read now.
         getPermission: (site) => grants()[site] || null,

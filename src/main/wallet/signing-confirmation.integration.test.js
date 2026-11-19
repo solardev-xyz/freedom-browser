@@ -1,17 +1,19 @@
 /**
  * Approval tokens through the real freedom-cored (freedom-core design 0012,
  * APB-1): signing-confirmation.test.js's cases for the core's kinds, against
- * the pinned binary. Main mints every kind but x402's with `approval.issue`
- * (a wallet kind as `shell`, a page kind under `page` with its PageContext
- * and handle), a signature the core makes presents its token to `sign.*`,
- * and the kinds that sign nothing here spend theirs with `approval.spend`.
- * A spy on the core's requests checks the caller of each, and that main
- * calls none of the permission files' write methods. A page's send the
- * Agent answers in a tab it holds (APB-1d) goes through main's own page
- * dispatcher, the agent route and main's issuer to the core, under `page`
- * with `agent: true`, and never as `shell`; a signature there is the core's
- * eth.sign prompt, answered by the Agent's sheet (APB-5a), and signed by the
- * core, or by main's device signer with the core's token. Skipped unless
+ * the pinned binary. Main mints its own wallet kinds with `approval.issue`
+ * as `shell`; a page kind is the core's, minted on an approve answer to its
+ * own prompt (APB-4, APB-5), so the cases of the core's page-token checks
+ * take theirs from a test fixture past the spy, as cored 0.21.0 still
+ * admits. A signature the core makes presents its token to `sign.*`, and
+ * the kinds that sign nothing here spend theirs with `approval.spend`. A spy
+ * on the core's requests checks the caller of each, that main calls none of
+ * the permission files' write methods, and that it mints no page kind and
+ * writes no dApp grant under `page`. In a tab the Agent holds (APB-1d), a
+ * signature or a send is the core's eth.sign or eth.send prompt, answered
+ * by the Agent's sheet (APB-5a, APB-5b), and signed by the core, or by
+ * main's own steps and signers with the core's token, under `page` with
+ * `agent: true`, never as `shell`. Skipped unless
  * FREEDOM_CORED_PATH points at a build, e.g.
  *   FREEDOM_CORED_PATH=…/freedom-cored-bin/linux-x64/freedom-cored npx jest src/main/wallet/signing-confirmation.integration
  * or FREEDOM_CORED_APPROVALS_TEST=1 asks for the binary `npm run core:download`
@@ -30,6 +32,8 @@ if (required && !fs.existsSync(binary)) {
   throw new Error('FREEDOM_CORED_APPROVALS_TEST=1 needs freedom-cored: run npm run core:download');
 }
 const describeIfBinary = binary ? describe : describe.skip;
+// A real core quotes a send from its chain on real timers.
+jest.setTimeout(30_000);
 const quietLog = { info() {}, warn() {}, error() {} };
 const ABANDON =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -106,10 +110,65 @@ const unmovedWrites = (calls) =>
       WRITE_METHODS.includes(call.method) && call.method !== 'approval.forget_account' && !MOVED.has(call.params?.store)
   );
 
+// Test fixtures, not main's calls (design 0012, APB-5): a page token as the
+// core mints it on an approve answer to its own prompt, and a site's
+// connect, account or signing rule as the core writes them from one. Main
+// mints and writes none of them since APB-5b, so the suite sends them past
+// its spy (`send`, the core client's own request), under `page`, as cored
+// 0.21.0 still admits (APR-7 refuses both: the APR-7 pin moves these to the
+// core's prompt). Main's copy of a grant is read again from the core.
+function coreFixtures(core, scOf) {
+  const asPage = (page) => ({ caller: 'page', page });
+  // The fixtures' own calls, apart from main's.
+  const made = [];
+  const send = (method, params, context) => {
+    made.push({ method, params, context });
+    return core(method, params, context);
+  };
+  async function pageToken(kind, index, payload, page = PAGE, handle = HANDLE, options = {}) {
+    const request = scOf().corePayload(kind, index, payload, {
+      chainId: options.chainId,
+      remember: kind === 'dapp-send' && options.remember === true,
+    });
+    const params = { kind, payload: request.payload, handle };
+    if (request.account !== undefined) params.account = request.account;
+    if (options.feeAcknowledged === true) params.fee_ack = true;
+    if (options.phone === true) params.phone = true;
+    const reply = await send('approval.issue', params, asPage(page));
+    const confirmation = { token: reply.token, kind, payload: request.payload, handle, page };
+    if (request.account !== undefined) confirmation.account = request.account;
+    return typeof reply.hash === 'string' ? { ...confirmation, hash: reply.hash, view: reply.view } : confirmation;
+  }
+  async function grant(permissions, page, change) {
+    const reply = await send('approval.grant', { store: 'dapp', change }, asPage(page));
+    await permissions.refreshGrant(page.origin);
+    return reply?.grant ?? null;
+  }
+  return {
+    calls: made,
+    pageToken,
+    coreConnect: (permissions, account, chainId, page) => grant(permissions, page, { op: 'connect', account, chain_id: chainId }),
+    coreAccount: (permissions, account, page) => grant(permissions, page, { op: 'account', account }),
+    coreSigningRule: (permissions, page) => grant(permissions, page, { op: 'signing' }),
+  };
+}
+
+// Main's own calls the core refuses under `page` from APR-7: `approval.issue`
+// (a page kind is the core's to mint), and `approval.grant` for the dApp
+// store (design 0012, APB-5's spy).
+const pageMintsAndGrants = (calls) =>
+  calls.filter(
+    (call) =>
+      call.context?.caller === 'page' &&
+      (call.method === 'approval.issue' || (call.method === 'approval.grant' && call.params?.store === 'dapp'))
+  );
+
 describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
   let root;
   let core;
   let calls;
+  let fixtures;
+  let chainShell;
   let sc;
   let vaultBackend;
   let buildTransaction;
@@ -119,6 +178,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-tokens-'));
     const { CoreClient } = require('../core/core-client');
+    // The chain shell a send's quote is read through, from the same module
+    // registry as the core's client (its JsonText replies).
+    chainShell = { ...require('../core/chain-shell'), makeHop: require('../core/naming-shell').makeHop };
     core = new CoreClient({
       spawn,
       command: binary,
@@ -134,6 +196,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       calls.push({ method, context, params, reply });
       return reply;
     };
+    fixtures = coreFixtures(request, () => sc);
     jest.resetModules();
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
     jest.doMock('../identity-manager', () => ({
@@ -219,11 +282,14 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
 
   beforeEach(() => {
     calls.length = 0;
+    fixtures.calls.length = 0;
   });
 
   afterEach(() => {
-    // Main calls none of the write methods of a file that hasn't moved.
+    // Main calls none of the write methods of a file that hasn't moved, and
+    // mints no page kind and writes no dApp grant under `page` (APB-5).
     expect(unmovedWrites(calls)).toEqual([]);
+    expect(pageMintsAndGrants(calls)).toEqual([]);
   });
 
   // A send as main signs it: built as every send is, at the nonce main
@@ -251,8 +317,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     return sc.confirmationFor(token, kind, index, payload);
   }
 
-  const pageToken = (kind, index, payload, page = PAGE, handle = HANDLE, options) =>
-    sc.issuePageConfirmation(kind, index, payload, { handle, context: page }, options);
+  const pageToken = (...args) => fixtures.pageToken(...args);
 
   const signSend = (confirmation, tx, index = 0) =>
     vaultBackend.sign.transaction(account(index), wire(tx), sc.signingAuthorization(confirmation));
@@ -594,7 +659,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
 
     test('a dApp send signs under its page, once, for its document and handle', async () => {
       const confirmation = await pageToken('dapp-send', 0, DAPP_TX);
-      expect(calls.find((call) => call.method === 'approval.issue')).toMatchObject({
+      expect(fixtures.calls.find((call) => call.method === 'approval.issue')).toMatchObject({
         context: { caller: 'page', page: PAGE },
         params: { kind: 'dapp-send', account: 0, handle: HANDLE },
       });
@@ -679,20 +744,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       );
     });
 
-    test("main's issuer mints only a page kind, with its handle and page", async () => {
-      await expect(pageToken('wallet-send', 0, TX)).rejects.toThrow(/Not a page confirmation kind/);
-      await expect(pageToken('safe-send', SAFE_INDEX, { tx: { to: TX.to }, chainId: 100 })).rejects.toThrow(
-        /Not a page confirmation kind/
-      );
-      for (const [page, handle] of [
-        [PAGE, 'xyz'],
-        [PAGE, undefined],
-        [null, HANDLE],
-        [{ ...PAGE, origin: '' }, HANDLE],
-      ]) {
-        await expect(sc.issuePageConfirmation('sign-message', 0, '0x68', { handle, context: page })).rejects.toThrow(/needs its/);
-      }
-      expect(calls.filter((call) => call.method === 'approval.issue')).toEqual([]);
+    test('main has no issuer of its own for a page kind (APB-5b): the core mints one on its own prompt', () => {
+      expect(sc.issuePageConfirmation).toBeUndefined();
+      expect(Object.keys(sc).filter((name) => /page/i.test(name) && /issue|mint/i.test(name))).toEqual([]);
     });
   });
 
@@ -741,8 +795,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     }
 
     test('a signature the signing rule answers: chosen by the core, and signed under `page` with `{ standing }`', async () => {
-      await permissions.grantPermission(SITE, 0, 100, PAGE);
-      await permissions.setSigningAutoApprove(SITE, true, PAGE);
+      await fixtures.coreConnect(permissions, 0, 100, PAGE);
+      await fixtures.coreSigningRule(permissions, PAGE);
       expect(await check({ kind: 'message', payload: 'hello' })).toEqual({ covered: true, reason: null });
       expect(calls.at(-1)).toMatchObject({
         method: 'approval.check',
@@ -780,8 +834,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     });
 
     test('no rule answers another site, another account, a tab in custody, a rule turned off, or no grant', async () => {
-      await permissions.grantPermission(SITE, 0, 100, PAGE);
-      await permissions.setSigningAutoApprove(SITE, true, PAGE);
+      await fixtures.coreConnect(permissions, 0, 100, PAGE);
+      await fixtures.coreSigningRule(permissions, PAGE);
       const message = { kind: 'message', payload: 'hello' };
       expect(await check(message, { ...PAGE, origin: OTHER_SITE, top_origin: OTHER_SITE })).toEqual({ covered: false, reason: 'no_rule' });
       expect(await check({ ...message, account: 1 })).toEqual({ covered: false, reason: 'no_rule' });
@@ -793,7 +847,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       expect(await permissions.setSigningAutoApprove(SITE, false)).toBe(true);
       expect(await check(message)).toEqual({ covered: false, reason: 'no_rule' });
       expect(await notConfirmed(ruled(PAGE).signMessage('hello'))).toBe('no_rule');
-      await permissions.setSigningAutoApprove(SITE, true, PAGE);
+      await fixtures.coreSigningRule(permissions, PAGE);
       expect(await permissions.revokePermission(SITE)).toBe(true);
       expect(await check(message)).toEqual({ covered: false, reason: 'no_rule' });
       // A request the core can't judge reads as not covered, unasked.
@@ -806,7 +860,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     });
 
     test("a send the contract rule answers: the rule the core wrote from a confirmed send, with main's pause, its value cap and the core's own fee check", async () => {
-      await permissions.grantPermission(SITE, 0, 100, PAGE);
+      await fixtures.coreConnect(permissions, 0, 100, PAGE);
       expect(await flaggedSend()).toEqual([{ added: true }]);
       const send = (request) => check({ kind: 'transaction', payload: SEND, paused: false, ...request });
       // A phone picks its own fee: the rule, the account and the pause decide.
@@ -853,19 +907,15 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     test('"Always allow": the core writes the rule as it signs and says so; not ticked, or not connected, none', async () => {
       // Not connected: the core signs the confirmed send, and writes no rule.
       expect(await flaggedSend()).toEqual([{ added: false, reason: 'not_exposed' }]);
-      await permissions.grantPermission(SITE, 0, 100, PAGE);
-      expect(calls.find((call) => call.method === 'approval.grant')).toMatchObject({
-        context: { caller: 'page', page: PAGE },
-        params: { store: 'dapp', change: { op: 'connect', account: 0, chain_id: 100 } },
-      });
+      await fixtures.coreConnect(permissions, 0, 100, PAGE);
       expect(await flaggedSend()).toEqual([{ added: true }]);
-      expect(calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({
+      expect(fixtures.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({
         tx: expect.any(Object),
         remember: true,
       });
       // Not ticked: no flag, and no rule in the reply.
       const plain = await pageToken('dapp-send', 0, DAPP_TX);
-      expect(calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({ tx: expect.any(Object) });
+      expect(fixtures.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({ tx: expect.any(Object) });
       const heard = [];
       await getSigner(0, { confirmation: plain, onRule: (rule) => heard.push(rule) }).signTransaction(
         buildTransaction({ ...SEND, nonce: 7 })
@@ -927,7 +977,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       });
 
       test("the token goes to the core's job under its page; an unverified payment writes no rule, and no receipt is given", async () => {
-        await permissions.grantPermission(SITE, PHONE_INDEX, 100, PAGE);
+        await fixtures.coreConnect(permissions, PHONE_INDEX, 100, PAGE);
         const { sent, rules, receipts } = await flaggedPhoneSend();
         expect(sent).toMatchObject({ hash: '0x' + 'ab'.repeat(32), outcome: 'unverified' });
         const job = calls.find((call) => call.method === 'phone.job');
@@ -947,7 +997,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       });
 
       test('a send the phone refused writes no rule', async () => {
-        await permissions.grantPermission(SITE, PHONE_INDEX, 100, PAGE);
+        await fixtures.coreConnect(permissions, PHONE_INDEX, 100, PAGE);
         refuse = true;
         const { sent, rules } = await flaggedPhoneSend();
         expect(sent).toMatchObject({ code: 'REMOTE_USER_REJECTED' });
@@ -1003,7 +1053,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       });
 
       test('the spend writes nothing; the receipt presented under its page writes the rule, and the next identical call is covered by it', async () => {
-        await permissions.grantPermission(SITE, index, 100, PAGE);
+        await fixtures.coreConnect(permissions, index, 100, PAGE);
         const held = await spentForDevice();
         expect(held).toEqual({ receipt: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE });
         const spend = calls.find((call) => call.method === 'approval.spend');
@@ -1027,7 +1077,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       });
 
       test('a send the device refused presents nothing: no rule', async () => {
-        await permissions.grantPermission(SITE, index, 100, PAGE);
+        await fixtures.coreConnect(permissions, index, 100, PAGE);
         refuse = true;
         const held = await spentForDevice();
         // The spend gave its receipt; the device refused, so main never
@@ -1040,7 +1090,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       });
 
       test('another document, a narrowing, or no grant: nothing written', async () => {
-        await permissions.grantPermission(SITE, index, 100, PAGE);
+        await fixtures.coreConnect(permissions, index, 100, PAGE);
         // Another document of the same site: refused, and the receipt gone.
         const other = await spentForDevice();
         expect(await reasonOf(vaultBackend.approval.remember({ receipt: other.receipt }, { ...PAGE, navigation: PAGE.navigation + 1 }))).toBe(
@@ -1060,7 +1110,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         // A grant that no longer exposes the account (moved to another): not written.
         const moved = await spentForDevice();
         await permissions.revokePermission(SITE);
-        await permissions.grantPermission(SITE, 0, 100, PAGE);
+        await fixtures.coreConnect(permissions, 0, 100, PAGE);
         expect(await reasonOf(vaultBackend.approval.remember({ receipt: moved.receipt }, PAGE))).toBe('unknown_token');
         const fresh = await spentForDevice();
         expect(await sc.rememberDeviceSend(fresh)).toEqual({ added: false, reason: 'not_exposed' });
@@ -1092,19 +1142,26 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     let answerWith;
     let nextId = 1;
     let nextNonce = 1;
-    // The agent route's and the relay's runs, which outlive a request main
-    // answered (its document gone): a test waits for them before it checks
-    // what was signed.
+    // The relay's runs, which outlive a request main answered (its document
+    // gone): a test waits for them before it checks what was signed.
     let running;
+    // Chain 100's node, from which the core prepares a send (its estimate
+    // and quote, APB-4c), and its gas price, which a test may lower.
+    let node;
+    const NODE_PRICE = 15_960_000_000;
+    let nodePrice = NODE_PRICE;
     // The transaction service's own waits before it asks the signer (the
     // fee, the nonce), held when a test sets one; and what each device was
     // asked.
     let serviceWait;
     let deviceAsked;
-    // The Agent's sheet (APB-5a): its wait before it answers, held when a
-    // test sets one; and the core's tokens main handed a device's signer.
+    // The Agent's sheet (APB-5a, APB-5b): its wait before it answers, held
+    // when a test sets one; and the core's tokens main handed a signer.
     let sheetWait;
     let presented;
+    // Each signed send main's guard let through to the journal and the
+    // network.
+    let committed;
     // DNS names over IPNS the page documents resolve: name -> IPNS key.
     const names = new Map();
 
@@ -1139,13 +1196,12 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       }
     }
 
-    beforeAll(() => {
+    beforeAll(async () => {
       permissions = require('./dapp-permissions');
       const { getSigner } = require('./signers');
       const { createPageDocuments } = require('../page/page-documents');
       const { createPageRequests } = require('../page/page-requests');
       const { createEthereumDispatchers } = require('../page/page-ethereum');
-      const { AgentWalletController } = require('../agent/agent-wallet-controller');
       guests = new Map();
       custody = new Set();
       const wallets = async () => [
@@ -1153,42 +1209,78 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         { index: LEDGER_INDEX, name: 'My Ledger', address: DEVICE_ADDRESS, type: 'ledger' },
         { index: PHONE_INDEX, name: 'My Phone', address: DEVICE_ADDRESS, type: 'remote' },
       ];
-      // The Agent's own approval, as the agent service asks it: the test
-      // answers each, and sees what it was asked.
-      const controller = new AgentWalletController({
-        identityManager: { getDerivedWallets: wallets, getActiveWalletIndex: () => 0 },
-        getPermission: (key) => permissions.getPermission(key),
-        grantPermission: () => {},
-        updateLastUsed: () => {},
-        updateWalletIndex: () => {},
-        getChain: (chainId) => ({ chainId, name: 'Gnosis', nativeCurrency: { symbol: 'xDAI', decimals: 18 } }),
-        estimateGas: async () => ({ gasLimit: TX.gasLimit }),
-        getGasPrices: async () => ({ type: 'eip1559', maxFeePerGas: TX.maxFeePerGas, maxPriorityFeePerGas: TX.maxPriorityFeePerGas }),
-        // Main's own signers: a vault account's signature by the core.
-        getSigner,
-        // As the transaction service runs it: the account's address, its
-        // own waits (held when a test sets `serviceWait`), then signed at
-        // the nonce main chose and committed past the caller's guard; a
-        // phone signs and broadcasts in one step.
-        signAndRecord: async (tx, signer, _record, options) => {
-          await signer.getAddress();
-          if (serviceWait) {
-            serviceWait.reached.resolve();
-            await serviceWait.promise;
-          }
-          if (typeof signer.sendTransaction === 'function') {
-            // A phone's send answers the core's outcome (PHN-2), as the
-            // transaction service takes it.
-            return { hash: (await signer.sendTransaction(buildTransaction({ ...tx, nonce: 7 }))).hash };
-          }
-          const raw = await signer.signTransaction(buildTransaction({ ...tx, nonce: 7 }));
-          let committed = null;
-          await options.guardCommit(async () => {
-            committed = raw;
-          });
-          return { hash: Transaction.from(committed).hash };
-        },
+      // Chain 100's node: the estimate and a legacy gas price, from which
+      // the core quotes a send (APB-4c); every other method is unknown.
+      const http = require('http');
+      node = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (chunk) => {
+          body += chunk;
+        });
+        req.on('end', () => {
+          const { id, method } = JSON.parse(body);
+          const answers = { eth_chainId: '0x64', eth_estimateGas: '0x445c', eth_gasPrice: '0x' + nodePrice.toString(16) };
+          const answer = answers[method]
+            ? { result: answers[method] }
+            : { error: { code: -32601, message: 'the method does not exist' } };
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, ...answer }));
+        });
       });
+      await new Promise((resolve) => node.listen(0, '127.0.0.1', resolve));
+      const base = `http://127.0.0.1:${node.address().port}`;
+      const endpoints = { e100a: `${base}/a`, e100b: `${base}/b` };
+      const chain = { generation: 0 };
+      chainShell.registerChainShell(
+        core,
+        { endpoint: (ref) => (endpoints[ref] ? { url: endpoints[ref], chainId: 100 } : null), generation: () => chain.generation },
+        { hop: chainShell.makeHop({ fetch }) }
+      );
+      const { generations } = await core.request(
+        'chain.configure',
+        {
+          chains: [
+            {
+              chain_id: 100,
+              display_name: 'Gnosis Chain',
+              read_order: ['direct'],
+              broadcast_order: ['direct'],
+              quorum: { k: 3, m: 2, timeout_ms: 5000 },
+              rpc: [
+                { endpoint: 'e100a', user_configured: false },
+                { endpoint: 'e100b', user_configured: false },
+              ],
+              prover: null,
+              myotis: false,
+              blockscout: null,
+            },
+          ],
+        },
+        { caller: 'chrome' },
+        { watchdogMs: 60_000 }
+      );
+      chain.generation = generations['100'];
+      // The transaction service as it runs a send (tx-recorder.js): the
+      // account's address, its own waits (held when a test sets
+      // `serviceWait`), then signed at the nonce main chose and committed
+      // past the caller's guard; a phone signs and broadcasts in one step.
+      const signAndRecord = async (tx, signer, _record, options) => {
+        await signer.getAddress();
+        if (serviceWait) {
+          serviceWait.reached.resolve();
+          await serviceWait.promise;
+        }
+        if (typeof signer.sendTransaction === 'function') {
+          // A phone's send answers the core's outcome (PHN-2), as the
+          // transaction service takes it.
+          return { hash: (await signer.sendTransaction(buildTransaction({ ...tx, nonce: 7 }))).hash };
+        }
+        const raw = await signer.signTransaction(buildTransaction({ ...tx, nonce: 7 }));
+        await options.guardCommit(async () => {
+          committed.push(raw);
+        });
+        options.onCommitted?.();
+        return { hash: Transaction.from(raw).hash, recorded: true, paymentId: 'payment_1' };
+      };
       const documents = createPageDocuments({
         isPrivateWebContents: () => false,
         isChromeIndexUrl: (url) => url === CHROME_URL,
@@ -1199,10 +1291,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       });
       const inCustody = (guestId) => custody.has(guestId);
       // The identity core's dispatcher (design 0012, APB-4), and its prompts
-      // in a tab the Agent holds answered by the Agent's sheet (APB-5a): a
-      // connect or a signature there is the core's, and the test's sheet
-      // answers its eth.sign prompt. A send keeps the agent route until
-      // APB-5b.
+      // in a tab the Agent holds answered by the Agent's sheet (APB-5): a
+      // connect, a signature and a send there are the core's, and the
+      // test's sheet answers its eth.sign and eth.send prompts.
       const { createEip1193Relay } = require('../page/page-eip1193');
       const relay = createEip1193Relay({
         coreClient: () => core,
@@ -1238,26 +1329,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
           networks: () => ({ 100: { name: 'Gnosis' } }),
           getActiveWalletIndex: () => 0,
           updateLastUsed: () => {},
-          agentWalletRequest: (guestId, request, options) =>
-            track(controller.handleRequest(
-              {
-                tabId: `tab_${guestId}`,
-                pageUrl: guests.get(guestId).getURL(),
-                conversationId: 'conversation_1',
-                requestApproval: async (asked) => {
-                  approvals.push(asked);
-                  return answerWith;
-                },
-                attested: options.attested,
-                beforeEffect: options.beforeEffect,
-                effectAllowed: options.effectAllowed,
-                pageToken: options.pageToken,
-                pageContext: options.pageContext,
-              },
-              request
-            )),
-          // Its runs kept, as the agent route's: a device's step outlives a
-          // request main answered (its document gone).
+          // Its runs kept: a device's step or a send's outlives a request
+          // main answered (its document gone).
           relay: { ...relay, request: (...args) => track(relay.request(...args)) },
           permissionsLoaded: async () => {},
           // A device's signature after the sheet's approve: main's own
@@ -1270,6 +1343,16 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
               return require('./signers').getSigner(index, authorized);
             },
           },
+          // A send after the sheet's approve (APB-5b): main's own steps
+          // (`page-core-sends.js`) and signers, handed the core's token.
+          coreSendDeps: {
+            getSigner: (index, authorized) => {
+              presented.push(authorized.confirmation);
+              return getSigner(index, authorized);
+            },
+            signAndRecord,
+            discardToken: (token) => sc.discardConfirmation(token),
+          },
           signing: { inCustody },
           sends: { inCustody },
         }),
@@ -1281,7 +1364,18 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       });
     });
 
-    // A run of the agent route, kept until it settles.
+    // Chain 100's node closed, and a fresh core process for the cases after
+    // these, with no chain and no fee evidence (the Safe executor's case
+    // reads none): main's client starts another once this one exits.
+    afterAll(async () => {
+      await new Promise((resolve) => node.close(resolve));
+      const restarted = new Promise((resolve) => core.once('ready', resolve));
+      core.current.child.kill('SIGKILL');
+      await restarted;
+      await vaultBackend.unlock('testpass1');
+    });
+
+    // A run of the relay, kept until it settles.
     function track(run) {
       running.push(run);
       return run;
@@ -1340,10 +1434,11 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       serviceWait = null;
       sheetWait = null;
       presented = [];
+      committed = [];
       deviceAsked = [];
       devices.ledger = device('ledger');
       devices.phone = device('phone');
-      await permissions.grantPermission(SITE, 0, 100, pageOf(SITE));
+      await fixtures.coreConnect(permissions, 0, 100, pageOf(SITE));
     });
 
     afterEach(async () => {
@@ -1390,33 +1485,33 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       };
     }
 
-    // The core's calls for one request: the Agent's token minted under
-    // `page` with `agent: true` and main's handle, then presented under
-    // `page` with `agent: true` by the one signature.
-    function minted(kind, page, index = 0) {
-      const issued = calls.filter((call) => call.method === 'approval.issue');
-      expect(issued).toEqual([
+    // The core's `{ send }` for one request, as main's signer was handed it
+    // (APB-5b): the core minted the token on the sheet's approve, for the
+    // request's page (`agent: true`) and the handle main opened for the
+    // sheet. Main minted nothing.
+    function handedSend(page) {
+      expect(calls.filter((call) => call.method === 'approval.issue')).toEqual([]);
+      expect(presented).toEqual([
         expect.objectContaining({
-          context: { caller: 'page', page },
-          params: expect.objectContaining({ kind, account: index, handle: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+          kind: 'dapp-send',
+          page,
+          handle: expect.stringMatching(/^[0-9a-f]{64}$/),
+          token: expect.stringMatching(/^[0-9a-f]{64}$/),
         }),
       ]);
-      return issued[0].params.handle;
+      return presented[0].handle;
     }
+    const SEND_PARAMS = () => [{ to: TX.to, value: '0x' + BigInt(TX.value).toString(16), data: TX.data }];
 
-    // A connect or a signature in the Agent's tab is the core's since APB-5a:
-    // page-agent-answers.integration.test.js answers its prompts with the
-    // sheet. A send keeps the agent route here until APB-5b.
-    test('eth_sendTransaction: a dapp-send token under `page` with agent: true, presented naming its kind', async () => {
+    // A connect or a signature in the Agent's tab is the core's since APB-5a,
+    // and a send since APB-5b: the core's eth.send, answered by the sheet,
+    // and its `{ send }` signed by main's own steps with the core's token.
+    test("eth_sendTransaction: the core's eth.send answered by the sheet; its dapp-send token presented under `page` with agent: true, naming its kind", async () => {
       const tab = agentTab();
-      const answer = await tab.ask('eth_sendTransaction', [{ to: TX.to, value: '0x' + BigInt(TX.value).toString(16), data: TX.data }]);
+      const answer = await tab.ask('eth_sendTransaction', SEND_PARAMS());
       expect(answer.result).toMatch(/^0x[0-9a-f]{64}$/);
-      expect(approvals).toEqual([expect.objectContaining({ action: 'wallet_transaction' })]);
-      const handle = minted('dapp-send', tab.page);
-      // The Agent ticks no "Always allow" and confirms no fee again.
-      const issue = calls.find((call) => call.method === 'approval.issue');
-      expect(issue.params.payload).not.toHaveProperty('remember');
-      expect(issue.params).not.toHaveProperty('fee_ack');
+      expect(approvals).toEqual([{ sheet: 'eth.send' }]);
+      const handle = handedSend(tab.page);
       const signs = calls.filter((call) => call.method.startsWith('sign.'));
       expect(signs).toEqual([
         expect.objectContaining({
@@ -1431,7 +1526,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     });
 
     test("a standing rule never answers it: the core asks the Agent's sheet, and refuses `{ standing }` in its tab (custody)", async () => {
-      await permissions.setSigningAutoApprove(SITE, true, pageOf(SITE));
+      await fixtures.coreSigningRule(permissions, pageOf(SITE));
       const tab = agentTab();
       const answer = await tab.ask('personal_sign', ['0x68656c6c6f', SIGNER]);
       expect(require('ethers').verifyMessage('hello', answer.result)).toBe(SIGNER);
@@ -1453,23 +1548,57 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       calls.length = 0;
     });
 
-    test("the Agent declining a send mints nothing and signs nothing", async () => {
+    // A7-5: a send whose fee the core's check stops is never the sheet's:
+    // the core gets a closed prompt, and the page today's fee text through
+    // main's override. Here the core's fee evidence falls while the sheet
+    // decides (main's own fee reference), so the core asks again with
+    // feeAskAgain at the sheet's approve.
+    test("a fee the core asks again (A7-5): the core's prompt closed cancelled, the page gets the fee-check text, nothing signed", async () => {
+      const feeReference = () =>
+        core.request('chain.fee_reference', { chain_id: 100, deadline_ms: 30_000 }, { caller: 'chrome' }, { watchdogMs: 60_000 });
+      const tab = agentTab();
+      const hold = holdSheet();
+      try {
+        const asking = tab.ask('eth_sendTransaction', SEND_PARAMS());
+        await hold.reached;
+        nodePrice = 1_000_000_000;
+        await feeReference();
+        hold.restore();
+        hold.release();
+        expect(await asking).toEqual({
+          error: { code: -32603, message: expect.stringMatching(/^The network fee is .+× today's network fee\. Confirm it again to send\.$/) },
+        });
+        // The sheet's approve, then the core's prompt asked again, which
+        // main closed without relaying an approve.
+        expect(approvals).toEqual([{ sheet: 'eth.send' }, { sheet: 'eth.send' }]);
+        expect(presented).toEqual([]);
+        expect(calls.filter((call) => call.method.startsWith('sign.'))).toEqual([]);
+      } finally {
+        hold.restore();
+        nodePrice = NODE_PRICE;
+        await feeReference();
+      }
+    });
+
+    test("the Agent declining a send: the core's prompt answered approve false, the page gets 4001; nothing minted or signed", async () => {
       const tab = agentTab();
       answerWith = 'declined';
-      expect(await tab.ask('eth_sendTransaction', [{ to: TX.to, value: '0x' + BigInt(TX.value).toString(16), data: TX.data }])).toEqual({
+      expect(await tab.ask('eth_sendTransaction', SEND_PARAMS())).toEqual({
         error: { code: 4001, message: 'User rejected the request' },
       });
-      expect(approvals).toEqual([expect.objectContaining({ action: 'wallet_transaction' })]);
+      expect(approvals).toEqual([{ sheet: 'eth.send' }]);
+      expect(presented).toEqual([]);
       expect(calls.filter((call) => call.method === 'approval.issue' || call.method.startsWith('sign.'))).toEqual([]);
     });
 
-    // Codex on #1246: main presents the Agent's token as the signer is
-    // built, and the core spends it under the PageContext read then; the
-    // signer waits after that (a vault's address, a device's hash and the
-    // core's spend, the transaction service's fee and nonce). Its last step
-    // reads the tab and the document again, right before the core or the
-    // device is asked: a tab the Agent left, or a document gone, at any of
-    // those waits signs nothing, sends nothing, and leaves no live token.
+    // Codex on #1246, and A7-6 since APB-5b: main presents the core's token
+    // as the signer is built, and the core spends it under the PageContext
+    // read then; the signer waits after that (a vault's address, a device's
+    // hash and the core's spend, the transaction service's fee and nonce).
+    // Its last step reads the tab and the document again, right before the
+    // core or the device is asked: a tab the Agent left, or a document gone,
+    // at any of those waits signs nothing, sends nothing, and leaves no live
+    // token.
     const ASKS = {
       personal_sign: (account) => ['personal_sign', ['0x68656c6c6f', account]],
       eth_signTypedData_v4: (account) => ['eth_signTypedData_v4', [account, JSON.stringify(TYPED_DATA)]],
@@ -1514,7 +1643,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       return { reached: wait.reached.promise, release: wait.resolve, restore: () => (sheetWait = null) };
     }
 
-    // A send, on the agent route until APB-5b.
+    // A send since APB-5b: the core's eth.send, answered by the sheet, and
+    // its `{ send }` through main's steps (`page-core-sends.js`).
     describe.each([
       ["a vault send, at the transaction service's wait", 'vault', 'eth_sendTransaction', 'service'],
       ["a Ledger send, at the transaction service's wait", 'ledger', 'eth_sendTransaction', 'service'],
@@ -1530,29 +1660,40 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         ['the document navigates', (tab) => tab.guest.commit(`${SITE}/next`), { gone: true }],
         ['nothing changes', () => {}, null],
       ])('%s there: the signer\'s last step decides', async (_change, change, refused) => {
-        await permissions.grantPermission(SITE, index, 100, pageOf(SITE));
+        await fixtures.coreConnect(permissions, index, 100, pageOf(SITE));
         const tab = agentTab();
         const hold = holdAt === 'service' ? holdService() : holdCore(holdAt);
         let answer;
         try {
           const asking = tab.ask(...ASKS[method](address));
           await hold.reached;
-          // Minted and presented: the signer was built, and waits.
-          const handle = minted(KINDS[method], tab.page, index);
+          // The core's token handed to main's signer, which waits.
+          expect(approvals).toEqual([{ sheet: 'eth.send' }]);
+          const handle = handedSend(tab.page);
+          const issued = presented[0];
           change(tab);
           hold.release();
           answer = await asking;
           await Promise.allSettled(running);
-          const issued = await calls.find((call) => call.method === 'approval.issue').reply;
           const signs = calls.filter((call) => call.method.startsWith('sign.'));
-          if (refused) {
+          if (refused?.gone) {
+            // The document gone: main's steps read it in the send's turn and
+            // at the commit, not as the signer's last step (A7-6 adds
+            // custody there), as for any page's send (APB-4c). A vault's or
+            // a Ledger's signed send is never committed; a phone's job signs
+            // and broadcasts in one step, with no such point.
             expect(answer).toEqual(refused);
+            expect(committed).toEqual([]);
+            calls.length = 0;
+          } else if (refused) {
+            expect(answer).toEqual(refused);
+            expect(committed).toEqual([]);
             // Neither the core nor the device was asked.
             expect(signs).toEqual([]);
             expect(deviceAsked).toEqual([]);
             // No live token: spent by a device's signer before its last
             // step, or burnt unspent.
-            const page = calls.find((call) => call.method === 'approval.issue').context.page;
+            const { page } = issued;
             expect(
               await reasonOf(
                 vaultBackend.sign.message(account(0), Buffer.from('hello'), {
@@ -1564,6 +1705,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             calls.length = 0;
           } else {
             expect(answer).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]+$/) });
+            expect(committed).toHaveLength(held === 'phone' ? 0 : 1);
             if (held === 'vault') {
               expect(signs).toHaveLength(1);
               expect(deviceAsked).toEqual([]);
@@ -1612,7 +1754,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       ];
 
       test.each(changes)("%s there: the sheet's answer, or the device signer's last step, decides", async (_change, change, refused) => {
-        await permissions.grantPermission(SITE, index, 100, pageOf(SITE));
+        await fixtures.coreConnect(permissions, index, 100, pageOf(SITE));
         const tab = agentTab();
         const hold = holdAt === 'sheet' ? holdSheet() : holdCore(holdAt);
         try {
@@ -1677,7 +1819,6 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     describe("a Ledger's device session: the last check after its queue, its open and its address", () => {
       const NAME = 'example.com';
       const IPNS_KEY = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
-      const OTHER_IPNS_KEY = 'k51qzi5uqu5dh71qgwangrt6r0nd4094i88nsady6qgd1dhjcyfsaqmpp143ab';
       const tick = async () => {
         for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
       };
@@ -1752,7 +1893,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
           deviceAsked = [];
           running = [];
           names.set(NAME, IPNS_KEY);
-          await permissions.grantPermission(grantKey, LEDGER_INDEX, 100, pageOf(grantKey));
+          await fixtures.coreConnect(permissions, LEDGER_INDEX, 100, pageOf(grantKey));
           const tab = agentTab({ name });
           const hold = HOLDS[held](settledCall('approval.spend'));
           const asking = tab.ask(...ASKS[method](DEVICE_ADDRESS));
@@ -1780,15 +1921,14 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       }
 
       describe.each(Object.keys(HOLDS))('%s held', (held) => {
-        // A send, on the agent route until APB-5b, in a tab bound to a DNS
-        // name over IPNS.
-        test("the Agent's eth_sendTransaction: the tab left, the document gone or the name moved there sends no signing APDU; unchanged, one", async () => {
-          await atHeldStep(held, 'eth_sendTransaction', 'signTransaction', [
-            LEFT,
-            ['the document navigates', (tab) => tab.guest.commit(`ipns://${IPNS_KEY}/next`), { gone: true }],
-            ['the name moves', () => names.set(NAME, OTHER_IPNS_KEY), { error: { code: 4100, message: 'This page has no address to connect from yet' } }],
-            UNCHANGED,
-          ], { name: NAME, grantKey: NAME });
+        // A send since APB-5b: the `{ send }` the core hands main after the
+        // sheet's approve, through main's steps (`page-core-sends.js`) and
+        // its own Ledger backend, with custody read again inside the device
+        // session (A7-6), in a plain tab as the signatures'. The document and
+        // the name are any page's send's (APB-4c, APB-4e): read in the
+        // send's turn and at the commit.
+        test("the Agent's eth_sendTransaction, the sheet's: the tab left there sends no signing APDU; unchanged, one", async () => {
+          await atHeldStep(held, 'eth_sendTransaction', 'signTransaction', [LEFT, UNCHANGED]);
         });
 
         // A signature since APB-5a: the `{ device }` the core hands main
@@ -2098,6 +2238,7 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
   let root;
   let core;
   let calls;
+  let fixtures;
   let sc;
   let permissions;
   let reference;
@@ -2116,13 +2257,9 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
   const message = { kind: 'message', payload: 'hello' };
   const send = { kind: 'transaction', payload: SEND, paused: false };
   async function flaggedSend(page = PAGE) {
-    const confirmation = await sc.issuePageConfirmation(
-      'dapp-send',
-      0,
-      { ...SEND, origin: page.origin },
-      { handle: HANDLE, context: page },
-      { remember: true }
-    );
+    const confirmation = await fixtures.pageToken('dapp-send', 0, { ...SEND, origin: page.origin }, page, HANDLE, {
+      remember: true,
+    });
     const heard = [];
     await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction(buildTransaction({ ...SEND, nonce: 7 }));
     return heard;
@@ -2158,6 +2295,7 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
       calls.push({ method, context, params });
       return request(method, params, context, options);
     };
+    fixtures = coreFixtures(request, () => sc);
     jest.resetModules();
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
     jest.doMock('../identity-manager', () => ({
@@ -2193,10 +2331,13 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
 
   beforeEach(() => {
     calls.length = 0;
+    fixtures.calls.length = 0;
     spies = [...FS_WRITES.map((name) => jest.spyOn(fs, name)), ...FS_PROMISE_WRITES.map((name) => jest.spyOn(fs.promises, name))];
   });
 
   afterEach(() => {
+    // Main mints no page kind and writes no dApp grant under `page` (APB-5).
+    expect(pageMintsAndGrants(calls)).toEqual([]);
     // Main writes the dApp file nowhere: the core is its only writer. (A
     // read opens it 'r'.)
     for (const spy of spies) {
@@ -2232,14 +2373,14 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
   });
 
   test("Q9's transition: the limited replacements through the browser's own prompt; the reference then finds no rule for either", async () => {
-    // "Always allow" on the signing prompt (page/page-signing.js): Q9's
-    // limited rule, under the page, which clears today's flag.
-    expect(await permissions.setSigningAutoApprove(SITE, true, PAGE)).toBe(true);
-    expect(calls.find((call) => call.method === 'approval.grant')).toMatchObject({
+    // "Always allow" on the core's signing prompt (APB-4b): Q9's limited
+    // rule, under the page, which clears today's flag.
+    expect(await fixtures.coreSigningRule(permissions, PAGE)).toBeTruthy();
+    expect(fixtures.calls.find((call) => call.method === 'approval.grant')).toMatchObject({
       context: { caller: 'page', page: PAGE },
       params: { store: 'dapp', change: { op: 'signing' } },
     });
-    // "Always allow" on the send's prompt (page/page-sends.js): the core
+    // "Always allow" on the core's send prompt (APB-4c): the core
     // writes the limited contract rule as it signs, clearing today's.
     expect(await flaggedSend()).toEqual([{ added: true }]);
     // The new build answers both.
@@ -2273,8 +2414,8 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
 
   test('rollback: the reference reads the file the core wrote and sees the same grants', async () => {
     const third = { ...PAGE, origin: THIRD_SITE, top_origin: THIRD_SITE };
-    await permissions.grantPermission(THIRD_SITE, 1, 10, third);
-    await permissions.updateWalletIndex(THIRD_SITE, 2, third);
+    await fixtures.coreConnect(permissions, 1, 10, third);
+    await fixtures.coreAccount(permissions, 2, third);
     await permissions.updateLastUsed(THIRD_SITE, 100, third);
     expect(await permissions.revokePermission(OTHER_SITE)).toBe(true);
     // The chrome's revoke goes as the chrome (design 0012, API).
@@ -2297,12 +2438,12 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
     expect(permissions.getAllPermissions().map((record) => record.origin).sort()).toEqual(records.map((r) => r.origin).sort());
   });
 
-  test("an account change for a key the core holds no grant for: the core writes nothing, and main's change rejects", async () => {
+  test("an account change for a key the core holds no grant for: the core writes nothing, and main's copy has none", async () => {
     const fourth = 'https://fourth.example';
     const page = { ...PAGE, origin: fourth, top_origin: fourth };
     const before = fs.readFileSync(file(), 'utf8');
-    await expect(permissions.updateWalletIndex(fourth, 1, page)).rejects.toThrow('The account change was not recorded');
-    expect(calls.filter((call) => call.method === 'approval.grant').at(-1)).toMatchObject({
+    expect(await fixtures.coreAccount(permissions, 1, page)).toBeNull();
+    expect(fixtures.calls.filter((call) => call.method === 'approval.grant').at(-1)).toMatchObject({
       params: { store: 'dapp', change: { op: 'account', account: 1 } },
       context: { caller: 'page', page },
     });

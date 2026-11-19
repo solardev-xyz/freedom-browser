@@ -273,7 +273,6 @@ describeIfBinary('a DNS name over IPNS through the real freedom-cored (0012 APR-
         relay: env.relay,
         identityWalletEnabled: () => true,
         permissionsLoaded: async () => {},
-        agentWalletRequest: async () => ({ handled: false }),
         signing: { inCustody: () => false },
         sends: { inCustody: () => false },
       }),
