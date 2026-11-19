@@ -1179,6 +1179,72 @@ async function lockTestWallet(window) {
   });
 }
 
+// The chain behind an Agent-held page's send on APB-5b's path (freedom-core
+// design 0012): the identity core prepares the send itself, its estimate
+// and fee quote read through main's chain shell, which a hop answers here
+// (chain-shell.js's E2E hook): a legacy gas price of 1 gwei and an estimate
+// of 17,500 (the core's limit, plus 20%: 21,000). Main then signs, records
+// and broadcasts it in page-core-sends through tx-recorder's
+// `signAndRecord`, which this replaces in main for the app instance: the
+// core signs with the token the sheet's approve got, main's commit check
+// runs, and nothing is broadcast; each send is kept in `__agentSends`.
+async function serveAgentSendChain(electronApp) {
+  await electronApp.evaluate(
+    (_electron, args) => {
+      const results = {
+        eth_chainId: '0x64',
+        net_version: '100',
+        eth_blockNumber: '0x1',
+        eth_gasPrice: '0x3b9aca00',
+        eth_estimateGas: '0x445c',
+        eth_getBalance: '0x8ac7230489e80000',
+        eth_getTransactionCount: '0x0',
+        eth_call: '0x' + '00'.repeat(32),
+      };
+      const reply = (request) => {
+        if (request.method === 'eth_getBlockByNumber') {
+          return {
+            result: {
+              number: '0x1',
+              hash: '0x' + '11'.repeat(32),
+              parentHash: '0x' + '22'.repeat(32),
+              timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16),
+              gasLimit: '0x1c9c380',
+              gasUsed: '0x0',
+              transactions: [],
+            },
+          };
+        }
+        return results[request.method] !== undefined
+          ? { result: results[request.method] }
+          : { error: { code: -32601, message: `${request.method} is not served here` } };
+      };
+      globalThis.__FREEDOM_TEST_CHAIN__.setHop(async (_url, init) => {
+        let body;
+        try {
+          const request = JSON.parse(String(init?.body));
+          const one = (r) => ({ jsonrpc: '2.0', id: r.id, ...reply(r) });
+          body = JSON.stringify(Array.isArray(request) ? request.map(one) : one(request));
+        } catch {
+          return { status: 400, headers: {}, body: Buffer.alloc(0) };
+        }
+        return { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(body) };
+      });
+      const service = process.mainModule.require(`${args.root}/src/main/wallet/transaction-service`);
+      const recorder = process.mainModule.require(`${args.root}/src/main/wallet/tx-recorder`);
+      globalThis.__agentSends = [];
+      recorder.signAndRecord = async (tx, signer, context, options) => {
+        await signer.signTransaction(service.buildTransaction({ ...tx, nonce: 0 }));
+        if (options?.guardCommit) await options.guardCommit(async () => ({ intentId: 'intent-agent-e2e' }));
+        globalThis.__agentSends.push({ transaction: { ...tx }, context: { kind: context.kind, origin: context.origin } });
+        options?.onCommitted?.();
+        return { hash: args.hash, paymentId: 'payment_agent_wallet_test', recorded: true };
+      };
+    },
+    { root: path.resolve(__dirname, '..'), hash: `0x${'ab'.repeat(32)}` }
+  );
+}
+
 function walletFixtureBody() {
   return `<!doctype html><title>Agent wallet fixture</title><main>
     <h1>Agent wallet fixture</h1>
@@ -1903,9 +1969,11 @@ test('privileged capability: declining an Agent wallet request is final and reco
 });
 
 test('privileged capability: locked-wallet transaction shows exact data and returns a safe receipt', async ({
+  electronApp,
   window,
   harness,
 }) => {
+  await serveAgentSendChain(electronApp);
   await createUnlockedTestWallet(window);
   await lockTestWallet(window);
   await prepareTask(window, harness, URLS.walletTransaction, walletFixtureBody());
@@ -1930,7 +1998,8 @@ test('privileged capability: locked-wallet transaction shows exact data and retu
   const summary = window.locator('#agent-wallet-approval-summary');
   await expect(summary).toContainText('0x3333333333333333333333333333333333333333');
   await expect(summary).toContainText('1.0 xDAI');
-  await expect(summary).toContainText('0.000021 xDAI');
+  // The core's view: its gas limit times its fee cap.
+  await expect(summary).toContainText('Maximum fee0.0000273 xDAI');
   await expect(summary).toContainText('0xabcdef12');
   await expect(window.locator('#agent-approval-approve')).toHaveText('Confirm transaction');
   await window.locator('#agent-approval-approve').click();
@@ -1947,7 +2016,8 @@ test('privileged capability: locked-wallet transaction shows exact data and retu
     'document.querySelector("#transaction-status").textContent'
   );
   const identityStatus = await window.evaluate(() => window.identity.getStatus());
-  const harnessState = await harness.state();
+  const agentSends = await electronApp.evaluate(() => globalThis.__agentSends.slice());
+  expect(agentSends).toHaveLength(1);
   const result = await recordQualification(
     window,
     'agent-native-wallet-transaction',
@@ -1955,7 +2025,7 @@ test('privileged capability: locked-wallet transaction shows exact data and retu
     {
       transactionStatus,
       identityUnlocked: identityStatus?.isUnlocked,
-      capturedTransaction: harnessState.agentWalletTransaction,
+      capturedTransaction: agentSends[0],
       walletReceipts: observedWalletReceipts,
     }
   );
@@ -1963,15 +2033,17 @@ test('privileged capability: locked-wallet transaction shows exact data and retu
   expect(result.transactionStatus).toBe(`Transaction ${deterministicHash}`);
   expect(result.identityUnlocked).toBe(true);
   expect(result.capturedTransaction).toEqual({
+    // The transaction the core prepared and the sheet approved, in main's
+    // form (page-core-sends): the page's 0xde0b6b3a7640000 (1 xDAI), the
+    // core's gas limit (its estimate plus 20%) and its gas price (the
+    // quote's 1 gwei, plus its 30% headroom).
     transaction: {
       to: '0x3333333333333333333333333333333333333333',
-      // The page's 0xde0b6b3a7640000 (1 xDAI), in main's checked form: main
-      // checks a page's send before it offers it to the agent (0011 PRQ-5b).
       value: '1000000000000000000',
       data: '0xabcdef12',
       gasLimit: '21000',
       chainId: 100,
-      gasPrice: '1000000000',
+      gasPrice: '1300000000',
     },
     context: { kind: 'dapp-send', origin: PRODUCT_ORIGIN },
   });
