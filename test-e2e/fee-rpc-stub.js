@@ -13,8 +13,10 @@
 // for its evidence (the harness's `setFeeReferenceFixture('core')`).
 //
 // They answer `eth_gasPrice` with the spec's gas price, `eth_chainId` with
-// the chain, and the latest block with no base fee (a legacy quote); every
-// other method is an error. The quote they make together is the fixture's:
+// the chain, the latest block with no base fee (a legacy quote), and
+// `eth_estimateGas` with the spec's estimate: from APB-4c the core prepares
+// a page's send itself, its gas limit the estimate plus 20%. Every other
+// method is an error. The quote they make together is the fixture's:
 // a legacy gas price from two endpoints.
 
 const http = require('http');
@@ -31,9 +33,10 @@ function failure(id, message) {
  * @param {object} options
  * @param {number} options.chainId
  * @param {string} options.gasPrice - wei, decimal
+ * @param {string} [options.gasEstimate] - gas, decimal (17,500: a 21,000 limit)
  * @returns {Promise<{urls: string[], setGasPrice: (wei: string) => void, close: () => Promise<void>}>}
  */
-async function startFeeRpcStub({ chainId, gasPrice }) {
+async function startFeeRpcStub({ chainId, gasPrice, gasEstimate = '17500' }) {
   let price = BigInt(gasPrice);
   const respond = (call) => {
     switch (call?.method) {
@@ -41,6 +44,8 @@ async function startFeeRpcStub({ chainId, gasPrice }) {
         return answer(call.id, '0x' + chainId.toString(16));
       case 'eth_gasPrice':
         return answer(call.id, '0x' + price.toString(16));
+      case 'eth_estimateGas':
+        return answer(call.id, '0x' + BigInt(gasEstimate).toString(16));
       case 'eth_getBlockByNumber':
         return answer(call.id, {
           number: '0x1',

@@ -2,14 +2,14 @@
 
 /**
  * Main's relay to the identity core's Ethereum dispatcher (freedom-core
- * design 0012, "fc-eip1193 and approval.request"; steps APB-4a and APB-4b).
+ * design 0012, "fc-eip1193 and approval.request"; steps APB-4a to APB-4c).
  *
  * `page-ethereum.js` hands a page's request here for the methods the core
  * answers from cored 0.20.0: the reads (`eth_chainId`, `net_version`,
  * `eth_accounts` and the 23 read-only methods), the connect
  * (`eth_requestAccounts`), `wallet_switchEthereumChain`, and the
- * signatures (`personal_sign`, `eth_signTypedData_v4`, APB-4b). Sends stay
- * on main's own route until APB-4c.
+ * signatures (`personal_sign`, `eth_signTypedData_v4`, APB-4b), and the
+ * sends (`eth_sendTransaction`, APB-4c).
  *
  *   - **The request** goes to `eip1193.request { method, params?, world }`
  *     under `page`, with the document's PageContext: its key as `origin`,
@@ -23,10 +23,16 @@
  *   - **Its answer** is the page's: `{ result }` or `{ error }`, with the
  *     EIP-1193 code main gave before. `{ device }` (APB-4b) is main's to act
  *     on, and never reaches a page: a signature's goes to main's device
- *     step (`page-devices.js`) once it is checked against the request (its
- *     kind for the method, and the handle main approved the core's prompt
- *     on), and anything else is an internal error, its token discarded.
- *     `{ send }` is APB-4c's. A 0001 error (the core down, a crossed
+ *     step (`page-devices.js`), and a send's to main's send step
+ *     (`page-core-sends.js`), once it is checked against the request (its
+ *     kind for the method, its payload, and the handle main approved the
+ *     core's prompt on), and anything else is an internal error, its token
+ *     discarded. `{ send }` (APB-4c) is main's too: the core's prepared
+ *     transaction, checked against the page's request (`to`, `value` and
+ *     `data`, the page's chain, and the fee the user approved), with its
+ *     token for that approve's handle, or `standing: true` for a send the
+ *     site's rule answered and no prompt approved; it goes to main's send
+ *     step, which adds the nonce and nothing else. A 0001 error (the core down, a crossed
  *     answer's `not_authorized`) is `-32603`. Where main itself refused the
  *     core a step (the name moved, the window's prompt budget, an unlock
  *     the user cancelled), the page gets main's own answer, as from main's
@@ -59,7 +65,15 @@
  *       - `vault.unlock` (APB-4b, a rule's signature while the vault is
  *         locked): the unlock prompt. Its approve goes to the core as it
  *         is, and a vault still locked then refuses the signature.
- *       - `eth.send` answers `busy` until APB-4c serves it.
+ *       - `eth.send` (APB-4c): the send prompt, from the core's view (the
+ *         account, the chain, the transaction, the core's quote and fee
+ *         check), with "Always allow" and the fee's confirmation where the
+ *         core offers them. With the approvals document on, a vault
+ *         account's prompt asks for the vault unlocked first, as main's own
+ *         route did. A fee asked again at the approve is the core's new
+ *         prompt (`feeAskAgain`).
+ *       - `vault.unlock` with reason "send" (APB-4c): a rule's send while
+ *         the vault is locked, as for a signature.
  *   - **`approval.recheck { request, page }`:** `{ live, agent }`, read
  *     now: whether the request is still open and its document still holds
  *     its key (a DNS name over IPNS resolved again), and whether the Agent
@@ -75,6 +89,7 @@
  */
 
 const { ShellError } = require('../core/service-client');
+const { txOf, selectorOf } = require('./page-sends');
 
 // What the chrome's getCurrentChainId falls back to (`page-ethereum.js`).
 const FALLBACK_CHAIN_ID = 100;
@@ -85,13 +100,12 @@ const NO_ADDRESS = Object.freeze({ code: 4100, message: 'This page has no addres
 const PROMPT_ID = /^[0-9a-f]{32}$/;
 // 0011's reasons a handle closes with no decision.
 const CLOSED_REASONS = new Set(['navigated', 'closed', 'cancelled', 'expired']);
-// The kinds the core asks for from 0.20.0 that APB-4c serves.
-const LATER_KINDS = new Set(['eth.send']);
+const SEND_METHOD = 'eth_sendTransaction';
 // The signatures (APB-4b), and the token kind each one's `{ device }` names
 // for a Ledger or a phone; a Safe's is `safe-message`.
 const SIGN_KINDS = Object.freeze({ personal_sign: 'sign-message', eth_signTypedData_v4: 'sign-typed-data' });
 // A rule's request asks for the vault's unlock with its reason.
-const UNLOCK_REASONS = Object.freeze({ personal_sign: 'sign', eth_signTypedData_v4: 'sign' });
+const UNLOCK_REASONS = Object.freeze({ personal_sign: 'sign', eth_signTypedData_v4: 'sign', [SEND_METHOD]: 'send' });
 const DEVICE_TYPES = new Set(['ledger', 'remote', 'safe']);
 const DEVICE_KEYS = new Set(['type', 'kind', 'account', 'payload', 'expected_hash', 'handle', 'token']);
 const HASH = /^0x[0-9a-f]{64}$/i;
@@ -101,6 +115,21 @@ const DEVICE_MISMATCH = Object.freeze({
   code: INTERNAL_ERROR_CODE,
   message: "The identity core's device answer doesn't match the request",
 });
+const SEND_MISMATCH = Object.freeze({
+  code: INTERNAL_ERROR_CODE,
+  message: "The identity core's send doesn't match the request",
+});
+const SEND_KEYS = new Set(['kind', 'account', 'tx', 'handle', 'token', 'standing']);
+const SEND_VIEW_KEYS = new Set(['account', 'chain', 'tx', 'fee', 'feeCheck', 'feeAskAgain', 'alwaysAllow']);
+const SEND_CHOICES = Object.freeze(['alwaysAllow', 'feeAcknowledged']);
+// `sign.transaction`'s form without a nonce, by type (design 0012).
+const TX_FIELDS = Object.freeze({
+  2: ['type', 'chain_id', 'to', 'value', 'data', 'gas_limit', 'max_fee_per_gas', 'max_priority_fee_per_gas'],
+  0: ['type', 'chain_id', 'to', 'value', 'data', 'gas_limit', 'gas_price'],
+});
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const HEX = /^0x(?:[0-9a-fA-F]{2})*$/;
 const PAGE_FIELDS = Object.freeze(['origin', 'top_origin', 'frame', 'navigation', 'agent']);
 const SELECT_KEYS = new Set(['request', 'page', 'chain_id']);
 const RECHECK_KEYS = new Set(['request', 'page']);
@@ -225,6 +254,55 @@ function unlockShown(view, choices, method) {
   if (!isPlainObject(view) || !isPlainObject(choices) || Object.keys(choices).length !== 0) throw invalid();
   if (!hasOnlyKeys(view, new Set(['account', 'reason'])) || view.reason !== UNLOCK_REASONS[method]) throw invalid();
   return { view: { account: accountShown(view.account), reason: view.reason } };
+}
+
+// A flat object of the given value type, copied; throws on anything else.
+function flatCopy(value, isValue) {
+  if (!isPlainObject(value) || !Object.values(value).every(isValue)) throw invalid();
+  return { ...value };
+}
+
+/**
+ * The send prompt's view (APB-4c), rebuilt to main's form from the core's
+ * (the reference's, `page-sends.js`'s `sendView`): the account, the chain
+ * with its native symbol, the transaction (`to` checksummed), the core's
+ * quoted fee (or none, or a Safe's executor), the fee check's verdict,
+ * whether the fee is asked again, and whether "Always allow" is shown; and
+ * the values the core offers for "Always allow" and the fee's
+ * confirmation. Throws on anything else.
+ */
+function sendShown(view, choices) {
+  if (!isPlainObject(view) || !isPlainObject(choices)) throw invalid();
+  if (!hasOnlyKeys(choices, new Set(SEND_CHOICES))) throw invalid();
+  const offered = {};
+  for (const name of SEND_CHOICES) {
+    const values = choices[name];
+    if (!Array.isArray(values) || !values.every((value) => typeof value === 'boolean')) throw invalid();
+    if (new Set(values).size !== values.length || !values.includes(false)) throw invalid();
+    offered[name] = new Set(values);
+  }
+  if (!hasOnlyKeys(view, SEND_VIEW_KEYS)) throw invalid();
+  const { chain, tx, fee, feeCheck } = view;
+  if (!isPlainObject(chain) || !hasOnlyKeys(chain, new Set(['id', 'name', 'symbol'])) || !positive(chain.id)) {
+    throw invalid();
+  }
+  if ((chain.name !== null && typeof chain.name !== 'string') || typeof chain.symbol !== 'string') throw invalid();
+  if (!isPlainObject(tx) || !hasOnlyKeys(tx, new Set(['to', 'value', 'data']))) throw invalid();
+  if (![tx.to, tx.value, tx.data].every((field) => typeof field === 'string')) throw invalid();
+  if (typeof view.feeAskAgain !== 'boolean' || typeof view.alwaysAllow !== 'boolean') throw invalid();
+  const scalar = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
+  return {
+    view: {
+      account: accountShown(view.account),
+      chain: { id: chain.id, name: chain.name, symbol: chain.symbol },
+      tx: { to: tx.to, value: tx.value, data: tx.data },
+      fee: fee === null ? null : flatCopy(fee, (value) => typeof value === 'string'),
+      feeCheck: feeCheck === null ? null : flatCopy(feeCheck, scalar),
+      feeAskAgain: view.feeAskAgain,
+      alwaysAllow: view.alwaysAllow,
+    },
+    offered,
+  };
 }
 
 /**
@@ -358,6 +436,7 @@ function createEip1193Relay(deps = {}) {
     // Only the decision main relayed for this request, on its own handle.
     if (entry.approved === null || handle !== entry.approved) return null;
     if (!DEVICE_TYPES.has(type) || !Number.isSafeInteger(account) || account < 0 || !isPlainObject(payload)) return null;
+    if (entry.method === SEND_METHOD) return sendDeviceOf(entry, device);
     if (!SIGN_KINDS[entry.method] || kind !== (type === 'safe' ? 'safe-message' : SIGN_KINDS[entry.method])) return null;
     if (kind === 'sign-message') {
       if (!hasOnlyKeys(payload, new Set(['message'])) || typeof payload.message !== 'string') return null;
@@ -368,6 +447,124 @@ function createEip1193Relay(deps = {}) {
       return null;
     }
     return Object.freeze({ type, kind, account, payload, expectedHash, handle, token });
+  }
+
+  // The chain a send of this request is for: the one the page reads, as
+  // main sent it in `world` (an onchain app's own, or the window's).
+  const sendChainOf = (entry) => entry.world?.chain || entry.world?.window_chain || FALLBACK_CHAIN_ID;
+
+  // The page's own transaction, as main's route checked its form, or null.
+  function askedTx(entry) {
+    try {
+      return txOf(entry.params);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A prepared transaction in `sign.transaction`'s form, with no nonce
+   * (design 0012), checked against the request: the page's `to`, `value`
+   * and `data`, the page's chain, and, for a send the user approved, the
+   * gas limit and fees the approved prompt showed. Null for anything else.
+   */
+  function preparedTx(entry, tx) {
+    if (!isPlainObject(tx)) return null;
+    const fields = TX_FIELDS[tx.type];
+    if (!fields || Object.keys(tx).length !== fields.length || !hasOnlyKeys(tx, new Set(fields))) return null;
+    const quantities = fields.filter((field) => !['type', 'to', 'data'].includes(field));
+    if (!quantities.every((field) => typeof tx[field] === 'string' && DECIMAL.test(tx[field]))) return null;
+    if (typeof tx.to !== 'string' || !ADDRESS.test(tx.to) || typeof tx.data !== 'string' || !HEX.test(tx.data)) {
+      return null;
+    }
+    const asked = askedTx(entry);
+    if (!asked || tx.to.toLowerCase() !== asked.to.toLowerCase() || tx.value !== asked.value) return null;
+    if (tx.data.toLowerCase() !== asked.data.toLowerCase() || Number(tx.chain_id) !== sendChainOf(entry)) return null;
+    if (entry.approved !== null) {
+      const fee = entry.approvedFee;
+      if (!isPlainObject(fee) || fee.gasLimit !== tx.gas_limit) return null;
+      const same =
+        tx.type === 2
+          ? fee.maxFeePerGas === tx.max_fee_per_gas && fee.maxPriorityFeePerGas === tx.max_priority_fee_per_gas
+          : fee.gasPrice === tx.gas_price;
+      if (!same) return null;
+    }
+    return Object.freeze({ ...tx });
+  }
+
+  // "Always allow" the user ticked, for a contract call (the core carries
+  // it in the token only for one).
+  const remembers = (entry, tx) => entry.remember === true && Boolean(selectorOf(tx.data));
+
+  /**
+   * A send's `{ device }` checked against its request: a Ledger's or a
+   * phone's `dapp-send` with `payload: { tx }`, or a Safe's `safe-send` with
+   * `payload: { safe, chain_id, tx: { to, value, data } }` for the Safe main
+   * listed and the page's chain, each with the token for the handle main
+   * approved the core's prompt on. Null for anything else.
+   */
+  function sendDeviceOf(entry, device) {
+    const { type, kind, account, payload, handle, token } = device;
+    if (device.expected_hash !== undefined) return null;
+    if (type === 'safe') {
+      if (kind !== 'safe-send' || !hasOnlyKeys(payload, new Set(['safe', 'chain_id', 'tx']))) return null;
+      const { tx } = payload;
+      if (!isPlainObject(tx) || !hasOnlyKeys(tx, new Set(['to', 'value', 'data']))) return null;
+      if (![tx.to, tx.value, tx.data].every((field) => typeof field === 'string')) return null;
+      const asked = askedTx(entry);
+      if (!asked || tx.to.toLowerCase() !== asked.to.toLowerCase() || tx.value !== asked.value) return null;
+      if (tx.data.toLowerCase() !== asked.data.toLowerCase()) return null;
+      if (String(payload.chain_id) !== String(sendChainOf(entry))) return null;
+      const safe = (entry.world?.wallets || []).find((wallet) => wallet?.index === account);
+      if (typeof payload.safe !== 'string' || typeof safe?.address !== 'string') return null;
+      if (payload.safe.toLowerCase() !== safe.address.toLowerCase()) return null;
+      return Object.freeze({ type, kind, account, payload, handle, token, remember: false });
+    }
+    if (kind !== 'dapp-send' || !hasOnlyKeys(payload, new Set(['tx']))) return null;
+    const tx = preparedTx(entry, payload.tx);
+    if (!tx) return null;
+    return Object.freeze({ type, kind, account, payload: { tx }, handle, token, remember: remembers(entry, tx) });
+  }
+
+  /**
+   * A `{ send }` checked against the request it answers: a vault account's
+   * prepared transaction with the token the core minted for the handle main
+   * approved the core's prompt on for this request, or a rule's
+   * (`standing: true`) with no token, for a request no prompt of main's
+   * approved. Null for anything else.
+   */
+  function sendOf(entry, send) {
+    if (entry.method !== SEND_METHOD || !isPlainObject(send) || !hasOnlyKeys(send, SEND_KEYS)) return null;
+    const { kind, account, handle, token } = send;
+    if (kind !== 'dapp-send' || !Number.isSafeInteger(account) || account < 0) return null;
+    // A vault account main listed for the request (a device's send comes
+    // as `{ device }`).
+    const wallet = (entry.world?.wallets || []).find((candidate) => candidate?.index === account);
+    if (!wallet || !['mnemonic', undefined, null].includes(wallet.type)) return null;
+    if (send.standing !== undefined) {
+      if (send.standing !== true || handle !== undefined || token !== undefined || entry.approved !== null) return null;
+    } else if (typeof token !== 'string' || !token || entry.approved === null || handle !== entry.approved) {
+      return null;
+    }
+    const tx = preparedTx(entry, send.tx);
+    if (!tx) return null;
+    if (send.standing === true) return Object.freeze({ kind, account, tx, standing: true });
+    return Object.freeze({ kind, account, tx, handle, token, remember: remembers(entry, tx) });
+  }
+
+  // Main's send step for a checked `{ send }`, or the page's error.
+  async function sendAnswer(entry, send, step) {
+    const checked = !entry.override && step ? sendOf(entry, send) : null;
+    if (!checked) {
+      discard(send?.token);
+      return { error: { ...SEND_MISMATCH } };
+    }
+    if (checked.token) entry.context.traceCoreToken?.('minted', checked.kind);
+    try {
+      return await step(checked, entry.page);
+    } catch (err) {
+      return failure(err);
+    }
   }
 
   // Main's device step for a checked `{ device }`, or the page's error.
@@ -386,6 +583,7 @@ function createEip1193Relay(deps = {}) {
   }
 
   const isDevice = (reply) => isPlainObject(reply) && Object.keys(reply).length === 1 && reply.device !== undefined;
+  const isSend = (reply) => isPlainObject(reply) && Object.keys(reply).length === 1 && reply.send !== undefined;
 
   // The core's answer as the page gets it.
   function pageAnswer(reply) {
@@ -397,7 +595,7 @@ function createEip1193Relay(deps = {}) {
         return { error: data === undefined ? { code, message } : { code, message, data } };
       }
     }
-    // `{ send }` is main's (APB-4c), and no method here gets one.
+    // Anything else, `{ send }` for a method that gets none among it.
     return { error: { code: INTERNAL_ERROR_CODE, message: 'The identity core gave no answer for the page' } };
   }
 
@@ -411,20 +609,26 @@ function createEip1193Relay(deps = {}) {
    * core reads them; `announce(context, account, chainId, written)` tells a
    * new grant's events, queued at the approve (`page-ethereum.js`);
    * `device(device, page)` answers the page from a device, for a
-   * signature's `{ device }` (`page-devices.js`).
+   * signature's or a send's `{ device }` (`page-devices.js`,
+   * `page-core-sends.js`); `send(send, page)` answers it for a `{ send }`
+   * (`page-core-sends.js`).
    */
-  async function request(context, { params, announce = null, device = null } = {}) {
+  async function request(context, { params, announce = null, device = null, send = null } = {}) {
     const method = context.method;
     const client = read(coreClient, null);
     if (!client) return { error: { code: INTERNAL_ERROR_CODE, message: 'The identity core is not running' } };
     const page = pageOf(context);
-    const body = { method, world: await worldFor(context, method) };
+    const world = await worldFor(context, method);
+    const body = { method, world };
     if (params !== undefined) body.params = params;
-    const entry = { context, method, page, params, client, announce, id: null, generation: null };
+    const entry = { context, method, page, params, world, client, announce, id: null, generation: null };
     entry.override = null;
     entry.granted = null;
-    // The handle main approved the core's prompt on, for this request.
+    // The handle main approved the core's prompt on, for this request, and
+    // for a send the fee that prompt showed and "Always allow" as ticked.
     entry.approved = null;
+    entry.approvedFee = null;
+    entry.remember = false;
     let key = null;
     let answer;
     let reply = null;
@@ -445,6 +649,7 @@ function createEip1193Relay(deps = {}) {
       if (key !== null && running.get(key) === entry) running.delete(key);
     }
     if (!answer && isDevice(reply)) answer = await deviceAnswer(entry, reply.device, device);
+    if (!answer && isSend(reply)) answer = await sendAnswer(entry, reply.send, send);
     if (!answer) {
       answer = pageAnswer(reply);
       // The core made the signature on the approve main relayed: it minted
@@ -625,6 +830,66 @@ function createEip1193Relay(deps = {}) {
     return { prompt: id, handle: decision.handle, approve: true, choices: {}, world: await worldFor(entry.context, entry.method) };
   }
 
+  /**
+   * The send's prompt (APB-4c), and main's answer for its decision. With
+   * the approvals document on, a vault account's prompt asks for the vault
+   * unlocked first, as main's own route did. "Always allow" and the fee's
+   * confirmation are picked only where the core offers them. The fee the
+   * prompt showed, and the tick, are kept for the `{ send }` the approve
+   * leads to.
+   */
+  async function sendAsk(entry, prompt, shown) {
+    const { context } = entry;
+    const { account } = shown.view;
+    if (context.approvalsDocument && account.type === 'mnemonic' && !(await vaultOpen())) {
+      const unlock = await unlockPrompt(entry, prompt, { account, reason: 'send' });
+      const done = unapproved(entry, prompt, unlock);
+      if (done?.busy) return done;
+      if (done) {
+        entry.override = { ...UNLOCK_CANCELLED };
+        return { prompt, closed: 'cancelled' };
+      }
+    }
+    const { offered } = shown;
+    const decision = await context.prompt({
+      kind: 'eth.send',
+      view: shown.view,
+      corePrompt: prompt,
+      choices: (raw) =>
+        Object.keys(raw).every((name) => SEND_CHOICES.includes(name)) &&
+        SEND_CHOICES.every((name) => raw[name] === undefined || typeof raw[name] === 'boolean') &&
+        SEND_CHOICES.every((name) => offered[name].has(raw[name] === true))
+          ? { alwaysAllow: raw.alwaysAllow === true, feeAcknowledged: raw.feeAcknowledged === true }
+          : null,
+    });
+    const done = unapproved(entry, prompt, decision);
+    if (done) return done;
+    const id = typeof decision.prompt === 'string' ? decision.prompt : prompt;
+    if (context.approvalsDocument && decision.from !== 'approvals') return { prompt: id, closed: 'cancelled' };
+    // Name-revalidated: once the user has approved, the document must still
+    // hold its key, or the core mints nothing. No keyless answer is set on
+    // the record (`nameHolds`' option), as on main's own route: a refusal
+    // answers 4100 itself, and once a send that passed main's gate has gone
+    // out, its hash is the page's even if the name moves after it.
+    if (!((await context.nameHolds()) && context.holdsKey())) {
+      entry.override = { ...NO_ADDRESS };
+      return { prompt: id, closed: 'cancelled' };
+    }
+    entry.approved = decision.handle;
+    entry.approvedFee = shown.view.fee;
+    entry.remember = decision.choices.alwaysAllow === true;
+    return {
+      prompt: id,
+      handle: decision.handle,
+      approve: true,
+      choices: {
+        alwaysAllow: decision.choices.alwaysAllow === true,
+        feeAcknowledged: decision.choices.feeAcknowledged === true,
+      },
+      world: await worldFor(context, entry.method),
+    };
+  }
+
   // The prompt main opens for a core's request of `kind`, its view checked.
   function askFor(entry, prompt, { kind, view, choices }) {
     const { method } = entry;
@@ -636,6 +901,10 @@ function createEip1193Relay(deps = {}) {
       const shown = signShown(view, choices, method);
       return () => signAsk(entry, prompt, shown);
     }
+    if (kind === 'eth.send' && method === SEND_METHOD) {
+      const shown = sendShown(view, choices);
+      return () => sendAsk(entry, prompt, shown);
+    }
     if (kind === 'vault.unlock' && UNLOCK_REASONS[method]) {
       const shown = unlockShown(view, choices, method);
       return () => unlockAsk(entry, prompt, shown);
@@ -645,10 +914,8 @@ function createEip1193Relay(deps = {}) {
 
   async function approvalRequest(params, { signal, generation } = {}) {
     const entry = runningFor(params, generation, PROMPT_KEYS);
-    const { prompt, kind } = params;
+    const { prompt } = params;
     if (typeof prompt !== 'string' || !PROMPT_ID.test(prompt)) throw invalid();
-    // APB-4c serves these; nothing asks for them before.
-    if (LATER_KINDS.has(kind)) return { prompt, busy: true };
     const ask = askFor(entry, prompt, params);
     if (signal?.aborted) return { prompt, closed: 'cancelled' };
     const { context } = entry;
@@ -768,4 +1035,5 @@ module.exports = {
   connectShown,
   signShown,
   unlockShown,
+  sendShown,
 };

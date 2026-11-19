@@ -1217,4 +1217,12 @@ module.exports = {
   createSendDispatchers,
   sendDappPayment,
   txOf,
+  // Shared with the identity core's sends (`page-core-sends.js`, APB-4c).
+  agentTxOf,
+  failure,
+  reportRule,
+  reportPhoneRuleWaits,
+  withdrawn,
+  safeDisplay,
+  selectorOf,
 };

@@ -20,6 +20,15 @@
 // 0012, APB-1b), which main asks the core for, from two loopback endpoints
 // of this spec's (fee-rpc-stub.js). Everything between the page and the
 // signer is the app's own.
+//
+// From APB-4c (freedom-core design 0012) the identity core prepares a
+// page's send itself, through its own chain machine, from those two
+// endpoints: its estimate (plus 20%), its fee quote and its fee check's
+// evidence. Main's stubbed quote above isn't asked for a page's send. Two
+// departures of the core's are named where they show: a fee above today's
+// is set up on the core's own evidence, and a Ledger's send is asked even
+// where the site's rule would have answered it (no standing rule answers a
+// device's account through the core until 0016).
 
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -53,12 +62,24 @@ const SELECTOR = '0x095ea7b3';
 const CALL = { to: CONTRACT, value: '0x0', data: `${SELECTOR}${'0'.repeat(56)}deadbeef${'f'.repeat(64)}` };
 const TRANSFER = { to: '0x1111111111111111111111111111111111111111', value: '0x2386f26fc10000' };
 const HASH = `0x${'ab'.repeat(32)}`;
+// The endpoints' eth_gasPrice that the core quotes at 1 gwei, and one it
+// quotes at a tenth of that (0.1 gwei), with its headroom.
+const GAS_PRICE = '760000000';
+const TENTH_GAS_PRICE = '40000000';
 const REJECTED = { code: 4001, message: 'User rejected the request' };
 
 const test = base.extend({
-  // The base app plus a vault with one account, and a Ledger account.
+  // Gnosis's fee quote, for the core's own evidence and its quote, from two
+  // endpoints of this spec's (fee-rpc-stub.js): the fixture's 1 gwei once
+  // the core's legacy headroom is added (⌊G·125/100⌋ + 0.05 gwei).
   // eslint-disable-next-line no-empty-pattern
-  electronApp: async ({}, use) => {
+  fees: async ({}, use) => {
+    const fees = await startFeeRpcStub({ chainId: 100, gasPrice: GAS_PRICE });
+    await use(fees);
+    await fees.close();
+  },
+  // The base app plus a vault with one account, and a Ledger account.
+  electronApp: async ({ fees }, use) => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'f-page-sends-'));
     const userDataDir = path.join(tmpRoot, 'userData');
     const identityDir = path.join(tmpRoot, 'identity');
@@ -86,9 +107,6 @@ const test = base.extend({
       }),
       'utf-8'
     );
-    // Gnosis's fee quote, for the core's own evidence: the stubs' gas price,
-    // the fixture's, from two endpoints of this spec's (fee-rpc-stub.js).
-    const fees = await startFeeRpcStub({ chainId: 100, gasPrice: '1000000000' });
     fs.writeFileSync(
       path.join(userDataDir, 'network-config.json'),
       JSON.stringify({
@@ -119,7 +137,6 @@ const test = base.extend({
     });
     await use(app);
     await closeApp(app);
-    await fees.close();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 });
@@ -259,6 +276,16 @@ const ledgerSigned = (electronApp) => electronApp.evaluate(() => globalThis.__le
 // The fee check's evidence, through the harness (null restores its default).
 const feeReference = (electronApp, reply) =>
   electronApp.evaluate((_electron, value) => globalThis.__FREEDOM_TEST_HARNESS__.setFeeReferenceFixture(value), reply);
+// The core's own fee evidence for Gnosis, at the endpoints' gas price now:
+// main asks the core for its `chain.fee_reference`, whose reply the core
+// keeps as its newest evidence for a minute (design 0012, "The fee check").
+async function coreEvidenceAt(electronApp, fees, wei) {
+  fees.setGasPrice(wei);
+  await electronApp.evaluate(
+    (_electron, args) => process.mainModule.require(`${args.root}/src/main/networks/chain-data`).getFeeReference(100),
+    { root: repoRoot }
+  );
+}
 
 async function openIn(win, url) {
   const address = win.locator('[data-test="address-input"]');
@@ -291,6 +318,7 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   electronApp,
   window: win,
   harness,
+  fees,
 }) => {
   test.setTimeout(180_000);
   await harness.setContentFixture(`${KEY_A}/`, page('dapp a'));
@@ -401,12 +429,11 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   await expect.poll(() => outcome(win, KEY_A, 'transfer')).toEqual(REJECTED);
 
   // A fee far above today's (the fee check's reference a tenth of the quote):
-  // never under the rule, and confirmed twice on the prompt.
-  await feeReference(electronApp, {
-    header: null,
-    lowest_priority: null,
-    quote: { type: 'legacy', gasPrice: '100000000', effectiveGasPrice: '100000000', source: 'direct', verified: false, answered: 2 },
-  });
+  // never under the rule, and confirmed twice on the prompt. The reference
+  // is the core's own evidence (APB-4c): taken at a tenth of the price the
+  // endpoints quote the send at.
+  await coreEvidenceAt(electronApp, fees, TENTH_GAS_PRICE);
+  fees.setGasPrice(GAS_PRICE);
   await send(win, KEY_A, 'above', CALL);
   await expectPanel(panel, 'Confirm Transaction', KEY_A);
   await expect(panel.locator('#body')).toContainText("× today's network fee.");
@@ -416,7 +443,7 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   expect(await outcome(win, KEY_A, 'above')).toEqual({ pending: true });
   await decideInPanel(electronApp, { panel, windowId });
   await expect.poll(async () => (await outcome(win, KEY_A, 'above'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
-  await feeReference(electronApp, 'core');
+  await coreEvidenceAt(electronApp, fees, GAS_PRICE);
 
   // A locked vault under the rule: main asks for the unlock first, for the
   // site it attested, and sends once the vault is open.
@@ -491,12 +518,15 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   await expect.poll(async () => (await approvalsState(electronApp))[windowId]).toMatchObject({ visible: false, waiting: null });
   expect(await ledgerSigned(electronApp)).toBe(2);
   expect(await ruleCovers(electronApp, KEY_C)).toBe(true);
-  // The same call again: no prompt and no token, the rule answering, and the
-  // Ledger signs it.
+  // The same call again: through the core (APB-4c) no standing rule answers
+  // a device's account until 0016, so it is asked, and the Ledger signs it
+  // once approved.
   const ledgerPrompts = (await promptsOf(electronApp, 'eth.send')).length;
   await send(win, KEY_C, 'ledger-ruled', CALL);
+  await expectPanel(panel, 'Confirm Transaction', KEY_C);
+  await decideInPanel(electronApp, { panel, windowId });
   await expect.poll(async () => (await outcome(win, KEY_C, 'ledger-ruled'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
-  expect((await promptsOf(electronApp, 'eth.send')).length).toBe(ledgerPrompts);
+  expect((await promptsOf(electronApp, 'eth.send')).length).toBe(ledgerPrompts + 1);
   expect(await ledgerSigned(electronApp)).toBe(3);
 
   // Every send went to main; none took the chrome's old path.
