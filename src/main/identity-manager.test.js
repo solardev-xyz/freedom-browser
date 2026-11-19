@@ -34,6 +34,7 @@ function makeProfileIdentityMock() {
   return {
     createVault: jest.fn().mockResolvedValue('test mnemonic'),
     unlockVault: jest.fn().mockResolvedValue(undefined),
+    isUnlocked: jest.fn(() => true),
     deriveAllKeys: jest.fn(() => ({
       userWallet: { address: '0xuser', privateKey: '0xuser-private' },
       beeWallet: { address: '0xbee', privateKey: '0xbee-private' },
@@ -55,7 +56,7 @@ function makeRestartIdentityMock() {
     createVault: jest.fn(async () => 'test test test test test test test test test test test about'),
     unlockVault: jest.fn(async () => {}),
     vaultExists: jest.fn(async () => true),
-    isUnlocked: jest.fn(async () => true),
+    isUnlocked: jest.fn(() => true),
     deriveAllKeys: jest.fn(() => ({
       userWallet: { address: '0xuser', privateKey: '0x01' },
       beeWallet: { address: '0xbee', privateKey: '0x02' },
@@ -68,6 +69,37 @@ function makeRestartIdentityMock() {
     injectRadicleKey: jest.fn(() => 'did:key:zTest'),
     createRadicleIdentity: jest.fn(() => ({ did: 'did:key:zTest' })),
   };
+}
+
+/**
+ * A fake Ledger: addLedgerWallet reads the address at the path back from
+ * the device (#1065). `device.address` is what it holds there.
+ */
+function makeLedgerDevice(address) {
+  const device = {
+    address,
+    readAddresses: jest.fn(async (paths) => paths.map(() => device.address)),
+  };
+  return device;
+}
+
+// Anvil/Hardhat-default test keys — well-known, never funded on mainnet.
+const PHONE_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+const STRANGER_KEY = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
+
+/**
+ * A fake phone: adding a phone account has the phone sign a check as the
+ * account (#1078). `phone.wallet` is the key it signs with; a test swaps
+ * `phone.answer` to answer otherwise.
+ */
+function makePhone() {
+  const { Wallet, getBytes } = require('ethers');
+  const phone = {
+    wallet: new Wallet(PHONE_KEY),
+    answer: ({ params }) => phone.wallet.signMessage(getBytes(params[0])),
+    requestRemoteSignature: jest.fn(async (job) => phone.answer(job)),
+  };
+  return phone;
 }
 
 describe('identity-manager profile paths', () => {
@@ -139,7 +171,8 @@ describe('identity-manager profile paths', () => {
     expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
       antDir,
       '0xbee-private',
-      expect.any(String)
+      expect.any(String),
+      { beforeWrite: expect.any(Function) }
     );
     expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
       antDir,
@@ -280,24 +313,38 @@ describe('identity-manager ledger accounts', () => {
   let tmpDir;
   let envSnapshot;
   let identityManager;
+  let device;
+  let phone;
 
+  let vaultPresent = false;
   const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
   const LEDGER_PATH = "44'/60'/0'/0/0";
   const HARDWARE_INDEX_BASE = 1000000;
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-ledger-'));
-    envSnapshot = snapshotEnv();
-    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
-    identityManager = loadMainModule(require.resolve('./identity-manager'), {
+  const loadIdentityManager = () =>
+    loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
         [require.resolve('./identity')]: () => ({
           getMnemonic: jest.fn(() => null), // vault locked — ledger ops must not need it
           isUnlocked: jest.fn(() => false),
+          vaultExists: jest.fn(async () => vaultPresent),
+        }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
+        [require.resolve('./wallet/remote/bridge')]: () => ({
+          requestRemoteSignature: phone.requestRemoteSignature,
         }),
       },
-    }).mod;
+    });
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-ledger-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    vaultPresent = false;
+    device = makeLedgerDevice(LEDGER_ADDRESS);
+    phone = makePhone();
+    identityManager = loadIdentityManager().mod;
   });
 
   afterEach(() => {
@@ -334,9 +381,106 @@ describe('identity-manager ledger accounts', () => {
       address: LEDGER_ADDRESS,
       type: 'ledger',
       path: LEDGER_PATH,
+      addressCheck: 'matched',
     });
     expect(readVaultMeta().derivedWallets).toHaveLength(2);
-    expect(readVaultMeta().derivedWallets[1]).toMatchObject({ type: 'ledger', path: LEDGER_PATH });
+    expect(readVaultMeta().derivedWallets[1]).toMatchObject({
+      type: 'ledger',
+      path: LEDGER_PATH,
+      addressCheck: 'matched',
+    });
+    // The address was read back from the device at that path.
+    expect(device.readAddresses).toHaveBeenCalledWith([LEDGER_PATH]);
+  });
+
+  test('addLedgerWallet refuses an address the device does not hold at that path (#1065)', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    device.address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+    await expect(identityManager.addLedgerWallet('Planted', LEDGER_ADDRESS, LEDGER_PATH))
+      .rejects.toMatchObject({
+        code: 'LEDGER_ADDRESS_MISMATCH',
+        message: expect.stringMatching(/different address at that path/),
+      });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('addLedgerWallet adds nothing when the device cannot be read', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    device.readAddresses.mockRejectedValueOnce(
+      Object.assign(new Error('No Ledger device found.'), { code: 'LEDGER_DEVICE_NOT_FOUND' })
+    );
+
+    await expect(identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH))
+      .rejects.toMatchObject({ code: 'LEDGER_DEVICE_NOT_FOUND' });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('the add IPC answers a mismatch with its code', async () => {
+    seedMainWallet();
+    const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: tmpDir,
+      extraMocks: {
+        [require.resolve('./identity')]: () => ({
+          getMnemonic: jest.fn(() => null),
+          isUnlocked: jest.fn(() => false),
+        }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
+      },
+    });
+    mod.registerIdentityIpc();
+    device.address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+    await expect(ipcMain.invoke('wallet:add-ledger-wallet', 'Planted', LEDGER_ADDRESS, LEDGER_PATH))
+      .resolves.toMatchObject({ success: false, code: 'LEDGER_ADDRESS_MISMATCH' });
+  });
+
+  test('a record added before the device check starts unchecked and is never deleted (#1065)', async () => {
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+        { index: HARDWARE_INDEX_BASE, name: 'Old', address: LEDGER_ADDRESS, type: 'ledger', path: LEDGER_PATH },
+        {
+          index: HARDWARE_INDEX_BASE + 1,
+          name: 'Checked',
+          address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+          type: 'ledger',
+          path: "44'/60'/1'/0/0",
+          addressCheck: 'matched',
+        },
+      ],
+    });
+
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'unchecked' });
+    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index))
+      .toEqual([HARDWARE_INDEX_BASE]);
+
+    // A device that doesn't hold it marks it mismatched, and keeps it.
+    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({
+      address: LEDGER_ADDRESS,
+      addressCheck: 'mismatched',
+    });
+    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index))
+      .toEqual([HARDWARE_INDEX_BASE]);
+
+    // One that does makes it matched.
+    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
+    expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
+    expect(identityManager.getLedgerRecordsToCheck()).toEqual([]);
+
+    // A matched record stays matched: a later device that doesn't hold it
+    // is another Ledger.
+    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, false)).toBe('matched');
+    expect(readVaultMeta().derivedWallets[2]).toMatchObject({ addressCheck: 'matched' });
+
+    // Only Ledger records carry the state.
+    expect(identityManager.recordLedgerAddressCheck(0, true)).toBeNull();
+    expect(readVaultMeta().derivedWallets[0]).not.toHaveProperty('addressCheck');
   });
 
   test('addLedgerWallet auto-names and works with the vault locked', async () => {
@@ -358,6 +502,44 @@ describe('identity-manager ledger accounts', () => {
       .rejects.toThrow('Invalid Ledger account address');
     await expect(identityManager.addLedgerWallet('Bad', '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', ''))
       .rejects.toThrow('Missing derivation path');
+  });
+
+  test('getFreedomSigningAddresses lists the Ant key and every account with the vault locked (#647)', async () => {
+    vaultPresent = false;
+    expect(await identityManager.getFreedomSigningAddresses())
+      .toEqual({ addresses: new Set(), complete: true });
+    // A vault whose meta is missing or unreadable cannot vouch for its
+    // accounts: the owner check fails closed rather than passing.
+    vaultPresent = true;
+    expect((await identityManager.getFreedomSigningAddresses()).complete).toBe(false);
+    fs.writeFileSync(path.join(tmpDir, 'vault-meta.json'), '{ not json', 'utf-8');
+    expect((await identityManager.getFreedomSigningAddresses()).complete).toBe(false);
+
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: {
+        userWallet: '0x0000000000000000000000000000000000000001',
+        beeWallet: '0x00000000000000000000000000000000000000Bb',
+      },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+        { index: HARDWARE_INDEX_BASE, name: 'Stax', address: LEDGER_ADDRESS, type: 'ledger', path: LEDGER_PATH },
+      ],
+    });
+    expect(await identityManager.getFreedomSigningAddresses()).toEqual({
+      addresses: new Set([
+        '0000000000000000000000000000000000000001',
+        '00000000000000000000000000000000000000bb',
+        LEDGER_ADDRESS.slice(2).toLowerCase(),
+      ]),
+      complete: true,
+    });
+
+    // A mnemonic account whose address is only known once unlocked.
+    const meta = readVaultMeta();
+    meta.derivedWallets.push({ index: 1, name: 'Second' });
+    writeVaultMeta(meta);
+    expect((await identityManager.getFreedomSigningAddresses()).complete).toBe(false);
   });
 
   test('getDerivedWallets returns the stored device address without derivation', async () => {
@@ -409,15 +591,102 @@ describe('identity-manager ledger accounts', () => {
   test('addRemoteWallet appends a pathless typed record and auto-names', async () => {
     seedMainWallet();
 
-    const wallet = await identityManager.addRemoteWallet('', LEDGER_ADDRESS);
+    const wallet = await identityManager.addRemoteWallet('', phone.wallet.address);
 
     expect(wallet).toEqual({
       index: HARDWARE_INDEX_BASE,
       name: 'Phone 1',
-      address: LEDGER_ADDRESS,
+      address: phone.wallet.address,
       type: 'remote',
+      addressCheck: 'matched',
     });
     expect(readVaultMeta().derivedWallets[1]).toEqual(wallet);
+  });
+
+  test('addRemoteWallet has the phone sign a fresh check as the account first (#1078)', async () => {
+    seedMainWallet();
+
+    await identityManager.addRemoteWallet('My Phone', phone.wallet.address);
+
+    expect(phone.requestRemoteSignature).toHaveBeenCalledTimes(1);
+    const [job] = phone.requestRemoteSignature.mock.calls[0];
+    expect(job).toMatchObject({
+      method: 'personal_sign',
+      address: phone.wallet.address,
+      purpose: 'account-check',
+    });
+    expect(job.params[1]).toBe(phone.wallet.address);
+    const challenge = Buffer.from(job.params[0].slice(2), 'hex').toString('utf8');
+    expect(challenge).toContain(phone.wallet.address);
+    expect(challenge).toMatch(/Nonce: [0-9a-f]{64}$/);
+  });
+
+  test('addRemoteWallet refuses an address the phone does not sign as (#1078)', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    // The chrome names an address; the phone behind the session holds another.
+    const { Wallet } = require('ethers');
+    phone.wallet = new Wallet(STRANGER_KEY);
+
+    await expect(identityManager.addRemoteWallet('Planted', new Wallet(PHONE_KEY).address))
+      .rejects.toMatchObject({
+        code: 'REMOTE_ADDRESS_MISMATCH',
+        message: "Your phone answered from a different account than the one you picked. The account wasn't added.",
+      });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('addRemoteWallet refuses a phone that says the account is not its own (EIP-1193 4100)', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    phone.answer = async () => {
+      throw Object.assign(new Error('Unauthorized'), { code: 'REMOTE_WRONG_ACCOUNT' });
+    };
+
+    await expect(identityManager.addRemoteWallet('Planted', phone.wallet.address))
+      .rejects.toMatchObject({ code: 'REMOTE_ADDRESS_MISMATCH' });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test.each([
+    ['no answer in time', () => Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' })],
+    ['the user cancels', () => Object.assign(new Error('cancelled'), { code: 'REMOTE_USER_CANCELLED' })],
+    ['a rejection on the phone', () => Object.assign(new Error('rejected'), { code: 'REMOTE_USER_REJECTED' })],
+  ])('addRemoteWallet adds nothing on %s (#1078)', async (_label, makeError) => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    phone.answer = async () => {
+      throw makeError();
+    };
+
+    const refusal = identityManager.addRemoteWallet('My Phone', phone.wallet.address);
+    await expect(refusal).rejects.toMatchObject({
+      code: 'REMOTE_ADDRESS_UNPROVEN',
+      message: expect.stringMatching(/didn't confirm that it holds this account, so it wasn't added/),
+    });
+    await expect(refusal).rejects.toHaveProperty('cause.code', makeError().code);
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('addRemoteWallet adds nothing for a malformed answer', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    phone.answer = async () => 'not-a-signature';
+
+    await expect(identityManager.addRemoteWallet('My Phone', phone.wallet.address))
+      .rejects.toMatchObject({ code: 'REMOTE_ADDRESS_UNPROVEN' });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('the add IPC answers a refusal with its code', async () => {
+    seedMainWallet();
+    const { mod, ipcMain } = loadIdentityManager();
+    mod.registerIdentityIpc();
+    const { Wallet } = require('ethers');
+    phone.wallet = new Wallet(STRANGER_KEY);
+
+    await expect(ipcMain.invoke('wallet:add-remote-wallet', 'Planted', new Wallet(PHONE_KEY).address))
+      .resolves.toMatchObject({ success: false, code: 'REMOTE_ADDRESS_MISMATCH' });
   });
 
   test('addRemoteWallet rejects bad addresses and duplicates across account types', async () => {
@@ -429,24 +698,133 @@ describe('identity-manager ledger accounts', () => {
     // The same address already added as a Ledger account is still a duplicate.
     await expect(identityManager.addRemoteWallet('Again', LEDGER_ADDRESS.toLowerCase()))
       .rejects.toThrow(/already in your wallet list/);
+    // Neither asks the phone.
+    expect(phone.requestRemoteSignature).not.toHaveBeenCalled();
   });
 
   test('remote accounts behave like device accounts across the record seams', async () => {
     seedMainWallet();
-    const wallet = await identityManager.addRemoteWallet('My Phone', LEDGER_ADDRESS);
+    const address = phone.wallet.address;
+    const wallet = await identityManager.addRemoteWallet('My Phone', address);
 
     expect(identityManager.getWalletRecord(wallet.index)).toMatchObject({
       type: 'remote',
-      address: LEDGER_ADDRESS,
+      address,
+      addressCheck: 'matched',
     });
     await expect(identityManager.getUserWalletKey(wallet.index))
       .rejects.toThrow('This account has no derivable private key');
 
     await identityManager.setActiveWalletIndex(wallet.index);
-    await expect(identityManager.getActiveWalletAddress()).resolves.toBe(LEDGER_ADDRESS);
+    await expect(identityManager.getActiveWalletAddress()).resolves.toBe(address);
 
     const wallets = await identityManager.getDerivedWallets();
-    expect(wallets[1]).toMatchObject({ type: 'remote', address: LEDGER_ADDRESS });
+    expect(wallets[1]).toMatchObject({ type: 'remote', address, addressCheck: 'matched' });
+  });
+
+  describe('a phone record added before the check (#1078)', () => {
+    const seedOldPhone = (extra = {}) =>
+      writeVaultMeta({
+        activeWalletIndex: 0,
+        addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+        derivedWallets: [
+          { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+          { index: HARDWARE_INDEX_BASE, name: 'Old Phone', address: phone.wallet.address, type: 'remote', ...extra },
+        ],
+        nextHardwareWalletIndex: HARDWARE_INDEX_BASE + 1,
+      });
+
+    test('starts unchecked, becomes mismatched and then matched, and is never deleted', () => {
+      seedOldPhone();
+
+      expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'unchecked' });
+
+      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+      expect(readVaultMeta().derivedWallets[1]).toMatchObject({
+        address: phone.wallet.address,
+        addressCheck: 'mismatched',
+      });
+
+      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
+      expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
+
+      // A matched record stays matched: a later answer from another account
+      // is the phone on another account.
+      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('matched');
+      expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+      // Only phone records carry the state.
+      expect(identityManager.recordRemoteAddressCheck(0, true)).toBeNull();
+      expect(readVaultMeta().derivedWallets[0]).not.toHaveProperty('addressCheck');
+    });
+
+    test('checkRemoteWallet keeps a match', async () => {
+      seedOldPhone();
+
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE)).resolves.toMatchObject({
+        index: HARDWARE_INDEX_BASE,
+        addressCheck: 'matched',
+      });
+      expect(phone.requestRemoteSignature).toHaveBeenCalledWith(
+        expect.objectContaining({ walletIndex: HARDWARE_INDEX_BASE, purpose: 'account-check' })
+      );
+      expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
+    });
+
+    test('checkRemoteWallet marks a phone on another account mismatched, and keeps the record', async () => {
+      seedOldPhone();
+      const { Wallet } = require('ethers');
+      phone.wallet = new Wallet(STRANGER_KEY);
+      const oldAddress = new Wallet(PHONE_KEY).address;
+
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE)).resolves.toMatchObject({
+        addressCheck: 'mismatched',
+      });
+      expect(readVaultMeta().derivedWallets[1]).toMatchObject({
+        name: 'Old Phone',
+        address: oldAddress,
+        addressCheck: 'mismatched',
+      });
+    });
+
+    test('checkRemoteWallet leaves the record as it was when no answer comes', async () => {
+      seedOldPhone();
+      const before = readVaultMeta();
+      phone.answer = async () => {
+        throw Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' });
+      };
+
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE))
+        .rejects.toMatchObject({ code: 'REMOTE_TIMEOUT' });
+      expect(readVaultMeta()).toEqual(before);
+    });
+
+    test('checkRemoteWallet only checks phone records', async () => {
+      seedOldPhone();
+      await expect(identityManager.checkRemoteWallet(0)).rejects.toThrow(/not a phone account/);
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE + 5)).rejects.toThrow(/not a phone account/);
+      expect(phone.requestRemoteSignature).not.toHaveBeenCalled();
+    });
+
+    test('the check IPC answers with the state, or the failure and its code', async () => {
+      seedOldPhone();
+      const { mod, ipcMain } = loadIdentityManager();
+      mod.registerIdentityIpc();
+
+      await expect(ipcMain.invoke('wallet:check-remote-wallet', HARDWARE_INDEX_BASE)).resolves.toMatchObject({
+        success: true,
+        wallet: { index: HARDWARE_INDEX_BASE, addressCheck: 'matched' },
+      });
+
+      phone.answer = async () => {
+        throw Object.assign(new Error('Request cancelled.'), { code: 'REMOTE_USER_CANCELLED' });
+      };
+      await expect(ipcMain.invoke('wallet:check-remote-wallet', HARDWARE_INDEX_BASE)).resolves.toEqual({
+        success: false,
+        error: 'Request cancelled.',
+        code: 'REMOTE_USER_CANCELLED',
+      });
+    });
   });
 });
 
@@ -455,6 +833,8 @@ describe('identity-manager safe accounts', () => {
   let envSnapshot;
   let identityManager;
   let ownerIndexes;
+  let device;
+  let phone;
 
   const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
   const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
@@ -464,12 +844,18 @@ describe('identity-manager safe accounts', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-safe-'));
     envSnapshot = snapshotEnv();
     process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    device = makeLedgerDevice(LEDGER_ADDRESS);
+    phone = makePhone();
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
         [require.resolve('./identity')]: () => ({
           getMnemonic: jest.fn(() => null), // vault locked — safe ops must not need it
           isUnlocked: jest.fn(() => false),
+        }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
+        [require.resolve('./wallet/remote/bridge')]: () => ({
+          requestRemoteSignature: phone.requestRemoteSignature,
         }),
       },
     }).mod;
@@ -533,6 +919,76 @@ describe('identity-manager safe accounts', () => {
       owners: ownerIndexes,
       threshold: 1,
       saltNonce: SALT,
+    });
+  });
+
+  test('addSafeWallet refuses a Ledger owner no device has matched, until one does (#1065)', async () => {
+    // A Ledger record from before the device check: the chrome's word.
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+        { index: 1000000, name: 'Old Ledger', address: LEDGER_ADDRESS, type: 'ledger', path: "44'/60'/0'/0/0" },
+      ],
+      nextHardwareWalletIndex: 1000001,
+    });
+    ownerIndexes = [0, 1000000];
+
+    await expect(addSafe()).rejects.toMatchObject({
+      code: 'LEDGER_ACCOUNT_UNCHECKED',
+      message: expect.stringMatching(/"Old Ledger" can't own a Safe until it has been checked/),
+    });
+    expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+    identityManager.recordLedgerAddressCheck(1000000, false);
+    await expect(addSafe()).rejects.toMatchObject({
+      code: 'LEDGER_ACCOUNT_UNCHECKED',
+      message: expect.stringMatching(/the Ledger last connected doesn't hold it/),
+    });
+    expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+    identityManager.recordLedgerAddressCheck(1000000, true);
+    await expect(addSafe()).resolves.toMatchObject({ type: 'safe', owners: [0, 1000000] });
+  });
+
+  test('addSafeWallet refuses a phone owner its phone has not shown it holds, until it has (#1078)', async () => {
+    // A phone record from before the phone check: the chrome's word.
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+        { index: 1000000, name: 'Old Phone', address: phone.wallet.address, type: 'remote' },
+      ],
+      nextHardwareWalletIndex: 1000001,
+    });
+    ownerIndexes = [0, 1000000];
+
+    await expect(addSafe()).rejects.toMatchObject({
+      code: 'REMOTE_ACCOUNT_UNCHECKED',
+      message: expect.stringMatching(/"Old Phone" can't own a Safe until it has been checked on your phone/),
+    });
+    expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+    identityManager.recordRemoteAddressCheck(1000000, false);
+    await expect(addSafe()).rejects.toMatchObject({
+      code: 'REMOTE_ACCOUNT_UNCHECKED',
+      message: expect.stringMatching(/your phone last answered from a different account/),
+    });
+    expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+    // Checked on the phone: it can own the Safe now.
+    await identityManager.checkRemoteWallet(1000000);
+    await expect(addSafe()).resolves.toMatchObject({ type: 'safe', owners: [0, 1000000] });
+  });
+
+  test('addSafeWallet takes a phone owner added through the phone check', async () => {
+    await seedOwners();
+    const added = await identityManager.addRemoteWallet('My Phone', phone.wallet.address);
+
+    await expect(addSafe('Joint', { owners: [0, added.index] })).resolves.toMatchObject({
+      owners: [0, added.index],
     });
   });
 
@@ -602,9 +1058,37 @@ describe('identity-manager safe accounts', () => {
     await identityManager.markSafeDeployed(wallet.index, 100);
 
     expect(identityManager.getWalletRecord(wallet.index).deployed).toEqual({ 100: true });
-    expect(readVaultMeta().derivedWallets[2].deployed).toEqual({ 100: true });
+    // The stored mark says a verified check wrote it (#1066).
+    expect(readVaultMeta().derivedWallets[2].deployed).toEqual({ 100: { verified: true } });
 
     await expect(identityManager.markSafeDeployed(0, 100)).rejects.toThrow(/not a Safe/i);
+  });
+
+  test('a deployed mark from a release before #1066 reads as not deployed until marked again', async () => {
+    await seedOwners();
+    const wallet = await addSafe();
+    // Before #1066, one endpoint's eth_getCode answer stored a bare `true`.
+    const meta = readVaultMeta();
+    meta.derivedWallets[2].deployed = { 100: true, 8453: true };
+    writeVaultMeta(meta);
+
+    expect(identityManager.getWalletRecord(wallet.index).deployed).toEqual({});
+    const listed = (await identityManager.getDerivedWallets()).find((w) => w.index === wallet.index);
+    expect(listed.deployed).toEqual({});
+    // Nothing is deleted: the record and its old mark stay on disk.
+    expect(readVaultMeta().derivedWallets[2]).toMatchObject({
+      type: 'safe',
+      address: SAFE_ADDRESS,
+      deployed: { 100: true, 8453: true },
+    });
+
+    // A verified check marks it again, on that chain only.
+    await identityManager.markSafeDeployed(wallet.index, 100);
+    expect(identityManager.getWalletRecord(wallet.index).deployed).toEqual({ 100: true });
+    expect(readVaultMeta().derivedWallets[2].deployed).toEqual({
+      100: { verified: true },
+      8453: true,
+    });
   });
 
   test('an owner of a safe cannot be deleted while the safe exists', async () => {
@@ -676,6 +1160,7 @@ describe('identity-manager wallet index allocation', () => {
   let tmpDir;
   let envSnapshot;
   let identityManager;
+  let device;
 
   const LEDGER_A = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
   const LEDGER_B = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
@@ -686,9 +1171,11 @@ describe('identity-manager wallet index allocation', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-index-'));
     envSnapshot = snapshotEnv();
     process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    device = makeLedgerDevice(null);
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
+        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
         [require.resolve('./identity')]: () => ({
           getMnemonic: jest.fn(() => 'test mnemonic'),
           isUnlocked: jest.fn(() => true),
@@ -707,6 +1194,12 @@ describe('identity-manager wallet index allocation', () => {
     restoreEnv(envSnapshot);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  /** The Ledger the user connects holds the address being added. */
+  function addLedger(name, address, ledgerPath) {
+    device.address = address;
+    return identityManager.addLedgerWallet(name, address, ledgerPath);
+  }
 
   function readVaultMeta() {
     return JSON.parse(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8'));
@@ -730,7 +1223,7 @@ describe('identity-manager wallet index allocation', () => {
     expect(second.index).toBe(1);
 
     await identityManager.deleteDerivedWallet(1);
-    const ledger = await identityManager.addLedgerWallet('', LEDGER_A, LEDGER_PATH);
+    const ledger = await addLedger('', LEDGER_A, LEDGER_PATH);
 
     expect(ledger.index).toBe(HARDWARE_INDEX_BASE);
 
@@ -744,7 +1237,7 @@ describe('identity-manager wallet index allocation', () => {
 
   test('mnemonic accounts keep allocating from the low range once a ledger exists', async () => {
     seedMainWallet();
-    await identityManager.addLedgerWallet('', LEDGER_A, LEDGER_PATH);
+    await addLedger('', LEDGER_A, LEDGER_PATH);
 
     const next = await identityManager.createDerivedWallet('Wallet 2');
 
@@ -755,10 +1248,10 @@ describe('identity-manager wallet index allocation', () => {
 
   test('a deleted ledger does not hand its index to the next device account', async () => {
     seedMainWallet();
-    const first = await identityManager.addLedgerWallet('', LEDGER_A, LEDGER_PATH);
+    const first = await addLedger('', LEDGER_A, LEDGER_PATH);
     await identityManager.deleteDerivedWallet(first.index);
 
-    const second = await identityManager.addLedgerWallet('', LEDGER_B, LEDGER_PATH);
+    const second = await addLedger('', LEDGER_B, LEDGER_PATH);
 
     expect(second.index).toBe(HARDWARE_INDEX_BASE + 1);
     expect(readVaultMeta().nextHardwareWalletIndex).toBe(HARDWARE_INDEX_BASE + 2);
@@ -784,7 +1277,7 @@ describe('identity-manager wallet index allocation', () => {
       'utf-8'
     );
 
-    const added = await identityManager.addLedgerWallet('', LEDGER_B, LEDGER_PATH);
+    const added = await addLedger('', LEDGER_B, LEDGER_PATH);
 
     expect(added.index).toBe(HARDWARE_INDEX_BASE + 5);
   });
@@ -885,7 +1378,7 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     fs.writeFileSync(path.join(dataDirs.radicle, 'keys', 'radicle'), 'key');
   }
 
-  test('force reinjection reports Radicle but NOT Bee/IPFS for restart', async () => {
+  test('force reinjection reports no node for restart: both restart themselves (R-8)', async () => {
     // Bee/Radicle are injected. A stale IPFS identity metadata file from older
     // builds must be ignored because native freedom-ipfs now reports ephemeral
     // identity mode instead of a prepared durable PeerID.
@@ -898,16 +1391,225 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
 
     const results = await mgr.injectAllIdentities('FreedomBrowser', true);
 
-    expect(results.needsRestart).not.toContain('bee');
-    expect(results.needsRestart).not.toContain('ipfs');
-    expect(results.needsRestart).toEqual(expect.arrayContaining(['radicle']));
+    expect(results.needsRestart).toEqual([]);
     expect(results.bee.reinjected).toBe(true);
+    expect(results.radicle.reinjected).toBe(true);
     expect(results.ipfs).toMatchObject({
       mode: 'ephemeral',
       active: false,
       peerId: null,
       stableIdentitySupported: false,
     });
+  });
+
+  test('a Radicle re-key wipes and writes the key inside the stopped-node section (R-8)', async () => {
+    seedRadicleInjected();
+    const storage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(storage, { recursive: true });
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+
+    const steps = [];
+    let finishStop;
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        steps.push('stop requested');
+        await new Promise((resolve) => {
+          finishStop = resolve;
+        });
+        steps.push('stopped');
+        try {
+          return await work();
+        } finally {
+          steps.push(`restarted (storage ${fs.existsSync(storage) ? 'kept' : 'wiped'})`);
+        }
+      },
+    });
+
+    const injecting = mgr.injectRadicleIdentity('Alias');
+    for (let i = 0; i < 50 && !finishStop; i += 1) await new Promise((r) => setImmediate(r));
+    // The node has not stopped yet: nothing is wiped.
+    expect(fs.existsSync(storage)).toBe(true);
+    finishStop();
+    const { did } = await injecting;
+    expect(did).toMatch(/^did:key:/);
+    expect(steps).toEqual(['stop requested', 'stopped', 'restarted (storage wiped)']);
+  });
+
+  test('a Radicle re-key whose node will not stop wipes nothing (R-8)', async () => {
+    seedRadicleInjected();
+    const storage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(storage, { recursive: true });
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
+    const keyBefore = fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null;
+    mgr.setRadicleLifecycle({
+      withStopped: async () => {
+        throw new Error('shutdown failed');
+      },
+    });
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow('shutdown failed');
+    expect(fs.existsSync(storage)).toBe(true);
+    expect(fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null).toBe(keyBefore);
+  });
+
+  test('a revocation inside the stopped-node section refuses the new key (R-8)', async () => {
+    seedRadicleInjected();
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
+    const keyBefore = fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null;
+    let sawError = null;
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        // The vault's authority ends (as on quit) once the node is stopped.
+        mgr.closeVaultAuthority();
+        try {
+          return await work();
+        } catch (err) {
+          sawError = err;
+          throw err;
+        }
+      },
+    });
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow();
+    expect(sawError).not.toBeNull();
+    expect(fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null).toBe(keyBefore);
+  });
+
+  // Review note 2b: Ant was re-keyed before Radicle, so a Radicle stop that
+  // failed left Ant on the new identity and Radicle on the old one, and the
+  // user saw only "Setup failed".
+  function notStopped(message) {
+    return Object.assign(new Error(message), { code: 'RADICLE_NOT_STOPPED' });
+  }
+
+  test('a forced re-key changes Ant only once Radicle is proved stopped (R-8)', async () => {
+    seedBeeInjected();
+    seedRadicleInjected();
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const steps = [];
+    mgr.setBeeLifecycle({
+      stop: async () => {
+        steps.push('ant stopped for its re-key');
+        return false;
+      },
+    });
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        steps.push('radicle stopped');
+        const did = await work();
+        steps.push('radicle re-keyed');
+        return did;
+      },
+    });
+
+    const results = await mgr.injectAllIdentities('FreedomBrowser', true);
+    expect(steps).toEqual(['radicle stopped', 'ant stopped for its re-key', 'radicle re-keyed']);
+    expect(results.bee.reinjected).toBe(true);
+    expect(results.radicle.reinjected).toBe(true);
+  });
+
+  test('a Radicle stop that fails re-keys no node and says so (R-8)', async () => {
+    seedBeeInjected();
+    seedRadicleInjected();
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const beeStop = jest.fn(async () => false);
+    mgr.setBeeLifecycle({ stop: beeStop });
+    mgr.setRadicleLifecycle({
+      withStopped: async () => {
+        throw notStopped('The Radicle node did not answer its shutdown within 30s');
+      },
+    });
+    const swarmKey = path.join(dataDirs.bee, 'keys', 'swarm.key');
+
+    const err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe('RADICLE_NOT_STOPPED');
+    expect(err.message).toMatch(/Radicle node could not be stopped, so no node was given the new identity/);
+    expect(err.message).toMatch(/within 30s/);
+    expect(err.message).toMatch(/Ant and Radicle keep their current identities/);
+    expect(err.message).toMatch(/run identity setup again/);
+    // Ant was never touched.
+    expect(beeStop).not.toHaveBeenCalled();
+    expect(fs.readFileSync(swarmKey, 'utf8')).toBe('{}');
+  });
+
+  test('a Radicle failure after Ant was re-keyed names which node has which identity (R-8)', async () => {
+    seedBeeInjected();
+    seedRadicleInjected();
+    const radicleStorage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(radicleStorage, { recursive: true });
+    fs.mkdirSync(path.join(dataDirs.bee, 'statestore'), { recursive: true });
+    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
+    // Ant's wipe works; Radicle's own wipe, inside its section, fails.
+    const actual = jest.requireActual('./fs-offload');
+    let err;
+    try {
+      const mgr = loadIdentityManager(dataDirs, {
+        removePath: async (target, opts) => {
+          if (target.startsWith(dataDirs.radicle)) {
+            throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+          }
+          return actual.removePath(target, opts);
+        },
+      });
+      await mgr.createNewVault('password-123');
+      const beeStop = jest.fn(async () => false);
+      mgr.setBeeLifecycle({ stop: beeStop });
+      mgr.setRadicleLifecycle({ withStopped: async (work) => work() });
+      err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
+      expect(beeStop).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.dontMock(require.resolve('./fs-offload'));
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/Radicle was not given the new identity: permission denied/);
+    expect(err.message).toMatch(/Ant already uses the new identity; Radicle keeps its old one/);
+    expect(err.message).toMatch(/Run identity setup again/);
+    // Ant's state was reset for its new key; Radicle's key and data were not.
+    expect(fs.existsSync(path.join(dataDirs.bee, 'statestore'))).toBe(false);
+    expect(fs.readFileSync(keyPath, 'utf8')).toBe('key');
+    expect(fs.existsSync(radicleStorage)).toBe(true);
+  });
+
+  test('an Ant failure inside Radicle\'s section is reported as it is (R-8)', async () => {
+    seedBeeInjected();
+    seedRadicleInjected();
+    // Ant's wipe fails (its first stale directory cannot be removed).
+    const mgr = loadIdentityManager(dataDirs, {
+      removePath: async () => {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      },
+    });
+    await mgr.createNewVault('password-123');
+    mgr.setBeeLifecycle({ stop: async () => false });
+    fs.mkdirSync(path.join(dataDirs.bee, 'statestore'), { recursive: true });
+    const radicleStorage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(radicleStorage, { recursive: true });
+    const sections = [];
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        sections.push('radicle stopped');
+        return work();
+      },
+    });
+    let err;
+    try {
+      err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
+    } finally {
+      jest.dontMock(require.resolve('./fs-offload'));
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe('permission denied');
+    // Radicle's own wipe never ran.
+    expect(fs.existsSync(radicleStorage)).toBe(true);
+    expect(sections).toEqual(['radicle stopped']);
   });
 
   test('first-time injection reports nothing for restart', async () => {
@@ -1065,6 +1767,418 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
       jest.useRealTimers();
     }
     expect(fs.existsSync(path.join(beeDir, 'statestore'))).toBe(true);
+  });
+});
+
+describe('Swarm keystore password (K-3)', () => {
+  let root;
+  let envSnapshot;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-keystore-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = path.join(root, 'identity');
+    process.env.FREEDOM_ANT_DATA = path.join(root, 'ant');
+    process.env.FREEDOM_IPFS_DATA = path.join(root, 'ipfs');
+    process.env.FREEDOM_RADICLE_DATA = path.join(root, 'radicle');
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    restoreEnv(envSnapshot);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // The vault's derived Swarm account, and another identity's.
+  const VAULT_BEE = '0x' + 'b2'.repeat(20);
+  const OTHER_BEE = '0x' + 'a1'.repeat(20);
+  const antDir = () => path.join(root, 'ant');
+  const swarmKeyPath = () => path.join(antDir(), 'keys', 'swarm.key');
+  // A Web3 v3 keystore's unencrypted `address` (no 0x, lowercase); the
+  // password it was "encrypted" with is recorded so a test can check the
+  // pair on disk.
+  const writeKeystore = (address, password = 'lost-password') => {
+    fs.mkdirSync(path.dirname(swarmKeyPath()), { recursive: true });
+    fs.writeFileSync(
+      swarmKeyPath(),
+      JSON.stringify({ address: address.slice(2).toLowerCase(), version: 3, password })
+    );
+  };
+  const keystoreOnDisk = () => JSON.parse(fs.readFileSync(swarmKeyPath(), 'utf8'));
+
+  function load(safeStorage) {
+    const identityMock = {
+      ...makeRestartIdentityMock(),
+      getMnemonic: jest.fn(() => 'test test test test test test test test test test test about'),
+    };
+    identityMock.deriveAllKeys = jest.fn(() => ({
+      userWallet: { address: '0xuser', privateKey: '0x01' },
+      beeWallet: { address: VAULT_BEE, privateKey: '0x02' },
+      ipfsKey: { privateKey: '0x03', publicKey: '0x04' },
+      radicleKey: { privateKey: '0x05', publicKey: '0x06' },
+    }));
+    identityMock.injectBeeKey = jest.fn(async (dataDir, privateKey, password) => {
+      expect(privateKey).toBe('0x02');
+      writeKeystore(VAULT_BEE, password);
+    });
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: path.join(root, 'identity'),
+      electronOverrides: { safeStorage },
+      extraMocks: { [require.resolve('./identity')]: () => identityMock },
+    });
+    return { mod, identityMock, keystore: require('./swarm/ant-keystore-password') };
+  }
+
+  const keychain = () => ({
+    isAsyncEncryptionAvailable: async () => true,
+    getSelectedStorageBackend: () => 'gnome_libsecret',
+    encryptStringAsync: async (text) => Buffer.from(`v11${text}`),
+    decryptStringAsync: async (buffer) => ({
+      result: buffer.toString().slice(3),
+      shouldReEncrypt: false,
+    }),
+  });
+
+  test('injection seals the keystore password and leaves it out of config.yaml', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    await mod.createNewVault('password123');
+    await mod.injectBeeIdentity();
+
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      null,
+      expect.any(Number),
+      expect.any(Number)
+    );
+    expect(await keystore.unsealPassword(path.join(root, 'ant'))).toBe(password);
+  });
+
+  test('without a keyring injection keeps the password in config.yaml, sealing nothing', async () => {
+    const { mod, identityMock, keystore } = load({
+      ...keychain(),
+      isAsyncEncryptionAvailable: async () => false,
+    });
+    await mod.createNewVault('password123');
+    await mod.injectBeeIdentity();
+
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      password,
+      expect.any(Number),
+      expect.any(Number)
+    );
+    expect(keystore.hasSealedPassword(path.join(root, 'ant'))).toBe(false);
+  });
+
+  test('an unlock re-encrypts the keystore the node could not open, then starts it', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const start = jest.fn(async () => {
+      needed = false;
+    });
+    let needed = true;
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => needed });
+
+    await mod.unlockVault('password123');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Same derived key, a new password, sealed; the node starts again.
+    expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      '0x02',
+      expect.stringMatching(/^[0-9a-f]{64}$/),
+      expect.objectContaining({ beforeWrite: expect.any(Function) })
+    );
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(await keystore.unsealPassword(path.join(root, 'ant'))).toBe(password);
+    expect(start).toHaveBeenCalledTimes(1);
+
+    // Nothing to do on an unlock when the node opened its keystore.
+    needed = false;
+    await mod.unlockVault('password123');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+  });
+
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  // The Ant side of the pairing (ant-manager createAntLifecycle): a start
+  // that stops for re-injection sets the flag and tells the subscriber.
+  function antSide({ startFails = () => false } = {}) {
+    const side = { needed: false, listener: null };
+    side.stopForReinjection = () => {
+      side.needed = true;
+      side.listener?.();
+    };
+    side.hooks = {
+      start: jest.fn(async () => {
+        if (startFails()) side.stopForReinjection();
+        else side.needed = false;
+      }),
+      needsKeyReinjection: () => side.needed,
+      refuseKeyReinjection: jest.fn(() => {
+        side.needed = false;
+      }),
+      onKeyReinjectionNeeded: (listener) => {
+        side.listener = listener;
+      },
+    };
+    return side;
+  }
+
+  test('a start that fails while the vault is unlocked recovers without a lock and unlock', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+
+    // The sealed password stops decrypting at a later start (a reset keychain).
+    ant.stopForReinjection();
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+    expect(ant.needed).toBe(false);
+  });
+
+  test('a start that fails while the vault is locked waits for the unlock', async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+
+    ant.stopForReinjection();
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+
+    await mod.unlockVault('password123');
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recovery's own start that fails again is not recovered in a loop", async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide({ startFails: () => true });
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.stopForReinjection();
+    await settle();
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+    // Still asked for: the next unlock tries again.
+    expect(ant.needed).toBe(true);
+  });
+
+  // K-1 x K-3: a recovery holds no key across an await. A lock while it
+  // waits for the keystore lock stops it before any key is read, and the
+  // next unlock runs its own recovery rather than joining the stale one.
+  test('a lock while a recovery waits for the keystore lock stops it; the next unlock recovers', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    identityMock.lockVault = jest.fn();
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    let release;
+    const held = keystore.withKeystoreLock(antDir(), () => new Promise((r) => (release = r)));
+    const stale = mod.reencryptBeeKeystore();
+    await settle();
+    await mod.lockVault();
+    // Unlocked again while the stale recovery still waits: this unlock's
+    // own recovery queues behind it instead of joining it.
+    ant.needed = true;
+    await mod.unlockVault('password123');
+    release();
+    await held;
+    await expect(stale).rejects.toThrow(/locked/i);
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('a lock while a recovery builds the keystore stops it before the write', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    identityMock.lockVault = jest.fn();
+    writeKeystore(VAULT_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    let built;
+    identityMock.injectBeeKey = jest.fn(async (dataDir, privateKey, password, opts) => {
+      await new Promise((r) => (built = r));
+      opts.beforeWrite();
+      writeKeystore(VAULT_BEE, password);
+    });
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.needed = true;
+    const recovery = mod.reencryptBeeKeystore();
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    await mod.lockVault();
+    built();
+    await expect(recovery).rejects.toThrow(/locked/i);
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(keystore.hasSealedPassword(antDir())).toBe(false);
+    expect(ant.hooks.start).not.toHaveBeenCalled();
+  });
+
+  test("a start that fails while unlocked still never overwrites another identity's keystore", async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(OTHER_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.stopForReinjection();
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(ant.hooks.refuseKeyReinjection).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).not.toHaveBeenCalled();
+  });
+
+  test('an Ant data directory Freedom refuses fails the recovery, not the unlock', async () => {
+    const { mod, identityMock } = load(keychain());
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, antDir());
+    const ant = antSide();
+    ant.needed = true;
+    mod.setBeeLifecycle(ant.hooks);
+
+    await expect(mod.unlockVault('password123')).resolves.toBeUndefined();
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    await expect(mod.reencryptBeeKeystore()).rejects.toThrow(/symbolic link/);
+  });
+
+  // The K-3 review's reproduction: a keystore for account A, its sealed
+  // password lost, and a vault that derives account B. Recovery must keep
+  // A's keystore, the only encrypted copy of A's key, not write B's over it.
+  test("recovery never overwrites another identity's keystore", async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    writeKeystore(OTHER_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    const start = jest.fn(async () => {});
+    const refuseKeyReinjection = jest.fn();
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => true, refuseKeyReinjection });
+
+    await mod.unlockVault('password123');
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(keystore.hasSealedPassword(antDir())).toBe(false);
+    expect(start).not.toHaveBeenCalled();
+    expect(refuseKeyReinjection).toHaveBeenCalledWith(
+      'Swarm keystore belongs to a different identity: re-inject manually'
+    );
+    await expect(mod.reencryptBeeKeystore()).rejects.toThrow(keystore.IDENTITY_MISMATCH_MESSAGE);
+  });
+
+  test('recovery refuses a keystore whose identity it cannot read', async () => {
+    const { mod, identityMock } = load(keychain());
+    fs.mkdirSync(path.dirname(swarmKeyPath()), { recursive: true });
+    fs.writeFileSync(swarmKeyPath(), JSON.stringify({ version: 3, crypto: {} }));
+    const refuseKeyReinjection = jest.fn();
+    mod.setBeeLifecycle({ start: jest.fn(), needsKeyReinjection: () => true, refuseKeyReinjection });
+
+    await mod.unlockVault('password123');
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(refuseKeyReinjection).toHaveBeenCalledTimes(1);
+  });
+
+  // The K-3 review's reordering: recovery A held at its sealing call after
+  // writing its keystore, a second unlock meanwhile, then A released. One
+  // recovery runs, and the keystore on disk opens with the sealed password.
+  test('overlapping unlocks run one recovery, ending with a matching pair', async () => {
+    const storage = keychain();
+    let releaseSeal;
+    const held = new Promise((resolve) => (releaseSeal = resolve));
+    const encrypt = storage.encryptStringAsync;
+    storage.encryptStringAsync = jest.fn(async (text) => {
+      if (storage.encryptStringAsync.mock.calls.length === 1) await held;
+      return encrypt(text);
+    });
+    const { mod, identityMock, keystore } = load(storage);
+    writeKeystore(VAULT_BEE);
+    let needed = true;
+    const start = jest.fn(async () => {
+      needed = false;
+    });
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => needed });
+
+    await mod.unlockVault('password123');
+    await settle();
+    expect(storage.encryptStringAsync).toHaveBeenCalledTimes(1);
+    const second = mod.reencryptBeeKeystore();
+    await mod.unlockVault('password123');
+    await settle();
+    releaseSeal();
+    await second;
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+  });
+
+  test('an injection during a recovery waits, and the last pair written matches', async () => {
+    const storage = keychain();
+    let releaseSeal;
+    const held = new Promise((resolve) => (releaseSeal = resolve));
+    const encrypt = storage.encryptStringAsync;
+    storage.encryptStringAsync = jest.fn(async (text) => {
+      if (storage.encryptStringAsync.mock.calls.length === 1) await held;
+      return encrypt(text);
+    });
+    const { mod, identityMock, keystore } = load(storage);
+    writeKeystore(VAULT_BEE);
+    mod.setBeeLifecycle({ start: jest.fn(async () => {}), needsKeyReinjection: () => true });
+
+    await mod.unlockVault('password123');
+    await settle();
+    const injection = mod.injectBeeIdentity();
+    // Long enough for an unserialized injection to reach its own write.
+    for (let i = 0; i < 20 && identityMock.injectBeeKey.mock.calls.length < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // The injection has not written its keystore while the recovery holds the lock.
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    releaseSeal();
+    await injection;
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(2);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(keystoreOnDisk().password).toBe(identityMock.injectBeeKey.mock.calls[1][2]);
   });
 });
 

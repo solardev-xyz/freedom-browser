@@ -143,6 +143,50 @@ describe('radicle-embedded addon loading', () => {
     });
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  // PRIVATE MODE GUARD (#1073): a private window's seed or sync reaches the
+  // progress callback in its log context, and JSON.parse's error quotes part
+  // of the event (a short one whole), whose fetch errors can name the
+  // Radicle storage path.
+  const BAD_EVENT = '/home/alice';
+  test.each([
+    ['a private', true],
+    ['a normal', false],
+  ])('an invalid clone progress event in %s context', async (_label, isPrivate) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(
+      fake,
+      'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'cloneRepoWithProgress: async (_rid, _timeout, callback) => {' +
+        ` callback(${JSON.stringify(BAD_EVENT)});` +
+        ' return JSON.stringify({ ok: true }); },' +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    await jest.isolateModulesAsync(async () => {
+      const log = require('./logger');
+      const { runWithPrivateLogContext } = require('./private/private-log-context');
+      const embedded = require('./radicle-embedded');
+      await runWithPrivateLogContext(isPrivate, () =>
+        embedded.cloneRepoWithProgress('rad:zAbc', 1234, () => {})
+      );
+      const lines = log.warn.mock.calls.filter(([first]) =>
+        String(first).includes('Ignoring invalid clone progress event')
+      );
+      expect(lines).toHaveLength(1);
+      if (isPrivate) {
+        expect(lines[0]).toEqual([
+          '[RadicleEmbedded] Ignoring invalid clone progress event:',
+          '<private>',
+        ]);
+      } else {
+        expect(lines[0][1]).toContain('/home/alice');
+      }
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe('raw reads (#514)', () => {
@@ -297,6 +341,136 @@ describe('buildRepoMeta shape', () => {
       expect(meta.visibility).toEqual({ type: 'public' });
     });
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // PRIVATE MODE GUARD (#1050): a seeders() failure is swallowed here, so
+  // the protocol's redacted catch never runs, and the add-on's text can
+  // name the repository's storage path. Under the context a private `rad:`
+  // or `radapi:` registration sets, its log line carries none of it.
+  const HOME = '/home/alice/.config/Freedom/profiles/default/radicle';
+  const SEEDERS_FAILED = `failed to open '${HOME}/storage/zAbc/refs': Permission denied`;
+  test.each([
+    ['a private', true, '<private>'],
+    ['a normal', false, SEEDERS_FAILED],
+  ])('a seeders() failure in %s context', async (_label, isPrivate, logged) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(
+      fake,
+      'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'repoInfo: async () => JSON.stringify({ rid: "rad:zAbc", name: "demo" }),' +
+        `seeders: async () => JSON.stringify({ error: ${JSON.stringify(SEEDERS_FAILED)} }),` +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    await jest.isolateModulesAsync(async () => {
+      const embedded = require('./radicle-embedded');
+      const log = require('./logger');
+      const { runWithPrivateLogContext } = require('./private/private-log-context');
+      const meta = await runWithPrivateLogContext(isPrivate, () =>
+        embedded.buildRepoMeta('rad:zAbc')
+      );
+      expect(meta.seeding).toBe(0);
+      const prefix = '[RadicleEmbedded] seeders() failed:';
+      expect(log.warn.mock.calls.filter((args) => args[0] === prefix)).toEqual([[prefix, logged]]);
+      expect(JSON.stringify(log.warn.mock.calls).includes(HOME)).toBe(!isPrivate);
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('shutdown proof (R-8)', () => {
+  afterEach(() => {
+    delete process.env.FREEDOM_RADICLE_ADDON;
+    jest.resetModules();
+  });
+
+  test('the node counts as started until the add-on proves it stopped', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    // The first shutdown fails before the node's thread has joined; the
+    // second one succeeds.
+    fs.writeFileSync(
+      fake,
+      'let shutdowns = 0;' +
+        'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'start: async () => JSON.stringify({ did: "did:key:z6MkTest" }),' +
+        'shutdown: async () => { shutdowns += 1;' +
+        ' return shutdowns === 1' +
+        '  ? JSON.stringify({ error: "control channel closed" })' +
+        '  : JSON.stringify({ ok: true }); },' +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    try {
+      await jest.isolateModulesAsync(async () => {
+        const embedded = require('./radicle-embedded');
+        await embedded.start(dir, 'Alias');
+        expect(embedded.isStarted()).toBe(true);
+
+        const stopping = embedded.shutdown();
+        // Still started while the add-on has not answered, and after it
+        // failed to prove the node stopped.
+        expect(embedded.isStarted()).toBe(true);
+        await expect(stopping).rejects.toThrow('control channel closed');
+        expect(embedded.isStarted()).toBe(true);
+
+        await expect(embedded.shutdown()).resolves.toEqual({ ok: true });
+        expect(embedded.isStarted()).toBe(false);
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('shutdown in flight (R-8 review)', () => {
+  afterEach(() => {
+    delete global.__radicleShutdown;
+    delete process.env.FREEDOM_RADICLE_ADDON;
+    jest.resetModules();
+  });
+
+  test('a second shutdown while one is in flight waits on it, not the add-on', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(
+      fake,
+      'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'start: async () => JSON.stringify({ did: "did:key:z6MkTest" }),' +
+        'shutdown: () => global.__radicleShutdown(),' +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    let answer;
+    global.__radicleShutdown = jest.fn(
+      () => new Promise((resolve) => {
+        answer = () => resolve(JSON.stringify({ ok: true }));
+      })
+    );
+    try {
+      await jest.isolateModulesAsync(async () => {
+        const embedded = require('./radicle-embedded');
+        await embedded.start(dir, 'Alias');
+        const first = embedded.shutdown();
+        const second = embedded.shutdown();
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(global.__radicleShutdown).toHaveBeenCalledTimes(1);
+        expect(embedded.isStarted()).toBe(true);
+        answer();
+        await expect(first).resolves.toEqual({ ok: true });
+        await expect(second).resolves.toEqual({ ok: true });
+        expect(embedded.isStarted()).toBe(false);
+        // Proved stopped: a later shutdown asks nothing of the add-on.
+        await expect(embedded.shutdown()).resolves.toEqual({ ok: true });
+        expect(global.__radicleShutdown).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

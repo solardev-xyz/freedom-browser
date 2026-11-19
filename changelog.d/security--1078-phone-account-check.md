@@ -1,0 +1,2 @@
+- Adding a phone account now has your phone sign a short check as that account, and only checked phone accounts can own a new Safe ([#1078](https://github.com/solardev-xyz/freedom-browser/issues/1078))
+  - Phone accounts added earlier are checked the next time your phone signs with them, or from Wallet Settings; one your phone answers for with another account is kept and marked

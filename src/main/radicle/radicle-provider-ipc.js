@@ -31,6 +31,11 @@
  * radicle_getSeedStatus remains the snapshot/reload path, and radicle_sync
  * restarts the fetch (the retry path) for repos that are already seeded —
  * it can never start seeding a new one. See seed-status.js.
+ *
+ * Errors: a page never gets the Radicle add-on's own error text, which can
+ * name the user's Radicle storage on disk. Each add-on failure is answered
+ * with a fixed text for its category (ADDON_ERROR_TEXTS below), and the
+ * add-on's text goes to the log only, through redactForLog (#1073).
  */
 
 const { ipcMain, BrowserWindow } = require('electron');
@@ -57,6 +62,7 @@ const { createAutoWriteLimiter } = require('./auto-write-limiter');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 const { isPrivateSender } = require('../private/private-sender');
+const { redactForLog, runWithPrivateLogContext } = require('../private/private-log-context');
 
 const SPEC_VERSION = '0.2';
 
@@ -73,6 +79,84 @@ function providerError(base, message, data) {
   const err = { code: base.code, message: message || base.message };
   if (data) err.data = data;
   return err;
+}
+
+// What a page gets for an add-on error: a fixed text for its category,
+// never the add-on's own (#1073). libradicle's text for a repository that
+// isn't stored names its storage path, `<radicle home>/storage/<rid>`,
+// under the user's profile, and its storage, git and io errors can name
+// files there too. The categories and texts are `rad:`'s (#1050):
+//  - not found: the test `rad:` decides its 404 on;
+//  - too large: libradicle's `TooLarge` and `TooDeep` texts, anchored;
+//  - cancelled: libradicle's `Cancelled` text (`clone cancelled` in older
+//    add-ons), anchored;
+//  - failed: everything else, with the text for what failed: a read, a
+//    write, a fetch, or anything else (`Internal error`).
+// Each reply's code and data.reason are decided as before, on the add-on's
+// own text, so none changes. That text is kept for the decision and for
+// the log, through redactForLog.
+const MISSING_RE = /not found|does not exist|NotFound/i;
+const TOO_LARGE_RE =
+  /^(?:\d+ bytes is over the limit of \d+|the tree is nested deeper than \d+ levels)$/;
+const CANCELLED_RE = /^(?:clone )?cancelled$/;
+const ADDON_ERROR_TEXTS = Object.freeze({
+  missing: 'not found',
+  tooLarge: 'repository data too large to serve here',
+  cancelled: 'request cancelled',
+  readFailed: 'the read failed',
+  writeFailed: 'the write failed',
+  fetchFailed: 'the fetch failed',
+});
+
+/** The fixed text for an add-on error's text, `failed` for no category. */
+function publicAddonText(message, failed) {
+  const text = typeof message === 'string' ? message : '';
+  if (MISSING_RE.test(text)) return ADDON_ERROR_TEXTS.missing;
+  if (TOO_LARGE_RE.test(text)) return ADDON_ERROR_TEXTS.tooLarge;
+  if (CANCELLED_RE.test(text)) return ADDON_ERROR_TEXTS.cancelled;
+  return failed;
+}
+
+/** Log an add-on error's own text, which no page gets, for `method`. */
+function logAddonError(method, message) {
+  log.warn(`[radicle-provider] ${method} failed:`, redactForLog(message));
+}
+
+// radicle-manager's failures whose text is its own, fixed one. Any other
+// failure's text can be the add-on's (UNSEED_FAILED), and is answered by
+// its category.
+const MANAGER_OWN_TEXTS = new Set(['RADICLE_NOT_RUNNING', 'INVALID_RID', 'NOT_SEEDED']);
+
+function managerFailure(method, error, failed, reason) {
+  if (MANAGER_OWN_TEXTS.has(error?.code) && error.message) {
+    return providerError(ERRORS.INTERNAL, error.message, { reason });
+  }
+  logAddonError(method, error?.message);
+  return providerError(ERRORS.INTERNAL, publicAddonText(error?.message, failed), { reason });
+}
+
+/**
+ * A seed status as a page gets it: the fetch's error texts (`lastError`,
+ * `progress.reason`, each recent attempt's `error`) are the add-on's, so
+ * each gets the fixed text for its category. The tracker keeps and logs
+ * the detail (seed-status.js); everything else is unchanged.
+ */
+function publicSeedStatus(status) {
+  if (!status || typeof status !== 'object') return status;
+  const text = (message) => publicAddonText(message, ADDON_ERROR_TEXTS.fetchFailed);
+  const out = { ...status };
+  if (out.lastError != null) out.lastError = text(out.lastError);
+  if (out.progress && typeof out.progress === 'object' && out.progress.reason != null) {
+    out.progress = { ...out.progress, reason: text(out.progress.reason) };
+  }
+  if (Array.isArray(out.recentAttempts)) {
+    out.recentAttempts = out.recentAttempts.map((attempt) =>
+      attempt && typeof attempt === 'object' && attempt.error != null
+        ? { ...attempt, error: text(attempt.error) }
+        : attempt
+    );
+  }
+  return out;
 }
 
 // method -> required grant this process checks. The node-tier per-repo
@@ -140,7 +224,9 @@ function broadcastProviderEvent(event, origin, data, exceptSender = null) {
 function getSeedStatusBroadcaster(origin) {
   let broadcast = seedStatusBroadcasters.get(origin);
   if (broadcast) return broadcast;
-  broadcast = (data) => broadcastProviderEvent('seedStatus', origin, data);
+  // The page gets the add-on's texts in a seed status as fixed category
+  // texts, never raw (#1073): publicSeedStatus before the event leaves main.
+  broadcast = (data) => broadcastProviderEvent('seedStatus', origin, publicSeedStatus(data));
   seedStatusBroadcasters.set(origin, broadcast);
   return broadcast;
 }
@@ -191,7 +277,11 @@ async function handleGetNodeStatus(origin) {
       result.alias = identity.alias;
       if (permissions.hasSigningGrant(origin)) result.nid = identity.nid;
     } catch (err) {
-      log.warn(`[radicle-provider] getNodeStatus identity lookup failed: ${err.message}`);
+      // PRIVATE MODE GUARD: the add-on's text can name its storage path.
+      log.warn(
+        '[radicle-provider] getNodeStatus identity lookup failed:',
+        redactForLog(err.message)
+      );
     }
   }
   return result;
@@ -201,7 +291,11 @@ async function handleListSeededRepos() {
   try {
     return await embedded.listSeededRepos();
   } catch (err) {
-    throw providerError(ERRORS.INTERNAL, err.message || 'repo listing failed');
+    logAddonError('radicle_listSeededRepos', err.message);
+    throw providerError(
+      ERRORS.INTERNAL,
+      publicAddonText(err.message, ADDON_ERROR_TEXTS.readFailed)
+    );
   }
 }
 
@@ -221,20 +315,26 @@ async function handleSeed(origin, params, onSeedStatus) {
     ? await seedRepository(rid, onSeedStatus)
     : await seedRepository(rid);
   if (!result.success) {
-    throw providerError(ERRORS.INTERNAL, result.error?.message || 'seed failed', {
-      reason: 'seed_failed',
-    });
+    throw managerFailure(
+      'radicle_seed',
+      result.error,
+      ADDON_ERROR_TEXTS.writeFailed,
+      'seed_failed'
+    );
   }
-  return { rid, seeded: true, status: result.status };
+  return { rid, seeded: true, status: publicSeedStatus(result.status) };
 }
 
 async function handleUnseed(origin, params) {
   const rid = requireRidParam(params);
   const result = await unseedRepository(rid);
   if (!result.success) {
-    throw providerError(ERRORS.INTERNAL, result.error?.message || 'unseed failed', {
-      reason: 'unseed_failed',
-    });
+    throw managerFailure(
+      'radicle_unseed',
+      result.error,
+      ADDON_ERROR_TEXTS.writeFailed,
+      'unseed_failed'
+    );
   }
   return { rid, seeded: false };
 }
@@ -256,11 +356,14 @@ async function handleSync(origin, params, onSeedStatus) {
         reason: 'not_seeded',
       });
     }
-    throw providerError(ERRORS.INTERNAL, result.error?.message || 'sync failed', {
-      reason: 'sync_failed',
-    });
+    throw managerFailure(
+      'radicle_sync',
+      result.error,
+      ADDON_ERROR_TEXTS.writeFailed,
+      'sync_failed'
+    );
   }
-  return { rid, status: result.status };
+  return { rid, status: publicSeedStatus(result.status) };
 }
 
 async function handleGetSeedStatus(origin, params, onSeedStatus) {
@@ -269,26 +372,41 @@ async function handleGetSeedStatus(origin, params, onSeedStatus) {
     ? await getSeedFetchStatus(rid, onSeedStatus)
     : await getSeedFetchStatus(rid);
   if (!result.success) {
-    throw providerError(ERRORS.INTERNAL, result.error?.message || 'status unavailable', {
-      reason: 'status_failed',
-    });
+    throw managerFailure(
+      'radicle_getSeedStatus',
+      result.error,
+      ADDON_ERROR_TEXTS.readFailed,
+      'status_failed'
+    );
   }
-  return result.status; // includes rid
+  return publicSeedStatus(result.status); // includes rid
 }
 
-/** Translate cob-service errors into provider errors. */
-function wrapCobError(err) {
+/**
+ * Translate cob-service errors into provider errors. A validation error's
+ * text is cob-service's own; any other is the add-on's, so the page gets
+ * its category's text, and the reason cob-service decided on its text.
+ */
+function wrapCobError(method, err) {
   if (err instanceof cob.CobValidationError) {
     return providerError(ERRORS.INVALID_PARAMS, err.message, { reason: err.reason });
   }
-  return providerError(ERRORS.INTERNAL, err.message, err.reason ? { reason: err.reason } : null);
+  logAddonError(method, err.message);
+  const failed = SIGNED_WRITE_METHODS.has(method)
+    ? ADDON_ERROR_TEXTS.writeFailed
+    : ADDON_ERROR_TEXTS.readFailed;
+  return providerError(
+    ERRORS.INTERNAL,
+    publicAddonText(err.message, failed),
+    err.reason ? { reason: err.reason } : null
+  );
 }
 
-async function handleCobWrite(fn, params) {
+async function handleCobWrite(method, fn, params) {
   try {
     return await fn(params);
   } catch (err) {
-    throw err.code ? err : wrapCobError(err);
+    throw err.code ? err : wrapCobError(method, err);
   }
 }
 
@@ -308,9 +426,9 @@ function failedBeforeSigning(err) {
  * limiter charge back, so a site retrying a bad write doesn't burn its
  * daily budget on writes that never published.
  */
-async function handleSignedWrite(fn, params, refundAutoWrite) {
+async function handleSignedWrite(method, fn, params, refundAutoWrite) {
   try {
-    return await handleCobWrite(fn, params);
+    return await handleCobWrite(method, fn, params);
   } catch (err) {
     if (refundAutoWrite && failedBeforeSigning(err)) refundAutoWrite();
     throw err;
@@ -432,15 +550,15 @@ async function executeRadicleMethod(
       autoWriteLimiter.forget(normalizeOrigin(origin));
       return { connected: false };
     case 'radicle_getIdentity':
-      return handleCobWrite(() => cob.getIdentity(), params);
+      return handleCobWrite(method, () => cob.getIdentity(), params);
     case 'radicle_createIssue':
-      return handleSignedWrite((p) => cob.createIssue(p), params, refundAutoWrite);
+      return handleSignedWrite(method, (p) => cob.createIssue(p), params, refundAutoWrite);
     case 'radicle_commentIssue':
-      return handleSignedWrite((p) => cob.commentIssue(p), params, refundAutoWrite);
+      return handleSignedWrite(method, (p) => cob.commentIssue(p), params, refundAutoWrite);
     case 'radicle_editIssueState':
-      return handleSignedWrite((p) => cob.editIssueState(p), params, refundAutoWrite);
+      return handleSignedWrite(method, (p) => cob.editIssueState(p), params, refundAutoWrite);
     case 'radicle_commentPatch':
-      return handleSignedWrite((p) => cob.commentPatch(p), params, refundAutoWrite);
+      return handleSignedWrite(method, (p) => cob.commentPatch(p), params, refundAutoWrite);
     /* istanbul ignore next -- KNOWN_METHODS guard makes this unreachable */
     default:
       throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
@@ -518,41 +636,57 @@ function registerRadicleProviderIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_PROVIDER_EXECUTE, async (event, { method, params, origin, meta } = {}) => {
-    // Before the seed-status broadcaster or the backend is touched.
+    // PRIVATE MODE GUARD (#1073): the log lines below keep the add-on's
+    // text, which can name the user's Radicle storage, through
+    // redactForLog, which redacts only in a private log context. A private
+    // window's request runs in one. main decides on the sender it can see
+    // and fails closed: a sender it cannot place in a known public window
+    // counts as private (private-sender.js).
     const privateSender = isPrivateSender(event);
-    const privateRefusal = privateWindowRefusal(privateSender, method);
-    if (privateRefusal) return { error: privateRefusal };
-    const refusal = agentCustodyRefusal(event?.sender, method, meta);
-    if (refusal) return { error: refusal };
-    const hadBroadcaster = seedStatusBroadcasters.has(origin);
-    // A private window's seed-status read is a snapshot: no broadcaster
-    // for its origin and no subscription to the fetch, since nothing a
-    // private window does may outlive it, and the disconnect that would
-    // remove them is refused to it (R-9).
-    const onSeedStatus =
-      PUSH_METHODS.has(method) && !privateSender ? getSeedStatusBroadcaster(origin) : undefined;
-    try {
-      const result = await executeRadicleMethod(method, params, origin, {
-        onSeedStatus,
-        approval: meta?.approval,
-        privateSender,
-      });
-      if (method === 'radicle_disconnect') {
-        // The site may be open in other windows too. The asking window tells
-        // its own pages and repaints its banner (radicle-provider.js); every
-        // other window learns here, so its pages get the disconnect event
-        // and its Radicle banner stops showing the site as connected.
-        broadcastProviderEvent('disconnect', origin, { origin }, event?.sender ?? null);
+    return runWithPrivateLogContext(privateSender, async () => {
+      // Before the seed-status broadcaster or the backend is touched.
+      const privateRefusal = privateWindowRefusal(privateSender, method);
+      if (privateRefusal) return { error: privateRefusal };
+      const refusal = agentCustodyRefusal(event?.sender, method, meta);
+      if (refusal) return { error: refusal };
+      const hadBroadcaster = seedStatusBroadcasters.has(origin);
+      // A private window's seed-status read is a snapshot: no broadcaster
+      // for its origin and no subscription to the fetch, since nothing a
+      // private window does may outlive it, and the disconnect that would
+      // remove them is refused to it (R-9).
+      const onSeedStatus =
+        PUSH_METHODS.has(method) && !privateSender ? getSeedStatusBroadcaster(origin) : undefined;
+      try {
+        const result = await executeRadicleMethod(method, params, origin, {
+          onSeedStatus,
+          approval: meta?.approval,
+          privateSender,
+        });
+        if (method === 'radicle_disconnect') {
+          // The site may be open in other windows too. The asking window tells
+          // its own pages and repaints its banner (radicle-provider.js); every
+          // other window learns here, so its pages get the disconnect event
+          // and its Radicle banner stops showing the site as connected.
+          broadcastProviderEvent('disconnect', origin, { origin }, event?.sender ?? null);
+        }
+        return { result };
+      } catch (err) {
+        if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);
+        if (err && typeof err.code === 'number') {
+          return { error: err };
+        }
+        // Not a provider error: an add-on, io or other failure, whose text
+        // the page doesn't get (#1073).
+        const message = typeof err?.message === 'string' ? err.message : String(err);
+        log.error(`[radicle-provider] ${method} failed:`, redactForLog(message));
+        return {
+          error: {
+            ...ERRORS.INTERNAL,
+            message: publicAddonText(message, ERRORS.INTERNAL.message),
+          },
+        };
       }
-      return { result };
-    } catch (err) {
-      if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);
-      if (err && typeof err.code === 'number') {
-        return { error: err };
-      }
-      log.error(`[radicle-provider] ${method} failed: ${err?.message || err}`);
-      return { error: { ...ERRORS.INTERNAL, message: err?.message || 'Internal error' } };
-    }
+    });
   });
   log.info('[radicle-provider] IPC handler registered');
 }

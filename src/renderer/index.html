@@ -904,6 +904,31 @@
               <span class="bee-info-label">Version:</span>
               <span id="bee-version-text">Unknown</span>
             </div>
+            <!-- The node's /addresses publicKey: what a publisher adds to an
+                 ACT grantee list to share with this node (#1188). Chrome
+                 only; no page can read it. -->
+            <div
+              class="bee-info-row bee-act-key-row"
+              title="Give this key to someone so they can share access-controlled Swarm content with this node"
+            >
+              <span class="bee-info-label">ACT Public Key:</span>
+              <span class="bee-act-key">
+                <code class="bee-act-key-text" id="bee-act-key-text">Unknown</code>
+                <button
+                  type="button"
+                  class="node-copy-btn-inline bee-act-key-copy"
+                  id="bee-act-key-copy"
+                  title="Copy ACT public key"
+                  aria-label="Copy ACT public key"
+                  disabled
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                  </svg>
+                </button>
+              </span>
+            </div>
           </div>
 
           <!-- Divider -->
@@ -3278,7 +3303,10 @@
 
               <!-- Step 2: Pick account -->
               <div id="connect-phone-accounts-step" class="subscreen-content hidden">
-                <p class="create-wallet-message">Choose the account to add.</p>
+                <p class="create-wallet-message">
+                  Choose the account to add. To show it's yours, your phone then signs a short
+                  check: scan the new code that appears.
+                </p>
 
                 <div id="connect-phone-account-list" class="connect-ledger-account-list"></div>
 
@@ -3470,6 +3498,20 @@
                 <div class="wallet-settings-section">
                   <label class="wallet-settings-label">Address</label>
                   <code class="wallet-settings-address" id="wallet-settings-address"></code>
+                </div>
+
+                <!-- Phone check: a phone account its phone hasn't shown it holds (#1078) -->
+                <div class="wallet-settings-section hidden" id="wallet-settings-phone-check">
+                  <label class="wallet-settings-label">Phone Check</label>
+                  <p class="export-pk-unlock-text" id="wallet-settings-phone-check-text"></p>
+                  <button
+                    type="button"
+                    class="wallet-settings-export-btn"
+                    id="wallet-settings-phone-check-btn"
+                  >
+                    Check on Phone
+                  </button>
+                  <div class="export-pk-error hidden" id="wallet-settings-phone-check-error"></div>
                 </div>
 
                 <!-- Export Private Key Section -->
@@ -4793,6 +4835,10 @@
                     <span class="swarm-publish-label">Files</span>
                     <span class="swarm-publish-value" id="swarm-publish-paths"></span>
                   </div>
+                  <div class="swarm-publish-row hidden" id="swarm-publish-owner-row">
+                    <span class="swarm-publish-label">Owner</span>
+                    <span class="swarm-publish-value" id="swarm-publish-owner"></span>
+                  </div>
                 </div>
 
                 <div class="swarm-connect-warning">
@@ -4877,6 +4923,67 @@
                 <div class="swarm-connect-actions">
                   <button type="button" class="swarm-connect-reject-btn" id="swarm-messaging-reject">Reject</button>
                   <button type="button" class="swarm-connect-approve-btn" id="swarm-messaging-confirm">Allow</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Swarm ACT Approval sub-screen (#648): open content shared with this node -->
+            <div id="sidebar-swarm-act-approve" class="sidebar-subscreen sidebar-modal hidden">
+              <div
+                class="subscreen-header"
+                data-back="swarm-act-back"
+                data-title="Open Shared Content"
+              ></div>
+
+              <div class="subscreen-content">
+                <div class="swarm-connect-origin">
+                  <div class="swarm-connect-site" id="swarm-act-site">site.eth</div>
+                  <div class="swarm-connect-wants">
+                    wants to open content this publisher shared with you
+                  </div>
+                </div>
+
+                <div class="swarm-publish-details">
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Publisher</span>
+                    <span class="swarm-publish-value" id="swarm-act-publisher"></span>
+                  </div>
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Publisher address</span>
+                    <span class="swarm-publish-value" id="swarm-act-publisher-address"></span>
+                  </div>
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Reference</span>
+                    <span class="swarm-publish-value" id="swarm-act-reference"></span>
+                  </div>
+                  <div class="swarm-publish-row hidden" id="swarm-act-path-row">
+                    <span class="swarm-publish-label">Path</span>
+                    <span class="swarm-publish-value" id="swarm-act-path"></span>
+                  </div>
+                </div>
+
+                <div class="swarm-connect-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path
+                      d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                    />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                  <span
+                    >Your Swarm node decrypts this with its own key and gives the content to this
+                    site. Only content this publisher shared with you can be opened.</span
+                  >
+                </div>
+
+                <label class="auto-approve-checkbox">
+                  <input type="checkbox" id="swarm-act-auto-approve" />
+                  <span>Always allow this site to open what this publisher shares with you</span>
+                </label>
+
+                <div class="swarm-connect-actions">
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-act-reject">Reject</button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-act-confirm">Open</button>
                 </div>
               </div>
             </div>
@@ -5200,6 +5307,10 @@
                       <span class="toggle-slider"></span>
                     </label>
                   </div>
+                </div>
+                <div class="perms-section" id="swarm-perms-act-section">
+                  <div class="perms-section-header">Shared content you allowed</div>
+                  <div id="swarm-perms-act-list"></div>
                 </div>
                 <div class="perms-section hidden" id="swarm-perms-manifest-section">
                   <div class="perms-section-header">Declared by app</div>

@@ -1,12 +1,13 @@
 /**
  * Wallet Settings Module
  *
- * Settings screen, delete wallet, export private key.
+ * Settings screen, delete wallet, export private key, and the phone check
+ * for a phone account its phone hasn't shown it holds (#1078).
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
 import { refuseSubscreenWhileInFlight } from './signature-flight.js';
-import { selectWallet } from './wallet-selector.js';
+import { selectWallet, loadDerivedWallets } from './wallet-selector.js';
 
 // DOM references
 let walletSettingsScreen;
@@ -14,6 +15,12 @@ let walletSettingsBackBtn;
 let walletSettingsName;
 let walletSettingsAddress;
 let walletSettingsDeleteBtn;
+
+// Phone check DOM references
+let phoneCheckSection;
+let phoneCheckText;
+let phoneCheckBtn;
+let phoneCheckError;
 
 // Export private key DOM references
 let exportPkButtonView;
@@ -36,6 +43,11 @@ export function initWalletSettings(switchTab) {
   walletSettingsName = document.getElementById('wallet-settings-name');
   walletSettingsAddress = document.getElementById('wallet-settings-address');
   walletSettingsDeleteBtn = document.getElementById('wallet-settings-delete');
+
+  phoneCheckSection = document.getElementById('wallet-settings-phone-check');
+  phoneCheckText = document.getElementById('wallet-settings-phone-check-text');
+  phoneCheckBtn = document.getElementById('wallet-settings-phone-check-btn');
+  phoneCheckError = document.getElementById('wallet-settings-phone-check-error');
 
   exportPkButtonView = document.getElementById('export-pk-button-view');
   exportPkUnlockView = document.getElementById('export-pk-unlock-view');
@@ -72,6 +84,8 @@ function setupWalletSettingsScreen() {
   if (walletSettingsDeleteBtn) {
     walletSettingsDeleteBtn.addEventListener('click', handleWalletSettingsDelete);
   }
+
+  phoneCheckBtn?.addEventListener('click', handlePhoneCheck);
 
   const exportPkBtn = document.getElementById('wallet-settings-export-pk');
   if (exportPkBtn) {
@@ -126,6 +140,7 @@ function openWalletSettings() {
     }
   }
 
+  renderPhoneCheck(activeWallet);
   resetExportPkView();
 }
 
@@ -170,6 +185,76 @@ async function handleWalletSettingsDelete() {
   } catch (err) {
     console.error('[WalletUI] Failed to delete wallet:', err);
     alert(`Failed to delete wallet: ${err.message}`);
+  }
+}
+
+// ============================================
+// Phone check (#1078)
+// ============================================
+
+/**
+ * What the phone check says about a wallet: null for anything but a phone
+ * account its phone hasn't shown it holds. Such an account can't own a
+ * Safe until it has been checked.
+ */
+export function phoneCheckStatus(wallet) {
+  if (wallet?.type !== 'remote' || !wallet.addressCheck || wallet.addressCheck === 'matched') {
+    return null;
+  }
+  return wallet.addressCheck === 'mismatched'
+    ? "Your phone last answered from a different account. Select this account on your phone and check it again. Until then it can't own a Safe."
+    : "Your phone hasn't yet shown that it holds this account, so it can't own a Safe. Check it once on your phone.";
+}
+
+function renderPhoneCheck(wallet) {
+  const status = phoneCheckStatus(wallet);
+  phoneCheckSection?.classList.toggle('hidden', !status);
+  if (phoneCheckText) phoneCheckText.textContent = status || '';
+  if (phoneCheckBtn) {
+    phoneCheckBtn.disabled = false;
+    phoneCheckBtn.textContent = 'Check on Phone';
+    phoneCheckBtn.classList.remove('hidden');
+  }
+  phoneCheckError?.classList.add('hidden');
+  if (phoneCheckError) phoneCheckError.textContent = '';
+}
+
+/** Main has the phone sign a check as the account; the QR panel takes it from there. */
+async function handlePhoneCheck() {
+  const activeWallet = walletState.derivedWallets.find(w => w.index === walletState.activeWalletIndex);
+  if (!phoneCheckStatus(activeWallet)) return;
+
+  if (phoneCheckBtn) {
+    phoneCheckBtn.disabled = true;
+    phoneCheckBtn.textContent = 'Checking…';
+  }
+  phoneCheckError?.classList.add('hidden');
+
+  try {
+    const result = await window.remoteSigner.checkAccount(activeWallet.index);
+    if (!result.success) {
+      throw new Error(result.error);
+    }
+    activeWallet.addressCheck = result.wallet.addressCheck;
+    // The wallet list's badge and the Safe screen's owners read the state.
+    await loadDerivedWallets();
+    if (result.wallet.addressCheck === 'matched') {
+      phoneCheckSection?.classList.remove('hidden');
+      if (phoneCheckText) phoneCheckText.textContent = 'Checked: your phone holds this account.';
+      phoneCheckBtn?.classList.add('hidden');
+    } else {
+      renderPhoneCheck(activeWallet);
+    }
+  } catch (err) {
+    console.error('[WalletUI] Phone check failed:', err);
+    if (phoneCheckBtn) {
+      phoneCheckBtn.disabled = false;
+      phoneCheckBtn.textContent = 'Check on Phone';
+    }
+    if (phoneCheckError) {
+      phoneCheckError.textContent = err.message || 'The phone check failed. Try again.';
+      phoneCheckError.classList.remove('hidden');
+    }
   }
 }
 

@@ -52,6 +52,24 @@ const MISSING_RE = /not found|does not exist|NotFound/i;
 const REPO_NOT_FOUND = Object.freeze({ error: 'repository not found' });
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 
+// What `rad:`'s final catch answers for an add-on error: a fixed text,
+// never the add-on's own. libradicle's text for a repository that isn't
+// stored names its storage path, `<radicle home>/storage/<rid>`, under the
+// user's profile, and its storage and git errors can name files there too
+// (#1050). The status is still decided on the add-on's text: 404 for
+// MISSING_RE, 500 for the rest. The texts are freedom-radicled's (`not
+// found`, `the read failed`). An ended read and an over-cap reply are
+// answered before this, by their typed errors (R-3), and a repoInfo
+// failure by the preflight (R-2).
+const PUBLIC_READ_ERRORS = Object.freeze({
+  missing: Object.freeze({ error: 'not found' }),
+  failed: Object.freeze({ error: 'the read failed' }),
+});
+
+function publicReadError(missing) {
+  return missing ? PUBLIC_READ_ERRORS.missing : PUBLIC_READ_ERRORS.failed;
+}
+
 // The one page allowed to reach `radapi:`. Unlike `rad:` — public repo
 // data any dweb page may read — this scheme exposes node-level endpoints
 // (health, peer counts, the full seeded-repo list) and repo reads that
@@ -226,7 +244,9 @@ async function serveNodeApi(pathname) {
       { cors: false }
     );
   } catch (err) {
-    log.warn('[radapi] node status failed:', err.message);
+    // PRIVATE MODE GUARD: a private session's registration marks this, and
+    // the add-on's text can name its storage path (#1050).
+    log.warn('[radapi] node status failed:', redactForLog(err.message));
     return json({ error: err.message }, 503, { cors: false });
   }
 }
@@ -475,7 +495,10 @@ async function serveBoundedRepoApi(
         redactForLog(err.message)
       );
     }
-    return reply({ error: err.message }, missing ? 404 : 500);
+    // `radapi:` keeps the add-on's text: its replies reach the internal
+    // viewer only (guardRadicleApiRequest). `rad:` replies to any page.
+    const body = allowPrivate ? { error: err.message } : publicReadError(missing);
+    return reply(body, missing ? 404 : 500);
   }
 }
 
@@ -527,7 +550,8 @@ async function handleRadicleApiRequest(request) {
       );
       return method === 'HEAD' ? withoutBody(response) : response;
     } catch (err) {
-      log.warn('[radapi] repository listing failed:', err.message);
+      // PRIVATE MODE GUARD: as for node status; the text can name a RID.
+      log.warn('[radapi] repository listing failed:', redactForLog(err.message));
       return json({ error: err.message }, 500, { cors: false });
     }
   }

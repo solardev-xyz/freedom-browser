@@ -1,0 +1,3 @@
+- The Nodes menu shows your Swarm node's ACT public key with a copy button, so you can give it to someone who wants to share access-controlled Swarm content with you ([#1188](https://github.com/solardev-xyz/freedom-browser/issues/1188))
+  - It works with the bundled node and with an external Bee node, and reads Unknown while the node can't be asked
+  - Only Freedom's own menu shows it; sites cannot read it

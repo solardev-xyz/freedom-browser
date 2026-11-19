@@ -38,6 +38,7 @@ let swarmPermsPublishToggle;
 let swarmPermsFeedsToggle;
 let swarmPermsSigningToggle;
 let swarmPermsMessagingToggle;
+let swarmPermsActList;
 let swarmPermsManifestSection;
 let swarmPermsManifestList;
 let swarmPermsIdentitySelector;
@@ -86,6 +87,7 @@ export function initPermissionManage() {
   swarmPermsFeedsToggle = document.getElementById('swarm-perms-feeds-toggle');
   swarmPermsSigningToggle = document.getElementById('swarm-perms-signing-toggle');
   swarmPermsMessagingToggle = document.getElementById('swarm-perms-messaging-toggle');
+  swarmPermsActList = document.getElementById('swarm-perms-act-list');
   swarmPermsManifestSection = document.getElementById('swarm-perms-manifest-section');
   swarmPermsManifestList = document.getElementById('swarm-perms-manifest-list');
   swarmPermsIdentitySelector = document.getElementById('swarm-perms-identity-selector');
@@ -259,6 +261,7 @@ export async function showSwarmPermissions(permissionKey, options = {}) {
   if (swarmPermsMessagingToggle) {
     swarmPermsMessagingToggle.checked = await window.swarmPermissions.hasMessagingGrant(permissionKey);
   }
+  await renderActGrants(permissionKey);
   await renderManifestGrant(permissionKey);
   await refreshSwarmIdentitySection();
 
@@ -268,6 +271,63 @@ export async function showSwarmPermissions(permissionKey, options = {}) {
 
   if (options.focusIdentity) {
     document.getElementById('swarm-perms-identity-section')?.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+/**
+ * The publishers this site may open ACT shares from without asking (#648),
+ * each with its own Remove: the rule is per publisher, so is its revocation.
+ */
+async function renderActGrants(origin) {
+  if (!swarmPermsActList) return;
+  let grants = [];
+  try {
+    grants = (await window.swarmPermissions.getActGrants(origin)) || [];
+  } catch (err) {
+    console.error('[PermissionManage] Failed to load ACT rules:', err);
+  }
+  if (swarmPermsKey !== origin) return;
+
+  swarmPermsActList.innerHTML = '';
+  if (!grants.length) {
+    const empty = document.createElement('div');
+    empty.className = 'perms-empty';
+    empty.textContent = 'No publishers allowed without asking';
+    swarmPermsActList.appendChild(empty);
+    return;
+  }
+
+  for (const grant of grants) {
+    const row = document.createElement('div');
+    row.className = 'perms-tx-rule';
+
+    const info = document.createElement('div');
+    info.className = 'perms-tx-info';
+
+    const key = document.createElement('code');
+    key.className = 'perms-tx-addr perms-act-key';
+    key.textContent = grant.publicKey;
+
+    const address = document.createElement('span');
+    address.className = 'perms-tx-chain';
+    address.textContent = grant.address;
+
+    info.appendChild(key);
+    info.appendChild(address);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'perms-tx-remove';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', async () => {
+      await window.swarmPermissions.revokeAct(origin, grant.publicKey);
+      await renderActGrants(origin);
+      updateSwarmConnectionBanner(origin);
+    });
+
+    row.appendChild(info);
+    row.appendChild(removeBtn);
+    swarmPermsActList.appendChild(row);
   }
 }
 
@@ -315,6 +375,7 @@ async function refreshSwarmPermissionControls(origin) {
   if (swarmPermsMessagingToggle) {
     swarmPermsMessagingToggle.checked = await window.swarmPermissions.hasMessagingGrant(origin);
   }
+  await renderActGrants(origin);
   updateSwarmConnectionBanner(origin);
 }
 
@@ -323,6 +384,7 @@ export function closeSwarmPerms() {
   walletState.identityView?.classList.remove('hidden');
   swarmPermsKey = null;
   swarmPermsIdentityState = null;
+  if (swarmPermsActList) swarmPermsActList.innerHTML = '';
   if (swarmPermsIdentitySelector) swarmPermsIdentitySelector.innerHTML = '';
   if (swarmPermsIdentityNote) {
     swarmPermsIdentityNote.textContent = '';

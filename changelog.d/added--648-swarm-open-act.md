@@ -1,0 +1,4 @@
+- Sites can open content that someone shared with your Swarm node through Swarm's access control (ACT), with your consent for each publisher, through `window.swarm.openAct` ([#648](https://github.com/solardev-xyz/freedom-browser/issues/648))
+  - Freedom asks every time, naming the site and the publisher; "always allow" covers that one publisher on that one site, and each such rule can be removed from the site's Swarm permissions
+  - Your node decrypts the content with its own key, which never leaves it; `bzz://` pages still cannot send ACT headers to your node
+  - Private windows cannot open shared content and keep no rule

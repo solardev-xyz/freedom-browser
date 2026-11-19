@@ -2,7 +2,11 @@ const { ownerWallet } = require('./__tests__/helpers/test-owners');
 
 const OWNERS = [ownerWallet(0).address, ownerWallet(2).address, ownerWallet(4).address];
 const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+const OTHER_ADDRESS = '0x000000000000000000000000000000000000dEaD';
 
+// Records as vault-meta stores them: `deployed` holds the stored marks,
+// which the record seam filters as identity-manager's does (#1066), and
+// markSafeDeployed writes the verified mark.
 const mockWalletRecords = {
   0: { index: 0, name: 'Main Wallet', address: OWNERS[0], type: 'mnemonic' },
   2: { index: 2, name: 'My Stax', address: OWNERS[1], type: 'ledger' },
@@ -20,13 +24,26 @@ const mockWalletRecords = {
 };
 
 const mockAddSafeWallet = jest.fn(async (name, params) => ({ index: 9, name, type: 'safe', ...params }));
-const mockMarkSafeDeployed = jest.fn(async () => {});
-jest.mock('../../identity-manager', () => ({
-  getWalletRecord: (index) => mockWalletRecords[index] || null,
-  addSafeWallet: (...args) => mockAddSafeWallet(...args),
-  markSafeDeployed: (...args) => mockMarkSafeDeployed(...args),
-  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
-}));
+const mockMarkSafeDeployed = jest.fn(async (index, chainId) => {
+  const { verifiedDeployedMark } = jest.requireActual('./deployed-mark');
+  const record = mockWalletRecords[index];
+  record.deployed = { ...record.deployed, [chainId]: verifiedDeployedMark() };
+});
+jest.mock('../../identity-manager', () => {
+  const { verifiedDeployments } = jest.requireActual('./deployed-mark');
+  return {
+    getWalletRecord: (index) => {
+      const record = mockWalletRecords[index];
+      if (!record) return null;
+      return record.type === 'safe'
+        ? { ...record, deployed: verifiedDeployments(record.deployed) }
+        : record;
+    },
+    addSafeWallet: (...args) => mockAddSafeWallet(...args),
+    markSafeDeployed: (...args) => mockMarkSafeDeployed(...args),
+    WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
+  };
+});
 
 const mockPredictSafeAddress = jest.fn(async () => SAFE_ADDRESS);
 const mockBuildDeploymentTransaction = jest.fn(async () => ({
@@ -49,7 +66,8 @@ const mockGetGasPrices = jest.fn(async () => ({
   maxFeePerGas: '2000000000', // cost = 300000 * 2 gwei = 0.0006 ether
   maxPriorityFeePerGas: '1000000000',
 }));
-const mockWaitForTransaction = jest.fn(async () => ({ status: 'confirmed' }));
+// A receipt a verified source gave, unless a test says otherwise.
+const mockWaitForTransaction = jest.fn(async () => ({ status: 'confirmed', verified: true }));
 jest.mock('../transaction-service', () => ({
   estimateGas: (...args) => mockEstimateGas(...args),
   getGasPrices: (...args) => mockGetGasPrices(...args),
@@ -58,33 +76,61 @@ jest.mock('../transaction-service', () => ({
   waitForTransaction: (...args) => mockWaitForTransaction(...args),
 }));
 
-// Raw chain reads: eth_getCode (deployment truth) + eth_getBalance.
+// Raw chain reads: eth_getBalance.
 const mockRpcRequest = jest.fn();
 jest.mock('../provider-manager', () => ({
   getEip1193Provider: () => ({ request: (...args) => mockRpcRequest(...args) }),
 }));
 
+// Deployment truth: eth_getCode through the chain router, with its label.
+const mockChainRequest = jest.fn();
+jest.mock('../../networks/chain-data-router', () => ({
+  request: (...args) => mockChainRequest(...args),
+}));
+
 const {
   DEPLOY_CHAIN_ID,
   createSafeAccount,
+  getSafeRecord,
   getSafeStatus,
   activateSafe,
+  isMarkedDeployed,
 } = require('./safe-service');
 
 const DEPLOY_COST = 300000n * 2000000000n; // gasLimit × maxFeePerGas
 
-function stubChainState({ code = '0x', balance = 0n } = {}) {
+function stubChainState({ code = '0x', balance = 0n, verified = true } = {}) {
   mockRpcRequest.mockImplementation(async ({ method }) => {
-    if (method === 'eth_getCode') return code;
     if (method === 'eth_getBalance') return '0x' + balance.toString(16);
     throw new Error(`unexpected rpc ${method}`);
+  });
+  mockChainRequest.mockImplementation(async (chainId, method) => {
+    if (method === 'eth_getCode') {
+      return { result: code, source: verified ? 'colibri' : 'direct', verified };
+    }
+    throw new Error(`unexpected chain read ${method}`);
   });
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockWalletRecords[5].deployed = {};
   stubChainState();
 });
+
+/**
+ * eth_getCode answers in order, one per read (the last one repeats), each
+ * `{ code, verified }`.
+ */
+function stubCodeReads(answers, { balance = DEPLOY_COST * 2n } = {}) {
+  stubChainState({ balance });
+  const queue = [...answers];
+  mockChainRequest.mockImplementation(async (chainId, method) => {
+    if (method !== 'eth_getCode') throw new Error(`unexpected chain read ${method}`);
+    const { code, verified } = queue.length > 1 ? queue.shift() : queue[0];
+    return { result: code, source: verified ? 'myotis' : 'direct', verified };
+  });
+}
 
 describe('createSafeAccount', () => {
   test('predicts the address from resolved owner addresses and stores the record', async () => {
@@ -150,7 +196,7 @@ describe('getSafeStatus', () => {
     expect(status.needsFunds).toBe(true);
   });
 
-  test('code on chain marks the record deployed (self-heal) and skips the quote', async () => {
+  test('verified code on chain marks the record deployed (self-heal) and skips the quote', async () => {
     stubChainState({ code: '0x60806040' });
 
     const status = await getSafeStatus(5);
@@ -158,16 +204,101 @@ describe('getSafeStatus', () => {
     expect(status.deployed).toBe(true);
     expect(status.needsFunds).toBe(false);
     expect(status.estimatedCost).toBeNull();
+    expect(mockChainRequest).toHaveBeenCalledWith(DEPLOY_CHAIN_ID, 'eth_getCode', [
+      SAFE_ADDRESS,
+      'latest',
+    ]);
     expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
     expect(mockEstimateGas).not.toHaveBeenCalled();
   });
 
+  test('unverified code marks nothing, and the next check asks again (#1066)', async () => {
+    stubChainState({ code: '0x60806040', verified: false });
+
+    await expect(getSafeStatus(5)).rejects.toMatchObject({
+      code: 'SAFE_UNVERIFIED',
+      message: /couldn't verify/,
+    });
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+    // not offered for activation either: the Safe may be deployed
+    expect(mockBuildDeploymentTransaction).not.toHaveBeenCalled();
+    expect(mockEstimateGas).not.toHaveBeenCalled();
+
+    // A label other than `true` is no verification either.
+    mockChainRequest.mockResolvedValueOnce({ result: '0x60806040', source: 'direct' });
+    await expect(getSafeStatus(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+
+    // Later a verified source answers, and that read marks it.
+    stubChainState({ code: '0x60806040', verified: true });
+    const status = await getSafeStatus(5);
+    expect(status.deployed).toBe(true);
+    expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
+    expect(mockChainRequest).toHaveBeenCalledTimes(3);
+  });
+
+  test('an unverified "no code" answer leaves the Safe undeployed and offers activation', async () => {
+    stubChainState({ code: '0x', verified: false, balance: DEPLOY_COST * 2n });
+    const status = await getSafeStatus(5);
+    expect(status.deployed).toBe(false);
+    expect(status.needsFunds).toBe(false);
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+  });
+
+  test('a deployment to another address than the record\'s is not quoted (#1066)', async () => {
+    stubChainState({ code: '0x', balance: DEPLOY_COST * 2n });
+    mockBuildDeploymentTransaction.mockResolvedValueOnce({
+      safeAddress: OTHER_ADDRESS,
+      to: '0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67',
+      value: '0',
+      data: '0xdeadbeef',
+    });
+    await expect(getSafeStatus(5)).rejects.toMatchObject({ code: 'SAFE_ADDRESS_MISMATCH' });
+    expect(mockEstimateGas).not.toHaveBeenCalled();
+  });
+
   test('record already marked deployed skips the chain read entirely', async () => {
-    mockWalletRecords[5].deployed = { [DEPLOY_CHAIN_ID]: true };
+    mockWalletRecords[5].deployed = { [DEPLOY_CHAIN_ID]: { verified: true } };
     const status = await getSafeStatus(5);
     expect(status.deployed).toBe(true);
     expect(mockRpcRequest).not.toHaveBeenCalled();
-    mockWalletRecords[5].deployed = {};
+    expect(mockChainRequest).not.toHaveBeenCalled();
+  });
+
+  test('a deployed mark of a release before #1066 is read again, and only a verified read accepts it', async () => {
+    // One endpoint's eth_getCode answer was enough to store this bare mark.
+    mockWalletRecords[5].deployed = { [DEPLOY_CHAIN_ID]: true };
+    expect(isMarkedDeployed(getSafeRecord(5))).toBe(false);
+
+    // The chain is asked again; unverified code doesn't make it deployed.
+    stubChainState({ code: '0x60806040', verified: false });
+    await expect(getSafeStatus(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    expect(mockChainRequest).toHaveBeenCalledWith(DEPLOY_CHAIN_ID, 'eth_getCode', [
+      SAFE_ADDRESS,
+      'latest',
+    ]);
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+    // Still pending, and the record is kept as it was.
+    expect(mockWalletRecords[5].deployed).toEqual({ [DEPLOY_CHAIN_ID]: true });
+    expect(isMarkedDeployed(getSafeRecord(5))).toBe(false);
+
+    // A verified read marks it, and later checks need no read.
+    stubChainState({ code: '0x60806040', verified: true });
+    await expect(getSafeStatus(5)).resolves.toMatchObject({ deployed: true });
+    expect(mockWalletRecords[5].deployed).toEqual({ [DEPLOY_CHAIN_ID]: { verified: true } });
+    expect(isMarkedDeployed(getSafeRecord(5))).toBe(true);
+    mockChainRequest.mockClear();
+    await expect(getSafeStatus(5)).resolves.toMatchObject({ deployed: true });
+    expect(mockChainRequest).not.toHaveBeenCalled();
+  });
+
+  test('a deployed mark of a release before #1066 with no code behind it offers activation', async () => {
+    mockWalletRecords[5].deployed = { [DEPLOY_CHAIN_ID]: true };
+    stubChainState({ code: '0x', balance: DEPLOY_COST * 2n });
+    const status = await getSafeStatus(5);
+    expect(status).toMatchObject({ deployed: false, needsFunds: false });
+    expect(status.estimatedCost).toBe(DEPLOY_COST.toString());
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
   });
 
   test('a safe with no local gas-paying owner reports executorIndex null', async () => {
@@ -225,11 +356,135 @@ describe('activateSafe', () => {
     expect(mockDeploySafe).not.toHaveBeenCalled();
   });
 
+  test('refuses, with nothing sent, a deployment to another address than the record\'s (#1066)', async () => {
+    stubChainState({ code: '0x', balance: DEPLOY_COST * 2n });
+    // e.g. a record whose address came from a wrong proxyCreationCode()
+    // answer before #1066: the init params now derive another address.
+    mockBuildDeploymentTransaction.mockResolvedValueOnce({
+      safeAddress: OTHER_ADDRESS,
+      to: '0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67',
+      value: '0',
+      data: '0xdeadbeef',
+    });
+
+    await expect(activateSafe(5)).rejects.toMatchObject({
+      code: 'SAFE_ADDRESS_MISMATCH',
+      message: new RegExp(`${SAFE_ADDRESS}.*${OTHER_ADDRESS}`),
+    });
+    expect(mockDeploySafe).not.toHaveBeenCalled();
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+  });
+
+  test('neither deploys nor marks on unverified code at the address (#1066)', async () => {
+    stubChainState({ code: '0x60806040', verified: false, balance: DEPLOY_COST * 2n });
+    const err = await activateSafe(5).catch((e) => e);
+    expect(err).toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    // Nothing was sent: no hash, so the card may offer Activate again.
+    expect(err.hash).toBeUndefined();
+    expect(mockDeploySafe).not.toHaveBeenCalled();
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+  });
+
   test('does not mark deployed when the deploy tx fails', async () => {
     stubChainState({ code: '0x', balance: DEPLOY_COST * 2n });
     mockWaitForTransaction.mockResolvedValueOnce({ status: 'failed' });
 
     await expect(activateSafe(5)).rejects.toThrow(/failed/i);
     expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+  });
+
+  test('re-reads a deployed mark of a release before #1066, and refuses while unverified', async () => {
+    mockWalletRecords[5].deployed = { [DEPLOY_CHAIN_ID]: true };
+    stubChainState({ code: '0x60806040', verified: false, balance: DEPLOY_COST * 2n });
+    await expect(activateSafe(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    expect(mockChainRequest).toHaveBeenCalledWith(DEPLOY_CHAIN_ID, 'eth_getCode', [
+      SAFE_ADDRESS,
+      'latest',
+    ]);
+    expect(mockDeploySafe).not.toHaveBeenCalled();
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+  });
+
+  test('an unverified receipt marks nothing, and the Safe stays pending (#1066)', async () => {
+    // The receipt came from one endpoint, and no verified source sees the
+    // Safe's code yet: a dishonest broadcaster's receipt looks like this.
+    stubCodeReads([{ code: '0x', verified: true }]);
+    mockWaitForTransaction.mockResolvedValueOnce({ status: 'confirmed', verified: false });
+
+    const sentErr = await activateSafe(5).catch((e) => e);
+    expect(sentErr).toMatchObject({
+      code: 'SAFE_UNVERIFIED',
+      message: /sent the activation, but couldn't verify/,
+    });
+    // The sent deployment's hash rides on the error (the card keys on it).
+    expect(sentErr.hash).toBe('0x' + 'ab'.repeat(32));
+    expect(mockDeploySafe).toHaveBeenCalledTimes(1);
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+    // The verified read after the receipt is what was asked.
+    expect(mockChainRequest).toHaveBeenCalledTimes(2);
+    expect(isMarkedDeployed(getSafeRecord(5))).toBe(false);
+
+    // Neither does a receipt with no label, or code no verified source confirms.
+    for (const [receipt, code] of [
+      [{ status: 'confirmed' }, { code: '0x', verified: true }],
+      [{ status: 'confirmed', verified: false }, { code: '0x60806040', verified: false }],
+      [{ status: 'confirmed', verified: 'true' }, { code: '0x60806040' }],
+    ]) {
+      jest.clearAllMocks();
+      stubCodeReads([{ code: '0x', verified: true }, code]);
+      mockWaitForTransaction.mockResolvedValueOnce(receipt);
+      await expect(activateSafe(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+      expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+    }
+
+    // The next status check reads again, and a verified read marks it.
+    stubCodeReads([{ code: '0x60806040', verified: true }]);
+    await expect(getSafeStatus(5)).resolves.toMatchObject({ deployed: true });
+    expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
+  });
+
+  test('a failed verification read after an unverified receipt leaves the Safe pending', async () => {
+    stubCodeReads([{ code: '0x', verified: true }]);
+    mockChainRequest
+      .mockResolvedValueOnce({ result: '0x', source: 'myotis', verified: true })
+      .mockRejectedValueOnce(new Error('No chain source left for eth_getCode'));
+    mockWaitForTransaction.mockResolvedValueOnce({ status: 'confirmed', verified: false });
+    await expect(activateSafe(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+  });
+
+  test('an unverified receipt with a verified read of the code marks deployed', async () => {
+    stubCodeReads([
+      { code: '0x', verified: true },
+      { code: '0x60806040', verified: true },
+    ]);
+    mockWaitForTransaction.mockResolvedValueOnce({ status: 'confirmed', verified: false });
+
+    const result = await activateSafe(5);
+
+    expect(result).toEqual({ safeAddress: SAFE_ADDRESS, hash: '0x' + 'ab'.repeat(32) });
+    expect(mockChainRequest).toHaveBeenCalledTimes(2);
+    expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
+    expect(isMarkedDeployed(getSafeRecord(5))).toBe(true);
+  });
+
+  test('a verified receipt marks deployed with no further read', async () => {
+    stubCodeReads([{ code: '0x', verified: true }]);
+
+    await activateSafe(5);
+
+    expect(mockChainRequest).toHaveBeenCalledTimes(1); // the status read only
+    expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
+    expect(mockWalletRecords[5].deployed).toEqual({ [DEPLOY_CHAIN_ID]: { verified: true } });
+  });
+});
+
+describe('isMarkedDeployed', () => {
+  test('accepts only a verified mark as the record seam exposes it', () => {
+    expect(isMarkedDeployed({ deployed: { [DEPLOY_CHAIN_ID]: true } })).toBe(true);
+    expect(isMarkedDeployed({ deployed: { [DEPLOY_CHAIN_ID]: true } }, 8453)).toBe(false);
+    expect(isMarkedDeployed({ deployed: {} })).toBe(false);
+    expect(isMarkedDeployed({})).toBe(false);
+    expect(isMarkedDeployed({ deployed: { [DEPLOY_CHAIN_ID]: 'true' } })).toBe(false);
   });
 });

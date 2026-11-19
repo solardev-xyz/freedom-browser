@@ -12,6 +12,7 @@ const {
   writePrivateFileSync,
   UnsafePrivatePathError,
   _setFdBindingForTests,
+  _setDirOpsByPathForTests,
 } = require('./private-files');
 
 const posix = process.platform === 'win32' ? describe.skip : describe;
@@ -432,6 +433,151 @@ posix('managed directory handles (K-3)', () => {
       // Only the directory itself was opened.
       expect(opened.every((target) => target === data)).toBe(true);
       expect(fs.readdirSync(data)).toEqual(['keys']);
+    }
+  );
+});
+
+// #946 review R2-M2: listing a held directory and removing an empty
+// directory in it go through the handle. Bound (Linux), they stay on the
+// held directory; by path (macOS, Windows, and Linux here through the test
+// seam), a swap before or after is refused (#963).
+posix('directory listing and removal through a handle (K-3)', () => {
+  let root;
+  let data;
+  let outsideDir;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'private-dir-ops-'));
+    data = path.join(root, 'ant-data');
+    fs.mkdirSync(path.join(data, 'run', 'h-held'), { recursive: true, mode: 0o700 });
+    outsideDir = path.join(root, 'outside');
+    // What a swapped-in link could point at: a directory with the same
+    // child, not empty, so a removal by path cannot take it either.
+    fs.mkdirSync(path.join(outsideDir, 'h-held'), { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, 'h-held', 'keep'), 'not yours');
+    fs.writeFileSync(path.join(outsideDir, 'other'), 'not yours');
+  });
+  afterEach(() => {
+    _setDirOpsByPathForTests(false);
+    jest.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  // run/ moved aside (the handle still holds it), a link to outside in its place.
+  const swapRunForLink = () => {
+    fs.renameSync(path.join(data, 'run'), path.join(data, 'run.held'));
+    fs.symlinkSync(outsideDir, path.join(data, 'run'));
+  };
+  const outsideUntouched = () => {
+    expect(fs.readdirSync(outsideDir).sort()).toEqual(['h-held', 'other']);
+    expect(fs.readdirSync(path.join(outsideDir, 'h-held'))).toEqual(['keep']);
+  };
+  // Run `swap` at the start of the next call to fs[fnName], then the call.
+  const swapAt = (fnName, swap) => {
+    const real = fs[fnName];
+    let done = false;
+    jest.spyOn(fs, fnName).mockImplementation((...args) => {
+      if (!done) {
+        done = true;
+        swap();
+      }
+      return real(...args);
+    });
+  };
+
+  const modes = [
+    ...(process.platform === 'linux' ? [['bound to the descriptor (Linux)', false]] : []),
+    ['by path, bracketed', true],
+  ];
+  describe.each(modes)('%s', (_label, byPath) => {
+    beforeEach(() => _setDirOpsByPathForTests(byPath));
+
+    test('a swap between the check and the listing never lists the replacement', () => {
+      withPrivateDir(data, (dir) => {
+        const run = dir.openDir('run');
+        swapAt('readdirSync', swapRunForLink);
+        let names;
+        try {
+          names = run.entries();
+        } catch (err) {
+          expect(err).toBeInstanceOf(UnsafePrivatePathError);
+        }
+        // Refused, or the held directory's own names.
+        if (byPath) expect(names).toBeUndefined();
+        if (names !== undefined) expect(names).toEqual(['h-held']);
+      });
+      outsideUntouched();
+    });
+
+    test('a swap between the check and the removal never removes outside', () => {
+      withPrivateDir(data, (dir) => {
+        const run = dir.openDir('run');
+        swapAt('rmdirSync', swapRunForLink);
+        let removed;
+        try {
+          removed = run.removeDir('h-held');
+        } catch (err) {
+          expect(err.code === 'ENOTEMPTY' || err instanceof UnsafePrivatePathError).toBe(true);
+        }
+        // Bound, the held directory's own child went; by path, refused.
+        if (!byPath) expect(fs.existsSync(path.join(data, 'run.held', 'h-held'))).toBe(false);
+        if (byPath) expect(removed).toBeUndefined();
+      });
+      outsideUntouched();
+    });
+  });
+
+  // The K-3 round-3 regression: by path, an empty directory of the same
+  // name in a swapped-in replacement would be removed before any check
+  // after could refuse. Without a descriptor-relative removal none is
+  // attempted at all.
+  test('by path, no directory is removed at all, so an empty outside one survives', () => {
+    _setDirOpsByPathForTests(true);
+    fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
+    let rmdirCalls = 0;
+    const realRmdir = fs.rmdirSync;
+    // The swap lands between the check and the rmdir, if one ever runs.
+    jest.spyOn(fs, 'rmdirSync').mockImplementation((...args) => {
+      rmdirCalls += 1;
+      swapRunForLink();
+      return realRmdir(...args);
+    });
+    withPrivateDir(data, (dir) => {
+      const run = dir.openDir('run');
+      expect(() => run.removeDir('h-held')).toThrow(UnsafePrivatePathError);
+    });
+    expect(rmdirCalls).toBe(0);
+    expect(fs.existsSync(path.join(outsideDir, 'h-held'))).toBe(true);
+    expect(fs.existsSync(path.join(data, 'run', 'h-held'))).toBe(true);
+  });
+
+  (process.platform === 'linux' ? test : test.skip)(
+    "bound, the same swap removes only the held directory's empty child",
+    () => {
+      fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
+      withPrivateDir(data, (dir) => {
+        const run = dir.openDir('run');
+        swapAt('rmdirSync', swapRunForLink);
+        expect(() => run.removeDir('h-held')).toThrow(UnsafePrivatePathError);
+      });
+      expect(fs.existsSync(path.join(outsideDir, 'h-held'))).toBe(true);
+      expect(fs.existsSync(path.join(data, 'run.held', 'h-held'))).toBe(false);
+    }
+  );
+
+  // Descriptor-relative removal exists on Linux only; elsewhere every
+  // removeDir is refused (above).
+  (process.platform === 'linux' ? test : test.skip)(
+    'a link at the name is refused, never its target removed',
+    () => {
+      fs.symlinkSync(path.join(outsideDir, 'h-held'), path.join(data, 'run', 'h-link'));
+      fs.rmSync(path.join(outsideDir, 'h-held', 'keep'));
+      withPrivateDir(data, (dir) => {
+        const run = dir.openDir('run');
+        expect(() => run.removeDir('h-link')).toThrow(/ENOTDIR/);
+        expect(run.removeDir('h-held')).toBe(true);
+        expect(run.removeDir('h-held')).toBe(false);
+        expect(run.entries()).toEqual(['h-link']);
+      });
+      expect(fs.existsSync(path.join(outsideDir, 'h-held'))).toBe(true);
     }
   );
 });

@@ -19,6 +19,7 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 const log = require('./logger');
+const { redactForLog } = require('./private/private-log-context');
 const path = require('path');
 const fs = require('fs');
 const {
@@ -211,10 +212,27 @@ async function start(home, alias) {
   return result;
 }
 
-async function shutdown() {
-  if (!started) return { ok: true };
-  started = false;
-  return call('shutdown');
+// The node counts as stopped only on the add-on's proof: its shutdown
+// resolves after the node's thread has joined. A rejection proves nothing
+// (the thread may still hold the home's files), so the node still counts as
+// started, and a re-key refuses to wipe under it (R-8). A shutdown asked for
+// while one is still in flight (the manager stops waiting after a timeout,
+// and the user can stop again) waits on that one: the add-on is never asked
+// to shut down twice at once.
+let shuttingDown = null;
+function shutdown() {
+  if (!started) return Promise.resolve({ ok: true });
+  if (!shuttingDown) {
+    shuttingDown = call('shutdown')
+      .then((result) => {
+        started = false;
+        return result;
+      })
+      .finally(() => {
+        shuttingDown = null;
+      });
+  }
+  return shuttingDown;
 }
 
 function isStarted() {
@@ -230,7 +248,13 @@ async function cloneRepoWithProgress(rid, timeoutMs = 120000, onProgress = () =>
     try {
       onProgress(JSON.parse(eventRaw));
     } catch (err) {
-      log.warn('[RadicleEmbedded] Ignoring invalid clone progress event:', err.message);
+      // PRIVATE MODE GUARD (#1073): a private window's seed or sync gets
+      // here in its log context, and JSON.parse's text quotes part of the
+      // event, whose fetch errors can name the Radicle storage path.
+      log.warn(
+        '[RadicleEmbedded] Ignoring invalid clone progress event:',
+        redactForLog(err.message)
+      );
     }
   });
   return parseResult(raw);
@@ -282,7 +306,10 @@ async function buildRepoMeta(rid) {
   try {
     seeding = (await seeders(rid)).seeding;
   } catch (err) {
-    log.warn('[RadicleEmbedded] seeders() failed:', err.message);
+    // PRIVATE MODE GUARD: the failure is swallowed here, so the protocol's
+    // redacted catch never sees it, and its text can name the repository's
+    // storage path (#1050).
+    log.warn('[RadicleEmbedded] seeders() failed:', redactForLog(err.message));
   }
   return {
     rid: info.rid,
