@@ -52,7 +52,7 @@ freedom-ipfsd (IPFS service)
 freedom-radicled (Radicle service)
   https://github.com/solardev-xyz/freedom-core
   License: not chosen yet (pending the maintainer's decision).
-  Shipped, but not yet run: Radicle still runs on the libradicle addon.
+  Runs the profile's Radicle node in every packaged build.
   Statically links third-party Rust crates, among them libradicle's and
   Radicle Heartwood's (MIT OR Apache-2.0), the C libraries libgit2 1.9.6,
   zlib 1.4 (Zlib) and SQLite 3.49.1 (public domain), and the Rust
