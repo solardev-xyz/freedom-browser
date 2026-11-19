@@ -976,7 +976,10 @@ jobs:
       # which spends it, and the kinds that sign nothing here spend theirs
       # with approval.spend. signing-confirmation.test.js's cases against
       # the binary, with a spy on main's calls: none of the permission
-      # files' write methods.
+      # files' write methods. In a tab the Agent holds, a send still mints
+      # through the agent route (APB-1d, until APB-5b); a signature is the
+      # core's eth.sign prompt, answered by the Agent's sheet (APB-5a), and
+      # custody is read again at the approve and as a device's last step.
       - name: Approval tokens (real freedom-cored)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/wallet/signing-confirmation.integration.test.js
