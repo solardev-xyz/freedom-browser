@@ -225,13 +225,17 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
     await core.start();
     await vaultBackend.importVault('testpass1', ABANDON);
     custodyOffersAlways = !(await aprSevenCore());
+    // Every core from 0.22.0 has APR-7: there the probe must find it.
+    const [major, minor] = String(core.hello?.core_version).split('.').map(Number);
+    if (major > 0 || minor >= 22) expect(custodyOffersAlways).toBe(false);
   });
 
   /**
-   * Whether the core has APR-7 (freedom-core #409): it offers a prompt in
-   * custody (`agent: true`) `alwaysAllow: [false]` only, where cored 0.21.0
-   * offers `[false, true]` and the sheet never picks `true`. Both report
-   * 0.21.0 in their hello, so the version can't tell them apart; APR-7 also
+   * Whether the core has APR-7 (freedom-core #409, cored 0.22.0): it offers
+   * a prompt in custody (`agent: true`) `alwaysAllow: [false]` only, where
+   * cored 0.21.0 offers `[false, true]` and the sheet never picks `true`. A
+   * build of #409 before the release reported 0.21.0 in its hello, so the
+   * version alone can't tell them apart; APR-7 also
    * refuses main's own page `approval.issue` (`forbidden`), which 0.21.0
    * still takes, and that tells them apart. A probe token 0.21.0 mints is
    * discarded at once.
@@ -261,6 +265,57 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
     await core.stop();
     fs.rmSync(root, { recursive: true, force: true });
   });
+
+  // Chain 100 in the core, from a node of the test's (the estimate and a
+  // legacy gas price, every other method unknown), through main's chain
+  // shell, for a send's quote; the returned function takes it all away
+  // again, the client's chain routes as they were.
+  async function chainForSends() {
+    const http = require('http');
+    const node = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        const { id, method } = JSON.parse(body);
+        const answers = { eth_chainId: '0x64', eth_estimateGas: '0x5208', eth_gasPrice: '0x3b9aca00' };
+        const answer = answers[method] ? { result: answers[method] } : { error: { code: -32601, message: 'the method does not exist' } };
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, ...answer }));
+      });
+    });
+    await new Promise((resolve) => node.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${node.address().port}`;
+    const endpoints = { a100a: `${base}/a`, a100b: `${base}/b` };
+    const state = { generation: 0 };
+    const ROUTES = ['shell.rpc', 'shell.blockscout'];
+    const routes = ROUTES.map((name) => core.shapedHandlers.get(name)?.slice());
+    require('../core/chain-shell').registerChainShell(
+      core,
+      { endpoint: (ref) => (endpoints[ref] ? { url: endpoints[ref], chainId: 100 } : null), generation: () => state.generation },
+      { hop: require('../core/naming-shell').makeHop({ fetch }) }
+    );
+    const configure = (chains) => core.request('chain.configure', { chains }, { caller: 'chrome' }, { watchdogMs: 60_000 });
+    const { generations } = await configure([
+      {
+        chain_id: 100,
+        display_name: 'Gnosis Chain',
+        read_order: ['direct'],
+        broadcast_order: ['direct'],
+        quorum: { k: 3, m: 2, timeout_ms: 5000 },
+        rpc: Object.keys(endpoints).map((endpoint) => ({ endpoint, user_configured: false })),
+        prover: null,
+        myotis: false,
+        blockscout: null,
+      },
+    ]);
+    state.generation = generations['100'];
+    return async () => {
+      await configure([]);
+      ROUTES.forEach((name, i) => (routes[i] ? core.shapedHandlers.set(name, routes[i]) : core.shapedHandlers.delete(name)));
+      await new Promise((resolve) => node.close(resolve));
+    };
+  }
 
   beforeEach(async () => {
     Object.assign(seams, { before: null, cross: null, answers: [], asked: [] });
@@ -464,6 +519,74 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
     expect(await env.decide(env.prompts()[0].handle, true, { alwaysAllow: false })).toEqual({ ok: true });
     expect(verifyMessage('Hello, Freedom', (await asked).result)).toBe(VAULT_ACCOUNT);
     expect(seams.answers[0]).toMatchObject({ prompt: seams.asked[0].prompt, approve: true });
+  });
+
+  // A7-4 (cored 0.22.0, APR-7): in a tab the Agent holds, a prompt the
+  // agent service doesn't take is the user's, for the same prompt (its
+  // PageContext `agent: true`), and from APR-7 it offers no "Always allow"
+  // either, on a signature's prompt or a send's, where a core before it
+  // offered the box (the reference's). A tick relayed anyway is the core's
+  // mismatch: nothing signed, no rule written.
+  test('the user\'s prompt in custody offers no "Always allow" on a signature or a send (A7-4); a tick relayed anyway is the core\'s mismatch', async () => {
+    const site = key('j');
+    const page = await env.held(`${site}/app`);
+    sheet.answer = async () => ({ handled: false });
+    const offered = custodyOffersAlways ? [false, true] : [false];
+    // A signature: the user's prompt, without the box.
+    const signing = page.ask('personal_sign', [MESSAGE, VAULT_ACCOUNT]);
+    await until(() => env.prompts().length === 1);
+    expect(seams.asked[0]).toMatchObject({ kind: 'eth.sign', page: { origin: site, agent: true }, choices: { alwaysAllow: offered } });
+    const [shown] = env.prompts();
+    expect(shown.view.alwaysAllow).toBe(custodyOffersAlways);
+    if (!custodyOffersAlways) {
+      // Ticked where it isn't offered: main refuses it, the prompt stays.
+      expect(await env.decide(shown.handle, true, { alwaysAllow: true })).toMatchObject({ ok: false });
+    }
+    expect(await env.decide(shown.handle, true, { alwaysAllow: false })).toEqual({ ok: true });
+    expect(verifyMessage('Hello, Freedom', (await signing).result)).toBe(VAULT_ACCOUNT);
+    expect(seams.answers[0]).toMatchObject({ prompt: seams.asked[0].prompt, approve: true, choices: { alwaysAllow: false } });
+    expect(sheet.asked).toHaveLength(1);
+
+    // A send: the core quotes it from chain 100's node, and the user's
+    // prompt offers no box; the fee's confirmation it still offers.
+    const closeChain = await chainForSends();
+    try {
+      const SEND = [{ from: VAULT_ACCOUNT, to: '0x' + '22'.repeat(20), value: '0x1', data: '0x095ea7b3' + '00'.repeat(64) }];
+      const sending = page.ask('eth_sendTransaction', SEND);
+      await until(() => env.prompts().length === 2);
+      expect(seams.asked[1]).toMatchObject({
+        kind: 'eth.send',
+        page: { origin: site, agent: true },
+        choices: { alwaysAllow: offered, feeAcknowledged: [false, true] },
+      });
+      const sendPrompt = env.prompts()[1];
+      expect(sendPrompt.view.alwaysAllow).toBe(custodyOffersAlways);
+      expect(await env.decide(sendPrompt.handle, false)).toEqual({ ok: true });
+      expect(await sending).toEqual({ error: REJECTED });
+
+      if (!custodyOffersAlways) {
+        // A tick main relayed anyway, on a signature and on a send: the core's
+        // mismatch, and the page gets an error, nothing signed.
+        seams.cross = (method, _params, answer) =>
+          method === 'approval.request' && answer.approve ? { ...answer, choices: { ...answer.choices, alwaysAllow: true } } : answer;
+        const crossedSign = page.ask('personal_sign', [MESSAGE, VAULT_ACCOUNT]);
+        await until(() => env.prompts().length === 3);
+        expect(await env.decide(env.prompts()[2].handle, true, { alwaysAllow: false })).toEqual({ ok: true });
+        const signAnswer = await crossedSign;
+        expect(signAnswer.error).toMatchObject({ code: -32603 });
+        expect(signAnswer.result).toBeUndefined();
+        const crossedSend = page.ask('eth_sendTransaction', SEND);
+        await until(() => env.prompts().length === 4);
+        expect(await env.decide(env.prompts()[3].handle, true, { alwaysAllow: false, feeAcknowledged: false })).toEqual({ ok: true });
+        const sendAnswer = await crossedSend;
+        expect(sendAnswer.error).toMatchObject({ code: -32603 });
+        expect(sendAnswer.result).toBeUndefined();
+        expect(calls.filter(({ method }) => method.startsWith('sign.'))).toEqual([]);
+      }
+    } finally {
+      await closeChain();
+    }
+    expect(grants()[site].autoApprove?.limited).toBeUndefined();
   });
 
   test("an answer with another prompt's id is the core's mismatch: nothing signed", async () => {
