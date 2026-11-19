@@ -996,6 +996,20 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # freedom-core design 0012, APB-4b: a page's personal_sign and
+      # eth_signTypedData_v4 through eip1193.request. Against the binary: a
+      # vault account's signature from main's eth.sign prompt, "Always allow"
+      # as the core's rule, which then answers with no prompt; a rule's
+      # vault.unlock rejected, approved while locked, busy and closed; a
+      # crossed answer signs nothing; a Ledger's, a phone's and a Safe's
+      # { device } spent through the core with the core's payload, an altered
+      # one refused, and "Always allow" never offered for a device.
+      - name: Page signatures through eip1193 (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-eip1193-sign.integration.test.js
+        env:
+          FREEDOM_CORED_APPROVALS_TEST: '1'
+
       # freedom-core design 0012, PHN-2: a phone's signatures and payments as
       # the core's jobs, through main's bridge and the phone's backend, with
       # a fake chrome and a local JSON-RPC node. bridge.test.js's and

@@ -2,30 +2,35 @@
 
 /**
  * Main's relay to the identity core's Ethereum dispatcher (freedom-core
- * design 0012, "fc-eip1193 and approval.request"; step APB-4a).
+ * design 0012, "fc-eip1193 and approval.request"; steps APB-4a and APB-4b).
  *
  * `page-ethereum.js` hands a page's request here for the methods the core
  * answers from cored 0.20.0: the reads (`eth_chainId`, `net_version`,
  * `eth_accounts` and the 23 read-only methods), the connect
- * (`eth_requestAccounts`) and `wallet_switchEthereumChain`. Signatures and
- * sends stay on main's own routes until APB-4b and APB-4c.
+ * (`eth_requestAccounts`), `wallet_switchEthereumChain`, and the
+ * signatures (`personal_sign`, `eth_signTypedData_v4`, APB-4b). Sends stay
+ * on main's own route until APB-4c.
  *
  *   - **The request** goes to `eip1193.request { method, params?, world }`
  *     under `page`, with the document's PageContext: its key as `origin`,
  *     or the empty origin `""` for a document with no key, which the core
- *     answers as such (`4100` for a connect or a switch, `[]` for
- *     `eth_accounts`). `world` is main's wallet state read as main sends it:
- *     the Identity & Wallet switch, an onchain app's own chain and the
+ *     answers as such (`4100` for a connect, a switch or a signature, `[]`
+ *     for `eth_accounts`). `world` is main's wallet state read as main sends
+ *     it: the Identity & Wallet switch, an onchain app's own chain and the
  *     window's, the wallets as main lists them, the registry's networks
  *     (each one's name, whether it has a source, and its native symbol),
  *     the active account, and, for a send only (APB-4c), D12's pause.
  *   - **Its answer** is the page's: `{ result }` or `{ error }`, with the
- *     EIP-1193 code main gave before. `{ send }` and `{ device }` are main's
- *     to act on (APB-4b, APB-4c), and never reach a page: for these methods
- *     each is an internal error. A 0001 error (the core down, a crossed
+ *     EIP-1193 code main gave before. `{ device }` (APB-4b) is main's to act
+ *     on, and never reaches a page: a signature's goes to main's device
+ *     step (`page-devices.js`) once it is checked against the request (its
+ *     kind for the method, and the handle main approved the core's prompt
+ *     on), and anything else is an internal error, its token discarded.
+ *     `{ send }` is APB-4c's. A 0001 error (the core down, a crossed
  *     answer's `not_authorized`) is `-32603`. Where main itself refused the
- *     core a step (the name moved, the window's prompt budget), the page
- *     gets main's own answer, as from main's route.
+ *     core a step (the name moved, the window's prompt budget, an unlock
+ *     the user cancelled), the page gets main's own answer, as from main's
+ *     route.
  *   - **The request is cancelled** when main answers the page's record (its
  *     deadline, its document gone), and its hang watchdog is held while
  *     main answers one of its prompts (0012's `Steps` class).
@@ -35,17 +40,26 @@
  * PageContext, which must be the one main sent:
  *
  *   - **`approval.request { request, prompt, page, kind, view, choices }`:**
- *     an `eth.connect` opens main's connect prompt from the core's view and
- *     choices, on the request's record, whose handle record keeps the
- *     core's prompt id. Main answers with the decision on that handle,
- *     echoing the prompt id and the handle: `{ prompt, handle, approve:
- *     true, choices, world }` once the user approves (the document still
- *     holding its key, name and all), `{ prompt, handle, approve: false,
- *     choices: {} }` on a rejection, `{ prompt, closed }` when the handle
- *     closes otherwise, and `{ prompt, busy: true }` when the document
- *     already has a wallet prompt. The other kinds (`eth.sign`, `eth.send`,
- *     `vault.unlock`) answer `busy` until APB-4b and APB-4c serve them. A
- *     core's cancel closes the prompt.
+ *     main opens its own prompt from the core's view and choices, on the
+ *     request's record, whose handle record keeps the core's prompt id, and
+ *     answers with the decision on that handle, echoing the prompt id and
+ *     the handle: `{ prompt, handle, approve: true, choices, world }` once
+ *     the user approves (the document still holding its key, name and
+ *     all), `{ prompt, handle, approve: false, choices: {} }` on a
+ *     rejection, `{ prompt, closed }` when the handle closes otherwise, and
+ *     `{ prompt, busy: true }` when the document already has a wallet
+ *     prompt. A core's cancel closes the prompt.
+ *       - `eth.connect`: the connect prompt, the pick one of the accounts
+ *         offered.
+ *       - `eth.sign` (APB-4b): the signature prompt, with "Always allow"
+ *         only where the core offers it (a vault account's, never a
+ *         device's: main's view says which). With the approvals document
+ *         on, a vault account's prompt asks for the vault unlocked first,
+ *         as main's own route did.
+ *       - `vault.unlock` (APB-4b, a rule's signature while the vault is
+ *         locked): the unlock prompt. Its approve goes to the core as it
+ *         is, and a vault still locked then refuses the signature.
+ *       - `eth.send` answers `busy` until APB-4c serves it.
  *   - **`approval.recheck { request, page }`:** `{ live, agent }`, read
  *     now: whether the request is still open and its document still holds
  *     its key (a DNS name over IPNS resolved again), and whether the Agent
@@ -57,7 +71,7 @@
  *
  * Anything else, or a request main doesn't know, is `invalid_argument`,
  * which the core takes as a crossed answer: the page's request fails, with
- * nothing written.
+ * nothing written or signed.
  */
 
 const { ShellError } = require('../core/service-client');
@@ -71,8 +85,22 @@ const NO_ADDRESS = Object.freeze({ code: 4100, message: 'This page has no addres
 const PROMPT_ID = /^[0-9a-f]{32}$/;
 // 0011's reasons a handle closes with no decision.
 const CLOSED_REASONS = new Set(['navigated', 'closed', 'cancelled', 'expired']);
-// The kinds the core asks for from 0.20.0; main serves `eth.connect` here.
-const LATER_KINDS = new Set(['eth.sign', 'eth.send', 'vault.unlock']);
+// The kinds the core asks for from 0.20.0 that APB-4c serves.
+const LATER_KINDS = new Set(['eth.send']);
+// The signatures (APB-4b), and the token kind each one's `{ device }` names
+// for a Ledger or a phone; a Safe's is `safe-message`.
+const SIGN_KINDS = Object.freeze({ personal_sign: 'sign-message', eth_signTypedData_v4: 'sign-typed-data' });
+// A rule's request asks for the vault's unlock with its reason.
+const UNLOCK_REASONS = Object.freeze({ personal_sign: 'sign', eth_signTypedData_v4: 'sign' });
+const DEVICE_TYPES = new Set(['ledger', 'remote', 'safe']);
+const DEVICE_KEYS = new Set(['type', 'kind', 'account', 'payload', 'expected_hash', 'handle', 'token']);
+const HASH = /^0x[0-9a-f]{64}$/i;
+const SIGN_VIEW_KEYS = new Set(['method', 'account', 'chain', 'message', 'typedData', 'chains']);
+const UNLOCK_CANCELLED = Object.freeze({ code: 4001, message: 'User cancelled unlock' });
+const DEVICE_MISMATCH = Object.freeze({
+  code: INTERNAL_ERROR_CODE,
+  message: "The identity core's device answer doesn't match the request",
+});
 const PAGE_FIELDS = Object.freeze(['origin', 'top_origin', 'frame', 'navigation', 'agent']);
 const SELECT_KEYS = new Set(['request', 'page', 'chain_id']);
 const RECHECK_KEYS = new Set(['request', 'page']);
@@ -106,6 +134,8 @@ function defaultDependencies() {
     isChainAvailable: (chainId) => require('../networks/network-registry').isChainAvailable(chainId),
     getActiveWalletIndex: () => require('../identity-manager').getActiveWalletIndex(),
     rulePaused: (key) => require('../wallet/auto-approve-pause').transactionAutoApprovePaused(key),
+    isVaultUnlocked: () => require('../identity-manager').isVaultUnlocked(),
+    discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
     selectChainForPage: (windowId, chainId) =>
       require('../wallet/selected-chain').selectChainForPage(windowId, chainId),
   };
@@ -144,6 +174,59 @@ function connectShown(view, choices) {
   };
 }
 
+// An account in a core's view, in main's form. Throws on anything else.
+function accountShown(account) {
+  if (!isPlainObject(account) || !Number.isSafeInteger(account.index) || account.index < 0) throw invalid();
+  return {
+    index: account.index,
+    name: typeof account.name === 'string' ? account.name : '',
+    address: typeof account.address === 'string' ? account.address : null,
+    type: typeof account.type === 'string' ? account.type : 'mnemonic',
+  };
+}
+
+/**
+ * The signature prompt's view for the request's `method`, rebuilt to main's
+ * form from the core's (the reference's, `page-signing.js`), and the
+ * "Always allow" values the core offers: `[false, true]` for a vault
+ * account, `[false]` for a device's. Main adds `alwaysAllow`, whether the
+ * box is offered at all. Throws on anything else.
+ */
+function signShown(view, choices, method) {
+  if (!isPlainObject(view) || !isPlainObject(choices)) throw invalid();
+  if (!hasOnlyKeys(choices, new Set(['alwaysAllow'])) || !Array.isArray(choices.alwaysAllow)) throw invalid();
+  const offered = choices.alwaysAllow;
+  if (!offered.every((value) => typeof value === 'boolean') || new Set(offered).size !== offered.length) throw invalid();
+  if (!offered.includes(false)) throw invalid();
+  if (!hasOnlyKeys(view, SIGN_VIEW_KEYS) || view.method !== method) throw invalid();
+  const { chain } = view;
+  if (!isPlainObject(chain) || !positive(chain.id)) throw invalid();
+  if (chain.name !== null && typeof chain.name !== 'string') throw invalid();
+  const shown = { method, account: accountShown(view.account), chain: { id: chain.id, name: chain.name } };
+  if (method === 'personal_sign') {
+    const { message } = view;
+    if (view.typedData !== undefined || view.chains !== undefined || !isPlainObject(message)) throw invalid();
+    if (typeof message.hex !== 'string' || typeof message.rawHash !== 'boolean') throw invalid();
+    shown.message = { hex: message.hex, rawHash: message.rawHash };
+  } else {
+    const typed = view.typedData;
+    if (view.message !== undefined || !isPlainObject(typed) || !isPlainObject(typed.view)) throw invalid();
+    if (typeof typed.hash !== 'string' || !Array.isArray(typed.warnings)) throw invalid();
+    if (view.chains !== undefined && !isPlainObject(view.chains)) throw invalid();
+    shown.typedData = { hash: typed.hash, view: typed.view, warnings: typed.warnings.slice() };
+    shown.chains = view.chains || {};
+  }
+  shown.alwaysAllow = offered.includes(true);
+  return { view: shown, offered: new Set(offered) };
+}
+
+/** A rule's unlock prompt's view (`{ account, reason }`), its choices `{}`. */
+function unlockShown(view, choices, method) {
+  if (!isPlainObject(view) || !isPlainObject(choices) || Object.keys(choices).length !== 0) throw invalid();
+  if (!hasOnlyKeys(view, new Set(['account', 'reason'])) || view.reason !== UNLOCK_REASONS[method]) throw invalid();
+  return { view: { account: accountShown(view.account), reason: view.reason } };
+}
+
 /**
  * @param {object} [deps] injected for tests; each defaults to main's own.
  */
@@ -159,6 +242,8 @@ function createEip1193Relay(deps = {}) {
     getActiveWalletIndex,
     rulePaused,
     selectChainForPage,
+    isVaultUnlocked,
+    discardToken,
   } = { ...defaultDependencies(), ...deps };
 
   // `${generation}:${id}` -> the request main sent the core, while it runs.
@@ -234,6 +319,74 @@ function createEip1193Relay(deps = {}) {
     };
   }
 
+  async function vaultOpen() {
+    try {
+      return (await isVaultUnlocked()) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  // A token the core gave main that main won't present: burnt now.
+  function discard(token) {
+    if (typeof token !== 'string' || !token) return;
+    try {
+      Promise.resolve(discardToken(token)).catch(() => {});
+    } catch {
+      // Burnt by the core at its life's end all the same.
+    }
+  }
+
+  // The document still answers its key: a DNS name over IPNS resolved
+  // again, and the key held in the same run.
+  async function documentHolds(context) {
+    return (await context.nameHolds({ keyless: { error: { ...NO_ADDRESS } } })) && context.holdsKey();
+  }
+
+  /**
+   * A `{ device }` answer checked against the request it answers: a
+   * signature's (`SIGN_KINDS`, or a Safe's `safe-message`) from a device's
+   * account, with the token the core minted for the handle main approved
+   * the core's prompt on for this request, and the payload the token binds.
+   * Null for anything else.
+   */
+  function deviceOf(entry, device) {
+    if (!isPlainObject(device) || !hasOnlyKeys(device, DEVICE_KEYS)) return null;
+    const { type, kind, account, payload, handle, token } = device;
+    const expectedHash = device.expected_hash;
+    if (typeof token !== 'string' || !token) return null;
+    // Only the decision main relayed for this request, on its own handle.
+    if (entry.approved === null || handle !== entry.approved) return null;
+    if (!DEVICE_TYPES.has(type) || !Number.isSafeInteger(account) || account < 0 || !isPlainObject(payload)) return null;
+    if (!SIGN_KINDS[entry.method] || kind !== (type === 'safe' ? 'safe-message' : SIGN_KINDS[entry.method])) return null;
+    if (kind === 'sign-message') {
+      if (!hasOnlyKeys(payload, new Set(['message'])) || typeof payload.message !== 'string') return null;
+      if (expectedHash !== undefined) return null;
+    } else if (kind === 'sign-typed-data') {
+      if (!isPlainObject(payload.typed_data) || typeof expectedHash !== 'string' || !HASH.test(expectedHash)) return null;
+    } else if (payload.method !== entry.method || !Array.isArray(payload.params) || expectedHash !== undefined) {
+      return null;
+    }
+    return Object.freeze({ type, kind, account, payload, expectedHash, handle, token });
+  }
+
+  // Main's device step for a checked `{ device }`, or the page's error.
+  async function deviceAnswer(entry, device, step) {
+    const checked = !entry.override && step ? deviceOf(entry, device) : null;
+    if (!checked) {
+      discard(device?.token);
+      return { error: { ...DEVICE_MISMATCH } };
+    }
+    entry.context.traceCoreToken?.('minted', checked.kind);
+    try {
+      return await step(checked, entry.page);
+    } catch (err) {
+      return failure(err);
+    }
+  }
+
+  const isDevice = (reply) => isPlainObject(reply) && Object.keys(reply).length === 1 && reply.device !== undefined;
+
   // The core's answer as the page gets it.
   function pageAnswer(reply) {
     if (isPlainObject(reply)) {
@@ -244,7 +397,7 @@ function createEip1193Relay(deps = {}) {
         return { error: data === undefined ? { code, message } : { code, message, data } };
       }
     }
-    // `{ send }` and `{ device }` are main's, and no method here gets one.
+    // `{ send }` is main's (APB-4c), and no method here gets one.
     return { error: { code: INTERNAL_ERROR_CODE, message: 'The identity core gave no answer for the page' } };
   }
 
@@ -256,9 +409,11 @@ function createEip1193Relay(deps = {}) {
   /**
    * Run the page's request in the core. `params` are sent only where the
    * core reads them; `announce(context, account, chainId, written)` tells a
-   * new grant's events, queued at the approve (`page-ethereum.js`).
+   * new grant's events, queued at the approve (`page-ethereum.js`);
+   * `device(device, page)` answers the page from a device, for a
+   * signature's `{ device }` (`page-devices.js`).
    */
-  async function request(context, { params, announce = null } = {}) {
+  async function request(context, { params, announce = null, device = null } = {}) {
     const method = context.method;
     const client = read(coreClient, null);
     if (!client) return { error: { code: INTERNAL_ERROR_CODE, message: 'The identity core is not running' } };
@@ -268,10 +423,13 @@ function createEip1193Relay(deps = {}) {
     const entry = { context, method, page, params, client, announce, id: null, generation: null };
     entry.override = null;
     entry.granted = null;
+    // The handle main approved the core's prompt on, for this request.
+    entry.approved = null;
     let key = null;
     let answer;
+    let reply = null;
     try {
-      const reply = await client.request('eip1193.request', body, { caller: 'page', page }, {
+      reply = await client.request('eip1193.request', body, { caller: 'page', page }, {
         watchdogMs: read(watchdogMs, null),
         signal: context.signal,
         onSent: (id, generation) => {
@@ -281,11 +439,20 @@ function createEip1193Relay(deps = {}) {
           running.set(key, entry);
         },
       });
-      answer = pageAnswer(reply);
     } catch (err) {
       answer = failure(err);
     } finally {
       if (key !== null && running.get(key) === entry) running.delete(key);
+    }
+    if (!answer && isDevice(reply)) answer = await deviceAnswer(entry, reply.device, device);
+    if (!answer) {
+      answer = pageAnswer(reply);
+      // The core made the signature on the approve main relayed: it minted
+      // the request's token for that handle and spent it (design 0012).
+      if (entry.approved !== null && SIGN_KINDS[method] && answer.result !== undefined) {
+        context.traceCoreToken?.('minted', SIGN_KINDS[method]);
+        context.traceCoreToken?.('spent', SIGN_KINDS[method]);
+      }
     }
     if (entry.granted) {
       const account = Array.isArray(answer.result) && typeof answer.result[0] === 'string' ? answer.result[0] : null;
@@ -320,9 +487,9 @@ function createEip1193Relay(deps = {}) {
     }
   }
 
-  // Main's answer to the core for its connect prompt's decision.
-  async function connectAnswer(entry, prompt, decision) {
-    const { context } = entry;
+  // Main's answer to the core for a decision that approves nothing: busy,
+  // closed or rejected. Null for an approve.
+  function unapproved(entry, prompt, decision) {
     if (decision.error) {
       // The document's one wallet prompt is taken (`-32002`), or the
       // window's prompt budget is spent (`-32005`, which the page gets
@@ -336,6 +503,15 @@ function createEip1193Relay(deps = {}) {
       return { prompt: id, closed: CLOSED_REASONS.has(decision.closed) ? decision.closed : 'cancelled' };
     }
     if (decision.approve !== true) return { prompt: id, handle: decision.handle, approve: false, choices: {} };
+    return null;
+  }
+
+  // Main's answer to the core for its connect prompt's decision.
+  async function connectAnswer(entry, prompt, decision) {
+    const { context } = entry;
+    const done = unapproved(entry, prompt, decision);
+    if (done) return done;
+    const id = typeof decision.prompt === 'string' ? decision.prompt : prompt;
     // Name-revalidated: once the user has approved, the document must still
     // hold its key, a DNS name over IPNS resolved again, or the core writes
     // nothing and the page hears what a keyless document would.
@@ -355,14 +531,125 @@ function createEip1193Relay(deps = {}) {
     };
   }
 
+  // The connect's prompt, and main's answer for its decision.
+  async function connectAsk(entry, prompt, shown) {
+    const decision = await entry.context.prompt({
+      kind: 'eth.connect',
+      view: shown.view,
+      corePrompt: prompt,
+      // The one thing the user picks: which offered account.
+      choices: (raw) =>
+        Object.keys(raw).every((name) => name === 'walletIndex') &&
+        Number.isInteger(raw.walletIndex) &&
+        shown.offered.has(raw.walletIndex)
+          ? { walletIndex: raw.walletIndex }
+          : null,
+    });
+    return connectAnswer(entry, prompt, decision);
+  }
+
+  // The vault's unlock on the request's record: the approvals document's
+  // takes the password and unlocks (`page-requests.js`), the chrome's
+  // unlocks itself before it approves.
+  const unlockPrompt = (entry, prompt, view) =>
+    entry.context.prompt({
+      kind: 'vault.unlock',
+      view,
+      corePrompt: prompt,
+      choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
+    });
+
+  /**
+   * The signature's prompt (APB-4b), and main's answer for its decision.
+   * With the approvals document on, a vault account's prompt asks for the
+   * vault unlocked first, as main's own route did (APS-2): the document's
+   * signature screen has no unlock of its own. "Always allow" is picked
+   * only where the core offers it: a device's account's never is, and its
+   * ticked box is refused at the decision, with the prompt still open.
+   */
+  async function signAsk(entry, prompt, shown) {
+    const { context } = entry;
+    const { account } = shown.view;
+    if (context.approvalsDocument && account.type === 'mnemonic' && !(await vaultOpen())) {
+      const unlock = await unlockPrompt(entry, prompt, { account, reason: 'sign' });
+      const done = unapproved(entry, prompt, unlock);
+      if (done?.busy) return done;
+      if (done) {
+        entry.override = { ...UNLOCK_CANCELLED };
+        return { prompt, closed: 'cancelled' };
+      }
+    }
+    const decision = await context.prompt({
+      kind: 'eth.sign',
+      view: shown.view,
+      corePrompt: prompt,
+      choices: (raw) =>
+        Object.keys(raw).every((name) => name === 'alwaysAllow') &&
+        (raw.alwaysAllow === undefined || typeof raw.alwaysAllow === 'boolean') &&
+        shown.offered.has(raw.alwaysAllow === true)
+          ? { alwaysAllow: raw.alwaysAllow === true }
+          : null,
+    });
+    const done = unapproved(entry, prompt, decision);
+    if (done) return done;
+    const id = typeof decision.prompt === 'string' ? decision.prompt : prompt;
+    // With the approvals document on, only its decision approves, as main's
+    // own issuer minted a page's token only on it.
+    if (context.approvalsDocument && decision.from !== 'approvals') return { prompt: id, closed: 'cancelled' };
+    // Name-revalidated: once the user has approved, the document must still
+    // hold its key, or the core signs nothing and the page hears what a
+    // keyless document would.
+    if (!(await documentHolds(context))) {
+      entry.override = { ...NO_ADDRESS };
+      return { prompt: id, closed: 'cancelled' };
+    }
+    entry.approved = decision.handle;
+    return {
+      prompt: id,
+      handle: decision.handle,
+      approve: true,
+      choices: { alwaysAllow: decision.choices.alwaysAllow === true },
+      world: await worldFor(context, entry.method),
+    };
+  }
+
+  // A rule's unlock (APB-4b): the user's approve goes to the core as it is,
+  // as main's own route went on to the signature. The core rechecks the
+  // document, and a vault still locked refuses the signature (-32603 "Vault
+  // is locked", as the reference's signer did).
+  async function unlockAsk(entry, prompt, shown) {
+    const decision = await unlockPrompt(entry, prompt, shown.view);
+    const done = unapproved(entry, prompt, decision);
+    if (done) return done;
+    const id = typeof decision.prompt === 'string' ? decision.prompt : prompt;
+    return { prompt: id, handle: decision.handle, approve: true, choices: {}, world: await worldFor(entry.context, entry.method) };
+  }
+
+  // The prompt main opens for a core's request of `kind`, its view checked.
+  function askFor(entry, prompt, { kind, view, choices }) {
+    const { method } = entry;
+    if (kind === 'eth.connect' && method === 'eth_requestAccounts') {
+      const shown = connectShown(view, choices);
+      return () => connectAsk(entry, prompt, shown);
+    }
+    if (kind === 'eth.sign' && SIGN_KINDS[method]) {
+      const shown = signShown(view, choices, method);
+      return () => signAsk(entry, prompt, shown);
+    }
+    if (kind === 'vault.unlock' && UNLOCK_REASONS[method]) {
+      const shown = unlockShown(view, choices, method);
+      return () => unlockAsk(entry, prompt, shown);
+    }
+    throw invalid();
+  }
+
   async function approvalRequest(params, { signal, generation } = {}) {
     const entry = runningFor(params, generation, PROMPT_KEYS);
     const { prompt, kind } = params;
     if (typeof prompt !== 'string' || !PROMPT_ID.test(prompt)) throw invalid();
-    // APB-4b and APB-4c serve these; nothing asks for them before.
+    // APB-4c serves these; nothing asks for them before.
     if (LATER_KINDS.has(kind)) return { prompt, busy: true };
-    if (kind !== 'eth.connect' || entry.method !== 'eth_requestAccounts') throw invalid();
-    const shown = connectShown(params.view, params.choices);
+    const ask = askFor(entry, prompt, params);
     if (signal?.aborted) return { prompt, closed: 'cancelled' };
     const { context } = entry;
     // No overall deadline while main answers its prompt.
@@ -370,19 +657,7 @@ function createEip1193Relay(deps = {}) {
     const onAbort = () => context.cancelPrompt(prompt);
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const decision = await context.prompt({
-        kind: 'eth.connect',
-        view: shown.view,
-        corePrompt: prompt,
-        // The one thing the user picks: which offered account.
-        choices: (raw) =>
-          Object.keys(raw).every((name) => name === 'walletIndex') &&
-          Number.isInteger(raw.walletIndex) &&
-          shown.offered.has(raw.walletIndex)
-            ? { walletIndex: raw.walletIndex }
-            : null,
-      });
-      return await connectAnswer(entry, prompt, decision);
+      return await ask();
     } finally {
       signal?.removeEventListener('abort', onAbort);
       release();
@@ -491,4 +766,6 @@ module.exports = {
   getEip1193Relay,
   attachEip1193,
   connectShown,
+  signShown,
+  unlockShown,
 };

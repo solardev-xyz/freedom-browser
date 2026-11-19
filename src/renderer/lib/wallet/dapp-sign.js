@@ -310,7 +310,11 @@ export function showPageSign(prompt) {
     signing: false,
   };
   dappSignPending = request;
-  if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
+  if (dappSignAutoApproveCheckbox) {
+    dappSignAutoApproveCheckbox.checked = false;
+    // "Always allow" only where main offers it: a device's account has none.
+    dappSignAutoApproveCheckbox.closest('label')?.classList.toggle('hidden', view.alwaysAllow === false);
+  }
   setDappSignCancelEnabled(true);
   if (dappSignApproveBtn) dappSignApproveBtn.textContent = 'Sign';
   hideDappSignError();

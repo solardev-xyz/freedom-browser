@@ -1,15 +1,16 @@
 // Main's relay to the identity core's Ethereum dispatcher (freedom-core
-// design 0012, APB-4a): the reads, the connect and the switch go to
-// `eip1193.request` under the page's PageContext, and main serves the
-// core's `approval.request`, `approval.recheck` and `eip1193.select_chain`
-// for the request they name. Here the core is a stand-in that asks what a
+// design 0012, APB-4a and APB-4b): the reads, the connect, the switch and
+// the signatures go to `eip1193.request` under the page's PageContext, main
+// serves the core's `approval.request`, `approval.recheck` and
+// `eip1193.select_chain` for the request they name, and a signature's
+// `{ device }` goes to main's device step. Here the core is a stand-in that asks what a
 // script tells it to; page-eip1193.integration.test.js runs the real one.
 
 const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
 const { createEthereumDispatchers } = require('./page-ethereum');
-const { createEip1193Relay, connectShown } = require('./page-eip1193');
+const { createEip1193Relay, connectShown, signShown, unlockShown } = require('./page-eip1193');
 
 const CHROME_URL = 'file:///app/src/renderer/index.html';
 const KEY_A = `bzz://${'a'.repeat(64)}`;
@@ -103,7 +104,7 @@ function standInCore() {
   return core;
 }
 
-function setup() {
+function setup({ approvalsDocument = false, deviceDeps = {} } = {}) {
   const guests = new Map();
   const names = new Map();
   const state = {
@@ -116,6 +117,8 @@ function setup() {
     selections: [],
     agent: false,
     paused: false,
+    unlocked: true,
+    discarded: [],
   };
   const networks = {
     1: { name: 'Ethereum', nativeSymbol: 'ETH' },
@@ -148,6 +151,8 @@ function setup() {
       state.selections.push([windowId, chainId]);
       state.selected.set(windowId, chainId);
     }),
+    isVaultUnlocked: async () => state.unlocked,
+    discardToken: (token) => state.discarded.push(token),
   });
   const sent = [];
   const requests = createPageRequests({
@@ -158,6 +163,12 @@ function setup() {
       identityWalletEnabled: () => state.enabled,
       permissionsLoaded: async () => {},
       agentWalletRequest: async () => ({ handled: false }),
+      signing: { inCustody: () => false },
+      deviceDeps: {
+        walletList: async () => state.wallets,
+        discardToken: (token) => state.discarded.push(token),
+        ...deviceDeps,
+      },
     }),
     setTimer: () => ({}),
     clearTimer: () => {},
@@ -165,6 +176,14 @@ function setup() {
     sendToWindow: (windowId, channel, payload) => sent.push([windowId, channel, payload]),
     watchWindow: () => {},
     isAgentGuest: () => state.agent,
+    // With the approvals document on: its prompts land in `sent` too, and
+    // main unlocks with the password its decision carries.
+    approvals: approvalsDocument ? { send: (windowId, channel, payload) => sent.push([windowId, channel, payload]) } : null,
+    unlockVault: async (password) => {
+      if (password !== 'right password') throw new Error('Incorrect password');
+      state.unlocked = true;
+    },
+    touchIdAvailable: async () => false,
   });
 
   function tab(url = `${KEY_A}/app`, { window = 1, bind = null, front = true } = {}) {
@@ -187,7 +206,9 @@ function setup() {
   const prompts = (windowId = 1) => sent.filter(([w, c]) => w === windowId && c === 'page:prompt').map(([, , p]) => p);
   const closed = () => sent.filter(([, c]) => c === 'page:prompt-closed').map(([, , p]) => p);
   const decide = (handle, approve, choices, windowId = 1) =>
-    requests.decide({ sender: { id: 500 + windowId } }, { handle, approve, choices });
+    approvalsDocument
+      ? requests.decideInWindow(windowId, { handle, approve, choices })
+      : requests.decide({ sender: { id: 500 + windowId } }, { handle, approve, choices });
   return { requests, relay, core, state, names, tab, prompts, closed, decide, sent };
 }
 
@@ -452,18 +473,21 @@ describe('approval.request for eth.connect (0012 APB-4a)', () => {
     expect(other.guest.events).toEqual([]);
   });
 
-  test('the kinds APB-4b and APB-4c serve answer busy, and open nothing', async () => {
+  test('eth.send answers busy until APB-4c; a signature\'s or an unlock\'s prompt for a connect is refused; neither opens anything', async () => {
     const env = setup();
     const page = env.tab();
     const answers = [];
     env.core.script = async ({ id, page: pc }) => {
-      for (const kind of ['eth.sign', 'eth.send', 'vault.unlock']) {
-        answers.push(await env.relay.approvalRequest({ ...connectAsk(id, pc), kind }, { generation: GENERATION }));
+      answers.push(await env.relay.approvalRequest({ ...connectAsk(id, pc), kind: 'eth.send' }, { generation: GENERATION }));
+      for (const kind of ['eth.sign', 'vault.unlock']) {
+        await expect(
+          env.relay.approvalRequest({ ...connectAsk(id, pc), kind }, { generation: GENERATION })
+        ).rejects.toMatchObject({ code: 'invalid_argument' });
       }
       return { error: { code: -32002, message: 'Another wallet request is already pending' } };
     };
     await page.ask('eth_requestAccounts', []);
-    expect(answers).toEqual(Array(3).fill({ prompt: PROMPT, busy: true }));
+    expect(answers).toEqual([{ prompt: PROMPT, busy: true }]);
     expect(env.prompts()).toEqual([]);
   });
 
@@ -603,5 +627,491 @@ describe('approval.recheck and eip1193.select_chain (0012 APB-4a)', () => {
     expect(await named.ask('wallet_switchEthereumChain', [{ chainId: '0x1' }])).toEqual({ error: NO_ADDRESS });
     expect(outcomes.at(-1)).toBe('invalid_argument');
     expect(env.state.selections).toEqual([]);
+  });
+});
+
+// ---- APB-4b: the signatures, `vault.unlock` and `{ device }` ----
+
+const MESSAGE = '0x48656c6c6f';
+const TYPED = JSON.stringify({
+  types: { EIP712Domain: [{ name: 'name', type: 'string' }], Mail: [{ name: 'contents', type: 'string' }] },
+  domain: { name: 'Fixture' },
+  primaryType: 'Mail',
+  message: { contents: 'hi' },
+});
+const TYPED_HASH = '0x' + '5a'.repeat(32);
+const LEDGER = 1000000;
+const PHONE = 1000001;
+const SAFE = 5000;
+const SAFE_ADDRESS = '0x' + 'aa'.repeat(20);
+const TOKEN = 'b'.repeat(64);
+const DEVICE_WALLETS = [
+  { index: 0, name: 'Main Wallet', address: ACCOUNT, type: 'mnemonic' },
+  { index: LEDGER, name: 'Ledger', address: SECOND, type: 'ledger' },
+  { index: PHONE, name: 'Phone', address: SECOND, type: 'remote' },
+  { index: SAFE, name: 'Safe', address: SAFE_ADDRESS, type: 'safe' },
+];
+const accountOf = (index) => DEVICE_WALLETS.find((wallet) => wallet.index === index);
+
+// The core's eth.sign prompt for request `id`, as cored 0.20.0 asks it.
+function signAsk(id, page, { method = 'personal_sign', account = 0, offered = [false, true], prompt = PROMPT } = {}) {
+  const view = { method, account: accountOf(account), chain: { id: 100, name: 'Gnosis Chain' } };
+  if (method === 'personal_sign') view.message = { hex: MESSAGE, rawHash: false };
+  else view.typedData = { hash: TYPED_HASH, view: { primary_type: 'Mail' }, warnings: [] };
+  if (method !== 'personal_sign') view.chains = {};
+  return { request: id, prompt, page, kind: 'eth.sign', view, choices: { alwaysAllow: offered } };
+}
+const unlockAsk = (id, page, prompt = PROMPT) => ({
+  request: id,
+  prompt,
+  page,
+  kind: 'vault.unlock',
+  view: { account: accountOf(0), reason: 'sign' },
+  choices: {},
+});
+
+// A stand-in core that asks main `ask(id, page)` and, on an approve, answers
+// with `onApprove(answer)`; otherwise with the reference's 4001.
+function asking(env, ask, onApprove) {
+  const answers = [];
+  env.core.script = async ({ id, page: pc }) => {
+    const answer = await env.relay.approvalRequest(ask(id, pc), { generation: GENERATION });
+    answers.push(answer);
+    if (answer.approve === true) return onApprove(answer, pc);
+    if (answer.busy) return { error: { code: -32002, message: 'Another wallet request is already pending' } };
+    return { error: { code: 4001, message: 'User rejected the request' } };
+  };
+  return answers;
+}
+
+describe('signatures through the relay (0012 APB-4b)', () => {
+  test('personal_sign goes to the core with its params; main\'s eth.sign prompt shows the core\'s view; the approve echoes the prompt and handle, with "Always allow" and world; the core\'s signature is the page\'s', async () => {
+    const env = setup();
+    const page = env.tab();
+    const answers = asking(env, signAsk, () => ({ result: '0x' + '1'.repeat(130) }));
+    const asked = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.core.sent[0].params).toMatchObject({ method: 'personal_sign', params: [MESSAGE, ACCOUNT] });
+    expect(env.core.sent[0].params.world.paused).toBeUndefined();
+    const [shown] = env.prompts();
+    expect(shown.kind).toBe('eth.sign');
+    expect(shown.view).toEqual({
+      method: 'personal_sign',
+      account: accountOf(0),
+      chain: { id: 100, name: 'Gnosis Chain' },
+      message: { hex: MESSAGE, rawHash: false },
+      alwaysAllow: true,
+    });
+    expect(env.core.holds).toEqual([[GENERATION, 1]]);
+    expect(await env.decide(shown.handle, true, { alwaysAllow: true })).toEqual({ ok: true });
+    expect(await asked).toEqual({ result: '0x' + '1'.repeat(130) });
+    expect(answers).toEqual([
+      {
+        prompt: PROMPT,
+        handle: shown.handle,
+        approve: true,
+        choices: { alwaysAllow: true },
+        world: expect.objectContaining({ enabled: true, window_chain: 100, wallets: env.state.wallets }),
+      },
+    ]);
+    expect(env.core.released).toEqual([[GENERATION, 1]]);
+    // A typed-data request's view keeps the core's view of the data.
+    asking(env, (id, pc) => signAsk(id, pc, { method: 'eth_signTypedData_v4' }), () => ({ result: '0x02' }));
+    const typed = page.ask('eth_signTypedData_v4', [ACCOUNT, TYPED]);
+    await flush();
+    const typedShown = env.prompts()[1];
+    expect(typedShown.view).toMatchObject({
+      method: 'eth_signTypedData_v4',
+      typedData: { hash: TYPED_HASH, view: { primary_type: 'Mail' }, warnings: [] },
+      chains: {},
+      alwaysAllow: true,
+    });
+    expect(await env.decide(typedShown.handle, true, {})).toEqual({ ok: true });
+    expect(await typed).toEqual({ result: '0x02' });
+  });
+
+  test('a rejection answers on its handle, and the core\'s 4001 is the page\'s; a rule-answered signature opens no prompt', async () => {
+    const env = setup();
+    const page = env.tab();
+    const answers = asking(env, signAsk, () => ({ result: '0x01' }));
+    const asked = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    const [shown] = env.prompts();
+    expect(await env.decide(shown.handle, false)).toEqual({ ok: true });
+    expect(await asked).toEqual({ error: { code: 4001, message: 'User rejected the request' } });
+    expect(answers).toEqual([{ prompt: PROMPT, handle: shown.handle, approve: false, choices: {} }]);
+    // The rule: the core rechecks the document and signs, with no prompt.
+    let recheck;
+    env.core.script = async ({ id, page: pc }) => {
+      recheck = await env.relay.approvalRecheck({ request: id, page: pc }, { generation: GENERATION });
+      return { result: '0x03' };
+    };
+    expect(await page.ask('personal_sign', [MESSAGE, ACCOUNT])).toEqual({ result: '0x03' });
+    expect(recheck).toEqual({ live: true, agent: false });
+    expect(env.prompts()).toHaveLength(1);
+  });
+
+  test('a device\'s prompt offers no "Always allow": main\'s view says so, a ticked box is refused at the decision with the prompt still open', async () => {
+    const env = setup();
+    env.state.wallets = DEVICE_WALLETS;
+    const page = env.tab();
+    const answers = asking(env, (id, pc) => signAsk(id, pc, { account: LEDGER, offered: [false] }), () => ({
+      error: { code: 4001, message: 'User rejected the request' },
+    }));
+    const asked = page.ask('personal_sign', [MESSAGE, SECOND]);
+    await flush();
+    const [shown] = env.prompts();
+    expect(shown.view).toMatchObject({ account: accountOf(LEDGER), alwaysAllow: false });
+    expect(await env.decide(shown.handle, true, { alwaysAllow: true })).toEqual({ ok: false, reason: 'invalid' });
+    expect(answers).toEqual([]);
+    expect(await env.decide(shown.handle, true, { alwaysAllow: false })).toEqual({ ok: true });
+    await asked;
+    expect(answers[0]).toMatchObject({ approve: true, choices: { alwaysAllow: false } });
+  });
+
+  test('crossed sign prompts are refused: a view for another method, choices that don\'t offer false or repeat, an unlock for another reason', async () => {
+    const env = setup();
+    const page = env.tab();
+    const refusals = [];
+    env.core.script = async ({ id, page: pc }) => {
+      const tries = [
+        signAsk(id, pc, { method: 'eth_signTypedData_v4' }),
+        signAsk(id, pc, { offered: [true] }),
+        signAsk(id, pc, { offered: [false, false] }),
+        { ...signAsk(id, pc), choices: { alwaysAllow: [false], other: [1] } },
+        { ...unlockAsk(id, pc), view: { account: accountOf(0), reason: 'send' } },
+        { ...unlockAsk(id, pc), choices: { password: [] } },
+        { ...connectAsk(id, pc) },
+      ];
+      for (const ask of tries) {
+        refusals.push(
+          await env.relay.approvalRequest(ask, { generation: GENERATION }).then(
+            () => 'answered',
+            (err) => err.code
+          )
+        );
+      }
+      return { error: { code: -32603, message: 'crossed' } };
+    };
+    await page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    expect(refusals).toEqual(Array(7).fill('invalid_argument'));
+    expect(env.prompts()).toEqual([]);
+    // The view rebuilt: unknown fields refused, a typed-data view's message refused.
+    expect(() => signShown({ ...signAsk(1, {}).view, extra: 1 }, { alwaysAllow: [false] }, 'personal_sign')).toThrow();
+    expect(() =>
+      signShown({ ...signAsk(1, {}, { method: 'eth_signTypedData_v4' }).view, message: {} }, { alwaysAllow: [false] }, 'eth_signTypedData_v4')
+    ).toThrow();
+    expect(unlockShown({ account: accountOf(0), reason: 'sign' }, {}, 'personal_sign')).toEqual({
+      view: { account: accountOf(0), reason: 'sign' },
+    });
+  });
+
+  test('vault.unlock: a rejection, a navigation and busy answer as such; an approve goes to the core as it is, which refuses the signature while the vault is still locked', async () => {
+    const env = setup();
+    const page = env.tab();
+    // The core's answer after an approve: the vault's refusal while it is
+    // still locked (core #398), else the signature.
+    const answers = asking(env, unlockAsk, () =>
+      env.state.unlocked ? { result: '0x01' } : { error: { code: -32603, message: 'Vault is locked' } }
+    );
+    env.state.unlocked = false;
+    const rejected = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    let [shown] = env.prompts();
+    expect(shown).toMatchObject({ kind: 'vault.unlock', view: { account: accountOf(0), reason: 'sign' } });
+    expect(await env.decide(shown.handle, false)).toEqual({ ok: true });
+    await rejected;
+    expect(answers.at(-1)).toEqual({ prompt: PROMPT, handle: shown.handle, approve: false, choices: {} });
+
+    // Approved with the vault still locked: the approve goes to the core as
+    // it is, and the page hears the core's refusal.
+    const locked = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    shown = env.prompts()[1];
+    expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
+    expect(await locked).toEqual({ error: { code: -32603, message: 'Vault is locked' } });
+    expect(answers.at(-1)).toEqual({ prompt: PROMPT, handle: shown.handle, approve: true, choices: {}, world: expect.any(Object) });
+
+    // Open: approved, with no choices and main's world.
+    const open = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    shown = env.prompts()[2];
+    env.state.unlocked = true;
+    expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
+    expect(await open).toEqual({ result: '0x01' });
+    expect(answers.at(-1)).toEqual({ prompt: PROMPT, handle: shown.handle, approve: true, choices: {}, world: expect.any(Object) });
+
+    // Busy: a second unlock while the first is up.
+    env.state.unlocked = false;
+    const first = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    const second = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(await second).toEqual({ error: { code: -32002, message: 'Another wallet request is already pending' } });
+    expect(answers.at(-1)).toEqual({ prompt: PROMPT, busy: true });
+    // The navigation closes the first's.
+    page.guest.commit(`${KEY_A}/next`);
+    expect(await first).toEqual({ gone: true });
+    await flush();
+    expect(answers.at(-1)).toEqual({ prompt: PROMPT, closed: 'navigated' });
+  });
+
+  test('with the approvals document on: a vault account\'s prompt asks for the unlock first, whose cancel gives 4001 "User cancelled unlock"; a rule\'s unlock takes the password, and its approve names its own handle', async () => {
+    const env = setup({ approvalsDocument: true });
+    const page = env.tab();
+    env.state.unlocked = false;
+    const answers = asking(env, signAsk, () => ({ result: '0x01' }));
+    const cancelled = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    const [unlock] = env.prompts();
+    expect(unlock).toMatchObject({ kind: 'vault.unlock', view: { account: accountOf(0), reason: 'sign' } });
+    expect(await env.decide(unlock.handle, false)).toEqual({ ok: true });
+    expect(await cancelled).toEqual({ error: { code: 4001, message: 'User cancelled unlock' } });
+    expect(answers).toEqual([{ prompt: PROMPT, closed: 'cancelled' }]);
+
+    const ruleAnswers = asking(env, unlockAsk, () => ({ result: '0x04' }));
+    const ruled = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    const first = env.prompts()[1];
+    expect(await env.decide(first.handle, true, { password: 'wrong' })).toEqual({ ok: true });
+    await flush();
+    const again = env.prompts()[2];
+    expect(again.view.failed).toBe(true);
+    expect(await env.decide(again.handle, true, { password: 'right password' })).toEqual({ ok: true });
+    expect(await ruled).toEqual({ result: '0x04' });
+    expect(ruleAnswers).toEqual([{ prompt: PROMPT, handle: again.handle, approve: true, choices: {}, world: expect.any(Object) }]);
+    expect(JSON.stringify(ruleAnswers)).not.toContain('right password');
+  });
+
+  test('a name moved off its IPNS key by the approve: the core hears closed, and the page main\'s 4100', async () => {
+    const env = setup();
+    env.names.set(NAME, IPNS_KEY);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const answers = asking(env, signAsk, () => ({ result: '0x01' }));
+    const asked = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    const [shown] = env.prompts();
+    env.names.set(NAME, OTHER_IPNS_KEY);
+    expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
+    expect(await asked).toEqual({ error: NO_ADDRESS });
+    expect(answers).toEqual([{ prompt: PROMPT, closed: 'cancelled' }]);
+  });
+
+  test('a name moved off its IPNS key while the core made a vault signature: main withholds it, and the page gets main\'s 4100', async () => {
+    const env = setup();
+    env.names.set(NAME, IPNS_KEY);
+    // From main's prompt: approved with the name in place, which moves
+    // while the core signs.
+    const prompted = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const answers = asking(env, signAsk, () => {
+      env.names.set(NAME, OTHER_IPNS_KEY);
+      return { result: '0x01' };
+    });
+    const asked = prompted.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    const [shown] = env.prompts();
+    expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
+    expect(await asked).toEqual({ error: NO_ADDRESS });
+    expect(answers).toEqual([expect.objectContaining({ prompt: PROMPT, handle: shown.handle, approve: true })]);
+    // A rule's signature, with no prompt: the name moves while the core
+    // signs.
+    env.names.set(NAME, IPNS_KEY);
+    const ruled = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    env.core.script = async () => {
+      env.names.set(NAME, OTHER_IPNS_KEY);
+      return { result: '0x03' };
+    };
+    expect(await ruled.ask('eth_signTypedData_v4', [ACCOUNT, '{}'])).toEqual({ error: NO_ADDRESS });
+    expect(env.core.sent.at(-1).params).toMatchObject({ method: 'eth_signTypedData_v4', params: [ACCOUNT, '{}'] });
+    expect(env.prompts()).toHaveLength(1);
+  });
+});
+
+describe('{ device } answers (0012 APB-4b)', () => {
+  // A stand-in device step's dependencies: what each was asked.
+  function deviceSetup(signature = '0x' + 'de'.repeat(65)) {
+    const calls = { signers: [], signed: [], spentSafe: [], safes: [], cancelled: [] };
+    const deviceDeps = {
+      getSigner: (index, authorized) => {
+        calls.signers.push([index, authorized]);
+        return {
+          signMessage: async (message) => {
+            calls.signed.push(['message', message]);
+            if (calls.fail) throw calls.fail;
+            calls.duringSign?.();
+            return signature;
+          },
+          signTypedData: async (typedData, options) => {
+            calls.signed.push(['typed', typedData, options]);
+            return signature;
+          },
+        };
+      },
+      spendSafe: async (confirmation) => {
+        calls.spentSafe.push(confirmation);
+        return { bound: true, approval: { id: 'e'.repeat(32), page: confirmation.page } };
+      },
+      startSafeMessage: async (options) => {
+        calls.safes.push(options);
+        return { complete: true, token: 'session' };
+      },
+      completeSafeMessage: async () => ({ signature: '0x5afe' }),
+      cancelSafeMessage: async (index, token) => calls.cancelled.push(token),
+      safeBoards: () => null,
+    };
+    const env = setup({ deviceDeps });
+    env.state.wallets = DEVICE_WALLETS;
+    return { env, calls };
+  }
+
+  // The core's prompt for a device's account, and its `{ device }` on the
+  // approve: `device(answer, page)` builds it.
+  const deviceAsk = (env, method, account, device) =>
+    asking(env, (id, pc) => signAsk(id, pc, { method, account, offered: [false] }), (answer, pc) => ({
+      device: device(answer, pc),
+    }));
+
+  async function approveOne(env, page, method, params) {
+    const asked = page.ask(method, params);
+    await flush();
+    const shown = env.prompts().at(-1);
+    expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
+    return { answer: await asked, shown };
+  }
+
+  test('a Ledger\'s message and typed data: the token as a confirmation for the request\'s PageContext and handle, the core\'s payload presented, then discarded', async () => {
+    const { env, calls } = deviceSetup();
+    const page = env.tab();
+    let pc;
+    deviceAsk(env, 'personal_sign', LEDGER, (answer, page0) => {
+      pc = page0;
+      return { type: 'ledger', kind: 'sign-message', account: LEDGER, payload: { message: MESSAGE }, handle: answer.handle, token: TOKEN };
+    });
+    const { answer, shown } = await approveOne(env, page, 'personal_sign', [MESSAGE, SECOND]);
+    expect(answer).toEqual({ result: '0x' + 'de'.repeat(65) });
+    expect(calls.signers).toEqual([
+      [LEDGER, { confirmation: { token: TOKEN, kind: 'sign-message', account: LEDGER, payload: { message: MESSAGE }, handle: shown.handle, page: pc } }],
+    ]);
+    expect(calls.signed).toEqual([['message', MESSAGE]]);
+    expect(env.state.discarded).toEqual([TOKEN]);
+
+    const payload = { typed_data: { primary_type: 'Mail' }, chain_id: '100' };
+    deviceAsk(env, 'eth_signTypedData_v4', LEDGER, (approved) => ({
+      type: 'ledger',
+      kind: 'sign-typed-data',
+      account: LEDGER,
+      payload,
+      expected_hash: TYPED_HASH,
+      handle: approved.handle,
+      token: TOKEN,
+    }));
+    const typed = await approveOne(env, page, 'eth_signTypedData_v4', [SECOND, TYPED]);
+    expect(typed.answer).toEqual({ result: '0x' + 'de'.repeat(65) });
+    expect(calls.signers[1][1].confirmation).toMatchObject({ kind: 'sign-typed-data', payload, handle: typed.shown.handle });
+    // The page's typed data, which must hash to what the token bound.
+    expect(calls.signed[1]).toEqual(['typed', TYPED, { expectedHash: TYPED_HASH }]);
+  });
+
+  test('a phone\'s signature goes the same way, its job the signer\'s; a Safe\'s spends its token for the Safe approval and starts the session with the core\'s payload', async () => {
+    const { env, calls } = deviceSetup();
+    const page = env.tab();
+    deviceAsk(env, 'personal_sign', PHONE, (answer) => ({
+      type: 'remote',
+      kind: 'sign-message',
+      account: PHONE,
+      payload: { message: MESSAGE },
+      handle: answer.handle,
+      token: TOKEN,
+    }));
+    expect((await approveOne(env, page, 'personal_sign', [MESSAGE, SECOND])).answer).toEqual({ result: '0x' + 'de'.repeat(65) });
+    expect(calls.signers[0][0]).toBe(PHONE);
+
+    const safePayload = { safe: SAFE_ADDRESS, chain_id: '100', method: 'personal_sign', params: [MESSAGE, SAFE_ADDRESS] };
+    deviceAsk(env, 'personal_sign', SAFE, (answer) => ({
+      type: 'safe',
+      kind: 'safe-message',
+      account: SAFE,
+      payload: safePayload,
+      handle: answer.handle,
+      token: TOKEN,
+    }));
+    const safe = await approveOne(env, page, 'personal_sign', [MESSAGE, SAFE_ADDRESS]);
+    expect(safe.answer).toEqual({ result: '0x5afe' });
+    expect(calls.spentSafe).toEqual([
+      expect.objectContaining({ token: TOKEN, kind: 'safe-message', account: SAFE, payload: safePayload, handle: safe.shown.handle }),
+    ]);
+    expect(calls.safes[0]).toMatchObject({
+      safeIndex: SAFE,
+      request: { method: 'personal_sign', params: [MESSAGE, SAFE_ADDRESS] },
+      owner: 'main',
+      approval: { id: 'e'.repeat(32) },
+    });
+    expect(calls.signers).toHaveLength(1);
+    expect(env.state.discarded).toEqual([TOKEN, TOKEN]);
+  });
+
+  test('a crossed { device } is refused before any spend, its token discarded and in no answer: another handle, another kind, another type\'s, an account main doesn\'t list as that device, or a device for a connect', async () => {
+    const { env, calls } = deviceSetup();
+    const page = env.tab();
+    const base = (answer) => ({
+      type: 'ledger',
+      kind: 'sign-message',
+      account: LEDGER,
+      payload: { message: MESSAGE },
+      handle: answer.handle,
+      token: TOKEN,
+    });
+    const crossings = [
+      (answer) => ({ ...base(answer), handle: 'f'.repeat(64) }),
+      (answer) => ({ ...base(answer), kind: 'sign-typed-data', expected_hash: TYPED_HASH }),
+      (answer) => ({ ...base(answer), kind: 'safe-message' }),
+      (answer) => ({ ...base(answer), type: 'safe' }),
+      (answer) => ({ ...base(answer), payload: { message: MESSAGE, extra: 1 } }),
+      (answer) => ({ ...base(answer), expected_hash: TYPED_HASH }),
+      (answer) => ({ ...base(answer), extra: true }),
+    ];
+    for (const crossing of crossings) {
+      deviceAsk(env, 'personal_sign', LEDGER, crossing);
+      const { answer } = await approveOne(env, page, 'personal_sign', [MESSAGE, SECOND]);
+      expect(answer).toEqual({ error: { code: -32603, message: "The identity core's device answer doesn't match the request" } });
+      expect(JSON.stringify(answer)).not.toContain(TOKEN);
+    }
+    // A device type main doesn't list the account as: no spend either.
+    deviceAsk(env, 'personal_sign', LEDGER, (answer) => ({ ...base(answer), type: 'remote' }));
+    expect((await approveOne(env, page, 'personal_sign', [MESSAGE, SECOND])).answer.error.code).toBe(-32603);
+    expect(calls.signers).toEqual([]);
+    expect(calls.spentSafe).toEqual([]);
+    expect(env.state.discarded).toEqual(Array(crossings.length + 1).fill(TOKEN));
+    // A `{ device }` with no prompt approved, or for a method that has none.
+    env.core.script = async () => ({ device: { ...base({ handle: 'f'.repeat(64) }) } });
+    expect((await page.ask('personal_sign', [MESSAGE, SECOND])).error.code).toBe(-32603);
+    expect((await page.ask('eth_chainId', [])).error.code).toBe(-32603);
+    expect(calls.signers).toEqual([]);
+    expect(env.state.discarded).toHaveLength(crossings.length + 3);
+  });
+
+  test('a device\'s refusal is the user\'s 4001, a failure its message without the token, and a name that moved while the device signed gets main\'s 4100', async () => {
+    const { env, calls } = deviceSetup();
+    env.names.set(NAME, IPNS_KEY);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    deviceAsk(env, 'personal_sign', LEDGER, (answer) => ({
+      type: 'ledger',
+      kind: 'sign-message',
+      account: LEDGER,
+      payload: { message: MESSAGE },
+      handle: answer.handle,
+      token: TOKEN,
+    }));
+    calls.fail = Object.assign(new Error('Declined on the device'), { code: 'LEDGER_USER_REJECTED' });
+    expect((await approveOne(env, page, 'personal_sign', [MESSAGE, SECOND])).answer).toEqual({
+      error: { code: 4001, message: 'User rejected the request' },
+    });
+    calls.fail = new Error('The device is busy');
+    const failed = (await approveOne(env, page, 'personal_sign', [MESSAGE, SECOND])).answer;
+    expect(failed).toEqual({ error: { code: -32603, message: 'The device is busy' } });
+    calls.fail = null;
+    calls.duringSign = () => env.names.set(NAME, OTHER_IPNS_KEY);
+    expect((await approveOne(env, page, 'personal_sign', [MESSAGE, SECOND])).answer).toEqual({ error: NO_ADDRESS });
+    expect(env.state.discarded).toEqual([TOKEN, TOKEN, TOKEN]);
   });
 });

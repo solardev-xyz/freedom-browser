@@ -696,6 +696,12 @@ function createPageRequests({
       // The identity core cancelled the prompt it asked for (design 0012,
       // APR-5): the record's open handle closes, cancelled, if its record
       // keeps that prompt id.
+      // A token the identity core minted for the record's approval, or
+      // spent, as main's own issuer traced its own (`confirm`, `spend`):
+      // `phase` is `minted` or `spent`. The token itself never comes here.
+      traceCoreToken: (phase, kind) =>
+        (phase === 'minted' || phase === 'spent') &&
+        trace({ kind: `token-${phase}`, id: record.id, token: kind, by: 'core' }),
       cancelPrompt: (corePrompt) =>
         typeof corePrompt === 'string' && record.corePrompt === corePrompt && closeHandle(record, CLOSED.CANCELLED),
       // The open prompt's content changed: it shows again with this view.
@@ -812,10 +818,13 @@ function createPageRequests({
    * saying so (`failed`). The password goes nowhere else.
    */
   function unlockPrompt(record, spec) {
+    // The identity core's unlock (design 0012, APR-5d-2): each prompt's
+    // handle record keeps the core's prompt id.
+    const corePrompt = typeof spec?.corePrompt === 'string' ? { corePrompt: spec.corePrompt } : {};
     return unlockLoop(
       {
         id: record.id,
-        ask: (shown) => promptOnce(record, { ...shown, kind: 'vault.unlock' }),
+        ask: (shown) => promptOnce(record, { ...shown, kind: 'vault.unlock', ...corePrompt }),
         over: () => record.answered,
       },
       spec
@@ -894,7 +903,10 @@ function createPageRequests({
         attemptDone();
       }
       trace({ kind: 'unlocked', id });
-      return Object.freeze({ approve: true, choices: Object.freeze({}), from: decision.from });
+      // A core's prompt: the handle the approval was made on, and the
+      // prompt id its record kept (`promptOnce`).
+      const named = typeof decision.prompt === 'string' ? { handle: decision.handle, prompt: decision.prompt } : {};
+      return Object.freeze({ approve: true, choices: Object.freeze({}), from: decision.from, ...named });
     }
   }
 

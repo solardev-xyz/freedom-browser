@@ -279,7 +279,8 @@
         account: ACCOUNT,
         chain: CHAIN,
         message: record({ hex: text(MAX_HEX, { pattern: HEX }), rawHash: boolean() }),
-      }),
+        alwaysAllow: boolean(),
+      }, { optional: ['alwaysAllow'] }),
       record(
         {
           method: oneOf('eth_signTypedData_v4'),
@@ -291,8 +292,9 @@
             warnings: list(3, oneOf('named-type', 'chain-mismatch', 'chain-absent')),
           }),
           chains: json({ depth: 2 }),
+          alwaysAllow: boolean(),
         },
-        { optional: ['chains'] }
+        { optional: ['chains', 'alwaysAllow'] }
       )
     ),
     heading: () => 'Sign Message',
@@ -337,9 +339,11 @@
       }
       if (DEVICE_NOTES[view.account.type]) body.append(ui.note(DEVICE_NOTES[view.account.type]));
       body.append(ui.warning('Only sign messages from sites you trust. Signing can authorize actions on your behalf.'));
-      const always = ui.checkbox('Always allow this site to request signatures without asking');
-      body.append(always.element);
-      return { choices: () => ({ alwaysAllow: checked(always) }) };
+      // "Always allow" only where main offers it: a device's account has none.
+      const always =
+        view.alwaysAllow === false ? null : ui.checkbox('Always allow this site to request signatures without asking');
+      if (always) body.append(always.element);
+      return { choices: () => ({ alwaysAllow: always ? checked(always) : false }) };
     },
   });
 
