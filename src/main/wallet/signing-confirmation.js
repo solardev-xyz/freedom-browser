@@ -74,14 +74,17 @@
  * The page kinds (freedom-core design 0011, "Approval tokens"): the kinds
  * that serve a page's request, `dapp-send`, `sign-message`,
  * `sign-typed-data`, `safe-message` and a `safe-send` that names a site.
- * Their tokens come from main's own issuer (`issuePageConfirmation`), which
- * the page dispatcher calls on the user's approval of a prompt main showed
- * for a live request; the token never leaves main. A page token binds the
- * prompt's handle and the requesting document (its PageContext: the
- * attested key, the frame and the document's number), so a token answers
- * one prompt of one document. The chrome's `wallet:confirm-signing` refuses
- * each page kind once its methods have moved to main (`wallet-ipc.js`,
- * PRQ-5).
+ * Since APB-5b (freedom-core design 0012) main mints none of them: main
+ * relays a page's request to the identity core (`eip1193.request`,
+ * `page/page-eip1193.js`), shows the core's own prompt, and answers it with
+ * the user's (or the Agent's sheet's) decision; the core mints the token
+ * for that prompt and hands it to main in a `{ send }` or `{ device }`, or
+ * presents it to its own `sign.*`. Main has no page issuer, and the token
+ * never leaves main for a renderer. A page token binds the prompt's handle
+ * and the requesting document (its PageContext: the attested key, the frame
+ * and the document's number), so a token answers one prompt of one
+ * document. The chrome's `wallet:confirm-signing` refuses each page kind
+ * (`wallet-ipc.js`, PRQ-5).
  *
  * Tokens through the core (freedom-core design 0012, APB-1): every kind is
  * minted, checked and spent by the identity core (`approval.issue`,

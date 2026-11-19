@@ -95,9 +95,10 @@ function feeAsk(err) {
 
 // The page kinds, whose methods main serves (freedom-core design 0011,
 // "Approval tokens"; PRQ-5): `personal_sign` and `eth_signTypedData_v4`
-// (PRQ-5a) and `eth_sendTransaction` (PRQ-5b), from a Safe account too. Main's
-// own issuer mints their tokens for a page's request (page/page-signing.js,
-// page/page-sends.js), so the chrome's `wallet:confirm-signing` refuses them,
+// (PRQ-5a) and `eth_sendTransaction` (PRQ-5b), from a Safe account too. The
+// identity core mints their tokens on its own prompt for a page's request
+// (`eip1193.request`, design 0012; main has no page issuer since APB-5b),
+// so the chrome's `wallet:confirm-signing` refuses them,
 // and a Safe send that names a site with them (`isPageKind`). The signing
 // handlers refuse the chrome's `{ autoApprove, webContentsId }` claim
 // outright: main reads a site's rules itself, for the requester's attested
@@ -185,9 +186,10 @@ function intentAccount(intentId) {
   }
 }
 
-// The wallet's own send. A dApp's is main's, for a page's request it holds
-// (page/page-sends.js), confirmed by main's own issuer and recorded under
-// the requester's key.
+// The wallet's own send. A dApp's is the identity core's prompt for a
+// page's request (`eip1193.request`, page/page-eip1193.js): the core mints
+// its token when the prompt is approved, and main signs, records and sends
+// it under the requester's key (page/page-core-sends.js).
 async function handleSendTransaction(walletIndex, params, context = {}, authorization = null) {
   try {
     const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params || {};
@@ -420,9 +422,9 @@ function registerWalletIpc() {
   // verdict it gets back.
   handle('wallet:confirm-signing', async (event, kind, accountIndex, payload, options) => {
     try {
-      // A page's signature or send is confirmed by main's own issuer, on the
-      // user's decision of the prompt main showed (design 0011, PRQ-5): a
-      // dApp send and a Safe send that names a site among them.
+      // A page's signature or send is confirmed by the identity core, on the
+      // decision of its own prompt (`eip1193.request`, design 0012), never
+      // here: a dApp send and a Safe send that names a site among them.
       if (CHROME_REFUSED_KINDS.has(kind) || isPageKind(kind, payload)) {
         return { success: false, error: PAGE_KIND_REFUSED, code: NOT_CONFIRMED };
       }
@@ -480,9 +482,10 @@ function registerWalletIpc() {
           return { success: false, error: error.message, code: error.code, feeCheck: verdict };
         }
       }
-      // Typed data, whose token binds the core's digest, is a page kind:
-      // main's own issuer mints it (page/page-signing.js). The core runs
-      // its own fee check at minting, on the evidence main's check read.
+      // Typed data, whose token binds the core's digest, is a page kind,
+      // refused above: the core mints it on its own prompt's approval
+      // (`eip1193.request`). The core runs its own fee check at minting, on
+      // the evidence main's check read.
       const { token, expiresAt } = await issueConfirmation(kind, index, payload, {
         feeAcknowledged: options?.feeAcknowledged === true,
         phone,
@@ -595,8 +598,9 @@ function registerWalletIpc() {
       // (D12), so the token binds it. A wallet's own SafeTx has none.
       const site = display?.site ?? undefined;
       if (site !== undefined) {
-        // A site's Safe send is a page's, confirmed for its page by main's
-        // own issuer (page/page-sends.js): never on the chrome's token.
+        // A site's Safe send is a page's, confirmed for its page by the
+        // core's own prompt (page/page-core-sends.js): never on the chrome's
+        // token.
         if (authorization?.confirmation) discardConfirmation(authorization.confirmation);
         throw notAuthorized('request differs from what was confirmed');
       }

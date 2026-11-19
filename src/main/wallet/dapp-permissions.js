@@ -475,9 +475,9 @@ function registerDappPermissionsIpc() {
   });
 
   // No IPC adds a transaction auto-approve rule: the core writes one as it
-  // signs a send the user just confirmed on main's own prompt with "Always
+  // signs a send the user just confirmed on its own prompt with "Always
   // allow", for the requester's key (security audit O-7; freedom-core
-  // design 0011, PRQ-5b; design 0012, APB-2: page/page-sends.js).
+  // design 0011, PRQ-5b; design 0012, APB-2: page/page-core-sends.js).
 
   ipcMain.handle(IPC.DAPP_REMOVE_TX_AUTO_APPROVE, (_event, origin, to, selector, chainId) => {
     return removeTransactionAutoApprove(origin, to, selector, chainId);
