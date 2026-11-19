@@ -1,0 +1,1 @@
+- `window.swarm` calls made while Freedom starts or restarts the Swarm node (for example right after setting up your identity) wait for the node, for up to 30 seconds, instead of failing, and a write no longer opens the publish setup for a node that is about to be back ([#988](https://github.com/solardev-xyz/freedom-browser/issues/988))

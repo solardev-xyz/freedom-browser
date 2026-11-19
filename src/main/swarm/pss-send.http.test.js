@@ -32,6 +32,7 @@ jest.mock('./swarm-permissions', () => ({
 jest.mock('./gsoc-miner', () => ({ mineSigner: jest.fn(), joinJob: jest.fn() }));
 jest.mock('./subscription-registry', () => ({ configure: jest.fn(), cancelByOrigin: jest.fn() }));
 jest.mock('./publish-setup-service', () => ({ getPublishReadiness: async () => ({ ok: true }) }));
+jest.mock('../ant-manager', () => ({ waitForNodeSettled: async () => true, isNodeSettled: () => true }));
 jest.mock('./publish-service', () => ({}));
 jest.mock('./feed-service', () => ({}));
 jest.mock('./feed-store', () => ({}));

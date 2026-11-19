@@ -1573,6 +1573,281 @@ describe('ant-manager', () => {
     });
   });
 
+  // Page calls wait for a node Freedom is bringing back instead of failing
+  // with node-stopped (#988).
+  describe('planned restarts and waitForNodeSettled (#988)', () => {
+    const spawnCtx = () =>
+      loadAntManagerModule({
+        existsSync: (target) => /[\\/]antd(\.exe)?$/.test(target),
+        portSequence: [false],
+        httpResponse: () => ({ statusCode: 500, body: '' }),
+      });
+
+    test('a stopped node with no restart under way is settled at once', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      expect(ctx.mod.isNodeSettled()).toBe(true);
+      await expect(ctx.mod.waitForNodeSettled(10)).resolves.toBe(true);
+    });
+
+    test('waits through STARTING, and answers false if the node is still starting', async () => {
+      jest.useFakeTimers();
+      const ctx = spawnCtx();
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(500).then((settled) => (answer = settled));
+      await jest.advanceTimersByTimeAsync(499);
+      expect(answer).toBeUndefined();
+      await jest.advanceTimersByTimeAsync(1);
+      await wait;
+      expect(answer).toBe(false);
+
+      const stop = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await stop;
+    });
+
+    test('answers true once a starting node settles, even as stopped', async () => {
+      const ctx = spawnCtx();
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+
+      const wait = ctx.mod.waitForNodeSettled(60_000);
+      ctx.spawnedProcesses[0].emit('close', 1);
+      await expect(wait).resolves.toBe(true);
+      expect(ctx.mod.getStatus().status).toBe('stopped');
+    });
+
+    test('a planned restart holds callers while the node is stopped, until it ends', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      const end = ctx.mod.beginPlannedRestart();
+      expect(ctx.mod.getStatus().status).toBe('stopped');
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(60_000).then((settled) => (answer = settled));
+      await flushMicrotasks();
+      expect(answer).toBeUndefined();
+
+      end();
+      await wait;
+      expect(answer).toBe(true);
+      // Ending it twice is harmless.
+      end();
+      expect(ctx.mod.isNodeSettled()).toBe(true);
+    });
+
+    test('a planned restart nobody ends lapses after 30 s', () => {
+      jest.useFakeTimers();
+      const ctx = loadAntManagerModule({ binExists: false });
+      ctx.mod.beginPlannedRestart();
+      jest.advanceTimersByTime(29_999);
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+      jest.advanceTimersByTime(1);
+      expect(ctx.mod.isNodeSettled()).toBe(true);
+    });
+
+    test('a restart begun in the same tick as a status change keeps callers waiting', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      const endFirst = ctx.mod.beginPlannedRestart();
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(60_000).then((settled) => (answer = settled));
+
+      endFirst();
+      const endSecond = ctx.mod.beginPlannedRestart();
+      await flushMicrotasks();
+      expect(answer).toBeUndefined();
+
+      endSecond();
+      await wait;
+      expect(answer).toBe(true);
+    });
+
+    test('a start that stops for keystore recovery keeps callers waiting until the recovery ends (K-3)', async () => {
+      const real = jest.requireActual('./swarm/ant-keystore-password');
+      const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+      const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
+      const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+      const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+      const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+      const ctx = loadAntManagerModule({
+        existsSync: (target) => target === antBinPath || target === swarmKeyPath,
+        keystorePassword: {
+          ...real,
+          hasSealedPassword: jest.fn(() => true),
+          unsealPassword: jest.fn(() => {
+            throw new real.KeystorePasswordUnavailableError(new Error('keychain reset'));
+          }),
+          sealPassword: jest.fn(() => true),
+          forgetSealedPassword: jest.fn(),
+          writePasswordFile: jest.fn(),
+        },
+        portSequence: [false],
+        httpResponse: () => ({ statusCode: 500, body: '' }),
+      });
+      // As identity-manager does with an unlocked vault: the listener starts
+      // the recovery, which marks a planned restart until it ends.
+      const lifecycle = ctx.mod.createAntLifecycle();
+      let finishRecovery;
+      const recovery = new Promise((resolve) => (finishRecovery = resolve));
+      lifecycle.onKeyReinjectionNeeded(() => lifecycle.restartingUntil(recovery));
+
+      const starting = ctx.mod.startAnt();
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(60_000).then((settled) => (answer = settled));
+      await starting;
+      await flushMicrotasks();
+      // ERROR for re-injection is not where callers resume.
+      expect(ctx.mod.getStatus().status).toBe('error');
+      expect(answer).toBeUndefined();
+
+      finishRecovery();
+      await wait;
+      expect(answer).toBe(true);
+    });
+
+    test('a start queued during a stop keeps callers waiting until it runs', async () => {
+      jest.useFakeTimers();
+      const ctx = loadAntManagerModule({
+        existsSync: (target) => /[\\/]antd(\.exe)?$/.test(target),
+        portSequence: [false, false],
+        httpResponse: () => ({ statusCode: 500, body: '' }),
+        processOptions: { autoCloseOnKill: false },
+      });
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      const stopping = ctx.mod.stopAnt();
+      expect(ctx.mod.getStatus().status).toBe('stopping');
+      await ctx.mod.startAnt(); // queued behind the stop
+
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(60_000).then((settled) => (answer = settled));
+      ctx.spawnedProcesses[0].emit('close', 0);
+      await stopping;
+      await flushMicrotasks();
+      // Stopped, but the queued start has not run yet.
+      expect(ctx.mod.getStatus().status).toBe('stopped');
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+      expect(answer).toBeUndefined();
+
+      await jest.advanceTimersByTimeAsync(100);
+      expect(ctx.mod.getStatus().status).toBe('starting');
+      expect(answer).toBeUndefined();
+
+      const stop = ctx.mod.stopAnt();
+      ctx.spawnedProcesses[1]?.emit('close', 0);
+      await jest.advanceTimersByTimeAsync(0);
+      await stop;
+      await wait;
+      expect(answer).toBe(true);
+    });
+
+    test('restartAnt holds callers from the stop until the start has run', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      const restart = ctx.mod.restartAnt();
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+      const wait = ctx.mod.waitForNodeSettled(60_000);
+
+      await restart;
+      // No binary: the start ends in ERROR, and callers are told at once.
+      expect(ctx.mod.getStatus()).toEqual({
+        status: 'error',
+        error: expect.stringContaining('Ant binary not found'),
+      });
+      await expect(wait).resolves.toBe(true);
+      expect(ctx.mod.isNodeSettled()).toBe(true);
+    });
+
+    describe('identity injection lifecycle', () => {
+      const lifecycleFor = (ctx, overrides = {}) =>
+        ctx.mod.createAntLifecycle({
+          getStatus: () => ({ status: 'running', error: null }),
+          hasLiveProcess: () => true,
+          stopAnt: jest.fn().mockResolvedValue(undefined),
+          startAnt: jest.fn().mockResolvedValue(undefined),
+          setUseInjectedIdentity: jest.fn(),
+          ...overrides,
+        });
+
+      test('stopping a running node for injection is a planned restart until start()', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx);
+
+        await expect(lifecycle.stop()).resolves.toBe(true);
+        // The key is written meanwhile; callers keep waiting.
+        expect(ctx.mod.isNodeSettled()).toBe(false);
+
+        await lifecycle.start();
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+
+      test('a start that fails still ends the restart', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx, {
+          startAnt: jest.fn().mockRejectedValue(new Error('no start')),
+        });
+
+        await lifecycle.stop();
+        await expect(lifecycle.start()).rejects.toThrow('no start');
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+
+      test('a stop that fails ends the restart, since no start follows', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx, {
+          stopAnt: jest.fn().mockRejectedValue(new Error('no stop')),
+        });
+
+        await expect(lifecycle.stop()).rejects.toThrow('no stop');
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+
+      test('abandonRestart ends the restart when no start will follow', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const startAnt = jest.fn();
+        const lifecycle = lifecycleFor(ctx, { startAnt });
+
+        await lifecycle.stop();
+        expect(ctx.mod.isNodeSettled()).toBe(false);
+        lifecycle.abandonRestart();
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+        expect(startAnt).not.toHaveBeenCalled();
+      });
+
+      test('a node that was not running is not restarted, so nothing is held', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx, {
+          getStatus: () => ({ status: 'stopped', error: null }),
+          hasLiveProcess: () => false,
+        });
+
+        await expect(lifecycle.stop()).resolves.toBe(false);
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+
+      test.each([
+        ['resolves', () => Promise.resolve(true)],
+        ['rejects', () => Promise.reject(new Error('vault locked'))],
+      ])('keystore recovery holds callers until it %s', async (_how, settle) => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx);
+        let finish;
+        const recovery = new Promise((resolve) => (finish = resolve)).then(settle);
+        recovery.catch(() => {});
+
+        lifecycle.restartingUntil(recovery);
+        expect(ctx.mod.isNodeSettled()).toBe(false);
+
+        finish();
+        await recovery.catch(() => {});
+        await flushMicrotasks();
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+    });
+  });
+
   test('tells main-process listeners about every status change', async () => {
     const ctx = loadAntManagerModule({ binExists: false });
     const listener = jest.fn();
