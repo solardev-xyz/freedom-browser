@@ -185,6 +185,7 @@ if (typeof module === 'object' && module.exports) {
     els.provider.addEventListener('change', () => {
       const choice = els.provider.value;
       customInvalid = false;
+      failedCustom = null;
       els.custom.removeAttribute('aria-invalid');
       setStatus('');
       if (choice !== 'custom') {
@@ -201,8 +202,25 @@ if (typeof module === 'object' && module.exports) {
       els.custom.focus();
     });
 
+    // The address whose save last failed, while the field still holds it.
+    // Chromium fires `change` only when the value differs from the last one
+    // committed, so pressing Enter again on it fires nothing: the keydown
+    // handler below retries it instead.
+    let failedCustom = null;
+    // Bumped by every `change`, so the Enter retry can tell whether `change`
+    // already handled that Enter.
+    let customChanges = 0;
+
+    const saveCustom = async (value) => {
+      failedCustom = null;
+      const ok = await save({ secureDnsProvider: 'custom', secureDnsCustomTemplate: value });
+      if (!ok) failedCustom = value;
+    };
+
     // `change`: on Enter, or when the field loses focus after an edit.
     els.custom.addEventListener('change', () => {
+      customChanges += 1;
+      failedCustom = null;
       const value = els.custom.value.trim();
       if (!isValidDohTemplate(value)) {
         customInvalid = true;
@@ -214,7 +232,20 @@ if (typeof module === 'object' && module.exports) {
       els.custom.removeAttribute('aria-invalid');
       setStatus('');
       els.custom.value = value;
-      save({ secureDnsProvider: 'custom', secureDnsCustomTemplate: value });
+      saveCustom(value);
+    });
+
+    // Enter on an unchanged address after a failed save ("Try again"). The
+    // check waits a task so that an Enter which does fire `change` (an
+    // edited address) is left to that handler and saved once, not twice.
+    els.custom.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.isComposing) return;
+      const before = customChanges;
+      setTimeout(() => {
+        if (customChanges !== before || failedCustom === null) return;
+        if (els.custom.disabled || els.custom.value.trim() !== failedCustom) return;
+        saveCustom(failedCustom);
+      }, 0);
     });
 
     freedomAPI.onSettingsUpdated?.((settings) => {

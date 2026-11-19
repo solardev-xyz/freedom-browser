@@ -192,6 +192,81 @@ test('a failed save says so, whichever control made it', async ({ window, electr
   await expect(status).toHaveText(waiting('Cloudflare'));
 });
 
+// "Try again" after a failed custom address means Enter on the same address
+// again. Chromium fires no `change` for a value it already committed, so the
+// field's Enter handler has to retry it; and an Enter that does fire `change`
+// (an edited address) must still save once, not twice.
+test('Enter on the same address retries a failed custom save', async ({ window, electronApp }) => {
+  const page = await openSecureDns(window, electronApp);
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__secureDnsSaveResult = false;
+    globalThis.__secureDnsSaves = [];
+    ipcMain.removeHandler('settings:save');
+    ipcMain.handle('settings:save', (_event, patch) => {
+      globalThis.__secureDnsSaves.push(patch);
+      return globalThis.__secureDnsSaveResult;
+    });
+  });
+  const saves = () => electronApp.evaluate(() => globalThis.__secureDnsSaves.length);
+  const saveStatus = page.locator('#secure-dns-status');
+  const failed = "Couldn't save the change. Try again.";
+  // Enter as Chromium delivers it: keydown, then `change` in the same task
+  // only if the value differs from the last one committed. Typed keys would
+  // go to the address bar (see enterCustom), so the events are dispatched.
+  const pressEnter = (page, { change }) =>
+    page.evaluate((fireChange) => {
+      const field = document.getElementById('secure-dns-custom');
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      if (fireChange) field.dispatchEvent(new Event('change'));
+    }, change);
+
+  await page.selectOption('#secure-dns-provider', 'custom');
+  await enterCustom(page, CUSTOM);
+  await expect(saveStatus).toHaveText(failed);
+  expect(await saves()).toBe(1);
+
+  // Enter again on the unchanged address: no `change` fires, and the retry
+  // still goes out (and fails again, still saying so).
+  await page.evaluate(() => {
+    document.getElementById('secure-dns-status').textContent = '';
+  });
+  await pressEnter(page, { change: false });
+  await expect.poll(saves).toBe(2);
+  await expect(saveStatus).toHaveText(failed);
+  await expect(page.locator('#secure-dns-custom')).toHaveValue(CUSTOM);
+
+  // This time it is stored.
+  await electronApp.evaluate(() => {
+    globalThis.__secureDnsSaveResult = true;
+  });
+  await pressEnter(page, { change: false });
+  await expect.poll(saves).toBe(3);
+  await expect(saveStatus).toHaveText('');
+  expect(await electronApp.evaluate(() => globalThis.__secureDnsSaves.at(-1))).toEqual({
+    secureDnsProvider: 'custom',
+    secureDnsCustomTemplate: CUSTOM,
+  });
+  // Nothing failed, so a further Enter has nothing to retry.
+  await pressEnter(page, { change: false });
+  await page.waitForTimeout(300);
+  expect(await saves()).toBe(3);
+
+  // An edited address after a failure: Enter fires `change`, which saves it
+  // once; the retry handler leaves that Enter alone.
+  await electronApp.evaluate(() => {
+    globalThis.__secureDnsSaveResult = false;
+  });
+  await enterCustom(page, MULLVAD);
+  await expect.poll(saves).toBe(4);
+  await page.evaluate((address) => {
+    document.getElementById('secure-dns-custom').value = address;
+  }, QUAD9);
+  await pressEnter(page, { change: true });
+  await expect.poll(saves).toBe(5);
+  await page.waitForTimeout(300);
+  expect(await saves()).toBe(5);
+});
+
 // Look `host` up through Chromium with its net log running, and return the
 // answer plus every logged event, by name.
 async function lookUpLogged(electronApp, host, logPath) {
