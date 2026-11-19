@@ -186,7 +186,7 @@ describe('permission manifests', () => {
       expect(requested(withOld)).toEqual([NEW_URL, OLD_URL]);
     });
 
-    test('when neither file is valid, the new file decides the outcome', async () => {
+    test('when neither file is valid, the first file that is not missing decides the outcome', async () => {
       const broken = legacy({ publish: { why: 'Old schema in the new file' } });
       await expect(discover('bzz://app.eth/', serve({ [NEW_URL]: broken })))
         .resolves.toMatchObject({ status: 'invalid', error: 'unsupported manifest schema' });

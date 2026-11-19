@@ -251,7 +251,9 @@ async function discover(committedUrl, fetchManifest = handleBzzRequest) {
   // Bee serves a site's error document (often its index page) with a 200 for
   // any missing path, so on such a site a missing new file looks invalid. Both
   // files are the site's own content, so falling back grants nothing the site
-  // doesn't declare. When neither is valid, the new file's outcome stands.
+  // doesn't declare. When neither is valid, the first file that isn't missing
+  // decides: the new file's `invalid` if it has one, else the old file's
+  // outcome (`invalid`, or `absent` when both are missing).
   let outcome = { status: 'absent' };
   for (const file of MANIFEST_FILES) {
     const found = await discoverFile(`bzz://${url.host}/${file.path}`, file.schema, fetchManifest);
