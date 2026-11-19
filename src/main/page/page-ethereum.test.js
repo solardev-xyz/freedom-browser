@@ -84,6 +84,9 @@ const TYPED_HASH = TypedDataEncoder.hash(TYPED.domain, { Order: TYPED.types.Orde
 const NO_ADDRESS = { error: { code: 4100, message: 'This page has no address to connect from yet' } };
 const REJECTED = { error: { code: 4001, message: 'User rejected the request' } };
 const PENDING = { error: { code: -32002, message: 'Another wallet request is already pending' } };
+const DISCONNECTED = { error: { code: 4900, message: 'Disconnected' } };
+// The stand-in core's answer to a signature or a send (`standInCore`).
+const STAND_IN_REFUSAL = { error: { code: 4200, message: 'The stand-in core answers no signature or send' } };
 const GENERATION = 3;
 
 // Each area's accounts, as its own tests had them: a connect offers every
@@ -177,8 +180,10 @@ const eventFrom = (guest) => ({ sender: guest, senderFrame: guest.mainFrame });
  * connect with no grant asks main for its prompt through the relay's
  * `approval.request` handler, and on the user's approval writes the grant
  * (`grantPermission`) before it answers, as the core writes it under the
- * request's PageContext. It signs and sends nothing: those methods reach it
- * only from a tab the agent doesn't hold, and no test here asks that.
+ * request's PageContext. It signs and sends nothing: a signature or a send
+ * reaches it only from a tab the agent doesn't hold, and it answers those
+ * `4200`, or `4100` for a keyless document as the core does, which the tests
+ * of main's gates read as the core's answer.
  */
 function standInCore(state, grantPermission, relayOf) {
   let lastId = 0;
@@ -230,7 +235,7 @@ function standInCore(state, grantPermission, relayOf) {
   }
 
   async function answer(id, { method, params, world }, page, signal) {
-    if (!world.enabled) return { error: { code: 4900, message: 'Disconnected' } };
+    if (!world.enabled) return DISCONNECTED;
     const chainId = world.chain || world.window_chain || 100;
     if (method === 'eth_chainId') return { result: `0x${chainId.toString(16)}` };
     if (method === 'net_version') return { result: String(chainId) };
@@ -247,7 +252,8 @@ function standInCore(state, grantPermission, relayOf) {
       const account = grantedAccount(page, world);
       return account ? { result: [account] } : connect(id, page, world, chainId, signal);
     }
-    return { error: { code: 4200, message: 'The stand-in core answers no signature or send' } };
+    if (!page.origin) return NO_ADDRESS;
+    return STAND_IN_REFUSAL;
   }
 
   return core;
@@ -692,6 +698,122 @@ describe("main's part around the core's dispatcher (0012 APB-4d)", () => {
       expect(env.requests.bindName(own, { guest: guest.id, name: NAME, key: IPNS_KEY })).toBe(false);
       guest.destroyed = false;
       expect(env.requests.bindName(own, { guest: guest.id, name: NAME, key: IPNS_KEY })).toBe(true);
+    });
+  });
+
+  // Main's gates before the agent's route and the core, which main's own
+  // routes' tests covered until APB-4d removed those routes: the early exit
+  // to the core with the switch off or no key, the custody gate on a
+  // signature or a send, and the name checks before the agent and the core.
+  describe("main's gates before the agent's route and the core", () => {
+    // The methods the agent's route may answer, each as a page asks it.
+    const ASKS = {
+      eth_requestAccounts: (page) => page.ask('eth_requestAccounts'),
+      personal_sign: (page) => page.ask('personal_sign', [MESSAGE, ACCOUNT]),
+      eth_signTypedData_v4: (page) => page.ask('eth_signTypedData_v4', [ACCOUNT, JSON.stringify(TYPED)]),
+      eth_sendTransaction: (page) => page.send(TRANSFER),
+    };
+    const METHODS = Object.keys(ASKS);
+    // Only a tab the agent holds is offered these.
+    const GATED = ['personal_sign', 'eth_signTypedData_v4', 'eth_sendTransaction'];
+
+    // An agent route that would answer whatever it were offered.
+    function eagerAgent(env) {
+      env.state.agent = async () => ({ handled: true, result: HASH });
+    }
+
+    // The requests the core was sent, with the origin each went under.
+    const sentToCore = (env) => env.core.sent.map((request) => [request.method, request.page.origin]);
+
+    test('with the switch off, each goes straight to the core, which answers 4900: the agent is never offered it, even in custody', async () => {
+      const env = setup({ wallets: SENDING_WALLETS });
+      eagerAgent(env);
+      env.connect();
+      const page = env.tab(DAPP);
+      env.state.custody.add(page.guest.id);
+      env.state.enabled = false;
+      for (const method of METHODS) {
+        expect({ method, answer: await ASKS[method](page) }).toEqual({ method, answer: DISCONNECTED });
+      }
+      expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+      expect(sentToCore(env)).toEqual(METHODS.map((method) => [method, KEY_A]));
+      // From a tab the agent holds, as this test means them to be.
+      expect(env.state.misrouted.map((request) => request.method)).toEqual(METHODS);
+      env.state.misrouted.length = 0;
+    });
+
+    test("a keyless document's go straight to the core under the empty origin, which answers 4100: the agent is never offered them, even in custody", async () => {
+      const env = setup({ wallets: SENDING_WALLETS });
+      eagerAgent(env);
+      const page = env.tab('data:text/html,<h1>keyless</h1>');
+      env.state.custody.add(page.guest.id);
+      for (const method of METHODS) {
+        expect({ method, answer: await ASKS[method](page) }).toEqual({ method, answer: NO_ADDRESS });
+      }
+      expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+      expect(sentToCore(env)).toEqual(METHODS.map((method) => [method, '']));
+      expect(env.state.misrouted.map((request) => request.method)).toEqual(METHODS);
+      env.state.misrouted.length = 0;
+    });
+
+    test('from a tab the agent does not hold, a signature or a send is never offered to the agent: the core answers it', async () => {
+      const env = setup({ wallets: SENDING_WALLETS });
+      eagerAgent(env);
+      env.connect();
+      const page = env.tab(DAPP);
+      for (const method of GATED) {
+        expect({ method, answer: await ASKS[method](page) }).toEqual({ method, answer: STAND_IN_REFUSAL });
+      }
+      expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+      expect(sentToCore(env)).toEqual(GATED.map((method) => [method, KEY_A]));
+    });
+
+    describe('a DNS name over IPNS', () => {
+      function bound({ custody = false } = {}) {
+        const env = setup({ wallets: SENDING_WALLETS });
+        env.names.set(NAME, IPNS_KEY);
+        env.state.permissions.set(NAME, { origin: NAME, walletIndex: 0, chainId: 100 });
+        const page = env.tab(`ipns://${IPNS_KEY}/docs`, { bind: NAME });
+        if (custody) env.state.custody.add(page.guest.id);
+        return { env, page };
+      }
+      const lastNameCheck = (env) => env.trace.filter((entry) => entry.kind === 'name-checked').at(-1);
+
+      test.each(METHODS)('outside custody, %s from a name that moved off its IPNS key answers 4100, and the core is never asked', async (method) => {
+        const { env, page } = bound();
+        await flush();
+        env.names.set(NAME, OTHER_IPNS_KEY);
+        expect(await ASKS[method](page)).toEqual(NO_ADDRESS);
+        expect(env.core.sent).toEqual([]);
+        expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+        // The binding has ended.
+        expect(lastNameCheck(env)).toMatchObject({ holds: false });
+      });
+
+      test.each(METHODS)('in custody, %s from a name that moved off its IPNS key is never offered to the agent, nor sent to the core', async (method) => {
+        const { env, page } = bound({ custody: true });
+        eagerAgent(env);
+        await flush();
+        env.names.set(NAME, OTHER_IPNS_KEY);
+        expect(await ASKS[method](page)).toEqual(NO_ADDRESS);
+        expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+        expect(env.core.sent).toEqual([]);
+      });
+
+      // The agent's route declines a tab it no longer holds: main then asks
+      // the core, but only after checking the name again.
+      test.each(METHODS)('%s whose name moves while the agent declines it (its custody ended) answers 4100, and the core is never asked', async (method) => {
+        const { env, page } = bound({ custody: true });
+        env.state.agent = async () => {
+          env.state.custody.delete(page.guest.id);
+          env.names.set(NAME, OTHER_IPNS_KEY);
+          return { handled: false };
+        };
+        expect(await ASKS[method](page)).toEqual(NO_ADDRESS);
+        expect(env.deps.agentWalletRequest).toHaveBeenCalledTimes(1);
+        expect(env.core.sent).toEqual([]);
+        expect(lastNameCheck(env)).toMatchObject({ holds: false });
+      });
     });
   });
 });
