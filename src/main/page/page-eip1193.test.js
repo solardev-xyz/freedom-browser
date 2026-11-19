@@ -7,6 +7,11 @@
 // script tells it to; page-eip1193.integration.test.js runs the real one.
 
 const { EventEmitter } = require('events');
+const os = require('os');
+const { PassThrough, Writable } = require('stream');
+const { CoreClient } = require('../core/core-client');
+const { CoreError, REQUIREMENT_UNMET, RESTART_DELAYS_MS } = require('../core/service-client');
+const { encodeFrame, FrameDecoder, KIND_JSON } = require('../core/frame');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
 const { createEthereumDispatchers } = require('./page-ethereum');
@@ -93,6 +98,11 @@ function standInCore() {
     released: [],
     script: async () => ({ result: null }),
     request: jest.fn(async (method, params, context, options) => {
+      // The client's check of the process it writes the frame to
+      // (`requires`), as ServiceClient makes it: refused unsent.
+      if (options.requires && !options.requires(core.hello)) {
+        throw new CoreError(REQUIREMENT_UNMET, "The identity core can't take this request");
+      }
       const id = ++lastId;
       core.sent.push({ id, method, params, context, watchdogMs: options.watchdogMs });
       options.onSent(id, GENERATION);
@@ -108,7 +118,7 @@ function standInCore() {
   return core;
 }
 
-function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {} } = {}) {
+function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {}, coreClient = null } = {}) {
   const guests = new Map();
   const names = new Map();
   const state = {
@@ -150,7 +160,7 @@ function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {} }
       return key ? { type: 'ok', protocol: 'ipns', decoded: key } : { type: 'not_found' };
     },
   });
-  const core = standInCore();
+  const core = coreClient || standInCore();
   const relay = createEip1193Relay({
     coreClient: () => core,
     watchdogMs: () => 135_000,
@@ -2344,25 +2354,170 @@ describe('transport_key for a DNS name over IPNS (0012 APR-5f, APB-4e)', () => {
       expect(env.core.sent).toHaveLength(routed ? 1 : 0);
     });
 
-    test('a client not ready yet: its hello once ready decides; one that never gets ready fails closed', async () => {
+    test('the check is the client\'s, on the process it writes to: asked only for a bound document\'s name-checked requests, and only its refusal answers keyless', async () => {
       const env = setup();
       env.core.script = async () => ({ result: ['sent'] });
       const page = await bound(env);
-      env.core.hello = null;
-      env.core.whenReady = async () => {
-        env.core.hello = { core_version: '0.21.0' };
-        return env.core.hello;
+      await page.ask('eth_accounts', []);
+      await page.ask('eth_chainId', []);
+      await env.tab().ask('eth_accounts', []);
+      const asked = env.core.request.mock.calls.map(([, body, , options]) => [body.method, typeof options.requires]);
+      expect(asked).toEqual([
+        ['eth_accounts', 'function'],
+        ['eth_chainId', 'object'],
+        ['eth_accounts', 'object'],
+      ]);
+      // What it requires: a hello from 0.21.0 on; none, or no version, fails.
+      const requires = env.core.request.mock.calls[0][3].requires;
+      expect([{ core_version: '0.21.0' }, { core_version: '0.20.0' }, {}, null].map(requires)).toEqual([true, false, false, false]);
+      // Any other failure of the client's is the core's failure, not a
+      // keyless answer.
+      env.core.request.mockImplementationOnce(async () => {
+        throw new CoreError('core_unavailable', 'The identity core is not running');
+      });
+      expect(await page.ask('eth_accounts', [])).toEqual({
+        error: { code: -32603, message: 'The identity core is not running' },
+      });
+    });
+  });
+
+  describe('a core that restarts while a bound document\'s request waits for it (r1)', () => {
+    /**
+     * A freedom-cored process for a real CoreClient: it answers the hello
+     * as `version`, and each `eip1193.request` as a core that checks no
+     * name would for a key with a grant: the account, or a signature.
+     */
+    class CoredProcess extends EventEmitter {
+      constructor(version) {
+        super();
+        this.pid = 4242;
+        this.stdout = new PassThrough();
+        this.stderr = new PassThrough();
+        this.requests = [];
+        const decoder = new FrameDecoder();
+        this.stdin = new Writable({
+          write: (chunk, _encoding, callback) => {
+            for (const frame of decoder.push(chunk)) {
+              if (frame.kind !== KIND_JSON || frame.message?.type !== 'request') continue;
+              const { id, method, params, context } = frame.message;
+              this.requests.push({ method, params, context });
+              let result = {};
+              if (method === 'core.hello') result = { protocol: 2, core_version: version, capabilities: ['streams'] };
+              else if (method === 'eip1193.request') result = { result: params.method === 'personal_sign' ? '0x5167' : [ACCOUNT] };
+              this.stdout.write(encodeFrame({ type: 'response', id, result }));
+            }
+            callback();
+          },
+          final: (callback) => {
+            setImmediate(() => this.exit(0));
+            callback();
+          },
+        });
+      }
+
+      exit(code, { close = true } = {}) {
+        this.emit('exit', code, null);
+        if (close) setImmediate(() => this.close(code));
+      }
+
+      close(code) {
+        this.stdout.end();
+        this.emit('close', code, null);
+      }
+
+      kill() {
+        setImmediate(() => this.exit(null));
+        return true;
+      }
+    }
+
+    // A real CoreClient whose processes answer the hello as `versions`, in
+    // turn, and whose timers run only when the test runs them.
+    function restartingCore(versions) {
+      const children = [];
+      const timers = [];
+      const client = new CoreClient({
+        spawn: jest.fn(() => {
+          const child = new CoredProcess(versions[Math.min(children.length, versions.length - 1)]);
+          children.push(child);
+          return child;
+        }),
+        command: '/bin/freedom-cored',
+        args: ['serve'],
+        log: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+        grantRoot: os.tmpdir(),
+        setTimer: (fn, ms) => {
+          const timer = { fn, ms, cleared: false };
+          timers.push(timer);
+          return timer;
+        },
+        clearTimer: (timer) => {
+          if (timer) timer.cleared = true;
+        },
+        now: () => 0,
+      });
+      const runTimers = (ms) => {
+        for (const timer of timers.splice(0)) {
+          if (!timer.cleared && timer.ms === ms) timer.fn();
+          else if (!timer.cleared) timers.push(timer);
+        }
       };
-      expect(await page.ask('eth_accounts', [])).toEqual({ result: ['sent'] });
-      env.core.hello = null;
-      env.core.whenReady = async () => {
-        throw Object.assign(new Error('unavailable'), { code: 'unavailable' });
-      };
-      expect(await page.ask('eth_accounts', [])).toEqual({ result: [] });
-      // No hello and no way to wait for one.
-      env.core.whenReady = undefined;
-      expect(await page.ask('eth_accounts', [])).toEqual({ result: [] });
-      expect(env.core.sent).toHaveLength(1);
+      const relayed = () =>
+        children.map((child) =>
+          child.requests.filter(({ method }) => method === 'eip1193.request').map(({ params, context }) => [params.method, context.page.transport_key])
+        );
+      return { client, children, runTimers, relayed };
+    }
+
+    // The bound document's requests, asked once the first core exited: the
+    // client is starting the next and still holds the first one's hello.
+    async function askedAcrossRestart(versions) {
+      const restart = restartingCore(versions);
+      const env = setup({ coreClient: restart.client });
+      const page = await bound(env);
+      await restart.client.start();
+      restart.children[0].exit(1, { close: false });
+      expect(restart.client.state).toBe('starting');
+      expect(restart.client.hello.core_version).toBe(versions[0]);
+      const answers = Promise.all([
+        page.ask('eth_accounts', []),
+        page.ask('eth_requestAccounts', []),
+        page.ask('personal_sign', [MESSAGE, ACCOUNT]),
+      ]);
+      await flush();
+      restart.children[0].close(1);
+      await flush();
+      restart.runTimers(RESTART_DELAYS_MS[0]);
+      const answered = await answers;
+      await restart.client.stop();
+      return { answered, restart, env };
+    }
+
+    test('0.21.0 exits and 0.20.0 replaces it: eth_accounts, a connect and a signature go by the replacement\'s hello and answer keyless, and neither core gets them', async () => {
+      const { answered, restart, env } = await askedAcrossRestart(['0.21.0', '0.20.0']);
+      expect(answered).toEqual([{ result: [] }, { error: NO_ADDRESS }, { error: NO_ADDRESS }]);
+      expect(restart.children).toHaveLength(2);
+      expect(restart.relayed()).toEqual([[], []]);
+      expect(env.prompts()).toEqual([]);
+    });
+
+    test('0.21.0 exits and a 0.21.0 pre-release replaces it: keyless too', async () => {
+      const { answered, restart } = await askedAcrossRestart(['0.21.0', '0.21.0-rc.1']);
+      expect(answered).toEqual([{ result: [] }, { error: NO_ADDRESS }, { error: NO_ADDRESS }]);
+      expect(restart.relayed()).toEqual([[], []]);
+    });
+
+    test('0.20.0 exits and 0.21.0 replaces it: the requests go to the replacement with the binding', async () => {
+      const { answered, restart } = await askedAcrossRestart(['0.20.0', '0.21.0']);
+      expect(answered).toEqual([{ result: [ACCOUNT] }, { result: [ACCOUNT] }, { result: '0x5167' }]);
+      const transport = `ipns://${IPNS_KEY}`;
+      const [first, second] = restart.relayed();
+      expect(first).toEqual([]);
+      expect(second.sort()).toEqual([
+        ['eth_accounts', transport],
+        ['eth_requestAccounts', transport],
+        ['personal_sign', transport],
+      ]);
     });
   });
 

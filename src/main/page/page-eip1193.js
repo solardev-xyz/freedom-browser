@@ -28,8 +28,11 @@
  *     hello is older than 0.21.0 would drop it and check nothing, so a
  *     bound document's `eth_accounts`, connect, switch, signature or send
  *     goes to the core only from 0.21.0, and otherwise answers as a keyless
- *     document's (`[]`, or `4100`). The core echoes `transport_key` in
- *     `page`, and main compares it with what it sent.
+ *     document's (`[]`, or `4100`). The version is read from the hello of
+ *     the process the request is written to, as it is written
+ *     (service-client's `requires`): never from one that exited, whose
+ *     hello the client holds until a replacement is ready. The core echoes
+ *     `transport_key` in `page`, and main compares it with what it sent.
  *   - **Its answer** is the page's: `{ result }` or `{ error }`, with the
  *     EIP-1193 code main gave before. `{ device }` (APB-4b) is main's to act
  *     on, and never reaches a page: a signature's goes to main's device
@@ -99,7 +102,7 @@
  * nothing written or signed.
  */
 
-const { ShellError } = require('../core/service-client');
+const { ShellError, REQUIREMENT_UNMET } = require('../core/service-client');
 const { txOf, selectorOf } = require('./page-core-sends');
 
 // What the chrome's getCurrentChainId falls back to (`page-ethereum.js`).
@@ -197,6 +200,10 @@ function checksNames(version) {
   }
   return parts[4] === undefined;
 }
+
+// What a bound document's request requires of the process it is written
+// to (service-client's `requires`): a hello from a core that checks names.
+const checksNamesFor = (hello) => checksNames(hello?.core_version);
 
 /**
  * A document's name binding: its transport key for a DNS name over IPNS
@@ -467,22 +474,6 @@ function createEip1193Relay(deps = {}) {
     return out;
   }
 
-  /**
-   * Whether the core this request goes to checks a bound document's name
-   * (APR-5f): its hello's `core_version`, read once the client is ready, in
-   * the run that sends the request. Unknown counts as no.
-   */
-  async function namesChecked(client) {
-    if (!client.hello && typeof client.whenReady === 'function') {
-      try {
-        await client.whenReady();
-      } catch {
-        return false;
-      }
-    }
-    return checksNames(client.hello?.core_version);
-  }
-
   // What a keyless document gets for a method whose name the core checks.
   const keylessAnswer = (method) => (method === 'eth_accounts' ? { result: [] } : { error: { ...NO_ADDRESS } });
 
@@ -709,11 +700,15 @@ function createEip1193Relay(deps = {}) {
     const page = pageOf(context);
     const world = await worldFor(context, method);
     // A bound document's name is the core's to check (APR-5f): only a core
-    // that checks it gets the request. Otherwise, or for a binding no check
-    // can pass, it answers as a keyless document's would, failing closed.
+    // that checks it gets the request, by the hello of the process it is
+    // written to (`requires`, checked as the frame is written). Otherwise,
+    // or for a binding no check can pass, it answers as a keyless
+    // document's would, failing closed.
     const binding = bindingOf(context.requester);
+    let requires = null;
     if (binding !== null && world.enabled === true && NAME_CHECKED.has(method)) {
-      if (!binding || !(await namesChecked(client))) return keylessAnswer(method);
+      if (!binding) return keylessAnswer(method);
+      requires = checksNamesFor;
       // An account or a signature reaches the page only while main still
       // holds the key when it answers: main's own checks of the name, for
       // the steps it holds, may end the binding meanwhile (`nameHolds`).
@@ -736,6 +731,7 @@ function createEip1193Relay(deps = {}) {
       reply = await client.request('eip1193.request', body, { caller: 'page', page }, {
         watchdogMs: read(watchdogMs, null),
         signal: context.signal,
+        requires,
         onSent: (id, generation) => {
           entry.id = id;
           entry.generation = generation;
@@ -744,7 +740,8 @@ function createEip1193Relay(deps = {}) {
         },
       });
     } catch (err) {
-      answer = failure(err);
+      // Refused in main, unsent: the process it would go to checks no name.
+      answer = requires && err?.code === REQUIREMENT_UNMET ? keylessAnswer(method) : failure(err);
     } finally {
       if (key !== null && running.get(key) === entry) running.delete(key);
     }

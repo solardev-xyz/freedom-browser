@@ -20,6 +20,7 @@ const { createPageRequests, GONE } = require('./page-requests');
 const { CLASS, methodRow, ETHEREUM_RPC_READS } = require('./page-methods');
 const { ETHEREUM_READ_METHODS, ETHEREUM_PAGE_METHODS, createEthereumDispatchers } = require('./page-ethereum');
 const { createEip1193Relay } = require('./page-eip1193');
+const { CoreError, REQUIREMENT_UNMET } = require('../core/service-client');
 const { createPageEvents } = require('./page-events');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { AgentWalletController } = require('../agent/agent-wallet-controller');
@@ -199,6 +200,10 @@ function standInCore(state, grantPermission, relayOf, names) {
     nameChecks: [],
     ended: new Set(),
     request: async (method, body, context, options) => {
+      // The client's check of the process it writes to (`requires`).
+      if (options.requires && !options.requires(core.hello)) {
+        throw new CoreError(REQUIREMENT_UNMET, "The identity core can't take this request");
+      }
       const id = ++lastId;
       core.sent.push({ id, method: body.method, params: body.params, page: context.page });
       options.onSent(id, GENERATION);

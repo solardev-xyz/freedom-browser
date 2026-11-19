@@ -17,6 +17,7 @@ const {
   POOL_BYTES,
   POOL_EXEMPT_BYTES,
 } = require('./core-client');
+const { REQUIREMENT_UNMET } = require('./service-client');
 const {
   encodeBegin,
   encodeCredit,
@@ -350,6 +351,111 @@ describe('CoreClient', () => {
     });
     expect(children[1].requests.map((m) => m.method)).toEqual(['core.hello']);
     expect(await client.requestTo(client.current, 'vault.status')).toEqual({ ok: true });
+  });
+
+  describe("a request's requires: the hello of the process it is written to", () => {
+    // A core that answers its hello as `version`, and every other request
+    // with the version that answered it.
+    const versioned = (version) => (message, core) => {
+      if (message.method === 'core.hello') {
+        core.reply({
+          type: 'response',
+          id: message.id,
+          result: helloResult({ core_version: version }),
+        });
+      } else if (message.method === 'core.shutdown') {
+        core.reply({ type: 'response', id: message.id, result: {} });
+      } else {
+        core.reply({ type: 'response', id: message.id, result: { at: version } });
+      }
+    };
+    const from021 = (hello) => hello.core_version === '0.21.0';
+    const asked = (child) => child.requests.filter((m) => m.method === 'vault.status').length;
+    const requiring = (client, requires) =>
+      client.request('vault.status', {}, undefined, { requires });
+
+    test('a ready process whose hello meets it gets the request; otherwise nothing is written, and it fails requirement_unmet', async () => {
+      const { client, children } = makeClient([versioned('0.21.0')]);
+      await client.start();
+      const seen = [];
+      const watching = (hello) => {
+        seen.push(hello.core_version);
+        return true;
+      };
+      await expect(requiring(client, watching)).resolves.toEqual({ at: '0.21.0' });
+      expect(seen).toEqual(['0.21.0']);
+      // Refused, a throw, or anything but true.
+      const refusals = [
+        () => false,
+        () => {
+          throw new Error('no');
+        },
+        () => 'yes',
+        () => undefined,
+      ];
+      for (const requires of refusals) {
+        const err = await requiring(client, requires).catch((e) => e);
+        expect(err).toBeInstanceOf(CoreError);
+        expect(err.code).toBe(REQUIREMENT_UNMET);
+      }
+      expect(asked(children[0])).toBe(1);
+      // The connection goes on: the next request is written.
+      await expect(client.request('vault.status')).resolves.toEqual({ at: '0.21.0' });
+      expect(client.state).toBe('ready');
+    });
+
+    test("one waiting while the core restarts is checked against the replacement's hello, never the exited one's the client still holds", async () => {
+      const { client, children, runTimers } = makeClient([
+        versioned('0.21.0'),
+        versioned('0.20.0'),
+        versioned('0.21.0'),
+      ]);
+      await client.start();
+      // Exited, not yet retired: the client is starting the next process,
+      // and its hello is still the exited one's.
+      children[0].exit(1, null, { close: false });
+      expect(client.state).toBe('starting');
+      expect(client.hello.core_version).toBe('0.21.0');
+      const refused = requiring(client, from021).catch((e) => e);
+      const plain = client.request('vault.status');
+      children[0].close(1);
+      await tick();
+      runTimers(RESTART_DELAYS_MS[0]);
+      expect((await refused).code).toBe(REQUIREMENT_UNMET);
+      await expect(plain).resolves.toEqual({ at: '0.20.0' });
+      expect([asked(children[0]), asked(children[1])]).toEqual([0, 1]);
+      // The other way round: the 0.20.0 core exits while a request waits,
+      // and the 0.21.0 one that replaces it gets it.
+      children[1].exit(1, null, { close: false });
+      expect(client.hello.core_version).toBe('0.20.0');
+      const passes = requiring(client, from021);
+      children[1].close(1);
+      await tick();
+      runTimers(RESTART_DELAYS_MS[1]);
+      await expect(passes).resolves.toEqual({ at: '0.21.0' });
+      expect(asked(children[2])).toBe(1);
+    });
+
+    test('requestTo and callStream check the process they name', async () => {
+      const { client, children } = makeClient([versioned('0.20.0')]);
+      await client.start();
+      await expect(
+        client.requestTo(client.current, 'vault.status', {}, undefined, { requires: from021 })
+      ).rejects.toMatchObject({
+        code: REQUIREMENT_UNMET,
+      });
+      await expect(
+        client.callStream('vault.status', {}, undefined, { requires: from021 })
+      ).rejects.toMatchObject({
+        code: REQUIREMENT_UNMET,
+      });
+      expect(asked(children[0])).toBe(0);
+      await expect(
+        client.requestTo(client.current, 'vault.status', {}, undefined, { requires: () => true })
+      ).resolves.toEqual({
+        at: '0.20.0',
+      });
+    });
   });
 
   test('a request past its hang watchdog kills the core, which fails it; one answered clears it', async () => {
