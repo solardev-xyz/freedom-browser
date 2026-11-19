@@ -44,6 +44,7 @@ const CONSTANTS = Object.freeze({
   EVENT_CANCELLED: 1 << 4,
   EVENT_HANDLE_FREED: 1 << 5,
   ROUTING_MODE_AUTO: 20,
+  ROUTING_MODE_OFFLINE: 23,
 });
 
 function createFakeFreedomIpfsAddon() {
