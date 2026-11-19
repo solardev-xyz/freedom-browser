@@ -806,10 +806,14 @@ describe('signatures through the relay (0012 APB-4b)', () => {
     });
   });
 
-  test('vault.unlock: a rejection, a navigation and busy answer as such; an approve only once the vault is open', async () => {
+  test('vault.unlock: a rejection, a navigation and busy answer as such; an approve goes to the core as it is, which refuses the signature while the vault is still locked', async () => {
     const env = setup();
     const page = env.tab();
-    const answers = asking(env, unlockAsk, () => ({ result: '0x01' }));
+    // The core's answer after an approve: the vault's refusal while it is
+    // still locked (core #398), else the signature.
+    const answers = asking(env, unlockAsk, () =>
+      env.state.unlocked ? { result: '0x01' } : { error: { code: -32603, message: 'Vault is locked' } }
+    );
     env.state.unlocked = false;
     const rejected = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
     await flush();
@@ -819,13 +823,14 @@ describe('signatures through the relay (0012 APB-4b)', () => {
     await rejected;
     expect(answers.at(-1)).toEqual({ prompt: PROMPT, handle: shown.handle, approve: false, choices: {} });
 
-    // Approved with the vault still locked: no approve.
+    // Approved with the vault still locked: the approve goes to the core as
+    // it is, and the page hears the core's refusal.
     const locked = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
     await flush();
     shown = env.prompts()[1];
     expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
-    await locked;
-    expect(answers.at(-1)).toEqual({ prompt: PROMPT, handle: shown.handle, approve: false, choices: {} });
+    expect(await locked).toEqual({ error: { code: -32603, message: 'Vault is locked' } });
+    expect(answers.at(-1)).toEqual({ prompt: PROMPT, handle: shown.handle, approve: true, choices: {}, world: expect.any(Object) });
 
     // Open: approved, with no choices and main's world.
     const open = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
@@ -890,6 +895,35 @@ describe('signatures through the relay (0012 APB-4b)', () => {
     expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
     expect(await asked).toEqual({ error: NO_ADDRESS });
     expect(answers).toEqual([{ prompt: PROMPT, closed: 'cancelled' }]);
+  });
+
+  test('a name moved off its IPNS key while the core made a vault signature: main withholds it, and the page gets main\'s 4100', async () => {
+    const env = setup();
+    env.names.set(NAME, IPNS_KEY);
+    // From main's prompt: approved with the name in place, which moves
+    // while the core signs.
+    const prompted = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const answers = asking(env, signAsk, () => {
+      env.names.set(NAME, OTHER_IPNS_KEY);
+      return { result: '0x01' };
+    });
+    const asked = prompted.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    const [shown] = env.prompts();
+    expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
+    expect(await asked).toEqual({ error: NO_ADDRESS });
+    expect(answers).toEqual([expect.objectContaining({ prompt: PROMPT, handle: shown.handle, approve: true })]);
+    // A rule's signature, with no prompt: the name moves while the core
+    // signs.
+    env.names.set(NAME, IPNS_KEY);
+    const ruled = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    env.core.script = async () => {
+      env.names.set(NAME, OTHER_IPNS_KEY);
+      return { result: '0x03' };
+    };
+    expect(await ruled.ask('eth_signTypedData_v4', [ACCOUNT, '{}'])).toEqual({ error: NO_ADDRESS });
+    expect(env.core.sent.at(-1).params).toMatchObject({ method: 'eth_signTypedData_v4', params: [ACCOUNT, '{}'] });
+    expect(env.prompts()).toHaveLength(1);
   });
 });
 

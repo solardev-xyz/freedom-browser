@@ -57,7 +57,8 @@
  *         on, a vault account's prompt asks for the vault unlocked first,
  *         as main's own route did.
  *       - `vault.unlock` (APB-4b, a rule's signature while the vault is
- *         locked): the unlock prompt, approved only once the vault is open.
+ *         locked): the unlock prompt. Its approve goes to the core as it
+ *         is, and a vault still locked then refuses the signature.
  *       - `eth.send` answers `busy` until APB-4c serves it.
  *   - **`approval.recheck { request, page }`:** `{ live, agent }`, read
  *     now: whether the request is still open and its document still holds
@@ -612,14 +613,15 @@ function createEip1193Relay(deps = {}) {
     };
   }
 
-  // A rule's unlock (APB-4b), approved only once the vault is open: the
-  // core rechecks the document before it signs.
+  // A rule's unlock (APB-4b): the user's approve goes to the core as it is,
+  // as main's own route went on to the signature. The core rechecks the
+  // document, and a vault still locked refuses the signature (-32603 "Vault
+  // is locked", as the reference's signer did).
   async function unlockAsk(entry, prompt, shown) {
     const decision = await unlockPrompt(entry, prompt, shown.view);
     const done = unapproved(entry, prompt, decision);
     if (done) return done;
     const id = typeof decision.prompt === 'string' ? decision.prompt : prompt;
-    if (!(await vaultOpen())) return { prompt: id, handle: decision.handle, approve: false, choices: {} };
     return { prompt: id, handle: decision.handle, approve: true, choices: {}, world: await worldFor(entry.context, entry.method) };
   }
 

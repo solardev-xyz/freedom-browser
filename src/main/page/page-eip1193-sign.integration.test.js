@@ -374,7 +374,7 @@ describeIfBinary('page signatures through the real freedom-cored\'s eip1193.requ
     expect(devices.spends).toEqual([]);
   });
 
-  test('a rule\'s signature with the vault locked: main\'s unlock prompt, whose rejection, close and busy sign nothing, nor an approve with the vault still locked', async () => {
+  test('a rule\'s signature with the vault locked: main\'s unlock prompt, whose rejection, close and busy sign nothing; an approve with the vault still locked gets the core\'s "Vault is locked"', async () => {
     const site = key('b');
     const page = await env.connected(`${site}/app`, 0);
     const ruled = env.asking(page, 'personal_sign', [MESSAGE, VAULT_ACCOUNT]);
@@ -391,10 +391,11 @@ describeIfBinary('page signatures through the real freedom-cored\'s eip1193.requ
     expect(await env.decide(unlock.handle, false)).toEqual({ ok: true });
     expect(await rejected.answer).toEqual({ error: UNLOCK_CANCELLED });
 
-    // Approved, but the vault is still locked: main approves nothing.
+    // Approved, but the vault is still locked: main passes the approve on,
+    // and the core refuses the signature as the reference did.
     const stillLocked = env.asking(page, 'personal_sign', [MESSAGE, VAULT_ACCOUNT]);
     expect(await env.decide((await stillLocked.prompt()).handle, true, {})).toEqual({ ok: true });
-    expect(await stillLocked.answer).toEqual({ error: UNLOCK_CANCELLED });
+    expect(await stillLocked.answer).toEqual({ error: { code: -32603, message: 'Vault is locked' } });
 
     // Two from one document: the second's unlock is up first, and the core
     // hears busy for the first, which gets -32002.
