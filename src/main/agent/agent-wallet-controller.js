@@ -5,7 +5,6 @@ const { AutomationError, ERROR_CODES } = require('../automation/contract/errors'
 const { getPermissionKey, isEnsHost } = require('../../shared/origin-utils');
 const identityManager = require('../identity-manager');
 const tokenRegistry = require('../token-registry');
-const { getPermission, updateLastUsed } = require('../wallet/dapp-permissions');
 const { getChain } = require('../wallet/chains');
 const { getAllBalances, clearBalanceCache } = require('../wallet/balance-service');
 const { resolveEnsAddress } = require('../ens-resolver');
@@ -17,50 +16,21 @@ const {
 } = require('../wallet/transaction-service');
 const { signAndRecord, KINDS } = require('../wallet/tx-recorder');
 const { getSigner } = require('../wallet/signers');
+const { feeCheckError, FEE_CHECK_ASK_AGAIN } = require('../wallet/fee-check');
 
-// The page methods main hands to the agent's own route, attested
-// (freedom-core design 0011): a send (PRQ-5b), until APB-5b. A connect or a
-// signature in a tab the Agent holds goes to the identity core, whose prompt
-// the Agent's sheet answers (design 0012, "The Agent's answer", APB-5a:
-// `answerPrompt`).
-const PRIVILEGED_METHODS = new Set(['eth_sendTransaction']);
-
-// The page kind the Agent's decision on a send mints (freedom-core design
-// 0012, "A page request the Agent answers"), as main's issuer names it.
-const SEND_TOKEN_KIND = 'dapp-send';
-
-// The core's prompts the Agent's sheet answers, with the page methods each
-// serves (APB-5a).
+// A page's wallet request in a tab the Agent holds goes to the identity
+// core like any page's, and the Agent's sheet answers the core's prompt for
+// it (freedom-core design 0012, "The Agent's answer", APB-5:
+// `answerPrompt`): the core's prompts it answers, with the page methods
+// each serves.
 const PROMPT_METHODS = Object.freeze({
   'eth.connect': new Set(['eth_requestAccounts']),
   'eth.sign': new Set(['personal_sign', 'eth_signTypedData_v4']),
+  'eth.send': new Set(['eth_sendTransaction']),
 });
 // The longest request, and the longest payload the sheet shows in full.
 const MAX_REQUEST_CHARS = 131_072;
 const MAX_PAYLOAD_CHARS = 65_536;
-
-/**
- * Main's issuer for the Agent's decision on a page request it attested
- * (design 0012): `mint(kind, walletIndex, payload, options)` has the identity
- * core mint the request's page-kind token under `page`, `present(token)`
- * hands it to the signature in the same run as main's last checks, under
- * the page's live PageContext (`{ confirmation }`, for `getSigner`),
- * `holds(token)` throws unless the decision still holds now (the request,
- * its document and key, and the agent's custody of the tab), and
- * `discard(token)` burns one the request ended before presenting. Null
- * when main gave none, or one without any of them: such a request signs
- * nothing.
- */
-function pageTokenOf(context) {
-  const token = context?.pageToken;
-  return token &&
-    typeof token.mint === 'function' &&
-    typeof token.present === 'function' &&
-    typeof token.holds === 'function' &&
-    typeof token.discard === 'function'
-    ? token
-    : null;
-}
 
 function providerError(code, message) {
   return { code, message };
@@ -189,8 +159,6 @@ function tokenKey(token) {
 class AgentWalletController {
   constructor(options = {}) {
     this.identity = options.identityManager || identityManager;
-    this.getPermission = options.getPermission || getPermission;
-    this.updateLastUsed = options.updateLastUsed || updateLastUsed;
     this.getChain = options.getChain || getChain;
     this.estimateGas = options.estimateGas || estimateGas;
     this.getGasPrices = options.getGasPrices || getGasPrices;
@@ -428,11 +396,12 @@ class AgentWalletController {
 
   /**
    * The Agent's sheet answering the identity core's prompt for a page's
-   * connect or signature in a tab the Agent holds (freedom-core design 0012,
-   * "The Agent's answer", APB-5a). Main asks it from its handler of the
+   * connect, signature or send in a tab the Agent holds (freedom-core design
+   * 0012, "The Agent's answer", APB-5). Main asks it from its handler of the
    * core's `approval.request`, on a handle it opened for the sheet's
    * decision, and answers the core with that decision; the core then writes
-   * the grant, or mints the token and signs, or hands main `{ device }`.
+   * the grant, or mints the token and signs, or hands main `{ send }` or
+   * `{ device }`.
    *
    * `context`: the run's (`tabId`, `pageUrl`, `requestApproval`) and main's
    * (`attested`: the key the request acts under and the page's transport
@@ -443,7 +412,10 @@ class AgentWalletController {
    * The agent's own refusals answer without the sheet (A7-3): a request over
    * 131,072 characters, a page this run sees on another transport, a Safe's
    * account, a signature for another address, typed data for another chain,
-   * or a payload too large to show in full.
+   * a payload too large to show in full, a send with no `to`, another
+   * `from` or `chainId`, or data over 65,536 characters, and a send with no
+   * fee. So does a send whose fee the core's check stops (A7-5): its sheet
+   * would approve a fee it can't confirm.
    *
    * @returns {Promise<object>} `{ handled: false }` for a prompt it doesn't
    *   take; `{ handled: true, error, errorCode }` for a refusal; or
@@ -526,6 +498,7 @@ class AgentWalletController {
     } catch (error) {
       return refuse(-32603, error.message, error.code);
     }
+    if (prompt.kind === 'eth.send') return this.#answerSend(context, prompt, { request, account, chainName, key, refuse });
     const personal = method === 'personal_sign';
     const params = Array.isArray(prompt.params) ? prompt.params : [];
     const claimedAddress = personal ? params[1] : params[0];
@@ -567,6 +540,88 @@ class AgentWalletController {
     };
   }
 
+  /**
+   * A send's prompt (APB-5b): the agent's own refusals (A7-3) and the fee
+   * check's (A7-5) without the sheet; otherwise the sheet, showing the
+   * core's view: the transaction it prepared and its quote (A7-7, A7-10).
+   */
+  async #answerSend(context, prompt, { request, account, chainName, key, refuse }) {
+    const { view } = prompt;
+    const chainId = view.chain.id;
+    const params = Array.isArray(prompt.params) ? prompt.params : [];
+    const txParams = params[0];
+    if (!txParams || typeof txParams !== 'object' || !txParams.to) {
+      return refuse(-32603, 'Transaction parameters are incomplete', ERROR_CODES.INVALID_ARGUMENT);
+    }
+    if (txParams.chainId !== undefined && Number(txParams.chainId) !== chainId) {
+      return refuse(-32603, 'Transaction chain does not match the approved wallet network', ERROR_CODES.POLICY_DENIED);
+    }
+    if (
+      txParams.data !== undefined &&
+      (typeof txParams.data !== 'string' ||
+        txParams.data.length > MAX_PAYLOAD_CHARS ||
+        !/^0x(?:[a-f0-9]{2})*$/i.test(txParams.data))
+    ) {
+      return refuse(
+        -32603,
+        'Use valid transaction data no larger than the approval display limit.',
+        ERROR_CODES.INVALID_ARGUMENT
+      );
+    }
+    if (txParams.from && String(txParams.from).toLowerCase() !== account.address.toLowerCase()) {
+      return refuse(-32603, 'Transaction sender does not match the connected wallet', ERROR_CODES.POLICY_DENIED);
+    }
+    // The core's quote: with none (a failed read), no fee to show.
+    const fee = view.fee;
+    let maxFee;
+    try {
+      maxFee = BigInt(fee?.gasLimit ?? 0) * BigInt(fee?.maxFeePerGas ?? fee?.gasPrice ?? 0);
+    } catch {
+      maxFee = 0n;
+    }
+    if (maxFee <= 0n) {
+      return refuse(
+        -32603,
+        'Freedom could not determine the maximum transaction fee. Try again before approving.',
+        ERROR_CODES.POLICY_DENIED
+      );
+    }
+    // Above the fee check's threshold, or asked again at the approve: the
+    // sheet confirms no fee, so it isn't asked (A7-5).
+    if (view.feeCheck?.above === true || view.feeAskAgain === true) {
+      const { message } = feeCheckError(FEE_CHECK_ASK_AGAIN, { ratio: view.feeCheck?.ratio ?? '?' });
+      return refuse(-32603, message, ERROR_CODES.POLICY_DENIED);
+    }
+    const chain = this.getChain(chainId);
+    const decimals = Number.isSafeInteger(chain?.nativeCurrency?.decimals) ? chain.nativeCurrency.decimals : 18;
+    const symbol = bounded(view.chain.symbol, 20);
+    const data = typeof view.tx?.data === 'string' && view.tx.data !== '0x' ? view.tx.data : '';
+    const decision = await this.#decide(context, {
+      ...request,
+      action: 'wallet_transaction',
+      label: 'Send a wallet transaction',
+      wallet: {
+        kind: 'transaction',
+        chainId,
+        chainName,
+        account,
+        to: bounded(view.tx?.to, 100),
+        value: `${displayValue(view.tx?.value, decimals)} ${symbol}`,
+        maxFee: `${displayValue(maxFee, decimals)} ${symbol}`,
+        data: bounded(data, MAX_PAYLOAD_CHARS),
+        requiresUnlock: account.type === 'mnemonic',
+      },
+    });
+    return {
+      handled: true,
+      decision: decision.approve === true ? { approve: true } : decision,
+      receiptOf: (answer) =>
+        typeof answer?.result === 'string'
+          ? { wallet: { action: 'broadcast', origin: key, chainId, transactionHash: answer.result } }
+          : null,
+    };
+  }
+
   // The sheet's decision, as main relays it: approved (with the account a
   // connect picked), declined, or withdrawn.
   async #decide(context, request) {
@@ -576,332 +631,6 @@ class AgentWalletController {
     }
     return decision.status === 'withdrawn' ? { closed: true } : { approve: false };
   }
-
-  async handleRequest(context, payload) {
-    if (
-      !context ||
-      typeof context !== 'object' ||
-      typeof context.tabId !== 'string' ||
-      typeof context.pageUrl !== 'string' ||
-      typeof context.requestApproval !== 'function'
-    ) {
-      return { handled: false };
-    }
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
-      return { handled: false };
-    if (!PRIVILEGED_METHODS.has(payload.method)) return { handled: false };
-    let serialized;
-    try {
-      serialized = JSON.stringify(payload);
-    } catch {
-      return { handled: false };
-    }
-    if (serialized.length > MAX_REQUEST_CHARS) {
-      return {
-        handled: true,
-        error: providerError(-32602, 'Wallet request is too large'),
-        errorCode: ERROR_CODES.INVALID_ARGUMENT,
-      };
-    }
-
-    const pageKey = getPermissionKey(context.pageUrl);
-    const originMismatch = {
-      handled: true,
-      error: providerError(4100, 'Wallet request origin did not match the page'),
-      errorCode: ERROR_CODES.POLICY_DENIED,
-    };
-    let permissionKey;
-    if (context.attested) {
-      // A request main attested (freedom-core design 0011, PRQ-5b): it acts
-      // under main's key (a DNS name over IPNS keeps its name), on the page
-      // this run sees on the same transport.
-      const { key, transportKey } = context.attested;
-      if (typeof key !== 'string' || !key || !pageKey || pageKey !== transportKey) return originMismatch;
-      permissionKey = key;
-    } else {
-      const requestKey = getPermissionKey(payload.displayUrl);
-      if (!pageKey || requestKey !== pageKey || payload.permissionKey !== pageKey) return originMismatch;
-      permissionKey = pageKey;
-    }
-
-    try {
-      const outcome = await this.#executeRequest(context, payload, permissionKey);
-      return {
-        handled: true,
-        result: outcome.providerResult,
-        receipt: outcome.receipt,
-      };
-    } catch (error) {
-      const declined = error?.code === ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER;
-      return {
-        handled: true,
-        error: declined
-          ? providerError(4001, 'User rejected the request')
-          : providerError(-32603, bounded(error?.message, 240) || 'Wallet request failed'),
-        errorCode:
-          error instanceof AutomationError ? error.code : ERROR_CODES.INTERNAL_ERROR,
-      };
-    }
-  }
-
-  async #executeRequest(context, payload, permissionKey) {
-    const chainId = Number(payload.chainId);
-    const chain = this.getChain(chainId);
-    if (!Number.isSafeInteger(chainId) || !chain || chain.chainId !== chainId) {
-      throw new AutomationError(
-        ERROR_CODES.INVALID_ARGUMENT,
-        'The wallet request uses an unsupported chain'
-      );
-    }
-    const wallets = (await this.identity.getDerivedWallets()).map(safeWallet).filter(Boolean);
-    if (wallets.length === 0) {
-      throw new AutomationError(
-        ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        'No wallet account is available'
-      );
-    }
-    const permission = this.getPermission(permissionKey);
-
-    if (!permission) {
-      throw new AutomationError(
-        ERROR_CODES.POLICY_DENIED,
-        'The site must connect to a wallet before requesting this action'
-      );
-    }
-    const wallet = wallets.find((item) => item.index === permission.walletIndex);
-    if (!wallet) {
-      throw new AutomationError(
-        ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        'The connected wallet is unavailable'
-      );
-    }
-
-    assertSupportedSigningWallet(wallet);
-    // A page's send is the page's (design 0012, APB-1): it goes under
-    // `page` with the token the Agent's decision mints through main's
-    // issuer, never as main's own. A request main didn't attest, or
-    // one it gave no issuer for, has no page to sign under: refused before
-    // anything is asked.
-    if (!context.attested || !pageTokenOf(context)) {
-      throw new AutomationError(
-        ERROR_CODES.POLICY_DENIED,
-        'A page’s wallet request signs only through Freedom’s page dispatcher'
-      );
-    }
-    return this.#sendTransaction(context, payload, permissionKey, chain, wallet);
-  }
-
-  async #sendTransaction(context, payload, permissionKey, chain, wallet) {
-    const txParams = payload.params?.[0];
-    if (!txParams || typeof txParams !== 'object' || !txParams.to) {
-      throw new AutomationError(
-        ERROR_CODES.INVALID_ARGUMENT,
-        'Transaction parameters are incomplete'
-      );
-    }
-    if (txParams.chainId !== undefined && Number(txParams.chainId) !== chain.chainId) {
-      throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'Transaction chain does not match the approved wallet network');
-    }
-    if (txParams.data !== undefined && (typeof txParams.data !== 'string' || txParams.data.length > 65_536 || !/^0x(?:[a-f0-9]{2})*$/i.test(txParams.data))) {
-      throw new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'Use valid transaction data no larger than the approval display limit.');
-    }
-    if (txParams.from && txParams.from.toLowerCase() !== wallet.address.toLowerCase()) {
-      throw new AutomationError(
-        ERROR_CODES.POLICY_DENIED,
-        'Transaction sender does not match the connected wallet'
-      );
-    }
-    const chainId = chain.chainId;
-    const [gasEstimate, gasPrices] = await Promise.all([
-      this.estimateGas({
-        from: wallet.address,
-        to: txParams.to,
-        value: txParams.value || '0',
-        data: txParams.data,
-        chainId,
-      }),
-      this.getGasPrices(chainId),
-    ]);
-    const gasLimit = gasEstimate.gasLimit || txParams.gas;
-    const tx = {
-      to: txParams.to,
-      value: txParams.value || '0',
-      data: txParams.data,
-      gasLimit,
-      chainId,
-    };
-    if (gasPrices.type === 'eip1559') {
-      tx.maxFeePerGas = gasPrices.maxFeePerGas;
-      tx.maxPriorityFeePerGas = gasPrices.maxPriorityFeePerGas;
-    } else {
-      tx.gasPrice = gasPrices.gasPrice;
-    }
-    const feePerGas = tx.maxFeePerGas || tx.gasPrice;
-    if (!gasLimit || !feePerGas || BigInt(gasLimit) <= 0n || BigInt(feePerGas) <= 0n) {
-      throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'Freedom could not determine the maximum transaction fee. Try again before approving.');
-    }
-    const maxFee = BigInt(gasLimit) * BigInt(feePerGas);
-    await this.#approve(context, {
-      action: 'wallet_transaction',
-      operation: 'browser_wallet_action',
-      tabId: context.tabId,
-      origin: permissionKey,
-      destinationOrigin: permissionKey,
-      label: 'Send a wallet transaction',
-      wallet: {
-        kind: 'transaction',
-        chainId,
-        chainName: bounded(chain.name, 80),
-        account: wallet,
-        to: bounded(tx.to, 100),
-        value: `${displayValue(tx.value, chain.nativeCurrency.decimals)} ${chain.nativeCurrency.symbol}`,
-        maxFee: `${displayValue(maxFee, chain.nativeCurrency.decimals)} ${chain.nativeCurrency.symbol}`,
-        data: tx.data ? bounded(tx.data, 65_536) : '',
-        requiresUnlock: wallet.type === 'mnemonic',
-      },
-    });
-    // A request main attested sends only while main still holds it: not
-    // answered (its deadline, its page gone), the name checked again, the
-    // page still under its key, the tab still the agent's and its grant
-    // still exposing this account: before the mint, after it, and as the
-    // signer's last step, after the transaction service's waits (fee, nonce,
-    // address) and the signer's own (the core's spend for a device), right
-    // before the core or the device is asked. A signer can take long (a
-    // Ledger, the core), so the same gates run again after the signature and
-    // before the signed bytes are recorded or sent (the transaction
-    // service's `guardCommit`), and the guard commits them itself. A phone
-    // signs and broadcasts in one step: its send is gated right before the
-    // phone is asked.
-    const grantStillExposes = () => {
-      if (this.getPermission(permissionKey)?.walletIndex !== wallet.index) {
-        throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The site is no longer connected with this account');
-      }
-    };
-    const record = { kind: KINDS.DAPP_SEND, origin: permissionKey };
-    // The Agent's approval mints the page's `dapp-send` token for this
-    // transaction (design 0012), the phone's unjudged by the core's fee
-    // check as on main's own path; the send presents it under `page`.
-    const result = await this.#underMain(context, () => {
-      grantStillExposes();
-      return this.#withPageToken(
-        context,
-        {
-          kind: SEND_TOKEN_KIND,
-          walletIndex: wallet.index,
-          payload: { ...tx, origin: permissionKey },
-          options: { phone: wallet.type === 'remote' },
-          check: grantStillExposes,
-        },
-        (authorized, _confirmation, held) =>
-          this.signAndRecord(tx, this.getSigner(wallet.index, authorized()), record, {
-            guardCommit: (commit) => held(commit),
-          })
-      );
-    });
-    // A grant held under the attested key is touched only while main still
-    // holds the request after the send's wait, checked the same way. The
-    // hash itself reaches the page only while its name holds, which main
-    // checks when it answers.
-    await this.#underMain(context, () => this.#touch(context, permissionKey, chainId), { required: false });
-    return {
-      providerResult: result.hash,
-      receipt: {
-        wallet: {
-          action: 'broadcast',
-          origin: permissionKey,
-          chainId,
-          transactionHash: result.hash,
-          ...(result.paymentId && { paymentId: result.paymentId }),
-        },
-      },
-    };
-  }
-
-  /**
-   * A page's signature or send under the token the Agent's decision mints
-   * (design 0012, "A page request the Agent answers"): main's issuer mints
-   * it for this request, then `sign(authorized, confirmation, held)` runs.
-   *
-   * Main's gate (`held`): the name resolved again, then, in the same run as
-   * the step it gates, the request still open, its page holding its key,
-   * the caller's own `check` (a send's grant) and the decision itself
-   * (`holds`: the agent still holding the tab). It runs after the mint's
-   * wait, before `sign`; `authorized()`, called as the signer is built,
-   * presents the token there under the page's live PageContext; and the
-   * signer awaits the same gate as its last step (`beforeSign`), after its
-   * own waits, right before the core or the device is asked: the custody
-   * main read when it presented the token is read again there. A send's
-   * guard runs it once more before the signed bytes are recorded. Any of
-   * them refusing signs nothing. The token is burnt afterwards, spent or
-   * not.
-   */
-  async #withPageToken(context, { kind, walletIndex, payload, options, check = () => {} }, sign) {
-    const issuer = pageTokenOf(context);
-    const confirmation = await issuer.mint(kind, walletIndex, payload, options);
-    const held = (step) =>
-      this.#underMain(context, () => {
-        check();
-        issuer.holds(confirmation);
-        return step();
-      });
-    try {
-      return await held(() =>
-        sign(
-          () => ({ ...issuer.present(confirmation), beforeSign: () => held(() => undefined) }),
-          confirmation,
-          held
-        )
-      );
-    } finally {
-      issuer.discard(confirmation);
-    }
-  }
-
-  /**
-   * Run `effect` (a grant write, a signature) for a request: at once for one
-   * of the agent's own, and for one main attested only once main's gates
-   * pass, in the same run as the last of them (`effectAllowed`), never across
-   * an await, so no other check can end the page's key between them. When
-   * they don't pass, nothing runs, and `required` throws.
-   */
-  async #underMain(context, effect, { required = true } = {}) {
-    if (!context.attested) return effect();
-    const ready = typeof context.beforeEffect === 'function' && (await context.beforeEffect()) === true;
-    if (ready && typeof context.effectAllowed === 'function' && context.effectAllowed() === true) return effect();
-    if (required) throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
-    return undefined;
-  }
-
-  /**
-   * A grant's last use and chain, which the identity core writes under the
-   * page's PageContext (design 0012, APB-2): none without one. Sent in the
-   * caller's run; nothing waits on it, and it never rejects.
-   */
-  #touch(context, permissionKey, chainId) {
-    if (typeof context.pageContext !== 'function') return;
-    try {
-      Promise.resolve(this.updateLastUsed(permissionKey, chainId, context.pageContext())).catch(() => {});
-    } catch {
-      // The signature or send stands.
-    }
-  }
-
-  async #approve(context, request) {
-    const decision = normalizeDecision(await context.requestApproval(request));
-    if (decision.status !== 'approved') {
-      throw new AutomationError(
-        ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
-        decision.status === 'withdrawn'
-          ? 'Wallet approval was withdrawn'
-          : 'The user declined the wallet request'
-      );
-    }
-    const defaultWalletIndex = request.wallet?.defaultWalletIndex;
-    return {
-      ...decision,
-      walletIndex: decision.walletIndex ?? defaultWalletIndex,
-    };
-  }
 }
 
-module.exports = { AgentWalletController, PRIVILEGED_METHODS };
+module.exports = { AgentWalletController };

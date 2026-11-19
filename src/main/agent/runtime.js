@@ -208,23 +208,13 @@ function createFreedomAgentRuntime(options = {}) {
   });
 
   return {
-    // A page request main attested, from a tab the agent may hold
-    // (freedom-core design 0011, "Agent custody"): the agent service answers
-    // it, or `{ handled: false }` for a tab it doesn't hold. This is the only
-    // route into the service for a page's request. `pageRequest` is main's:
-    // the attested key, the signal main aborts when it answers the request,
-    // and the checks the effect waits on.
-    async handlePageWalletRequest(guestWebContentsId, request, pageRequest = {}) {
-      if (!isEnabled()) return { handled: false };
-      const tabId = options.automationTabIdForGuest?.(guestWebContentsId);
-      if (!tabId || !request || typeof request !== 'object' || Array.isArray(request)) return { handled: false };
-      if (!pageRequest?.attested) return { handled: false };
-      return service.handleWalletRequest(tabId, request, pageRequest);
-    },
-    // The identity core's prompt for a page's connect or signature in a tab
-    // the agent may hold (freedom-core design 0012, "The Agent's answer",
-    // APB-5a): the Agent's sheet decides it, or `{ handled: false }` for a
-    // tab it doesn't hold, which leaves it to the user's prompt.
+    // The identity core's prompt for a page's connect, signature or send in
+    // a tab the agent may hold (freedom-core design 0012, "The Agent's
+    // answer", APB-5): the Agent's sheet decides it, or `{ handled: false }`
+    // for a tab it doesn't hold, which leaves it to the user's prompt. This
+    // is the only route into the service for a page's request. `pageRequest`
+    // is main's: the attested key, the signal main aborts when the handle
+    // for the sheet's decision closes, and the page's answer.
     async handlePageWalletPrompt(guestWebContentsId, prompt, pageRequest = {}) {
       if (!isEnabled()) return { handled: false };
       const tabId = options.automationTabIdForGuest?.(guestWebContentsId);

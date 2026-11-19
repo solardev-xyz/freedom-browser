@@ -1,3 +1,5 @@
+const { mintPageToken } = require('../../../test/helpers/page-tokens');
+
 jest.mock('electron', () => ({
   ipcMain: { handle: jest.fn() },
   webContents: { fromId: jest.fn(() => null) },
@@ -688,7 +690,7 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(refused).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(outstanding()).toBe(0);
       // A page token, main's own, is never spent here.
-      const { token } = await confirmations.issuePageConfirmation(
+      const { token } = await mintPageToken(
         'safe-send',
         7,
         { tx: SAFE_TX, chainId: 100, origin: SITE },

@@ -7,12 +7,11 @@
  * main writes it nowhere. Each change goes to the core's write methods
  * ("The files (Q10)", API):
  * - **A page's**, under `page` with the request's PageContext, for its own
- *   key: a connect and its account (`approval.grant`, `connect` and
- *   `account`), its last use and chain (`approval.touch`), and "Always
- *   allow" on a signing prompt (`approval.grant`'s `signing`: Q9's limited
- *   rule, which clears today's flag in the same write). A transaction rule
- *   comes only with the confirmed send it was ticked on: the core writes it
- *   as it signs, and says so in `sign.transaction`'s reply.
+ *   key: its last use and chain (`approval.touch`). A connect, and "Always
+ *   allow" on a signing or send prompt, are the core's own, written from an
+ *   approve answer to its own prompt (`eip1193.request`, design 0012 APB-4
+ *   and APB-5): main writes neither (APR-7 refuses `approval.grant` for this
+ *   store under `page`).
  * - **The chrome's**, as `chrome`: a revoke from its settings, a site's
  *   signing rule or contract rule turned off there (`approval.revoke`; it
  *   only narrows). Main relays them from the chrome's IPC.
@@ -37,8 +36,8 @@
  * A grant revoked, or its account changed, is told to whoever listens
  * (`onGrantChanged`): main sends `accountsChanged` to every live document
  * of the key (freedom-core design 0011, "Events"; PRQ-6,
- * `page/page-events.js`). A grant main writes from a connect is told by its
- * own dispatcher (`page/page-ethereum.js`).
+ * `page/page-events.js`). A grant the core writes from a page's connect is
+ * told by main's dispatcher (`page/page-ethereum.js`).
  */
 
 const { ipcMain } = require('electron');
@@ -254,37 +253,6 @@ function getPermission(origin) {
 }
 
 /**
- * A page's connect, from the user's decision on the prompt main showed: the
- * core writes the grant for the page's key. Rejects when it isn't written
- * (a widening whose write failed isn't applied).
- * @param {string} origin - The dApp's key, the page's own
- * @param {number} walletIndex - Which wallet to expose
- * @param {number} chainId - Initial chain ID
- * @param {object} page - the request's PageContext
- * @returns {Promise<Object>} The created permission
- */
-async function grantPermission(origin, walletIndex, chainId, page) {
-  const key = pageKey(origin, page);
-  const at = ++seq;
-  let reply;
-  try {
-    reply = await vault().approval.grant(
-      { store: STORE, change: { op: 'connect', account: walletIndex, chain_id: chainId } },
-      page
-    );
-  } catch (err) {
-    writeFailed(`connecting ${key}`, err);
-    throw err;
-  }
-  notDurable(`Granted ${key}`, reply);
-  const grant = reply?.grant ?? null;
-  applyEntry(key, grant, at, { silent: true });
-  if (!grant) throw new Error('The connection was not recorded');
-  console.log('[DAppPermissions] Granted permission to:', key);
-  return grant;
-}
-
-/**
  * Revoke permission for an origin (the chrome's disconnect): the chrome's,
  * as `chrome`, which only narrows.
  * @param {string} origin - The dApp origin
@@ -377,39 +345,6 @@ async function updateLastUsed(origin, chainId, page) {
 }
 
 /**
- * The account a page's grant exposes, chosen again on its own prompt (the
- * agent's connect): the core writes it for the page's key. Rejects when it
- * isn't written: a failed write, or a reply with no grant (the core holds
- * none for the key).
- * @param {string} origin - The dApp's key, the page's own
- * @param {number} walletIndex - New wallet index
- * @param {object} page - the request's PageContext
- * @returns {Promise<true>} Resolves once written
- */
-async function updateWalletIndex(origin, walletIndex, page) {
-  const key = pageKey(origin, page);
-  const at = ++seq;
-  let reply;
-  try {
-    reply = await vault().approval.grant({ store: STORE, change: { op: 'account', account: walletIndex } }, page);
-  } catch (err) {
-    writeFailed(`the account of ${key}`, err);
-    throw err;
-  }
-  notDurable(`Account of ${key} saved`, reply);
-  // No grant in the reply: the core holds none for the key (removed behind
-  // main's copy), so nothing was written. Main's copy drops it, and the
-  // account change fails, as a connect not recorded does.
-  const grant = reply?.grant ?? null;
-  applyEntry(key, grant, at);
-  if (!grant) {
-    console.error(`[DAppPermissions] Failed to save permissions (the account of ${key}): the core holds no grant for it`);
-    throw new Error('The account change was not recorded');
-  }
-  return true;
-}
-
-/**
  * Whether an entry stores a signing rule: Q9's limited one, or today's flag
  * (which answers nothing from APB-2, but an older build still would).
  */
@@ -428,37 +363,28 @@ function getSigningAutoApprove(origin) {
 }
 
 /**
- * A site's signing rule: turned on only from "Always allow" on a signing
- * prompt main showed, under the page (Q9's limited rule, which clears
- * today's flag in the same write); turned off by the chrome (as `chrome`,
- * which clears both). Never rejects.
+ * A site's signing rule, turned off by the chrome (as `chrome`, which clears
+ * today's flag and Q9's limited rule). Main never turns one on: the identity
+ * core writes it from "Always allow" on its own signing prompt (design 0012,
+ * APB-4b), so `enabled` other than false writes nothing. Never rejects.
  * @param {string} origin
- * @param {boolean} enabled
- * @param {object} [page] - the request's PageContext, to turn it on
+ * @param {boolean} enabled - false
  * @returns {Promise<boolean>} True if updated
  */
-async function setSigningAutoApprove(origin, enabled, page) {
+async function setSigningAutoApprove(origin, enabled) {
+  if (enabled !== false) return false;
   const key = normalizeOrigin(origin);
-  const at = ++seq;
   try {
-    if (enabled) {
-      pageKey(origin, page);
-      const reply = await vault().approval.grant({ store: STORE, change: { op: 'signing' } }, page);
-      notDurable(`Signing rule saved for ${key}`, reply);
-      if (!reply?.grant) return false;
-      applyEntry(key, reply.grant, at);
-    } else {
-      const reply = await vault().approval.revoke({ store: STORE, key, what: 'signing' }, CHROME);
-      notDurable(`Signing rule turned off for ${key}`, reply);
-      if (reply?.revoked !== true) return false;
-      reread(key);
-    }
+    const reply = await vault().approval.revoke({ store: STORE, key, what: 'signing' }, CHROME);
+    notDurable(`Signing rule turned off for ${key}`, reply);
+    if (reply?.revoked !== true) return false;
+    reread(key);
   } catch (err) {
     writeFailed(`the signing rule of ${key}`, err);
-    if (enabled || !standsUnsaved(err)) return false;
+    if (!standsUnsaved(err)) return false;
     reread(key);
   }
-  console.log(`[DAppPermissions] Signing auto-approve ${enabled ? 'enabled' : 'disabled'} for:`, key);
+  console.log('[DAppPermissions] Signing auto-approve disabled for:', key);
   return true;
 }
 
@@ -510,8 +436,8 @@ function registerDappPermissionsIpc() {
   });
 
   // Refused for every site (freedom-core design 0011, "Grants"; PRQ-4): a
-  // connection is written by main itself, for the key it attested, from the
-  // user's decision on the prompt it issued (page/page-ethereum.js). The
+  // connection is written by the identity core, for the key main attested,
+  // from an approve answer to its own prompt (design 0012, APB-4). The
   // chrome named the site here, so a compromised chrome could connect any
   // site to any account. Revoking stays open: it only narrows.
   ipcMain.handle(IPC.DAPP_GRANT_PERMISSION, () => {
@@ -538,9 +464,9 @@ function registerDappPermissionsIpc() {
     return signingRuleStored(await readGrant(origin));
   });
 
-  // Clearing only (freedom-core design 0011, PRQ-5): main sets a site's
-  // signing rule through the core, for the requester's key, from the user's
-  // "always allow" on a signing prompt main showed (page/page-signing.js). The
+  // Clearing only (freedom-core design 0011, PRQ-5): the identity core sets
+  // a site's signing rule, for the requester's key, from "Always allow" on
+  // its own signing prompt (design 0012, APB-4b). The
   // chrome named the site here, so a rule it sets is refused. Turning one
   // off only narrows, and stays open.
   ipcMain.handle(IPC.DAPP_SET_SIGNING_AUTO_APPROVE, (_event, origin, enabled) => {
@@ -573,12 +499,10 @@ function _resetCache() {
 module.exports = {
   loadPermissions,
   getPermission,
-  grantPermission,
   revokePermission,
   revokePermissionsForWalletIndex,
   getAllPermissions,
   updateLastUsed,
-  updateWalletIndex,
   getSigningAutoApprove,
   setSigningAutoApprove,
   signingRuleStored,

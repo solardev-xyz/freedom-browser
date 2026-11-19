@@ -186,6 +186,8 @@ function standInCore(state, relayOf) {
     afterApprove: null,
     unlockFirst: false,
     viewMessage: null,
+    // What a test changes in a send's view (its fee check).
+    sendView: null,
     request: async (method, body, context, options) => {
       core.calls.push(method);
       if (method !== 'eip1193.request') throw new Error(`The stand-in core takes no ${method}`);
@@ -297,8 +299,9 @@ function standInCore(state, relayOf) {
           feeCheck: null,
           feeAskAgain: false,
           alwaysAllow: true,
+          ...core.sendView,
         },
-        choices: { alwaysAllow: [false, true], feeAcknowledged: [false] },
+        choices: { alwaysAllow: [false, true], feeAcknowledged: [false, true] },
       });
       return decision.approve === true ? NOT_SENT : refusal(decision);
     }
@@ -822,22 +825,80 @@ describe("a tab the Agent holds: its sheet answers the core's connect and signat
       expect(env.agentPrompt).toHaveBeenCalledTimes(1);
       expect(env.prompts()).toHaveLength(1);
     });
+  });
 
-    test("an eth.send prompt is never the sheet's: a send the agent's route declines asks the user", async () => {
+  // APB-5b: a send in a tab the Agent holds is the core's too, and the
+  // sheet answers its eth.send prompt.
+  describe("a send: the sheet answers the core's eth.send (APB-5b)", () => {
+    test("the core's prompt id on main's handle, never \"Always allow\" nor a fee's confirmation, though the core offers both", async () => {
       const env = setup();
       env.connect();
+      const asks = env.sheet();
       const page = env.tab(DAPP, { custody: true });
       const answer = page.ask('eth_sendTransaction', [TRANSFER]);
-      await until(() => env.prompts().length === 1);
-      // The agent's own route was offered it first (until APB-5b).
-      expect(env.deps.agentWalletRequest).toHaveBeenCalledTimes(1);
+      await until(() => asks.length === 1);
       expect(env.core.sent[0]).toMatchObject({ method: 'eth_sendTransaction', page: expect.objectContaining({ agent: true }) });
-      expect(env.core.asked[0].kind).toBe('eth.send');
-      expect(env.agentPrompt).not.toHaveBeenCalled();
-      const [shown] = env.prompts();
-      expect(shown.kind).toBe('eth.send');
-      expect(await env.decide(shown.handle, false)).toEqual({ ok: true });
-      expect(await answer).toEqual(REJECTED);
+      expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+      const [asked] = env.core.asked;
+      expect(asked.kind).toBe('eth.send');
+      // The sheet gets the core's view: its quote, not the page's params.
+      expect(asks[0].prompt).toMatchObject({
+        kind: 'eth.send',
+        method: 'eth_sendTransaction',
+        chainId: 100,
+        view: expect.objectContaining({ tx: { to: TRANSFER.to, value: '10000000000000000', data: '0x' }, fee: expect.any(Object) }),
+      });
+      expect(env.prompts()).toEqual([]);
+      asks[0].resolve({ handled: true, decision: { approve: true } });
+      // The stand-in core sends nothing after the approve.
+      expect(await answer).toEqual(NOT_SENT);
+      expect(asked.answer).toEqual({
+        prompt: asked.prompt,
+        handle: expect.stringMatching(/^[0-9a-f]{64}$/),
+        approve: true,
+        choices: { alwaysAllow: false, feeAcknowledged: false },
+        world: expect.objectContaining({ enabled: true }),
+      });
+      await expect(asks[0].options.answered).resolves.toEqual(NOT_SENT);
+    });
+
+    test("the sheet's decline: approve false, and the page gets 4001; a sheet withdrawn: closed", async () => {
+      const env = setup();
+      env.connect();
+      const asks = env.sheet();
+      const page = env.tab(DAPP, { custody: true });
+      const declined = page.ask('eth_sendTransaction', [TRANSFER]);
+      await until(() => asks.length === 1);
+      asks[0].resolve({ handled: true, decision: { approve: false } });
+      expect(await declined).toEqual(REJECTED);
+      expect(env.core.asked[0].answer).toMatchObject({ approve: false, choices: {} });
+      const withdrawn = page.ask('eth_sendTransaction', [TRANSFER]);
+      await until(() => asks.length === 2);
+      asks[1].resolve({ handled: true, decision: { closed: true } });
+      expect(await withdrawn).toEqual(REJECTED);
+      expect(env.core.asked[1].answer).toEqual({ prompt: env.core.asked[1].prompt, closed: 'cancelled' });
+    });
+
+    // A7-5: the agent service refuses a send whose fee the check stops
+    // without asking the sheet (agent-wallet-controller.test.js); an
+    // approve that came all the same is refused by main as well, never
+    // relayed for the core to ask again.
+    test.each([
+      ['above the threshold', { feeCheck: { comparable: true, ratio: '3.5', above: true }, feeAskAgain: false }],
+      ['asked again at the approve', { feeCheck: { comparable: true, ratio: '3.5', above: true, askAgain: true }, feeAskAgain: true }],
+    ])("a fee the check stops (%s): the core gets a closed prompt, the page today's fee text, even on a sheet's approve", async (_name, fee) => {
+      const env = setup();
+      env.connect();
+      const FEE = { error: { code: -32603, message: "The network fee is 3.5× today's network fee. Confirm it again to send." } };
+      env.core.sendView = fee;
+      env.agentPrompt.mockImplementation(async () => ({ handled: true, decision: { approve: true } }));
+      const page = env.tab(DAPP, { custody: true });
+      expect(await page.ask('eth_sendTransaction', [TRANSFER])).toEqual(FEE);
+      expect(env.core.asked[0].answer).toEqual({ prompt: env.core.asked[0].prompt, closed: 'cancelled' });
+      // The agent service's own refusal: the same answers.
+      env.agentPrompt.mockImplementation(async () => ({ handled: true, error: FEE.error }));
+      expect(await page.ask('eth_sendTransaction', [TRANSFER])).toEqual(FEE);
+      expect(env.core.asked[1].answer).toEqual({ prompt: env.core.asked[1].prompt, closed: 'cancelled' });
     });
   });
 

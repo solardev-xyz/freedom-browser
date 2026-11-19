@@ -1115,8 +1115,8 @@ describe('Freedom agent IPC', () => {
   });
 
   // A page's wallet request reaches the Agent service only through main's
-  // attestation (runtime.js `handlePageWalletRequest`; freedom-core design
-  // 0011): the chrome's old route, which named the tab itself, is gone.
+  // attestation (runtime.js `handlePageWalletPrompt`; freedom-core design
+  // 0011, 0012 APB-5): the chrome's old route, which named the tab itself, is gone.
   test('registers no chrome route for a page wallet request', () => {
     const ctx = register();
     expect(ctx.ipcMain.handlers.has('agent:wallet:request')).toBe(false);

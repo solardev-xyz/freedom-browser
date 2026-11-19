@@ -12,6 +12,7 @@ const {
 // The core's approval tokens, simulated (test/helpers/simulated-approvals.js);
 // the real core's in signing-confirmation.integration.test.js.
 const mockCore = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+const { mintPageToken } = require('../../../test/helpers/page-tokens');
 jest.mock('../core/vault-backend', () => ({ vaultBackend: { approval: mockCore.approval } }));
 jest.mock('../identity-manager', () => ({
   getWalletRecord: (index) => (index === 9 ? { index, type: 'safe', address: '0x' + 'AA'.repeat(20) } : null),
@@ -354,27 +355,24 @@ describe("signing-confirmation: the core's kinds", () => {
     expect(mockCore.calls).toHaveLength(1);
   });
 
-  test("a page kind is minted under `page` with the document's PageContext and the prompt's handle", async () => {
-    const confirmation = await sc.issuePageConfirmation(KINDS.DAPP_SEND, 3, TX, { handle: HANDLE, context: PAGE });
-    expect(confirmation).toEqual({ token: expect.any(String), kind: 'dapp-send', account: 3, payload: { tx: WIRE }, handle: HANDLE, page: PAGE });
-    expect(mockCore.calls[0]).toEqual({
-      method: 'approval.issue',
-      params: { kind: 'dapp-send', account: 3, payload: { tx: WIRE }, handle: HANDLE },
-      page: PAGE,
-    });
+  // A page kind is the core's to mint, on an approve answer to its own
+  // prompt (design 0012, APB-5): main's issuer for one is gone, and APR-7
+  // refuses `page` on `approval.issue`.
+  test('main mints no page kind: no issuer for one, and `issueConfirmation` refuses each', async () => {
+    expect(sc.issuePageConfirmation).toBeUndefined();
+    for (const kind of [KINDS.DAPP_SEND, KINDS.SIGN_MESSAGE, KINDS.SIGN_TYPED_DATA]) {
+      const payload = kind === KINDS.DAPP_SEND ? TX : kind === KINDS.SIGN_MESSAGE ? '0x68' : TYPED_DATA;
+      await expect(sc.issueConfirmation(kind, 0, payload)).rejects.toThrow(/issued for its page/);
+    }
+    expect(mockCore.calls).toEqual([]);
+  });
+
+  test("a page kind's token, as the core minted it, is presented under `page` with its handle", async () => {
+    const confirmation = await mintPageToken(KINDS.DAPP_SEND, 3, TX, { handle: HANDLE, context: PAGE });
     expect(sc.signingAuthorization(confirmation)).toEqual({
       authorization: { token: confirmation.token, kind: 'dapp-send', handle: HANDLE },
       page: PAGE,
     });
-    const typed = await sc.issuePageConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { handle: HANDLE, context: PAGE }, { chainId: 100 });
-    expect(typed.hash).toMatch(/^0x[0-9a-f]{64}$/);
-    for (const page of [null, {}, { handle: HANDLE }, { handle: 'xyz', context: PAGE }, { handle: HANDLE, context: { ...PAGE, origin: '' } }]) {
-      await expect(sc.issuePageConfirmation(KINDS.SIGN_MESSAGE, 0, '0x68', page)).rejects.toThrow(/needs its/);
-    }
-    await expect(sc.issuePageConfirmation(KINDS.WALLET_SEND, 0, TX, { handle: HANDLE, context: PAGE })).rejects.toThrow(
-      /Not a page confirmation kind/
-    );
-    expect(mockCore.calls).toHaveLength(2);
   });
 
   test("a send's token names its kind at the signature; an intent-replace names its intent, a message neither (cored 0.15.0)", async () => {
@@ -384,7 +382,7 @@ describe("signing-confirmation: the core's kinds", () => {
     }
     const replace = { token: 'f'.repeat(64), kind: KINDS.INTENT_REPLACE, payload: {}, intent: { id: 'intent-0001' } };
     expect(sc.signingAuthorization(replace)).toEqual({ authorization: { token: replace.token, intent: { id: 'intent-0001' } }, page: null });
-    const message = await sc.issuePageConfirmation(KINDS.SIGN_MESSAGE, 0, '0x68', { handle: HANDLE, context: PAGE });
+    const message = await mintPageToken(KINDS.SIGN_MESSAGE, 0, '0x68', { handle: HANDLE, context: PAGE });
     expect(sc.signingAuthorization(message)).toEqual({ authorization: { token: message.token, handle: HANDLE }, page: PAGE });
   });
 
@@ -453,7 +451,7 @@ describe("signing-confirmation: a device send's finalize receipt", () => {
   const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
   const HANDLE = 'c'.repeat(64);
   const flagged = (remember = true) =>
-    sc.issuePageConfirmation(KINDS.DAPP_SEND, 3, TX, { handle: HANDLE, context: PAGE }, { remember, phone: true });
+    mintPageToken(KINDS.DAPP_SEND, 3, TX, { handle: HANDLE, context: PAGE }, { remember, phone: true });
 
   beforeEach(() => {
     _reset();

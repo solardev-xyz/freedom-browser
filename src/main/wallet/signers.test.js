@@ -33,6 +33,8 @@ const mockCreateRemoteBackend = jest.fn(() => mockRemoteBackend);
 // (freedom-core's vectors/signing.json). mockIdentity drives the lock and
 // the key; mockCore records every call.
 const mockCore = { calls: [] };
+const { mintPageToken } = require('../../../test/helpers/page-tokens');
+
 jest.mock('../core/vault-backend', () => ({
   vaultBackend: require('../../../test/helpers/simulated-vault-core').simulatedVaultBackend(
     mockIdentity,
@@ -538,7 +540,6 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
   });
 
   test('a flagged dApp send: the core\'s `rule` reply reaches `onRule` once signed', async () => {
-    const confirmations = require('./signing-confirmation');
     const send = {
       to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
       value: '0',
@@ -551,7 +552,7 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
     const page = { handle: 'c'.repeat(64), context: PAGE };
     const heard = [];
     for (const remember of [true, false]) {
-      const confirmation = await confirmations.issuePageConfirmation('dapp-send', 0, send, page, { remember });
+      const confirmation = await mintPageToken('dapp-send', 0, send, page, { remember });
       await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction({ ...send, nonce: 1, type: 0 });
     }
     // The dApp file is the core's (APB-2): the core decides the rule as it
@@ -563,7 +564,6 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
   // spent before the device is asked, and a flagged one's spend gives a
   // finalize receipt, handed on with the PageContext it was spent under.
   test("a Ledger's flagged dApp send: the spend's receipt reaches `onReceipt`, with the page it was spent under, before the device", async () => {
-    const confirmations = require('./signing-confirmation');
     const record = { index: 1000000, type: 'ledger', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', path: "44'/60'/0'/0/0" };
     mockGetWalletRecord.mockReturnValue(record);
     const order = [];
@@ -575,7 +575,7 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
     const page = { handle: 'c'.repeat(64), context: PAGE };
     const heard = [];
     for (const remember of [true, false]) {
-      const confirmation = await confirmations.issuePageConfirmation('dapp-send', record.index, send, page, { remember });
+      const confirmation = await mintPageToken('dapp-send', record.index, send, page, { remember });
       const signer = getSigner(record.index, {
         confirmation,
         onReceipt: (held) => {
@@ -599,7 +599,6 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
   // it bound, and the core's reply says what became of "Always allow"
   // (`rule`), written only once the payment's transaction matched.
   test("a phone's flagged dApp send: main spends nothing; the token and its send go to the core's job, and its `rule` reaches `onRule`", async () => {
-    const confirmations = require('./signing-confirmation');
     const record = { index: 1000001, type: 'remote', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' };
     mockGetWalletRecord.mockReturnValue(record);
     const hash = '0x' + 'ab'.repeat(32);
@@ -615,7 +614,7 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
     for (const remember of [true, false]) {
       const reply = replies.shift();
       mockRemoteBackend.sendTransaction.mockImplementationOnce(async () => reply);
-      const confirmation = await confirmations.issuePageConfirmation('dapp-send', record.index, send, page, { remember, phone: true });
+      const confirmation = await mintPageToken('dapp-send', record.index, send, page, { remember, phone: true });
       expect(confirmation.payload.tx).toMatchObject({ to: send.to, data: send.data });
       const signer = getSigner(record.index, {
         confirmation,
@@ -860,9 +859,8 @@ describe('getSigner (remote-backed dispatch)', () => {
     });
 
     test("a token: `{ token, handle }` under its page, and the payload it bound; main spends nothing", async () => {
-      const confirmations = require('./signing-confirmation');
       const handle = 'e'.repeat(64);
-      const confirmation = await confirmations.issuePageConfirmation('sign-message', 4, 'hello', { handle, context: PAGE });
+      const confirmation = await mintPageToken('sign-message', 4, 'hello', { handle, context: PAGE });
       await getSigner(4, { confirmation }).signMessage('hello');
       expect(mockRemoteBackend.signMessage).toHaveBeenCalledWith('hello', {
         authorization: { token: confirmation.token, handle },
@@ -874,9 +872,8 @@ describe('getSigner (remote-backed dispatch)', () => {
     });
 
     test("typed data's token: the data, `primary_type` and `chain_id` it was minted with, and the confirmed hash", async () => {
-      const confirmations = require('./signing-confirmation');
       const handle = 'e'.repeat(64);
-      const confirmation = await confirmations.issuePageConfirmation('sign-typed-data', 4, TYPED, { handle, context: PAGE }, { chainId: 100 });
+      const confirmation = await mintPageToken('sign-typed-data', 4, TYPED, { handle, context: PAGE }, { chainId: 100 });
       await getSigner(4, { confirmation }).signTypedData(TYPED, { expectedHash: HASH });
       const [, options] = mockRemoteBackend.signTypedData.mock.calls[0];
       expect(options).toEqual({
@@ -1238,23 +1235,22 @@ describe("getSigner: the caller's last check, right before the signature", () =>
     });
   });
 
-  // Codex on #1246: a token the Agent's decision minted (design 0012) is
-  // spent by the core under the PageContext main read as the signer was
-  // built; main reads the decision again (its tab, its document, its name)
+  // Codex on #1246: a token minted on the Agent's decision (design 0012;
+  // from APB-5 the core's, on the sheet's approve) is spent under the
+  // PageContext main read as the signer was built; main reads custody again
   // as the signer's last step, after the signer's own waits, on any
-  // account, the vault's included.
+  // account, the vault's included (A7-6).
   describe("the Agent's token, which the core spends under the PageContext main read as the signer was built", () => {
-    const confirmations = require('./signing-confirmation');
     const AGENT = Object.freeze({ ...PAGE, agent: true });
     const handle = 'd'.repeat(64);
     const SEND = { to: TX.to, value: TX.value, data: TX.data, gasLimit: TX.gasLimit, gasPrice: TX.gasPrice, chainId: 100, origin: AGENT.origin };
     const mint = (kind, index, payload, options) =>
-      confirmations.issuePageConfirmation(kind, index, payload, { handle, context: AGENT }, options);
+      mintPageToken(kind, index, payload, { handle, context: AGENT }, options);
     const approvals = () => mockCore.approvals;
     const count = (method) => approvals().calls.filter((call) => call.method === method).length;
 
     beforeEach(() => {
-      confirmations._reset();
+      require('./signing-confirmation')._reset();
       mockCore.approvals?.reset();
     });
 
