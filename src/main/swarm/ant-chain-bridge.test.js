@@ -540,6 +540,36 @@ test('bounds simultaneous requests including work still settling', async () => {
   await Promise.all(pending);
 });
 
+// A connection Ant reused just as the bridge dropped it was reset, failing
+// the funding step Ant was waiting on (#992). A client that keeps
+// connections alive, as Ant's does, must never get one back to reuse.
+test('every answer closes its connection, so Ant never reuses one (#992)', async () => {
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  const ask = (url) =>
+    new Promise((resolve, reject) => {
+      const req = http.request(
+        url,
+        { method: 'POST', agent, headers: { 'content-type': 'application/json' } },
+        (res) => {
+          res.resume();
+          res.on('end', () =>
+            resolve({ connection: res.headers.connection, reused: req.reusedSocket })
+          );
+        }
+      );
+      req.on('error', reject);
+      req.end(JSON.stringify(rpc()));
+    });
+  try {
+    expect(await ask(bridge.url)).toEqual({ connection: 'close', reused: false });
+    expect(await ask(bridge.url)).toEqual({ connection: 'close', reused: false });
+    // A refusal too.
+    expect(await ask(`${bridge.url}0`)).toEqual({ connection: 'close', reused: false });
+  } finally {
+    agent.destroy();
+  }
+});
+
 test('restart uses a fresh capability and rejects the previous one', async () => {
   const oldPath = new URL(bridge.url).pathname;
   await bridge.close();
