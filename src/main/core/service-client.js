@@ -647,8 +647,16 @@ class ServiceClient extends EventEmitter {
    * @param {object} [options]
    * @param {number|null} [options.watchdogMs] - the request's hang watchdog
    *   (see requestTo), from when it is sent; none if null
+   * @param {AbortSignal|null} [options.signal] - cancels it (see requestTo)
+   * @param {Function|null} [options.onSent] - `(id, generation)` once it is
+   *   written (see requestTo)
    */
-  async request(method, params = {}, context = { caller: 'chrome' }, { watchdogMs = null } = {}) {
+  async request(
+    method,
+    params = {},
+    context = { caller: 'chrome' },
+    { watchdogMs = null, signal = null, onSent = null } = {}
+  ) {
     if (this.state !== STATE.READY) {
       // Requests waiting for readiness are bounded like those in flight:
       // by count, and by the size of the whole request as it will be framed
@@ -673,7 +681,27 @@ class ServiceClient extends EventEmitter {
         this.waitingBytes -= size;
       }
     }
-    return this.send(this.current, method, params, context, { watchdogMs });
+    return this.send(this.current, method, params, context, { watchdogMs, signal, onSent });
+  }
+
+  /**
+   * Holds the hang watchdog of main's request `id` to process `generation`
+   * (the number `onSent` reported) while main answers one of the process's
+   * own requests for it: freedom-core design 0012's `Steps` class, whose
+   * request has no overall deadline while one of its prompts is open
+   * (`eip1193.request`'s `approval.request`). The watchdog counts only the
+   * time outside its holds: held, it stops with what it had left, and once
+   * every hold is released it runs on with that. Returns the release, which
+   * does nothing a second time; a request that isn't pending, or has no
+   * watchdog, holds nothing.
+   * @param {number} generation
+   * @param {number} id
+   * @returns {() => void}
+   */
+  holdWatchdog(generation, id) {
+    const gen = this.current;
+    const entry = gen && gen.number === generation ? gen.pending.get(id) : undefined;
+    return entry?.watchdog ? entry.watchdog.hold() : () => {};
   }
 
   /**
@@ -1302,20 +1330,46 @@ class ServiceClient extends EventEmitter {
       // The hang watchdog (design 0001): the process enforces the request's
       // deadline and always replies, so no reply by deadline + 15 s means
       // it is hung. It is killed, which fails what it holds, and restarted.
+      // It counts only the time outside its holds (`holdWatchdog`).
       const settle = entry.settle;
-      const watchdog = this.timer(
-        gen,
-        () => {
-          if (gen.pending.get(id) !== entry) return;
-          this.log.error(`${this.label} request hung; restarting the ${this.service.noun}`, {
-            method,
-          });
-          this.end(gen, 'hang');
+      const dog = { left: watchdogMs, since: 0, timer: null, holds: 0, done: false };
+      const arm = () => {
+        dog.since = this.now();
+        dog.timer = this.timer(
+          gen,
+          () => {
+            dog.timer = null;
+            if (gen.pending.get(id) !== entry) return;
+            this.log.error(`${this.label} request hung; restarting the ${this.service.noun}`, {
+              method,
+            });
+            this.end(gen, 'hang');
+          },
+          dog.left
+        );
+      };
+      arm();
+      entry.watchdog = {
+        hold: () => {
+          if (dog.done) return () => {};
+          dog.holds += 1;
+          if (dog.holds === 1 && dog.timer) {
+            this.cancelTimer(gen, dog.timer);
+            dog.timer = null;
+            dog.left = Math.max(0, dog.left - (this.now() - dog.since));
+          }
+          let released = false;
+          return () => {
+            if (released) return;
+            released = true;
+            dog.holds -= 1;
+            if (dog.holds === 0 && !dog.done) arm();
+          };
         },
-        watchdogMs
-      );
+      };
       entry.settle = (outcome) => {
-        this.cancelTimer(gen, watchdog);
+        dog.done = true;
+        this.cancelTimer(gen, dog.timer);
         settle(outcome);
       };
     }

@@ -983,6 +983,19 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # freedom-core design 0012, APB-4a: main relays a page's reads, connect
+      # and chain switch to eip1193.request and serves the core's
+      # approval.request, approval.recheck and eip1193.select_chain. Against
+      # the binary: a connect writes its grant only from the user's approve on
+      # the core's own prompt; a reject, a navigation, busy, a crossed prompt
+      # id and a reused handle write nothing; a switch's chainChanged reaches
+      # its own window only.
+      - name: Page eip1193 relay (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-eip1193.integration.test.js
+        env:
+          FREEDOM_CORED_APPROVALS_TEST: '1'
+
       # freedom-core design 0012, PHN-2: a phone's signatures and payments as
       # the core's jobs, through main's bridge and the phone's backend, with
       # a fake chrome and a local JSON-RPC node. bridge.test.js's and
