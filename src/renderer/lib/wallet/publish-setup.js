@@ -492,12 +492,15 @@ function renderPlans() {
 // Custom size and duration (#1257)
 // ============================================
 
-// What the custom fields say now: `days` is null while the field is empty
-// or not a whole number of days in range, and `error` says why once the
-// user has typed something.
+// What the custom fields say now: `depth` is null until the size picker
+// holds one of the sizes main offers (it is empty before a state with
+// sizes arrives), `days` is null while the field is empty or not a whole
+// number of days in range, and `error` says why once the user has typed
+// something.
 function readCustomChoice() {
   const maxDays = setupState?.maxDays || 3650;
-  const depth = Number(customSize?.value);
+  const picked = Number(customSize?.value);
+  const depth = (setupState?.sizes || []).some((size) => size.depth === picked) ? picked : null;
   const text = customDays?.value.trim() || '';
   const days = /^\d+$/.test(text) ? Number(text) : null;
   if (days === null || days < 1 || days > maxDays) {
@@ -510,9 +513,13 @@ function readCustomChoice() {
   return { depth, days, error: null };
 }
 
+function isCompleteChoice(choice) {
+  return Boolean(choice.depth && choice.days);
+}
+
 function isPricedChoice(choice) {
   return Boolean(
-    choice.days &&
+    isCompleteChoice(choice) &&
     customQuote?.quote &&
     customQuote.depth === choice.depth &&
     customQuote.days === choice.days
@@ -532,13 +539,29 @@ function resetCustom() {
 // A changed field drops the price shown for the old choice and, once the
 // choice is complete, asks for the new one after `delay`.
 function scheduleCustomQuote(delay) {
+  requestCustomQuote(readCustomChoice(), delay);
+  render();
+}
+
+function requestCustomQuote(choice, delay) {
   clearTimeout(customTimer);
   customRequestId++;
   customQuote = null;
-  const choice = readCustomChoice();
-  customLoading = Boolean(choice.days);
-  if (choice.days) customTimer = setTimeout(() => loadCustomQuote(choice), delay);
-  render();
+  customLoading = isCompleteChoice(choice);
+  if (customLoading) customTimer = setTimeout(() => loadCustomQuote(choice), delay);
+}
+
+// Whether a render should ask for a price no field edit asked for: the
+// details are open on a complete choice with no price for it, because the
+// sizes arrived after they were opened, or because the last price failed
+// and is PLANS_RETRY_MS old (the node may have finished starting since),
+// the same retry the plan list gets.
+function customQuoteDue(choice) {
+  if (!customForm?.open || customLoading || !isCompleteChoice(choice)) return false;
+  if (!customQuote || customQuote.depth !== choice.depth || customQuote.days !== choice.days) {
+    return true;
+  }
+  return Boolean(customQuote.error) && Date.now() - customQuote.at >= PLANS_RETRY_MS;
 }
 
 async function loadCustomQuote(choice) {
@@ -558,7 +581,7 @@ async function loadCustomQuote(choice) {
     priced = { quote: null, error: err.message || 'Could not get a price from the Swarm node.' };
   }
   if (requestId !== customRequestId) return;
-  customQuote = { depth: choice.depth, days: choice.days, ...priced };
+  customQuote = { depth: choice.depth, days: choice.days, at: Date.now(), ...priced };
   customLoading = false;
   render();
 }
@@ -567,7 +590,8 @@ function fillCustomSizes() {
   const sizes = setupState?.sizes || [];
   const key = sizes.map((size) => size.depth).join(',');
   if (!customSize || key === customSizesKey) return;
-  const selected = customSizesKey === null ? String(CUSTOM_DEFAULT_DEPTH) : customSize.value;
+  // An empty picker (no sizes yet) held no choice of the user's to keep.
+  const selected = customSizesKey ? customSize.value : String(CUSTOM_DEFAULT_DEPTH);
   customSize.innerHTML = '';
   sizes.forEach((size) => {
     const option = document.createElement('option');
@@ -582,6 +606,7 @@ function fillCustomSizes() {
 function renderCustom() {
   fillCustomSizes();
   const choice = readCustomChoice();
+  if (customQuoteDue(choice)) requestCustomQuote(choice, 0);
   const size = (setupState?.sizes || []).find((s) => s.depth === choice.depth);
   const priced = isPricedChoice(choice) ? customQuote : null;
 

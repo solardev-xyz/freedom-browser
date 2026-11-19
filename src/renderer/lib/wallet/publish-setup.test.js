@@ -358,7 +358,9 @@ describe('finished operations and refusals', () => {
   });
 
   test('leaving the pay step keeps the purchase armed', async () => {
-    const { mod, elements } = await load({ state: { ...payState(), operation: { ...payState().operation, id: 3 } } });
+    const { mod, elements } = await load({
+      state: { ...payState(), operation: { ...payState().operation, id: 3 } },
+    });
     await mod.openPublishSetup();
     elements['publish-setup-back'].dispatch('click');
     expect(window.publishSetup.cancel).not.toHaveBeenCalled();
@@ -557,6 +559,61 @@ describe('custom size and duration (#1257)', () => {
     await flush();
     expect(el('-label').textContent).toBe('Custom · 20/9 xDAI');
     expect(el('-error').classList.contains('hidden')).toBe(true);
+  });
+
+  test('a failed price is asked again once it is stale, like the plan list', async () => {
+    const { el, type } = await openCustom();
+    window.publishSetup.quote.mockResolvedValueOnce({
+      request: null,
+      quote: null,
+      error: 'The Swarm node is still starting.',
+    });
+    await type('7');
+    expect(el('-error').textContent).toBe('The Swarm node is still starting.');
+    const calls = window.publishSetup.quote.mock.calls.length;
+
+    // A state push right away does not ask again; one 10 s later does.
+    const push = window.publishSetup.onState.mock.calls[0][0];
+    push(plansState());
+    await jest.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(window.publishSetup.quote.mock.calls.length).toBe(calls);
+
+    jest.setSystemTime(Date.now() + 10_000);
+    push(plansState());
+    await jest.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(window.publishSetup.quote.mock.calls.length).toBe(calls + 1);
+    expect(window.publishSetup.quote).toHaveBeenLastCalledWith({ kind: 'buy', depth: 20, days: 7 });
+    expect(el('-label').textContent).toBe('Custom · 20/7 xDAI');
+    expect(el('-error').classList.contains('hidden')).toBe(true);
+    expect(el('-choice').disabled).toBe(false);
+  });
+
+  test('opened before the sizes arrive, it prices nothing until they do', async () => {
+    const ctx = await load({ state: { ...plansState(), sizes: [] } });
+    window.publishSetup.quote = jest.fn(async ({ depth, days }) => ({
+      quote: { price: { display: `${depth}/${days}` } },
+      error: null,
+    }));
+    await ctx.mod.openPublishSetup();
+    await flush();
+    const el = (id) => ctx.elements[`publish-custom${id}`];
+    el('').open = true;
+    el('').dispatch('toggle');
+    await jest.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(window.publishSetup.quote).not.toHaveBeenCalled();
+    expect(el('-error').classList.contains('hidden')).toBe(true);
+    expect(el('-label').textContent).toBe('Custom');
+
+    const push = window.publishSetup.onState.mock.calls[0][0];
+    push(plansState());
+    await jest.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(window.publishSetup.quote).toHaveBeenCalledTimes(1);
+    expect(window.publishSetup.quote).toHaveBeenCalledWith({ kind: 'buy', depth: 20, days: 30 });
+    expect(el('-label').textContent).toBe('Custom · 20/30 xDAI');
   });
 
   test('reopening the screen starts the form over', async () => {
