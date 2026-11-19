@@ -15,6 +15,8 @@ const {
   derivePublisherKey,
   siteEncryptionKeyPath,
   deriveSiteEncryptionKey,
+  sitePublisherKeyPath,
+  deriveSitePublisherKey,
   getSeed,
   PATHS,
 } = require('./derivation');
@@ -66,6 +68,8 @@ module.exports = {
   derivePublisherKey,
   siteEncryptionKeyPath,
   deriveSiteEncryptionKey,
+  sitePublisherKeyPath,
+  deriveSitePublisherKey,
   getSeed,
   PATHS,
   createBeeKeystore,

@@ -144,12 +144,14 @@ jest.mock('./feed-store', () => ({
 
 const mockGetDerivedKeys = jest.fn();
 const mockGetPublisherKey = jest.fn();
+const mockGetSitePublisherKey = jest.fn();
 const mockGetSiteEncryptionKey = jest.fn();
 const mockGetUserWalletKey = jest.fn();
 const mockGetFreedomSigningAddresses = jest.fn();
 jest.mock('../identity-manager', () => ({
   getDerivedKeys: mockGetDerivedKeys,
   getPublisherKey: mockGetPublisherKey,
+  getSitePublisherKey: mockGetSitePublisherKey,
   getSiteEncryptionKey: mockGetSiteEncryptionKey,
   getUserWalletKey: mockGetUserWalletKey,
   getFreedomSigningAddresses: (...args) => mockGetFreedomSigningAddresses(...args),
@@ -199,6 +201,12 @@ async function invokeProvider(method, params, origin, meta) {
         id: 'ethereum-wallet:2',
         mode: 'ethereum-wallet',
         walletIndex: 2,
+      },
+      'app-scoped:site:0': {
+        id: 'app-scoped:site:0',
+        mode: 'app-scoped',
+        publisherKeyIndex: null,
+        siteKey: { site: origin, index: 0 },
       },
     };
   const activeIdentity = identities[activeIdentityId];
@@ -1332,6 +1340,28 @@ describe('swarm-provider-ipc', () => {
         name: 'SOC chunk',
         bytesSize: 5,
       }));
+    });
+
+    test('writes an SOC with a site-derived publisher key (#1155)', async () => {
+      mockV2FeedCapability('myapp.eth', 'app-scoped:site:0');
+      mockPreFlightOk();
+      mockGetSitePublisherKey.mockResolvedValue({ privateKey: '0xsitekey' });
+      mockWriteSingleOwnerChunk.mockResolvedValue({
+        reference: VALID_REF,
+        owner: VALID_OWNER,
+        identifier: VALID_IDENTIFIER,
+        batchIdUsed: 'batch1',
+      });
+
+      const result = await invokeProvider('swarm_writeSingleOwnerChunk', {
+        identifier: VALID_IDENTIFIER,
+        data: 'hello',
+      }, 'myapp.eth');
+
+      expect(result.result).toMatchObject({ reference: VALID_REF });
+      expect(mockGetSitePublisherKey).toHaveBeenCalledWith('myapp.eth', 0);
+      expect(mockGetPublisherKey).not.toHaveBeenCalled();
+      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xsitekey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
     });
 
     test.each([

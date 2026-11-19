@@ -28,8 +28,9 @@ const PATHS = {
   RADICLE: "m/44'/73404'/0'/0'/0'",     // Radicle DID
   IPFS: "m/44'/73405'/0'/0'/0'",        // IPFS PeerID
 
-  // Swarm publisher keys (secp256k1) - dedicated namespace for feed signing
-  // One key per origin index: m/44'/73406'/{originIndex}'/0/0
+  // Swarm publisher keys (secp256k1) - dedicated namespace for feed signing.
+  // Counter-numbered (before #1155): m/44'/73406'/{originIndex}'/0/0
+  // Per site: m/44'/73406'/{a}'/{b}'/{c}'/{n}', see sitePublisherKeyPath
   SWARM_PUBLISHER: "m/44'/73406'",       // base path (without trailing segments)
 
   // Page encryption keys (secp256k1) - one per site, for key agreement only.
@@ -46,6 +47,12 @@ const PATHS = {
 // extension (SWIP) specifies this recipe, so every browser that follows it
 // derives the same key for a site from the same recovery phrase.
 const SITE_ENCRYPTION_KEY_DOMAIN = 'swarm-provider/encryption-key/v1\n';
+
+// The same for a site's publisher keys (#1155): the recipe the Swarm
+// provider SWIP specifies, so a restored recovery phrase gives a site the
+// same signing keys, and so the same feeds, in any browser that follows it.
+// Changing it changes the owner of every feed those keys signed.
+const SITE_PUBLISHER_KEY_DOMAIN = 'swarm-provider/publisher-key/v1\n';
 
 /**
  * Generate a new BIP-39 mnemonic
@@ -193,14 +200,50 @@ function derivePublisherKey(mnemonic, originIndex) {
  * @returns {string} m/44'/73407'/{a}'/{b}'/{c}'
  */
 function siteEncryptionKeyPath(site) {
+  return `${PATHS.SWARM_ENCRYPTION}/${siteHardenedIndexes(SITE_ENCRYPTION_KEY_DOMAIN, site)}`;
+}
+
+/**
+ * Three hardened path indexes for a site: the first three big-endian 32-bit
+ * words of SHA-256(domain + site), each with its top bit cleared.
+ * @returns {string} "{a}'/{b}'/{c}'"
+ */
+function siteHardenedIndexes(domain, site) {
   if (typeof site !== 'string' || site.length === 0) {
     throw new Error('Site must be a non-empty string');
   }
-  const digest = createHash('sha256')
-    .update(SITE_ENCRYPTION_KEY_DOMAIN + site, 'utf8')
-    .digest();
-  const indexes = [0, 4, 8].map((offset) => digest.readUInt32BE(offset) & 0x7fffffff);
-  return `${PATHS.SWARM_ENCRYPTION}/${indexes.map((index) => `${index}'`).join('/')}`;
+  const digest = createHash('sha256').update(domain + site, 'utf8').digest();
+  return [0, 4, 8].map((offset) => `${digest.readUInt32BE(offset) & 0x7fffffff}'`).join('/');
+}
+
+/**
+ * The derivation path of a site's publisher key number `index` (0 for the
+ * site's first app-scoped identity, 1 for its second, ...). Restoring the
+ * recovery phrase restores each one, found by trying index 0, 1, 2, ...
+ * @param {string} site - The site's permission key (e.g. 'myapp.eth')
+ * @param {number} index - The site's identity number
+ * @returns {string} m/44'/73406'/{a}'/{b}'/{c}'/{index}'
+ */
+function sitePublisherKeyPath(site, index) {
+  if (!Number.isInteger(index) || index < 0 || index > 0x7fffffff) {
+    throw new Error('Site key index must be an integer from 0 to 2^31 - 1');
+  }
+  return `${PATHS.SWARM_PUBLISHER}/${siteHardenedIndexes(SITE_PUBLISHER_KEY_DOMAIN, site)}/${index}'`;
+}
+
+/**
+ * Derive a site's publisher key number `index`: a secp256k1 key that signs
+ * the site's feeds and single-owner chunks (an app-scoped identity).
+ * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {string} site - The site's permission key
+ * @param {number} index - The site's identity number
+ * @returns {Object} { privateKey, publicKey, address, path }
+ */
+function deriveSitePublisherKey(mnemonic, site, index) {
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('Invalid mnemonic');
+  }
+  return deriveEthereumKey(mnemonic, sitePublisherKeyPath(site, index));
 }
 
 /**
@@ -240,6 +283,8 @@ module.exports = {
   derivePublisherKey,
   siteEncryptionKeyPath,
   deriveSiteEncryptionKey,
+  sitePublisherKeyPath,
+  deriveSitePublisherKey,
   getSeed,
   PATHS,
 };
