@@ -10,7 +10,8 @@ const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
 const { createEthereumDispatchers } = require('./page-ethereum');
-const { createEip1193Relay, connectShown, signShown, unlockShown } = require('./page-eip1193');
+const { createEip1193Relay, connectShown, signShown, unlockShown, sendShown } = require('./page-eip1193');
+const { buildTransaction, toCoreTransaction } = require('../wallet/signing-utils');
 
 const CHROME_URL = 'file:///app/src/renderer/index.html';
 const KEY_A = `bzz://${'a'.repeat(64)}`;
@@ -104,7 +105,7 @@ function standInCore() {
   return core;
 }
 
-function setup({ approvalsDocument = false, deviceDeps = {} } = {}) {
+function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {} } = {}) {
   const guests = new Map();
   const names = new Map();
   const state = {
@@ -119,6 +120,10 @@ function setup({ approvalsDocument = false, deviceDeps = {} } = {}) {
     paused: false,
     unlocked: true,
     discarded: [],
+    // Main's copy of the grants, and the last uses it sent the core.
+    grants: new Map(),
+    touched: [],
+    custody: false,
   };
   const networks = {
     1: { name: 'Ethereum', nativeSymbol: 'ETH' },
@@ -163,7 +168,15 @@ function setup({ approvalsDocument = false, deviceDeps = {} } = {}) {
       identityWalletEnabled: () => state.enabled,
       permissionsLoaded: async () => {},
       agentWalletRequest: async () => ({ handled: false }),
+      getPermission: (key) => state.grants.get(key) || state.grants.get('*') || null,
+      getDerivedWallets: async () => state.wallets,
+      updateLastUsed: async (key, chainId, page) => state.touched.push([key, page]),
       signing: { inCustody: () => false },
+      sends: { inCustody: () => state.custody },
+      coreSendDeps: {
+        discardToken: (token) => state.discarded.push(token),
+        ...coreSendDeps,
+      },
       deviceDeps: {
         walletList: async () => state.wallets,
         discardToken: (token) => state.discarded.push(token),
@@ -473,13 +486,12 @@ describe('approval.request for eth.connect (0012 APB-4a)', () => {
     expect(other.guest.events).toEqual([]);
   });
 
-  test('eth.send answers busy until APB-4c; a signature\'s or an unlock\'s prompt for a connect is refused; neither opens anything', async () => {
+  test('a send\'s, a signature\'s or an unlock\'s prompt for a connect is refused, and opens nothing', async () => {
     const env = setup();
     const page = env.tab();
     const answers = [];
     env.core.script = async ({ id, page: pc }) => {
-      answers.push(await env.relay.approvalRequest({ ...connectAsk(id, pc), kind: 'eth.send' }, { generation: GENERATION }));
-      for (const kind of ['eth.sign', 'vault.unlock']) {
+      for (const kind of ['eth.send', 'eth.sign', 'vault.unlock']) {
         await expect(
           env.relay.approvalRequest({ ...connectAsk(id, pc), kind }, { generation: GENERATION })
         ).rejects.toMatchObject({ code: 'invalid_argument' });
@@ -487,7 +499,7 @@ describe('approval.request for eth.connect (0012 APB-4a)', () => {
       return { error: { code: -32002, message: 'Another wallet request is already pending' } };
     };
     await page.ask('eth_requestAccounts', []);
-    expect(answers).toEqual([{ prompt: PROMPT, busy: true }]);
+    expect(answers).toEqual([]);
     expect(env.prompts()).toEqual([]);
   });
 
@@ -1113,5 +1125,402 @@ describe('{ device } answers (0012 APB-4b)', () => {
     calls.duringSign = () => env.names.set(NAME, OTHER_IPNS_KEY);
     expect((await approveOne(env, page, 'personal_sign', [MESSAGE, SECOND])).answer).toEqual({ error: NO_ADDRESS });
     expect(env.state.discarded).toEqual([TOKEN, TOKEN, TOKEN]);
+  });
+});
+
+// APB-4c: the sends.
+const CALL = { to: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', value: '0x0', data: `0x095ea7b3${'00'.repeat(32)}` };
+// The core's prepared send for CALL: `sign.transaction`'s form, no nonce.
+const CORE_TX = Object.freeze({
+  type: 0,
+  chain_id: '100',
+  to: CALL.to,
+  value: '0',
+  data: CALL.data,
+  gas_limit: '21000',
+  gas_price: '1000000000',
+});
+const FEE = { gasLimit: '21000', gasPrice: '1000000000', estimate: '21000000000000' };
+const SEND_HASH = '0x' + 'ab'.repeat(32);
+const RECEIPT = 'e'.repeat(32);
+const SEND_MISMATCH = { code: -32603, message: "The identity core's send doesn't match the request" };
+const DEVICE_MISMATCH = { code: -32603, message: "The identity core's device answer doesn't match the request" };
+
+// The core's eth.send prompt for request `id`, as cored 0.20.0 asks it.
+function sendAsk(id, page, { account = 0, fee = FEE, again = false, prompt = PROMPT, above = false } = {}) {
+  const safe = accountOf(account).type === 'safe';
+  return {
+    request: id,
+    prompt,
+    page,
+    kind: 'eth.send',
+    view: {
+      account: accountOf(account),
+      chain: { id: 100, name: 'Gnosis Chain', symbol: 'xDAI' },
+      tx: { to: CALL.to, value: '0', data: CALL.data },
+      fee: safe ? { paidBy: 'executor' } : fee,
+      feeCheck: safe ? null : { comparable: true, above, autoApprove: !above, ratio: above ? 10 : 1 },
+      feeAskAgain: again,
+      alwaysAllow: !safe,
+    },
+    choices: { alwaysAllow: safe ? [false] : [false, true], feeAcknowledged: [false, true] },
+  };
+}
+
+/**
+ * Main's payment steps, stood in: the site's turn, the signer it builds,
+ * and the transaction service, which adds the nonce (7) as main does
+ * (`buildTransaction`, then the core's form) and runs main's guard after
+ * the "signature".
+ */
+function payments() {
+  const paid = { turns: [], signed: [], remembered: [], safes: [], busy: false, waiting: false, refuse: null, during: null };
+  paid.deps = {
+    takeSiteTurn: async (site, { wait }) => {
+      paid.turns.push([site, wait]);
+      if (paid.busy && !wait) throw Object.assign(new Error('busy'), { code: 'SITE_TURN_BUSY' });
+      return () => {};
+    },
+    sitePaymentWaiting: async () => paid.waiting,
+    getSigner: (index, authorized) => ({ index, authorized }),
+    signAndRecord: async (tx, signer, context, options) => {
+      const presented = toCoreTransaction(buildTransaction({ ...tx, nonce: 7 })).tx;
+      if (paid.refuse) throw paid.refuse;
+      const { authorized } = signer;
+      // A Ledger's spend of a flagged token gives a receipt.
+      if (authorized.confirmation?.account === LEDGER) authorized.onReceipt({ receipt: RECEIPT, page: authorized.confirmation.page });
+      paid.signed.push({ index: signer.index, authorized, presented, tx, context });
+      await paid.during?.();
+      if (options.guardCommit) await options.guardCommit(async () => ({}));
+      options.onCommitted?.();
+      return { hash: SEND_HASH, recorded: true };
+    },
+    rememberDeviceSend: async (held) => {
+      paid.remembered.push({ ...held });
+      return { added: true };
+    },
+    reserveSafeSend: () => ({ release: () => {} }),
+    spendSafe: async (confirmation) => {
+      paid.safes.push(confirmation);
+      return { approval: { id: 'f'.repeat(32), page: confirmation.page } };
+    },
+    startSafeSend: async () => {
+      throw new Error('The Safe stand-in stops here');
+    },
+  };
+  return paid;
+}
+
+describe('sends through the relay (0012 APB-4c)', () => {
+  function sendSetup(options = {}) {
+    const paid = payments();
+    const env = setup({ ...options, coreSendDeps: paid.deps });
+    env.state.wallets = DEVICE_WALLETS;
+    env.state.grants.set('*', { walletIndex: 0 });
+    return { env, paid };
+  }
+  // The core asks `ask(id, page)` and answers an approve with `onApprove`.
+  const sending = (env, ask, onApprove) => asking(env, ask, onApprove);
+  async function approveSend(env, page, choices = {}, params = [CALL]) {
+    const asked = page.ask('eth_sendTransaction', params);
+    await flush();
+    const shown = env.prompts().at(-1);
+    expect(await env.decide(shown.handle, true, choices)).toEqual({ ok: true });
+    return { answer: await asked, shown };
+  }
+  const tokenSend = (answer, account = 0, tx = CORE_TX) => ({
+    send: { kind: 'dapp-send', account, tx, handle: answer.handle, token: TOKEN },
+  });
+
+  test('a vault send: main\'s eth.send prompt from the core\'s view; the approve echoes the prompt and handle with both choices and world; { send } signed in the site\'s turn with only the nonce added, under the token, its handle and the request\'s PageContext; the page gets the hash', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    const answers = sending(env, sendAsk, (answer) => tokenSend(answer));
+    const asked = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    expect(env.core.sent[0].params).toMatchObject({ method: 'eth_sendTransaction', params: [CALL], world: { paused: false } });
+    const [shown] = env.prompts();
+    expect(shown.kind).toBe('eth.send');
+    expect(shown.view).toEqual(sendAsk(1, null).view);
+    expect(await env.decide(shown.handle, true, { alwaysAllow: true })).toEqual({ ok: true });
+    expect(await asked).toEqual({ result: SEND_HASH });
+    expect(answers).toEqual([
+      {
+        prompt: PROMPT,
+        handle: shown.handle,
+        approve: true,
+        choices: { alwaysAllow: true, feeAcknowledged: false },
+        world: expect.objectContaining({ paused: false }),
+      },
+    ]);
+    expect(paid.turns).toEqual([[KEY_A, true]]);
+    const [signed] = paid.signed;
+    // Main adds the nonce, and nothing else: the core's form comes back.
+    expect(signed.presented).toEqual({ ...CORE_TX, nonce: '7' });
+    expect(signed.index).toBe(0);
+    expect(signed.authorized.confirmation).toEqual({
+      token: TOKEN,
+      kind: 'dapp-send',
+      handle: shown.handle,
+      page: env.core.sent[0].context.page,
+    });
+    expect(signed.context).toMatchObject({ kind: 'dapp-send', origin: KEY_A });
+    expect(env.state.discarded).toEqual([TOKEN]);
+  });
+
+  test('a type-2 send: the core\'s two fees pass unchanged, with the nonce the only field added', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    const fee = { gasLimit: '25200', maxFeePerGas: '3000000000', maxPriorityFeePerGas: '2000000000', estimate: '1' };
+    const tx = { type: 2, chain_id: '100', to: CALL.to, value: '0', data: CALL.data, gas_limit: '25200', max_fee_per_gas: '3000000000', max_priority_fee_per_gas: '2000000000' };
+    sending(env, (id, pc) => sendAsk(id, pc, { fee }), (answer) => tokenSend(answer, 0, tx));
+    expect((await approveSend(env, page)).answer).toEqual({ result: SEND_HASH });
+    expect(paid.signed[0].presented).toEqual({ ...tx, nonce: '7' });
+  });
+
+  test('a crossed { send } sends nothing: another handle, no approve, a token under a rule, a nonce, another field changed, another kind or account, a fee the prompt didn\'t show; its token is discarded', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    const crossings = [
+      (a) => ({ send: { ...tokenSend(a).send, handle: 'f'.repeat(64) } }),
+      (a) => ({ send: { ...tokenSend(a).send, standing: true } }),
+      (a) => ({ send: { ...tokenSend(a).send, kind: 'wallet-send' } }),
+      (a) => ({ send: { ...tokenSend(a).send, remember: true } }),
+      (a) => tokenSend(a, 1),
+      (a) => tokenSend(a, 0, { ...CORE_TX, nonce: '1' }),
+      (a) => tokenSend(a, 0, { ...CORE_TX, to: SECOND }),
+      (a) => tokenSend(a, 0, { ...CORE_TX, value: '1' }),
+      (a) => tokenSend(a, 0, { ...CORE_TX, data: '0x095ea7b3' }),
+      (a) => tokenSend(a, 0, { ...CORE_TX, chain_id: '1' }),
+      (a) => tokenSend(a, 0, { ...CORE_TX, gas_limit: '30000' }),
+      (a) => tokenSend(a, 0, { ...CORE_TX, gas_price: '2000000000' }),
+      (a) => tokenSend(a, 0, { ...CORE_TX, type: 2 }),
+    ];
+    for (const cross of crossings) {
+      sending(env, sendAsk, cross);
+      expect((await approveSend(env, page)).answer).toEqual({ error: SEND_MISMATCH });
+    }
+    // A token with no approve of main's, and a rule's send after one.
+    env.core.script = async () => ({ send: { kind: 'dapp-send', account: 0, tx: CORE_TX, handle: 'f'.repeat(64), token: TOKEN } });
+    expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ error: SEND_MISMATCH });
+    sending(env, sendAsk, () => ({ send: { kind: 'dapp-send', account: 0, tx: CORE_TX, standing: true } }));
+    expect((await approveSend(env, page)).answer).toEqual({ error: SEND_MISMATCH });
+    // A send for another request's transaction.
+    sending(env, sendAsk, (a) => tokenSend(a));
+    expect((await approveSend(env, page, {}, [{ ...CALL, value: '0x1' }])).answer).toEqual({ error: SEND_MISMATCH });
+    expect(paid.signed).toEqual([]);
+    expect(paid.turns).toEqual([]);
+    expect(env.state.discarded).toEqual(Array(15).fill(TOKEN));
+  });
+
+  test('a fee asked again: the core\'s new prompt shows feeAskAgain, its approve confirms the fee, and only that approve\'s handle sends', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    const answers = [];
+    env.core.script = async ({ id, page: pc }) => {
+      answers.push(await env.relay.approvalRequest(sendAsk(id, pc), { generation: GENERATION }));
+      const again = await env.relay.approvalRequest(sendAsk(id, pc, { prompt: OTHER_PROMPT, again: true, above: true }), {
+        generation: GENERATION,
+      });
+      answers.push(again);
+      return tokenSend(again);
+    };
+    const asked = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    const [first] = env.prompts();
+    // Its decision is answered with the request, once the second is decided.
+    const firstDecided = env.decide(first.handle, true, {});
+    await flush();
+    const second = env.prompts().at(-1);
+    expect(second.handle).not.toBe(first.handle);
+    expect(second.view).toMatchObject({ feeAskAgain: true, feeCheck: { above: true } });
+    // A pick the core doesn't offer is refused, with the prompt still open.
+    expect(await env.decide(second.handle, true, { feeAcknowledged: 'yes' })).toMatchObject({ ok: false });
+    expect(await env.decide(second.handle, true, { feeAcknowledged: true })).toEqual({ ok: true });
+    expect(await firstDecided).toEqual({ ok: true });
+    expect(await asked).toEqual({ result: SEND_HASH });
+    expect(answers.map((a) => [a.prompt, a.handle, a.choices])).toEqual([
+      [PROMPT, first.handle, { alwaysAllow: false, feeAcknowledged: false }],
+      [OTHER_PROMPT, second.handle, { alwaysAllow: false, feeAcknowledged: true }],
+    ]);
+    expect(paid.signed).toHaveLength(1);
+    // The first approve's handle no longer sends.
+    env.core.script = async ({ id, page: pc }) => {
+      const one = await env.relay.approvalRequest(sendAsk(id, pc), { generation: GENERATION });
+      await env.relay.approvalRequest(sendAsk(id, pc, { prompt: OTHER_PROMPT, again: true, above: true }), { generation: GENERATION });
+      return tokenSend(one);
+    };
+    const crossed = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    const decided = env.decide(env.prompts().at(-1).handle, true, {});
+    await flush();
+    expect(await env.decide(env.prompts().at(-1).handle, true, { feeAcknowledged: true })).toEqual({ ok: true });
+    expect(await crossed).toEqual({ error: SEND_MISMATCH });
+    expect(await decided).toEqual({ ok: true });
+    expect(paid.signed).toHaveLength(1);
+  });
+
+  test('a rule\'s send: no prompt; the turn without waiting; signed under { standing: { paused: false } } with the PageContext read live; the last use after the broadcast; a busy turn or a waiting payment is D12\'s refusal, custody agent_custody, a rule the core no longer allows the rule gone', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    env.core.script = async () => ({ send: { kind: 'dapp-send', account: 0, tx: CORE_TX, standing: true } });
+    expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ result: SEND_HASH });
+    expect(env.prompts()).toEqual([]);
+    expect(paid.turns).toEqual([[KEY_A, false]]);
+    expect(paid.signed[0].authorized).toEqual({ page: env.core.sent[0].context.page, standing: { paused: false } });
+    expect(paid.signed[0].presented).toEqual({ ...CORE_TX, nonce: '7' });
+    expect(env.state.touched).toEqual([[KEY_A, env.core.sent[0].context.page]]);
+    const PAUSED = {
+      code: -32603,
+      message: 'Signing was not confirmed: auto-approve is paused while a payment this site requested is waiting',
+    };
+    paid.busy = true;
+    expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ error: PAUSED });
+    paid.busy = false;
+    paid.waiting = true;
+    expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({ error: PAUSED });
+    paid.waiting = false;
+    env.state.custody = true;
+    expect(await page.ask('eth_sendTransaction', [CALL])).toMatchObject({ error: { code: 4100, data: { reason: 'agent_custody' } } });
+    env.state.custody = false;
+    const { confirmationError } = require('../wallet/signing-confirmation');
+    paid.refuse = confirmationError(Object.assign(new Error('rate'), { code: 'not_authorized', data: { reason: 'rate_limited' } }));
+    expect(await page.ask('eth_sendTransaction', [CALL])).toEqual({
+      error: { code: -32603, message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules" },
+    });
+    paid.refuse = null;
+    expect(paid.signed).toHaveLength(1);
+    expect(env.state.touched).toHaveLength(1);
+    // D12's pause goes to the core with the request: the core reads it.
+    env.state.paused = true;
+    await page.ask('eth_sendTransaction', [CALL]);
+    expect(env.core.sent.at(-1).params.world.paused).toBe(true);
+  });
+
+  test('a device\'s send: a Ledger\'s spend presents the core\'s payload with the handle and PageContext, and its receipt is presented once the send is recorded; a phone\'s job gets the same; a Safe\'s safe-send is spent for its approval; a payload for another send is refused, nothing spent', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    const deviceSend = (type, account) => (answer) => ({
+      device: { type, kind: 'dapp-send', account, payload: { tx: CORE_TX }, handle: answer.handle, token: TOKEN },
+    });
+    env.state.grants.set('*', { walletIndex: LEDGER });
+    sending(env, (id, pc) => sendAsk(id, pc, { account: LEDGER }), deviceSend('ledger', LEDGER));
+    const ledger = await approveSend(env, page, { alwaysAllow: true });
+    expect(ledger.answer).toEqual({ result: SEND_HASH });
+    const pc = env.core.sent.at(-1).context.page;
+    expect(paid.signed[0].index).toBe(LEDGER);
+    expect(paid.signed[0].authorized.confirmation).toEqual({
+      token: TOKEN,
+      kind: 'dapp-send',
+      account: LEDGER,
+      payload: { tx: CORE_TX },
+      handle: ledger.shown.handle,
+      page: pc,
+    });
+    expect(paid.signed[0].presented).toEqual({ ...CORE_TX, nonce: '7' });
+    expect(paid.remembered).toEqual([{ receipt: RECEIPT, page: pc }]);
+    env.state.grants.set('*', { walletIndex: PHONE });
+    sending(env, (id, pc0) => sendAsk(id, pc0, { account: PHONE }), deviceSend('remote', PHONE));
+    const phone = await approveSend(env, page);
+    expect(phone.answer).toEqual({ result: SEND_HASH });
+    expect(paid.signed[1].authorized.confirmation).toMatchObject({ kind: 'dapp-send', account: PHONE, payload: { tx: CORE_TX }, handle: phone.shown.handle });
+    // A Safe's: spent for the Safe approval (the stand-in stops at the start).
+    env.state.grants.set('*', { walletIndex: SAFE });
+    const safePayload = { safe: SAFE_ADDRESS, chain_id: '100', tx: { to: CALL.to, value: '0', data: CALL.data } };
+    sending(env, (id, pc0) => sendAsk(id, pc0, { account: SAFE }), (answer) => ({
+      device: { type: 'safe', kind: 'safe-send', account: SAFE, payload: safePayload, handle: answer.handle, token: TOKEN },
+    }));
+    const safe = await approveSend(env, page);
+    expect(safe.answer).toEqual({ error: { code: -32603, message: 'The Safe stand-in stops here' } });
+    expect(paid.safes).toEqual([
+      { token: TOKEN, kind: 'safe-send', account: SAFE, payload: safePayload, handle: safe.shown.handle, page: env.core.sent.at(-1).context.page },
+    ]);
+    // Crossed: another send's payload, a signature's kind, a ticked Safe, another Safe.
+    const crossed = [
+      (a) => ({ device: { ...deviceSend('remote', PHONE)(a).device, payload: { tx: { ...CORE_TX, to: SECOND } } } }),
+      (a) => ({ device: { ...deviceSend('remote', PHONE)(a).device, kind: 'sign-message' } }),
+      (a) => ({ device: { ...deviceSend('remote', PHONE)(a).device, payload: { tx: CORE_TX, remember: true } } }),
+      (a) => ({ device: { type: 'safe', kind: 'safe-send', account: SAFE, payload: { ...safePayload, safe: SECOND }, handle: a.handle, token: TOKEN } }),
+      (a) => ({ device: { type: 'safe', kind: 'safe-send', account: SAFE, payload: { ...safePayload, chain_id: '1' }, handle: a.handle, token: TOKEN } }),
+    ];
+    env.state.grants.set('*', { walletIndex: PHONE });
+    for (const cross of crossed) {
+      sending(env, (id, pc0) => sendAsk(id, pc0, { account: PHONE }), cross);
+      expect((await approveSend(env, page)).answer).toEqual({ error: DEVICE_MISMATCH });
+    }
+    expect(paid.signed).toHaveLength(2);
+    expect(paid.safes).toHaveLength(1);
+  });
+
+  test('a name moved off its IPNS key: by the approve, the core hears closed and mints nothing; in the send\'s turn, or during the signature, nothing is recorded or sent', async () => {
+    const { env, paid } = sendSetup();
+    env.names.set(NAME, IPNS_KEY);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const answers = sending(env, sendAsk, (answer) => tokenSend(answer));
+    const asked = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    env.names.set(NAME, OTHER_IPNS_KEY);
+    expect(await env.decide(env.prompts().at(-1).handle, true, {})).toEqual({ ok: true });
+    expect(await asked).toEqual({ error: NO_ADDRESS });
+    expect(answers.at(-1)).toEqual({ prompt: PROMPT, closed: 'cancelled' });
+    // Moved after the approve, before the turn's check: nothing signed.
+    env.names.set(NAME, IPNS_KEY);
+    const page2 = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    sending(env, sendAsk, (answer) => {
+      env.names.set(NAME, OTHER_IPNS_KEY);
+      return tokenSend(answer);
+    });
+    expect((await approveSend(env, page2)).answer).toEqual({ error: NO_ADDRESS });
+    expect(paid.signed).toEqual([]);
+    // Moved during the signature: withdrawn before it is recorded.
+    env.names.set(NAME, IPNS_KEY);
+    const page3 = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    paid.during = async () => env.names.set(NAME, OTHER_IPNS_KEY);
+    sending(env, sendAsk, (answer) => tokenSend(answer));
+    expect((await approveSend(env, page3)).answer).toEqual({ error: NO_ADDRESS });
+    expect(paid.signed).toHaveLength(1);
+    expect(env.state.discarded).toEqual([TOKEN, TOKEN]);
+  });
+
+  test('with the approvals document on, a vault account\'s send asks for the unlock first; a cancel is the page\'s 4001 and the core hears closed; a rule\'s unlock (reason "send") goes to the core as it is', async () => {
+    const { env } = sendSetup({ approvalsDocument: true });
+    env.state.unlocked = false;
+    const page = env.tab();
+    const answers = sending(env, sendAsk, (answer) => tokenSend(answer));
+    const asked = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    const unlock = env.prompts().at(-1);
+    expect(unlock).toMatchObject({ kind: 'vault.unlock', view: { account: accountOf(0), reason: 'send' } });
+    expect(await env.decide(unlock.handle, false, {})).toEqual({ ok: true });
+    expect(await asked).toEqual({ error: { code: 4001, message: 'User cancelled unlock' } });
+    expect(answers).toEqual([{ prompt: PROMPT, closed: 'cancelled' }]);
+    const ruleAnswers = sending(env, (id, pc) => ({ ...unlockAsk(id, pc), view: { account: accountOf(0), reason: 'send' } }), () => ({
+      send: { kind: 'dapp-send', account: 0, tx: CORE_TX, standing: true },
+    }));
+    const ruled = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    const shown = env.prompts().at(-1);
+    expect(shown).toMatchObject({ kind: 'vault.unlock', view: { reason: 'send' } });
+    expect(await env.decide(shown.handle, true, { password: 'right password' })).toEqual({ ok: true });
+    expect(await ruled).toEqual({ result: SEND_HASH });
+    expect(ruleAnswers).toEqual([{ prompt: PROMPT, handle: shown.handle, approve: true, choices: {}, world: expect.objectContaining({ paused: false }) }]);
+  });
+
+  test('the core\'s send view is rebuilt to main\'s form, and a malformed one refused', () => {
+    const { view, choices } = sendAsk(1, null);
+    expect(sendShown(view, choices).view).toEqual(view);
+    expect([...sendShown(view, choices).offered.alwaysAllow]).toEqual([false, true]);
+    const bad = [
+      [{ ...view, extra: 1 }, choices],
+      [{ ...view, chain: { id: 100, name: 'Gnosis Chain' } }, choices],
+      [{ ...view, tx: { ...view.tx, nonce: '1' } }, choices],
+      [{ ...view, fee: { gasLimit: 21000 } }, choices],
+      [{ ...view, feeCheck: { nested: {} } }, choices],
+      [{ ...view, feeAskAgain: 'no' }, choices],
+      [view, { alwaysAllow: [true], feeAcknowledged: [false, true] }],
+      [view, { alwaysAllow: [false, true] }],
+      [view, { ...choices, other: [false] }],
+    ];
+    for (const [v, c] of bad) expect(() => sendShown(v, c)).toThrow();
   });
 });

@@ -67,7 +67,7 @@
  * route for a tab it holds, a DNS name's resolution over IPNS (before the
  * key is used and after the last wait, as above), a new grant's events,
  * and binary params refused before any JSON. The routes above stay the
- * reference, which sends still take until APB-4c.
+ * reference until APB-4d removes them.
  *
  * The signatures go to the core as well (APB-4b): the core shows its own
  * `eth.sign` prompt through main, or a rule answers it (with a locked
@@ -76,12 +76,24 @@
  * spends as its own route did (`page-devices.js`). Main keeps the agent's
  * route for a tab it holds, and checks the name again after the signature,
  * withholding it from a document whose name moved.
+ *
+ * And the sends (APB-4c): the core prepares the send (its estimate and its
+ * own fee quote), asks its `eth.send` prompt through main or answers it by
+ * the site's rule (a locked vault's `vault.unlock` first), and answers main
+ * `{ send }` (a vault account's) or `{ device }` (a Ledger's, a phone's or
+ * a Safe's). Main takes the site's turn, adds the nonce, has the core sign
+ * or the device sign, records the send and broadcasts it
+ * (`page-core-sends.js`). Main keeps the agent's route for a tab it holds,
+ * the transaction's form checked first as on its own route, and a DNS
+ * name's checks: before the key is used, after the agent's route, and in
+ * the send's turn just before the signature and after a signer's wait.
  */
 
 const { ETHEREUM_RPC_READS } = require('./page-methods');
 const { SIGNING_METHODS, createSigningDispatchers, guestInCustody } = require('./page-signing');
 const { createDeviceSigning } = require('./page-devices');
-const { SEND_METHODS, createSendDispatchers } = require('./page-sends');
+const { SEND_METHODS, createSendDispatchers, txOf, agentTxOf } = require('./page-sends');
+const { createCoreSends } = require('./page-core-sends');
 
 // What the chrome's getCurrentChainId falls back to: Gnosis.
 const FALLBACK_CHAIN_ID = 100;
@@ -560,6 +572,13 @@ function createEthereumDispatchers(deps = {}) {
   // The identity core's dispatcher (APB-4a, `page-eip1193.js`): the same
   // methods, and main's checks around them.
   const viaCore = (context, options) => relay.request(context, options);
+  // Main's steps for the core's sends (APB-4c).
+  const coreSends = relay
+    ? createCoreSends(
+      { getPermission, updateLastUsed, walletList },
+      { inCustody: (guest) => custody(guest, sendDeps.inCustody), ...deps.coreSendDeps }
+    )
+    : null;
 
   async function coreRead(context) {
     // As `read`: no binary data reaches the JSON.
@@ -602,9 +621,9 @@ function createEthereumDispatchers(deps = {}) {
   }
 
   // Whether the agent holds the requester's tab now; unknown counts as held.
-  function custody(guest) {
+  function custody(guest, inCustody = null) {
     try {
-      return (signingDeps.inCustody || guestInCustody)(guest) === true;
+      return (inCustody || signingDeps.inCustody || guestInCustody)(guest) === true;
     } catch {
       return true;
     }
@@ -635,6 +654,37 @@ function createEthereumDispatchers(deps = {}) {
       return { error: { ...NO_ADDRESS } };
     }
     return answer;
+  }
+
+  // The sends (APB-4c): main's agent route and name checks around the
+  // core's, as main's own route (`page-sends.js`) ordered them.
+  async function coreSend(context) {
+    const { requester } = context;
+    // The core answers `4900` with the switch off, then `4100` with no key.
+    if (!requester.key || !identityWalletEnabled()) return viaCore(context, { params: context.params });
+    // The agent's route reads main's copy of the grants.
+    await permissionsLoaded();
+    // The transaction's form first, in custody or not, as main's route
+    // checked it: the agent gets only main's form of a well-formed one.
+    let tx;
+    try {
+      tx = txOf(context.params);
+    } catch (err) {
+      return { error: { code: -32602, message: err.message } };
+    }
+    if (!(await context.nameHolds())) return { error: { ...NO_ADDRESS } };
+    const agent = custody(requester.guest, sendDeps.inCustody) ? await agentAnswer(context, {}, [agentTxOf(tx)]) : null;
+    // Refused because the name moved: the keyless answer. Sent: the hash.
+    if (agent) return agent.error && !context.holdsKey() ? { error: { ...NO_ADDRESS } } : agent;
+    if (!(await context.nameHolds())) return { error: { ...NO_ADDRESS } };
+    // After `{ send }` or `{ device }` main checks the name itself, in the
+    // send's turn and after a signer's wait (`page-core-sends.js`). Once a
+    // payment has gone, its hash is the page's.
+    return viaCore(context, {
+      params: context.params,
+      send: (send, page) => coreSends.pay(context, send, page),
+      device: (device, page) => coreSends.device(context, device, page),
+    });
   }
 
   const serve = (answer) => async (context) => {
@@ -670,6 +720,7 @@ function createEthereumDispatchers(deps = {}) {
     dispatchers['ethereum:eth_requestAccounts'] = coreRequestAccounts;
     dispatchers['ethereum:wallet_switchEthereumChain'] = coreSwitchChain;
     for (const method of SIGNING_METHODS) dispatchers[`ethereum:${method}`] = coreSign;
+    for (const method of SEND_METHODS) dispatchers[`ethereum:${method}`] = coreSend;
   }
   return dispatchers;
 }
