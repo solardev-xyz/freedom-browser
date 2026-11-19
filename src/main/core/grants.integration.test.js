@@ -510,10 +510,21 @@ describeIfBinary('the Swarm and Radicle files with the real freedom-cored (APB-3
     test("a key with a grant: the core's approval.recheck gets main's unknown_method, and the connect ends not_authorized mismatch, nothing marked", async () => {
       const KEY = 'https://granted.example';
       const generation = core.current;
-      await vaultBackend.approval.grant(
-        { store: 'dapp', change: { op: 'connect', account: 1, chain_id: 100 } },
-        page(KEY)
-      );
+      // The key's grant, from the core's own connect prompt (cored 0.22.0,
+      // APR-7: a page's dApp grant comes from nowhere else), approved by a
+      // handler main has for this setup only.
+      core.handle('approval.request', (params) => ({
+        prompt: params.prompt,
+        handle: require('crypto').randomBytes(32).toString('hex'),
+        approve: true,
+        choices: { walletIndex: 1 },
+        world: WORLD,
+      }));
+      try {
+        await expect(connect(KEY).answer).resolves.toEqual({ result: [WORLD.wallets[1].address] });
+      } finally {
+        core.handlers.delete('approval.request');
+      }
       const before = dappText();
       expect(JSON.parse(before)[KEY]).toMatchObject({ walletIndex: 1 });
       lookups.mockClear();

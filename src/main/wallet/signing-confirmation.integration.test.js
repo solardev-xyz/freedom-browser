@@ -3,9 +3,10 @@
  * APB-1): signing-confirmation.test.js's cases for the core's kinds, against
  * the pinned binary. Main mints its own wallet kinds with `approval.issue`
  * as `shell`; a page kind is the core's, minted on an approve answer to its
- * own prompt (APB-4, APB-5), so the cases of the core's page-token checks
- * take theirs from a test fixture past the spy, as cored 0.21.0 still
- * admits. A signature the core makes presents its token to `sign.*`, and
+ * own prompt (APB-4, APB-5; only so from cored 0.22.0, APR-7), so the
+ * cases of the core's page-token checks take theirs from a test fixture
+ * that answers the core's prompt through main's relay, past the spy. A
+ * signature the core makes presents its token to `sign.*`, and
  * the kinds that sign nothing here spend theirs with `approval.spend`. A spy
  * on the core's requests checks the caller of each, that main calls none of
  * the permission files' write methods, and that it mints no page kind and
@@ -23,7 +24,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { Wallet, Transaction, TypedDataEncoder } = require('ethers');
+const { HDNodeWallet, Wallet, Transaction, TypedDataEncoder } = require('ethers');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary =
@@ -110,47 +111,262 @@ const unmovedWrites = (calls) =>
       WRITE_METHODS.includes(call.method) && call.method !== 'approval.forget_account' && !MOVED.has(call.params?.store)
   );
 
-// Test fixtures, not main's calls (design 0012, APB-5): a page token as the
-// core mints it on an approve answer to its own prompt, and a site's
-// connect, account or signing rule as the core writes them from one. Main
-// mints and writes none of them since APB-5b, so the suite sends them past
-// its spy (`send`, the core client's own request), under `page`, as cored
-// 0.21.0 still admits (APR-7 refuses both: the APR-7 pin moves these to the
-// core's prompt). Main's copy of a grant is read again from the core.
-function coreFixtures(core, scOf) {
-  const asPage = (page) => ({ caller: 'page', page });
-  // The fixtures' own calls, apart from main's.
+// Test fixtures, not main's calls (design 0012, APR-7): a page token, and a
+// site's connect, account or signing rule, each from the core's own prompt,
+// as cored 0.22.0 makes them only. The page's request goes to
+// `eip1193.request` through main's relay (page-eip1193.js), past the suite's
+// spy, and a prompt stand-in approves the core's prompt on a handle of its
+// own with the choices asked; the relay's device or send step keeps the
+// core's token instead of spending it, for the case to present. A vault
+// account's signature the core makes itself: no token. A send is quoted by
+// the core from a local chain node, configured for that request only; its
+// quote leaves the core's fee evidence (see `freshCore`). The site's grant is put back
+// as it was: a token needs one exposing its account, which the fixture
+// writes for the token and revokes again (as the chrome). Main's copy of a
+// grant is read again from the core.
+function coreFixtures(core, scOf, modulesOf) {
+  // The fixtures' own calls, apart from main's: the client's request.
   const made = [];
-  const send = (method, params, context) => {
+  const send = (method, params, context, options) => {
     made.push({ method, params, context });
-    return core(method, params, context);
+    return core(method, params, context, options);
   };
-  async function pageToken(kind, index, payload, page = PAGE, handle = HANDLE, options = {}) {
-    const request = scOf().corePayload(kind, index, payload, {
-      chainId: options.chainId,
-      remember: kind === 'dapp-send' && options.remember === true,
+  const vault = HDNodeWallet.fromPhrase(ABANDON, undefined, "m/44'/60'/0'/0");
+  const WALLETS = [
+    ...[0, 1, 2].map((index) => ({ index, name: `Account ${index}`, address: vault.deriveChild(index).address, type: 'mnemonic' })),
+    { index: LEDGER_INDEX, name: 'My Ledger', address: DEVICE_ADDRESS, type: 'ledger' },
+    { index: PHONE_INDEX, name: 'My Phone', address: DEVICE_ADDRESS, type: 'remote' },
+    { index: SAFE_INDEX, name: 'Safe', address: SAFE_ADDRESS, type: 'safe', deployed: { 100: true } },
+  ];
+  const addressOf = (index) => WALLETS.find((wallet) => wallet.index === index).address;
+  const RELAYED = ['approval.request', 'approval.recheck', 'eip1193.select_chain'];
+  let relay = null;
+  let node = null;
+  async function chainNode() {
+    if (node) return node;
+    const http = require('http');
+    node = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        const { id, method } = JSON.parse(body);
+        const answers = { eth_chainId: '0x64', eth_estimateGas: '0x5208', eth_gasPrice: '0x3b9aca00' };
+        const answer = answers[method] ? { result: answers[method] } : { error: { code: -32601, message: 'the method does not exist' } };
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id, ...answer }));
+      });
     });
-    const params = { kind, payload: request.payload, handle };
-    if (request.account !== undefined) params.account = request.account;
-    if (options.feeAcknowledged === true) params.fee_ack = true;
-    if (options.phone === true) params.phone = true;
-    const reply = await send('approval.issue', params, asPage(page));
-    const confirmation = { token: reply.token, kind, payload: request.payload, handle, page };
-    if (request.account !== undefined) confirmation.account = request.account;
-    return typeof reply.hash === 'string' ? { ...confirmation, hash: reply.hash, view: reply.view } : confirmation;
+    await new Promise((resolve) => node.listen(0, '127.0.0.1', resolve));
+    return node;
   }
-  async function grant(permissions, page, change) {
-    const reply = await send('approval.grant', { store: 'dapp', change }, asPage(page));
-    await permissions.refreshGrant(page.origin);
-    return reply?.grant ?? null;
+  // Chain 100 for the core's quote while `run` runs, through main's chain
+  // shell; then no chain in the core, as the suite's cases have none of
+  // their own, and the client's chain routes as they were: the first route
+  // a chain request finds takes it, and a case's own (APB-1d's node) must.
+  const CHAIN_ROUTES = ['shell.rpc', 'shell.blockscout'];
+  async function onChain(run) {
+    const { client, chainShell } = modulesOf();
+    const routes = CHAIN_ROUTES.map((name) => client.shapedHandlers.get(name)?.slice());
+    try {
+      await chain(client, chainShell);
+      return await run();
+    } finally {
+      await send('chain.configure', { chains: [] }, { caller: 'chrome' }, { watchdogMs: 60_000 });
+      CHAIN_ROUTES.forEach((name, i) => (routes[i] ? client.shapedHandlers.set(name, routes[i]) : client.shapedHandlers.delete(name)));
+    }
+  }
+  async function chain(client, chainShell) {
+    const base = `http://127.0.0.1:${(await chainNode()).address().port}`;
+    const endpoints = { f100a: `${base}/a`, f100b: `${base}/b` };
+    const state = { generation: 0 };
+    chainShell.registerChainShell(
+      client,
+      { endpoint: (ref) => (endpoints[ref] ? { url: endpoints[ref], chainId: 100 } : null), generation: () => state.generation },
+      { hop: chainShell.makeHop({ fetch }) }
+    );
+    const { generations } = await send(
+      'chain.configure',
+      {
+        chains: [
+          {
+            chain_id: 100,
+            display_name: 'Gnosis Chain',
+            read_order: ['direct'],
+            broadcast_order: ['direct'],
+            quorum: { k: 3, m: 2, timeout_ms: 5000 },
+            rpc: Object.keys(endpoints).map((endpoint) => ({ endpoint, user_configured: false })),
+            prover: null,
+            myotis: false,
+            blockscout: null,
+          },
+        ],
+      },
+      { caller: 'chrome' },
+      { watchdogMs: 60_000 }
+    );
+    state.generation = generations['100'];
+  }
+  function relayOf() {
+    if (relay) return relay;
+    const { createEip1193Relay } = require('../page/page-eip1193');
+    relay = createEip1193Relay({
+      coreClient: () => Object.assign(Object.create(modulesOf().client), { request: send }),
+      identityWalletEnabled: () => true,
+      selectedChainOf: () => 100,
+      getDerivedWallets: async () => WALLETS,
+      networks: () => ({ 1: { name: 'Ethereum', nativeSymbol: 'ETH' }, 10: { name: 'OP', nativeSymbol: 'ETH' }, 100: { name: 'Gnosis Chain', nativeSymbol: 'xDAI' } }),
+      isChainAvailable: (chainId) => [1, 10, 100].includes(Number(chainId)),
+      getActiveWalletIndex: () => 0,
+      rulePaused: async () => false,
+      selectChainForPage: () => {},
+      isVaultUnlocked: async () => true,
+      discardToken: (token) => scOf().discardConfirmation(token),
+    });
+    return relay;
+  }
+  // A page's request through main's relay, the core's prompts approved on
+  // `handle` with `picks[kind]`; the device's or the send's checked token.
+  // Each prompt's approve on a handle of its own: the core takes a handle once.
+  const freshHandle = () => require('crypto').randomBytes(32).toString('hex');
+  async function ask(page, method, params, picks, chainId = 100) {
+    const handle = freshHandle();
+    const { client } = modulesOf();
+    // The relay's handlers on the client for this request, and a case's own after it.
+    const before = RELAYED.map((name) => client.handlers.get(name));
+    relayOf().attach(client);
+    const record = { method: 'eip1193.request', context: { caller: 'page', page }, params: { method, params }, prompts: [], token: null };
+    made.push(record);
+    const keep = (checked) => {
+      record.token = checked;
+      return { result: '0x' };
+    };
+    const context = {
+      method,
+      requester: { key: page.origin, transportKey: page.origin, topKey: page.top_origin, chain: chainId, window: 1 },
+      pageContext: () => ({ frame: page.frame, navigation: page.navigation, agent: page.agent === true }),
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      nameHolds: async () => true,
+      holdsKey: () => true,
+      prompt: async ({ kind, view, choices }) => {
+        const picked = choices(picks[kind] ?? {});
+        record.prompts.push({ kind, choices: picked });
+        record.view = view;
+        return picked ? { approve: true, handle, choices: picked } : { closed: 'cancelled' };
+      },
+    };
+    try {
+      const answer = await relayOf().request(context, { params, device: keep, send: keep });
+      return { answer, token: record.token, record };
+    } finally {
+      RELAYED.forEach((name, i) => (before[i] ? client.handlers.set(name, before[i]) : client.handlers.delete(name)));
+    }
+  }
+  const grantOf = async (origin) =>
+    (await send('approval.grants', { store: 'dapp' }, { caller: 'chrome' })).records.find((record) => record.origin === origin) ?? null;
+  async function revoke(origin) {
+    await send('approval.revoke', { store: 'dapp', key: origin, what: 'grant' }, { caller: 'chrome' });
+  }
+  // The core's connect prompt approved for `account`; a grant for another account revoked first.
+  async function connect(account, chainId, page) {
+    const held = await grantOf(page.origin);
+    if (held?.walletIndex === account) return held;
+    if (held) await revoke(page.origin);
+    const { answer } = await ask(page, 'eth_requestAccounts', [], { 'eth.connect': { walletIndex: account } }, chainId);
+    if (!Array.isArray(answer.result)) throw new Error(`no connect: ${JSON.stringify(answer)} ${JSON.stringify(made.slice(-3))}`);
+    return grantOf(page.origin);
+  }
+  // A grant exposing `account` while `run` runs, then the site's grant as it was.
+  async function exposing(account, page, run) {
+    const held = await grantOf(page.origin);
+    if (held?.walletIndex === account) return run();
+    await connect(account, 100, page);
+    try {
+      return await run();
+    } finally {
+      if (held) await connect(held.walletIndex, held.chainId, page);
+      else await revoke(page.origin);
+    }
+  }
+  const quantity = (value) => '0x' + BigInt(value).toString(16);
+  // The handle is the one main approved the core's prompt on (`_handle`, a
+  // fixed one, is no longer the fixture's to choose).
+  async function pageToken(kind, index, payload, page = PAGE, _handle = HANDLE, options = {}) {
+    // Checked as main checks a request before the core is asked.
+    scOf().corePayload(kind, index, payload, { chainId: options.chainId, remember: kind === 'dapp-send' && options.remember === true });
+    const from = addressOf(index);
+    let method;
+    let params;
+    const picks = {};
+    if (kind === 'dapp-send' || kind === 'safe-send') {
+      const tx = kind === 'safe-send' ? payload.tx : payload;
+      method = 'eth_sendTransaction';
+      params = [{ from, to: tx.to, value: quantity(tx.value), data: tx.data }];
+      picks['eth.send'] = { alwaysAllow: options.remember === true, feeAcknowledged: true };
+    } else if (kind === 'sign-message' || (kind === 'safe-message' && payload.method === 'personal_sign')) {
+      const message = kind === 'safe-message' ? payload.params[0] : payload;
+      method = 'personal_sign';
+      params = [message.startsWith('0x') ? message : '0x' + Buffer.from(message, 'utf8').toString('hex'), from];
+      picks['eth.sign'] = {};
+    } else if (kind === 'sign-typed-data') {
+      method = 'eth_signTypedData_v4';
+      params = [from, JSON.stringify(toCoreTypedDataView(payload))];
+      picks['eth.sign'] = {};
+    } else {
+      throw new Error(`no prompt gives a ${kind} token`);
+    }
+    const asked = () => ask(page, method, params, picks);
+    const { token, answer, record } = await exposing(index, page, method === 'eth_sendTransaction' ? () => onChain(asked) : asked);
+    if (!token) throw new Error(`the core gave no token for ${kind}: ${JSON.stringify(answer)}`);
+    const confirmation = { token: token.token, kind: token.kind, payload: token.payload ?? { tx: token.tx }, handle: token.handle, page };
+    if (token.account !== undefined) confirmation.account = token.account;
+    // A device's typed data: the hash the core confirmed, and the view its prompt showed.
+    if (token.expectedHash !== undefined) confirmation.hash = token.expectedHash;
+    if (kind === 'sign-typed-data') confirmation.view = record.view;
+    // The send as main signs it: the core's prepared transaction in main's form.
+    const tx = token.tx ?? token.payload?.tx;
+    if (tx && tx.chain_id !== undefined) confirmation.sent = modulesOf().mainTxOf(tx);
+    if (token.remember === true) confirmation.remember = true;
+    return confirmation;
   }
   return {
     calls: made,
     pageToken,
-    coreConnect: (permissions, account, chainId, page) => grant(permissions, page, { op: 'connect', account, chain_id: chainId }),
-    coreAccount: (permissions, account, page) => grant(permissions, page, { op: 'account', account }),
-    coreSigningRule: (permissions, page) => grant(permissions, page, { op: 'signing' }),
+    // `approval.grant` asked under `page`, as cored 0.22.0 refuses it for the dApp store.
+    grantAsPage: (params, page) => send('approval.grant', params, { caller: 'page', page }),
+    // A page's request on `account`'s grant, its prompts approved with `picks`.
+    pageRequest: (account, page, method, params, picks) => exposing(account, page, () => ask(page, method, params, picks)),
+    coreConnect: async (permissions, account, chainId, page) => {
+      const grant = await connect(account, chainId, page);
+      await permissions.refreshGrant(page.origin);
+      return grant;
+    },
+    // A grant can't change its account (A7-1): revoked and connected again.
+    coreAccount: async (permissions, account, page) => {
+      await revoke(page.origin);
+      const grant = await connect(account, 100, page);
+      await permissions.refreshGrant(page.origin);
+      return grant;
+    },
+    // "Always allow" ticked on a vault signature's prompt.
+    coreSigningRule: async (permissions, page) => {
+      const { answer } = await ask(page, 'personal_sign', ['0x68656c6c6f', addressOf(0)], { 'eth.sign': { alwaysAllow: true } });
+      if (typeof answer.result !== 'string') throw new Error(`no signature: ${JSON.stringify(answer)}`);
+      await permissions.refreshGrant(page.origin);
+      return grantOf(page.origin);
+    },
+    close: () => (node ? new Promise((resolve) => node.close(resolve)) : null),
   };
+}
+
+// Typed data as a page sends it, with its EIP712Domain type.
+function toCoreTypedDataView(data) {
+  const domainType = Object.keys(data.domain).map((name) => ({
+    name,
+    type: { name: 'string', version: 'string', chainId: 'uint256', verifyingContract: 'address', salt: 'bytes32' }[name],
+  }));
+  return { ...data, types: { EIP712Domain: domainType, ...data.types } };
 }
 
 // Main's own calls the core refuses under `page` from APR-7: `approval.issue`
@@ -196,7 +412,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       calls.push({ method, context, params, reply });
       return reply;
     };
-    fixtures = coreFixtures(request, () => sc);
+    fixtures = coreFixtures(request, () => sc, () => ({ client: core, chainShell, mainTxOf: require('../page/page-core-sends').mainTxOf }));
     jest.resetModules();
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
     jest.doMock('../identity-manager', () => ({
@@ -276,6 +492,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
   });
 
   afterAll(async () => {
+    await fixtures.close();
     await core.stop();
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -312,6 +529,17 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     return err.data?.reason;
   };
 
+  // A fresh core process, its vault unlocked again: what the core held in
+  // memory gone (its tokens, receipts and fee evidence), its files kept. A
+  // page's send is the core's own prompt since APR-7, whose quote leaves its
+  // fee evidence (APR-5e-1) for 60 s; a case about a core with none takes
+  // a fresh one after the fixture's send.
+  async function freshCore() {
+    await core.stop();
+    await core.start();
+    await vaultBackend.unlock('testpass1');
+  }
+
   async function walletToken(kind, index, payload, options) {
     const { token } = await sc.issueConfirmation(kind, index, payload, options);
     return sc.confirmationFor(token, kind, index, payload);
@@ -319,8 +547,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
 
   const pageToken = (...args) => fixtures.pageToken(...args);
 
+  // A page's send signs the transaction the core prepared (`sent`).
   const signSend = (confirmation, tx, index = 0) =>
-    vaultBackend.sign.transaction(account(index), wire(tx), sc.signingAuthorization(confirmation));
+    vaultBackend.sign.transaction(account(index), wire(confirmation.sent ?? tx), sc.signingAuthorization(confirmation));
 
   describe('wallet kinds, minted by main itself', () => {
     test('a token signs exactly the request it was issued for, once', async () => {
@@ -588,7 +817,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         expect(params.authorization).toEqual({
           token: confirmation.token,
           kind,
-          ...(kind === 'dapp-send' ? { handle: HANDLE } : {}),
+          ...(kind === 'dapp-send' ? { handle: confirmation.handle } : {}),
         });
         expect(context).toEqual(kind === 'dapp-send' ? { caller: 'page', page: PAGE } : { caller: 'shell' });
       }
@@ -659,14 +888,17 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
 
     test('a dApp send signs under its page, once, for its document and handle', async () => {
       const confirmation = await pageToken('dapp-send', 0, DAPP_TX);
-      expect(fixtures.calls.find((call) => call.method === 'approval.issue')).toMatchObject({
+      // The core's, on its own prompt for the page's request (APR-7).
+      expect(fixtures.calls.find((call) => call.method === 'eip1193.request' && call.token)).toMatchObject({
         context: { caller: 'page', page: PAGE },
-        params: { kind: 'dapp-send', account: 0, handle: HANDLE },
+        params: { method: 'eth_sendTransaction' },
+        prompts: [{ kind: 'eth.send' }],
+        token: { kind: 'dapp-send', account: 0, handle: confirmation.handle, token: confirmation.token },
       });
       await expect(signSend(confirmation, DAPP_TX)).resolves.toHaveProperty('raw');
       expect(calls.find((call) => call.method === 'sign.transaction')).toMatchObject({
         context: { caller: 'page', page: PAGE },
-        params: { authorization: { token: confirmation.token, kind: 'dapp-send', handle: HANDLE } },
+        params: { authorization: { token: confirmation.token, kind: 'dapp-send', handle: confirmation.handle } },
       });
       expect(await reasonOf(signSend(confirmation, DAPP_TX))).toBe('unknown_token');
     });
@@ -693,55 +925,66 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       await expect(pageToken('dapp-send', 0, TX)).rejects.toThrow(/needs the site it is for/);
     });
 
-    test('personal_sign: the exact message, its text and hex one message', async () => {
-      const confirmation = await pageToken('sign-message', 0, 'hello');
-      const sign = (c, text) =>
-        vaultBackend.sign.message(account(0), Buffer.from(text, 'utf8'), sc.signingAuthorization(c));
-      expect(await reasonOf(sign(confirmation, 'hellp'))).toBe('mismatch');
-      const again = await pageToken('sign-message', 0, '0x68656c6c6f');
-      await expect(sign(again, 'hello')).resolves.toMatch(/^0x[0-9a-f]{130}$/);
+    // cored 0.22.0 (APR-7): a page's signature token is the core's, on its
+    // own prompt, and a vault account's signature the core makes itself,
+    // answering the page with it; a device's account's is the one it hands
+    // main, spent with `approval.spend` before the device is asked. Its
+    // binding, the same `sign.*` checks, is checked at a Ledger's spend.
+    const spendAs = (confirmation, kind, payload) =>
+      vaultBackend.approval.spend(
+        { token: confirmation.token, kind, account: confirmation.account, payload, handle: confirmation.handle },
+        confirmation.page
+      );
+    const messagePayload = (text) => sc.corePayload('sign-message', LEDGER_INDEX, text).payload;
+    // Every object's keys in the reverse order, at any depth.
+    const reversed = (value) =>
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.keys(value).reverse().map((key) => [key, reversed(value[key])]))
+        : value;
+
+    test("personal_sign: the exact message, its text and hex one message (a Ledger's token, at its spend)", async () => {
+      const confirmation = await pageToken('sign-message', LEDGER_INDEX, 'hello');
+      expect(confirmation).toMatchObject({ kind: 'sign-message', account: LEDGER_INDEX, payload: messagePayload('hello') });
+      expect(await reasonOf(spendAs(confirmation, 'sign-message', messagePayload('hellp')))).toBe('mismatch');
+      const again = await pageToken('sign-message', LEDGER_INDEX, '0x68656c6c6f');
+      await expect(spendAs(again, 'sign-message', messagePayload('hello'))).resolves.toMatchObject({ bound: true });
     });
 
-    test('typed data: the token carries the core hash, key order does not matter, content does', async () => {
-      const confirmation = await pageToken('sign-typed-data', 0, TYPED_DATA, PAGE, HANDLE, { chainId: 100 });
+    test("typed data: the token carries the core hash, key order does not matter, content does (a Ledger's token, at its spend)", async () => {
+      const confirmation = await pageToken('sign-typed-data', LEDGER_INDEX, TYPED_DATA, PAGE, HANDLE, { chainId: 100 });
       const { types, domain, message } = TYPED_DATA;
       expect(confirmation.hash).toBe(TypedDataEncoder.hash(domain, types, message));
       expect(confirmation.view).toBeTruthy();
-      const reordered = { message: { value: '1' }, primaryType: 'Permit', types, domain: { verifyingContract: domain.verifyingContract, chainId: 100, name: 'Permit' } };
-      const sign = (c, data, hash = c.hash) =>
-        vaultBackend.sign.typedData(account(0), toCoreTypedData(data), hash, {
-          ...sc.signingAuthorization(c),
-          primaryType: c.payload.primary_type,
-          chainId: c.payload.chain_id,
-        });
-      await expect(sign(confirmation, reordered)).resolves.toMatch(/^0x[0-9a-f]{130}$/);
-      const other = await pageToken('sign-typed-data', 0, TYPED_DATA, PAGE, HANDLE, { chainId: 100 });
-      const changed = { ...TYPED_DATA, message: { value: '2' } };
-      const err = await refusal(sign(other, changed, TypedDataEncoder.hash(domain, types, changed.message)));
+      const spend = (c, change) => spendAs(c, 'sign-typed-data', { ...c.payload, ...change });
+      await expect(spend(confirmation, { typed_data: reversed(confirmation.payload.typed_data) })).resolves.toMatchObject({ bound: true });
+      const other = await pageToken('sign-typed-data', LEDGER_INDEX, TYPED_DATA, PAGE, HANDLE, { chainId: 100 });
+      const changed = { ...other.payload.typed_data, message: { value: '2' } };
+      const err = await refusal(spend(other, { typed_data: changed }));
       expect(err.code).toBe('not_authorized');
       // Told another chain beside the data, the view differs.
-      const chained = await pageToken('sign-typed-data', 0, TYPED_DATA, PAGE, HANDLE, { chainId: 100 });
-      const viewed = await refusal(
-        vaultBackend.sign.typedData(account(0), toCoreTypedData(TYPED_DATA), chained.hash, {
-          ...sc.signingAuthorization(chained),
-          primaryType: 'Permit',
-          chainId: '1',
-        })
-      );
+      const chained = await pageToken('sign-typed-data', LEDGER_INDEX, TYPED_DATA, PAGE, HANDLE, { chainId: 100 });
+      const viewed = await refusal(spend(chained, { chain_id: '1' }));
       expect(viewed.code).toBe('not_authorized');
     });
 
-    test('a message token cannot sign typed data, nor a typed-data token a message', async () => {
-      const message = await pageToken('sign-message', 0, 'hello');
-      const { domain, types, message: body } = TYPED_DATA;
-      const err = await refusal(
-        vaultBackend.sign.typedData(account(0), toCoreTypedData(TYPED_DATA), TypedDataEncoder.hash(domain, types, body), sc.signingAuthorization(message))
-      );
+    test("a message token cannot sign typed data, nor a typed-data token a message (a Ledger's tokens, at their spend)", async () => {
+      const message = await pageToken('sign-message', LEDGER_INDEX, 'hello');
+      const typedPayload = sc.corePayload('sign-typed-data', LEDGER_INDEX, TYPED_DATA, { chainId: 100 }).payload;
+      const err = await refusal(spendAs(message, 'sign-typed-data', typedPayload));
       expect(err.code).toBe('not_authorized');
-      const typed = await pageToken('sign-typed-data', 0, TYPED_DATA, PAGE, HANDLE, { chainId: 100 });
-      expect(await reasonOf(vaultBackend.sign.message(account(0), Buffer.from('hello'), sc.signingAuthorization(typed)))).toBe(
-        'mismatch'
-      );
+      const typed = await pageToken('sign-typed-data', LEDGER_INDEX, TYPED_DATA, PAGE, HANDLE, { chainId: 100 });
+      expect(await reasonOf(spendAs(typed, 'sign-message', messagePayload('hello')))).toBe('mismatch');
+    });
+
+    // APR-7 itself: a vault account's signature is the core's, answering
+    // the page; no token reaches main.
+    test("a vault account's signature on the core's prompt: the page gets it, and main holds no token", async () => {
+      const { answer, token, record } = await fixtures.pageRequest(0, PAGE, 'personal_sign', ['0x68656c6c6f', DEVICE_ADDRESS], {
+        'eth.sign': {},
+      });
+      expect(require('ethers').verifyMessage('hello', answer.result)).toBe(DEVICE_ADDRESS);
+      expect(record.prompts).toEqual([{ kind: 'eth.sign', choices: { alwaysAllow: false } }]);
+      expect(token).toBeNull();
     });
 
     test('main has no issuer of its own for a page kind (APB-5b): the core mints one on its own prompt', () => {
@@ -788,7 +1031,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       const confirmation = await pageToken('dapp-send', 0, { ...send, origin: page.origin }, page, HANDLE, { remember: true });
       const heard = [];
       const raw = await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction(
-        buildTransaction({ ...send, nonce: 7 })
+        buildTransaction({ ...(confirmation.sent ?? send), nonce: 7 })
       );
       expect(Transaction.from(raw).from).toBe(MESSAGE_SIGNER);
       return heard;
@@ -881,7 +1124,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       expect(await send({ accountType: 'remote', payload: { ...SEND, chainId: 1 } })).toEqual({ covered: false, reason: 'no_rule' });
       expect(await send({ accountType: 'safe' })).toEqual({ covered: false, reason: 'no_rule' });
       // A vault account's send needs the core's own fee evidence, which only
-      // its `chain.fee_reference` gives: with none, the prompt.
+      // its `chain.fee_reference` gives: with none (a fresh core, past the
+      // fixture's send), the prompt.
+      await freshCore();
       expect(await send({ accountType: 'mnemonic' })).toEqual({ covered: false, reason: 'fee_check' });
       // The signature itself: judged again by the core under `{ standing }`.
       const built = buildTransaction({ ...SEND, nonce: 7 });
@@ -908,19 +1153,26 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       // Not connected: the core signs the confirmed send, and writes no rule.
       expect(await flaggedSend()).toEqual([{ added: false, reason: 'not_exposed' }]);
       await fixtures.coreConnect(permissions, 0, 100, PAGE);
-      expect(await flaggedSend()).toEqual([{ added: true }]);
-      expect(fixtures.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({
-        tx: expect.any(Object),
-        remember: true,
-      });
-      // Not ticked: no flag, and no rule in the reply.
+      // Not ticked on the core's prompt (APR-7): no flag, and no rule in the
+      // reply. (Before the ticked one: the rule it writes answers the same
+      // send with no prompt.)
+      const minted = () => fixtures.calls.filter((call) => call.method === 'eip1193.request' && call.token).at(-1);
       const plain = await pageToken('dapp-send', 0, DAPP_TX);
-      expect(fixtures.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({ tx: expect.any(Object) });
+      expect(minted()).toMatchObject({
+        prompts: [{ kind: 'eth.send', choices: { alwaysAllow: false } }],
+        token: { kind: 'dapp-send', tx: expect.any(Object), remember: false },
+      });
       const heard = [];
       await getSigner(0, { confirmation: plain, onRule: (rule) => heard.push(rule) }).signTransaction(
-        buildTransaction({ ...SEND, nonce: 7 })
+        buildTransaction({ ...(plain.sent ?? SEND), nonce: 7 })
       );
       expect(heard).toEqual([null]);
+      // Ticked: the core minted the token flagged, and writes the rule as it signs.
+      expect(await flaggedSend()).toEqual([{ added: true }]);
+      expect(minted()).toMatchObject({
+        prompts: [{ kind: 'eth.send', choices: { alwaysAllow: true } }],
+        token: { kind: 'dapp-send', tx: expect.any(Object), remember: true },
+      });
       // The file holds Q9's limited rule, where an older build doesn't look.
       const file = JSON.parse(fs.readFileSync(path.join(root, 'dapp-permissions.json'), 'utf8'));
       expect(file[SITE].autoApprove).toEqual({
@@ -963,8 +1215,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
           onRule: (rule) => rules.push(rule),
           onReceipt: (held) => receipts.push(held),
         });
-        const sent = await signer.sendTransaction(buildTransaction({ ...SEND, nonce: 7 })).catch((err) => err);
-        return { sent, rules, receipts };
+        const sent = await signer.sendTransaction(buildTransaction({ ...(confirmation.sent ?? SEND), nonce: 7 })).catch((err) => err);
+        return { sent, rules, receipts, confirmation };
       }
       beforeEach(() => {
         refuse = false;
@@ -978,12 +1230,12 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
 
       test("the token goes to the core's job under its page; an unverified payment writes no rule, and no receipt is given", async () => {
         await fixtures.coreConnect(permissions, PHONE_INDEX, 100, PAGE);
-        const { sent, rules, receipts } = await flaggedPhoneSend();
+        const { sent, rules, receipts, confirmation } = await flaggedPhoneSend();
         expect(sent).toMatchObject({ hash: '0x' + 'ab'.repeat(32), outcome: 'unverified' });
         const job = calls.find((call) => call.method === 'phone.job');
         expect(job).toMatchObject({
           context: { caller: 'page', page: PAGE },
-          params: { account: PHONE_INDEX, method: 'transaction', authorization: { kind: 'dapp-send', handle: HANDLE } },
+          params: { account: PHONE_INDEX, method: 'transaction', authorization: { kind: 'dapp-send', handle: confirmation.handle } },
         });
         expect(calls.filter((call) => call.method === 'approval.spend')).toEqual([]);
         expect(receipts).toEqual([]);
@@ -1013,7 +1265,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       let refuse;
       const deviceSend = (confirmation, onReceipt) => {
         const signer = getSigner(index, { confirmation, onReceipt });
-        const built = buildTransaction({ ...SEND, nonce: 7 });
+        const built = buildTransaction({ ...(confirmation.sent ?? SEND), nonce: 7 });
         return type === 'remote' ? signer.sendTransaction(built) : signer.signTransaction(built);
       };
       // Minted flagged for the page, as main's issuer mints a confirmed
@@ -1066,14 +1318,16 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
           context: { caller: 'page', page: PAGE },
           params: { receipt: held.receipt },
         });
+        // Presented once: taken at its first presentation.
+        expect(await reasonOf(vaultBackend.approval.remember({ receipt: held.receipt }, PAGE))).toBe('unknown_token');
+        // A Ledger's fee evidence: none in a fresh core, past the fixture's send.
+        if (type !== 'remote') await freshCore();
         expect(await sendCheck()).toEqual(COVERED);
         // Q9's limited rule, as a vault send's "Always allow" writes it.
         const file = JSON.parse(fs.readFileSync(path.join(root, 'dapp-permissions.json'), 'utf8'));
         expect(file[SITE].autoApprove.limited.transactions).toEqual([
           { to: TX.to.toLowerCase(), selector: SELECTOR, chainId: 100, maxValue: TX.value, grantedAt: expect.any(Number) },
         ]);
-        // Presented once: taken at its first presentation.
-        expect(await reasonOf(vaultBackend.approval.remember({ receipt: held.receipt }, PAGE))).toBe('unknown_token');
       });
 
       test('a send the device refused presents nothing: no rule', async () => {
@@ -1197,6 +1451,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     }
 
     beforeAll(async () => {
+      // A core whose only fee evidence is from this node: the fixture's
+      // sends before these left their own quote's.
+      await freshCore();
       permissions = require('./dapp-permissions');
       const { getSigner } = require('./signers');
       const { createPageDocuments } = require('../page/page-documents');
@@ -2261,7 +2518,7 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
       remember: true,
     });
     const heard = [];
-    await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction(buildTransaction({ ...SEND, nonce: 7 }));
+    await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction(buildTransaction({ ...(confirmation.sent ?? SEND), nonce: 7 }));
     return heard;
   }
   async function refusal(promise) {
@@ -2295,7 +2552,8 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
       calls.push({ method, context, params });
       return request(method, params, context, options);
     };
-    fixtures = coreFixtures(request, () => sc);
+    const chainShell = { ...require('../core/chain-shell'), makeHop: require('../core/naming-shell').makeHop };
+    fixtures = coreFixtures(request, () => sc, () => ({ client: core, chainShell, mainTxOf: require('../page/page-core-sends').mainTxOf }));
     jest.resetModules();
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
     jest.doMock('../identity-manager', () => ({
@@ -2325,6 +2583,7 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
   });
 
   afterAll(async () => {
+    await fixtures.close();
     await core.stop();
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -2376,9 +2635,9 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
     // "Always allow" on the core's signing prompt (APB-4b): Q9's limited
     // rule, under the page, which clears today's flag.
     expect(await fixtures.coreSigningRule(permissions, PAGE)).toBeTruthy();
-    expect(fixtures.calls.find((call) => call.method === 'approval.grant')).toMatchObject({
+    expect(fixtures.calls.find((call) => call.method === 'eip1193.request' && call.params.method === 'personal_sign')).toMatchObject({
       context: { caller: 'page', page: PAGE },
-      params: { store: 'dapp', change: { op: 'signing' } },
+      prompts: [{ kind: 'eth.sign', choices: { alwaysAllow: true } }],
     });
     // "Always allow" on the core's send prompt (APB-4c): the core
     // writes the limited contract rule as it signs, clearing today's.
@@ -2438,16 +2697,31 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
     expect(permissions.getAllPermissions().map((record) => record.origin).sort()).toEqual(records.map((r) => r.origin).sort());
   });
 
-  test("an account change for a key the core holds no grant for: the core writes nothing, and main's copy has none", async () => {
+  // APR-7: a page's dApp grant comes only from the core's own prompt. An
+  // account change (or any dApp grant) asked under `page`, for a key the
+  // core holds no grant for or one it does, is refused before the change.
+  test("a dApp grant asked under `page` (connect, account, signing, transaction), for a key the core holds no grant for or one it does: refused, the core writes nothing, and main's copy has none", async () => {
     const fourth = 'https://fourth.example';
     const page = { ...PAGE, origin: fourth, top_origin: fourth };
     const before = fs.readFileSync(file(), 'utf8');
-    expect(await fixtures.coreAccount(permissions, 1, page)).toBeNull();
-    expect(fixtures.calls.filter((call) => call.method === 'approval.grant').at(-1)).toMatchObject({
-      params: { store: 'dapp', change: { op: 'account', account: 1 } },
-      context: { caller: 'page', page },
-    });
-    expect((await coreRecords()).map((record) => record.origin)).not.toContain(fourth);
+    const recordsBefore = await coreRecords();
+    // All four dApp changes. A `transaction` rule is refused by APR-7's
+    // check, before the older "only with a confirmed send" refusal.
+    const changes = [
+      [page, { op: 'account', account: 1 }],
+      [page, { op: 'connect', account: 1, chain_id: 100 }],
+      [PAGE, { op: 'account', account: 1 }],
+      [PAGE, { op: 'signing' }],
+      [PAGE, { op: 'transaction' }],
+    ];
+    for (const [asking, change] of changes) {
+      await expect(fixtures.grantAsPage({ store: 'dapp', change }, asking)).rejects.toMatchObject({
+        code: 'forbidden',
+        message: expect.stringMatching(/only from the core's own prompt/),
+      });
+    }
+    expect(await coreRecords()).toEqual(recordsBefore);
+    expect(recordsBefore.map((record) => record.origin)).not.toContain(fourth);
     expect(permissions.getPermission(fourth)).toBeNull();
     expect(fs.readFileSync(file(), 'utf8')).toBe(before);
   });

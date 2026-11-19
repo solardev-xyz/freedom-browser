@@ -203,13 +203,13 @@ jobs:
       # does, at one reviewed commit: moved on purpose when the protocol's
       # vectors, method table, Radicle vectors or key-store vectors change,
       # never with freedom-core's main. It is the commit
-      # `cored-v0.21.0` was built from. Each suite fails if a file it is
+      # `cored-v0.22.0` was built from. Each suite fails if a file it is
       # pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 3bfe308cbc2eef187af0e4ea091ef8556020bb06
+          ref: 4bff981f08f2be22908553f0decb9d9e728932b0
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
@@ -972,8 +972,9 @@ jobs:
       # Approval tokens through the same binary (freedom-core design 0012,
       # APB-1): main mints its own wallet kinds with approval.issue as shell;
       # a page kind is the core's, minted on an approve answer to its own
-      # prompt (APB-4, APB-5), so the page-token cases take theirs from a
-      # test fixture. A signature the core makes presents its token to
+      # prompt (APB-4, APB-5; only so from cored 0.22.0, APR-7), so the
+      # page-token cases take theirs from a test fixture that answers the
+      # core's prompt through main's relay. A signature the core makes presents its token to
       # sign.*, which spends it, and the kinds that sign nothing here spend
       # theirs with approval.spend. signing-confirmation.test.js's cases
       # against the binary, with a spy on main's calls: none of the
@@ -1050,8 +1051,10 @@ jobs:
       # a withdrawn sheet and the agent's own refusal sign nothing; custody
       # that begins or ends between the request and its prompt shows the
       # user's prompt; the record's deadline closes the sheet (expired); a
-      # Ledger's { device } checks custody before the device; and main calls
-      # no approval.issue and no approval.grant.
+      # Ledger's { device } checks custody before the device; the user's
+      # prompt in custody offers no "Always allow" on a signature or a send,
+      # and a tick relayed anyway is the core's mismatch (A7-4); and main
+      # calls no approval.issue and no approval.grant.
       - name: Agent's sheet answers the core's prompts (real freedom-cored)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/page/page-agent-answers.integration.test.js
