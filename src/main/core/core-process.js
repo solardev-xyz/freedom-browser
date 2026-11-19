@@ -94,6 +94,10 @@ async function startCore() {
   // A phone payment's later check (design 0012, PHN-2): the core's
   // `phone.checked` and `phone.lost`, which it sends from its start on.
   require('../wallet/tx-recorder').attachPhoneEvents(client);
+  // The core's requests about a page's EIP-1193 request (design 0012,
+  // APB-4a): its prompts, its rechecks and a switch's selection, served
+  // before main sends any `eip1193.request`.
+  require('../page/page-eip1193').attachEip1193(client);
   // `shell.keystore` (design 0013, PRF-2): the core's key-store calls, each
   // run in the one-shot helper. Only where the helper has a key store
   // (macOS); elsewhere the core asks nothing.

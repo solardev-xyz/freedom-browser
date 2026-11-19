@@ -112,10 +112,11 @@ const METHOD_CLASSES = Object.freeze({
   // caller may send; x402's authorization and settlement under the core's
   // caps (X402-1), main's own (`shell`); and a page's EIP-1193 request
   // (APR-5b), `page` only. Main sends the phone jobs (PHN-2) and x402's
-  // (X402-2); `eip1193.request` waits for APB-4. The core's class for
-  // `eip1193.request` is `Steps`: a session's 120 s outside its own prompts,
-  // none while one is open. Main gives it a session's watchdog until APB-4
-  // sends it and pauses the watchdog while main answers one of its prompts.
+  // (X402-2), and `eip1193.request` from APB-4a (page/page-eip1193.js).
+  // The core's class for `eip1193.request` is `Steps`: a session's 120 s
+  // outside its own prompts, none while one is open. Main gives it a
+  // session's watchdog, held while main answers one of its prompts
+  // (service-client.js `holdWatchdog`).
   'phone.job': IMMEDIATE,
   'phone.sent': IMMEDIATE,
   'phone.result': SESSION,

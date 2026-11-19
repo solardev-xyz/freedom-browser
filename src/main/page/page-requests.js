@@ -471,6 +471,9 @@ function createPageRequests({
       // document (APS-2).
       approvedFrom: null,
       tokenHandle: null,
+      // The identity core's id for the prompt the record's handle shows, if
+      // the core asked for it (design 0012, APR-5).
+      corePrompt: null,
       // Whether its wallet operation (the Agent's own approval) is running
       // now, and whether the Agent's decision has minted its one token
       // (`agentMint`), and that token's handle, which stays the decision's
@@ -690,6 +693,11 @@ function createPageRequests({
       // account's prompt then asks for the vault unlocked first, which the
       // chrome's own screens did in place.
       approvalsDocument: Boolean(approvals),
+      // The identity core cancelled the prompt it asked for (design 0012,
+      // APR-5): the record's open handle closes, cancelled, if its record
+      // keeps that prompt id.
+      cancelPrompt: (corePrompt) =>
+        typeof corePrompt === 'string' && record.corePrompt === corePrompt && closeHandle(record, CLOSED.CANCELLED),
       // The open prompt's content changed: it shows again with this view.
       updatePrompt: (view) =>
         Boolean(record.handle) && handles.get(record.handle) === record && prompts.update(record.handle, view),
@@ -890,7 +898,7 @@ function createPageRequests({
     }
   }
 
-  async function promptOnce(record, { kind, view = {}, choices, released } = {}) {
+  async function promptOnce(record, { kind, view = {}, choices, released, corePrompt } = {}) {
     const testKind = kind === TEST_KIND && hooks.testPrompts === true;
     if (!KIND_SET.has(kind) && !testKind) throw new Error(`page-requests: no prompt of kind ${kind}`);
     if (record.answered) return { closed: CLOSED.CANCELLED };
@@ -917,6 +925,9 @@ function createPageRequests({
     try {
       handle = openHandle(record);
       if (!handle) return { closed: CLOSED.CANCELLED };
+      // The identity core's own prompt (design 0012, APR-5): its handle
+      // record keeps the core's prompt id while the handle is open.
+      record.corePrompt = typeof corePrompt === 'string' ? corePrompt : null;
       const { requester } = record;
       entry = prompts.add({
         handle,
@@ -937,7 +948,11 @@ function createPageRequests({
         if (handle) closeHandle(record, CLOSED.CANCELLED);
       }
     }
-    return entry.decision;
+    if (record.corePrompt === null) return entry.decision;
+    // A core's prompt: the decision names the handle it was made on and the
+    // prompt id that handle's record kept, for main's answer to the core.
+    const named = Object.freeze({ handle, prompt: record.corePrompt });
+    return entry.decision.then((decision) => Object.freeze({ ...decision, ...named }));
   }
 
   /**
@@ -1668,7 +1683,13 @@ function getPageRequests() {
     const { isApprovalsDocumentEnabled, getApprovalsDocuments } = require('../approvals/approvals-document');
     shared = createPageRequests({
       documents: createPageDocuments({ resolveEnsContent: resolveBoundName }),
-      dispatchers: { ...createEthereumDispatchers(), ...createSwarmDispatchers(), ...createRadicleDispatchers() },
+      dispatchers: {
+        // The identity core answers the reads, the connect and the switch
+        // (design 0012, APB-4a).
+        ...createEthereumDispatchers({ relay: require('./page-eip1193').getEip1193Relay() }),
+        ...createSwarmDispatchers(),
+        ...createRadicleDispatchers(),
+      },
       hooks: sharedHooks,
       approvals: isApprovalsDocumentEnabled() ? getApprovalsDocuments() : null,
       unlockVault: (password) => require('../identity-manager').unlockVault(password),
