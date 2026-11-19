@@ -618,6 +618,7 @@ function reDispatchAsWindowEvent(channel) {
 }
 reDispatchAsWindowEvent('settings:updated');
 reDispatchAsWindowEvent('payments:tx-recorded');
+reDispatchAsWindowEvent('wallet:records-changed');
 
 contextBridge.exposeInMainWorld('ant', {
   start: () => ipcRenderer.invoke('ant:start'),
@@ -885,8 +886,11 @@ contextBridge.exposeInMainWorld('remoteSigner', {
   // The request is being handed to the phone: from now on a timeout or
   // cancel cannot prove the phone did not act on it.
   delivered: (payload) => ipcRenderer.send('remote-signer:delivered', payload),
-  // Persist a phone account discovered via eth_requestAccounts.
+  // Persist a phone account discovered via eth_requestAccounts. Main has
+  // the phone sign a check as the account first (#1078).
   addAccount: (name, address) => ipcRenderer.invoke('wallet:add-remote-wallet', name, address),
+  // Check an existing phone account on the phone (#1078).
+  checkAccount: (index) => ipcRenderer.invoke('wallet:check-remote-wallet', index),
 });
 
 contextBridge.exposeInMainWorld('swarmNode', {
@@ -1044,6 +1048,11 @@ contextBridge.exposeInMainWorld('swarmPermissions', {
   grantMessaging: (origin) => ipcRenderer.invoke('swarm:grant-messaging', origin),
   revokeMessaging: (origin) => ipcRenderer.invoke('swarm:revoke-messaging', origin),
   hasMessagingGrant: (origin) => ipcRenderer.invoke('swarm:has-messaging-grant', origin),
+  grantAct: (origin, publisher) => ipcRenderer.invoke('swarm:grant-act', origin, publisher),
+  revokeAct: (origin, publisher) => ipcRenderer.invoke('swarm:revoke-act', origin, publisher),
+  getActGrants: (origin) => ipcRenderer.invoke('swarm:get-act-grants', origin),
+  describeActRequest: (origin, params) =>
+    ipcRenderer.invoke('swarm:describe-act-request', origin, params),
   // A site lost its connection, by any route; the provider tells its pages.
   onOriginDisconnected: (callback) => {
     const handler = (_event, payload) => callback(payload?.origin);

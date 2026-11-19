@@ -78,6 +78,7 @@ async function loadDappConnect({ activeDisplayUrl = '', activeWebview = null } =
     getActiveWebview: jest.fn(() => activeWebview),
     getActiveDisplayUrl: jest.fn(() => activeDisplayUrl),
     emitAccountsChanged: jest.fn(),
+    emitConnect: jest.fn(),
     getPermissionKey: jest.fn((url) => url || null),
     getNavigationGeneration: jest.fn(() => 0),
   };
@@ -209,11 +210,13 @@ async function loadDappConnectPrompt() {
   // Webviews by committed site; the active one is `provider.active`.
   const provider = { active: null, keys: new Map(), generations: new Map() };
   const emitAccountsChanged = jest.fn();
+  const emitConnect = jest.fn();
   jest.doMock('../dapp-provider.js', () => ({
     getActiveWebview: jest.fn(() => provider.active),
     getActiveDisplayUrl: jest.fn(() => provider.keys.get(provider.active) ?? ''),
     getPermissionKey: jest.fn((url) => url || null),
     emitAccountsChanged,
+    emitConnect,
     getNavigationGeneration: jest.fn((wv) => provider.generations.get(wv) ?? 0),
   }));
   jest.doMock('./permission-manage.js', () => ({ showDappPermissions: jest.fn() }));
@@ -244,7 +247,7 @@ async function loadDappConnectPrompt() {
 
   const hideForOtherScreen = () => require('./wallet-state.js').registerScreenHider.mock.calls[0][0]();
 
-  return { mod, elements: elementsById, grantPermission, openConnect, hideForOtherScreen, guard, provider, tab, emitAccountsChanged };
+  return { mod, elements: elementsById, grantPermission, openConnect, hideForOtherScreen, guard, provider, tab, emitAccountsChanged, emitConnect };
 }
 
 describe('dapp-connect prompt', () => {
@@ -351,7 +354,7 @@ describe('dapp-connect prompt', () => {
   });
 
   test("a grant's events reach only the document that asked", async () => {
-    const { elements, grantPermission, openConnect, provider } = await loadDappConnectPrompt();
+    const { elements, grantPermission, openConnect, provider, emitConnect } = await loadDappConnectPrompt();
     let finishGrant;
     grantPermission.mockReturnValueOnce(new Promise((resolve) => (finishGrant = resolve)));
     const first = openConnect('https://app.example');
@@ -363,6 +366,39 @@ describe('dapp-connect prompt', () => {
     finishGrant({ success: true });
     await flush();
     expect(first.webview.send).not.toHaveBeenCalled();
+    expect(emitConnect).not.toHaveBeenCalled();
+  });
+
+  // connect tells the page a chain: it goes through the provider, which
+  // records it as the chain the page's transactions are for.
+  test('approval tells the page its chain through the provider', async () => {
+    const { elements, openConnect, emitConnect } = await loadDappConnectPrompt();
+    require('./wallet-state.js').walletState.selectedChainId = 1;
+    const first = openConnect('https://app.example');
+
+    elements['dapp-connect-approve'].dispatch('click');
+    await flush();
+    expect(first.state).toBe('resolved');
+    expect(emitConnect).toHaveBeenCalledWith(first.webview, '0x1');
+    expect(first.webview.send).not.toHaveBeenCalledWith(
+      'dapp:provider-event', expect.objectContaining({ event: 'connect' }));
+  });
+
+  // "All Chains" with no onchain pin grants no chain: connect must still
+  // reach the page (the provider resolves the chain) and the banner update.
+  test('approval under "All Chains" still tells the page and finishes', async () => {
+    const { elements, openConnect, emitConnect, grantPermission } = await loadDappConnectPrompt();
+    require('./wallet-state.js').walletState.selectedChainId = null;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const first = openConnect('https://app.example');
+
+    elements['dapp-connect-approve'].dispatch('click');
+    await flush();
+    expect(first.state).toBe('resolved');
+    expect(grantPermission).toHaveBeenCalledWith('https://app.example', expect.anything(), null);
+    expect(emitConnect).toHaveBeenCalledWith(first.webview, null);
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   test("an earlier request's favicon never lands on a later one", async () => {

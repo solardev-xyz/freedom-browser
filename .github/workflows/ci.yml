@@ -1142,8 +1142,10 @@ jobs:
       # focus ring every chrome text field draws (`chrome-input-focus`, #246),
       # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
       # and the download shelf, whose dismissed card must stay dismissed for the
-      # rest of the transfer (`downloads`, #309), and the application menu's
-      # History menu, which reads private-window state (`history-menu`, #584).
+      # rest of the transfer (`downloads`, #309), the application menu's
+      # History menu, which reads private-window state (`history-menu`, #584),
+      # and the Swarm ACT prompt a page's `window.swarm.openAct` raises
+      # (`swarm-open-act`, #648).
       - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
@@ -1152,6 +1154,7 @@ jobs:
             test-e2e/tab-mute.spec.js \
             test-e2e/private-windows.spec.js \
             test-e2e/page-providers-early.spec.js \
+            test-e2e/swarm-open-act.spec.js \
             test-e2e/private-tab-color.spec.js \
             test-e2e/chrome-input-focus.spec.js \
             test-e2e/sidebar-subscreen-headers.spec.js \

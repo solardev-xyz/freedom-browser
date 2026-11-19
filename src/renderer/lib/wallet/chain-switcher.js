@@ -7,7 +7,7 @@
 import { walletState } from './wallet-state.js';
 import { escapeHtml } from './wallet-utils.js';
 import { renderAssetList, loadChainRegistry } from './balance-display.js';
-import { getActiveWebview, emitChainChanged } from '../dapp-provider.js';
+import { syncPagesToSelectedChain } from '../dapp-provider.js';
 
 // DOM references
 let chainSwitcherBtn;
@@ -85,6 +85,8 @@ async function renderChainList() {
     walletState.selectedChainId = null;
     updateChainSwitcherDisplay();
     renderAssetList();
+    // Pages now see Gnosis ("All Chains"): tell them, as for any switch
+    syncPagesToSelectedChain();
   }
 
   const availableChains = availableResult.success ? availableResult.chains : {};
@@ -172,15 +174,11 @@ function selectChain(chainId) {
   updateChainSwitcherDisplay();
   renderAssetList();
 
-  // Emit chainChanged event to active webview if chain actually changed
-  if (previousChainId !== chainId && chainId !== null) {
-    const webview = getActiveWebview();
-    if (webview) {
-      const chainIdHex = '0x' + chainId.toString(16);
-      emitChainChanged(webview, chainIdHex);
-      console.log('[WalletUI] Emitted chainChanged to dApp:', chainIdHex);
-    }
-  }
+  // Tell every page, not just the active tab's, when the chain it sees
+  // changed. "All Chains" counts: pages then see Gnosis. A page sends and
+  // signs on the chain it was last told (dapp-provider.js, pageChainId), so
+  // a page left untold would keep its old chain while its reads moved.
+  if (previousChainId !== chainId) syncPagesToSelectedChain();
 }
 
 /**
@@ -229,4 +227,5 @@ export function setSelectedChainId(chainId) {
   updateChainSwitcherDisplay();
   renderAssetList();
   console.log('[WalletUI] Chain switched to:', chainId);
+  syncPagesToSelectedChain();
 }

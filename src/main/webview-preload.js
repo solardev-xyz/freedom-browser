@@ -1424,12 +1424,20 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
 
   // Radicle
-  seedRadicle: guardInternal('seedRadicle', (rid) => ipcRenderer.invoke('radicle:seed', rid)),
+  // PRIVATE MODE GUARD (R-9): no seeding policy or fetched repository may
+  // outlive a private window; main refuses these too.
+  seedRadicle: guardInternal('seedRadicle', (rid) =>
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:seed', rid)
+  ),
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
-    ipcRenderer.invoke('radicle:syncRepo', rid)
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:syncRepo', rid)
   ),
   getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
     ipcRenderer.invoke('radicle:getSeedStatus', rid)
@@ -1839,7 +1847,9 @@ const SWARM_INJECT_SOURCE = `
             method === 'swarm_getMessagingIdentity' ||
             method === 'swarm_subscribe' ||
             // A blob of up to 5 MiB joined from the network can outlast 60s.
-            method === 'swarm_readData';
+            method === 'swarm_readData' ||
+            // Waits on the ACT prompt, then on the node's ACT lookup.
+            method === 'swarm_openAct';
           const timeout = longRunning ? 300000 : 60000;
           setTimeout(() => {
             if (pendingRequests.has(id)) {
@@ -1863,6 +1873,7 @@ const SWARM_INJECT_SOURCE = `
       readFeedEntry(params) { return this.request({ method: 'swarm_readFeedEntry', params: params }); },
       listFeeds() { return this.request({ method: 'swarm_listFeeds' }); },
       publishChunk(params) { return this.request({ method: 'swarm_publishChunk', params: params }); },
+      publishSingleOwnerChunk(params) { return this.request({ method: 'swarm_publishSingleOwnerChunk', params: params }); },
       readChunk(params) { return this.request({ method: 'swarm_readChunk', params: params }); },
       readData(params) { return this.request({ method: 'swarm_readData', params: params }); },
       writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
@@ -1873,6 +1884,7 @@ const SWARM_INJECT_SOURCE = `
       unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
       sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
       sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
+      openAct(params) { return this.request({ method: 'swarm_openAct', params: params }); },
 
       on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
       removeListener(event, handler) {

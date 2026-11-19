@@ -17,6 +17,8 @@ const { test, expect } = require('./fixtures');
 
 const ANT_PORT = 11633;
 const HASH = 'a'.repeat(64);
+// What the fake node's /addresses reports as its ACT public key (#1188).
+const ACT_PUBLIC_KEY = `03${'4e'.repeat(32)}`;
 
 async function navigateTo(page, url) {
   const input = page.locator('[data-test="address-input"]');
@@ -103,6 +105,12 @@ test.describe('Ant API guard (O-1)', () => {
         '/peers': { peers: [{ address: '1' }, { address: '2' }, { address: '3' }] },
         '/topology': { bins: { bin_0: { population: 4 }, bin_1: { population: 5 } } },
         '/health': { status: 'ok', version: 'antd/0.5.45-e2e' },
+        '/addresses': {
+          overlay: 'b'.repeat(64),
+          ethereum: `0x${'c'.repeat(40)}`,
+          publicKey: ACT_PUBLIC_KEY,
+          pssPublicKey: ACT_PUBLIC_KEY,
+        },
       }[req.url];
       res.writeHead(body ? 200 : 404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(body || { code: 404 }));
@@ -198,5 +206,27 @@ test.describe('Ant API guard (O-1)', () => {
     // The chrome renderer's own fetch() would have hit the harness http stub,
     // never this server: every hit here came over IPC from the main process.
     expect(nodeRequests).toEqual(expect.arrayContaining(['GET /peers', 'GET /health']));
+  });
+
+  test('the node menu shows the ACT public key and copies it whole (#1188)', async ({
+    electronApp,
+    window,
+  }) => {
+    await window.click('#bee-menu-button');
+    const keyText = window.locator('#bee-act-key-text');
+    await expect(keyText).toHaveText('034e4e…4e4e');
+    await expect(keyText).toHaveAttribute('title', ACT_PUBLIC_KEY);
+    const copy = window.locator('#bee-act-key-copy');
+    await expect(copy).toBeEnabled();
+    expect(nodeRequests).toContain('GET /addresses');
+
+    await electronApp.evaluate(({ clipboard }) => clipboard.writeText(''));
+    await copy.click();
+    await expect
+      .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
+      .toBe(ACT_PUBLIC_KEY);
+    await expect(copy).toHaveClass(/\bcopied\b/);
+    // Copying is a click inside the menu, so the menu stays open.
+    await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/\bopen\b/);
   });
 });

@@ -10,7 +10,9 @@
 
 const { PrivateKey, Topic, EthAddress, BeeResponseError, Bytes, Identifier, FeedIndex } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
+const { dataSizeFromSpan } = require('./chunk-service');
 const { noUsableBatchError } = require('./batch-errors');
+const { currentVaultEpoch, assertVaultEpoch } = require('../identity/vault-epoch');
 const log = require('electron-log');
 
 // ---------------------------------------------------------------------------
@@ -24,13 +26,23 @@ const writeLocks = new Map();
  * are fully parallel. The lock chains via .then(fn, fn) so a failed write
  * does not block subsequent writes.
  *
+ * A queued write holds its signer's key until its turn. It runs only if the
+ * vault epoch is still the one its key was read in (`epoch`, taken when it
+ * was queued unless the caller read the key earlier): a lock meanwhile ends
+ * the key's use (K-1).
+ *
  * @param {string} topicHex - Topic hex string used as the lock key
  * @param {Function} fn - Async function to execute under the lock
+ * @param {number} [epoch] - Vault epoch the signer key was read in
  * @returns {Promise<*>} Result of fn
  */
-async function withWriteLock(topicHex, fn) {
+async function withWriteLock(topicHex, fn, epoch = currentVaultEpoch()) {
   const prev = writeLocks.get(topicHex) || Promise.resolve();
-  const next = prev.then(fn, fn);
+  const guarded = () => {
+    assertVaultEpoch(epoch);
+    return fn();
+  };
+  const next = prev.then(guarded, guarded);
   writeLocks.set(topicHex, next);
   try {
     return await next;
@@ -108,22 +120,261 @@ function makeFeedIdentifier(topic, index) {
   ])).toUint8Array());
 }
 
-async function downloadExactFeedPayload(bee, owner, topic, index) {
+// ---------------------------------------------------------------------------
+// Metered reads — a page's feed read is paid for before its bytes are held
+// ---------------------------------------------------------------------------
+
+// Error bodies are read for their message only.
+const MAX_ERROR_BODY_BYTES = 4096;
+
+/**
+ * A refusal from the read meter (see readFeedPayload), carried as an error
+ * so the caller can hand the meter's own answer back to the page.
+ */
+function meterRefusal(refusal) {
+  const err = new Error('Feed read refused by the read budget');
+  err.refusal = refusal;
+  return err;
+}
+
+/** A feed entry larger than one read may ever return. */
+function entryTooLarge(limit, actual) {
+  const err = new Error(`Feed entry exceeds the maximum read size of ${limit} bytes`);
+  err.reason = 'data_too_large';
+  err.limit = limit;
+  if (actual !== undefined) err.actual = actual;
+  return err;
+}
+
+/**
+ * Read a node's response body piece by piece. `admit(bytes, total)` sees
+ * each piece before it is kept and throws to refuse it; the body is then
+ * cancelled, so the node stops sending and nothing past the refusal is held.
+ *
+ * @param {ReadableStream<Uint8Array>|null} body
+ * @param {(bytes: number, total: number) => void} admit
+ * @returns {Promise<Buffer>}
+ */
+async function readBodyAdmitted(body, admit) {
+  if (!body) return Buffer.alloc(0);
+  const reader = body.getReader();
+  const pieces = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      admit(value.byteLength, total);
+      pieces.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+  } catch (err) {
+    reader.cancel().catch(() => {});
+    throw err;
+  }
+  return Buffer.concat(pieces, total);
+}
+
+/** The first MAX_ERROR_BODY_BYTES of an error body, as text. */
+async function readErrorText(body) {
+  if (!body) return '';
+  const reader = body.getReader();
+  const pieces = [];
+  let total = 0;
+  try {
+    while (total < MAX_ERROR_BODY_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      pieces.push(Buffer.from(value));
+      total += value.byteLength;
+    }
+  } catch {
+    // A broken error body leaves the status to speak for itself.
+  }
+  reader.cancel().catch(() => {});
+  return Buffer.concat(pieces).subarray(0, MAX_ERROR_BODY_BYTES).toString('utf8');
+}
+
+/**
+ * GET a node path and return the response once its headers are in, its body
+ * unread. Failures read as bee-js's own: a BeeResponseError with the status
+ * and bee-js's message (`statusText: body`) for an error status, and one
+ * without a status for a network error, so callers tell them apart as they
+ * do for bee-js's calls.
+ */
+async function fetchNode(bee, path) {
+  const baseUrl = bee.url.endsWith('/') ? bee.url : `${bee.url}/`;
+  const url = new URL(path, baseUrl).href;
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        accept: 'application/json, text/plain, */*',
+        // A compressed body would decode past its Content-Length.
+        'accept-encoding': 'identity',
+      },
+    });
+  } catch (err) {
+    const message = err.cause?.message ? `${err.message}: ${err.cause.message}` : err.message;
+    throw new BeeResponseError('GET', url, message);
+  }
+  if (!response.ok) {
+    const raw = await readErrorText(response.body);
+    let data;
+    if (raw) {
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        data = raw;
+      }
+    }
+    const bodyMessage = typeof data === 'string' ? data : JSON.stringify(data);
+    const message = bodyMessage ? `${response.statusText}: ${bodyMessage}` : response.statusText;
+    throw new BeeResponseError('GET', url, message, data, response.status, response.statusText);
+  }
+  return response;
+}
+
+/** The body's declared length, or null when it has none it can be held to. */
+function declaredLength(response) {
+  const encoding = response.headers.get('content-encoding');
+  if (encoding && encoding.toLowerCase() !== 'identity') return null;
+  const value = response.headers.get('content-length');
+  if (value === null || !/^\d+$/.test(value.trim())) return null;
+  const length = Number(value.trim());
+  return Number.isSafeInteger(length) ? length : null;
+}
+
+/**
+ * The entry at an explicit index: its SOC first, then, for an entry larger
+ * than one chunk, the node's join of the chunk the SOC wraps (`GET /bytes`).
+ *
+ * The SOC is charged as soon as it is read. The wrapped chunk's span gives
+ * the entry's size. An entry that fits in the SOC is its payload held to that
+ * size. A larger one past the meter's maxBytes is data_too_large; otherwise
+ * the rest of its size (the SOC counts towards it) is reserved before
+ * `/bytes` is asked for, and the join is held to that size.
+ */
+async function readExactFeedEntry(bee, owner, topic, index, meter) {
   const feedIndex = normalizeFeedIndex(index);
-  const identifier = makeFeedIdentifier(topic, feedIndex);
-  const reference = bee.calculateSingleOwnerChunkAddress(identifier, owner);
+  const reference = bee.calculateSingleOwnerChunkAddress(makeFeedIdentifier(topic, feedIndex), owner);
   const raw = await bee.chunk.download(reference);
+  // The SOC came off the network: charge it before any refusal.
+  const socRefusal = meter.charge(raw.length);
   const soc = bee.unmarshalSingleOwnerChunk(raw, reference);
   const cac = bee.makeContentAddressedChunk(soc.payload, soc.span);
-  const payload = cac.span.toBigInt() <= 4096n
-    ? cac.payload
-    : await bee.data.download(cac.address);
 
-  return {
-    payload,
-    feedIndex,
-    feedIndexNext: feedIndex.next(),
-  };
+  // The entry's size, with the redundancy level cleared, as readData reads a root.
+  const size = dataSizeFromSpan(cac.span.toUint8Array());
+  let payload;
+  if (cac.span.toBigInt() <= 4096n) {
+    if (socRefusal) throw meterRefusal(socRefusal);
+    // The entry is the SOC's payload held to that size, as readData holds a
+    // one-chunk root: bytes past the span are not the entry, and a span past
+    // the payload is an entry the chunk doesn't hold.
+    const expected = Number(size);
+    const inline = Buffer.from(cac.payload.toUint8Array());
+    if (inline.length < expected) {
+      throw new Error(`Node returned ${inline.length} bytes for a ${expected}-byte feed entry`);
+    }
+    payload = inline.subarray(0, expected);
+  } else {
+    if (size > BigInt(meter.maxBytes)) {
+      throw entryTooLarge(meter.maxBytes, size <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(size) : size);
+    }
+    if (socRefusal) throw meterRefusal(socRefusal);
+    const expected = Number(size);
+    if (expected > raw.length) {
+      const refusal = meter.reserve(expected - raw.length);
+      if (refusal) throw meterRefusal(refusal);
+    }
+    const body = await bee.data.downloadReadable(toHex(cac.address));
+    payload = await readBodyAdmitted(body, (_bytes, total) => {
+      if (total > expected) {
+        throw new Error(`Node returned more than ${expected} bytes for a ${expected}-byte feed entry`);
+      }
+    });
+    if (payload.length !== expected) {
+      throw new Error(`Node returned ${payload.length} bytes for a ${expected}-byte feed entry`);
+    }
+  }
+
+  return { payload, feedIndex, feedIndexNext: feedIndex.next() };
+}
+
+/**
+ * The latest entry, as the node resolves it (`GET /feeds/<owner>/<topic>`).
+ * Its size is known only from the response. A declared Content-Length is
+ * checked and reserved before the body is read, and the body is held to it;
+ * a body without one is reserved piece by piece as it streams. Either way a
+ * body past the meter's maxBytes is data_too_large and one past what is left
+ * of the window is refused, and the body is cancelled there.
+ */
+async function readLatestFeedEntry(bee, owner, topic, meter) {
+  const response = await fetchNode(bee, `feeds/${owner.toHex()}/${topic.toHex()}`);
+  let feedIndex;
+  let feedIndexNext;
+  let declared;
+  try {
+    // The same headers, and the same errors when they are missing, as bee-js.
+    const indexHeader = response.headers.get('swarm-feed-index');
+    const nextHeader = response.headers.get('swarm-feed-index-next');
+    if (!indexHeader) throw new Error('Response did not contain expected swarm-feed-index!');
+    if (!nextHeader) throw new Error('Response did not contain expected swarm-feed-index-next!');
+    feedIndex = new FeedIndex(indexHeader);
+    feedIndexNext = new FeedIndex(nextHeader);
+
+    declared = declaredLength(response);
+    if (declared !== null) {
+      if (declared > meter.maxBytes) throw entryTooLarge(meter.maxBytes, declared);
+      const refusal = meter.reserve(declared);
+      if (refusal) throw meterRefusal(refusal);
+    }
+  } catch (err) {
+    response.body?.cancel().catch(() => {});
+    throw err;
+  }
+
+  const payload = await readBodyAdmitted(response.body, (bytes, total) => {
+    if (declared !== null) {
+      if (total > declared) {
+        throw new Error(`Node sent more than the ${declared} bytes it declared for the feed entry`);
+      }
+      return;
+    }
+    if (total > meter.maxBytes) throw entryTooLarge(meter.maxBytes);
+    const refusal = meter.reserve(bytes);
+    if (refusal) throw meterRefusal(refusal);
+  });
+  if (declared !== null && payload.length !== declared) {
+    throw new Error(`Node sent ${payload.length} of the ${declared} bytes it declared for the feed entry`);
+  }
+
+  return { payload, feedIndex, feedIndexNext };
+}
+
+/**
+ * Whether feed entry `index` exists, for a write at that index: its update
+ * chunk (the SOC) is read and checked against its address. The SOC is the
+ * entry, so the content it wraps is not fetched.
+ *
+ * Only a 404 means the index is free. A 500, a network error or timeout, or
+ * an answer that is not that SOC can't tell a free index from an entry the
+ * node failed to fetch, so it throws, and the write is refused rather than
+ * written over an entry a reader would otherwise see (#1054). The caller
+ * reports it as a node error, which the page may retry.
+ */
+async function feedEntryExists(bee, owner, topic, index) {
+  const reference = bee.calculateSingleOwnerChunkAddress(makeFeedIdentifier(topic, index), owner);
+  let raw;
+  try {
+    raw = await bee.chunk.download(reference);
+  } catch (err) {
+    if (err instanceof BeeResponseError && err.status === 404) return false;
+    throw err;
+  }
+  bee.unmarshalSingleOwnerChunk(raw, reference);
+  return true;
 }
 
 // Highest index the head probe will look for: 2^40 updates is far beyond any
@@ -269,11 +520,14 @@ async function createFeed(signerPrivateKey, topicString, batchId) {
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string} contentReference - Swarm reference to point the feed at
  * @param {string} [batchId] - Postage batch ID. Auto-selected if omitted.
- * @param {{ minIndex?: number }} [options] - minIndex: write at this index or
- *   later, for a caller that knows the feed already reached minIndex - 1.
+ * @param {{ minIndex?: number, epoch?: number }} [options] - minIndex: write at
+ *   this index or later, for a caller that knows the feed already reached
+ *   minIndex - 1. epoch: the vault epoch the key was read in (K-1); the
+ *   write stops if the vault was locked since.
  * @returns {Promise<{ index: number }>}
  */
 async function updateFeed(signerPrivateKey, topicString, contentReference, batchId, options = {}) {
+  const epoch = Number.isSafeInteger(options.epoch) ? options.epoch : currentVaultEpoch();
   const minIndex = Number.isSafeInteger(options.minIndex) && options.minIndex > 0 ? options.minIndex : 0;
   const bee = getBee();
   const privateKey = new PrivateKey(signerPrivateKey);
@@ -289,13 +543,27 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
   const result = await withWriteLock(topicHex, async () => {
     const writer = bee.feed.makeWriter(topic, privateKey);
     const nextIndex = await resolveNextIndex(writer, bee, privateKey.publicKey().address(), topic, minIndex);
+    assertVaultEpoch(epoch); // the index lookup awaited the network
     await writer.uploadReference(resolvedBatchId, contentReference, { index: nextIndex });
     return { index: nextIndex };
-  });
+  }, epoch);
 
   log.info(`[FeedService] Feed updated: topic=${topicString}, ref=${contentReference}, index=${result.index}`);
 
   return { index: result.index };
+}
+
+/**
+ * The page's payload can't be written. An SOC carries 1 to 4096 bytes and a
+ * larger payload goes up through /bytes, so the one payload refused here is
+ * an empty one, at the point where bee-js would refuse it as it builds the
+ * chunk. `reason` marks it as the page's, so the provider tells it apart from
+ * a node's failure whatever either one's message says (#1054).
+ */
+function unwritablePayloadError() {
+  const err = new Error('A feed entry needs at least 1 byte of data');
+  err.reason = 'payload_too_large';
+  return err;
 }
 
 /**
@@ -312,11 +580,13 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
  * @param {string} signerPrivateKey - 0x-prefixed hex private key
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string|Buffer|Uint8Array} data - Payload to write
- * @param {{ batchId?: string, index?: number }} [options]
+ * @param {{ batchId?: string, index?: number, epoch?: number }} [options] -
+ *   epoch: the vault epoch the key was read in (K-1)
  * @returns {Promise<{ index: number }>}
  */
 async function writeFeedPayload(signerPrivateKey, topicString, data, options = {}) {
   const { batchId, index } = options;
+  const epoch = Number.isSafeInteger(options.epoch) ? options.epoch : currentVaultEpoch();
   const bee = getBee();
   const privateKey = new PrivateKey(signerPrivateKey);
   const topic = Topic.fromString(topicString);
@@ -335,15 +605,10 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
     let writeIndex;
     if (index !== undefined && index !== null) {
       // Explicit index — check for existing entry (overwrite protection)
-      try {
-        await downloadExactFeedPayload(bee, privateKey.publicKey().address(), topic, index);
+      if (await feedEntryExists(bee, privateKey.publicKey().address(), topic, index)) {
         const err = new Error(`Feed entry already exists at index ${index}`);
         err.reason = 'index_already_exists';
         throw err;
-      } catch (e) {
-        if (e.reason === 'index_already_exists') throw e;
-        // Only treat "not found" as "index available". Other errors propagate.
-        if (!isNotFoundError(e)) throw e;
       }
       writeIndex = index;
     } else {
@@ -351,9 +616,11 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
       writeIndex = await resolveNextIndex(writer, bee, privateKey.publicKey().address(), topic);
     }
 
+    if (dataSize === 0) throw unwritablePayloadError();
+    assertVaultEpoch(epoch); // the index checks awaited the network
     await writer.uploadPayload(resolvedBatchId, data, { index: writeIndex });
     return { index: writeIndex };
-  });
+  }, epoch);
 
   log.info(`[FeedService] Feed payload written: topic=${topicString}, index=${result.index}`);
 
@@ -361,30 +628,51 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
 }
 
 /**
- * Read a feed entry at a specific index, or read the latest entry.
+ * Read a feed entry at a specific index, or read the latest entry, paid for
+ * through `meter` before its bytes are held (see readExactFeedEntry and
+ * readLatestFeedEntry). The meter is the caller's read budget:
+ * - `maxBytes`: the most one read may return; a larger entry is refused
+ *   with an error whose `reason` is `data_too_large` (`limit`, and `actual`
+ *   when the size is known), before its body is read;
+ * - `charge(bytes)`: bytes that already came off the network, charged
+ *   whatever happens next;
+ * - `reserve(bytes)`: bytes about to be read, reserved in one step or not
+ *   at all.
+ * `charge` and `reserve` return null, or a refusal; a refusal is thrown as an
+ * error whose `refusal` is that value, and nothing more is read.
  *
  * @param {string} ownerAddress - Feed owner Ethereum address (hex, with or without 0x)
  * @param {import('@ethersphere/bee-js').Topic} topic - Topic object (already resolved — not a string)
  * @param {number} [index] - Specific index to read. If omitted, reads latest.
+ * @param {{ maxBytes: number, charge: (bytes: number) => any, reserve: (bytes: number) => any }} meter
  * @returns {Promise<{ payload: Buffer, index: number, nextIndex: number|null }>}
  */
-async function readFeedPayload(ownerAddress, topic, index) {
+async function readFeedPayload(ownerAddress, topic, index, meter) {
+  // Every read is metered: a missing meter is the caller's bug, refused here
+  // before anything is asked of the node rather than as a TypeError midway.
+  if (
+    !meter ||
+    !Number.isSafeInteger(meter.maxBytes) ||
+    meter.maxBytes < 0 ||
+    typeof meter.charge !== 'function' ||
+    typeof meter.reserve !== 'function'
+  ) {
+    throw new TypeError('readFeedPayload needs a read meter ({ maxBytes, charge, reserve })');
+  }
   const bee = getBee();
   const owner = new EthAddress(ownerAddress);
-  const reader = bee.feed.makeReader(topic, owner);
 
   try {
     const result = index !== undefined && index !== null
-      ? await downloadExactFeedPayload(bee, owner, topic, index)
-      : await reader.downloadPayload();
+      ? await readExactFeedEntry(bee, owner, topic, index, meter)
+      : await readLatestFeedEntry(bee, owner, topic, meter);
 
-    const payload = Buffer.from(result.payload.toUint8Array());
     const readIndex = feedIndexToNumber(result.feedIndex);
     const nextIndex = result.feedIndexNext
       ? feedIndexToNumber(result.feedIndexNext)
       : null;
 
-    return { payload, index: readIndex, nextIndex };
+    return { payload: result.payload, index: readIndex, nextIndex };
   } catch (err) {
     // Only map "not found" errors to semantic reasons.
     // All other errors (network, timeout, parse) propagate as-is.

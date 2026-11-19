@@ -9,9 +9,12 @@
  * or stream unbounded bytes into the main process.
  *
  * This is the implementation all ENS resolution paths use: the Myotis
- * and Colibri providers' automatic CCIP callbacks and the block-pinned RPC
- * legs' manual CCIP loop (`ens-resolver.js#callUniversalResolver`). Keeping
- * them on one function is what stops their bounds from drifting apart.
+ * provider's automatic CCIP callback (`myotis-resolver.js`) and the
+ * block-pinned RPC legs' manual CCIP loop
+ * (`ens-resolver.js#callUniversalResolver`). Colibri no longer resolves
+ * names through an ethers provider of its own (#1076), so it has no CCIP
+ * path at all. Keeping the remaining paths on one function is what stops
+ * their bounds from drifting apart.
  *
  * Bounds, per gateway URL:
  *  - 15s wall clock, enforced with a real `AbortController` so the socket

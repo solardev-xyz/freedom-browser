@@ -23,6 +23,11 @@
  * then sees `isPrivateLogContext()`, and each log site redacts its
  * browsing-identifying values through `redactForLog()`.
  *
+ * The same marker picks Colibri's store (src/main/ens/colibri-resolver.js,
+ * #1058): a read in a private context runs on the chain's private worker,
+ * whose verifier store is in memory only, instead of the one on disk under
+ * <userData>/colibri.
+ *
  * Deliberate edge: concurrent resolves of the same name share one
  * in-flight promise. If a private caller creates it and a normal window
  * joins, the shared body logs redacted (safe direction — we lose a
@@ -35,6 +40,14 @@ const { AsyncLocalStorage } = require('async_hooks');
 
 const store = new AsyncLocalStorage();
 
+// The private session (#1058): from the first private window opening to the
+// last one closing (private-windows.js). A private context remembers the
+// session it was entered in, or none when no private window was open then,
+// so work that outlives its session can tell (`privateSessionLive`):
+// Colibri's private store must not take a read from a session that ended.
+let session = 0;
+let sessionOpen = false;
+
 /**
  * Run `fn` with the private-logging context set when `isPrivate`, so every
  * log site reached from it (however deep, however async) redacts.
@@ -42,12 +55,36 @@ const store = new AsyncLocalStorage();
  */
 function runWithPrivateLogContext(isPrivate, fn) {
   if (!isPrivate) return fn();
-  return store.run(true, fn);
+  return store.run({ session: sessionOpen ? session : null }, fn);
 }
 
 /** True when the current async context serves a private window. */
 function isPrivateLogContext() {
-  return store.getStore() === true;
+  const context = store.getStore();
+  return typeof context === 'object' && context !== null;
+}
+
+/**
+ * True when the current async context is private and was entered in the
+ * private session that is still open. False for a normal context, and for
+ * a private one whose session has ended (or that began with none open).
+ */
+function privateSessionLive() {
+  if (!isPrivateLogContext()) return false;
+  const entered = store.getStore().session;
+  return sessionOpen && entered !== null && entered === session;
+}
+
+/** A private window opened: the private session is open (idempotent). */
+function openPrivateSession() {
+  sessionOpen = true;
+}
+
+/** The last private window closed: its session has ended. */
+function endPrivateSession() {
+  if (!sessionOpen) return;
+  sessionOpen = false;
+  session += 1;
 }
 
 /**
@@ -108,10 +145,26 @@ function redactedFailure(status, build, ...browsingValues) {
   };
 }
 
+/**
+ * A transport error's code for the persistent log (`ECONNREFUSED`,
+ * `UND_ERR_SOCKET`, `native_gateway_error`), or '' when it has none shaped
+ * like one. The dweb transports log this instead of the error's message,
+ * whose text can carry the URL or path that was fetched — in a normal
+ * window as much as in a private one.
+ */
+function errorCodeForLog(err) {
+  const code = err?.cause?.code || err?.code;
+  return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_:.-]{0,63}$/.test(code) ? code : '';
+}
+
 module.exports = {
   runWithPrivateLogContext,
   isPrivateLogContext,
+  privateSessionLive,
+  openPrivateSession,
+  endPrivateSession,
   redactForLog,
   redactUrlForLog,
   redactedFailure,
+  errorCodeForLog,
 };

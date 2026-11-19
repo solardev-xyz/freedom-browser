@@ -102,12 +102,14 @@ const mockReadData = jest.fn();
 const mockWriteSingleOwnerChunk = jest.fn();
 const mockReadSingleOwnerChunk = jest.fn();
 const mockGetSignerAddress = jest.fn();
+const mockPublishSignedSoc = jest.fn();
 jest.mock('./chunk-service', () => ({
   publishChunk: mockPublishChunk,
   readChunk: mockReadChunk,
   readDataRoot: mockReadDataRoot,
   readData: mockReadData,
   writeSingleOwnerChunk: mockWriteSingleOwnerChunk,
+  publishSignedSingleOwnerChunk: mockPublishSignedSoc,
   readSingleOwnerChunk: mockReadSingleOwnerChunk,
   getSignerAddress: mockGetSignerAddress,
 }));
@@ -145,10 +147,12 @@ jest.mock('./feed-store', () => ({
 const mockGetDerivedKeys = jest.fn();
 const mockGetPublisherKey = jest.fn();
 const mockGetUserWalletKey = jest.fn();
+const mockGetFreedomSigningAddresses = jest.fn();
 jest.mock('../identity-manager', () => ({
   getDerivedKeys: mockGetDerivedKeys,
   getPublisherKey: mockGetPublisherKey,
   getUserWalletKey: mockGetUserWalletKey,
+  getFreedomSigningAddresses: (...args) => mockGetFreedomSigningAddresses(...args),
 }));
 
 const mockAddEntry = jest.fn().mockReturnValue({ id: 'test-id' });
@@ -294,6 +298,8 @@ describe('swarm-provider-ipc', () => {
         extensions: {
           ethereumWalletPublisherIdentity: true,
           publisherSigning: true,
+          pageSignedSingleOwnerChunks: true,
+          actShares: true,
         },
         limits: {
           maxDataBytes: LIMITS.maxDataBytes,
@@ -1317,7 +1323,7 @@ describe('swarm-provider-ipc', () => {
         owner: VALID_OWNER,
         identifier: VALID_IDENTIFIER,
       });
-      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xkey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
+      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xkey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined, epoch: expect.any(Number) });
       expect(mockAddEntry).toHaveBeenCalledWith(expect.objectContaining({
         type: 'soc',
         name: 'SOC chunk',
@@ -1463,6 +1469,217 @@ describe('swarm-provider-ipc', () => {
       expect(result.error.code).toBe(4100);
       expect(result.error.message).toBe('The origin is not authorized for this operation');
       expect(result.error.data.reason).toBe('feed_not_granted');
+    });
+  });
+
+  describe('swarm_publishSingleOwnerChunk (#647)', () => {
+    const OWNER = '0x' + 'ab'.repeat(20);
+    const IDENTIFIER = 'cd'.repeat(32);
+    const SIGNATURE = '0x' + 'ef'.repeat(64) + '1b';
+    const REFERENCE = '12'.repeat(32);
+    const params = (extra = {}) => ({
+      owner: OWNER,
+      identifier: IDENTIFIER,
+      signature: SIGNATURE,
+      data: 'hello',
+      ...extra,
+    });
+
+    function mockPreFlightOk() {
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
+    }
+
+    function heldAddresses(addresses = [], complete = true) {
+      mockGetFreedomSigningAddresses.mockResolvedValue({
+        addresses: new Set(addresses.map((a) => a.replace(/^0x/, '').toLowerCase())),
+        complete,
+      });
+    }
+
+    function verifiedPublish() {
+      mockPublishSignedSoc.mockImplementation(async (args) => {
+        args.onVerified();
+        return {
+          reference: REFERENCE,
+          owner: '0x' + 'AB'.repeat(20),
+          identifier: IDENTIFIER,
+          batchIdUsed: 'batch1',
+        };
+      });
+    }
+
+    function expectNoFreedomKeyUsed() {
+      expect(mockGetDerivedKeys).not.toHaveBeenCalled();
+      expect(mockGetPublisherKey).not.toHaveBeenCalled();
+      expect(mockGetUserWalletKey).not.toHaveBeenCalled();
+      expect(mockWriteSingleOwnerChunk).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      heldAddresses();
+      mockHasFeedGrant.mockReturnValue(false);
+    });
+
+    test('publishes a page-signed SOC with the connection grant alone', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      verifiedPublish();
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params({ span: 5 }), 'myapp.eth');
+
+      expect(result.result).toEqual({
+        reference: REFERENCE,
+        owner: '0x' + 'AB'.repeat(20),
+        identifier: IDENTIFIER,
+      });
+      expect(mockPublishSignedSoc).toHaveBeenCalledWith(expect.objectContaining({
+        owner: 'ab'.repeat(20),
+        identifier: IDENTIFIER,
+        signature: SIGNATURE,
+        data: Buffer.from('hello'),
+        span: 5n,
+      }));
+      expect(mockAddEntry).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'soc',
+        name: 'Signed SOC chunk',
+        origin: 'myapp.eth',
+        bytesSize: 5,
+      }));
+      expect(mockUpdateEntry).toHaveBeenCalledWith('test-id', expect.objectContaining({
+        status: 'completed',
+        reference: REFERENCE,
+      }));
+      expect(mockHasFeedGrant).not.toHaveBeenCalled();
+      expectNoFreedomKeyUsed();
+    });
+
+    test('is refused without the connection grant', async () => {
+      mockGetPermission.mockReturnValue(null);
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: 4100, data: { reason: 'not_connected' } });
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+    });
+
+    test('a signature that does not verify is invalid_signature, with no history entry', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      mockPublishSignedSoc.mockRejectedValue(Object.assign(
+        new Error('The signature does not recover to owner for this identifier and chunk'),
+        { reason: 'invalid_signature' }
+      ));
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: -32602, data: { reason: 'invalid_signature' } });
+      expect(mockAddEntry).not.toHaveBeenCalled();
+      expect(mockUpdateEntry).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['the Ant wallet', '0x' + '11'.repeat(20)],
+      ['a wallet account', '0x' + 'AB'.repeat(20)],
+    ])('an owner that is %s is refused before anything is stamped', async (_label, held) => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: { publish: true } });
+      heldAddresses(['0x' + '11'.repeat(20), '0x' + 'AB'.repeat(20)]);
+
+      // Matched whatever the case and 0x prefix the page sends.
+      const result = await invokeProvider(
+        'swarm_publishSingleOwnerChunk',
+        params({ owner: held.toLowerCase() }),
+        'myapp.eth'
+      );
+
+      expect(result.error).toMatchObject({ code: 4100, data: { reason: 'freedom_identity' } });
+      expect(mockGetPublishReadiness).not.toHaveBeenCalled();
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+      expect(mockAddEntry).not.toHaveBeenCalled();
+      expectNoFreedomKeyUsed();
+    });
+
+    test('an owner check that cannot complete fails closed', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      heldAddresses([], false);
+      const incomplete = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+      expect(incomplete.error).toMatchObject({ code: -32603, data: { reason: 'vault_locked' } });
+
+      mockGetFreedomSigningAddresses.mockRejectedValue(new Error('meta unreadable'));
+      const thrown = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+      expect(thrown.error.code).toBe(-32603);
+
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+      expect(mockAddEntry).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['owner', { owner: '0x1234' }, 'invalid_owner'],
+      ['identifier', { identifier: '0x' + 'cd'.repeat(32) }, 'invalid_identifier'],
+      ['signature length', { signature: 'ef'.repeat(64) }, 'invalid_signature'],
+      ['signature hex', { signature: 'zz'.repeat(65) }, 'invalid_signature'],
+      ['empty data', { data: '' }, 'invalid_params'],
+      ['oversized data', { data: Buffer.alloc(4097) }, 'payload_too_large'],
+      ['span', { span: -1 }, 'invalid_span'],
+      ['options', { options: { pin: false } }, 'unsupported_option'],
+    ])('validates %s before the owner check', async (_label, extra, reason) => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(extra), 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: -32602, data: { reason } });
+      expect(mockGetFreedomSigningAddresses).not.toHaveBeenCalled();
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+    });
+
+    test('a node that is not ready is reported with the pre-flight reason', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: false, reason: 'no-usable-stamps' });
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: 4900, data: { reason: 'no-usable-stamps' } });
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+    });
+
+    test('an upload failure after verification marks the history entry failed', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      mockPublishSignedSoc.mockImplementation(async (args) => {
+        args.onVerified();
+        throw new Error('SOC upload failed (500): boom');
+      });
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+
+      expect(result.error.code).toBe(-32603);
+      expect(mockUpdateEntry).toHaveBeenCalledWith('test-id', expect.objectContaining({
+        status: 'failed',
+      }));
+    });
+
+    test('Agent custody refuses an auto-approved signed-SOC write', async () => {
+      const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+      const chrome = { id: 1 };
+      const guest = { ...fakeWebContents(), hostWebContents: chrome };
+      mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: { publish: true } });
+      setAgentPageCustody(guest, true);
+      try {
+        const refused = await ipcHandlers['swarm:provider-execute'](
+          { sender: chrome },
+          {
+            method: 'swarm_publishSingleOwnerChunk',
+            params: params(),
+            origin: 'myapp.eth',
+            meta: { webContentsId: 9, approval: 'auto' },
+          }
+        );
+        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+        expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+      } finally {
+        setAgentPageCustody(guest, false);
+      }
     });
   });
 
@@ -1765,7 +1982,7 @@ describe('swarm-provider-ipc', () => {
       expect(result.result.reference).toBe(VALID_REF);
       expect(result.result.bzzUrl).toBe('bzz://mref');
       expect(result.result.index).toBe(7);
-      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey', 'myapp.eth/blog', VALID_REF);
+      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey', 'myapp.eth/blog', VALID_REF, undefined, { epoch: expect.any(Number) });
       expect(mockUpdateFeedReference).toHaveBeenCalledWith('myapp.eth', 'blog', VALID_REF);
     });
 
@@ -1785,7 +2002,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result.index).toBe(8);
       expect(mockGetPublisherKey).toHaveBeenCalledWith(1);
-      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey1', 'myapp.eth/blog', VALID_REF);
+      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey1', 'myapp.eth/blog', VALID_REF, undefined, { epoch: expect.any(Number) });
     });
 
     test('records publish history as feed-update', async () => {
@@ -1901,7 +2118,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello' }, 'myapp.eth');
 
       expect(result.result).toEqual({ index: 0 });
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: undefined });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: undefined, epoch: expect.any(Number) });
     });
 
     test('writes feed entry with the identity that created the feed', async () => {
@@ -1920,7 +2137,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result).toEqual({ index: 0 });
       expect(mockGetPublisherKey).toHaveBeenCalledWith(1);
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey1', 'myapp.eth/feed', 'hello', { index: undefined });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey1', 'myapp.eth/feed', 'hello', { index: undefined, epoch: expect.any(Number) });
     });
 
     test('passes explicit index to writeFeedPayload', async () => {
@@ -1933,7 +2150,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello', index: 5 }, 'myapp.eth');
 
       expect(result.result).toEqual({ index: 5 });
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: 5 });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: 5, epoch: expect.any(Number) });
     });
 
     test('records publish history on success', async () => {
@@ -1984,17 +2201,55 @@ describe('swarm-provider-ipc', () => {
       expect(result.error.data.reason).toBe('index_already_exists');
     });
 
-    test('translates payload too large error', async () => {
+    test('a node error from the overwrite check is a retryable -32603, not a free index (#1054)', async () => {
       mockFeedCapability('myapp.eth');
       mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
       mockPreFlightOk();
       mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
-      mockWriteFeedPayload.mockRejectedValue(new Error('chunk too large'));
+      // feed-service throws the node's 500 for the entry instead of writing.
+      mockWriteFeedPayload.mockRejectedValue(
+        Object.assign(new Error('Internal Server Error: read chunk failed'), { status: 500 })
+      );
 
-      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'x'.repeat(10000) }, 'myapp.eth');
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello', index: 0 }, 'myapp.eth');
+
+      expect(result.error.code).toBe(-32603);
+      expect(result.error.message).toBe('Internal Server Error: read chunk failed');
+      expect(result.error.data).toBeUndefined();
+    });
+
+    test('an empty payload refused by feed-service says so, not that it is too large', async () => {
+      mockFeedCapability('myapp.eth');
+      mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
+      mockPreFlightOk();
+      mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
+      // feed-service's own refusal of the page's payload, marked by reason.
+      mockWriteFeedPayload.mockRejectedValue(
+        Object.assign(new Error('A feed entry needs at least 1 byte of data'), { reason: 'payload_too_large' })
+      );
+
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: '' }, 'myapp.eth');
 
       expect(result.error.code).toBe(-32602);
-      expect(result.error.data.reason).toBe('payload_too_large');
+      expect(result.error.message).toBe('A feed entry needs at least 1 byte of data');
+      expect(result.error.data).toEqual({ reason: 'payload_too_large' });
+    });
+
+    test.each([
+      // bee-js's text for a node's malformed (4,202-byte) chunk.
+      ['payload size 4097 exceeds maximum chunk payload size 4096'],
+      ['chunk too large'],
+    ])('a node error that reads "%s" stays a retryable -32603 (#1054)', async (message) => {
+      mockFeedCapability('myapp.eth');
+      mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
+      mockPreFlightOk();
+      mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
+      mockWriteFeedPayload.mockRejectedValue(new Error(message));
+
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello', index: 0 }, 'myapp.eth');
+
+      expect(result.error.code).toBe(-32603);
+      expect(result.error.message).toBe(message);
     });
 
     test('accepts binary data', async () => {
@@ -2135,6 +2390,7 @@ describe('swarm-provider-ipc', () => {
         'cd'.repeat(20),
         expect.any(MockTopic),
         5,
+        expect.objectContaining({ maxBytes: 5 * 1024 * 1024 }),
       );
     });
 
@@ -2156,6 +2412,7 @@ describe('swarm-provider-ipc', () => {
         'ee'.repeat(20),
         expect.any(MockTopic),
         undefined,
+        expect.objectContaining({ maxBytes: 5 * 1024 * 1024 }),
       );
     });
 
@@ -2210,6 +2467,75 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.error.code).toBe(-32602);
       expect(result.error.data.reason).toBe('entry_not_found');
+    });
+
+    describe('the read budget (#1051)', () => {
+      const KIB = 1024;
+
+      beforeEach(() => {
+        mockGetPermission.mockReturnValue(null);
+        mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+        global.fetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+      });
+      afterEach(() => {
+        global.fetch.mockReset();
+      });
+
+      // What feed-service does with the meter, end to end in
+      // feed-read-budget.http.test.js: reserve before reading, or give up.
+      function readReserving(bytes) {
+        mockReadFeedPayload.mockImplementation(async (_owner, _topic, _index, meter) => {
+          const refusal = meter.reserve(bytes);
+          if (refusal) throw Object.assign(new Error('refused'), { refusal });
+          return { payload: Buffer.alloc(bytes), index: 0, nextIndex: 1 };
+        });
+      }
+
+      test('the meter reserves against the origin\'s byte budget, before the read', async () => {
+        readReserving(400 * KIB);
+        const first = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(Buffer.from(first.result.data, 'base64')).toHaveLength(400 * KIB);
+
+        const second = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(second.error.code).toBe(-32602);
+        expect(second.error.data).toMatchObject({ reason: 'rate_limited', maxBytes: 512 * KIB });
+
+        // The refused 400 KiB were never reserved: 112 KiB are left.
+        readReserving(100 * KIB);
+        const third = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(third.result).toBeDefined();
+      });
+
+      test('nothing more is charged after the read', async () => {
+        readReserving(512 * KIB);
+        const whole = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        // The whole budget, reserved once: not charged a second time.
+        expect(whole.result).toBeDefined();
+      });
+
+      test('the meter\'s limit is the origin\'s byte budget', async () => {
+        await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(mockReadFeedPayload.mock.calls[0][3].maxBytes).toBe(512 * KIB);
+      });
+
+      test('an entry larger than the budget is data_too_large', async () => {
+        const tooLarge = Object.assign(new Error('Feed entry exceeds the maximum read size of 524288 bytes'), {
+          reason: 'data_too_large',
+          limit: 512 * KIB,
+          actual: 10 * 1024 * KIB,
+        });
+        mockReadFeedPayload.mockRejectedValueOnce(tooLarge);
+        const known = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER, index: 2 }, 'unknown.eth');
+        expect(known.error.code).toBe(-32602);
+        expect(known.error.message).toBe('Feed entry exceeds the maximum read size of 524288 bytes');
+        expect(known.error.data).toEqual({ reason: 'data_too_large', limit: 512 * KIB, actual: 10 * 1024 * KIB });
+
+        // A body with no declared length: its size is not known.
+        delete tooLarge.actual;
+        mockReadFeedPayload.mockRejectedValueOnce(tooLarge);
+        const unknown = await invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'unknown.eth');
+        expect(unknown.error.data).toEqual({ reason: 'data_too_large', limit: 512 * KIB });
+      });
     });
 
     test('returns NODE_UNAVAILABLE when Bee is not reachable', async () => {
@@ -2446,6 +2772,16 @@ describe('swarm-provider-ipc', () => {
         expect(result.error.data.reason).toBe('invalid_recipient');
       });
 
+      test('accepts only a compressed key: not x ‖ y, uncompressed, or prefixless (#1062)', async () => {
+        mockMessagingGranted();
+        const xy = 'ef'.repeat(64);
+        for (const recipient of [xy, `04${xy}`, `0x${xy}`, 'ef'.repeat(32), `04${'ef'.repeat(32)}`, `${RECIPIENT}ef`]) {
+          const result = await invokeProvider('swarm_sendPss', { ...validParams, recipient }, ORIGIN);
+          expect(result.error.data.reason).toBe('invalid_recipient');
+        }
+        expect(mockSendPss).not.toHaveBeenCalled();
+      });
+
       test('requires targets (2-3 whole bytes of hex)', async () => {
         // undefined/empty, odd hex, 1-byte (below the storability floor),
         // and 4-byte (over the mining cap) are all invalid_target.
@@ -2504,7 +2840,7 @@ describe('swarm-provider-ipc', () => {
 
         const result = await invokeProvider(
           'swarm_sendPss',
-          { ...validParams, targets: 'AABB', recipient: `0x${RECIPIENT}` },
+          { ...validParams, targets: 'AABB', recipient: `0x${RECIPIENT.toUpperCase()}` },
           ORIGIN
         );
         expect(result.result).toEqual({ sent: true });

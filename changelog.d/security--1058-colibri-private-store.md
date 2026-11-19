@@ -1,0 +1,1 @@
+- Private windows no longer leave a record on disk of the contracts their pages and ENS lookups read ([#1058](https://github.com/solardev-xyz/freedom-browser/issues/1058))

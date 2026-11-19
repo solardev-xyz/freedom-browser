@@ -15,8 +15,6 @@ const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError, isNoUsableBatchError } = require('./batch-errors');
 const { addEntry, updateEntry } = require('./publish-history');
 const { isPrivateWebContents } = require('../private/private-windows');
-const { createProfileTempDir } = require('../profile-paths');
-const fsOffload = require('../fs-offload');
 const log = require('electron-log');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { createPickTokenStore } = require('./publish-pick-tokens');
@@ -225,37 +223,32 @@ async function publishCollection(files, options = {}) {
 }
 
 /**
- * Publish a collection of in-memory files as a Swarm directory manifest.
- * Writes files to a temp directory, delegates to publishDirectory, cleans up.
+ * Publish a collection of in-memory files (window.swarm's publishFiles) as a
+ * Swarm directory manifest, through publishCollection: each tar entry is
+ * named by the page's own `/`-separated path, on every platform, and nothing
+ * is written to disk. Written under a temp directory instead, the files were
+ * named by bee-js with the platform's path.join, so on Windows a nested
+ * `assets/app.js` reached the node as `assets\app.js` and a nested
+ * indexDocument matched nothing (#1052).
+ *
+ * The batch is chosen here, so that having none reads as noUsableBatchError,
+ * as for the other page uploads.
  *
  * Note: per-file contentType is accepted in the file objects but not currently
- * applied — bee-js collection.uploadFromDirectory infers MIME types from
- * extensions.
+ * applied — the node infers MIME types from extensions.
  * Files with non-standard names should use appropriate extensions.
  *
  * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files
  * @param {{ indexDocument?: string }} options
  */
 async function publishFilesFromContent(files, options = {}) {
-  const tempDir = createProfileTempDir('swarm-publish');
-
-  try {
-    for (const file of files) {
-      const filePath = path.join(tempDir, file.path);
-      await fsp.mkdir(path.dirname(filePath), { recursive: true });
-      await fsp.writeFile(filePath, file.bytes);
-    }
-
-    return await publishDirectory(tempDir, {
-      indexDocument: options.indexDocument,
-    });
-  } finally {
-    try {
-      await fsOffload.removePath(tempDir, { recursive: true, force: true });
-    } catch (err) {
-      log.error('[PublishService] Failed to clean up temp dir:', err.message);
-    }
+  const totalSize = files.reduce((total, file) => total + file.bytes.byteLength, 0);
+  const batchId = await selectBestBatch(totalSize, { requireCapacity: true });
+  if (!batchId) {
+    throw noUsableBatchError();
   }
+
+  return publishCollection(files, { batchId, indexDocument: options.indexDocument });
 }
 
 /**

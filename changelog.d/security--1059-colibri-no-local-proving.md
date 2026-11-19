@@ -1,0 +1,2 @@
+- When the Colibri prover is down, a balance, nonce, code, storage or block read no longer goes to Colibri's built-in public servers ([#1059](https://github.com/solardev-xyz/freedom-browser/issues/1059))
+  - Colibri used to prove the read inside Freedom, from servers you never chose. It now fails, and the read moves on to the next source

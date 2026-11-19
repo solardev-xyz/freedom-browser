@@ -12,6 +12,13 @@ jest.mock('./logger', () => mockLog);
 // real BrowserWindow, so stub the one predicate ens-resolver uses.
 jest.mock('./private/private-windows', () => ({
   isPrivateWebContents: (webContents) => webContents?.isPrivate === true,
+  // The strict classifier's three answers: a sender it can't place (none,
+  // destroyed, or without `isPrivate`) is unknown.
+  classifyWebContents: (webContents) => {
+    if (!webContents || webContents.isDestroyed?.()) return 'unknown';
+    if (webContents.isPrivate === true) return 'private';
+    return webContents.isPrivate === false ? 'public' : 'unknown';
+  },
 }));
 
 // Mock ens-prefetch so tests can assert when it fires and when it aborts,
@@ -127,15 +134,17 @@ jest.mock('./networks/network-registry', () => {
   };
 });
 
-// Mocked Colibri resolver. The orchestrator branch in consensusResolve
-// lazy-requires this; the lazy require sees the mocked module. Tests
-// flip behavior per case via mockResolveViaColibri.
+// Colibri answers no name lookup (#1076). The mock still offers the
+// adapters an older resolver called, and they answer with a forged name or
+// address (beforeEach), so a resolver that asked Colibri again would show.
 const mockResolveViaColibri = jest.fn();
 const mockResolveReverseViaColibri = jest.fn();
+const mockRequestViaColibri = jest.fn();
 jest.mock('./ens/colibri-resolver', () => ({
   resolveCallViaColibri: (...args) => mockResolveViaColibri(...args),
   resolveViaColibri: (...args) => mockResolveViaColibri(...args),
   resolveReverseViaColibri: (...args) => mockResolveReverseViaColibri(...args),
+  requestViaColibri: (...args) => mockRequestViaColibri(...args),
 }));
 
 // Myotis manager (experimental P2P light-client tier). Defaults to disabled
@@ -327,10 +336,14 @@ beforeEach(() => {
   mockGnsContenthash.mockResolvedValue('0x');
   mockGnsAddr.mockResolvedValue('0x0000000000000000000000000000000000000000');
   mockGnsReverseResolve.mockResolvedValue('');
+  // The forgeries a public RPC could feed Colibri (#1076): any lookup's
+  // answer is the forged address, and a reverse one the forged name.
   mockResolveViaColibri.mockResolvedValue({
-    resolvedData: actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['']),
-    resolverAddress: WNS_ADDRESS,
+    resolvedData: actualEthers.AbiCoder.defaultAbiCoder().encode(['address'], [FORGED_ADDRESS]),
+    resolverAddress: FAKE_RESOLVER,
   });
+  mockResolveReverseViaColibri.mockResolvedValue({ name: 'forged.eth' });
+  mockRequestViaColibri.mockRejectedValue(new Error('chain data is not under test here'));
   mockLoadSettings.mockReturnValue({
     enableEnsCustomRpc: false,
     ensRpcUrl: '',
@@ -361,6 +374,7 @@ function routeByProvider(map) {
 // 32-byte address directly. Each helper mirrors one of those shapes.
 const actualEthers = jest.requireActual('ethers').ethers;
 const FAKE_RESOLVER = '0x0000000000000000000000000000000000001234';
+const FORGED_ADDRESS = '0x00000000000000000000000000000000000bad00';
 
 // For contenthash-like (dynamic `bytes` return): wrap inner hex as ABI (bytes).
 function urReturnsBytes(innerHex) {
@@ -703,9 +717,18 @@ describe('ens-resolver', () => {
       }
     );
 
-    test('an HTTP 503 in the error message is still a provider error', async () => {
+    test('an HTTP 503 answer is still a provider error', async () => {
       const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
-      const unavailable = () => new Error('bad response (status=503, statusText="Service Unavailable")');
+      // The error ethers raises for an endpoint that answers 503.
+      const unavailable = () => {
+        const request = new actualEthers.FetchRequest('https://rpc.example');
+        try {
+          new actualEthers.FetchResponse(503, 'Service Unavailable', {}, null, request).assertOk();
+        } catch (err) {
+          return err;
+        }
+        throw new Error('assertOk accepted a 503');
+      };
       routeByProvider(new Map([
         [TEST_PROVIDERS[0], { kind: 'reject', payload: unavailable() }],
         [TEST_PROVIDERS[1], { kind: 'reject', payload: unavailable() }],
@@ -730,6 +753,134 @@ describe('ens-resolver', () => {
       expect(second.uri).toBe(`ipfs://${IPFS_V0}`);
       // Cold path hits K=3 legs; warm path hits 0 (cache).
       expect(mockUrResolve.mock.calls.length).toBe(callsAfterCold);
+    });
+
+    const revertReason = (reason) => '0x08c379a0' + actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], [reason]).slice(2);
+    // Call data is hex, so it can hold any run of digits: ethers' message
+    // for a failed call embeds it.
+    const DIGITS_CALLDATA = '0x9061b923' + '00'.repeat(30) + '4295035040' + '00'.repeat(30);
+
+    test.each([
+      ['a custom-error revert whose call data holds 429 and 50x digits', { code: 3, message: 'execution reverted', data: '0x12345678' }, DIGITS_CALLDATA],
+      ['a revert whose reason says timeout', { code: 3, message: 'execution reverted: timeout', data: revertReason('timeout') }, undefined],
+      ['a revert whose reason says no response', { code: -32000, message: 'execution reverted: no response' }, undefined],
+      ['a revert whose reason names an HTTP status', { code: -32000, message: 'execution reverted: 503 Service Unavailable' }, undefined],
+    ])('%s is an execution outcome and quarantines no endpoint', async (label, rpcError, calldata) => {
+      const error = rpcCallError(rpcError, calldata);
+      if (calldata) expect(error.message).toMatch(/429|50[234]/);
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: error }])));
+      const slug = label.replace(/\W+/g, '-');
+      const failing = await resolveEnsContent(`${slug}.box`);
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+      expect(failing.trust.level).toBe('verified');
+
+      // Every endpoint is still healthy: the next name uses the full pool.
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const healthy = await resolveEnsContent(`healthy-after-${slug}.box`);
+      expect(healthy.trust).toMatchObject({ level: 'verified' });
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    test('a name echoed in an ethers error message never quarantines an endpoint', async () => {
+      // dnsEncode refuses a label over 255 bytes, and its message quotes the
+      // name: a name that holds "503" or "timeout" must not read as an
+      // endpoint failure.
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      for (const label of ['x503'.repeat(64), 'timeout'.repeat(37)]) {
+        expect(() => actualEthers.dnsEncode(`${label}.eth`, 255)).toThrow(label);
+        const failing = await resolveEnsContent(`${label}.eth`);
+        expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+        expect(failing.trust.level).toBe('verified');
+      }
+
+      const healthy = await resolveEnsContent('healthy-after-echoed-name.box');
+      expect(healthy.trust).toMatchObject({ level: 'verified' });
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    test('an ABI decoding error stays an answer', async () => {
+      let decodeError;
+      try {
+        new actualEthers.Interface(['function f() view returns (bytes)']).decodeFunctionResult('f', '0x1234');
+      } catch (err) {
+        decodeError = err;
+      }
+      expect(decodeError.code).toBe('BAD_DATA');
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: decodeError }])));
+      const failing = await resolveEnsContent('abi-decoding.box');
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+    });
+
+    test.each([
+      ['a JSON-RPC internal error', { code: -32603, message: 'internal error' }],
+      ['a node that did not respond', { code: -32000, message: 'no response' }],
+      ['a node rate limit', { code: -32000, message: '429 Too Many Requests' }],
+      ['a node that timed out', { code: -32000, message: 'request timeout' }],
+    ])('%s still quarantines the endpoint', async (label, rpcError) => {
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: rpcCallError(rpcError) }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: rpcCallError(rpcError) }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
+      const slug = label.replace(/\W+/g, '-');
+      await resolveEnsContent(`${slug}.box`);
+
+      // Two endpoints sit in quarantine: one source is left.
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const next = await resolveEnsContent(`after-${slug}.box`);
+      expect(next.trust.level).toBe('unverified');
+      expect(next.trust.queried).toEqual([new URL(TEST_PROVIDERS[2]).host]);
+    });
+
+    // A status comes from the answer's own status (SERVER_ERROR), never
+    // from the node's text, which can echo calldata or a gas figure
+    // (freedom-core design 0004, classification rule 7).
+    test.each([
+      ['a bare status in the text', { code: -32000, message: 'upstream answered 503' }],
+      ['echoed call data holding 429', { code: -32000, message: 'invalid argument 0: 0x9061b923000429000502' }],
+      ['a gas figure holding 504', { code: -32000, message: 'intrinsic gas too low: have 15040, want 21000' }],
+    ])("%s in a node's message quarantines no endpoint", async (label, rpcError) => {
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: rpcCallError(rpcError) }])));
+      const slug = label.replace(/\W+/g, '-');
+      const failing = await resolveEnsContent(`${slug}.box`);
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const healthy = await resolveEnsContent(`healthy-after-${slug}.box`);
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    test.each([
+      ['a socket reset', () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+      ['a refused connection behind happy eyeballs', () => Object.assign(new AggregateError([Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })]), {})],
+      ['an answer without a response for the request', () => actualEthers.makeError('missing response for request', 'BAD_DATA', { value: [], info: { payload: { id: 1 } } })],
+      ['an HTTP 200 whose body is an HTML page', () => {
+        const page = new actualEthers.FetchResponse(200, 'OK', { 'content-type': 'text/html' }, actualEthers.toUtf8Bytes('<html>captive portal</html>'), null);
+        try { return page.bodyJson; } catch (err) { return err; }
+      }],
+      ['an expired TLS certificate', () => Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' })],
+      ['a TLS host name mismatch', () => Object.assign(new Error("Hostname/IP does not match certificate's altnames"), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' })],
+      ['a TLS protocol error', () => Object.assign(new Error('write EPROTO'), { code: 'EPROTO' })],
+      ['a network that is down', () => Object.assign(new Error('connect ENETDOWN'), { code: 'ENETDOWN' })],
+      ['a local address not available', () => Object.assign(new Error('connect EADDRNOTAVAIL'), { code: 'EADDRNOTAVAIL' })],
+    ])('%s quarantines the endpoint', async (label, makeFailure) => {
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: makeFailure() }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: makeFailure() }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
+      const slug = label.replace(/\W+/g, '-');
+      await resolveEnsContent(`${slug}.box`);
+
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const next = await resolveEnsContent(`after-${slug}.box`);
+      expect(next.trust.level).toBe('unverified');
+      expect(next.trust.queried).toEqual([new URL(TEST_PROVIDERS[2]).host]);
     });
 
     test('does not cache transient NO_CONTENTHASH errors', async () => {
@@ -1821,18 +1972,15 @@ describe('ens-resolver', () => {
       myotisUp();
       mockLoadSettings.mockReturnValue({
         ...mockLoadSettings(),
-        ensResolutionMethod: 'colibri',
-        ensResolutionOrder: ['colibri', 'myotis', 'quorum'],
+        ensResolutionOrder: ['quorum', 'myotis'],
         ensPreferVerified: true,
       });
-      const [resolvedData, resolverAddress] = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
-      mockResolveViaColibri.mockResolvedValue({ resolvedData, resolverAddress });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
 
-      const result = await resolveEnsContent('colibri-first.eth');
+      const result = await resolveEnsContent('quorum-first.eth');
 
-      expect(result.trust).toMatchObject({ level: 'verified', method: 'colibri' });
+      expect(result.trust).toMatchObject({ level: 'verified', quorum: { k: 3, m: 2, achieved: true } });
       expect(mockMyotisResolveEnsRecord).not.toHaveBeenCalled();
-      expect(mockUrResolve).not.toHaveBeenCalled();
     });
 
     test('does not consult a later method after an optimistic verified answer', async () => {
@@ -1922,7 +2070,7 @@ describe('ens-resolver', () => {
       infoSpy.mockRestore();
     });
 
-    test('discards a Myotis read interrupted by shutdown and resolves once through Colibri', async () => {
+    test('discards a Myotis read interrupted by shutdown and resolves once through the quorum', async () => {
       let ready = true;
       let epoch = 1;
       let finishMyotis;
@@ -1932,12 +2080,12 @@ describe('ens-resolver', () => {
       mockMyotisResolveEnsRecord.mockImplementation(() => new Promise((resolve) => {
         finishMyotis = resolve;
       }));
-      withColibri({
-        ensResolutionOrder: ['myotis', 'colibri'],
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        ensResolutionOrder: ['myotis', 'quorum'],
         ensPreferVerified: true,
       });
-      const [resolvedData, resolverAddress] = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
-      mockResolveViaColibri.mockResolvedValue({ resolvedData, resolverAddress });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
 
       const pending = resolveEnsContent('shutdown-race.eth');
       await Promise.resolve();
@@ -1960,9 +2108,10 @@ describe('ens-resolver', () => {
       expect(result).toMatchObject({
         type: 'ok',
         uri: `ipfs://${IPFS_V0}`,
-        trust: { level: 'verified', method: 'colibri' },
+        trust: { level: 'verified', quorum: { achieved: true } },
       });
-      expect(mockResolveViaColibri).toHaveBeenCalledTimes(1);
+      expect(result.trust.method).toBeUndefined();
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
     });
 
     test('unavailable transition evicts a cached Myotis answer before the next lookup', async () => {
@@ -1986,17 +2135,18 @@ describe('ens-resolver', () => {
       for (const cb of mockMyotisAvailabilityListeners) {
         cb({ chainId: 1, ready: false, reason: 'stopping', epoch });
       }
-      withColibri({
-        ensResolutionOrder: ['myotis', 'colibri'],
+      mockLoadSettings.mockReturnValue({
+        ...mockLoadSettings(),
+        ensResolutionOrder: ['myotis', 'quorum'],
         ensPreferVerified: true,
       });
-      const [resolvedData, resolverAddress] = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
-      mockResolveViaColibri.mockResolvedValue({ resolvedData, resolverAddress });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
 
       const second = await resolveEnsContent('shutdown-cache.eth');
 
-      expect(second.trust.method).toBe('colibri');
-      expect(mockResolveViaColibri).toHaveBeenCalledTimes(1);
+      expect(second.trust).toMatchObject({ level: 'verified', quorum: { achieved: true } });
+      expect(second.trust.method).toBeUndefined();
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
     });
 
     test('engine failure falls through to the quorum path', async () => {
@@ -2636,6 +2786,103 @@ describe('ens-resolver', () => {
       expect(result.trust.quorum.achieved).toBe(false);
     });
 
+    // #1094: the pool counts providers, not URL strings. One provider listed
+    // under three URLs plus one other is two providers, so K<3 as above.
+    test('one provider under several URLs counts once in the quorum pool', async () => {
+      const settings = {
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+      };
+      mockLoadSettings.mockReturnValue({
+        ...settings,
+        ensPublicRpcProviders: [
+          TEST_PROVIDERS[0],
+          `${TEST_PROVIDERS[0]}/`,
+          'https://TEST-A.example.com/second-key',
+          TEST_PROVIDERS[1],
+        ],
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const collapsed = await resolveEnsContent('one-provider-many-urls.eth');
+      expect(collapsed.type).toBe('ok');
+      expect(collapsed.trust.level).toBe('unverified');
+      expect(collapsed.trust.quorum.achieved).toBe(false);
+
+      // A third provider makes the quorum, and the repeats are not asked.
+      mockLoadSettings.mockReturnValue({
+        ...settings,
+        ensPublicRpcProviders: [
+          TEST_PROVIDERS[0],
+          `${TEST_PROVIDERS[0]}/`,
+          TEST_PROVIDERS[1],
+          TEST_PROVIDERS[2],
+        ],
+      });
+      const verified = await resolveEnsContent('three-providers-four-urls.eth');
+      expect(verified.trust.level).toBe('verified');
+      expect([...verified.trust.queried].sort()).toEqual([
+        'test-a.example.com',
+        'test-b.example.com',
+        'test-c.example.com',
+      ]);
+    });
+
+    // #1097 R1-M1: the pool keeps every URL, and only the quorum counts
+    // providers once. So a second URL at a provider whose first is down
+    // (a second key, a second local node) stands in for it once the first
+    // is quarantined, instead of the provider dropping out of the pool.
+    test("a quarantined URL's same-provider alias stands in for it", async () => {
+      const alias = 'https://test-a.example.com/second-key';
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0], alias, TEST_PROVIDERS[1], TEST_PROVIDERS[2]],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999; // no shuffle: the first URL is test-a's own
+      try {
+        invalidateCachedProvider();
+        const down = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        mockProviderAnchorMap = new Map([[TEST_PROVIDERS[0], { headNumber: down }]]);
+        const data = { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) };
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: down }],
+          [alias, data],
+          [TEST_PROVIDERS[1], data],
+          [TEST_PROVIDERS[2], data],
+        ]));
+
+        // The anchor asks each provider once; test-a's first URL is down,
+        // so only two heads come back and this read is unverified.
+        const first = await resolveEnsContent('alias-standin-1.eth');
+        expect(first.trust.level).toBe('unverified');
+
+        // Its URL is quarantined now, and the alias makes test-a a member.
+        const second = await resolveEnsContent('alias-standin-2.eth');
+        expect(second.trust.level).toBe('verified');
+        expect([...second.trust.queried].sort()).toEqual([
+          'test-a.example.com',
+          'test-b.example.com',
+          'test-c.example.com',
+        ]);
+      } finally {
+        Math.random = origRandom;
+      }
+    });
+
     // Even when K=2 providers would naturally agree on current-head
     // state, an attacker claiming a head within the safety-depth window
     // should not force a "verified" stale answer. Structural downgrade
@@ -2984,6 +3231,205 @@ describe('ens-resolver', () => {
       }
     });
 
+    // #1097 R2-M1: the second wave excludes the *providers* the first wave
+    // asked, not just their URLs. With test-a listed under three keys, a
+    // URL-only filter would leave test-a's other two keys as the second
+    // wave; they'd agree with each other at m=2 and label one provider's
+    // answer verified, the #1094 bug one wave later.
+    test('second wave never re-asks a first-wave provider under another URL', async () => {
+      const keyTwo = 'https://test-a.example.com/key-2';
+      const keyThree = 'https://test-a.example.com/key-3';
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0], keyTwo, keyThree, TEST_PROVIDERS[1], TEST_PROVIDERS[2]],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999; // no shuffle: the first wave is [test-a, test-b, test-c]
+      try {
+        invalidateCachedProvider();
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
+          [keyTwo, { kind: 'data', payload: goodPayload }],
+          [keyThree, { kind: 'data', payload: goodPayload }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+        ]));
+
+        const contractsBefore = ethers.Contract.mock.calls.length;
+        const result = await resolveEnsContent('second-wave-same-provider.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust.level).toBe('unverified');
+        // No second wave ran: the first wave's evidence is what's reported.
+        expect(result.trust.queried).toEqual([
+          'test-a.example.com',
+          'test-b.example.com',
+          'test-c.example.com',
+        ]);
+        const asked = ethers.Contract.mock.calls.slice(contractsBefore).map((args) => args[2]?.url);
+        expect(asked).toContain(TEST_PROVIDERS[0]);
+        expect(asked).not.toContain(keyTwo);
+        expect(asked).not.toContain(keyThree);
+      } finally {
+        Math.random = origRandom;
+      }
+    });
+
+    // After an all-errored first wave, the second runs against whatever is
+    // left. One endpoint agreeing with itself is single-source evidence.
+    function fourPoolWithDeterministicOrder() {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [...TEST_PROVIDERS, 'https://test-d.example.com'],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999;
+      invalidateCachedProvider();
+      return () => { Math.random = origRandom; };
+    }
+
+    test('3 errors + one fresh provider → its answer is unverified, not verified', async () => {
+      const restore = fourPoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
+        ]));
+
+        const result = await resolveEnsContent('lone-second-wave.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.uri).toBe(`ipfs://${IPFS_HASH}`);
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          queried: ['test-d.example.com'],
+          quorum: { k: 1, m: 1, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('3 errors + one fresh provider → its not-found is unverified, not verified', async () => {
+      const restore = fourPoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', {
+            kind: 'reject',
+            payload: new Error('execution reverted: ResolverNotFound("lone-not-found.eth")'),
+          }],
+        ]));
+
+        const result = await resolveEnsContent('lone-not-found.eth');
+
+        expect(result).toMatchObject({ type: 'not_found', reason: 'NO_RESOLVER' });
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          quorum: { k: 1, m: 1, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('3 errors + two fresh providers that agree → verified', async () => {
+      const { restore } = fivePoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+          ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
+        ]));
+
+        const result = await resolveEnsContent('pair-second-wave.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust).toMatchObject({
+          level: 'verified',
+          queried: ['test-d.example.com', 'test-e.example.com'],
+          quorum: { k: 2, m: 2, achieved: true },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('K = M = 3: two fresh providers that agree after 3 errors are unverified', async () => {
+      const { restore } = fivePoolWithDeterministicOrder({ ensQuorumM: 3 });
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+          ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
+        ]));
+
+        const result = await resolveEnsContent('pair-under-m3.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          queried: ['test-d.example.com', 'test-e.example.com'],
+          quorum: { k: 2, m: 2, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('K = M = 4 with three providers: a first wave of three that agree is unverified', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 4,
+        ensQuorumM: 4,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS,
+      });
+      invalidateCachedProvider();
+      const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodPayload }])));
+
+      const result = await resolveEnsContent('three-under-m4.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust).toMatchObject({ level: 'unverified', quorum: { k: 3, m: 3, achieved: false } });
+      expect(result.trust.agreed).toHaveLength(3);
+    });
+
     test('second wave also unverified → keep first-wave evidence (no downgrade)', async () => {
       const { restore } = fivePoolWithDeterministicOrder();
       try {
@@ -3134,211 +3580,104 @@ describe('ens-resolver', () => {
     });
   });
 
-  // Flip the mocked settings into Colibri-primary mode for the orchestrator
-  // tests below. Used by both the forward and reverse branch describes.
-  function withColibri(overrides = {}) {
-    mockLoadSettings.mockReturnValue({
-      ...mockLoadSettings(),
-      ensResolutionMethod: 'colibri',
-      ...overrides,
-    });
-  }
-
-  // Switches consensusResolve to the Colibri-backed verifier when
-  // ensResolutionMethod === 'colibri'. The colibri-resolver itself is
-  // unit-tested separately; here we cover the wiring: method routing,
-  // trust-shape, error → fallback handoff.
-  describe('colibri orchestrator branch', () => {
+  // Colibri answers no name lookup (#1076). Colibri 3.0.3 runs a lookup's
+  // `eth_call` on contract code from one of its public RPCs, unchecked
+  // against the proven code hash, and proves nothing for a call that reads
+  // no storage, so that RPC could choose the answer. An order that names
+  // Colibri gets the quorum (and Myotis, if the order enables it) in its
+  // place, each answering with its own label. The
+  // Colibri mock answers with forgeries (beforeEach): asking it would show.
+  describe('Colibri answers no name lookup (#1076)', () => {
     const IPFS_V0 = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
-
-    // resolveViaColibri returns { resolvedData, resolverAddress } (object),
-    // not the [bytes, address] tuple the contract mock returns. Adapt.
-    function colibriOk(innerHex) {
-      const [resolvedData, resolverAddress] = urReturnsBytes(innerHex);
-      return { resolvedData, resolverAddress };
-    }
-
-    test('routes through Colibri and returns verified trust with method=colibri', async () => {
-      withColibri();
-      mockResolveViaColibri.mockResolvedValue(colibriOk(ipfsContenthashFor(IPFS_V0)));
-
-      const result = await resolveEnsContent('vitalik.eth');
-
-      expect(mockResolveViaColibri).toHaveBeenCalledTimes(1);
-      expect(result.type).toBe('ok');
-      expect(result.uri).toBe(`ipfs://${IPFS_V0}`);
-      expect(result.trust).toMatchObject({
-        level: 'verified',
-        method: 'colibri',
-        prover: 'test-prover.example',
-        proof: 'ZK sync-committee proof',
-        quorum: { k: 1, m: 1, achieved: true },
-      });
-      // No public-RPC quorum legs fired.
-      expect(mockUrResolve).not.toHaveBeenCalled();
-    });
-
-    test('uses the user-configured prover URL when set in settings', async () => {
-      withColibri({ ensColibriProverUrl: 'https://my.prover.example/abc' });
-      mockResolveViaColibri.mockResolvedValue(colibriOk(ipfsContenthashFor(IPFS_V0)));
-
-      const result = await resolveEnsContent('a.eth');
-      expect(result.trust.prover).toBe('my.prover.example');
-    });
-
-    test('ResolverNotFound surfaces as a verified NO_RESOLVER (name not registered)', async () => {
-      withColibri();
-      const err = Object.assign(new Error('ResolverNotFound(bytes)'), {
-        data: '0x77209fe8000000',
-      });
-      mockResolveViaColibri.mockRejectedValue(err);
-
-      const result = await resolveEnsContent('not-registered.eth');
-
-      expect(result.type).toBe('not_found');
-      expect(result.reason).toBe('NO_RESOLVER');
-      expect(result.trust.method).toBe('colibri');
-      expect(mockUrResolve).not.toHaveBeenCalled();
-    });
-
-    test('proved resolver errors fall through instead of becoming absent records', async () => {
-      withColibri();
-      const err = Object.assign(new Error('reverted: custom resolver error'), {
-        code: 'CALL_EXCEPTION',
-        data: '0xdeadbeef',
-      });
-      mockResolveViaColibri.mockRejectedValue(err);
-
-      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
-      const result = await resolveEnsContent('empty-record.eth');
-
-      expect(result.type).toBe('ok');
-      expect(result.trust.method).not.toBe('colibri');
-      expect(mockUrResolve).toHaveBeenCalled();
-    });
-
-    test('CALL_EXCEPTION without revert data falls through to public RPC quorum', async () => {
-      withColibri();
-      const err = Object.assign(new Error(
-        'missing revert data transaction={ data: "0x' + 'ab'.repeat(200) + '" }'
-      ), {
-        code: 'CALL_EXCEPTION',
-        shortMessage: 'missing revert data',
-        info: { error: { code: -32603, message: 'no response from prover' } },
-      });
-      mockResolveViaColibri.mockRejectedValue(err);
-      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
-      const warnSpy = jest.spyOn(resolverLog, 'warn').mockImplementation(() => {});
-
-      const result = await resolveEnsContent('prover-down.eth');
-
-      expect(result.type).toBe('ok');
-      expect(result.uri).toBe(`ipfs://${IPFS_V0}`);
-      expect(mockUrResolve).toHaveBeenCalled();
-      expect(result.trust.method).not.toBe('colibri');
-      expect(result.trust.quorum).toEqual({ k: 3, m: 2, achieved: true });
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[ens] colibri-fallback name=prover-down.eth kind=content ' +
-        'error="missing revert data" code=CALL_EXCEPTION rpcCode=-32603 ' +
-        'rpcMessage="no response from prover" revert=none'
-      );
-      expect(warnSpy.mock.calls.flat().join(' ')).not.toContain('abababababababab');
-      warnSpy.mockRestore();
-    });
-
-    test('non-revert error falls through to the quorum path by default', async () => {
-      withColibri();
-      mockResolveViaColibri.mockRejectedValue(new Error('proof verification failed'));
-      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
-
-      const result = await resolveEnsContent('proof-failure.eth');
-
-      expect(result.type).toBe('ok');
-      expect(result.uri).toBe(`ipfs://${IPFS_V0}`);
-      // Fell through to the public-RPC quorum — three legs queried.
-      expect(mockUrResolve).toHaveBeenCalled();
-      expect(result.trust.method).not.toBe('colibri');
-      expect(result.trust.quorum).toEqual({ k: 3, m: 2, achieved: true });
-    });
-
-    test('default ensResolutionMethod=quorum bypasses Colibri (regression)', async () => {
-      // Don't call withColibri — defaults to 'quorum'.
-      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
-
-      await resolveEnsContent('legacy.eth');
-
-      expect(mockResolveViaColibri).not.toHaveBeenCalled();
-      expect(mockUrResolve).toHaveBeenCalled();
-    });
-  });
-
-  // Same Colibri orchestrator branch, reverse direction. resolveEnsReverse
-  // goes through tryColibriReverse rather than consensusResolve.
-  describe('colibri orchestrator branch — reverse', () => {
     const ADDR = '0xd8da6bf26964af9d7eed9e03e53415d37aa96045';
+    const REAL = '0x1111111111111111111111111111111111111111';
 
-    test('routes through Colibri and returns name + verified-via-colibri trust', async () => {
-      withColibri();
-      mockResolveReverseViaColibri.mockResolvedValue({ name: 'vitalik.eth' });
+    // The orders a saved or legacy policy can hold with Colibri in them:
+    // the old default (a `colibri` primary and no order), Colibri first,
+    // Colibri alone, and the shipped default order.
+    const ORDERS = [
+      ['the old Colibri default', { ensResolutionMethod: 'colibri' }],
+      ['Colibri first', { ensResolutionOrder: ['colibri', 'quorum'] }],
+      ['Colibri alone', { ensResolutionMethod: 'colibri', ensResolutionOrder: ['colibri'] }],
+      [
+        'the default order',
+        { ensResolutionOrder: ['myotis', 'colibri', 'quorum'], ensPreferVerified: true },
+      ],
+    ];
+    const withOrder = (policy) =>
+      mockLoadSettings.mockReturnValue({ ...mockLoadSettings(), ...policy });
+    const expectNoColibri = (result) => {
+      expect(mockResolveViaColibri).not.toHaveBeenCalled();
+      expect(mockResolveReverseViaColibri).not.toHaveBeenCalled();
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      expect(result.trust?.method).toBeUndefined();
+      expect(JSON.stringify(result)).not.toMatch(/colibri|test-prover|forged|bad00/i);
+    };
+    const quorumTrust = { level: 'verified', quorum: { k: 3, m: 2, achieved: true } };
+
+    afterEach(() => {
+      mockMyotisIsEnabled.mockImplementation(() => false);
+      mockMyotisIsReady.mockImplementation(() => false);
+    });
+
+    test.each(ORDERS)('%s: a site comes from the quorum, labelled as the quorum', async (_, policy) => {
+      withOrder(policy);
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+
+      const result = await resolveEnsContent('site.eth');
+
+      expect(result).toMatchObject({ type: 'ok', uri: `ipfs://${IPFS_V0}`, trust: quorumTrust });
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
+      expectNoColibri(result);
+    });
+
+    test.each(ORDERS)('%s: send-to-name gets the quorum\'s address', async (_, policy) => {
+      withOrder(policy);
+      mockUrResolve.mockResolvedValue(urReturnsAddress(REAL));
+
+      const result = await resolveEnsAddress('pay.eth');
+
+      expect(result).toMatchObject({ success: true, address: REAL, trust: quorumTrust });
+      expectNoColibri(result);
+    });
+
+    test.each(ORDERS)('%s: a primary name comes from the quorum', async (_, policy) => {
+      withOrder(policy);
+      mockUrReverse.mockResolvedValue(['vitalik.eth', FAKE_RESOLVER, FAKE_RESOLVER]);
 
       const result = await resolveEnsReverse(ADDR);
 
-      expect(mockResolveReverseViaColibri).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({
         success: true,
         address: ADDR,
         name: 'vitalik.eth',
-        trust: { level: 'verified', method: 'colibri', prover: 'test-prover.example' },
+        trust: quorumTrust,
       });
-      expect(mockUrReverse).not.toHaveBeenCalled();
+      expect(mockUrReverse).toHaveBeenCalledTimes(3);
+      expectNoColibri(result);
     });
 
-    test('an unnormalized Colibri primary name is UNVERIFIED', async () => {
-      withColibri({ ensResolutionOrder: ['colibri'] });
-      mockResolveReverseViaColibri.mockResolvedValue({ name: 'vitaIik.eth' });
+    test('a .wei address comes from the quorum through the WNS contract', async () => {
+      withOrder({ ensResolutionOrder: ['colibri', 'quorum'] });
+      mockWnsAddr.mockResolvedValue(REAL);
 
-      const result = await resolveEnsReverse(ADDR);
+      const result = await resolveEnsAddress('alice.wei');
 
       expect(result).toMatchObject({
-        success: false,
-        address: ADDR,
-        reason: 'UNVERIFIED',
-        claimedName: 'vitaIik.eth',
-        unverifiedCause: 'unnormalized',
-        trust: { method: 'colibri' },
+        success: true,
+        system: 'wns',
+        address: REAL,
+        trust: { ...quorumTrust, system: 'wns' },
       });
-      expect(result.name).toBeUndefined();
+      expect(mockWnsAddr).toHaveBeenCalledTimes(3);
+      expectNoColibri(result);
     });
 
-    test('no primary set surfaces as NO_REVERSE with trust attached', async () => {
-      withColibri({ ensResolutionOrder: ['colibri'] });
-      mockResolveReverseViaColibri.mockResolvedValue({ name: '' });
-
-      const result = await resolveEnsReverse(ADDR);
-
-      expect(result.success).toBe(false);
-      expect(result.reason).toBe('NO_REVERSE');
-      expect(result.trust.method).toBe('colibri');
-      expect(mockResolveViaColibri).toHaveBeenCalledTimes(2);
-      expect(mockResolveViaColibri.mock.calls.map(([name]) => name)).toEqual([
-        'reverse.wei',
-        'reverse.gwei',
-      ]);
-      expect(mockGetBlockNumber).not.toHaveBeenCalled();
-      expect(mockUrReverse).not.toHaveBeenCalled();
-      expect(mockWnsReverseResolve).not.toHaveBeenCalled();
-      expect(mockGnsReverseResolve).not.toHaveBeenCalled();
-    });
-
-    test('resolves and forward-verifies WNS through Colibri without public RPC', async () => {
-      withColibri();
-      mockResolveReverseViaColibri.mockResolvedValue({ name: '' });
-      mockResolveViaColibri.mockImplementation(async (name) => {
-        const resolvedData = name === 'reverse.wei'
-          ? actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['alice.wei'])
-          : actualEthers.AbiCoder.defaultAbiCoder().encode(['address'], [ADDR]);
-        return { resolvedData, resolverAddress: WNS_ADDRESS };
-      });
+    test('a WNS primary name and its forward check come from the quorum', async () => {
+      withOrder({ ensResolutionOrder: ['colibri', 'quorum'] });
+      mockUrReverse.mockResolvedValue(['', FAKE_RESOLVER, FAKE_RESOLVER]);
+      mockWnsReverseResolve.mockResolvedValue('alice.wei');
+      mockWnsAddr.mockResolvedValue(ADDR);
 
       const result = await resolveEnsReverse(ADDR);
 
@@ -3347,153 +3686,132 @@ describe('ens-resolver', () => {
         address: ADDR,
         name: 'alice.wei',
         system: 'wns',
-        trust: { level: 'verified', method: 'colibri', system: 'wns' },
+        trust: { ...quorumTrust, system: 'wns' },
       });
-      expect(mockResolveViaColibri).toHaveBeenCalledTimes(2);
-      expect(mockGetBlockNumber).not.toHaveBeenCalled();
-      expect(mockUrReverse).not.toHaveBeenCalled();
-      expect(mockWnsReverseResolve).not.toHaveBeenCalled();
-      expect(mockWnsAddr).not.toHaveBeenCalled();
+      expect(mockWnsReverseResolve).toHaveBeenCalledTimes(3);
+      expect(mockWnsAddr).toHaveBeenCalledTimes(3);
+      expectNoColibri(result);
     });
 
-    test('ResolverNotFound surfaces as NO_REVERSE (no record at all)', async () => {
-      withColibri();
-      const err = Object.assign(new Error('ResolverNotFound(bytes)'), {
-        data: '0x77209fe8',
-      });
-      mockResolveReverseViaColibri.mockRejectedValue(err);
+    test('with Direct after Colibri, the quorum answers before Direct', async () => {
+      // Colibri's slot becomes the quorum, as for Colibri alone, so a kept
+      // Direct fallback doesn't turn every lookup unverified.
+      withOrder({ ensResolutionOrder: ['colibri', 'direct'] });
+      mockUrResolve.mockResolvedValue(urReturnsAddress(REAL));
 
-      const result = await resolveEnsReverse(ADDR);
+      const result = await resolveEnsAddress('direct.eth');
 
-      expect(result.success).toBe(false);
-      expect(result.reason).toBe('NO_REVERSE');
-      expect(result.trust.method).toBe('colibri');
+      expect(result).toMatchObject({ success: true, address: REAL, trust: quorumTrust });
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
+      expectNoColibri(result);
     });
 
-    test('ReverseAddressMismatch surfaces as UNVERIFIED (spoofed/stale record)', async () => {
-      withColibri();
-      const err = Object.assign(new Error('ReverseAddressMismatch'), {
-        data: '0xef9c03ce',
-      });
-      mockResolveReverseViaColibri.mockRejectedValue(err);
-
-      const result = await resolveEnsReverse(ADDR);
-
-      expect(result.success).toBe(false);
-      expect(result.reason).toBe('UNVERIFIED');
-      expect(result.trust.method).toBe('colibri');
-      // Critical: the trust object's level is still 'verified' — the proof
-      // was valid, the contract reverted. The 'reason' carries the spoofed-
-      // record signal, not the trust level.
-      expect(result.trust.level).toBe('verified');
-    });
-
-    test('logs why an unverified Colibri reverse result continues to quorum', async () => {
-      withColibri({
-        ensResolutionOrder: ['myotis', 'colibri', 'quorum'],
-        ensPreferVerified: true,
-      });
+    test.each([
+      // Without Myotis in the saved order (its toggle is off), Colibri's
+      // slot is the quorum alone: the substitution must not turn Myotis on.
+      [['colibri', 'direct'], '[quorum,direct]'],
+      [['direct', 'colibri'], '[direct,quorum]'],
+      [['quorum', 'colibri'], '[quorum]'],
+      [['colibri'], '[quorum]'],
+      // With Myotis on, the slot gets Myotis and then the quorum.
+      [['myotis', 'colibri', 'quorum'], '[myotis,quorum]'],
+      [['colibri', 'myotis', 'direct'], '[myotis,quorum,direct]'],
+      [['direct', 'colibri', 'myotis'], '[direct,myotis,quorum]'],
+      [['direct'], '[direct]'],
+    ])('a saved order %j resolves as %s', async (order, expected) => {
+      withOrder({ ensResolutionOrder: order });
+      mockUrResolve.mockResolvedValue(urReturnsAddress(REAL));
       const infoSpy = jest.spyOn(resolverLog, 'info').mockImplementation(() => {});
-      const err = Object.assign(new Error('ReverseAddressMismatch'), {
-        data: '0xef9c03ce',
-      });
-      mockResolveReverseViaColibri.mockRejectedValue(err);
-      mockUrReverse.mockResolvedValue(['']);
-
       try {
-        const result = await resolveEnsReverse(ADDR);
-
-        expect(result).toMatchObject({ success: false, reason: 'NO_REVERSE' });
-        expect(infoSpy).toHaveBeenCalledWith(
-          `[ens] reverse policy address=${ADDR} order=[myotis,colibri,quorum] ` +
-          'preferVerified=true'
-        );
-        expect(infoSpy).toHaveBeenCalledWith(
-          `[ens] reverse method=myotis address=${ADDR} outcome=UNAVAILABLE ` +
-          'system=none trust=none action=continue reason=disabled'
-        );
-        expect(infoSpy).toHaveBeenCalledWith(
-          `[ens] reverse method=colibri address=${ADDR} outcome=UNVERIFIED ` +
-          'system=ens trust=verified action=continue reason=prefer-verified'
-        );
-        expect(infoSpy).toHaveBeenCalledWith(
-          `[ens] reverse method=quorum address=${ADDR} outcome=NO_REVERSE ` +
-          'system=ens,wns,gns trust=verified action=accept'
+        await resolveEnsAddress('order.eth');
+        expect(infoSpy.mock.calls.map(([line]) => line).join('\n')).toContain(
+          `[ens] policy name=order.eth kind=addr order=${expected} `
         );
       } finally {
         infoSpy.mockRestore();
       }
     });
 
-    test('UNVERIFIED carries the decoded claimedName from revert data', async () => {
-      withColibri();
-      // ReverseAddressMismatch(string,bytes) — claimed name + address bytes.
-      // Building a real revert payload here so the decoder is exercised end-to-end.
-      const args = actualEthers.AbiCoder.defaultAbiCoder().encode(
-        ['string', 'bytes'],
-        ['spoofed.eth', '0xabcd'],
-      );
-      const err = Object.assign(new Error('ReverseAddressMismatch'), {
-        data: '0xef9c03ce' + args.slice(2),
+    const myotisReadyWith = (dataHex) => {
+      mockMyotisIsEnabled.mockImplementation(() => true);
+      mockMyotisIsReady.mockImplementation(() => true);
+      mockMyotisResolveEnsRecord.mockResolvedValue({
+        status: 'ok',
+        verified: true,
+        blockNumber: 23456789,
+        dataHex,
       });
-      mockResolveReverseViaColibri.mockRejectedValue(err);
+    };
 
-      const result = await resolveEnsReverse(ADDR);
+    test('with Colibri alone, a ready Myotis stays unasked: its toggle is off', async () => {
+      // A saved order without Myotis is the Settings toggle switched off.
+      // Colibri's slot must not switch it back on behind that toggle.
+      withOrder({ ensResolutionMethod: 'colibri', ensResolutionOrder: ['colibri'] });
+      myotisReadyWith(ipfsContenthashFor(IPFS_V0));
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
 
-      expect(result.reason).toBe('UNVERIFIED');
-      expect(result.claimedName).toBe('spoofed.eth');
+      const result = await resolveEnsContent('local.eth');
+
+      expect(result).toMatchObject({ type: 'ok', uri: `ipfs://${IPFS_V0}`, trust: quorumTrust });
+      expect(mockMyotisResolveEnsRecord).not.toHaveBeenCalled();
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
+      expectNoColibri(result);
     });
 
-    test('UNVERIFIED with no decodable revert data has claimedName=null', async () => {
-      withColibri();
-      const err = Object.assign(new Error('ReverseAddressMismatch'), {
-        data: '0xef9c03ce', // selector only, no args
-      });
-      mockResolveReverseViaColibri.mockRejectedValue(err);
+    test('with Colibri before an enabled Myotis, Myotis answers first when it is ready', async () => {
+      withOrder({ ensResolutionOrder: ['colibri', 'myotis'] });
+      myotisReadyWith(ipfsContenthashFor(IPFS_V0));
 
-      const result = await resolveEnsReverse(ADDR);
-      expect(result.reason).toBe('UNVERIFIED');
-      expect(result.claimedName).toBeNull();
+      const result = await resolveEnsContent('local.eth');
+
+      expect(result).toMatchObject({
+        type: 'ok',
+        trust: { level: 'verified', method: 'myotis', finality: 'finalized' },
+      });
+      expect(mockUrResolve).not.toHaveBeenCalled();
+      expect(mockResolveViaColibri).not.toHaveBeenCalled();
     });
 
-    test('non-revert error falls through to the configured quorum path', async () => {
-      withColibri();
-      mockResolveReverseViaColibri.mockRejectedValue(new Error('prover unreachable'));
-      mockUrReverse.mockResolvedValue(['legacy.eth']);
+    test('the policy logs name the order without Colibri', async () => {
+      withOrder({ ensResolutionOrder: ['myotis', 'colibri', 'quorum'], ensPreferVerified: true });
+      mockUrResolve.mockResolvedValue(urReturnsAddress(REAL));
+      mockUrReverse.mockResolvedValue(['vitalik.eth', FAKE_RESOLVER, FAKE_RESOLVER]);
+      const infoSpy = jest.spyOn(resolverLog, 'info').mockImplementation(() => {});
 
-      const result = await resolveEnsReverse(ADDR);
+      try {
+        await resolveEnsAddress('logged.eth');
+        await resolveEnsReverse(ADDR);
 
-      expect(result.success).toBe(true);
-      expect(result.name).toBe('legacy.eth');
-      expect(result.trust).toMatchObject({
-        level: 'verified',
-        quorum: { k: 3, m: 2, achieved: true },
-      });
-      expect(mockUrReverse).toHaveBeenCalledTimes(3);
+        const lines = infoSpy.mock.calls.map(([line]) => line);
+        expect(lines).toContain(
+          '[ens] policy name=logged.eth kind=addr order=[myotis,quorum] preferVerified=true'
+        );
+        expect(lines).toContain(
+          `[ens] reverse policy address=${ADDR} order=[myotis,quorum] preferVerified=true`
+        );
+        expect(lines.join('\n')).not.toContain('method=colibri');
+
+        // The old default, a Colibri primary and no order.
+        mockLoadSettings.mockReturnValue({
+          ...mockLoadSettings(),
+          ensResolutionOrder: undefined,
+          ensResolutionMethod: 'colibri',
+        });
+        await resolveEnsAddress('legacy.eth');
+        expect(infoSpy.mock.calls.map(([line]) => line)).toContain(
+          '[ens] policy name=legacy.eth kind=addr order=[myotis,quorum] preferVerified=false'
+        );
+      } finally {
+        infoSpy.mockRestore();
+      }
     });
 
-    test('default ensResolutionMethod=quorum queries the configured provider quorum', async () => {
-      // Don't call withColibri — defaults to 'quorum'.
-      mockUrReverse.mockResolvedValue(['legacy.eth']);
-
-      const result = await resolveEnsReverse(ADDR);
-
-      expect(mockResolveReverseViaColibri).not.toHaveBeenCalled();
-      expect(mockUrReverse).toHaveBeenCalledTimes(3);
-      expect(result.name).toBe('legacy.eth');
-      expect(result.trust).toMatchObject({
-        level: 'verified',
-        quorum: { k: 3, m: 2, achieved: true },
-      });
-    });
-
-    test('invalid address rejects before either path is hit', async () => {
-      withColibri();
+    test('an invalid address is refused before any method runs', async () => {
+      withOrder({ ensResolutionMethod: 'colibri' });
       const result = await resolveEnsReverse('0xnotanaddress');
-      expect(result.success).toBe(false);
-      expect(result.reason).toBe('INVALID_ADDRESS');
-      expect(mockResolveReverseViaColibri).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ success: false, reason: 'INVALID_ADDRESS' });
       expect(mockUrReverse).not.toHaveBeenCalled();
+      expectNoColibri(result);
     });
   });
 });
@@ -3542,6 +3860,70 @@ describe('ens-resolver private-window logging', () => {
     expect(text).not.toContain(IPFS_V0);
     // The line is still emitted, so the log still shows a resolve happened.
     expect(text).toContain('[ens] Resolved: <private>');
+  });
+
+  // PRIVATE MODE GUARD (#1058): these handlers mark a private window's
+  // lookup private, so every read under it runs in that async context. Names
+  // no longer ask Colibri (#1076): with a saved Colibri-only order the
+  // quorum answers in its place, inside the sender's context, and Colibri is
+  // not asked from either window.
+  test.each([
+    ['ENS_RESOLVE', IPC.ENS_RESOLVE, { name: SECRET }, mockUrResolve],
+    [
+      'ENS_RESOLVE_REVERSE',
+      IPC.ENS_RESOLVE_REVERSE,
+      { address: '0x1111111111111111111111111111111111111111' },
+      mockUrReverse,
+    ],
+  ])('%s reads in the sender’s private-window context, never through Colibri', async (_label, channel, payload, read) => {
+    const { isPrivateLogContext } = jest.requireActual('./private/private-log-context');
+    mockLoadSettings.mockReturnValue({
+      ...mockLoadSettings(),
+      ensResolutionMethod: 'colibri',
+      ensResolutionOrder: ['colibri'],
+    });
+    const seen = [];
+    read.mockImplementation(async () => {
+      seen.push(isPrivateLogContext());
+      throw new Error('endpoint unavailable');
+    });
+
+    let fromPrivate;
+    try {
+      await handlerFor(channel)(privateEvent, payload);
+      fromPrivate = seen.splice(0);
+      clearEnsResolutionCaches();
+      await handlerFor(channel)(normalEvent, payload);
+    } finally {
+      // clearAllMocks keeps implementations: don't leak the throwing one.
+      read.mockReset();
+    }
+
+    expect(fromPrivate.length).toBeGreaterThan(0);
+    expect(fromPrivate).not.toContain(false);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen).not.toContain(true);
+    expect(mockResolveViaColibri).not.toHaveBeenCalled();
+    expect(mockResolveReverseViaColibri).not.toHaveBeenCalled();
+  });
+
+  // Codex review of #1070, finding 1: only a sender main places in a known
+  // public window counts as public.
+  test.each([
+    ['no sender', {}],
+    ['a destroyed sender', { sender: { isPrivate: false, isDestroyed: () => true } }],
+    ['a sender main cannot place', { sender: {} }],
+  ])('%s fails closed to the private context', async (_label, event) => {
+    const { isPrivateLogContext } = jest.requireActual('./private/private-log-context');
+    const seen = [];
+    mockUrResolve.mockImplementation(async () => {
+      seen.push(isPrivateLogContext());
+      throw new Error('endpoint unavailable');
+    });
+    await handlerFor(IPC.ENS_RESOLVE)(event, { name: SECRET });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen).not.toContain(false);
+    expect(loggedText()).not.toContain(SECRET);
   });
 
   test('a normal ENS_RESOLVE keeps the full diagnostic line', async () => {

@@ -14,6 +14,49 @@ let beeInfoPanel = null;
 let beeStatusRow = null;
 let beeStatusLabel = null;
 let beeStatusValue = null;
+let beeActKeyText = null;
+let beeActKeyCopy = null;
+
+// The ACT public key last read from the node's /addresses (#1188), or null.
+// Not cached across menu opens the way the version is: the endpoint can move
+// from the bundled node to an external Bee, and a stale key would send
+// shares to the wrong node.
+let actPublicKey = null;
+let actKeyCopiedTimer = null;
+// Bumped every time the info panel is torn down, so a /addresses reply from
+// an earlier open (or an earlier node behind the same menu) can't repaint a
+// later one.
+let actKeyGeneration = 0;
+// The generation an /addresses read is in flight for, or null: one read per
+// open at a time, since the 5 s status refresh calls updateAntUi again while
+// one may still be pending. A read left over from an earlier open doesn't
+// hold up the current one.
+let actKeyInFlight = null;
+
+// Compressed (66 hex, 02/03) or uncompressed (130 hex, 04) secp256k1 key, as
+// Bee and Ant report it; an optional 0x is tolerated.
+const ACT_PUBLIC_KEY_RE = /^(?:0x)?(?:0[23][0-9a-f]{64}|04[0-9a-f]{128})$/i;
+
+const shortKey = (key) => {
+  const hex = key.replace(/^0x/i, '');
+  return `${hex.slice(0, 6)}…${hex.slice(-4)}`;
+};
+
+const paintActKey = (key) => {
+  actPublicKey = key;
+  if (beeActKeyText) {
+    beeActKeyText.textContent = key ? shortKey(key) : UNKNOWN;
+    // Monospace for the key itself; the Unknown placeholder reads like every
+    // other row's.
+    beeActKeyText.classList.toggle('has-key', Boolean(key));
+    if (key) beeActKeyText.setAttribute('title', key);
+    else beeActKeyText.removeAttribute('title');
+  }
+  if (beeActKeyCopy) {
+    beeActKeyCopy.disabled = !key;
+    if (!key) beeActKeyCopy.classList.remove('copied');
+  }
+};
 
 // Binary availability state
 let beeBinaryAvailable = true;
@@ -34,6 +77,8 @@ export const stopAntInfoPolling = () => {
     beeVersionText.textContent = versionText(
       state.antVersionFetched ? state.antVersionValue : ''
     );
+  actKeyGeneration += 1;
+  paintActKey(null);
 };
 
 const fetchConnectedPeers = async () => {
@@ -107,6 +152,46 @@ const fetchAntVersionOnce = async () => {
   }
 };
 
+const fetchActPublicKey = async () => {
+  if (!state.antMenuOpen) return;
+  if (!beeInfoPanel?.classList.contains('visible')) return;
+
+  const generation = actKeyGeneration;
+  if (actKeyInFlight === generation) return;
+  actKeyInFlight = generation;
+  let key = null;
+  try {
+    const response = await fetchAntJson('/addresses');
+    const reported = response.ok ? response.data?.publicKey : null;
+    if (typeof reported === 'string' && ACT_PUBLIC_KEY_RE.test(reported)) key = reported;
+  } catch {
+    key = null;
+  } finally {
+    if (actKeyInFlight === generation) actKeyInFlight = null;
+  }
+  // The menu closed or the node stopped while the read was in flight.
+  if (generation !== actKeyGeneration) return;
+  if (!state.antMenuOpen || !beeInfoPanel?.classList.contains('visible')) return;
+  paintActKey(key);
+};
+
+const copyActPublicKey = async () => {
+  const key = actPublicKey;
+  if (!key || !beeActKeyCopy) return;
+  try {
+    await window.electronAPI.copyText(key);
+    beeActKeyCopy.classList.add('copied');
+    if (actKeyCopiedTimer) clearTimeout(actKeyCopiedTimer);
+    actKeyCopiedTimer = setTimeout(() => {
+      beeActKeyCopy?.classList.remove('copied');
+      actKeyCopiedTimer = null;
+    }, 1500);
+  } catch (err) {
+    console.error('[ant-ui] Copy ACT public key failed:', err);
+    pushDebug(`Copy ACT public key failed: ${err?.message || err}`);
+  }
+};
+
 export const startAntInfoPolling = () => {
   if (!state.antMenuOpen || state.currentAntStatus === 'stopped') {
     stopAntInfoPolling();
@@ -118,6 +203,10 @@ export const startAntInfoPolling = () => {
   fetchConnectedPeers();
   fetchVisiblePeers();
   if (!state.antVersionFetched) fetchAntVersionOnce();
+  // Not per poll tick: the key doesn't change while the node runs. Read on
+  // each open (a reopen picks up a node switch) and again from updateAntUi
+  // once the node reports running, if the first read found it still starting.
+  if (!actPublicKey) fetchActPublicKey();
 
   if (state.antPeersInterval) clearInterval(state.antPeersInterval);
   state.antPeersInterval = setInterval(fetchConnectedPeers, 500);
@@ -139,6 +228,11 @@ export const updateAntUi = (status, error) => {
   // Fetch version immediately when Bee becomes running (don't wait for polling)
   if (status === 'running' && !state.antVersionFetched) {
     fetchAntVersionOnce();
+  }
+  // Same for the ACT key, but only while the menu shows it (the read bails
+  // otherwise): an open menu whose first read hit a node still starting.
+  if (status === 'running' && !actPublicKey) {
+    fetchActPublicKey();
   }
 
   // Update status line and toggle state from registry
@@ -249,6 +343,12 @@ export const initAntUi = () => {
   beeStatusRow = document.getElementById('bee-status-row');
   beeStatusLabel = document.getElementById('bee-status-label');
   beeStatusValue = document.getElementById('bee-status-value');
+  beeActKeyText = document.getElementById('bee-act-key-text');
+  beeActKeyCopy = document.getElementById('bee-act-key-copy');
+
+  beeActKeyCopy?.addEventListener('click', () => {
+    copyActPublicKey();
+  });
 
   // Check binary availability
   if (window.ant) {

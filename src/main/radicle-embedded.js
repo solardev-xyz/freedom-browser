@@ -17,7 +17,9 @@
  * unparsed, for responses the main process only forwards (see `callRaw`).
  */
 
+const { AsyncLocalStorage } = require('node:async_hooks');
 const log = require('./logger');
+const { redactForLog } = require('./private/private-log-context');
 const path = require('path');
 const fs = require('fs');
 const {
@@ -114,11 +116,60 @@ function getVersion() {
   return RADICLE_ADDON_VERSION;
 }
 
-async function call(name, ...args) {
+// A read's bounds (R-3): `rad:` reads run under withReadBounds, so every
+// addon call they make, including the composed reads' later ones, checks
+// them. Other callers run unbounded.
+const readBounds = new AsyncLocalStorage();
+
+/** The read has ended for its caller (gone, or out of time): no further
+ * addon call starts, and nothing more is parsed. */
+class ReadEnded extends Error {
+  constructor() {
+    super('This Radicle read has ended');
+    this.name = 'ReadEnded';
+  }
+}
+
+/** An addon reply longer than the read's cap, refused before it is parsed. */
+class ReplyTooLarge extends Error {
+  constructor(name) {
+    super(`radicle addon reply from ${name} is too large to serve`);
+    this.name = 'ReplyTooLarge';
+  }
+}
+
+/**
+ * Run `fn` with a read's bounds: `signal` ends the read (no addon call
+ * starts after it aborts, and a reply that returns after it is dropped
+ * unparsed), and `maxReplyChars` caps each addon reply's text, checked
+ * before it is parsed or passed on.
+ */
+function withReadBounds({ signal = null, maxReplyChars = null } = {}, fn) {
+  return readBounds.run({ signal, maxReplyChars }, fn);
+}
+
+async function addonCall(name, args) {
   const a = loadAddon();
   if (!a) throw new Error('radicle addon not available');
+  // Taken before the call: the checks after it must not depend on the
+  // context surviving the addon's promise.
+  const bounds = readBounds.getStore();
+  if (bounds?.signal?.aborted) throw new ReadEnded();
   const raw = await a[name](...args);
-  return parseResult(raw);
+  if (bounds?.signal?.aborted) throw new ReadEnded();
+  if (
+    bounds?.maxReplyChars !== null &&
+    bounds?.maxReplyChars !== undefined &&
+    typeof raw === 'string' &&
+    raw.length > bounds.maxReplyChars
+  ) {
+    throw new ReplyTooLarge(name);
+  }
+  return raw;
+}
+
+async function call(name, ...args) {
+  return parseResult(await addonCall(name, args));
 }
 
 function parseResult(raw) {
@@ -142,9 +193,7 @@ const ERROR_PAYLOAD_RE = /^\s*\{\s*"error"\s*:/;
  * parsed and thrown, exactly as `call` does.
  */
 async function callRaw(name, ...args) {
-  const a = loadAddon();
-  if (!a) throw new Error('radicle addon not available');
-  const raw = await a[name](...args);
+  const raw = await addonCall(name, args);
   if (typeof raw !== 'string') {
     throw new Error(`radicle addon returned no JSON text from ${name}`);
   }
@@ -163,10 +212,27 @@ async function start(home, alias) {
   return result;
 }
 
-async function shutdown() {
-  if (!started) return { ok: true };
-  started = false;
-  return call('shutdown');
+// The node counts as stopped only on the add-on's proof: its shutdown
+// resolves after the node's thread has joined. A rejection proves nothing
+// (the thread may still hold the home's files), so the node still counts as
+// started, and a re-key refuses to wipe under it (R-8). A shutdown asked for
+// while one is still in flight (the manager stops waiting after a timeout,
+// and the user can stop again) waits on that one: the add-on is never asked
+// to shut down twice at once.
+let shuttingDown = null;
+function shutdown() {
+  if (!started) return Promise.resolve({ ok: true });
+  if (!shuttingDown) {
+    shuttingDown = call('shutdown')
+      .then((result) => {
+        started = false;
+        return result;
+      })
+      .finally(() => {
+        shuttingDown = null;
+      });
+  }
+  return shuttingDown;
 }
 
 function isStarted() {
@@ -182,7 +248,13 @@ async function cloneRepoWithProgress(rid, timeoutMs = 120000, onProgress = () =>
     try {
       onProgress(JSON.parse(eventRaw));
     } catch (err) {
-      log.warn('[RadicleEmbedded] Ignoring invalid clone progress event:', err.message);
+      // PRIVATE MODE GUARD (#1073): a private window's seed or sync gets
+      // here in its log context, and JSON.parse's text quotes part of the
+      // event, whose fetch errors can name the Radicle storage path.
+      log.warn(
+        '[RadicleEmbedded] Ignoring invalid clone progress event:',
+        redactForLog(err.message)
+      );
     }
   });
   return parseResult(raw);
@@ -234,7 +306,10 @@ async function buildRepoMeta(rid) {
   try {
     seeding = (await seeders(rid)).seeding;
   } catch (err) {
-    log.warn('[RadicleEmbedded] seeders() failed:', err.message);
+    // PRIVATE MODE GUARD: the failure is swallowed here, so the protocol's
+    // redacted catch never sees it, and its text can name the repository's
+    // storage path (#1050).
+    log.warn('[RadicleEmbedded] seeders() failed:', redactForLog(err.message));
   }
   return {
     rid: info.rid,
@@ -309,6 +384,9 @@ async function readmeAtRaw(rid, revision) {
 }
 
 module.exports = {
+  withReadBounds,
+  ReadEnded,
+  ReplyTooLarge,
   candidatePaths,
   REQUIRED_EXPORTS,
   isAvailable,
