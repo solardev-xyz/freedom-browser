@@ -51,16 +51,19 @@ let healthCheckInterval = null;
 // means no IPFS at all) or on an external gateway (Freedom's store isn't the
 // one in use there).
 let cacheNode = null;
-// When a cache-only start last failed, so a page full of subresources doesn't
-// retry the add-on once per request.
-let cacheNodeFailedAt = 0;
+// When a cache-only start last failed (performance.now(), null if it hasn't),
+// so a page full of subresources doesn't retry the add-on once per request.
+// Monotonic: a wall clock stepped back would stretch the back-off to hours.
+let cacheNodeFailedAt = null;
 const CACHE_NODE_RETRY_MS = 10_000;
 // Closed by the final stop at quit: a request still waiting on its name
 // lookup when the windows went away must not reopen the store afterwards.
 let cacheAdmissionClosed = false;
 // Set on the cache-only node's responses for ipfs-protocol.js, which turns a
 // miss on a page load into a page that says why, and strips the header.
+// Its value is CACHE_UNAVAILABLE when no cache-only node could answer at all.
 const CACHE_ONLY_HEADER = 'x-freedom-ipfs-cache-only';
+const CACHE_UNAVAILABLE = 'unavailable';
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
 // in-process freedom-ipfs native node; EXTERNAL routes gateway requests to a
@@ -718,7 +721,7 @@ async function startExternalIpfs(config) {
 function handleCacheNodeFailure(reason, node) {
   if (!node || node !== cacheNode) return;
   log.warn(`[IPFS] Cache-only node failed: ${reason || 'unknown reason'}`);
-  cacheNodeFailedAt = Date.now();
+  cacheNodeFailedAt = performance.now();
   void enqueueOp(() => stopCacheNode(node));
 }
 
@@ -739,7 +742,9 @@ async function doEnsureCacheNode(signal) {
   if (cacheAdmissionClosed || signal?.aborted) return null;
   if (currentState !== STATUS.STOPPED || activeNode) return null;
   if (!canServeFromCache()) return null;
-  if (Date.now() - cacheNodeFailedAt < CACHE_NODE_RETRY_MS) return null;
+  if (cacheNodeFailedAt !== null && performance.now() - cacheNodeFailedAt < CACHE_NODE_RETRY_MS) {
+    return null;
+  }
 
   const node = new FreedomIpfsNativeNode({
     dataDir: getIpfsDataPath(),
@@ -748,19 +753,19 @@ async function doEnsureCacheNode(signal) {
   });
   try {
     if (!(await node.start())) {
-      cacheNodeFailedAt = Date.now();
+      cacheNodeFailedAt = performance.now();
       log.warn('[IPFS] Cache-only node failed to start');
       return null;
     }
   } catch (err) {
-    cacheNodeFailedAt = Date.now();
+    cacheNodeFailedAt = performance.now();
     log.warn('[IPFS] Cache-only node failed to start:', err.message);
     return null;
   }
   // A start or a config change queued meanwhile runs after this op, and
   // stops this node first.
   cacheNode = node;
-  cacheNodeFailedAt = 0;
+  cacheNodeFailedAt = null;
   log.info('[IPFS] IPFS is off: serving saved content only');
   return node;
 }
@@ -1147,6 +1152,22 @@ async function serveNativeGatewayRequest({ path: gatewayPath, method, headers, s
   if (currentState === STATUS.STOPPED && !activeNode) {
     const cached = await serveFromCache({ path: gatewayPath, method, headers, signal });
     if (cached) return cached;
+    // The renderer let this load through because IPFS is off with saved pages
+    // to serve (`cacheOnly`), so its own "IPFS unavailable" page never shows.
+    // The cache-only node couldn't answer (start failed, back-off, unhealthy):
+    // mark the 503 so ipfs-protocol.js shows a page that says so.
+    if (!cacheAdmissionClosed && canServeFromCache()) {
+      return new Response(
+        JSON.stringify({ code: 503, message: 'freedom-ipfs node is not running' }),
+        {
+          status: 503,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            [CACHE_ONLY_HEADER]: CACHE_UNAVAILABLE,
+          },
+        }
+      );
+    }
   }
 
   if (!activeNode || currentState !== STATUS.RUNNING || !checkHealth()) {
@@ -1260,4 +1281,5 @@ module.exports = {
   probeExternalGateway,
   STATUS,
   CACHE_ONLY_HEADER,
+  CACHE_UNAVAILABLE,
 };

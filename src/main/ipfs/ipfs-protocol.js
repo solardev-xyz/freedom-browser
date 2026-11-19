@@ -51,7 +51,11 @@ const {
   nameSystemLabelForResult,
   resolveContentName,
 } = require('../content-name-resolver');
-const { serveNativeGatewayRequest, CACHE_ONLY_HEADER } = require('../ipfs-manager');
+const {
+  serveNativeGatewayRequest,
+  CACHE_ONLY_HEADER,
+  CACHE_UNAVAILABLE,
+} = require('../ipfs-manager');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
@@ -573,13 +577,24 @@ function notSavedColorScheme() {
   }
 }
 
-const notSavedPage = (scheme) => `<!doctype html>
+const NOT_SAVED_COPY = {
+  title: 'Not saved on this device',
+  text: "IPFS is off, so Freedom only opens IPFS pages you've opened before, and this one isn't among them. Turn IPFS on in the Nodes menu, then reload.",
+};
+// The cache-only node couldn't answer at all (its store didn't open, or it
+// failed and is waiting before the next try).
+const UNAVAILABLE_COPY = {
+  title: 'Saved pages are unavailable',
+  text: "IPFS is off, and Freedom couldn't open the pages saved on this device just now. Reload in a few seconds, or turn IPFS on in the Nodes menu.",
+};
+
+const notSavedPage = (scheme, { title, text } = NOT_SAVED_COPY) => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="${scheme}">
-<title>Not saved on this device</title>
+<title>${title}</title>
 <style>
 :root { color-scheme: ${scheme}; }
 body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
@@ -590,8 +605,8 @@ p { margin: 0; opacity: 0.75; }
 </head>
 <body>
 <main>
-<h1>Not saved on this device</h1>
-<p>IPFS is off, so Freedom only opens IPFS pages you've opened before, and this one isn't among them. Turn IPFS on in the Nodes menu, then reload.</p>
+<h1>${title}</h1>
+<p>${text}</p>
 </main>
 </body>
 </html>
@@ -608,9 +623,15 @@ function isCacheMiss(status, gatewayPath) {
 
 function cacheOnlyResponse(response, gatewayPath, method, request) {
   if (!response.headers.has(CACHE_ONLY_HEADER)) return response;
-  if (method === 'GET' && isDocumentRequest(request) && isCacheMiss(response.status, gatewayPath)) {
+  const unavailable = response.headers.get(CACHE_ONLY_HEADER) === CACHE_UNAVAILABLE;
+  if (
+    method === 'GET' &&
+    isDocumentRequest(request) &&
+    (unavailable || isCacheMiss(response.status, gatewayPath))
+  ) {
     response.body?.cancel().catch(() => {});
-    return new Response(notSavedPage(notSavedColorScheme()), {
+    const copy = unavailable ? UNAVAILABLE_COPY : NOT_SAVED_COPY;
+    return new Response(notSavedPage(notSavedColorScheme(), copy), {
       status: 503,
       headers: {
         'Content-Type': 'text/html; charset=utf-8',

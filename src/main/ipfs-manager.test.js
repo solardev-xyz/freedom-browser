@@ -442,27 +442,79 @@ describe('ipfs-manager', () => {
     test('a cache-only node that fails to start answers 503 and is not retried on every request', async () => {
       const ctx = loadIpfsManagerModule({ startOk: false });
 
-      expect((await request(ctx)).status).toBe(503);
-      expect((await request(ctx)).status).toBe(503);
+      const first = await request(ctx);
+      const second = await request(ctx);
 
+      expect(first.status).toBe(503);
+      expect(second.status).toBe(503);
       expect(ctx.nativeInstances).toHaveLength(1);
+      // Marked, so ipfs-protocol.js shows a page instead of the raw JSON: the
+      // renderer let the load through, so its own "unavailable" page didn't.
+      expect(first.headers.get(ctx.mod.CACHE_ONLY_HEADER)).toBe(ctx.mod.CACHE_UNAVAILABLE);
+      expect(second.headers.get(ctx.mod.CACHE_ONLY_HEADER)).toBe(ctx.mod.CACHE_UNAVAILABLE);
+    });
+
+    test('a 503 is not marked once quit closed admission, or for a disabled profile', async () => {
+      const closed = loadIpfsManagerModule();
+      await closed.mod.stopIpfs({ final: true });
+      const afterQuit = await request(closed);
+      expect(afterQuit.status).toBe(503);
+      expect(afterQuit.headers.has(closed.mod.CACHE_ONLY_HEADER)).toBe(false);
+
+      const disabled = loadIpfsManagerModule({
+        activeProfile: {
+          metadata: { nodes: { ipfs: { mode: 'disabled', backend: 'freedom-ipfs' } } },
+        },
+      });
+      const off = await request(disabled);
+      expect(off.status).toBe(503);
+      expect(off.headers.has(disabled.mod.CACHE_ONLY_HEADER)).toBe(false);
     });
 
     test('a cache-only node that fails later is dropped, and the next request starts a fresh one', async () => {
       const ctx = loadIpfsManagerModule();
       await request(ctx);
       const [failed] = ctx.nativeInstances;
-      const now = Date.now();
-      const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+      const now = performance.now();
+      const clock = jest.spyOn(performance, 'now').mockReturnValue(now);
 
-      failed.config.onFailure('dispatcher exited', failed);
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(failed.stop).toHaveBeenCalledTimes(1);
-      expect((await request(ctx)).status).toBe(503);
+      try {
+        failed.config.onFailure('dispatcher exited', failed);
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(failed.stop).toHaveBeenCalledTimes(1);
+        expect((await request(ctx)).status).toBe(503);
 
-      clock.mockReturnValue(now + 10_001);
-      expect((await request(ctx)).status).toBe(200);
-      expect(ctx.nativeInstances).toHaveLength(2);
+        clock.mockReturnValue(now + 10_001);
+        expect((await request(ctx)).status).toBe(200);
+        expect(ctx.nativeInstances).toHaveLength(2);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    test('the retry back-off runs on a monotonic clock: a wall clock stepped back does not stretch it', async () => {
+      const ctx = loadIpfsManagerModule();
+      await request(ctx);
+      const [failed] = ctx.nativeInstances;
+      const mono = performance.now();
+      const monoClock = jest.spyOn(performance, 'now').mockReturnValue(mono);
+      const wall = Date.now();
+      const wallClock = jest.spyOn(Date, 'now').mockReturnValue(wall);
+
+      try {
+        failed.config.onFailure('dispatcher exited', failed);
+        await new Promise((resolve) => setImmediate(resolve));
+
+        // The wall clock steps back an hour; 10 s of real time pass.
+        wallClock.mockReturnValue(wall - 3_600_000);
+        monoClock.mockReturnValue(mono + 10_001);
+
+        expect((await request(ctx)).status).toBe(200);
+        expect(ctx.nativeInstances).toHaveLength(2);
+      } finally {
+        monoClock.mockRestore();
+        wallClock.mockRestore();
+      }
     });
   });
 

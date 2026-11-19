@@ -450,6 +450,36 @@ describe('ipfs: IPFS off serves saved content (#30)', () => {
     }
   );
 
+  test('a cache-only node that cannot open the store gets a page too, not the raw 503 JSON', async () => {
+    await stack.manager.stopIpfs();
+    fake.addon.nodeStartNativeGatewayOnlineAsync.mockImplementation(
+      async (_node, _port, routingMode) => routingMode !== fake.addon.constants.ROUTING_MODE_OFFLINE
+    );
+
+    const page = await ipfs('/', { headers: { Accept: NAVIGATION_ACCEPT } });
+    // Inside the retry back-off: no second start, still the page.
+    const again = await ipfs('/', { headers: { Accept: NAVIGATION_ACCEPT } });
+    const image = await ipfs('/logo.png', { headers: { Accept: 'image/avif,image/webp,*/*' } });
+
+    expect(page.status).toBe(503);
+    expect(page.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(page.headers.get('cache-control')).toBe('no-store');
+    expect(page.headers.get('content-security-policy')).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'"
+    );
+    const html = await page.text();
+    expect(html).toContain('<title>Saved pages are unavailable</title>');
+    expect(html).toContain('turn IPFS on in the Nodes menu');
+    expect(html).not.toMatch(/<script/i);
+    expect(again.status).toBe(503);
+    expect(await again.text()).toContain('<title>Saved pages are unavailable</title>');
+    expect(offlineStarts()).toHaveLength(1);
+    // A subresource keeps the plain answer, without the marker.
+    expect(image.status).toBe(503);
+    expect(image.headers.has('x-freedom-ipfs-cache-only')).toBe(false);
+    expect(await image.json()).toEqual({ code: 503, message: 'freedom-ipfs node is not running' });
+  });
+
   test('a page load the store can serve is never replaced', async () => {
     await stack.manager.stopIpfs();
     fake.onRequest((request) => fake.serve(request, { body: 'saved' }));
