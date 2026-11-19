@@ -174,15 +174,18 @@ const SWAP_STEPS = Object.freeze(['prepare swap', 'swap xDAI for xBZZ']);
  *   - `retry`: the connection to Gnosis Chain dropped (`http:` for a read,
  *     `rpc: http:` for a transaction) in a step before anything that moves
  *     value; trying again is safe.
- *   - `swap`: the swap, or its setup, failed other than by a revert. It
- *     may still go through, so the user waits before trying again.
- *   - `uncertain`: the payment, a step after it, or a step that cannot be
- *     placed failed other than by a revert. antd had usually sent the
- *     transaction already (it gives up while waiting for the receipt), so it
- *     may still go through, and the node does not register a batch it lost
- *     track of until it restarts.
- *   - `failed`: a revert, or another failure before the payment; its reason
- *     is shown.
+ *   - `swap`: the swap, or its setup, lost its connection or was never seen
+ *     mined. It may still go through, so the user waits before trying again.
+ *   - `uncertain`: the connection dropped in the payment, a step after it, or
+ *     a step that cannot be placed. antd had usually sent the transaction
+ *     already (it gives up while waiting for the receipt), so it may still go
+ *     through, and the node does not register a batch it lost track of until
+ *     it restarts.
+ *   - `unmined`: the same steps, but antd sent the transaction and gave up
+ *     waiting for it to be mined; it too may still go through.
+ *   - `failed`: anything else, such as a revert, a refused send (`rpc: rpc:
+ *     insufficient funds`, `nonce too low`) or a receipt without a batch.
+ *     Its reason is shown, as before #992.
  */
 function classifyChainFailure(res, kind) {
   if (res?.status !== 502 || typeof res.message !== 'string') return 'failed';
@@ -191,11 +194,12 @@ function classifyChainFailure(res, kind) {
   const split = message.indexOf(': ');
   const step = split === -1 ? message : message.slice(0, split);
   const cause = split === -1 ? '' : message.slice(split + 2);
-  if (STEPS_BEFORE_PAYMENT[kind]?.includes(step)) {
-    return /^(?:rpc: )?http: /.test(cause) ? 'retry' : 'failed';
-  }
+  const dropped = /^(?:rpc: )?http: /.test(cause);
+  if (STEPS_BEFORE_PAYMENT[kind]?.includes(step)) return dropped ? 'retry' : 'failed';
+  const unmined = /^(?:rpc: )?transaction never mined\b/.test(cause);
+  if (!dropped && !unmined) return 'failed';
   if (SWAP_STEPS.includes(step)) return 'swap';
-  return 'uncertain';
+  return dropped ? 'uncertain' : 'unmined';
 }
 
 function droppedBeforePaymentMessage(label) {
@@ -1373,7 +1377,11 @@ function createPublishSetupService({
       return;
     }
 
-    if (chainFailure === 'uncertain' || antStorageApi.isUncertainWrite(res)) {
+    if (
+      chainFailure === 'uncertain' ||
+      chainFailure === 'unmined' ||
+      antStorageApi.isUncertainWrite(res)
+    ) {
       log.warn(
         `[PublishSetup] ${label}: outcome unknown (status ${res.status}${res.message ? `: ${res.message}` : ''})`
       );

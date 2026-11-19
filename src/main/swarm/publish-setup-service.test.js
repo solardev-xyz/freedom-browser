@@ -1568,10 +1568,21 @@ describe('a dropped Gnosis Chain connection (#992)', () => {
     ['buy', 'prepare swap: rpc: http: error sending request for url (x)', 'swap'],
     ['buy', 'swap xDAI for xBZZ: transaction reverted: 0x0', 'failed'],
     ['buy', 'buy storage: rpc: http: error sending request for url (x)', 'uncertain'],
-    ['buy', 'buy storage: transaction never mined: 0xab (timeout 60s)', 'uncertain'],
+    ['buy', 'buy storage: transaction never mined: 0xab (timeout 60s)', 'unmined'],
     ['buy', 'buy storage: transaction reverted: 0x0', 'failed'],
-    ['buy', 'batch registration failed: node loop busy', 'uncertain'],
-    ['buy', 'storage purchase receipt had no batch', 'uncertain'],
+    ['buy', 'batch registration failed: http: error sending request for url (x)', 'uncertain'],
+    // A send the RPC refused, or a failure that is not a lost connection,
+    // shows its own reason: nothing says it may still go through.
+    ['buy', 'buy storage: rpc: rpc: insufficient funds for gas * price + value', 'failed'],
+    ['buy', 'swap xDAI for xBZZ: rpc: rpc: insufficient funds for gas * price + value', 'failed'],
+    ['buy', 'prepare swap: rpc: rpc: nonce too low', 'failed'],
+    ['buy', 'batch registration failed: node loop busy', 'failed'],
+    ['buy', 'storage purchase receipt had no batch', 'failed'],
+    ['buy', 'some new step: rpc: rpc: execution reverted', 'failed'],
+    ['buy', 'some new step: rpc: http: error sending request for url (x)', 'uncertain'],
+    ['extend', 'extend storage: rpc: rpc: nonce too low', 'failed'],
+    ['extend', 'resize storage: transaction never mined: 0xab (timeout 60s)', 'unmined'],
+    ['deposit', 'deposit into chequebook: the wallet holds no xBZZ to deposit', 'failed'],
     ['extend', 'read batch: http: error sending request for url (x)', 'retry'],
     ['extend', 'authorise payment: rpc: http: error sending request for url (x)', 'retry'],
     ['extend', 'extend storage: rpc: http: error sending request for url (x)', 'uncertain'],
@@ -1757,6 +1768,57 @@ describe('a dropped Gnosis Chain connection (#992)', () => {
       expect(api.buyStorage).toHaveBeenCalledTimes(1);
     }
   );
+
+  test('a payment the RPC refused shows its own reason, not a dropped connection', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage.mockResolvedValue(
+      fail(502, 'buy storage: rpc: rpc: insufficient funds for gas * price + value')
+    );
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    const { operation } = service.getState();
+    expect(operation).toMatchObject({ phase: 'failed', uncertain: false });
+    expect(operation.error).toMatch(/insufficient funds for gas/);
+    expect(operation.error).not.toMatch(/connection to Gnosis Chain dropped|may still go through/);
+
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  test('a swap the RPC refused shows its own reason, not "may still go through"', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage.mockResolvedValue(
+      fail(502, 'swap xDAI for xBZZ: rpc: rpc: insufficient funds for gas * price + value')
+    );
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    const { operation } = service.getState();
+    expect(operation).toMatchObject({ phase: 'failed', uncertain: false });
+    expect(operation.error).toMatch(/insufficient funds for gas/);
+    expect(operation.error).not.toMatch(/may still go through/);
+  });
+
+  test('a payment never seen mined may still go through, without blaming the connection', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.getStamps.mockResolvedValue(ok({ stamps: [] }));
+    api.buyStorage.mockResolvedValue(
+      fail(502, 'buy storage: transaction never mined: 0xab (timeout 60s)')
+    );
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      uncertain: true,
+      error:
+        'Gnosis Chain did not confirm the transaction in time. It may still go through, so check your storage in a minute before you try again.',
+    });
+  });
 
   test('after the payment step fails, a new batch the node lists is the purchase', async () => {
     const { service, api } = setup();
