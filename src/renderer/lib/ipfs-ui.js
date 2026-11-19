@@ -18,6 +18,9 @@ let ipfsStatusValue = null;
 
 // Binary availability state
 let ipfsBinaryAvailable = true;
+// Why the add-on can't load, when main knows: 'glibc' on a Linux system too
+// old for it (#350).
+let ipfsUnavailableReason = null;
 
 // Guards one-time listener/subscription wiring so re-running initIpfsUi (e.g.
 // to re-check binary availability) doesn't bind the click handler twice.
@@ -289,7 +292,9 @@ export const updateIpfsToggleState = () => {
       : mode === 'external'
         ? 'Using an external IPFS gateway'
         : disabled
-          ? 'IPFS binary not found'
+          ? ipfsUnavailableReason === 'glibc'
+            ? 'Needs a newer Linux. Use an external node from Settings > Nodes.'
+            : 'IPFS binary not found'
           : null;
   if (title) {
     ipfsToggleBtn.setAttribute('title', title);
@@ -362,8 +367,9 @@ export const initIpfsUi = () => {
 
   // Check binary availability
   if (window.ipfs) {
-    window.ipfs.checkBinary().then(({ available }) => {
+    window.ipfs.checkBinary().then(({ available, reason }) => {
       ipfsBinaryAvailable = available;
+      ipfsUnavailableReason = available ? null : reason || null;
       // Re-derive the toggle state from both inputs rather than disabling
       // outright: the profile may be on an external gateway, which the missing
       // addon says nothing about.

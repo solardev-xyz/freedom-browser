@@ -103,6 +103,11 @@ function loadIpfsManagerModule(options = {}) {
     static isAvailable() {
       return options.nativeAvailable !== false;
     }
+
+    static loadError() {
+      if (options.nativeAvailable !== false) return null;
+      return options.nativeLoadError || new Error('freedom-ipfs native addon not found');
+    }
   }
 
   const { mod } = loadMainModule(require.resolve('./ipfs-manager'), {
@@ -204,6 +209,56 @@ describe('ipfs-manager', () => {
     await expect(ctx.ipcMain.invoke(IPC.IPFS_CHECK_BINARY)).resolves.toEqual({
       available: false,
     });
+  });
+
+  test('the binary check names a glibc too old for the add-on, before any start (#350)', async () => {
+    jest.spyOn(process.report, 'getReport').mockReturnValue({ header: {} });
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      nativeLoadError: new Error("libc.so.6: version `GLIBC_2.39' not found"),
+    });
+    ctx.mod.registerIpfsIpc();
+
+    try {
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_CHECK_BINARY)).resolves.toEqual({
+        available: false,
+        reason: 'glibc',
+        hostGlibc: null,
+      });
+    } finally {
+      process.report.getReport.mockRestore();
+    }
+    expect(ctx.updateService).toHaveBeenCalledWith('ipfs', {
+      unavailableReason: 'glibc',
+      hostGlibc: null,
+    });
+  });
+
+  test('the glibc reason is cleared once the add-on loads, and only then (#350)', async () => {
+    jest.spyOn(process.report, 'getReport').mockReturnValue({ header: {} });
+    const options = {
+      nativeAvailable: true,
+      nativeLoadError: new Error("libc.so.6: version `GLIBC_2.39' not found"),
+    };
+    const ctx = loadIpfsManagerModule(options);
+    ctx.mod.registerIpfsIpc();
+    const clearing = ['ipfs', { unavailableReason: null, hostGlibc: null }];
+
+    try {
+      // Nothing was published, so a loadable add-on clears nothing.
+      await ctx.ipcMain.invoke(IPC.IPFS_CHECK_BINARY);
+      expect(ctx.updateService).not.toHaveBeenCalledWith(...clearing);
+
+      options.nativeAvailable = false;
+      await ctx.ipcMain.invoke(IPC.IPFS_CHECK_BINARY);
+      options.nativeAvailable = true;
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_CHECK_BINARY)).resolves.toEqual({
+        available: true,
+      });
+    } finally {
+      process.report.getReport.mockRestore();
+    }
+    expect(ctx.updateService).toHaveBeenLastCalledWith(...clearing);
   });
 
   test('starts the bundled freedom-ipfs native node', async () => {
@@ -478,6 +533,57 @@ describe('ipfs-manager', () => {
         headers: new Headers(),
       })
     ).resolves.toMatchObject({ status: 503 });
+  });
+
+  test('names a glibc too old for the add-on instead of a generic failure (#350)', async () => {
+    jest
+      .spyOn(process.report, 'getReport')
+      .mockReturnValue({ header: { glibcVersionRuntime: '2.35' } });
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      nativeLoadError: new Error(
+        "/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by /opt/Freedom/resources/freedom-ipfs-node/freedom_ipfs_native.node)"
+      ),
+    });
+
+    try {
+      await ctx.mod.startIpfs();
+    } finally {
+      process.report.getReport.mockRestore();
+    }
+
+    expect(ctx.nativeInstances).toHaveLength(0);
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Needs a newer Linux');
+    expect(ctx.updateService).toHaveBeenCalledWith('ipfs', {
+      unavailableReason: 'glibc',
+      hostGlibc: '2.35',
+    });
+    expect(ctx.mod.getStatus()).toMatchObject({
+      status: 'error',
+      error: 'freedom-ipfs native addon needs a newer glibc',
+    });
+    const errors = ctx.log.error.mock.calls.map((call) => call.join(' ')).join('\n');
+    expect(errors).toContain("than this system's (2.35)");
+    expect(errors).toContain("GLIBC_2.38' not found");
+  });
+
+  test('logs why the add-on failed to load when it is not a glibc problem', async () => {
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      nativeLoadError: new Error('dlopen(freedom_ipfs_native.node): wrong architecture'),
+    });
+
+    await ctx.mod.startIpfs();
+
+    expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'Native node unavailable');
+    expect(ctx.updateService).not.toHaveBeenCalledWith(
+      'ipfs',
+      expect.objectContaining({ unavailableReason: expect.anything() })
+    );
+    expect(ctx.log.error).toHaveBeenCalledWith(
+      '[IPFS] freedom-ipfs native addon failed to load:',
+      'dlopen(freedom_ipfs_native.node): wrong architecture'
+    );
   });
 
   test('starts in external mode and proxies gateway requests even when the native addon is absent', async () => {
