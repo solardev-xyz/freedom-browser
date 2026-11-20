@@ -54,7 +54,12 @@ class FakeChild extends EventEmitter {
     let result;
     if (message.method === 'core.hello') {
       // The pinned core takes vault-meta.json (design 0013, PRF-6(a)).
-      result = { protocol: 2, core_version: '0.1.0', capabilities: ['streams'], store_moved: ['vault_meta'] };
+      result = {
+        protocol: 2,
+        core_version: '0.1.0',
+        capabilities: ['streams'],
+        store_moved: ['vault_meta'],
+      };
     } else if (message.method === 'core.shutdown') {
       result = {};
     } else {

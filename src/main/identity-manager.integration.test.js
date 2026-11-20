@@ -31,12 +31,18 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { loadMainModule } = require('../../test/helpers/main-process-test-utils');
-const { coredBinaries, startCore, watchWrites, SET_A_WRITES } = require('../../test/helpers/store-handover');
+const {
+  coredBinaries,
+  startCore,
+  watchWrites,
+  SET_A_WRITES,
+} = require('../../test/helpers/store-handover');
 const { referenceMeta } = require('../../test/helpers/simulated-store-core');
 
 const { current, previous } = coredBinaries();
 const describeIfCurrent = current && fs.existsSync(current) ? describe : describe.skip;
-const describeIfPrevious = current && previous && fs.existsSync(previous) ? describe : describe.skip;
+const describeIfPrevious =
+  current && previous && fs.existsSync(previous) ? describe : describe.skip;
 const keychain = process.platform === 'darwin' ? process.env.FREEDOM_TEST_KEYCHAIN : null;
 if (current && process.env.FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN === '1' && !keychain) {
   throw new Error('FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN=1 needs FREEDOM_TEST_KEYCHAIN');
@@ -58,7 +64,8 @@ function writeAsOlderBuild(file, text) {
 // The store's files (design 0013, "The vault and its metadata, one write").
 const STORE_FILES = /vault-meta\.json|vault-meta-journal\.json|\.freedom-new/;
 const PASSWORD = 'vault-meta-pass-1';
-const ABANDON = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const ABANDON =
+  'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const LEDGER = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
 const LEDGER_PATH = "44'/60'/0'/0/0";
 const OLD_LEDGER = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
@@ -75,7 +82,8 @@ const errorOf = (promise) =>
   );
 
 async function until(condition) {
-  for (let i = 0; i < 200 && !condition(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  for (let i = 0; i < 200 && !condition(); i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 10));
   expect(condition()).toBe(true);
 }
 
@@ -110,7 +118,9 @@ function loadMain(core, root, swarm) {
       [require.resolve('./wallet/ledger/transport')]: () => ({
         readAddresses: async (paths) => paths.map(() => LEDGER),
       }),
-      [require.resolve('./wallet/remote/account-proof')]: () => ({ proveRemoteAccount: async () => true }),
+      [require.resolve('./wallet/remote/account-proof')]: () => ({
+        proveRemoteAccount: async () => true,
+      }),
       [require.resolve('./swarm/feed-store')]: () => ({
         getEthereumWalletIdentityReferences: (index) => swarm.references(index),
       }),
@@ -215,7 +225,10 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     expect(first).toEqual({
       userKnowsPassword: false,
       createdAt: expect.any(String),
-      addresses: { userWallet: await addressOf(0), beeWallet: expect.stringMatching(/^0x[0-9a-fA-F]{40}$/) },
+      addresses: {
+        userWallet: await addressOf(0),
+        beeWallet: expect.stringMatching(/^0x[0-9a-fA-F]{40}$/),
+      },
     });
     expect(p.text()).toBe(JSON.stringify(first, null, 2));
     // The create and its metadata went as one request, under `requires`.
@@ -232,12 +245,19 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     await mod.deleteVaultData(PASSWORD);
     await mod.importExistingMnemonic(PASSWORD, ABANDON, false);
     const imported = p.readMeta();
-    expect(imported).toMatchObject({ userKnowsPassword: false, addresses: { userWallet: await addressOf(0) } });
-    expect(calls.filter((call) => call.method === 'vault.import').map((call) => call.params.user_knows_password)).toEqual([
-      false,
-    ]);
+    expect(imported).toMatchObject({
+      userKnowsPassword: false,
+      addresses: { userWallet: await addressOf(0) },
+    });
+    expect(
+      calls
+        .filter((call) => call.method === 'vault.import')
+        .map((call) => call.params.user_knows_password)
+    ).toEqual([false]);
     // The journal finished: nothing staged is left.
-    expect(fs.readdirSync(p.identity).filter((name) => /journal|freedom-new/.test(name))).toEqual([]);
+    expect(fs.readdirSync(p.identity).filter((name) => /journal|freedom-new/.test(name))).toEqual(
+      []
+    );
   }, 180_000);
 
   test('an unlock adds the addresses an older file lacks', async () => {
@@ -252,7 +272,10 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     expect(p.readMeta()).not.toHaveProperty('derivedWallets');
     const main = { index: 0, name: 'Main Wallet', address: await addressOf(0), type: 'mnemonic' };
     await expect(mod.getDerivedWallets()).resolves.toEqual([main]);
-    expect(p.readMeta()).toMatchObject({ activeWalletIndex: 0, derivedWallets: [{ index: 0, name: 'Main Wallet' }] });
+    expect(p.readMeta()).toMatchObject({
+      activeWalletIndex: 0,
+      derivedWallets: [{ index: 0, name: 'Main Wallet' }],
+    });
     const once = p.text();
     const { mtimeMs } = fs.statSync(p.metaFile);
     await expect(mod.getDerivedWallets()).resolves.toEqual([main]);
@@ -262,14 +285,20 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
 
   test("add_mnemonic: refused while locked with the reference's message; unlocked, the core's index and address", async () => {
     await mod.lockVault();
-    await expect(mod.createDerivedWallet('Spare')).rejects.toThrow('Vault must be unlocked to create a new wallet');
+    await expect(mod.createDerivedWallet('Spare')).rejects.toThrow(
+      'Vault must be unlocked to create a new wallet'
+    );
     await mod.unlockVault(PASSWORD);
     await expect(mod.createDerivedWallet('Spare')).resolves.toEqual({
       index: 1,
       name: 'Spare',
       address: await addressOf(1),
     });
-    expect(p.readMeta().derivedWallets.at(-1)).toEqual({ index: 1, name: 'Spare', address: await addressOf(1) });
+    expect(p.readMeta().derivedWallets.at(-1)).toEqual({
+      index: 1,
+      name: 'Spare',
+      address: await addressOf(1),
+    });
   }, 60_000);
 
   test('a Ledger and a phone, checked by main, are added matched; a matched record stays matched', async () => {
@@ -297,8 +326,16 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
       'This account is already in your wallet list as "Ledger 1"'
     );
     expect(mod.findWalletRecordByAddress(PHONE.toLowerCase())).toMatchObject({ index: HW + 1 });
-    for (const method of ['accounts.add_ledger', 'accounts.add_remote', 'accounts.record_address_check']) {
-      expect(calls.filter((call) => call.method === method).every((call) => call.context.caller === 'shell')).toBe(true);
+    for (const method of [
+      'accounts.add_ledger',
+      'accounts.add_remote',
+      'accounts.record_address_check',
+    ]) {
+      expect(
+        calls
+          .filter((call) => call.method === method)
+          .every((call) => call.context.caller === 'shell')
+      ).toBe(true);
     }
   });
 
@@ -320,7 +357,9 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     });
     const unchecked = await safe([0, HW + 2]);
     expect(unchecked.code).toBe('LEDGER_ACCOUNT_UNCHECKED');
-    expect(unchecked.message).toMatch(/^"Old" can't own a Safe until it has been checked on its Ledger/);
+    expect(unchecked.message).toMatch(
+      /^"Old" can't own a Safe until it has been checked on its Ledger/
+    );
 
     const added = (await safe([0, HW])).result;
     expect(added).toEqual({
@@ -335,7 +374,9 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     });
     expect((await safe([0, HW + 3])).message).toBe('A Safe cannot own another Safe');
     await mod.markSafeDeployed(HW + 3, 100);
-    expect(p.readMeta().derivedWallets.find((w) => w.index === HW + 3).deployed).toEqual({ 100: { verified: true } });
+    expect(p.readMeta().derivedWallets.find((w) => w.index === HW + 3).deployed).toEqual({
+      100: { verified: true },
+    });
     expect(mod.getWalletRecord(HW + 3)).toMatchObject({ type: 'safe', deployed: { 100: true } });
   });
 
@@ -351,7 +392,11 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     });
     const { wallets } = await invoke('wallet:get-derived-wallets');
     expect(wallets.map((w) => w.index)).toEqual([0, 1, HW, HW + 1, HW + 2, HW + 3]);
-    expect(calls.filter((call) => call.method.startsWith('accounts.')).map((call) => [call.method, call.context.caller])).toEqual([
+    expect(
+      calls
+        .filter((call) => call.method.startsWith('accounts.'))
+        .map((call) => [call.method, call.context.caller])
+    ).toEqual([
       ['accounts.set_active', 'chrome'],
       ['accounts.rename', 'chrome'],
       ['accounts.active', 'chrome'],
@@ -370,12 +415,27 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
   test("remove: the refusals, a Safe's state dropped, and the account's dApp grants forgotten, which main's copy and pages hear", async () => {
     const remove = (index) => errorOf(mod.deleteDerivedWallet(index));
     expect((await remove(0)).message).toBe('Cannot delete the main wallet (index 0)');
-    expect((await remove(HW)).message).toBe('This account is an owner of "Joint" — delete that Safe account first');
-    const references = [{ origin: 'myapp.eth', identityId: 'ethereum-wallet:1', active: true, feedNames: [], feedCount: 0 }];
+    expect((await remove(HW)).message).toBe(
+      'This account is an owner of "Joint" — delete that Safe account first'
+    );
+    const references = [
+      {
+        origin: 'myapp.eth',
+        identityId: 'ethereum-wallet:1',
+        active: true,
+        feedNames: [],
+        feedCount: 0,
+      },
+    ];
     swarm.references = (index) => (index === 1 ? references : []);
     const swarmRefusal = await remove(1);
-    expect(swarmRefusal).toMatchObject({ code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE', references });
-    expect(swarmRefusal.message).toMatch(/^Cannot delete wallet with index 1; it is active or pinned to Swarm feeds for myapp\.eth\./);
+    expect(swarmRefusal).toMatchObject({
+      code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE',
+      references,
+    });
+    expect(swarmRefusal.message).toMatch(
+      /^Cannot delete wallet with index 1; it is active or pinned to Swarm feeds for myapp\.eth\./
+    );
     swarm.references = () => [];
 
     // A Safe: main's own slot for it goes once the core has removed it (the
@@ -404,13 +464,11 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     // Main asked for no end and no separate forget: the core did both.
     expect(calls.map((call) => call.method)).not.toContain('approval.end');
     expect(calls.map((call) => call.method)).not.toContain('approval.forget_account');
-    expect(calls.filter((call) => call.method === 'accounts.remove').map((call) => call.params.swarm_references)).toEqual([
-      [],
-      [],
-      references,
-      [],
-      [],
-    ]);
+    expect(
+      calls
+        .filter((call) => call.method === 'accounts.remove')
+        .map((call) => call.params.swarm_references)
+    ).toEqual([[], [], references, [], []]);
   });
 
   test("rollback: the reference reads the core's file and sees what the core answers", async () => {
@@ -418,7 +476,8 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     const records = async () => {
       const listed = await vaultBackend.accounts.list();
       expect(await reference.getDerivedWallets()).toEqual(listed);
-      for (const { index } of listed) expect(reference.getWalletRecord(index)).toEqual(mod.getWalletRecord(index));
+      for (const { index } of listed)
+        expect(reference.getWalletRecord(index)).toEqual(mod.getWalletRecord(index));
       return listed;
     };
     expect((await records()).length).toBeGreaterThan(1);
@@ -472,219 +531,240 @@ describeIfKeychain('Quick Setup with vault_meta moved (macOS, the temporary keyc
     } finally {
       watch.restore();
     }
-    expect(p.readMeta()).toMatchObject({ userKnowsPassword: false, addresses: { userWallet: expect.any(String) } });
+    expect(p.readMeta()).toMatchObject({
+      userKnowsPassword: false,
+      addresses: { userWallet: expect.any(String) },
+    });
     await expect(vaultBackend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
     expect(fs.existsSync(path.join(p.identity, 'quick-unlock.dat'))).toBe(false);
   }, 120_000);
 });
 
-describeIfCurrent('the reference with the hello of a build before PRF-6, on the pinned freedom-cored (T3)', () => {
-  let p;
-  let core;
-  let reference;
-  let changed;
-  const envBefore = process.env.FREEDOM_IDENTITY_DATA;
-  const digest = () => p.text();
+describeIfCurrent(
+  'the reference with the hello of a build before PRF-6, on the pinned freedom-cored (T3)',
+  () => {
+    let p;
+    let core;
+    let reference;
+    let changed;
+    const envBefore = process.env.FREEDOM_IDENTITY_DATA;
+    const digest = () => p.text();
 
-  beforeAll(async () => {
-    p = profile('vault-meta-prestep-');
-    process.env.FREEDOM_IDENTITY_DATA = p.identity;
-    core = await startCore({
-      binary: current,
-      root: p.root,
-      storeMoved: [],
-      beforeStart: (client) => {
-        // The build before PRF-6 sends no `requires`. No core request
-        // changes vault-meta.json: each is checked before and after.
-        changed = [];
-        const request = client.request.bind(client);
-        client.request = async (method, params, context, options = {}) => {
-          const before = digest();
-          try {
-            return await request(method, params, context, { ...options, requires: null });
-          } finally {
-            if (digest() !== before) changed.push(method);
-          }
-        };
-        loadMainModule(require.resolve('./identity-manager'), {
-          userDataDir: p.root,
-          extraMocks: { [require.resolve('./core/core-process')]: () => ({ getCoreClient: () => client }) },
-        });
-        reference = require('../../test/helpers/reference-vault-meta');
-      },
-    });
-  });
-
-  afterAll(async () => {
-    await core?.stop();
-    if (p) fs.rmSync(p.root, { recursive: true, force: true });
-    if (envBefore === undefined) delete process.env.FREEDOM_IDENTITY_DATA;
-    else process.env.FREEDOM_IDENTITY_DATA = envBefore;
-  });
-
-  afterEach(() => {
-    expect(changed).toEqual([]);
-  });
-
-  test('the echo lacks vault_meta', () => {
-    expect(core.service.helloParams(core).store_moved).toEqual([]);
-    expect(core.hello.store_moved).toEqual([]);
-  });
-
-  test('vault.create, vault.unlock and vault.import leave the file to the reference, which writes it itself', async () => {
-    expect(fs.existsSync(p.metaFile)).toBe(false);
-    await reference.createNewVault(PASSWORD, 128, false);
-    expect(p.readMeta()).toMatchObject({ userKnowsPassword: false });
-    // An older file without addresses: the core's unlock adds none, the
-    // reference's own migration does.
-    const { addresses, ...older } = p.readMeta();
-    p.seed(older);
-    await reference.lockVault();
-    await reference.unlockVault(PASSWORD);
-    expect(p.readMeta()).toEqual({ ...older, addresses });
-    await reference.deleteVaultData(PASSWORD);
-    expect(p.readMeta()).toEqual({ ...older, addresses });
-    await reference.importExistingMnemonic(PASSWORD, ABANDON);
-    expect(p.readMeta()).toMatchObject({ userKnowsPassword: true });
-  }, 180_000);
-
-  test('every accounts.* write answers not_moved (vault_meta)', async () => {
-    const writes = SET_A_WRITES.filter(({ store }) => store === 'vault_meta');
-    expect(writes).toHaveLength(9);
-    for (const { method, params } of writes) {
-      const answer = await errorOf(core.request(method, params, shell));
-      expect([method, answer.code, answer.data?.store]).toEqual([method, 'not_moved', 'vault_meta']);
-    }
-  });
-
-  test("accounts.list answers the first-list default without writing it; list, meta and active follow the reference's writes", async () => {
-    expect(p.readMeta()).not.toHaveProperty('derivedWallets');
-    const { wallets } = await core.request('accounts.list', {}, shell);
-    expect(wallets).toEqual([expect.objectContaining({ index: 0, name: 'Main Wallet', type: 'mnemonic' })]);
-    expect(p.readMeta()).not.toHaveProperty('derivedWallets');
-
-    await reference.createDerivedWallet('Two');
-    await reference.setActiveWalletIndex(1);
-    await reference.renameDerivedWallet(1, 'Deux');
-    expect((await core.request('accounts.list', {}, shell)).wallets).toEqual(await reference.getDerivedWallets());
-    expect((await core.request('accounts.meta', {}, shell)).meta).toEqual(referenceMeta());
-    expect((await core.request('accounts.active', {}, shell)).index).toBe(1);
-  }, 60_000);
-});
-
-describeIfPrevious("this step's identity-manager on the previous freedom-cored release (T4)", () => {
-  let p;
-  const swarm = { references: () => [] };
-  let core;
-  let mod;
-  let ipcMain;
-  let reference;
-  let request;
-  const envBefore = process.env.FREEDOM_IDENTITY_DATA;
-
-  /** `task` as the build before PRF-6 runs it: no `requires`. */
-  async function asOlderBuild(task) {
-    const strict = core.request;
-    core.request = (method, params, context, options = {}) =>
-      request(method, params, context, { ...options, requires: null });
-    try {
-      return await task();
-    } finally {
-      core.request = strict;
-    }
-  }
-
-  beforeAll(async () => {
-    p = profile('vault-meta-previous-');
-    process.env.FREEDOM_IDENTITY_DATA = p.identity;
-    core = await startCore({
-      binary: previous,
-      root: p.root,
-      beforeStart: (client) => {
-        request = client.request.bind(client);
-        ({ mod, ipcMain } = loadMain(client, p.root, swarm));
-        reference = require('../../test/helpers/reference-vault-meta');
-      },
-    });
-    mod.registerIdentityIpc();
-  });
-
-  afterAll(async () => {
-    await core?.stop();
-    if (p) fs.rmSync(p.root, { recursive: true, force: true });
-    if (envBefore === undefined) delete process.env.FREEDOM_IDENTITY_DATA;
-    else process.env.FREEDOM_IDENTITY_DATA = envBefore;
-  });
-
-  test('the hello names vault_meta, and the previous release echoes none', () => {
-    expect(core.service.helloParams(core).store_moved).toEqual(['vault_meta']);
-    expect(core.hello.store_moved).toEqual([]);
-  });
-
-  test('a create and an import fail requirement_unmet in main, and no vault is made', async () => {
-    const watch = watchWrites(STORE_FILES);
-    try {
-      expect((await errorOf(mod.createNewVault(PASSWORD, 128))).code).toBe('requirement_unmet');
-      expect((await errorOf(mod.importExistingMnemonic(PASSWORD, ABANDON))).code).toBe('requirement_unmet');
-      expect(watch.offending()).toEqual([]);
-    } finally {
-      watch.restore();
-    }
-    expect(fs.existsSync(path.join(p.identity, 'identity-vault.json'))).toBe(false);
-    expect(fs.existsSync(p.metaFile)).toBe(false);
-  });
-
-  test('a vault the reference made unlocks, and nothing writes its metadata', async () => {
-    await asOlderBuild(() => reference.importExistingMnemonic(PASSWORD, ABANDON));
-    const { addresses, ...older } = p.readMeta();
-    expect(addresses).toBeTruthy();
-    p.seed(older);
-    await mod.lockVault();
-    const before = p.text();
-    const watch = watchWrites(STORE_FILES);
-    try {
-      await mod.unlockVault(PASSWORD);
-      await expect(mod.isVaultUnlocked()).resolves.toBe(true);
-      expect(watch.offending()).toEqual([]);
-    } finally {
-      watch.restore();
-    }
-    // Neither main nor 0.22.0 migrated it: that waits for a core that echoes vault_meta.
-    expect(p.text()).toBe(before);
-  }, 120_000);
-
-  test('every account operation fails requirement_unmet, and nothing writes the store', async () => {
-    const before = p.text();
-    const invoke = (channel, ...args) => ipcMain.handlers.get(channel)({}, ...args);
-    const watch = watchWrites(STORE_FILES);
-    try {
-      const operations = [
-        mod.getDerivedWallets(),
-        mod.createDerivedWallet('Spare'),
-        mod.setActiveWalletIndex(0),
-        mod.renameDerivedWallet(0, 'Main'),
-        mod.deleteDerivedWallet(1),
-        mod.addLedgerWallet('', LEDGER, LEDGER_PATH),
-        mod.addRemoteWallet('', PHONE),
-        mod.recordLedgerAddressCheck(HW, true),
-        mod.recordRemoteAddressCheck(HW, true),
-        mod.addSafeWallet('', { address: SAFE, owners: [0, HW], threshold: 1, saltNonce: '1' }),
-        mod.markSafeDeployed(HW, 100),
-      ];
-      for (const answer of await Promise.all(operations.map(errorOf))) {
-        expect(answer.code).toBe('requirement_unmet');
-      }
-      await expect(invoke('identity:get-vault-meta')).resolves.toBeNull();
-      await expect(invoke('wallet:get-active-index')).resolves.toEqual({
-        success: false,
-        error: "The core can't take this request",
+    beforeAll(async () => {
+      p = profile('vault-meta-prestep-');
+      process.env.FREEDOM_IDENTITY_DATA = p.identity;
+      core = await startCore({
+        binary: current,
+        root: p.root,
+        storeMoved: [],
+        beforeStart: (client) => {
+          // The build before PRF-6 sends no `requires`. No core request
+          // changes vault-meta.json: each is checked before and after.
+          changed = [];
+          const request = client.request.bind(client);
+          client.request = async (method, params, context, options = {}) => {
+            const before = digest();
+            try {
+              return await request(method, params, context, { ...options, requires: null });
+            } finally {
+              if (digest() !== before) changed.push(method);
+            }
+          };
+          loadMainModule(require.resolve('./identity-manager'), {
+            userDataDir: p.root,
+            extraMocks: {
+              [require.resolve('./core/core-process')]: () => ({ getCoreClient: () => client }),
+            },
+          });
+          reference = require('../../test/helpers/reference-vault-meta');
+        },
       });
-      expect(watch.offending()).toEqual([]);
-    } finally {
-      watch.restore();
+    });
+
+    afterAll(async () => {
+      await core?.stop();
+      if (p) fs.rmSync(p.root, { recursive: true, force: true });
+      if (envBefore === undefined) delete process.env.FREEDOM_IDENTITY_DATA;
+      else process.env.FREEDOM_IDENTITY_DATA = envBefore;
+    });
+
+    afterEach(() => {
+      expect(changed).toEqual([]);
+    });
+
+    test('the echo lacks vault_meta', () => {
+      expect(core.service.helloParams(core).store_moved).toEqual([]);
+      expect(core.hello.store_moved).toEqual([]);
+    });
+
+    test('vault.create, vault.unlock and vault.import leave the file to the reference, which writes it itself', async () => {
+      expect(fs.existsSync(p.metaFile)).toBe(false);
+      await reference.createNewVault(PASSWORD, 128, false);
+      expect(p.readMeta()).toMatchObject({ userKnowsPassword: false });
+      // An older file without addresses: the core's unlock adds none, the
+      // reference's own migration does.
+      const { addresses, ...older } = p.readMeta();
+      p.seed(older);
+      await reference.lockVault();
+      await reference.unlockVault(PASSWORD);
+      expect(p.readMeta()).toEqual({ ...older, addresses });
+      await reference.deleteVaultData(PASSWORD);
+      expect(p.readMeta()).toEqual({ ...older, addresses });
+      await reference.importExistingMnemonic(PASSWORD, ABANDON);
+      expect(p.readMeta()).toMatchObject({ userKnowsPassword: true });
+    }, 180_000);
+
+    test('every accounts.* write answers not_moved (vault_meta)', async () => {
+      const writes = SET_A_WRITES.filter(({ store }) => store === 'vault_meta');
+      expect(writes).toHaveLength(9);
+      for (const { method, params } of writes) {
+        const answer = await errorOf(core.request(method, params, shell));
+        expect([method, answer.code, answer.data?.store]).toEqual([
+          method,
+          'not_moved',
+          'vault_meta',
+        ]);
+      }
+    });
+
+    test("accounts.list answers the first-list default without writing it; list, meta and active follow the reference's writes", async () => {
+      expect(p.readMeta()).not.toHaveProperty('derivedWallets');
+      const { wallets } = await core.request('accounts.list', {}, shell);
+      expect(wallets).toEqual([
+        expect.objectContaining({ index: 0, name: 'Main Wallet', type: 'mnemonic' }),
+      ]);
+      expect(p.readMeta()).not.toHaveProperty('derivedWallets');
+
+      await reference.createDerivedWallet('Two');
+      await reference.setActiveWalletIndex(1);
+      await reference.renameDerivedWallet(1, 'Deux');
+      expect((await core.request('accounts.list', {}, shell)).wallets).toEqual(
+        await reference.getDerivedWallets()
+      );
+      expect((await core.request('accounts.meta', {}, shell)).meta).toEqual(referenceMeta());
+      expect((await core.request('accounts.active', {}, shell)).index).toBe(1);
+    }, 60_000);
+  }
+);
+
+describeIfPrevious(
+  "this step's identity-manager on the previous freedom-cored release (T4)",
+  () => {
+    let p;
+    const swarm = { references: () => [] };
+    let core;
+    let mod;
+    let ipcMain;
+    let reference;
+    let request;
+    const envBefore = process.env.FREEDOM_IDENTITY_DATA;
+
+    /** `task` as the build before PRF-6 runs it: no `requires`. */
+    async function asOlderBuild(task) {
+      const strict = core.request;
+      core.request = (method, params, context, options = {}) =>
+        request(method, params, context, { ...options, requires: null });
+      try {
+        return await task();
+      } finally {
+        core.request = strict;
+      }
     }
-    expect(p.text()).toBe(before);
-    // Main's synchronous lookups still read the file.
-    expect(mod.getWalletRecord(0)).toMatchObject({ index: 0, type: 'mnemonic' });
-  });
-});
+
+    beforeAll(async () => {
+      p = profile('vault-meta-previous-');
+      process.env.FREEDOM_IDENTITY_DATA = p.identity;
+      core = await startCore({
+        binary: previous,
+        root: p.root,
+        beforeStart: (client) => {
+          request = client.request.bind(client);
+          ({ mod, ipcMain } = loadMain(client, p.root, swarm));
+          reference = require('../../test/helpers/reference-vault-meta');
+        },
+      });
+      mod.registerIdentityIpc();
+    });
+
+    afterAll(async () => {
+      await core?.stop();
+      if (p) fs.rmSync(p.root, { recursive: true, force: true });
+      if (envBefore === undefined) delete process.env.FREEDOM_IDENTITY_DATA;
+      else process.env.FREEDOM_IDENTITY_DATA = envBefore;
+    });
+
+    test('the hello names vault_meta, and the previous release echoes none', () => {
+      expect(core.service.helloParams(core).store_moved).toEqual(['vault_meta']);
+      expect(core.hello.store_moved).toEqual([]);
+    });
+
+    test('a create and an import fail requirement_unmet in main, and no vault is made', async () => {
+      const watch = watchWrites(STORE_FILES);
+      try {
+        expect((await errorOf(mod.createNewVault(PASSWORD, 128))).code).toBe('requirement_unmet');
+        expect((await errorOf(mod.importExistingMnemonic(PASSWORD, ABANDON))).code).toBe(
+          'requirement_unmet'
+        );
+        expect(watch.offending()).toEqual([]);
+      } finally {
+        watch.restore();
+      }
+      expect(fs.existsSync(path.join(p.identity, 'identity-vault.json'))).toBe(false);
+      expect(fs.existsSync(p.metaFile)).toBe(false);
+    });
+
+    test('a vault the reference made unlocks, and nothing writes its metadata', async () => {
+      await asOlderBuild(() => reference.importExistingMnemonic(PASSWORD, ABANDON));
+      const { addresses, ...older } = p.readMeta();
+      expect(addresses).toBeTruthy();
+      p.seed(older);
+      await mod.lockVault();
+      const before = p.text();
+      const watch = watchWrites(STORE_FILES);
+      try {
+        await mod.unlockVault(PASSWORD);
+        await expect(mod.isVaultUnlocked()).resolves.toBe(true);
+        expect(watch.offending()).toEqual([]);
+      } finally {
+        watch.restore();
+      }
+      // Neither main nor 0.22.0 migrated it: that waits for a core that echoes vault_meta.
+      expect(p.text()).toBe(before);
+    }, 120_000);
+
+    test('every account operation fails requirement_unmet, and nothing writes the store', async () => {
+      const before = p.text();
+      const invoke = (channel, ...args) => ipcMain.handlers.get(channel)({}, ...args);
+      const watch = watchWrites(STORE_FILES);
+      try {
+        const operations = [
+          mod.getDerivedWallets(),
+          mod.createDerivedWallet('Spare'),
+          mod.setActiveWalletIndex(0),
+          mod.renameDerivedWallet(0, 'Main'),
+          mod.deleteDerivedWallet(1),
+          mod.addLedgerWallet('', LEDGER, LEDGER_PATH),
+          mod.addRemoteWallet('', PHONE),
+          mod.recordLedgerAddressCheck(HW, true),
+          mod.recordRemoteAddressCheck(HW, true),
+          mod.addSafeWallet('', { address: SAFE, owners: [0, HW], threshold: 1, saltNonce: '1' }),
+          mod.markSafeDeployed(HW, 100),
+        ];
+        for (const answer of await Promise.all(operations.map(errorOf))) {
+          expect(answer.code).toBe('requirement_unmet');
+        }
+        await expect(invoke('identity:get-vault-meta')).resolves.toBeNull();
+        await expect(invoke('wallet:get-active-index')).resolves.toEqual({
+          success: false,
+          error: "The core can't take this request",
+        });
+        expect(watch.offending()).toEqual([]);
+      } finally {
+        watch.restore();
+      }
+      expect(p.text()).toBe(before);
+      // Main's synchronous lookups still read the file.
+      expect(mod.getWalletRecord(0)).toMatchObject({ index: 0, type: 'mnemonic' });
+    });
+  }
+);
