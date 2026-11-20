@@ -141,7 +141,7 @@ async function asHandler(sending) {
   try {
     return { success: true, ...(await sending) };
   } catch (err) {
-    return { success: false, error: err.message, ...require('./intent-ipc').intentFailure(err) };
+    return { success: false, error: err.message, ...(await require('./intent-ipc').intentFailure(err)) };
   }
 }
 
@@ -232,7 +232,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     refusedOnce();
     const refused = await running.autoSend(SWAP);
     expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
-    expect(running.store.get(refused.intentId).state).toBe('held');
+    expect((await running.store.get(refused.intentId)).state).toBe('held');
 
     // The site asks again: main reads its rule as paused, and a silent send
     // that read the rule before the pause is refused in its turn, with
@@ -271,7 +271,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
 
     await mine(sent.hash);
     // Mined, though not final: no longer waiting, and still held.
-    expect(running.store.get(sent.intentId).state).toBe('held');
+    expect((await running.store.get(sent.intentId)).state).toBe('held');
     await expect(running.autoApproves(SWAP)).resolves.toBe(true);
     await expect(running.autoSend(SWAP)).resolves.toMatchObject({ success: true });
   });
@@ -370,7 +370,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     const confirmed = running.confirmedSend(SWAP);
     await settle();
     await running.store.ready;
-    expect(running.store.held()).toEqual([]);
+    expect(await running.store.held()).toEqual([]);
 
     read.finish();
     const [first, second] = [await silent, await confirmed];
@@ -463,7 +463,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     });
     const inFlight = running.autoSend(SWAP);
     await atSigner;
-    expect(running.store.held()).toEqual([]);
+    expect(await running.store.held()).toEqual([]);
 
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
     await expect(running.autoApproves(OTHER)).resolves.toBe(true);
@@ -495,7 +495,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     // swap alone.
     refusedOnce();
     const refused = await running.autoSend(SWAP);
-    expect(running.store.get(refused.intentId)).toMatchObject({
+    expect(await running.store.get(refused.intentId)).toMatchObject({
       state: 'held',
       context: { origin: SWAP },
     });

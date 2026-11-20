@@ -1578,7 +1578,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     },
 
     /** Why the intent can't be voided now, or null if it can (lock aside). */
-    voidRefusal(intentId) {
+    async voidRefusal(intentId) {
       assertLoaded();
       return voidRefusal(requireIntent(intentId), RUN_ID, LIVE);
     },
@@ -1587,7 +1587,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
      * How full the records are, in bytes: the file, what is owed to it, the
      * budget new intents are admitted against, and the limit.
      */
-    usage() {
+    async usage() {
       assertLoaded();
       return { file: journal.size, owed: owed(), budget: budget(), limit: limits.journalBytes };
     },
@@ -1626,15 +1626,24 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       return serialize(compactNow);
     },
 
+    // The reads (these, `voidRefusal` and `usage`) answer promises, as a
+    // store in the identity core will. Each reads the state as it stands
+    // when called, outside the write queue, so the caller resumes with
+    // what was true then: a write may land in between. A caller that reads
+    // and then writes keeps its guarantee where it already did: under the
+    // account's lock (nonce-reservations.js), or with a condition the
+    // store checks in line with its other writes (`expect`: settle,
+    // retire; a held intent for handoff and commit).
+
     /** One intent, or null. */
-    get(intentId) {
+    async get(intentId) {
       assertLoaded();
       const intent = intents.get(intentId);
       return intent ? view(intent) : null;
     },
 
     /** The held intent whose context has this key, or null. */
-    byKey(key) {
+    async byKey(key) {
       assertLoaded();
       let found = null;
       for (const intent of heldIntents()) {
@@ -1644,7 +1653,7 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     },
 
     /** Held intents, by account and nonce. */
-    held() {
+    async held() {
       assertLoaded();
       return heldIntents()
         .sort(
@@ -1654,13 +1663,13 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
     },
 
     /** Every intent this run knows: held ones, and the kept closed ones. */
-    list() {
+    async list() {
       assertLoaded();
       return [...intents.values()].map(view);
     },
 
     /** The nonces the account's held intents have, ascending. */
-    heldNonces(chainId, sender) {
+    async heldNonces(chainId, sender) {
       assertLoaded();
       return heldOf({ chainId, sender: String(sender).toLowerCase() })
         .map((intent) => intent.nonce)
