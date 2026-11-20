@@ -7,8 +7,9 @@
  * copy) and network-ipc (the settings page's channels, relayed as the
  * chrome's).
  *
- * - **(T1) No key store** (Linux and Windows until PRF-7, and macOS with no
- *   executor for the core's key-store calls): a set from the settings page
+ * - **(T1) No key store** (Linux and Windows until PRF-7; a macOS core
+ *   always uses its key store, and with no executor for its key-store calls
+ *   it refuses a set `key_store_unavailable`): a set from the settings page
  *   writes rpc-api-keys.json in the reference's text, which the reference
  *   key store (9d4ea6251) reads back (rollback), and a remove takes it out;
  *   an id outside the entry form and an empty key are refused. Keyed
@@ -81,6 +82,9 @@ if (haveCurrent && process.env.FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN === '1' && !tes
   );
 }
 const describeIfKeychain = haveCurrent && testKeychain ? describe : describe.skip;
+/** A core with no key store: Linux and Windows until PRF-7. */
+const describeIfNoKeyStore =
+  haveCurrent && process.platform !== 'darwin' ? describe : describe.skip;
 
 const quietLog = { info() {}, warn() {}, error() {}, debug() {} };
 const posix = process.platform !== 'win32';
@@ -281,7 +285,7 @@ describe('RPC API keys through freedom-cored (0013, PRF-6(e))', () => {
     }
   }
 
-  describeIfCurrent('with no key store in the core', () => {
+  describeIfNoKeyStore('with no key store in the core', () => {
     test('a set writes the reference text, which the reference reads back, and a remove takes it out', async () => {
       core = makeCore();
       main = loadMain(core);
