@@ -1161,6 +1161,26 @@ jobs:
           # On macOS the keychain legs must run, not skip.
           FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
 
+      # freedom-core design 0013, "RPC API keys" (PRF-6(e)): the hello names
+      # `rpc_api_keys`, and the core keeps the keys. With no key store
+      # (Linux, Windows, and macOS without main's key-store executor) a set
+      # writes rpc-api-keys.json in the reference's text, which the
+      # reference key store reads back; on macOS, against the temporary
+      # keychain above, a set lands in secrets.json, a file is migrated and
+      # removed (or keeps only what the secrets file can't hold), and an id
+      # outside the entry form and a 17th key are refused. Main opens no
+      # key file (an fs spy). The reference with the pre-step hello gets
+      # `not_moved` from all four methods, the file untouched; this build on
+      # the previous release (cored-v0.22.0) fails all four
+      # `requirement_unmet`, with no keyed endpoint and nothing written.
+      - name: RPC API keys through the core (real freedom-cored, pinned and previous)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/wallet/rpc-manager.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+          # On macOS the keychain legs must run, not skip.
+          FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
+
       - name: Quick Setup with a stubbed Touch ID E2E (macOS)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}
         run: npm run test:e2e -- --output=test-results/e2e-quick-setup test-e2e/quick-setup-touch-id.spec.js
