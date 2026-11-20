@@ -88,15 +88,24 @@ function decodablePage(page) {
  * grant's narrowing from its settings: design 0012, "The model"). A
  * PageContext the core couldn't decode (a null `origin`, say) is refused
  * here, `invalid_argument`, and never sent: it would end the core.
+ *
+ * `requires` is the shared client's (service-client.js): a set-A store's
+ * requests (design 0013, "One writer per store") pass
+ * `requiresStore(name)` (core-client.js), so a core whose hello didn't
+ * echo the store fails them `requirement_unmet` in main, unsent. Null
+ * (the default) for every other request.
  */
-async function call(method, params = {}, page = null) {
+async function call(method, params = {}, page = null, { requires = null } = {}) {
   let context;
   if (page === 'chrome') context = { caller: 'chrome' };
   else if (!page) context = { caller: 'shell' };
   else if (decodablePage(page)) context = { caller: 'page', page };
   else throw new VaultBackendError('invalid_argument', 'A page request needs its page’s context');
   try {
-    return await client().request(method, params, context, { watchdogMs: watchdogMs(method) });
+    return await client().request(method, params, context, {
+      watchdogMs: watchdogMs(method),
+      requires,
+    });
   } catch (err) {
     if (err instanceof VaultBackendError) throw err;
     const code = err.code || CORE_UNAVAILABLE;
@@ -788,6 +797,7 @@ module.exports = {
   VaultBackendError,
   // For tests.
   _internal: {
+    call,
     wordsFor,
     reset() {
       locks = 0;

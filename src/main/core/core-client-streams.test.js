@@ -310,6 +310,7 @@ describe('the hello at protocol 2', () => {
       core_version: '0.23.0',
       capabilities: ['vault.status', 'fragments', 'streams'],
       node_recovery: null,
+      store_moved: [],
     });
     expect(core().messages[0].params).toEqual({
       protocol: 2,
@@ -318,6 +319,7 @@ describe('the hello at protocol 2', () => {
       frames: ['fragment', 'stream'],
       grant_root: path.resolve(os.tmpdir()),
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
+      store_moved: [],
     });
     expect(client.streamStats()).toEqual({
       outstanding: 0,
