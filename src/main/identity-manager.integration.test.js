@@ -38,6 +38,7 @@ const {
   SET_A_WRITES,
 } = require('../../test/helpers/store-handover');
 const { referenceMeta } = require('../../test/helpers/simulated-store-core');
+const { createHelperRunner, registerKeystoreShell } = require('./core/keystore-shell');
 
 const { current, previous } = coredBinaries();
 const describeIfCurrent = current && fs.existsSync(current) ? describe : describe.skip;
@@ -505,6 +506,9 @@ describeIfKeychain('Quick Setup with vault_meta moved (macOS, the temporary keyc
       binary: current,
       root: p.root,
       beforeStart: (client) => {
+        // Main's `shell.keystore` executor, as the app registers it: the
+        // core seals Quick Setup's credential through it.
+        registerKeystoreShell(client, { runner: createHelperRunner({ command: current }) });
         ({ mod } = loadMain(client, p.root, { references: () => [] }));
         ({ vaultBackend } = require('./core/vault-backend'));
       },
