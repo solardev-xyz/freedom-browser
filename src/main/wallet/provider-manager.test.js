@@ -8,6 +8,8 @@ jest.mock('../networks/network-registry', () => ({
     Number(chainId) === 100 ? { chainId: 100, name: 'Gnosis', nativeSymbol: 'xDAI' } : null,
   getAllNetworks: () => ({}),
   invalidate: jest.fn(),
+  // No stored key; a redactor that can't list them fails closed (rpc-errors.js).
+  withoutApiKeys: (text) => String(text),
 }));
 
 const log = require('../logger');

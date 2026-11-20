@@ -29,29 +29,59 @@ const { safeErrorMessage } = require('../networks/chain-errors');
 
 const RPC_UNAVAILABLE = 'RPC_UNAVAILABLE';
 
-/** `text` with no URL beyond its origin and no stored API key in it. */
+// What a text becomes when its keys can't be cut out of it: the registry
+// or the retired set couldn't be loaded or listed, so none of it leaves.
+const WITHHELD = 'RPC error (details withheld)';
+
+// `text` with no stored API key in it, current or retired
+// (network-registry.js withoutApiKeys). Throws when the keys can't be
+// listed: each caller fails closed.
+function stripStoredKeys(text) {
+  return require('../networks/network-registry').withoutApiKeys(text);
+}
+
+/**
+ * `text` with no URL beyond its origin and no stored API key in it; the
+ * fixed WITHHELD when the keys can't be listed.
+ */
 function redactRpcText(text) {
-  const withoutUrls = redactUrls(text);
   try {
-    return require('../networks/network-registry').withoutApiKeys(withoutUrls);
+    return stripStoredKeys(redactUrls(text));
   } catch {
-    // A registry that can't load has no keys to substitute either.
-    return withoutUrls;
+    return WITHHELD;
   }
 }
 
 /**
- * `text` with no API key in it, current or retired (network-registry.js
- * withoutApiKeys), and its URLs left whole: for a surface whose errors are
- * not only RPC errors (a page's EIP-1193 answer, ENS and dweb errors).
+ * `text` with no API key in it, current or retired, and its URLs left
+ * whole: for a surface whose errors are not only RPC errors (a page's
+ * EIP-1193 answer, ENS and dweb errors). The fixed WITHHELD when the keys
+ * can't be listed.
  */
 function withoutStoredKeys(text) {
   try {
-    return require('../networks/network-registry').withoutApiKeys(text);
+    return stripStoredKeys(text);
   } catch {
-    // A registry that can't load has no keys to substitute either.
-    return String(text);
+    return WITHHELD;
   }
+}
+
+/**
+ * An error as main's log may keep it: its stack (or its text) with no URL
+ * beyond its origin and no stored API key, current or retired; WITHHELD
+ * when the keys can't be listed. The persistent log and the diagnostics
+ * buffer get what is logged, and the buffer cuts URLs but not keys (app
+ * diagnostics can hand it to the Agent model).
+ */
+function loggableError(err) {
+  let text;
+  try {
+    text = err instanceof Error ? String(err.stack || err.message) : String(err);
+  } catch {
+    // An error whose own text throws when read.
+    return 'error';
+  }
+  return redactRpcText(text);
 }
 
 // Redacted before it is cut, so no cut leaves part of a URL or key behind.
@@ -207,14 +237,16 @@ function redactedReply(reply) {
  * returns a key): every string in it, property names included, with no API
  * key in it, current or retired, walked like a reply's error (bounded depth
  * and size). A node's JSON-RPC error reaches a page through the core with
- * its free text, which a keyed endpoint can fill with its key.
+ * its free text, which a keyed endpoint can fill with its key. Undefined
+ * (no data) when it can't be redacted.
  */
 function keyRedactedData(data) {
   try {
-    return redactValue(data, 0, withoutStoredKeys);
+    return redactValue(data, 0, stripStoredKeys);
   } catch {
-    // Redaction itself failed (a proxy's trap threw, say): send nothing of it.
-    return NOT_PLAIN;
+    // Redaction itself failed (the keys couldn't be listed, or a proxy's
+    // trap threw): no data.
+    return undefined;
   }
 }
 
@@ -260,7 +292,9 @@ function redactedHandler(listener) {
 
 module.exports = {
   RPC_UNAVAILABLE,
+  WITHHELD,
   redactRpcText,
+  loggableError,
   withoutStoredKeys,
   keyRedactedData,
   endpointFailure,

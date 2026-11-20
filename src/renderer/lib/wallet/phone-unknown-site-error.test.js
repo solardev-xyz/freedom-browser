@@ -56,7 +56,10 @@ jest.mock('../../../main/wallet/balance-service', () => ({}));
 jest.mock('../../../main/wallet/rpc-manager', () => ({
   getEffectiveRpcUrls: () => [],
   getKeylessRpcUrls: () => [],
+  retiredApiKeys: () => [],
 }));
+// No stored key; a redactor that can't list them fails closed (rpc-errors.js).
+jest.mock('../../../main/networks/network-registry', () => ({ withoutApiKeys: (text) => String(text) }));
 jest.mock('../../../main/wallet/chains', () => ({
   getChain: () => null,
   getAllChains: () => [],

@@ -252,6 +252,32 @@ describe('IPC handlers', () => {
     expect(answers.map((answer) => answer.error)).toEqual(
       Array(3).fill('node said: invalid key [key redacted]')
     );
+    // Logged without it too, before the log is written: the persistent log
+    // and the diagnostics buffer (which cuts URLs, not keys) get the same.
+    expect(mockLog.error).toHaveBeenCalledTimes(3);
+    const logged = mockLog.error.mock.calls.flat().map((arg) => String(arg?.stack || arg?.message || arg));
+    expect(logged.join('\n')).not.toContain(mockStoredKey);
+    expect(logged.filter((text) => text.includes('node said: invalid key [key redacted]'))).toHaveLength(3);
+  });
+
+  test("an error whose keys can't be listed is withheld, in the answer and the log", async () => {
+    const withoutApiKeys = mockRegistry.withoutApiKeys;
+    mockRegistry.withoutApiKeys = () => {
+      throw new Error('cannot list');
+    };
+    try {
+      mockCoreDriver = {
+        ...coreDriver(),
+        resolveContent: jest.fn(async () => {
+          throw new Error(`node said: invalid key ${mockStoredKey}`);
+        }),
+      };
+      const answer = await handlerFor(IPC.ENS_RESOLVE)(normalEvent, { name: 'x.eth' });
+      expect(answer.error).toBe('RPC error (details withheld)');
+      expect(mockLog.error.mock.calls).toEqual([['[ens] resolution error', 'RPC error (details withheld)']]);
+    } finally {
+      mockRegistry.withoutApiKeys = withoutApiKeys;
+    }
   });
 
   test("keep their shapes and privacy around the core's lookups", async () => {

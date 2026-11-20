@@ -370,6 +370,70 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
         expect(JSON.stringify(logged)).toContain('main keeps it in force');
         expect(JSON.stringify(logged)).not.toContain(KEY);
       });
+
+      // Codex round 3, finding 4: the loop that sends contradicted fences
+      // again awaits each in turn, so a newer change can start meanwhile.
+      test.each([
+        ['still out at the core', true],
+        ['taken by the core', false],
+      ])(
+        "set A, set B, then remove B while the resend awaits A (%s): B's older set is never sent",
+        async (_label, holdRemove) => {
+          const A_KEY = `${KEY}-a`;
+          const B_KEY = `${KEY}-b`;
+          load();
+          const client = new EventEmitter();
+          rpc.attachCore(client);
+          client.emit('ready');
+          await flush();
+          // The core keeps losing both: every read contradicts both fences.
+          core.secrets.rpcApiKeys = async () => ({ keys: [] });
+          await expect(rpc.setApiKey('alchemy', A_KEY, { caller: 'chrome' })).resolves.toEqual({ success: true });
+          await expect(rpc.setApiKey('infura', B_KEY, { caller: 'chrome' })).resolves.toEqual({ success: true });
+          const setsOf = (id) => callsOf('secrets.set_rpc_api_key').filter((call) => call.id === id);
+          // Each sent once more in this start of the core.
+          expect(setsOf('alchemy')).toHaveLength(2);
+          expect(setsOf('infura')).toHaveLength(2);
+
+          // The next start's read: A's resend is held at the core.
+          let releaseA;
+          const realSet = core.secrets.setRpcApiKey;
+          core.secrets.setRpcApiKey = async (params, caller) => {
+            if (params.id === 'alchemy') await new Promise((resolve) => (releaseA = resolve));
+            return realSet(params, caller);
+          };
+          client.emit('ready');
+          await flush();
+          expect(typeof releaseA).toBe('function');
+          expect(setsOf('infura')).toHaveLength(2);
+
+          // Meanwhile the user removes B.
+          let releaseRemove = () => {};
+          const realRemove = core.secrets.removeRpcApiKey;
+          if (holdRemove) {
+            core.secrets.removeRpcApiKey = async (...args) => {
+              await new Promise((resolve) => (releaseRemove = resolve));
+              return realRemove(...args);
+            };
+          }
+          const removing = rpc.removeApiKey('infura', { caller: 'chrome' });
+          await flush();
+
+          releaseA();
+          await flush();
+          // B's older set was not sent after the remove started.
+          expect(setsOf('infura')).toHaveLength(2);
+          expect(setsOf('alchemy')).toHaveLength(3);
+
+          releaseRemove();
+          await expect(removing).resolves.toEqual({ success: true });
+          await flush();
+          expect(setsOf('infura')).toHaveLength(2);
+          expect(rpc.hasApiKey('infura')).toBe(false);
+          expect(rpc.cachedApiKeys().get('alchemy')).toBe(A_KEY);
+          expect(callsOf('secrets.remove_rpc_api_key').map(({ id }) => id)).toEqual(['infura']);
+        }
+      );
     });
 
     test("the retries are bounded, and the core's next start reads again", async () => {

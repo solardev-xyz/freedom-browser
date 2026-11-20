@@ -4,10 +4,15 @@ const {
   loadMainModule,
 } = require('../../../test/helpers/main-process-test-utils');
 
+// Built at runtime, so no key-shaped literal sits in the source.
+const STORED_KEY = ['stored', 'key', process.pid.toString(36)].join('-');
+
 function loadNetworkIpc(options = {}) {
   const ipcMain = createIpcMainMock();
   const send = jest.fn();
+  // The stored keys main redacts from error text (current and retired).
   const registry = {
+    withoutApiKeys: jest.fn((text) => String(text).split(STORED_KEY).join('[key redacted]')),
     getEndpointSourceList: jest.fn(() => []),
     getAllNetworks: jest.fn(() => ({})),
     getNetwork: jest.fn(() => null),
@@ -122,6 +127,7 @@ describe('network-ipc', () => {
   // or the ENS lens. The configuration is main's; only presence is unknown.
   test.each([
     ['requirement_unmet', "The core can't take this request"],
+    ['storage', `The secrets file could not be read near ${STORED_KEY}`],
     ['storage', 'The secrets file could not be read'],
     [undefined, 'The identity core is not running'],
   ])("get-config answers the configuration with hasKey null when the core can't (%s)", async (code, message) => {
@@ -146,8 +152,10 @@ describe('network-ipc', () => {
       ],
     });
     expect(ctx.log.warn).toHaveBeenCalledTimes(1);
-    expect(ctx.log.warn.mock.calls[0][0]).toContain(message);
+    // Logged without a stored key (rpc-errors.js redactRpcText).
+    expect(ctx.log.warn.mock.calls[0][0]).toContain(message.split(STORED_KEY).join('[key redacted]'));
     expect(ctx.log.warn.mock.calls[0][0]).toContain(code || 'error');
+    expect(JSON.stringify(ctx.log.warn.mock.calls)).not.toContain(STORED_KEY);
   });
 
   test('set-api-key and remove-api-key go as the chrome, and answer rpc-manager', async () => {

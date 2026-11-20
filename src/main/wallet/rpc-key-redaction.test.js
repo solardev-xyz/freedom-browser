@@ -467,8 +467,21 @@ describe("a page's chain read whose error quotes a key (0013 (e), PRF-6(e))", ()
     return guest;
   }
 
-  test('the page sees neither the current key nor a retired one, in the message or nested data', async () => {
-    const NEXT = `${KEY}-next`;
+  const NEXT = `${KEY}-next`;
+  // The core's answer to the read, as page-eip1193.js pageAnswer passes
+  // it on: the node's free text, quoting both keys, in its message and
+  // nested in its data (a property name included).
+  const quoted = `old ${KEY} new ${NEXT}`;
+  const quotingError = () => ({
+    error: {
+      code: -32000,
+      message: `invalid key: ${quoted}`,
+      data: { node: { message: quoted, list: [KEY, { deeper: NEXT }] }, [`k-${NEXT}`]: 1 },
+    },
+  });
+
+  /** A page on DAPP whose chain reads the core answers with quotingError; KEY retired, NEXT current. */
+  async function pageWithKeys() {
     const keysCore = simulatedRpcKeysCore();
     fs.writeFileSync(
       path.join(userDataDir, 'rpc-api-keys.json'),
@@ -482,22 +495,11 @@ describe("a page's chain read whose error quotes a key (0013 (e), PRF-6(e))", ()
     });
     const rpc = require('./rpc-manager');
     await rpc.refreshKeys();
-    // KEY retired, NEXT current.
     await expect(rpc.setApiKey('alchemy', NEXT, { caller: 'chrome' })).resolves.toEqual({ success: true });
     expect(rpc.retiredApiKeys()).toContain(KEY);
     expect(rpc.cachedApiKeys().get('alchemy')).toBe(NEXT);
 
-    // The core's answer to the read, as page-eip1193.js pageAnswer passes
-    // it on: the node's free text, quoting both keys, in its message and
-    // nested in its data (a property name included).
-    const quoted = `old ${KEY} new ${NEXT}`;
-    const dispatch = jest.fn(async () => ({
-      error: {
-        code: -32000,
-        message: `invalid key: ${quoted}`,
-        data: { node: { message: quoted, list: [KEY, { deeper: NEXT }] }, [`k-${NEXT}`]: 1 },
-      },
-    }));
+    const dispatch = jest.fn(async () => quotingError());
     const { createPageRequests } = require('../page/page-requests');
     const { createPageDocuments } = require('../page/page-documents');
     const documents = createPageDocuments({
@@ -520,8 +522,13 @@ describe("a page's chain read whose error quotes a key (0013 (e), PRF-6(e))", ()
     const nonce = '1'.padStart(32, '0');
     const event = () => ({ sender: guest, senderFrame: guest.mainFrame });
     expect(requests.hello(event(), { nonce })).toEqual(expect.objectContaining({ ok: true }));
+    const read = () => requests.request(event(), { nonce, provider: 'ethereum', method: 'eth_blockNumber', params: [] });
+    return { rpc, dispatch, read };
+  }
 
-    const answer = await requests.request(event(), { nonce, provider: 'ethereum', method: 'eth_blockNumber', params: [] });
+  test('the page sees neither the current key nor a retired one, in the message or nested data', async () => {
+    const { dispatch, read } = await pageWithKeys();
+    const answer = await read();
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(answer.error.code).toBe(-32000);
     expect(answer.error.message).toBe('invalid key: old [key redacted] new [key redacted]');
@@ -530,6 +537,20 @@ describe("a page's chain read whose error quotes a key (0013 (e), PRF-6(e))", ()
       'k-[key redacted]': 1,
     });
     expect(JSON.stringify(answer)).not.toContain(KEY);
+  });
+
+  test.each([
+    ['the retired set', (rpc) => jest.spyOn(rpc, 'retiredApiKeys')],
+    ['the registry', () => jest.spyOn(require('../networks/network-registry'), 'withoutApiKeys')],
+  ])("redaction fails closed when %s can't be listed: a fixed text and no data", async (_, spyOn) => {
+    const { rpc, read } = await pageWithKeys();
+    spyOn(rpc).mockImplementation(() => {
+      throw new Error('cannot list');
+    });
+    const answer = await read();
+    expect(answer.error).toEqual({ code: -32000, message: 'RPC error (details withheld)' });
+    expect(JSON.stringify(answer)).not.toContain(KEY);
+    jest.restoreAllMocks();
   });
 });
 

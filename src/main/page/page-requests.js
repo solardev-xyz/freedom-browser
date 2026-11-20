@@ -208,7 +208,11 @@ function normalizeError(error) {
       typeof error?.message === 'string' && error.message ? error.message : INTERNAL_ERROR.message
     ),
   };
-  if (error && typeof error === 'object' && error.data !== undefined) out.data = keyRedactedData(error.data);
+  if (error && typeof error === 'object' && error.data !== undefined) {
+    // None when it can't be redacted (rpc-errors.js keyRedactedData).
+    const data = keyRedactedData(error.data);
+    if (data !== undefined) out.data = data;
+  }
   return out;
 }
 

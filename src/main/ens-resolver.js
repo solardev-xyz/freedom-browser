@@ -308,6 +308,13 @@ function withoutStoredKeys(text) {
   return typeof text === 'string' ? require('./wallet/rpc-errors').withoutStoredKeys(text) : text;
 }
 
+// The same error as main's log gets it, before it is written: no key,
+// current or retired, and no URL beyond its origin (rpc-errors.js
+// loggableError); nothing of it in a private window's lookup.
+function errorForLog(err) {
+  return redactForLog(require('./wallet/rpc-errors').loggableError(err));
+}
+
 function registerEnsIpc() {
   ipcMain.handle(IPC.ENS_RESOLVE, async (event, payload = {}) => {
     const { name } = payload;
@@ -317,7 +324,7 @@ function registerEnsIpc() {
         const result = await resolveEnsContent(name);
         return result;
       } catch (err) {
-        log.error('[ens] resolution error', redactForLog(err));
+        log.error('[ens] resolution error', errorForLog(err));
         return {
           type: 'error',
           name: (name || '').trim().toLowerCase(),
@@ -334,7 +341,7 @@ function registerEnsIpc() {
       try {
         return await resolveEnsAddress(name, chainId);
       } catch (err) {
-        log.error('[ens] address resolution error', redactForLog(err));
+        log.error('[ens] address resolution error', errorForLog(err));
         return {
           success: false,
           name: (name || '').trim().toLowerCase(),
@@ -351,7 +358,7 @@ function registerEnsIpc() {
       try {
         return await resolveEnsReverse(address, chainId);
       } catch (err) {
-        log.error('[ens] reverse resolution error', redactForLog(err));
+        log.error('[ens] reverse resolution error', errorForLog(err));
         return {
           success: false,
           address: typeof address === 'string' ? address.toLowerCase() : null,

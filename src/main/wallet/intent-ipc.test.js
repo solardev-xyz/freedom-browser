@@ -43,7 +43,9 @@ jest.mock('electron', () => ({
 }));
 jest.mock('qrcode', () => ({}));
 jest.mock('./balance-service', () => ({}));
-jest.mock('./rpc-manager', () => ({ getEffectiveRpcUrls: () => [] }));
+jest.mock('./rpc-manager', () => ({ getEffectiveRpcUrls: () => [], retiredApiKeys: () => [] }));
+// No stored key; a redactor that can't list them fails closed (rpc-errors.js).
+jest.mock('../networks/network-registry', () => ({ withoutApiKeys: (text) => String(text) }));
 jest.mock('./chains', () => ({
   getChain: () => null,
   getAllChains: () => [],

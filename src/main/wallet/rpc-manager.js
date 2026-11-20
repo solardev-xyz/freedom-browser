@@ -65,6 +65,12 @@ function vault() {
   return require('../core/vault-backend').vaultBackend;
 }
 
+// An error's text as main's log gets it: no key, current or retired, and
+// no URL beyond its origin (rpc-errors.js).
+function logText(err) {
+  return require('./rpc-errors').redactRpcText(String(err?.message || err));
+}
+
 /** Main's copy: provider id -> key. Replaced whole, never changed. */
 let apiKeys = new Map();
 let attachedCore = null;
@@ -86,11 +92,25 @@ const listeners = new Set();
 const retired = new Set();
 
 // The committed-change fences, provider id -> { expect, durable, start,
-// caller, resent }: `expect` is the key the provider must have (null: no
-// key); `durable` whether the core said the change was durable; `start` the
-// core start that answered it; `resent` the core start main last sent it
-// again in.
+// caller, resent, epoch }: `expect` is the key the provider must have
+// (null: no key); `durable` whether the core said the change was durable;
+// `start` the core start that answered it; `resent` the core start main
+// last sent it again in; `epoch` the provider's operation epoch the change
+// started in.
 const fences = new Map();
+
+// Each provider's operation epoch: bumped when a set or remove starts,
+// before the core is asked. A fence is sent again only while its epoch is
+// still the provider's, so no older change is written after a newer one
+// was issued, whether or not the newer one was answered yet.
+const epochs = new Map();
+
+/** A set or remove of `providerId` starts: its operation epoch. */
+function beginChange(providerId) {
+  const epoch = (epochs.get(providerId) ?? 0) + 1;
+  epochs.set(providerId, epoch);
+  return epoch;
+}
 
 // The read back's retries after a failure while a fence stands (ms): then
 // the core's next start reads again.
@@ -138,7 +158,7 @@ function keysChanged() {
     try {
       listener();
     } catch (err) {
-      console.error('[RpcManager] A key-change listener failed:', err?.message || err);
+      console.error('[RpcManager] A key-change listener failed:', logText(err));
     }
   }
 }
@@ -182,11 +202,11 @@ function scheduleRetry() {
  * core has taken, applied to main's copy at once, before the read back: no
  * read started earlier applies. It leaves the provider's fence.
  */
-function applyCommitted(providerId, expect, { durable, caller }) {
+function applyCommitted(providerId, expect, { durable, caller, epoch }) {
   generation += 1;
   retries = 0;
   cancelRetry();
-  fences.set(providerId, { expect, durable, start: coreStart, caller, resent: null });
+  fences.set(providerId, { expect, durable, start: coreStart, caller, resent: null, epoch });
   const next = new Map(apiKeys);
   if (expect === null) next.delete(providerId);
   else next.set(providerId, expect);
@@ -200,9 +220,12 @@ const meets = (keys, providerId, { expect }) =>
 /**
  * A fenced change sent again, as it was (a remove as a remove, a set with
  * the key main holds): whether the core took it. A failure is logged, and
- * the fence stays.
+ * the fence stays. Not sent when a newer set or remove of the provider has
+ * started since (its epoch), checked right before the send: the loop that
+ * sends the fences again awaits each in turn.
  */
 async function resend(providerId, fence) {
+  if (epochs.get(providerId) !== fence.epoch || fences.get(providerId) !== fence) return false;
   fence.resent = coreStart;
   const params = fence.expect === null ? { id: providerId } : { id: providerId, api_key: fence.expect };
   try {
@@ -279,7 +302,7 @@ async function refreshKeys() {
 
 function refreshQuietly() {
   return refreshKeys().catch((err) => {
-    console.error('[RpcManager] Failed to read the RPC API keys from the core:', err?.message || err);
+    console.error('[RpcManager] Failed to read the RPC API keys from the core:', logText(err));
     return false;
   });
 }
@@ -373,6 +396,7 @@ async function setApiKey(providerId, apiKey, { caller = null } = {}) {
   if (!inRegistry(providerId)) {
     return { success: false, error: `Unknown provider: ${providerId}` };
   }
+  const epoch = beginChange(providerId);
   let durable;
   try {
     const answer = await vault().secrets.setRpcApiKey({ id: providerId, api_key: apiKey }, caller);
@@ -383,7 +407,11 @@ async function setApiKey(providerId, apiKey, { caller = null } = {}) {
   } catch (err) {
     return { success: false, error: keyErrorMessage(err, SAVE) };
   }
-  applyCommitted(providerId, typeof apiKey === 'string' && apiKey ? apiKey : null, { durable, caller });
+  applyCommitted(providerId, typeof apiKey === 'string' && apiKey ? apiKey : null, {
+    durable,
+    caller,
+    epoch,
+  });
   await refreshQuietly();
   console.log(`[RpcManager] API key set for provider: ${providerId}`);
   return { success: true };
@@ -397,6 +425,7 @@ async function removeApiKey(providerId, { caller = null } = {}) {
   if (typeof providerId !== 'string' || !(apiKeys.has(providerId) || inRegistry(providerId))) {
     return { success: false, error: `No API key found for provider: ${providerId}` };
   }
+  const epoch = beginChange(providerId);
   let durable;
   try {
     const answer = await vault().secrets.removeRpcApiKey({ id: providerId }, caller);
@@ -407,7 +436,7 @@ async function removeApiKey(providerId, { caller = null } = {}) {
   } catch (err) {
     return { success: false, error: keyErrorMessage(err, REMOVE) };
   }
-  applyCommitted(providerId, null, { durable, caller });
+  applyCommitted(providerId, null, { durable, caller, epoch });
   await refreshQuietly();
   console.log(`[RpcManager] API key removed for provider: ${providerId}`);
   return { success: true };

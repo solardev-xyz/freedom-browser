@@ -24,6 +24,8 @@ jest.mock('electron', () => ({
   webContents: { fromId: () => null },
 }));
 jest.mock('electron-log', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+// No stored RPC key; a redactor that can't list them fails closed (wallet/rpc-errors.js).
+jest.mock('../networks/network-registry', () => ({ withoutApiKeys: (text) => String(text) }));
 
 // The node's messaging: sockets a test feeds by hand, and sends it records.
 const mockNode = {

@@ -110,7 +110,8 @@ async function getConfig() {
     withKey = await rpcManager.providersWithKeys({ caller: 'chrome' });
   } catch (err) {
     log.warn(
-      `[network-ipc] RPC API key status unavailable (${err?.code || 'error'}): ${err?.message || err}`
+      `[network-ipc] RPC API key status unavailable (${err?.code || 'error'}): ` +
+        require('../wallet/rpc-errors').redactRpcText(String(err?.message || err))
     );
   }
   const sources = registry.getEndpointSourceList().map((src) =>
