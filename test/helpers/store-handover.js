@@ -152,8 +152,24 @@ function digests(paths) {
 }
 
 /**
+ * A file's sha256, or `'locked'` for one another process holds locked
+ * (Windows: the core's lifetime lock file reads EBUSY while it runs).
+ */
+function lockedOr(file) {
+  try {
+    return sha256(file);
+  } catch (err) {
+    if (process.platform === 'win32' && (err.code === 'EBUSY' || err.code === 'EPERM')) {
+      return 'locked';
+    }
+    throw err;
+  }
+}
+
+/**
  * Everything under `dir`, recursively, by its path relative to `dir`: a
- * directory's mtime, and a file's size, mtime and sha256.
+ * directory's mtime, and a file's size, mtime and sha256 (`'locked'` for
+ * one held locked on Windows, whose size and mtime still count).
  */
 function snapshot(dir) {
   const out = {};
@@ -169,7 +185,7 @@ function snapshot(dir) {
         out[rel] = {
           size: stat.size,
           mtimeMs: stat.mtimeMs,
-          sha256: entry.isFile() ? sha256(full) : null,
+          sha256: entry.isFile() ? lockedOr(full) : null,
         };
       }
     }
