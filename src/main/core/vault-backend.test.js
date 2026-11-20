@@ -94,6 +94,101 @@ describe('vaultBackend', () => {
     ).rejects.toMatchObject({ name: 'VaultBackendError', code: 'requirement_unmet' });
   });
 
+  // vault-meta.json's methods (design 0013, PRF-6(a)): each with
+  // `requires: requiresStore('vault_meta')`, as the chrome or as main, the
+  // reference's refusals with their codes.
+  test('accounts.*: wire shapes, callers and requires', async () => {
+    const core = new FakeCore((method) => {
+      switch (method) {
+        case 'accounts.list':
+          return { wallets: [{ index: 0 }] };
+        case 'accounts.meta':
+          return { meta: { userKnowsPassword: true } };
+        case 'accounts.active':
+          return { index: 2 };
+        case 'accounts.record_address_check':
+          return { address_check: 'matched' };
+        case 'accounts.add_mnemonic':
+        case 'accounts.add_ledger':
+        case 'accounts.add_remote':
+        case 'accounts.add_safe':
+          return { wallet: { index: 7 } };
+        default:
+          return { durable: false };
+      }
+    });
+    const { vaultBackend } = load(core);
+    const { accounts } = vaultBackend;
+    await expect(accounts.list('chrome')).resolves.toEqual([{ index: 0 }]);
+    await expect(accounts.list()).resolves.toEqual([{ index: 0 }]);
+    await expect(accounts.meta('chrome')).resolves.toEqual({ userKnowsPassword: true });
+    await expect(accounts.active()).resolves.toBe(2);
+    await expect(accounts.addMnemonic('Spare', 'chrome')).resolves.toEqual({ index: 7 });
+    await expect(accounts.addMnemonic(undefined)).resolves.toEqual({ index: 7 });
+    await accounts.addLedger({ name: '', address: '0xA', path: "44'/60'/0'/0/0" });
+    await accounts.addRemote({ address: '0xB' });
+    await expect(accounts.recordAddressCheck('remote', 1000000, false)).resolves.toBe('matched');
+    await accounts.addSafe({ name: 'S', address: '0xC', owners: [0, 1], threshold: 1, saltNonce: '5' });
+    await accounts.markSafeDeployed(1000001, 100);
+    await accounts.setActive(2, 'chrome');
+    await accounts.rename(2, 'Two', 'chrome');
+    await accounts.remove(2, [{ origin: 'a.eth' }], 'chrome');
+    expect(core.calls.map(({ method, params, context }) => [method, params, context.caller])).toEqual([
+      ['accounts.list', {}, 'chrome'],
+      ['accounts.list', {}, 'shell'],
+      ['accounts.meta', {}, 'chrome'],
+      ['accounts.active', {}, 'shell'],
+      ['accounts.add_mnemonic', { name: 'Spare' }, 'chrome'],
+      ['accounts.add_mnemonic', {}, 'shell'],
+      ['accounts.add_ledger', { name: '', address: '0xA', path: "44'/60'/0'/0/0" }, 'shell'],
+      ['accounts.add_remote', { address: '0xB' }, 'shell'],
+      ['accounts.record_address_check', { type: 'remote', index: 1000000, matched: false }, 'shell'],
+      [
+        'accounts.add_safe',
+        { name: 'S', address: '0xC', owners: [0, 1], threshold: 1, salt_nonce: '5' },
+        'shell',
+      ],
+      ['accounts.mark_safe_deployed', { index: 1000001, chain_id: 100 }, 'shell'],
+      ['accounts.set_active', { index: 2 }, 'chrome'],
+      ['accounts.rename', { index: 2, name: 'Two' }, 'chrome'],
+      ['accounts.remove', { index: 2, swarm_references: [{ origin: 'a.eth' }] }, 'chrome'],
+    ]);
+    for (const { options } of core.calls) {
+      expect(options.watchdogMs).toBe(45_000);
+      expect(options.requires({ store_moved: ['vault_meta'] })).toBe(true);
+      expect(options.requires({ store_moved: ['payments'] })).toBe(false);
+    }
+  });
+
+  test("accounts.*: a refusal's data.code becomes its code; the Swarm refusal gets main's references back", async () => {
+    const references = [{ origin: 'myapp.eth', identityId: 'ethereum-wallet:2', active: true }];
+    const core = new FakeCore((method) => {
+      const refusal = (message, data) =>
+        Object.assign(new Error(message), { code: 'invalid_argument', data });
+      if (method === 'accounts.add_safe') {
+        throw refusal('"L" can\'t own a Safe until …', { code: 'LEDGER_ACCOUNT_UNCHECKED' });
+      }
+      if (method === 'accounts.remove') {
+        throw refusal('Cannot delete wallet with index 2; …', {
+          code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE',
+        });
+      }
+      if (method === 'accounts.rename') throw refusal('Wallet with index 9 does not exist');
+      throw coreError('requirement_unmet', "The core can't take this request");
+    });
+    const { vaultBackend } = load(core);
+    await expect(
+      vaultBackend.accounts.addSafe({ address: '0xC', owners: [0, 1], threshold: 1, saltNonce: '1' })
+    ).rejects.toMatchObject({ code: 'LEDGER_ACCOUNT_UNCHECKED', message: '"L" can\'t own a Safe until …' });
+    const swarm = await vaultBackend.accounts.remove(2, references).catch((e) => e);
+    expect(swarm).toMatchObject({ code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE', references });
+    await expect(vaultBackend.accounts.rename(9, 'x')).rejects.toMatchObject({
+      code: 'invalid_argument',
+      message: 'Wallet with index 9 does not exist',
+    });
+    await expect(vaultBackend.accounts.list()).rejects.toMatchObject({ code: 'requirement_unmet' });
+  });
+
   test('no core: a typed unavailable error', async () => {
     const { vaultBackend } = load(null);
     await expect(vaultBackend.status()).rejects.toMatchObject({ code: 'core_unavailable' });
@@ -161,6 +256,108 @@ describe('vaultBackend', () => {
     await expect(
       vaultBackend.importVault('password1', 'abandon about', { overwrite: true })
     ).resolves.toEqual({ addresses: { user_wallet: '0x3' } });
+  });
+
+  // freedom-core design 0013, PRF-6(a): the core writes vault-meta.json with
+  // the vault, so a create, an import and their reconcile go only to a core
+  // that took `vault_meta`, and both send `user_knows_password`.
+  test('create and import send user_knows_password and require vault_meta; other mutations require nothing', async () => {
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: false, fingerprint: null };
+      if (method === 'vault.create') return { mnemonic_b64: b64('m'), addresses: {} };
+      return { addresses: {} };
+    });
+    const { vaultBackend } = load(core);
+    const { requiresStore } = require('./core-client');
+    await vaultBackend.createVault('pw1', 256, { userKnowsPassword: false });
+    await vaultBackend.importVault('pw2', 'abandon about', { userKnowsPassword: false });
+    await vaultBackend.importVault('pw3', 'abandon about');
+    await vaultBackend.changePassword('pw3', 'pw4');
+    const sent = core.calls.filter((c) => c.method !== 'vault.status');
+    expect(sent.map((c) => [c.method, c.params.user_knows_password])).toEqual([
+      ['vault.create', false],
+      ['vault.import', false],
+      ['vault.import', true],
+      ['vault.change_password', undefined],
+    ]);
+    const [create, imported, , change] = sent.map((c) => c.options.requires);
+    for (const requires of [create, imported]) {
+      expect(requires({ store_moved: ['vault_meta'] })).toBe(true);
+      expect(requires({ store_moved: [] })).toBe(false);
+    }
+    expect(create.toString()).toBe(requiresStore('vault_meta').toString());
+    expect(change).toBeNull();
+    for (const c of core.calls.filter((call) => call.method === 'vault.status')) {
+      expect(c.options.requires).toBeNull();
+    }
+  });
+
+  test('a core that did not take vault_meta: create fails requirement_unmet, nothing pending', async () => {
+    const core = new FakeCore((method, params, self) => {
+      if (method === 'vault.status') return { exists: false, fingerprint: null };
+      const requires = self.calls.at(-1).options.requires;
+      if (requires && !requires({ store_moved: [] })) {
+        throw coreError('requirement_unmet', "The core can't take this request");
+      }
+      return {};
+    });
+    const { vaultBackend, _internal } = load(core);
+    await expect(vaultBackend.createVault('pw1')).rejects.toMatchObject({ code: 'requirement_unmet' });
+    await expect(vaultBackend.importVault('pw1', 'abandon about')).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
+    expect(_internal.hasPending()).toBe(false);
+  });
+
+  test.each(['written', 'pending'])(
+    "a lost create whose reconcile answers meta: '%s' resolves with its result; main writes nothing",
+    async (meta) => {
+      let created = false;
+      const core = new FakeCore((method, params, self) => {
+        if (method === 'vault.status') return { exists: created, fingerprint: created ? FP : null };
+        if (method === 'vault.create') {
+          created = true;
+          throw coreError('core_unavailable', 'The core exited');
+        }
+        if (method === 'vault.reconcile') {
+          expect(self.calls.at(-1).options.requires({ store_moved: ['vault_meta'] })).toBe(true);
+          expect(self.calls.at(-1).options.requires({ store_moved: [] })).toBe(false);
+          return { status: 'committed', meta, mnemonic_b64: b64('m'), addresses: { user_wallet: '0x2' } };
+        }
+        return {};
+      });
+      const { vaultBackend } = load(core);
+      const writes = ['writeFileSync', 'renameSync', 'openSync', 'mkdirSync'].map((name) =>
+        jest.spyOn(fs, name)
+      );
+      try {
+        await expect(vaultBackend.createVault('password1', 256, { userKnowsPassword: false })).resolves.toEqual({
+          mnemonic: 'm',
+          addresses: { user_wallet: '0x2' },
+        });
+        for (const spy of writes) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of writes) spy.mockRestore();
+      }
+    }
+  );
+
+  test('a lost import reconciles under vault_meta; a lost password change requires nothing', async () => {
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: true, fingerprint: FP };
+      if (method === 'vault.import' || method === 'vault.change_password') {
+        throw coreError('core_unavailable', 'The core exited');
+      }
+      if (method === 'vault.reconcile') return { status: 'committed', meta: 'written', addresses: {} };
+      return {};
+    });
+    const { vaultBackend } = load(core);
+    await vaultBackend.importVault('pw1', 'abandon about', { overwrite: true });
+    await vaultBackend.changePassword('pw1', 'pw2');
+    const reconciles = core.calls.filter((c) => c.method === 'vault.reconcile');
+    expect(reconciles.map((c) => c.params.op)).toEqual(['import', 'change_password']);
+    expect(reconciles[0].options.requires({ store_moved: ['vault_meta'] })).toBe(true);
+    expect(reconciles[1].options.requires).toBeNull();
   });
 
   test('not committed: the original error', async () => {
@@ -516,6 +713,7 @@ describe('vaultBackend', () => {
       password_b64: b64('pw'),
       mnemonic_b64: b64('abandon about'),
       overwrite: false,
+      user_knows_password: true,
       quick_unlock: true,
     });
     expect(imports[1].params).not.toHaveProperty('quick_unlock');
@@ -595,6 +793,18 @@ describe('vaultBackend', () => {
       'quick_unlock.export_mnemonic',
       'quick_unlock.export_private_key',
       'quick_unlock.disable',
+      'accounts.list',
+      'accounts.meta',
+      'accounts.active',
+      'accounts.add_mnemonic',
+      'accounts.add_ledger',
+      'accounts.add_remote',
+      'accounts.record_address_check',
+      'accounts.add_safe',
+      'accounts.mark_safe_deployed',
+      'accounts.set_active',
+      'accounts.rename',
+      'accounts.remove',
     ]);
     let lose = true;
     const core = new FakeCore((method) => {
@@ -666,22 +876,46 @@ describe('vaultBackend', () => {
     await vaultBackend.quickExportPrivateKey(0);
     await vaultBackend.quickUnlockDisable();
     await vaultBackend.deleteVault('password2');
+    const { accounts } = vaultBackend;
+    await accounts.list();
+    await accounts.meta();
+    await accounts.active();
+    await accounts.addMnemonic('n');
+    await accounts.addLedger({ address: '0xA', path: 'p' });
+    await accounts.addRemote({ address: '0xB' });
+    await accounts.recordAddressCheck('ledger', 1, true);
+    await accounts.addSafe({ address: '0xC', owners: [0, 1], threshold: 1, saltNonce: '1' });
+    await accounts.markSafeDeployed(1, 100);
+    await accounts.setActive(0);
+    await accounts.rename(0, 'm');
+    await accounts.remove(1, []);
 
     const sent = new Set(core.calls.map((c) => c.method));
     // Every method vault-backend.js sends was sent above.
     const source = fs.readFileSync(path.join(__dirname, 'vault-backend.js'), 'utf8');
     const named = new Set(
-      [...source.matchAll(/(?:call|mutate)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
+      [...source.matchAll(/(?:call|mutate|accountsCall)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
     );
     expect([...named].sort()).toEqual([...sent].sort());
-    for (const { method, options } of core.calls) {
-      expect([method, options]).toEqual([
+    // vault-meta.json's requests, and the create and import that write it
+    // with the vault, require `vault_meta` (design 0013, PRF-6(a)).
+    const metaWrites = (method, params) =>
+      method.startsWith('accounts.') ||
+      method === 'vault.create' ||
+      method === 'vault.import' ||
+      (method === 'vault.reconcile' && ['create', 'import'].includes(params.op));
+    for (const { method, params, options } of core.calls) {
+      const { requires, ...rest } = options;
+      expect([method, rest]).toEqual([
         method,
-        {
-          watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : SESSION.has(method) ? 135_000 : 15_000,
-          requires: null,
-        },
+        { watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : SESSION.has(method) ? 135_000 : 15_000 },
       ]);
+      if (metaWrites(method, params)) {
+        expect([method, requires({ store_moved: ['vault_meta'] })]).toEqual([method, true]);
+        expect([method, requires({ store_moved: [] })]).toEqual([method, false]);
+      } else {
+        expect([method, requires]).toEqual([method, null]);
+      }
     }
   });
 
