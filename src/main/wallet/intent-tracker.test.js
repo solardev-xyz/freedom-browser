@@ -197,6 +197,32 @@ describe('the schedule', () => {
     instance.stop();
   });
 
+  // Review of #1294, round 1: a first intent committed while an empty
+  // pass's last read yields (that read's answer is from before it) still
+  // wakes the tracker once the pass ends.
+  test('an intent committed during a pass\'s last read is still checked', async () => {
+    const store = fakeStore([]);
+    const held = store.held;
+    let reads = 0;
+    store.held = async () => {
+      const answer = await held();
+      reads += 1;
+      // An empty pass reads twice: its start and its end. The commit lands
+      // while the end's read yields.
+      if (reads === 2) await store.put(intent(5));
+      return answer;
+    };
+    const { instance, request } = tracker({ store });
+    instance.start();
+    await jest.advanceTimersByTimeAsync(SCHEDULE.startupMs);
+    expect(reads).toBe(2);
+    expect(request).not.toHaveBeenCalled();
+    expect(instance.nextPassAt()).toBe(Date.now() + SCHEDULE.fastMs);
+    await jest.advanceTimersByTimeAsync(SCHEDULE.fastMs);
+    expect(finalizedReads(request)).toBe(1);
+    instance.stop();
+  });
+
   test('settled: the tracker stops when nothing is held', async () => {
     const store = fakeStore([intent(5)]);
     const { instance, request, recordSettlement } = tracker({

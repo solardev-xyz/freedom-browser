@@ -146,6 +146,10 @@ function createIntentTracker({
   let timer = null;
   let dueAt = null;
   let passing = null;
+  // A change that asked for a pass while one ran: the running pass's last
+  // read may predate it (an awaited read yields), so the pass schedules
+  // another when it ends.
+  let wokenDuringPass = false;
   let unsubscribe = null;
 
   function emit() {
@@ -231,8 +235,9 @@ function createIntentTracker({
     const handedOff = lastHandoffAt(intent);
     if (handedOff && now() - handedOff < schedule.afterBroadcastMs) {
       scheduleAt(handedOff + schedule.afterBroadcastMs);
-    } else if (!timer && !passing) {
-      scheduleAt(now() + schedule.fastMs);
+    } else if (!timer) {
+      if (passing) wokenDuringPass = true;
+      else scheduleAt(now() + schedule.fastMs);
     }
   }
 
@@ -429,6 +434,10 @@ function createIntentTracker({
         releaseIdleSegments(after);
         passing = null;
         scheduleNext(after);
+        if (wokenDuringPass) {
+          wokenDuringPass = false;
+          scheduleAt(now() + schedule.fastMs);
+        }
       }
     })();
     return passing;
