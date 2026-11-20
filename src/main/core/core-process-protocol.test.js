@@ -53,15 +53,18 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   // freedom-core design 0012, "The APR-3 pin": the hello carries grant_root,
   // the directory of the four permission files; grant_moved names the files
   // the core writes from then on: the dApp file (APB-2), Swarm's and
-  // Radicle's (APB-3). Design 0013's store_moved names no set-A store yet
-  // (PRF-6(0)), and the app's client takes no echo of any.
+  // Radicle's (APB-3). Design 0013's store_moved names the RPC API keys
+  // (PRF-6(e)), and the app's client takes an echo of no other store.
   const root = path.join(os.tmpdir(), 'freedom-profile');
   expect(client.grantRoot).toBe(root);
   const params = client.service.helloParams(client);
   expect(params.grant_root).toBe(root);
   expect([...params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
-  expect(params.store_moved).toEqual([]);
+  expect(params.store_moved).toEqual(['rpc_api_keys']);
   expect(client.service.validHello({ ...HELLO, store_moved: ['payments'] })).toBeNull();
+  expect(client.service.validHello({ ...HELLO, store_moved: ['rpc_api_keys'] }).store_moved).toEqual(
+    ['rpc_api_keys']
+  );
   expect(start).toHaveBeenCalledTimes(1);
   expect(handle).toHaveBeenCalledWith('shell.dweb_get', expect.any(Function), {
     streams: true,

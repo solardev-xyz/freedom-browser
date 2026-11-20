@@ -1,3 +1,10 @@
+// The reference: src/main/wallet/rpc-api-key-store.js as the build before
+// PRF-6(e) has it (freedom-browser integration/rust-core at 9d4ea6251,
+// freedom-core's STORES_REFERENCE_COMMIT), verbatim but for its require
+// paths. It is how an older build reads and writes rpc-api-keys.json, for
+// the rollout and rollback tests of the RPC API keys the identity core
+// keeps from PRF-6(e) (freedom-core design 0013, "RPC API keys"): never
+// main's code.
 /**
  * The one reader and writer of `<userData>/rpc-api-keys.json` (K-5), the
  * user's RPC provider API keys in plain JSON. rpc-manager and the network
@@ -10,8 +17,8 @@
  * file belongs to the Rust core's profile secrets store (#644).
  */
 
-const { getFreedomDataPath } = require('../freedom-root');
-const { readPrivateFile, repairPrivateFile, writePrivateFileSync } = require('../private-files');
+const { getFreedomDataPath } = require('../../src/main/freedom-root');
+const { readPrivateFile, repairPrivateFile, writePrivateFileSync } = require('../../src/main/private-files');
 
 const API_KEYS_FILE = 'rpc-api-keys.json';
 

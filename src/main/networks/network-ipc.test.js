@@ -42,11 +42,14 @@ function loadNetworkIpc(options = {}) {
   const settingsStore = {
     loadSettings: jest.fn(() => ({ theme: 'system' })),
   };
+  const keyListeners = [];
   const rpcManager = {
-    hasApiKey: jest.fn(() => false),
-    setApiKey: jest.fn(() => ({ success: true })),
-    removeApiKey: jest.fn(() => ({ success: true })),
+    providersWithKeys: jest.fn(async () => new Set()),
+    setApiKey: jest.fn(async () => ({ success: true })),
+    removeApiKey: jest.fn(async () => ({ success: true })),
     testApiKey: jest.fn(() => ({ success: true })),
+    onKeysChanged: jest.fn((listener) => keyListeners.push(listener)),
+    ...(options.rpcManager || {}),
   };
 
   const loaded = loadMainModule(require.resolve('./network-ipc'), {
@@ -78,10 +81,89 @@ function loadNetworkIpc(options = {}) {
     chain,
     settingsStore,
     rpcManager,
+    keyListeners,
   };
 }
 
 describe('network-ipc', () => {
+  // freedom-core design 0013, "RPC API keys" (PRF-6(e)): the keys are the
+  // identity core's; the settings page sees presence, as the chrome.
+  test("get-config tags keyed sources with the core's presence, asked as the chrome", async () => {
+    const ctx = loadNetworkIpc({
+      registry: {
+        getEndpointSourceList: jest.fn(() => [
+          { id: 'alchemy', role: 'rpc', keyed: true },
+          { id: 'infura', role: 'rpc', keyed: true },
+          { id: 'public', role: 'rpc', keyed: false },
+        ]),
+      },
+      rpcManager: { providersWithKeys: jest.fn(async () => new Set(['alchemy'])) },
+    });
+
+    const answer = await ctx.ipcMain.invoke('networks:get-config');
+
+    expect(ctx.rpcManager.providersWithKeys).toHaveBeenCalledWith({ caller: 'chrome' });
+    expect(answer).toEqual({
+      success: true,
+      networks: {},
+      sources: [
+        { id: 'alchemy', role: 'rpc', keyed: true, hasKey: true },
+        { id: 'infura', role: 'rpc', keyed: true, hasKey: false },
+        { id: 'public', role: 'rpc', keyed: false },
+      ],
+    });
+  });
+
+  test("get-config answers the core's refusal, with no configuration", async () => {
+    const refusal = Object.assign(new Error("The core can't take this request"), {
+      code: 'requirement_unmet',
+    });
+    const ctx = loadNetworkIpc({
+      rpcManager: { providersWithKeys: jest.fn(async () => Promise.reject(refusal)) },
+    });
+
+    await expect(ctx.ipcMain.invoke('networks:get-config')).resolves.toEqual({
+      success: false,
+      error: "The core can't take this request",
+    });
+  });
+
+  test('set-api-key and remove-api-key go as the chrome, and answer rpc-manager', async () => {
+    const ctx = loadNetworkIpc({
+      rpcManager: {
+        setApiKey: jest.fn(async () => ({ success: false, error: 'Invalid API key' })),
+      },
+    });
+
+    await expect(ctx.ipcMain.invoke('networks:set-api-key', 'alchemy', 'k')).resolves.toEqual({
+      success: false,
+      error: 'Invalid API key',
+    });
+    expect(ctx.rpcManager.setApiKey).toHaveBeenCalledWith('alchemy', 'k', { caller: 'chrome' });
+    await expect(ctx.ipcMain.invoke('networks:remove-api-key', 'alchemy')).resolves.toEqual({
+      success: true,
+    });
+    expect(ctx.rpcManager.removeApiKey).toHaveBeenCalledWith('alchemy', { caller: 'chrome' });
+    // The downstream caches follow a change to main's copy of the keys,
+    // not the IPC answer.
+    expect(ctx.providerManager.clearProviderCache).not.toHaveBeenCalled();
+  });
+
+  test("a change to main's copy of the keys refreshes everything downstream", () => {
+    const ctx = loadNetworkIpc();
+    expect(ctx.keyListeners).toHaveLength(1);
+
+    ctx.keyListeners[0]();
+
+    expect(ctx.providerManager.clearProviderCache).toHaveBeenCalledTimes(1);
+    expect(ctx.ensResolver.invalidateCachedProvider).toHaveBeenCalledTimes(1);
+    expect(ctx.chain.chainSettingsChanged).toHaveBeenCalledTimes(1);
+    expect(ctx.send).toHaveBeenCalledWith(
+      IPC.SETTINGS_UPDATED,
+      expect.objectContaining({ networkConfigUpdated: true })
+    );
+  });
+
   test('add-chain registers the native token with catalog decimals', async () => {
     const ctx = loadNetworkIpc();
     const chain = {

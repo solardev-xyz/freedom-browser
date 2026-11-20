@@ -1,7 +1,7 @@
 /**
  * The set-A store handover against the real freedom-cored (freedom-core
  * design 0013, "One writer per store: `store_moved`"), before any store
- * moves (PRF-6(0)): this build's hello names none, so the pinned core
+ * moves (PRF-6(0)): with a hello naming none, the pinned core
  * (0.23.0) writes none of the stores, answers each of their writes
  * `not_moved` and serves the reads it can; a store's request sent with
  * `requires: requiresStore(name)` fails `requirement_unmet` in main, unsent;
@@ -100,7 +100,8 @@ describeIfCurrent('the set-A stores before any moves, on the pinned freedom-core
   beforeAll(async () => {
     ({ requiresStore, STORES } = require('./core-client'));
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-'));
-    core = await startCore({ binary: current, root });
+    // The hello before any step names a store (PRF-6(e) names rpc_api_keys).
+    core = await startCore({ binary: current, root, storeMoved: [] });
   });
 
   afterAll(async () => {
@@ -108,9 +109,7 @@ describeIfCurrent('the set-A stores before any moves, on the pinned freedom-core
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test("the build's hello names no store, and the echo is empty", () => {
-    const { STORE_MOVED } = require('./core-client');
-    expect(STORE_MOVED).toEqual([]);
+  test('a hello naming no store gets an empty echo', () => {
     expect(core.service.helloParams(core).store_moved).toEqual([]);
     expect(core.hello.store_moved).toEqual([]);
   });

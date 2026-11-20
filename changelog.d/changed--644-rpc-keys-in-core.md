@@ -1,0 +1,2 @@
+- RPC provider API keys are kept by Freedom's identity core, in Freedom's own keychain item on macOS ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Saved keys move over at the next start on macOS; older versions there then ask for them again

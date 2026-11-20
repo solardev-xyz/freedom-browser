@@ -285,24 +285,26 @@ describe('CoreClient', () => {
     expect([...hello.params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
   });
 
-  // freedom-core design 0013, "One writer per store": the build names no
-  // set-A store yet (PRF-6(0)); the core echoes the names it took, and a
-  // core before 0.23.0 answers none.
-  test('the hello names no store in store_moved, and an absent echo is none', async () => {
+  // freedom-core design 0013, "One writer per store": the build names the
+  // RPC API keys (PRF-6(e)); the core echoes the names it took, and a core
+  // before 0.23.0 answers none.
+  test("the hello names the build's stores in store_moved, and an absent echo is none", async () => {
     expect(STORES).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
-    expect(STORE_MOVED).toEqual([]);
+    expect(STORE_MOVED).toEqual(['rpc_api_keys']);
     expect(Object.isFrozen(STORE_MOVED)).toBe(true);
     const { client, children } = makeClient([helloHandler()]);
     const hello = await client.start();
-    expect(children[0].requests[0].params.store_moved).toEqual([]);
+    expect(children[0].requests[0].params.store_moved).toEqual(['rpc_api_keys']);
     expect(hello.store_moved).toEqual([]);
     expect(client.hello.store_moved).toEqual([]);
-    const echoed = makeClient([
-      (m, core) =>
-        m.method === 'core.hello' &&
-        core.reply({ type: 'response', id: m.id, result: helloResult({ store_moved: [] }) }),
-    ]);
-    expect((await echoed.client.start()).store_moved).toEqual([]);
+    for (const echo of [[], ['rpc_api_keys']]) {
+      const echoed = makeClient([
+        (m, core) =>
+          m.method === 'core.hello' &&
+          core.reply({ type: 'response', id: m.id, result: helloResult({ store_moved: echo }) }),
+      ]);
+      expect((await echoed.client.start()).store_moved).toEqual(echo);
+    }
   });
 
   test('a service naming stores sends them and takes an echo of some or none', async () => {

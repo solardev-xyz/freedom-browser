@@ -91,6 +91,9 @@ async function startCore() {
   // The dApp grants, which the core writes (design 0012, APB-2): main's
   // copy read at each handshake, and again for each change the core sends.
   require('../wallet/dapp-permissions').attachCore(client);
+  // The RPC API keys, which the core keeps (design 0013, PRF-6(e)): main's
+  // copy, for the requests main runs itself, read at each handshake.
+  require('../wallet/rpc-manager').attachCore(client);
   // A phone payment's later check (design 0012, PHN-2): the core's
   // `phone.checked` and `phone.lost`, which it sends from its start on.
   require('../wallet/tx-recorder').attachPhoneEvents(client);

@@ -595,6 +595,10 @@ describe('vaultBackend', () => {
       'quick_unlock.export_mnemonic',
       'quick_unlock.export_private_key',
       'quick_unlock.disable',
+      'secrets.rpc_api_keys',
+      'secrets.rpc_api_key_status',
+      'secrets.set_rpc_api_key',
+      'secrets.remove_rpc_api_key',
     ]);
     let lose = true;
     const core = new FakeCore((method) => {
@@ -666,6 +670,10 @@ describe('vaultBackend', () => {
     await vaultBackend.quickExportPrivateKey(0);
     await vaultBackend.quickUnlockDisable();
     await vaultBackend.deleteVault('password2');
+    await vaultBackend.secrets.rpcApiKeys();
+    await vaultBackend.secrets.rpcApiKeyStatus('chrome');
+    await vaultBackend.secrets.setRpcApiKey({ id: 'alchemy', api_key: 'k' }, 'chrome');
+    await vaultBackend.secrets.removeRpcApiKey({ id: 'alchemy' }, 'chrome');
 
     const sent = new Set(core.calls.map((c) => c.method));
     // Every method vault-backend.js sends was sent above.
@@ -679,9 +687,34 @@ describe('vaultBackend', () => {
         method,
         {
           watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : SESSION.has(method) ? 135_000 : 15_000,
-          requires: null,
+          // The RPC API keys' requests need a core that took the store.
+          requires: method.startsWith('secrets.') ? expect.any(Function) : null,
         },
       ]);
+    }
+  });
+
+  // Design 0013, "RPC API keys" (PRF-6(e)): each RPC-key request names its
+  // caller and needs a core whose hello echoed `rpc_api_keys`.
+  test("the RPC-key requests go as their caller, with the store's requires", async () => {
+    const core = new FakeCore(() => ({ providers: [] }));
+    const { vaultBackend } = load(core);
+    await vaultBackend.secrets.rpcApiKeys();
+    await vaultBackend.secrets.rpcApiKeyStatus('chrome');
+    await vaultBackend.secrets.rpcApiKeyStatus();
+    await vaultBackend.secrets.setRpcApiKey({ id: 'alchemy', api_key: 'k' }, 'chrome');
+    await vaultBackend.secrets.removeRpcApiKey({ id: 'alchemy' });
+    expect(core.calls.map(({ method, params, context }) => [method, params, context])).toEqual([
+      ['secrets.rpc_api_keys', {}, { caller: 'shell' }],
+      ['secrets.rpc_api_key_status', {}, { caller: 'chrome' }],
+      ['secrets.rpc_api_key_status', {}, { caller: 'shell' }],
+      ['secrets.set_rpc_api_key', { id: 'alchemy', api_key: 'k' }, { caller: 'chrome' }],
+      ['secrets.remove_rpc_api_key', { id: 'alchemy' }, { caller: 'shell' }],
+    ]);
+    for (const { options } of core.calls) {
+      expect(options.requires({ store_moved: ['rpc_api_keys'] })).toBe(true);
+      expect(options.requires({ store_moved: ['vault_meta'] })).toBe(false);
+      expect(options.requires({ store_moved: [] })).toBe(false);
     }
   });
 

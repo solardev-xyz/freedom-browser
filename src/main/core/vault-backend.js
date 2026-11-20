@@ -27,8 +27,11 @@ const log = require('../logger');
 const { getCoreClient } = require('./core-process');
 const { watchdogMs } = require('./core-deadlines');
 const { keyStoreMessage } = require('./key-store-messages');
+const { requiresStore } = require('./core-client');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
+// The RPC-key requests' `requires` (PRF-6(e)).
+const RPC_KEYS = Object.freeze({ requires: requiresStore('rpc_api_keys') });
 // @scure/bip39 strengths (bits) and their word counts.
 const WORDS_BY_STRENGTH = { 128: 12, 160: 15, 192: 18, 224: 21, 256: 24 };
 
@@ -651,6 +654,33 @@ const vaultBackend = {
      */
     update(params, caller = 'chrome') {
       return call('x402.update', params, caller);
+    },
+  },
+
+  /**
+   * The RPC API keys (freedom-core design 0013, "RPC API keys"; PRF-6(e)),
+   * which the core keeps once the hello names `rpc_api_keys`
+   * (wallet/rpc-manager.js). Each request goes with `requires`, so a core
+   * that didn't take the store (0.22.0) fails it `requirement_unmet` in
+   * main, unsent. `caller` is `'chrome'` (the settings page's, relayed) or
+   * null (`shell`, main's own).
+   */
+  secrets: {
+    /** `{}` → `{ keys: [{ id, api_key }] }`, `shell` only. Never logged. */
+    rpcApiKeys() {
+      return call('secrets.rpc_api_keys', {}, null, RPC_KEYS);
+    },
+    /** `{}` → `{ providers: [{ id, present }] }`, never a key */
+    rpcApiKeyStatus(caller = null) {
+      return call('secrets.rpc_api_key_status', {}, caller, RPC_KEYS);
+    },
+    /** `{ id, api_key }` → `{ providers, durable? }`: replaces the provider's key */
+    setRpcApiKey(params, caller = null) {
+      return call('secrets.set_rpc_api_key', params, caller, RPC_KEYS);
+    },
+    /** `{ id }` → `{ providers, durable? }` */
+    removeRpcApiKey(params, caller = null) {
+      return call('secrets.remove_rpc_api_key', params, caller, RPC_KEYS);
     },
   },
 

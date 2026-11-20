@@ -21,11 +21,11 @@ jest.mock('node:fs', () => ({
   },
 }));
 
-// The API keys come through the shared key store (K-5), over the same files.
-jest.mock('../wallet/rpc-api-key-store', () => ({
-  readRpcApiKeys: () =>
-    'rpc-api-keys.json' in mockFiles ? JSON.parse(mockFiles['rpc-api-keys.json']) : {},
-}));
+// The API keys are main's copy of the identity core's (rpc-manager.js,
+// PRF-6(e)): the keys the core answers for `apiKeys` in the reference's file
+// shape, those it counts (a non-empty `apiKey`, `enabled` truthy).
+let mockApiKeys = new Map();
+jest.mock('../wallet/rpc-manager', () => ({ cachedApiKeys: () => mockApiKeys }));
 
 const registry = require('./network-registry');
 
@@ -63,7 +63,11 @@ function setFiles({ chains = CHAINS, sources = SOURCES, custom, userConfig, apiK
   mockFiles['endpoint-sources.json'] = JSON.stringify(sources);
   if (custom !== undefined) mockFiles['custom-chains.json'] = JSON.stringify(custom);
   if (userConfig !== undefined) mockFiles['network-config.json'] = JSON.stringify(userConfig);
-  if (apiKeys !== undefined) mockFiles['rpc-api-keys.json'] = JSON.stringify(apiKeys);
+  mockApiKeys = new Map(
+    Object.entries(apiKeys || {})
+      .filter(([, entry]) => typeof entry?.apiKey === 'string' && entry.apiKey && entry.enabled)
+      .map(([id, entry]) => [id, entry.apiKey])
+  );
   if (settings !== undefined) mockFiles['settings.json'] = JSON.stringify(settings);
   mockWriteFileSync.mockClear();
   registry.invalidate();
@@ -163,11 +167,11 @@ describe('getEndpoints — resolution', () => {
   });
 
   test('keyed source: dropped when no key is configured', () => {
-    // no rpc-api-keys.json → alchemy produces no URL
+    // no key in main's copy → alchemy produces no URL
     expect(registry.getEndpoints(1, 'rpc').some((u) => u.includes('alchemy'))).toBe(false);
   });
 
-  test('keyed source: dropped when the key is explicitly disabled', () => {
+  test('keyed source: dropped when the key is explicitly disabled (the core answers none)', () => {
     setFiles({ apiKeys: { alchemy: { apiKey: 'SECRET', enabled: false } } });
     expect(registry.getEndpoints(1, 'rpc').some((u) => u.includes('alchemy'))).toBe(false);
   });

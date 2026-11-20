@@ -1,10 +1,19 @@
 /**
- * K-5: rpc-api-keys.json holds the user's RPC provider API keys in plain
- * JSON. It is written owner-only and replaced atomically.
+ * The RPC API keys through the identity core (freedom-core design 0013,
+ * "RPC API keys"; PRF-6(e)), against a simulated core over the reference
+ * key store (test/helpers/simulated-rpc-keys-core.js), so the file's text
+ * is the reference's. The real core: rpc-manager.integration.test.js.
+ *
+ * - Main's copy of the keys is read from `secrets.rpc_api_keys` (`shell`) at
+ *   each start of the core and after each set or remove; until then the
+ *   keyed providers are left out of the registry's pool.
+ * - A set or a remove goes as its caller's, after main's registry check,
+ *   and the core's refusals reach the settings page in main's words.
  *
  * A keyed provider's resolved RPC URL carries the user's API key (#1040).
  * Main resolves and uses it; no renderer is answered with it.
  */
+const EventEmitter = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -14,6 +23,7 @@ const {
   removeTempUserDataDir,
   loadMainModule,
 } = require('../../../test/helpers/main-process-test-utils');
+const { simulatedRpcKeysCore } = require('../../../test/helpers/simulated-rpc-keys-core');
 
 const SHARED = path.join(__dirname, '..', '..', 'shared');
 const readShared = (name) => JSON.parse(fs.readFileSync(path.join(SHARED, name), 'utf-8'));
@@ -26,229 +36,306 @@ const keyedProviderIds = Object.entries(readShared('endpoint-sources.json'))
   .map(([id]) => id);
 const chainIds = Object.keys(readShared('chains.json'));
 
-const posixTest = process.platform === 'win32' ? test.skip : test;
-const modeOf = (file) => fs.statSync(file).mode & 0o777;
+const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-describe('rpc-manager API key file (K-5)', () => {
+/** A keyed rpc source per id, in network-config.json, covering chain 1. */
+function writeKeyedSources(userDataDir, ids) {
+  const endpointSources = Object.fromEntries(
+    ids.map((id) => [
+      id,
+      { role: 'rpc', keyed: true, name: id, coverage: { 1: `https://${id}.example/v2/{API_KEY}` } },
+    ])
+  );
+  fs.writeFileSync(path.join(userDataDir, 'network-config.json'), JSON.stringify({ endpointSources }));
+}
+
+describe('rpc-manager over the identity core (PRF-6(e))', () => {
   let userDataDir;
   let keysPath;
+  let core;
   let rpc;
   let onApiKeysChanged;
+  let logged;
 
-  beforeEach(() => {
-    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-keys-'));
-    keysPath = path.join(userDataDir, 'rpc-api-keys.json');
-    jest.spyOn(console, 'log').mockImplementation(() => {});
-    jest.spyOn(console, 'error').mockImplementation(() => {});
-    onApiKeysChanged = jest.fn();
+  function load({ keyStore = false } = {}) {
+    core = simulatedRpcKeysCore({ keyStore });
+    onApiKeysChanged = jest.fn(() => require('../networks/network-registry').invalidate());
     ({ mod: rpc } = loadMainModule(require.resolve('./rpc-manager'), {
       userDataDir,
       extraMocks: {
-        [require.resolve('../networks/network-registry')]: () => ({
-          getKeyedSources: jest.fn(() => ({ alchemy: { id: 'alchemy', coverage: {} } })),
+        [require.resolve('../core/vault-backend')]: () => ({
+          vaultBackend: { secrets: core.secrets },
         }),
         [require.resolve('./provider-manager')]: () => ({ onApiKeysChanged }),
       },
     }));
-  });
-
-  afterEach(() => {
-    jest.restoreAllMocks();
-    fs.rmSync(userDataDir, { recursive: true, force: true });
-  });
-
-  const tempFiles = () => fs.readdirSync(userDataDir).filter((name) => name.endsWith('.tmp'));
-
-  posixTest('saves the keys owner-only', () => {
-    expect(rpc.setApiKey('alchemy', 'secret-key')).toEqual({ success: true });
-    expect(modeOf(keysPath)).toBe(0o600);
-    expect(JSON.parse(fs.readFileSync(keysPath, 'utf8')).alchemy.apiKey).toBe('secret-key');
-    expect(tempFiles()).toEqual([]);
-  });
-
-  posixTest('narrows a key file an older build left world-readable', () => {
-    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: 'old', enabled: true } }));
-    fs.chmodSync(keysPath, 0o644);
-    expect(rpc.hasApiKey('alchemy')).toBe(true);
-    expect(modeOf(keysPath)).toBe(0o600);
-  });
-
-  test('a failed replace keeps the previous file', () => {
-    expect(rpc.setApiKey('alchemy', 'first').success).toBe(true);
-    const before = fs.readFileSync(keysPath, 'utf8');
-    const rename = jest.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-      throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
-    });
-
-    expect(rpc.setApiKey('alchemy', 'second')).toEqual({
-      success: false,
-      error: 'Failed to save API key',
-    });
-    rename.mockRestore();
-    expect(fs.readFileSync(keysPath, 'utf8')).toBe(before);
-    expect(tempFiles()).toEqual([]);
-  });
-});
-
-describe('the shared RPC key store (K-5 review)', () => {
-  let userDataDir;
-  let keysPath;
-  beforeEach(() => {
-    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-store-'));
-    keysPath = path.join(userDataDir, 'rpc-api-keys.json');
-    jest.spyOn(console, 'error').mockImplementation(() => {});
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
-  });
-  afterEach(() => {
-    jest.restoreAllMocks();
-    fs.rmSync(userDataDir, { recursive: true, force: true });
-  });
-
-  function loadRegistry() {
-    // Other tests here doMock the registry; this one wants the real one.
-    jest.dontMock(require.resolve('../networks/network-registry'));
-    const { mod } = loadMainModule(require.resolve('../networks/network-registry'), {
-      userDataDir,
-    });
-    return mod;
+    return rpc;
   }
 
-  posixTest('the network registry, read first, repairs an older 0644 file', () => {
-    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: 'k', enabled: true } }));
-    fs.chmodSync(keysPath, 0o644);
-
-    loadRegistry().getEndpoints(1, 'rpc');
-    expect(modeOf(keysPath)).toBe(0o600);
-  });
-
-  posixTest('the startup repair narrows it before any reader runs', () => {
-    fs.writeFileSync(keysPath, '{}');
-    fs.chmodSync(keysPath, 0o644);
-    const { mod: store } = loadMainModule(require.resolve('./rpc-api-key-store'), { userDataDir });
-    expect(store.repairRpcApiKeys()).toBe(true);
-    expect(modeOf(keysPath)).toBe(0o600);
-  });
-
-  posixTest('neither reader follows a link planted at the key file', () => {
-    const outside = path.join(userDataDir, 'outside.json');
-    fs.writeFileSync(outside, JSON.stringify({ alchemy: { apiKey: 'planted', enabled: true } }));
-    fs.chmodSync(outside, 0o644);
-    fs.symlinkSync(outside, keysPath);
-
-    const { mod: rpc } = loadMainModule(require.resolve('./rpc-manager'), {
-      userDataDir,
-      extraMocks: {
-        [require.resolve('../networks/network-registry')]: () => ({
-          getKeyedSources: jest.fn(() => ({ alchemy: { id: 'alchemy', coverage: {} } })),
-        }),
-        [require.resolve('./provider-manager')]: () => ({ onApiKeysChanged: jest.fn() }),
-      },
-    });
-    expect(rpc.hasApiKey('alchemy')).toBe(false);
-    loadRegistry().getEndpoints(1, 'rpc');
-    const { mod: store } = loadMainModule(require.resolve('./rpc-api-key-store'), { userDataDir });
-    expect(store.repairRpcApiKeys()).toBe(false);
-    expect(modeOf(outside)).toBe(0o644);
-
-    // Saving replaces the link with a real, owner-only file.
-    expect(rpc.setApiKey('alchemy', 'mine')).toEqual({ success: true });
-    expect(fs.lstatSync(keysPath).isSymbolicLink()).toBe(false);
-    expect(modeOf(keysPath)).toBe(0o600);
-    expect(JSON.parse(fs.readFileSync(outside, 'utf8')).alchemy.apiKey).toBe('planted');
-  });
-});
-
-// Review #1029 R1-2: a key file that cannot be made owner-only is never
-// read, by either reader, and the startup repair does not report it fixed.
-describe('a key file whose fchmod fails (K-5)', () => {
-  let userDataDir;
-  let keysPath;
   beforeEach(() => {
-    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-keys-fchmod-'));
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-keys-core-'));
     keysPath = path.join(userDataDir, 'rpc-api-keys.json');
-    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: 'old', enabled: true } }));
-    fs.chmodSync(keysPath, 0o644);
-    jest.spyOn(console, 'error').mockImplementation(() => {});
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    logged = [];
+    for (const level of ['log', 'warn', 'error']) {
+      jest.spyOn(console, level).mockImplementation((...args) => logged.push(args));
+    }
   });
+
   afterEach(() => {
     jest.restoreAllMocks();
     fs.rmSync(userDataDir, { recursive: true, force: true });
   });
 
-  posixTest('is refused: no reader gets its keys, and repair reports it unrepaired', () => {
-    const { mod: store } = loadMainModule(require.resolve('./rpc-api-key-store'), { userDataDir });
-    jest.spyOn(fs, 'fchmodSync').mockImplementation(() => {
-      throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), { code: 'EPERM' });
-    });
-    // The file's bytes are read through its descriptor, after the narrowing.
-    const realRead = fs.readFileSync;
-    const fdReads = [];
-    jest.spyOn(fs, 'readFileSync').mockImplementation((target, ...rest) => {
-      if (typeof target === 'number') fdReads.push(target);
-      return realRead(target, ...rest);
-    });
+  const fileText = () => fs.readFileSync(keysPath, 'utf8');
+  const keyedUrls = () => rpc.getEffectiveRpcUrls(1).filter((url) => url.includes(KEY));
 
-    expect(store.repairRpcApiKeys()).toBe(false);
-    expect(() => store.readRpcApiKeys()).toThrow('could not make it owner-only');
-    const { mod: rpc } = loadMainModule(require.resolve('./rpc-manager'), {
-      userDataDir,
-      extraMocks: {
-        [require.resolve('../networks/network-registry')]: () => ({
-          getKeyedSources: jest.fn(() => ({ alchemy: { id: 'alchemy', coverage: {} } })),
-        }),
-        [require.resolve('./provider-manager')]: () => ({ onApiKeysChanged: jest.fn() }),
-      },
-    });
+  test("before the core's first answer, main's copy is empty and no file is read", () => {
+    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: KEY, enabled: true } }));
+    load();
+    const read = jest.spyOn(fs, 'readFileSync');
+    const open = jest.spyOn(fs, 'openSync');
     expect(rpc.hasApiKey('alchemy')).toBe(false);
-    jest.dontMock(require.resolve('../networks/network-registry'));
-    const { mod: registry } = loadMainModule(require.resolve('../networks/network-registry'), {
-      userDataDir,
-    });
-    registry.getEndpoints(1, 'rpc');
-    expect(fdReads).toEqual([]);
-    expect(modeOf(keysPath)).toBe(0o644);
-  });
-});
-
-describe('a FIFO at the key file name (K-5)', () => {
-  let userDataDir;
-  beforeEach(() => {
-    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-keys-fifo-'));
-  });
-  afterEach(() => {
-    fs.rmSync(userDataDir, { recursive: true, force: true });
-  });
-
-  posixTest('the startup repair and a read refuse it at once, never waiting for a writer', () => {
-    const fifo = path.join(userDataDir, 'rpc-api-keys.json');
-    require('child_process').execFileSync('mkfifo', [fifo]);
-    // In a child, with electron's app stubbed: an open that waited for a
-    // writer would hang this worker.
-    const script = `
-      const Module = require('module');
-      const load = Module._load;
-      Module._load = function (request, ...rest) {
-        if (request === 'electron') return { app: { getPath: () => process.argv[1] } };
-        return load.call(this, request, ...rest);
-      };
-      const store = require(${JSON.stringify(require.resolve('./rpc-api-key-store'))});
-      const out = { repair: store.repairRpcApiKeys() };
-      try { store.readRpcApiKeys(); out.read = 'read'; } catch (err) { out.read = err.message; }
-      process.stdout.write(JSON.stringify(out));
-    `;
-    const result = require('child_process').spawnSync(
-      process.execPath,
-      ['-e', script, userDataDir],
-      { encoding: 'utf8', timeout: 15000 }
+    expect(rpc.cachedApiKeys().size).toBe(0);
+    expect(keyedUrls()).toEqual([]);
+    const touched = [...read.mock.calls, ...open.mock.calls].filter(([target]) =>
+      String(target).includes('rpc-api-keys')
     );
-    expect(result.error).toBeUndefined();
-    expect(result.signal).toBeNull();
-    expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({
-      repair: false,
-      read: expect.stringContaining('not a regular file'),
+    expect(touched).toEqual([]);
+    expect(core.calls).toEqual([]);
+  });
+
+  test("each start of the core reads the keys as main's, and a change drops the providers", async () => {
+    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: KEY, enabled: true } }));
+    load();
+    const listener = jest.fn();
+    rpc.onKeysChanged(listener);
+    const client = new EventEmitter();
+    rpc.attachCore(client);
+    rpc.attachCore(client);
+
+    client.emit('ready');
+    await tick();
+    expect(core.calls).toEqual([{ method: 'secrets.rpc_api_keys', caller: 'shell', id: undefined }]);
+    expect(rpc.hasApiKey('alchemy')).toBe(true);
+    expect(rpc.cachedApiKeys().get('alchemy')).toBe(KEY);
+    expect(keyedUrls()).toHaveLength(1);
+    expect(onApiKeysChanged).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    // A restarted core with the same keys changes nothing.
+    client.emit('ready');
+    await tick();
+    expect(core.calls).toHaveLength(2);
+    expect(onApiKeysChanged).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    // A key that isn't counted (`enabled` false) isn't answered, so it goes.
+    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: KEY, enabled: false } }));
+    client.emit('ready');
+    await tick();
+    expect(rpc.hasApiKey('alchemy')).toBe(false);
+    expect(keyedUrls()).toEqual([]);
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  test('an earlier read answered after a later one is dropped', async () => {
+    load();
+    const answers = [];
+    core.secrets.rpcApiKeys = () => new Promise((resolve) => answers.push(resolve));
+    const first = rpc.refreshKeys();
+    const second = rpc.refreshKeys();
+    answers[1]({ keys: [{ id: 'alchemy', api_key: `${KEY}-new` }] });
+    await expect(second).resolves.toBe(true);
+    answers[0]({ keys: [{ id: 'alchemy', api_key: `${KEY}-old` }] });
+    await expect(first).resolves.toBe(false);
+    expect(rpc.cachedApiKeys().get('alchemy')).toBe(`${KEY}-new`);
+  });
+
+  test('a read the core refuses leaves the copy as it was, logged without a key', async () => {
+    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: KEY, enabled: true } }));
+    load();
+    await rpc.refreshKeys();
+    core.failNext('secrets.rpc_api_keys', {
+      code: 'requirement_unmet',
+      message: "The core can't take this request",
     });
+    const client = new EventEmitter();
+    rpc.attachCore(client);
+    client.emit('ready');
+    await tick();
+    expect(rpc.hasApiKey('alchemy')).toBe(true);
+    expect(JSON.stringify(logged)).toContain("The core can't take this request");
+    expect(JSON.stringify(logged)).not.toContain(KEY);
+  });
+
+  test('a set goes as its caller, writes the reference text where there is no key store, and is read back', async () => {
+    load();
+    const listener = jest.fn();
+    rpc.onKeysChanged(listener);
+
+    await expect(rpc.setApiKey('alchemy', KEY, { caller: 'chrome' })).resolves.toEqual({
+      success: true,
+    });
+    expect(core.calls.map(({ method, caller }) => [method, caller])).toEqual([
+      ['secrets.set_rpc_api_key', 'chrome'],
+      ['secrets.rpc_api_keys', 'shell'],
+    ]);
+    const stored = JSON.parse(fileText());
+    expect(stored).toEqual({ alchemy: { apiKey: KEY, enabled: true, addedAt: expect.any(Number) } });
+    expect(fileText()).toBe(JSON.stringify(stored, null, 2));
+    expect(rpc.hasApiKey('alchemy')).toBe(true);
+    expect(keyedUrls()).toHaveLength(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+    // Main's own set (none today) goes as `shell`.
+    await rpc.setApiKey('alchemy', `${KEY}-2`);
+    expect(core.calls[2]).toMatchObject({ method: 'secrets.set_rpc_api_key', caller: 'shell' });
+    expect(rpc.cachedApiKeys().get('alchemy')).toBe(`${KEY}-2`);
+    expect(JSON.stringify(logged)).not.toContain(KEY);
+  });
+
+  test('a provider not in the registry is refused before the core', async () => {
+    load();
+    for (const id of ['nope', '__proto__', 'constructor', 7, null]) {
+      await expect(rpc.setApiKey(id, KEY, { caller: 'chrome' })).resolves.toEqual({
+        success: false,
+        error: `Unknown provider: ${id}`,
+      });
+    }
+    expect(core.calls).toEqual([]);
+  });
+
+  test('a remove takes the key, and one with no key or provider is refused before the core', async () => {
+    fs.writeFileSync(
+      keysPath,
+      JSON.stringify({
+        alchemy: { apiKey: KEY, enabled: true, addedAt: 1 },
+        'gone-provider': { apiKey: `${KEY}-gone`, enabled: true, addedAt: 1 },
+      })
+    );
+    load();
+    await rpc.refreshKeys();
+    core.calls.length = 0;
+
+    await expect(rpc.removeApiKey('nope', { caller: 'chrome' })).resolves.toEqual({
+      success: false,
+      error: 'No API key found for provider: nope',
+    });
+    expect(core.calls).toEqual([]);
+
+    await expect(rpc.removeApiKey('alchemy', { caller: 'chrome' })).resolves.toEqual({
+      success: true,
+    });
+    expect(core.calls.map(({ method, caller }) => [method, caller])).toEqual([
+      ['secrets.remove_rpc_api_key', 'chrome'],
+      ['secrets.rpc_api_keys', 'shell'],
+    ]);
+    expect(rpc.hasApiKey('alchemy')).toBe(false);
+    // A key for a provider no longer in the registry stays removable.
+    expect(rpc.hasApiKey('gone-provider')).toBe(true);
+    await expect(rpc.removeApiKey('gone-provider', { caller: 'chrome' })).resolves.toEqual({
+      success: true,
+    });
+    expect(JSON.parse(fileText())).toEqual({});
+  });
+
+  test('presence comes from the status, as its caller: never a key', async () => {
+    fs.writeFileSync(keysPath, JSON.stringify({ infura: { apiKey: KEY, enabled: true } }));
+    load();
+    const withKey = await rpc.providersWithKeys({ caller: 'chrome' });
+    expect([...withKey]).toEqual(['infura']);
+    expect(core.calls).toEqual([
+      { method: 'secrets.rpc_api_key_status', caller: 'chrome', id: undefined },
+    ]);
+    // A remove's answer names the provider `present: false`.
+    core.secrets.rpcApiKeyStatus = async () => ({
+      providers: [
+        { id: 'alchemy', present: true },
+        { id: 'infura', present: false },
+      ],
+    });
+    expect([...(await rpc.providersWithKeys())]).toEqual(['alchemy']);
+  });
+
+  test('an id outside the entry form is refused by the core, in main words', async () => {
+    writeKeyedSources(userDataDir, ['Custom_Up']);
+    load();
+    const answer = await rpc.setApiKey('Custom_Up', KEY, { caller: 'chrome' });
+    expect(answer).toEqual({ success: false, error: expect.stringMatching(/1 to 52 lowercase/) });
+    expect(fs.existsSync(keysPath)).toBe(false);
+  });
+
+  test('with a key store, a 17th key is refused and a replace at the bound taken', async () => {
+    const ids = Array.from({ length: 17 }, (_, i) => `p${String(i + 1).padStart(2, '0')}`);
+    writeKeyedSources(userDataDir, ids);
+    load({ keyStore: true });
+    for (const id of ids.slice(0, 16)) {
+      await expect(rpc.setApiKey(id, `${KEY}-${id}`)).resolves.toEqual({ success: true });
+    }
+    await expect(rpc.setApiKey('p17', KEY)).resolves.toEqual({
+      success: false,
+      error: 'Freedom keeps at most 16 RPC API keys. Remove one, then try again.',
+    });
+    await expect(rpc.setApiKey('p01', `${KEY}-again`)).resolves.toEqual({ success: true });
+    expect(rpc.cachedApiKeys().size).toBe(16);
+    expect(fs.existsSync(keysPath)).toBe(false);
+  });
+
+  test.each([
+    [
+      'an empty key',
+      { code: 'invalid_argument', data: { rule: 'rpc-key-size' } },
+      'An API key must be 1 to 1,024 bytes long.',
+    ],
+    ['a key that is not text', { code: 'invalid_argument' }, 'Invalid API key'],
+    [
+      'the keychain unavailable',
+      { code: 'key_store_unavailable', data: { reason: 'timeout' } },
+      /system keychain, so the API key wasn't saved/,
+    ],
+    [
+      'the keychain prompt cancelled',
+      { code: 'key_store_cancelled' },
+      /system keychain, so the API key wasn't saved/,
+    ],
+    [
+      'a secrets write that is not durable',
+      { code: 'storage', data: { kind: 'not_durable', file: 'secrets' } },
+      /previous key stays in use/,
+    ],
+    [
+      'the key file not written',
+      { code: 'storage', data: { kind: 'no_space', file: 'rpc_api_keys' } },
+      /couldn't save the API key/,
+    ],
+    [
+      'an older core',
+      { code: 'requirement_unmet', message: "The core can't take this request" },
+      "The core can't take this request",
+    ],
+    [
+      'no core',
+      { code: 'core_unavailable', message: 'The identity core is not running' },
+      'The identity core is not running',
+    ],
+  ])("a set refused for %s answers the settings page's error", async (_name, failure, error) => {
+    load();
+    core.failNext('secrets.set_rpc_api_key', failure);
+    const answer = await rpc.setApiKey('alchemy', KEY, { caller: 'chrome' });
+    expect(answer).toEqual({ success: false, error: expect.anything() });
+    if (error instanceof RegExp) expect(answer.error).toMatch(error);
+    else expect(answer.error).toBe(error);
+    expect(rpc.hasApiKey('alchemy')).toBe(false);
+    expect(fs.existsSync(keysPath)).toBe(false);
+  });
+
+  test('a remove the keychain refuses says so, and keeps the key', async () => {
+    fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: KEY, enabled: true } }));
+    load();
+    await rpc.refreshKeys();
+    core.failNext('secrets.remove_rpc_api_key', { code: 'key_store_unavailable' });
+    const answer = await rpc.removeApiKey('alchemy', { caller: 'chrome' });
+    expect(answer).toEqual({ success: false, error: expect.stringMatching(/wasn't removed/) });
+    expect(rpc.hasApiKey('alchemy')).toBe(true);
   });
 });
 
@@ -269,9 +356,19 @@ describe('RPC API keys stay in main (#1040)', () => {
     removeTempUserDataDir(userDataDir);
   });
 
-  function loadRpcManager() {
+  const vaultBackendMock = () => {
+    const core = simulatedRpcKeysCore();
+    return () => ({ vaultBackend: { secrets: core.secrets } });
+  };
+
+  async function loadRpcManager() {
     const ipcMain = createIpcMainMock();
-    const { mod } = loadMainModule(require.resolve('./rpc-manager'), { ipcMain, userDataDir });
+    const { mod } = loadMainModule(require.resolve('./rpc-manager'), {
+      ipcMain,
+      userDataDir,
+      extraMocks: { [require.resolve('../core/vault-backend')]: vaultBackendMock() },
+    });
+    await mod.refreshKeys();
     return { rpcManager: mod, ipcMain };
   }
 
@@ -281,8 +378,8 @@ describe('RPC API keys stay in main (#1040)', () => {
       expect(chainIds).toContain('1');
     });
 
-    test('main still resolves the keyed URLs for its own requests', () => {
-      const { rpcManager } = loadRpcManager();
+    test('main still resolves the keyed URLs for its own requests', async () => {
+      const { rpcManager } = await loadRpcManager();
       for (const id of keyedProviderIds) {
         expect(rpcManager.getEffectiveRpcUrls(1).some((url) => url.includes(`${KEY}-${id}`))).toBe(
           true
@@ -290,8 +387,8 @@ describe('RPC API keys stay in main (#1040)', () => {
       }
     });
 
-    test('offers no IPC registration: no channel answers with the RPC pool', () => {
-      const { rpcManager, ipcMain } = loadRpcManager();
+    test('offers no IPC registration: no channel answers with the RPC pool', async () => {
+      const { rpcManager, ipcMain } = await loadRpcManager();
       for (const value of Object.values(rpcManager)) {
         if (typeof value === 'function' && /^register/.test(value.name)) value();
       }
@@ -301,8 +398,8 @@ describe('RPC API keys stay in main (#1040)', () => {
       expect(ipcMain.handlers.has('rpc:get-effective-urls')).toBe(false);
     });
 
-    test('the keyless pool is the effective pool minus the keyed URLs, in its order', () => {
-      const { rpcManager } = loadRpcManager();
+    test('the keyless pool is the effective pool minus the keyed URLs, in its order', async () => {
+      const { rpcManager } = await loadRpcManager();
       let keyedSeen = 0;
       for (const chainId of chainIds) {
         const effective = rpcManager.getEffectiveRpcUrls(chainId);
@@ -328,9 +425,14 @@ describe('RPC API keys stay in main (#1040)', () => {
           }),
           [require.resolve('../token-registry')]: () => ({}),
           [require.resolve('../settings-store')]: () => ({ loadSettings: () => ({}) }),
+          [require.resolve('../core/vault-backend')]: vaultBackendMock(),
+          [require.resolve('../ens-resolver')]: () => ({ invalidateCachedProvider: jest.fn() }),
+          [require.resolve('../core/chain')]: () => ({ chainSettingsChanged: jest.fn() }),
         },
       });
       mod.registerNetworkConfigIpc();
+      // Main's copy holds the keys, so a read that leaked them would show.
+      await require('./rpc-manager').refreshKeys();
 
       const reads = [
         ['networks:get-config'],

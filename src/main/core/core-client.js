@@ -28,8 +28,8 @@
  *   it (Q10).
  * - **`store_moved`** (design 0013, "One writer per store") names the set-A
  *   stores (`STORES`) whose only writer is the core: `STORE_MOVED`, a
- *   property of the build, which names none yet. The core's answer echoes
- *   the names it took, each once (cored 0.23.0); a core before 0.23.0
+ *   property of the build (`rpc_api_keys` from PRF-6(e)). The core's
+ *   answer echoes the names it took, each once (cored 0.23.0); a core before 0.23.0
  *   (0.22.0) ignores the field, and its answer has none, which reads as
  *   none taken. A store's requests go with `requires: requiresStore(name)`,
  *   so on a core that didn't take the store they fail `requirement_unmet`
@@ -97,10 +97,10 @@ const STORES = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending
  * The stores this build names in every hello's `store_moved`, whose only
  * writer is then the core. It is a property of the build, never a run-time
  * switch: each PRF-6 step adds its store's name in the change that deletes
- * main's writer for it. Absent means none, and the core reads this empty
- * list the same way, so every set-A store is still main's.
+ * main's writer for it. A store not named is still main's: from PRF-6(e)
+ * the RPC API keys are the core's (wallet/rpc-manager.js).
  */
-const STORE_MOVED = Object.freeze([]);
+const STORE_MOVED = Object.freeze(['rpc_api_keys']);
 
 /**
  * The hello answer's `store_moved`: the names of `sent` whose store the core
@@ -197,8 +197,8 @@ function coreService(storeMoved = STORE_MOVED) {
       // (APB-2), Swarm's and Radicle's (APB-3), and x402's caps (X402-2).
       grant_root: client.grantRoot,
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
-      // The set-A stores the core writes from then on (design 0013): none
-      // yet. The core echoes those it took; 0.22.0 ignores the field.
+      // The set-A stores the core writes from then on (design 0013). The
+      // core echoes those it took; 0.22.0 ignores the field.
       store_moved: [...storeMoved],
     }),
     validHello: (result) => validHello(result, storeMoved),
