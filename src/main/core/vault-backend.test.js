@@ -94,6 +94,99 @@ describe('vaultBackend', () => {
     ).rejects.toMatchObject({ name: 'VaultBackendError', code: 'requirement_unmet' });
   });
 
+  // design 0013, "The intent journal" (PRF-6(b)): sixteen shell methods,
+  // each with the store's `requires`, whose INTENT_* refusals keep their code.
+  test('intents.* go as shell with the intents requirement, and keep the INTENT_* codes', async () => {
+    const core = new FakeCore((method, params) => {
+      if (method === 'intents.void') {
+        throw Object.assign(coreError('invalid_argument', "This payment can't be voided: x."), {
+          data: { code: 'INTENT_VOID_REFUSED' },
+        });
+      }
+      if (method === 'intents.commit') {
+        throw Object.assign(coreError('storage', "Could not save the wallet's payment record."), {
+          data: { code: 'INTENT_WRITE_FAILED' },
+        });
+      }
+      if (method === 'intents.track') {
+        throw Object.assign(coreError('invalid_argument', 'Invalid parameters'), { data: {} });
+      }
+      return { method, params };
+    });
+    const { vaultBackend } = load(core);
+    const { requiresStore } = require('./core-client');
+    const run = 'run-0123456789';
+    const id = { intent_id: 'i-0123456789' };
+    const calls = [
+      [
+        'commit',
+        { run, chain_id: 1, sender: '0x1', nonce: 0, hash: '0x2', raw: '0x3', via: 'original' },
+      ],
+      ['handoff', { run, ...id }],
+      ['outcome', { run, ...id, handoff_id: 'h', outcome: 'sent' }],
+      ['settle', { run, ...id, label: 'paid', hash: null, block: 1 }],
+      ['void', { run, ...id, lock: true }],
+      ['retire', { run, ...id, block: 1, hashes: ['0x2'], lock: true }],
+      ['track', { run, ...id, bracket: null }],
+      ['withdrawOrigin', id],
+      ['compact', undefined],
+      ['get', id],
+      ['byKey', { key: 'k' }],
+      ['held', undefined],
+      ['list', undefined],
+      ['heldNonces', { chain_id: 1, sender: '0x1' }],
+      ['usage', undefined],
+      ['voidRefusal', { ...id, run }],
+    ];
+    const answers = [];
+    for (const [name, params] of calls) {
+      answers.push(
+        await vaultBackend.intents[name](params).then(
+          (result) => result,
+          (err) => ({ code: err.code, name: err.name, message: err.message })
+        )
+      );
+    }
+    expect(Object.keys(vaultBackend.intents).sort()).toEqual(calls.map(([name]) => name).sort());
+    expect(core.calls.map((c) => c.method)).toEqual([
+      'intents.commit',
+      'intents.handoff',
+      'intents.outcome',
+      'intents.settle',
+      'intents.void',
+      'intents.retire',
+      'intents.track',
+      'intents.withdraw_origin',
+      'intents.compact',
+      'intents.get',
+      'intents.by_key',
+      'intents.held',
+      'intents.list',
+      'intents.held_nonces',
+      'intents.usage',
+      'intents.void_refusal',
+    ]);
+    calls.forEach(([, params], i) => {
+      expect(core.calls[i].params).toEqual(params ?? {});
+      expect(core.calls[i].context).toEqual({ caller: 'shell' });
+    });
+    // One requirement for all: the `intents` echo.
+    const [requires] = new Set(core.calls.map((c) => c.options.requires));
+    expect(new Set(core.calls.map((c) => c.options.requires)).size).toBe(1);
+    expect(requires({ store_moved: ['intents'] })).toBe(true);
+    expect(requires({ store_moved: ['vault_meta'] })).toBe(false);
+    expect(requires({})).toBe(requiresStore('intents')({}));
+    expect(answers[0]).toEqual({
+      code: 'INTENT_WRITE_FAILED',
+      name: 'VaultBackendError',
+      message: "Could not save the wallet's payment record.",
+    });
+    expect(answers[4]).toMatchObject({ code: 'INTENT_VOID_REFUSED', name: 'VaultBackendError' });
+    // The members' own error has no code: it stays invalid_argument.
+    expect(answers[6]).toMatchObject({ code: 'invalid_argument', message: 'Invalid parameters' });
+    expect(answers[9]).toEqual({ method: 'intents.get', params: id });
+  });
+
   test('no core: a typed unavailable error', async () => {
     const { vaultBackend } = load(null);
     await expect(vaultBackend.status()).rejects.toMatchObject({ code: 'core_unavailable' });
