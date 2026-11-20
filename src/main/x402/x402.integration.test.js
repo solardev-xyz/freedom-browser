@@ -140,7 +140,7 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
       },
     }));
     jest.doMock('../approvals/approvals-document', () => ({ isApprovalsDocumentEnabled: () => false }));
-    jest.doMock('../wallet/rpc-manager', () => ({ getKeylessRpcUrls: () => [] }));
+    jest.doMock('../wallet/rpc-manager', () => ({ getKeylessRpcUrls: () => [], cachedApiKeys: () => new Map() }));
     jest.doMock('../wallet/chains', () => ({ getChain: () => ({ name: 'Base', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 } }) }));
     // A Ledger signs the EIP-712 data it is given: faked by a key, which
     // signs the typed data itself (not the digest), as the device does.
