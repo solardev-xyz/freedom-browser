@@ -12,7 +12,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..', '..');
 const quietLog = { info() {}, warn() {}, error() {}, debug() {} };
@@ -178,12 +178,31 @@ function snapshot(dir) {
   return out;
 }
 
-/** What process `pid` holds open (`/proc/<pid>/fd`): Linux only, else null. */
+/**
+ * What process `pid` holds open (`/proc/<pid>/fd`): Linux only, else null.
+ * The core makes itself non-dumpable, so its `fd` directory is root's: as
+ * another user (CI's runner), it is read through `sudo -n`, and a host that
+ * allows neither throws.
+ */
 function openFiles(pid) {
   if (process.platform !== 'linux') return null;
   const dir = `/proc/${pid}/fd`;
+  let fds;
+  try {
+    fds = fs.readdirSync(dir);
+  } catch (err) {
+    if (err.code !== 'EACCES' && err.code !== 'EPERM') throw err;
+    const listed = execFileSync(
+      'sudo',
+      ['-n', 'find', dir, '-mindepth', '1', '-maxdepth', '1', '-printf', '%l\\n'],
+      {
+        encoding: 'utf8',
+      }
+    );
+    return listed.split('\n').filter(Boolean);
+  }
   const out = [];
-  for (const fd of fs.readdirSync(dir)) {
+  for (const fd of fds) {
     try {
       out.push(fs.readlinkSync(path.join(dir, fd)));
     } catch {
