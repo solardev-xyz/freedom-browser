@@ -37,6 +37,9 @@ module.exports = createReleaseFetcher({
   // What builds and attests cored-v* releases; CI verifies against it.
   provenanceWorkflow: 'release.yml',
 });
+// The previous release's fetcher (fetch-freedom-cored-previous.js) refuses
+// the same tags.
+module.exports.TAG_PATTERN = TAG_PATTERN;
 
 if (require.main === module) {
   module.exports.main();

@@ -83,6 +83,7 @@
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
     "core:download": "node scripts/fetch-freedom-cored.js",
+    "core:download:previous": "node scripts/fetch-freedom-cored-previous.js",
     "ipfsd:download": "node scripts/fetch-freedom-ipfsd.js",
     "radicled:download": "node scripts/fetch-freedom-radicled.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
