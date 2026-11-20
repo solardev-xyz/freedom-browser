@@ -517,13 +517,13 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
         }
 
         /** The core's set and remove: `made` lists the keys (null: a remove) the core makes before the answer is lost, `missed` those lost before it. */
-        function losing({ made = [], missed = [], refused = [] }) {
+        function losing({ made = [], missed = [], refused = [], error = lost }) {
           const real = realSecrets();
           const fail = async (key, run) => {
             if (refused.includes(key)) throw Object.assign(new Error('refused'), { code: 'invalid_argument' });
-            if (missed.includes(key)) throw lost();
+            if (missed.includes(key)) throw error();
             const answer = await run();
-            if (made.includes(key)) throw lost();
+            if (made.includes(key)) throw error();
             return answer;
           };
           core.secrets.setRpcApiKey = (params, caller) =>
@@ -564,6 +564,32 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
             await rpc.refreshKeys();
             expect(rpc.cachedApiKeys().get('infura')).toBe(K3);
             expect(JSON.stringify(logged)).not.toContain(K2);
+          }
+        );
+
+        // Review of #1292, round 6: the core can commit the secrets file
+        // and then fail rewriting rpc-api-keys.json, answering `storage`.
+        test.each([
+          ['with', true],
+          ['without', false],
+        ])(
+          'a set the core made before answering storage (%s a prior fence) is uncertain: in force, never undone',
+          async (_fence, withFence) => {
+            await started({ fenced: withFence });
+            const afterCommit = () =>
+              Object.assign(new Error('Storage error'), {
+                code: 'storage',
+                data: { kind: 'io', file: 'rpc_api_keys' },
+              });
+            losing({ made: [K2], error: afterCommit });
+            await expect(rpc.setApiKey('infura', K2, { caller: 'chrome' })).resolves.toEqual({
+              success: false,
+              error: expect.stringMatching(/may not have been saved/),
+            });
+            await flush();
+            expect(rpc.cachedApiKeys().get('infura')).toBe(K2);
+            expect(fileKey()).toBe(K2);
+            expect(setsWith(K1)).toHaveLength(withFence ? 1 : 0);
           }
         );
 
@@ -857,9 +883,10 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
       /previous key stays in use/,
     ],
     [
+      // Uncertain: the secrets file may have committed first (review of #1292, round 6).
       'the key file not written',
       { code: 'storage', data: { kind: 'no_space', file: 'rpc_api_keys' } },
-      /couldn't save the API key/,
+      /may not have been saved/,
     ],
     [
       'an older core',

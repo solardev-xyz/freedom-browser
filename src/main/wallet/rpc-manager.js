@@ -145,9 +145,6 @@ const REFUSED = new Set([
   // The key store, before the secrets write.
   'key_store_unavailable',
   'key_store_cancelled',
-  // A write that failed: the core's answers stay as they were (an atomic
-  // write not made, or the file's key still the one answered).
-  'storage',
   // The core's job abandoned before its commit claim.
   'deadline',
   // Main's client: no room, or the process fenced; unsent.
@@ -155,8 +152,18 @@ const REFUSED = new Set([
   'fenced',
 ]);
 
+/**
+ * A `storage` answer the core gives with nothing changed: the secrets
+ * write found not durable before its commit, the provider's previous key
+ * still the one answered. Any other `storage` answer may come after the
+ * change took effect (the secrets file committed, then `rpc-api-keys.json`'s
+ * rewrite or the reply failed: review of #1292, round 6), so it is uncertain.
+ */
+const unchangedStorage = (err) =>
+  err?.code === 'storage' && err.data?.kind === 'not_durable' && err.data?.file === 'secrets';
+
 /** Whether the set or remove that failed with `err` may have changed the core. */
-const answerLost = (err) => !REFUSED.has(err?.code);
+const answerLost = (err) => !(REFUSED.has(err?.code) || unchangedStorage(err));
 
 /** A set or remove of `providerId` starts: its operation epoch. */
 function beginChange(providerId) {
