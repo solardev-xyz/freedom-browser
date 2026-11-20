@@ -24,9 +24,10 @@ Optional local dictation downloads
 freedom-cored (Rust identity core)
   https://github.com/solardev-xyz/freedom-core
   License: not chosen yet (pending the maintainer's decision).
-  Statically links third-party Rust crates and the Rust toolchain's runtime
-  (on Linux also musl and LLVM's libunwind). Their notices ship beside the
-  binary: resources/freedom-cored/THIRD-PARTY-NOTICES and
+  Statically links third-party Rust crates, the C library SQLite 3.54.1
+  (public domain) and the Rust toolchain's runtime (on Linux also musl and
+  LLVM's libunwind). Their notices ship beside the binary:
+  resources/freedom-cored/THIRD-PARTY-NOTICES and
   resources/freedom-cored/THIRD-PARTY-NOTICES-rust-std.html.
 
 freedom-ipfsd (IPFS service)
