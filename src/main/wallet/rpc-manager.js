@@ -35,6 +35,20 @@
  *   holds) and reads back. If that fails too, main logs it and keeps
  *   failing closed until a later start sends it again: a key the user
  *   removed or replaced is never used again because a core read has it.
+ * - **A set or a remove that fails** (G32) leaves the provider's fence, if
+ *   it has one, owed again under a fresh fence: a new object for this
+ *   change's epoch, not yet sent again, so a send again already in flight
+ *   neither updates it nor stops its repair. How it failed decides the
+ *   rest (`answerLost`):
+ *   - **refused,** a definite answer before any change (`REFUSED`): nothing
+ *     changed, and the user is told why;
+ *   - **its answer lost** (the core gone, a timeout, any other failure):
+ *     the user is told the change may not have been saved, and main marks
+ *     it uncertain. The next read that answers decides: when it shows the
+ *     provider as the change left it, that is the user's latest intent, in
+ *     force, and the fence clears; otherwise the fence stays owed, and with
+ *     no fence the core's state applies as it is. A change begun since
+ *     owns the provider (its epoch).
  * - **Keys taken out of the copy** stay known to the registry's redaction
  *   (`retiredApiKeys`) for the rest of the process, never used for a
  *   request: one already in flight may be answered with an error quoting
@@ -105,6 +119,45 @@ const fences = new Map();
 // was issued, whether or not the newer one was answered yet.
 const epochs = new Map();
 
+// The changes whose answer was lost, provider id -> { expect, epoch }: the
+// state the set (`expect`, its key) or remove (`expect` null) would leave,
+// and the epoch it started in. The next read that answers takes each.
+const uncertain = new Map();
+
+/**
+ * The failures that are a definite answer before any change (G32): the
+ * core's refusals, each answered before its job's commit claim, so nothing
+ * it answers changed (freedom-core `rpc_keys.rs`, `vault.rs`), and main's
+ * own, the request never sent. Any other failure, `core_unavailable`
+ * (the core gone or killed by the watchdog), `cancelled`, `timeout`,
+ * `internal` or a failure with no code, may have lost the answer to a
+ * change the core made.
+ */
+const REFUSED = new Set([
+  // The core's rules (`rpc-key-*`), or main's client refusing the params, unsent.
+  'invalid_argument',
+  // Main: a core whose hello didn't take the store, unsent.
+  'requirement_unmet',
+  // The core, before the job runs.
+  'not_moved',
+  'forbidden',
+  'no_profile',
+  // The key store, before the secrets write.
+  'key_store_unavailable',
+  'key_store_cancelled',
+  // A write that failed: the core's answers stay as they were (an atomic
+  // write not made, or the file's key still the one answered).
+  'storage',
+  // The core's job abandoned before its commit claim.
+  'deadline',
+  // Main's client: no room, or the process fenced; unsent.
+  'busy',
+  'fenced',
+]);
+
+/** Whether the set or remove that failed with `err` may have changed the core. */
+const answerLost = (err) => !REFUSED.has(err?.code);
+
 /** A set or remove of `providerId` starts: its operation epoch. */
 function beginChange(providerId) {
   const epoch = (epochs.get(providerId) ?? 0) + 1;
@@ -113,18 +166,18 @@ function beginChange(providerId) {
 }
 
 /**
- * The set or remove of `providerId` begun in `epoch` failed: the user is
- * told so, and the change committed before it, if one is fenced, is again
- * what the provider must have. Its fence takes this epoch, so it is sent
- * again as before: a refusal (the core changed nothing) leaves it owed, and
- * a change whose answer was lost, whatever the core did with it, is put
- * back to the committed state the user last saw succeed. Then a read
- * reconciles. A change begun since owns the provider: nothing is restamped.
+ * The set or remove of `providerId` begun in `epoch`, which would leave
+ * `expect`, failed (`lost`: its answer may have been lost). The committed
+ * change before it, if one is fenced, is owed again under a fresh fence of
+ * this epoch, never sent again yet. A lost one is marked uncertain for the
+ * next read. A change begun since owns the provider: nothing is done.
  */
-function endFailedChange(providerId, epoch) {
+function endFailedChange(providerId, epoch, expect, lost) {
   if (epochs.get(providerId) !== epoch) return;
   const fence = fences.get(providerId);
-  if (fence) fence.epoch = epoch;
+  if (fence) fences.set(providerId, { ...fence, epoch, resent: null });
+  if (lost) uncertain.set(providerId, { expect, epoch });
+  else uncertain.delete(providerId);
 }
 
 // The read back's retries after a failure while a fence stands (ms): then
@@ -222,6 +275,7 @@ function applyCommitted(providerId, expect, { durable, caller, epoch }) {
   retries = 0;
   cancelRetry();
   fences.set(providerId, { expect, durable, start: coreStart, caller, resent: null, epoch });
+  uncertain.delete(providerId);
   const next = new Map(apiKeys);
   if (expect === null) next.delete(providerId);
   else next.set(providerId, expect);
@@ -266,9 +320,17 @@ async function resend(providerId, fence) {
  * The core's keys (`keys`, read in core start `start`) with each fence
  * applied: a provider whose read meets its fence clears it (a change the
  * core called not durable only from a later start); one whose read
- * contradicts it keeps main's entry. The contradicted fences.
+ * contradicts it keeps main's entry. The contradicted fences. First each
+ * uncertain change is taken: one the read shows, still the provider's
+ * latest, is in force, and clears the provider's fence.
  */
 function fenced(keys, start) {
+  for (const [providerId, change] of uncertain) {
+    uncertain.delete(providerId);
+    if (epochs.get(providerId) === change.epoch && meets(keys, providerId, change)) {
+      fences.delete(providerId);
+    }
+  }
   const next = new Map(keys);
   const contradicted = [];
   for (const [providerId, fence] of fences) {
@@ -354,6 +416,7 @@ function retiredApiKeys() {
 
 const SAVE = Object.freeze({
   fallback: 'Failed to save API key',
+  lost: "Freedom couldn't confirm the change, so the API key may not have been saved. Try again.",
   keychain:
     "Freedom couldn't use the system keychain, so the API key wasn't saved. " +
     'Try again, and allow Freedom to use the keychain if macOS asks.',
@@ -361,6 +424,7 @@ const SAVE = Object.freeze({
 });
 const REMOVE = Object.freeze({
   fallback: 'Failed to save changes',
+  lost: "Freedom couldn't confirm the change, so the API key may not have been removed. Try again.",
   keychain:
     "Freedom couldn't use the system keychain, so the API key wasn't removed. " +
     'Try again, and allow Freedom to use the keychain if macOS asks.',
@@ -368,8 +432,13 @@ const REMOVE = Object.freeze({
     "Freedom couldn't remove the API key. Try again, and contact support if it keeps failing.",
 });
 
-/** What the settings page shows for the core's refusal of a set or a remove. */
+/**
+ * What the settings page shows for a set or a remove that failed: the
+ * core's refusal in main's words, or, when the answer may have been lost,
+ * that the change may not have been saved.
+ */
 function keyErrorMessage(err, texts = SAVE) {
+  if (answerLost(err)) return texts.lost;
   switch (err?.code) {
     case 'invalid_argument':
       switch (err.data?.rule) {
@@ -411,6 +480,7 @@ async function setApiKey(providerId, apiKey, { caller = null } = {}) {
   if (!inRegistry(providerId)) {
     return { success: false, error: `Unknown provider: ${providerId}` };
   }
+  const expect = typeof apiKey === 'string' && apiKey ? apiKey : null;
   const epoch = beginChange(providerId);
   let durable;
   try {
@@ -420,11 +490,11 @@ async function setApiKey(providerId, apiKey, { caller = null } = {}) {
       console.warn(`[RpcManager] API key for ${providerId} set, but not yet durable`);
     }
   } catch (err) {
-    endFailedChange(providerId, epoch);
+    endFailedChange(providerId, epoch, expect, answerLost(err));
     refreshQuietly();
     return { success: false, error: keyErrorMessage(err, SAVE) };
   }
-  applyCommitted(providerId, typeof apiKey === 'string' && apiKey ? apiKey : null, {
+  applyCommitted(providerId, expect, {
     durable,
     caller,
     epoch,
@@ -451,7 +521,7 @@ async function removeApiKey(providerId, { caller = null } = {}) {
       console.warn(`[RpcManager] API key for ${providerId} removed, but not yet durably`);
     }
   } catch (err) {
-    endFailedChange(providerId, epoch);
+    endFailedChange(providerId, epoch, null, answerLost(err));
     refreshQuietly();
     return { success: false, error: keyErrorMessage(err, REMOVE) };
   }

@@ -464,12 +464,213 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
         });
         await flush();
         expect(rpc.cachedApiKeys().get('infura')).toBe(B_KEY);
+        // G32 (c): owed under a fresh fence, so its repair goes in this start too.
+        expect(setsOf('infura')).toHaveLength(3);
 
         // The core's next start: B's committed set goes again.
         client.emit('ready');
         await flush();
-        expect(setsOf('infura')).toHaveLength(3);
+        expect(setsOf('infura')).toHaveLength(4);
         expect(rpc.cachedApiKeys().get('infura')).toBe(B_KEY);
+      });
+
+      // Codex round 5, decision G32: a change whose answer is lost may have
+      // been made. A read showing it is the user's latest intent; any other
+      // state leaves the committed change before it owed.
+      describe('a change whose answer was lost (G32)', () => {
+        const K1 = `${KEY}-one`;
+        const K2 = `${KEY}-two`;
+        const K3 = `${KEY}-three`;
+        const lost = () => Object.assign(new Error('The identity core exited'), { code: 'core_unavailable' });
+        const realSecrets = () => ({ ...core.secrets });
+        // The keys main sends in sets that reach the core (its calls record no key).
+        let sent;
+        const setsWith = (key) => sent.filter((sentKey) => sentKey === key);
+        function loadRecording() {
+          load();
+          sent = [];
+          const realSet = core.secrets.setRpcApiKey;
+          core.secrets.setRpcApiKey = (params, caller) => {
+            sent.push(params.api_key);
+            return realSet(params, caller);
+          };
+        }
+
+        /** A started core; `fenced`: infura's K1 set, answered not durable, so its fence stands. */
+        async function started({ fenced: withFence }) {
+          if (!withFence) {
+            fs.writeFileSync(keysPath, JSON.stringify({ infura: { apiKey: K1, enabled: true, addedAt: 1 } }));
+          }
+          loadRecording();
+          const client = new EventEmitter();
+          rpc.attachCore(client);
+          client.emit('ready');
+          await flush();
+          if (withFence) {
+            const realSet = core.secrets.setRpcApiKey;
+            core.secrets.setRpcApiKey = async (...args) => ({ ...(await realSet(...args)), durable: false });
+            await expect(rpc.setApiKey('infura', K1, { caller: 'chrome' })).resolves.toEqual({ success: true });
+            core.secrets.setRpcApiKey = realSet;
+          }
+          expect(rpc.cachedApiKeys().get('infura')).toBe(K1);
+          return client;
+        }
+
+        /** The core's set and remove: `made` lists the keys (null: a remove) the core makes before the answer is lost, `missed` those lost before it. */
+        function losing({ made = [], missed = [], refused = [] }) {
+          const real = realSecrets();
+          const fail = async (key, run) => {
+            if (refused.includes(key)) throw Object.assign(new Error('refused'), { code: 'invalid_argument' });
+            if (missed.includes(key)) throw lost();
+            const answer = await run();
+            if (made.includes(key)) throw lost();
+            return answer;
+          };
+          core.secrets.setRpcApiKey = (params, caller) =>
+            fail(params.api_key, () => real.setRpcApiKey(params, caller));
+          core.secrets.removeRpcApiKey = (params, caller) => fail(null, () => real.removeRpcApiKey(params, caller));
+        }
+
+        const fileKey = () => JSON.parse(fileText()).infura?.apiKey;
+
+        test.each([
+          ['a set', 'with', 'set', true],
+          ['a set', 'without', 'set', false],
+          ['a remove', 'with', 'remove', true],
+          ['a remove', 'without', 'remove', false],
+        ])(
+          '%s the core made before its answer was lost (%s a prior fence) is in force, never undone',
+          async (_label, _fence, op, withFence) => {
+            await started({ fenced: withFence });
+            const attempted = op === 'set' ? K2 : null;
+            losing({ made: [attempted] });
+            const answer =
+              op === 'set'
+                ? await rpc.setApiKey('infura', K2, { caller: 'chrome' })
+                : await rpc.removeApiKey('infura', { caller: 'chrome' });
+            expect(answer).toEqual({
+              success: false,
+              error: expect.stringMatching(op === 'set' ? /may not have been saved/ : /may not have been removed/),
+            });
+            await flush();
+            // The read showed the change: the user's latest intent, in force.
+            expect(rpc.cachedApiKeys().get('infura')).toBe(attempted ?? undefined);
+            expect(fileKey()).toBe(attempted ?? undefined);
+            // K1 was not put back.
+            expect(setsWith(K1)).toHaveLength(withFence ? 1 : 0);
+
+            // No fence stands: a later read applies as it is.
+            fs.writeFileSync(keysPath, JSON.stringify({ infura: { apiKey: K3, enabled: true, addedAt: 2 } }));
+            await rpc.refreshKeys();
+            expect(rpc.cachedApiKeys().get('infura')).toBe(K3);
+            expect(JSON.stringify(logged)).not.toContain(K2);
+          }
+        );
+
+        test('a lost set the core never made leaves the committed set owed: repaired in this start, though already sent again', async () => {
+          loadRecording();
+          const client = new EventEmitter();
+          rpc.attachCore(client);
+          client.emit('ready');
+          await flush();
+          // The core keeps losing infura's key: every read contradicts its fence.
+          core.secrets.rpcApiKeys = async () => ({ keys: [] });
+          await expect(rpc.setApiKey('infura', K1, { caller: 'chrome' })).resolves.toEqual({ success: true });
+          // Sent again once in this start.
+          expect(setsWith(K1)).toHaveLength(2);
+
+          losing({ missed: [K2] });
+          await expect(rpc.setApiKey('infura', K2, { caller: 'chrome' })).resolves.toEqual({
+            success: false,
+            error: expect.stringMatching(/may not have been saved/),
+          });
+          await flush();
+          // Never the attempted state: K1 is owed under a fresh fence, sent again in this start.
+          expect(setsWith(K1)).toHaveLength(3);
+          expect(rpc.cachedApiKeys().get('infura')).toBe(K1);
+        });
+
+        test("a refusal while the committed set's resend is in flight: that resend leaves the fresh fence alone, and the repair goes in this start", async () => {
+          loadRecording();
+          const client = new EventEmitter();
+          rpc.attachCore(client);
+          client.emit('ready');
+          await flush();
+          const realRead = core.secrets.rpcApiKeys;
+          // The core keeps losing infura's key: every read contradicts its fence.
+          core.secrets.rpcApiKeys = async () => ({ keys: [] });
+          await expect(rpc.setApiKey('infura', K1, { caller: 'chrome' })).resolves.toEqual({ success: true });
+          expect(setsWith(K1)).toHaveLength(2);
+
+          // From the core's next start, each send again is held until answered by hand.
+          const real = realSecrets();
+          const held = [];
+          core.secrets.setRpcApiKey = async (params, caller) => {
+            if (params.api_key === K2) throw Object.assign(new Error('refused'), { code: 'invalid_argument' });
+            const how = await new Promise((resolve) => held.push(resolve));
+            if (how === 'lost') throw lost();
+            const answer = await real.setRpcApiKey(params, caller);
+            return how === 'not durable' ? { ...answer, durable: false } : answer;
+          };
+          client.emit('ready');
+          await flush();
+          expect(held).toHaveLength(1);
+
+          await expect(rpc.setApiKey('infura', K2, { caller: 'chrome' })).resolves.toEqual({
+            success: false,
+            error: 'Invalid API key',
+          });
+          await flush();
+          // The repair went in this start, though the earlier send again is still out.
+          expect(held).toHaveLength(2);
+          expect(rpc.cachedApiKeys().get('infura')).toBe(K1);
+
+          // The core keeps the key now. The earlier send again answers not
+          // durable: had it updated the fresh fence, this start's read could
+          // no longer confirm it. The repair's answer is lost.
+          core.secrets.rpcApiKeys = realRead;
+          held[0]('not durable');
+          await flush();
+          held[1]('lost');
+          await flush();
+          expect(rpc.cachedApiKeys().get('infura')).toBe(K1);
+          // The read confirmed the fresh fence, so it is gone: a later read applies as it is.
+          fs.writeFileSync(keysPath, JSON.stringify({}));
+          await rpc.refreshKeys();
+          expect(rpc.hasApiKey('infura')).toBe(false);
+          expect(held).toHaveLength(2);
+        });
+
+        test.each([
+          ['lost and never made, then lost and made', { missed: [K2], made: [K3] }, K3],
+          ['refused, then lost and made', { refused: [K2], made: [K3] }, K3],
+          ['lost and made, then refused', { made: [K2], refused: [K3] }, K1],
+        ])('two failures in a row (%s): the latest decides', async (_label, how, expected) => {
+          await started({ fenced: true });
+          losing(how);
+          // Both reads are held until both changes have failed.
+          const realRead = core.secrets.rpcApiKeys;
+          const heldReads = [];
+          core.secrets.rpcApiKeys = () => new Promise((resolve) => heldReads.push(resolve)).then(realRead);
+          const first = await rpc.setApiKey('infura', K2, { caller: 'chrome' });
+          const second = await rpc.setApiKey('infura', K3, { caller: 'chrome' });
+          for (const [answer, key] of [
+            [first, K2],
+            [second, K3],
+          ]) {
+            expect(answer).toEqual({
+              success: false,
+              error: how.refused?.includes(key) ? 'Invalid API key' : expect.stringMatching(/may not have been saved/),
+            });
+          }
+          core.secrets.rpcApiKeys = realRead;
+          for (const release of heldReads.splice(0)) release();
+          await flush();
+          expect(rpc.cachedApiKeys().get('infura')).toBe(expected);
+          expect(fileKey()).toBe(expected);
+          // K1 is sent again only when no later change was taken.
+          expect(setsWith(K1)).toHaveLength(expected === K1 ? 2 : 1);
+        });
       });
     });
 
@@ -666,9 +867,9 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
       "The core can't take this request",
     ],
     [
-      'no core',
+      'no core (the answer may be lost)',
       { code: 'core_unavailable', message: 'The identity core is not running' },
-      'The identity core is not running',
+      /may not have been saved/,
     ],
   ])("a set refused for %s answers the settings page's error", async (_name, failure, error) => {
     load();
