@@ -217,7 +217,11 @@ describe('AgentManagedWorkspaceStore', () => {
     expect(store.getForConversation('conversation_one')).toBeNull();
     expect(fs.existsSync(workspacePath)).toBe(true);
     // No caller asks again: the scheduled background pass finishes the removal.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Waited for, not timed: a busy runner's `fs.promises.rm` can take longer
+    // than any fixed delay (bounded at 10 s).
+    for (let i = 0; i < 1000 && store.get(workspace.workspaceId) !== null; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     expect(removeDirectory).toHaveBeenCalledTimes(2);
     expect(fs.existsSync(workspacePath)).toBe(false);
     expect(store.get(workspace.workspaceId)).toBeNull();
