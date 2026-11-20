@@ -1586,6 +1586,16 @@ function getSwarmPublisherIdentityReferences(walletIndex) {
 }
 
 /**
+ * Whether `accounts.remove` failed before the core ended anything: a refusal
+ * (`invalid_argument`, whose `data.code`, when it set one, became the error's
+ * code) or a request main never sent (`requirement_unmet`).
+ */
+function removalRefusedBeforeCleanup(err) {
+  if (err?.code === 'requirement_unmet' || err?.code === 'invalid_argument') return true;
+  return typeof err?.data?.code === 'string' && err.code === err.data.code;
+}
+
+/**
  * Delete a derived wallet, through the core (`accounts.remove`, design 0013),
  * which refuses the main wallet, a missing index, a Safe's owner and an
  * account the Swarm feeds still name (main's feed store finds those, and
@@ -1601,6 +1611,14 @@ function getSwarmPublisherIdentityReferences(walletIndex) {
  * reuses the index must neither inherit nor be blocked by it. A failed
  * clear of the pending entry is logged.
  *
+ * A removal that fails after it may have reached the core's cleanup (a
+ * `storage` or `not_moved` answer from a later step, or no answer at all)
+ * has ended the Safe's approvals in the core while the account stays: main
+ * drops its own approval slots too, so the Safe's next step asks for a new
+ * approval instead of presenting a token the core ended. A refusal the core
+ * answers before any cleanup (`invalid_argument`, carried as its `data.code`)
+ * and a request never sent (`requirement_unmet`) leave them.
+ *
  * @param {number} index - Wallet index (cannot be 0)
  * @param {'chrome'|null} [caller] - the chrome's request, or main's own
  */
@@ -1613,7 +1631,12 @@ async function deleteDerivedWallet(index, caller = null) {
   const safeApprovals = isSafe ? require('./wallet/safe/safe-approvals') : null;
   const deletion = safeApprovals ? safeApprovals.beginDeletion(index) : null;
   try {
-    await vaultBackend.accounts.remove(index, references, caller);
+    try {
+      await vaultBackend.accounts.remove(index, references, caller);
+    } catch (err) {
+      if (isSafe && !removalRefusedBeforeCleanup(err)) safeApprovals.forgetSafe(index);
+      throw err;
+    }
     if (isSafe) {
       safeApprovals.forgetSafe(index);
       require('./wallet/safe/message-sessions').discardSession(index);

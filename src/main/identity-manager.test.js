@@ -1561,9 +1561,12 @@ describe('identity-manager safe accounts', () => {
 
   // Design 0013, "`accounts.remove`" (G12): the core ends a Safe's open
   // approvals and removes its record in one request; main then drops its
-  // own slots, pending entry and session. A refused removal (a forget that
-  // failed) keeps all of them.
-  test("a Safe's approvals are ended by the core's removal; main then drops its own state, and a refused removal keeps it", async () => {
+  // own slots, pending entry and session. A removal that fails after the
+  // core's cleanup (a forget that failed) keeps the account and its pending
+  // entry, but main drops its approval slots, which the core ended: the
+  // Safe's next step takes a new approval (review of #1293, round 1). A
+  // request never sent (requirement_unmet) keeps them.
+  test("a Safe's approvals are ended by the core's removal; main then drops its own state, and a failed removal drops only the approvals the core ended", async () => {
     await seedOwners();
     const safe = await addSafe();
     const { setPending, getPending } = require('./wallet/safe/pending-store');
@@ -1582,10 +1585,23 @@ describe('identity-manager safe accounts', () => {
     vaultBackend.sim.forget = () => {
       throw Object.assign(new Error('Storage error'), { code: 'storage' });
     };
-    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'storage' });
-    expect(getPending(safe.index)).not.toBeNull();
+    // Never sent: the core ended nothing, and main keeps its approval.
+    vaultBackend.sim.moved = false;
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
     expect(safeApprovals.held('send', safe.index, '0xdead')).toEqual(approval);
+    vaultBackend.sim.moved = true;
+
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'storage' });
+    expect(vaultBackend.sim.endedSafes).toEqual([safe.index]);
+    expect(getPending(safe.index)).not.toBeNull();
+    expect(safeApprovals.held('send', safe.index, '0xdead')).toBeNull();
     expect(readVaultMeta().derivedWallets.map((w) => w.index)).toContain(safe.index);
+    // The Safe stays usable: its next step holds a new approval.
+    const renewed = { id: 'b'.repeat(32), page: null };
+    await safeApprovals.hold('send', safe.index, renewed, '0xdead');
+    expect(safeApprovals.held('send', safe.index, '0xdead')).toEqual(renewed);
 
     vaultBackend.sim.forget = null;
     await identityManager.deleteDerivedWallet(safe.index);
