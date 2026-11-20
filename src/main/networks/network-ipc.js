@@ -15,6 +15,7 @@ const chainCatalog = require('./chain-catalog-host');
 const tokenRegistry = require('../token-registry');
 const rpcManager = require('../wallet/rpc-manager');
 const { loadSettings } = require('../settings-store');
+const log = require('../logger');
 
 function broadcastNetworkConfigUpdated() {
   if (!webContents?.getAllWebContents) return;
@@ -99,11 +100,21 @@ function addedServesItsChain(chain, rpcUrls, options) {
 // The full config view: every network plus every endpoint source, with
 // keyed providers tagged by whether an API key is configured, as the
 // identity core answers the chrome (`secrets.rpc_api_key_status`, design
-// 0013): presence only, never a key. Throws the core's refusal.
+// 0013): presence only, never a key. When the core can't answer (it is
+// down, or refuses), each keyed provider's `hasKey` is null (unknown) and
+// the reason is logged here: the configuration itself lives in main, and
+// the Chains page and the ENS lens still need it.
 async function getConfig() {
-  const withKey = await rpcManager.providersWithKeys({ caller: 'chrome' });
+  let withKey = null;
+  try {
+    withKey = await rpcManager.providersWithKeys({ caller: 'chrome' });
+  } catch (err) {
+    log.warn(
+      `[network-ipc] RPC API key status unavailable (${err?.code || 'error'}): ${err?.message || err}`
+    );
+  }
   const sources = registry.getEndpointSourceList().map((src) =>
-    src.keyed ? { ...src, hasKey: withKey.has(src.id) } : src
+    src.keyed ? { ...src, hasKey: withKey ? withKey.has(src.id) : null } : src
   );
   return { networks: registry.getAllNetworks(), sources };
 }

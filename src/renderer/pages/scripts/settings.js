@@ -3105,17 +3105,20 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // section the row sits in; the row itself only flags noteworthy
   // state — primary, a missing API key, a disabled builtin. Keyed
   // providers are managed on the RPC Providers page; here they
-  // only show key status and a link there.
+  // only show key status and a link there. A null `hasKey` is an
+  // unknown status (the core didn't answer): no "missing" flag and no
+  // link, and the endpoint counts as unusable until it is known.
   const endpointRow = (src, cid, primary) => {
     const url = (src.coverage && src.coverage[cid]) || '';
     const meta = [];
     if (primary) meta.push('primary');
-    if (src.keyed && !src.hasKey) meta.push('no API key');
+    if (src.keyed && src.hasKey === null) meta.push('key status unavailable');
+    else if (src.keyed && !src.hasKey) meta.push('no API key');
     else if (src.removed) meta.push('disabled');
 
     let controls = '';
     if (src.keyed) {
-      if (!src.hasKey) {
+      if (src.hasKey !== null && !src.hasKey) {
         controls =
           '<button type="button" class="btn" data-action="open-rpc-page">Manage keys</button>';
       }
@@ -4441,15 +4444,23 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           </div>
         </div>`;
     }
-    const controls = p.hasKey
-      ? `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Replace key</button>
-         <button type="button" class="btn danger" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`
-      : `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Add key</button>`;
+    // A null `hasKey` is an unknown status (the core didn't answer): it
+    // offers neither "Add key" nor "Remove" until a reload knows.
+    const unknown = p.hasKey === null;
+    let controls = `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Add key</button>`;
+    if (unknown) controls = '';
+    else if (p.hasKey) {
+      controls = `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Replace key</button>
+         <button type="button" class="btn danger" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`;
+    }
+    let status = 'No API key';
+    if (unknown) status = 'API key status unavailable';
+    else if (p.hasKey) status = 'API key set';
     return `
       <div class="row">
         <div class="row-body">
           <p class="row-label">${esc(p.name || p.id)}</p>
-          <p class="row-help">${p.hasKey ? 'API key set' : 'No API key'} · supports ${esc(supportedChains(p))}</p>
+          <p class="row-help">${status} · supports ${esc(supportedChains(p))}</p>
         </div>
         <div class="row-control">${controls}</div>
       </div>`;

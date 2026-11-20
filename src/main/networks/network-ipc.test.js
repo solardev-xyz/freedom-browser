@@ -43,6 +43,7 @@ function loadNetworkIpc(options = {}) {
     loadSettings: jest.fn(() => ({ theme: 'system' })),
   };
   const keyListeners = [];
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   const rpcManager = {
     providersWithKeys: jest.fn(async () => new Set()),
     setApiKey: jest.fn(async () => ({ success: true })),
@@ -67,6 +68,7 @@ function loadNetworkIpc(options = {}) {
       [require.resolve('../ens-resolver')]: () => ensResolver,
       [require.resolve('../core/chain')]: () => chain,
       [require.resolve('../settings-store')]: () => settingsStore,
+      [require.resolve('../logger')]: () => log,
     },
   });
 
@@ -82,6 +84,7 @@ function loadNetworkIpc(options = {}) {
     settingsStore,
     rpcManager,
     keyListeners,
+    log,
   };
 }
 
@@ -114,18 +117,37 @@ describe('network-ipc', () => {
     });
   });
 
-  test("get-config answers the core's refusal, with no configuration", async () => {
-    const refusal = Object.assign(new Error("The core can't take this request"), {
-      code: 'requirement_unmet',
-    });
+  // Coordinator decision G30: a core that can't answer the key status
+  // (down, `requirement_unmet`, `storage`) doesn't blank the Chains page
+  // or the ENS lens. The configuration is main's; only presence is unknown.
+  test.each([
+    ['requirement_unmet', "The core can't take this request"],
+    ['storage', 'The secrets file could not be read'],
+    [undefined, 'The identity core is not running'],
+  ])("get-config answers the configuration with hasKey null when the core can't (%s)", async (code, message) => {
+    const refusal = Object.assign(new Error(message), code ? { code } : {});
     const ctx = loadNetworkIpc({
+      registry: {
+        getAllNetworks: jest.fn(() => ({ 1: { name: 'Ethereum' } })),
+        getEndpointSourceList: jest.fn(() => [
+          { id: 'alchemy', role: 'rpc', keyed: true },
+          { id: 'public', role: 'rpc', keyed: false },
+        ]),
+      },
       rpcManager: { providersWithKeys: jest.fn(async () => Promise.reject(refusal)) },
     });
 
     await expect(ctx.ipcMain.invoke('networks:get-config')).resolves.toEqual({
-      success: false,
-      error: "The core can't take this request",
+      success: true,
+      networks: { 1: { name: 'Ethereum' } },
+      sources: [
+        { id: 'alchemy', role: 'rpc', keyed: true, hasKey: null },
+        { id: 'public', role: 'rpc', keyed: false },
+      ],
     });
+    expect(ctx.log.warn).toHaveBeenCalledTimes(1);
+    expect(ctx.log.warn.mock.calls[0][0]).toContain(message);
+    expect(ctx.log.warn.mock.calls[0][0]).toContain(code || 'error');
   });
 
   test('set-api-key and remove-api-key go as the chrome, and answer rpc-manager', async () => {

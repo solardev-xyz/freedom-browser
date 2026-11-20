@@ -28,9 +28,11 @@
  *   unchanged by each, the core never opens it, and the reference's own
  *   writes still work.
  * - **(T4)** This step's modules on the previous release (0.22.0), which
- *   echoes no store: all four methods fail `requirement_unmet` in main,
- *   networks:get-config answers that failure, main's copy stays empty so
- *   the registry has no keyed endpoint, and nothing writes the file.
+ *   echoes no store: all four methods fail `requirement_unmet` in main;
+ *   networks:get-config still answers the configuration, with `hasKey`
+ *   null (unknown) on every keyed provider and the reason logged in main
+ *   (coordinator decision G30); main's copy stays empty so the registry
+ *   has no keyed endpoint, and nothing writes the file.
  *
  * Skipped without the binaries; FREEDOM_CORED_STORES_TEST=1 requires both
  * (npm run core:download, npm run core:download:previous). CI's e2e-desktop
@@ -200,7 +202,8 @@ describe('RPC API keys through freedom-cored (0013, PRF-6(e))', () => {
       ipcMain,
       webContents: { getAllWebContents: () => [] },
     }));
-    jest.doMock('../logger', () => quietLog);
+    const warnings = [];
+    jest.doMock('../logger', () => ({ ...quietLog, warn: (...args) => warnings.push(args) }));
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => client }));
     jest.doMock('../core/chain', () => chain);
     jest.doMock('../ens-resolver', () => ({ invalidateCachedProvider() {} }));
@@ -225,6 +228,7 @@ describe('RPC API keys through freedom-cored (0013, PRF-6(e))', () => {
       ipcMain,
       chain,
       errors,
+      warnings,
       vault: require('../core/vault-backend').vaultBackend,
       registry: require('../networks/network-registry'),
     };
@@ -506,7 +510,16 @@ describe('RPC API keys through freedom-cored (0013, PRF-6(e))', () => {
         expect(main.rpc.hasApiKey('alchemy')).toBe(false);
         expect(keyedUrls()).toEqual([]);
         expect(main.registry.getEndpoints(1, 'rpc').some((url) => url.includes(KEY))).toBe(false);
-        await expect(config()).resolves.toEqual({ success: false, error: UNMET });
+        // G30: the configuration still loads, with presence unknown.
+        const answer = await config();
+        expect(answer).toMatchObject({ success: true });
+        expect(answer.networks).toHaveProperty('1');
+        const keyed = answer.sources.filter((src) => src.keyed);
+        expect(keyed.length).toBeGreaterThan(0);
+        expect(keyed.map((src) => [src.id, src.hasKey])).toEqual(keyed.map((src) => [src.id, null]));
+        expect(answer.sources.filter((src) => !src.keyed && 'hasKey' in src)).toEqual([]);
+        expect(JSON.stringify(answer)).not.toContain(KEY);
+        expect(main.warnings.map(([line]) => String(line)).join('\n')).toContain('requirement_unmet');
         await expect(main.ipcMain.invoke('networks:set-api-key', 'alchemy', KEY)).resolves.toEqual({
           success: false,
           error: UNMET,
