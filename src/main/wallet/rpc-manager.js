@@ -112,6 +112,21 @@ function beginChange(providerId) {
   return epoch;
 }
 
+/**
+ * The set or remove of `providerId` begun in `epoch` failed: the user is
+ * told so, and the change committed before it, if one is fenced, is again
+ * what the provider must have. Its fence takes this epoch, so it is sent
+ * again as before: a refusal (the core changed nothing) leaves it owed, and
+ * a change whose answer was lost, whatever the core did with it, is put
+ * back to the committed state the user last saw succeed. Then a read
+ * reconciles. A change begun since owns the provider: nothing is restamped.
+ */
+function endFailedChange(providerId, epoch) {
+  if (epochs.get(providerId) !== epoch) return;
+  const fence = fences.get(providerId);
+  if (fence) fence.epoch = epoch;
+}
+
 // The read back's retries after a failure while a fence stands (ms): then
 // the core's next start reads again.
 const RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 16000]);
@@ -405,6 +420,8 @@ async function setApiKey(providerId, apiKey, { caller = null } = {}) {
       console.warn(`[RpcManager] API key for ${providerId} set, but not yet durable`);
     }
   } catch (err) {
+    endFailedChange(providerId, epoch);
+    refreshQuietly();
     return { success: false, error: keyErrorMessage(err, SAVE) };
   }
   applyCommitted(providerId, typeof apiKey === 'string' && apiKey ? apiKey : null, {
@@ -434,6 +451,8 @@ async function removeApiKey(providerId, { caller = null } = {}) {
       console.warn(`[RpcManager] API key for ${providerId} removed, but not yet durably`);
     }
   } catch (err) {
+    endFailedChange(providerId, epoch);
+    refreshQuietly();
     return { success: false, error: keyErrorMessage(err, REMOVE) };
   }
   applyCommitted(providerId, null, { durable, caller, epoch });

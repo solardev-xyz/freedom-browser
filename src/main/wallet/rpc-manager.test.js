@@ -434,6 +434,43 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
           expect(callsOf('secrets.remove_rpc_api_key').map(({ id }) => id)).toEqual(['infura']);
         }
       );
+
+      // Codex round 4: a newer change that fails, refused (the core changed
+      // nothing) or lost, leaves the committed change before it owed: its
+      // fence is sent again, never orphaned by the failed change's epoch.
+      test.each([
+        ['refused by the core', 'invalid_argument'],
+        ['lost on the way', 'unavailable'],
+      ])("a newer change of B that fails (%s) leaves B's committed set owed", async (_label, code) => {
+        const B_KEY = `${KEY}-b`;
+        load();
+        const client = new EventEmitter();
+        rpc.attachCore(client);
+        client.emit('ready');
+        await flush();
+        // The core keeps losing B's key: every read contradicts its fence.
+        core.secrets.rpcApiKeys = async () => ({ keys: [] });
+        await expect(rpc.setApiKey('infura', B_KEY, { caller: 'chrome' })).resolves.toEqual({ success: true });
+        const setsOf = (id) => callsOf('secrets.set_rpc_api_key').filter((call) => call.id === id);
+        expect(setsOf('infura')).toHaveLength(2);
+
+        const realSet = core.secrets.setRpcApiKey;
+        core.secrets.setRpcApiKey = async (params, caller) => {
+          if (params.api_key === 'another') throw Object.assign(new Error('refused'), { code });
+          return realSet(params, caller);
+        };
+        await expect(rpc.setApiKey('infura', 'another', { caller: 'chrome' })).resolves.toMatchObject({
+          success: false,
+        });
+        await flush();
+        expect(rpc.cachedApiKeys().get('infura')).toBe(B_KEY);
+
+        // The core's next start: B's committed set goes again.
+        client.emit('ready');
+        await flush();
+        expect(setsOf('infura')).toHaveLength(3);
+        expect(rpc.cachedApiKeys().get('infura')).toBe(B_KEY);
+      });
     });
 
     test("the retries are bounded, and the core's next start reads again", async () => {
