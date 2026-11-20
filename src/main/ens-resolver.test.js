@@ -37,7 +37,10 @@ const mockRegistry = {
   getEndpointSources: jest.fn(() => []),
   getEndpointSourceList: jest.fn(() => []),
   invalidate: jest.fn(),
+  // The RPC API keys main holds, current and retired (rpc-manager.js).
+  withoutApiKeys: (text) => String(text).split(mockStoredKey).join('[key redacted]'),
 };
+const mockStoredKey = ['stored', 'key', process.pid.toString(36)].join('-');
 jest.mock('./networks/network-registry', () => mockRegistry);
 
 // Contract calls answer from these mocks; the pure helpers are ethers' own,
@@ -231,6 +234,26 @@ describe('lookups go to the naming core', () => {
 });
 
 describe('IPC handlers', () => {
+  test('a lookup error quoting an RPC API key reaches the chrome without it (0013 (e))', async () => {
+    const quoting = async () => {
+      throw new Error(`node said: invalid key ${mockStoredKey}`);
+    };
+    mockCoreDriver = {
+      ...coreDriver(),
+      resolveContent: jest.fn(quoting),
+      resolveAddress: jest.fn(quoting),
+      resolveReverse: jest.fn(quoting),
+    };
+    const answers = [
+      await handlerFor(IPC.ENS_RESOLVE)(normalEvent, { name: 'x.eth' }),
+      await handlerFor(IPC.ENS_RESOLVE_ADDRESS)(normalEvent, { name: 'x.eth' }),
+      await handlerFor(IPC.ENS_RESOLVE_REVERSE)(normalEvent, { address: ADDRESS }),
+    ];
+    expect(answers.map((answer) => answer.error)).toEqual(
+      Array(3).fill('node said: invalid key [key redacted]')
+    );
+  });
+
   test("keep their shapes and privacy around the core's lookups", async () => {
     mockCoreDriver = {
       ...coreDriver(),

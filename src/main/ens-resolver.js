@@ -301,6 +301,13 @@ function privateResolveContext(event) {
   return isPrivateSender(event);
 }
 
+// A resolution error's text as the chrome gets it, with no RPC API key in
+// it, current or retired (design 0013 (e)): a name read's error can carry
+// a keyed endpoint's free text.
+function withoutStoredKeys(text) {
+  return typeof text === 'string' ? require('./wallet/rpc-errors').withoutStoredKeys(text) : text;
+}
+
 function registerEnsIpc() {
   ipcMain.handle(IPC.ENS_RESOLVE, async (event, payload = {}) => {
     const { name } = payload;
@@ -315,7 +322,7 @@ function registerEnsIpc() {
           type: 'error',
           name: (name || '').trim().toLowerCase(),
           reason: 'RESOLUTION_ERROR',
-          error: err.message,
+          error: withoutStoredKeys(err.message),
         };
       }
     });
@@ -332,7 +339,7 @@ function registerEnsIpc() {
           success: false,
           name: (name || '').trim().toLowerCase(),
           reason: 'RESOLUTION_ERROR',
-          error: err.message,
+          error: withoutStoredKeys(err.message),
         };
       }
     });
@@ -349,7 +356,7 @@ function registerEnsIpc() {
           success: false,
           address: typeof address === 'string' ? address.toLowerCase() : null,
           reason: 'RESOLUTION_ERROR',
-          error: err.message,
+          error: withoutStoredKeys(err.message),
         };
       }
     });

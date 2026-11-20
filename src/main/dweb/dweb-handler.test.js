@@ -9,6 +9,12 @@ jest.mock('../logger', () => mockLog);
 
 let mockDriver = null;
 jest.mock('../core/naming', () => ({ namingDriver: () => mockDriver }));
+// The RPC API keys main holds, current and retired (rpc-manager.js): a
+// resolver error quoting one reaches the page without it (0013 (e)).
+const mockStoredKey = ['stored', 'key', process.pid.toString(36)].join('-');
+jest.mock('../networks/network-registry', () => ({
+  withoutApiKeys: (text) => String(text).split(mockStoredKey).join('[key redacted]'),
+}));
 
 let mockAdmission = null;
 jest.mock('./fetch-admission', () => {
@@ -115,6 +121,12 @@ describe("dweb.open's failures", () => {
       coreError('repeated', 'Myotis availability changed repeatedly while resolving x.eth'),
       502,
       'ENS resolver error: Myotis availability changed repeatedly while resolving x.eth',
+    ],
+    [
+      'a resolver error quoting an RPC API key',
+      coreError('repeated', `node said: invalid key ${mockStoredKey}`),
+      502,
+      'ENS resolver error: node said: invalid key [key redacted]',
     ],
   ])('%s', async (_label, error, status, message) => {
     mockDriver = scriptedDriver({ error });

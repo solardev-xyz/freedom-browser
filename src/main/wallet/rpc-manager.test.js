@@ -282,6 +282,96 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
       expect(reads()).toBe(before + 2);
     });
 
+    describe('the committed-change fence', () => {
+      const OTHER = ['infura', 'key', process.pid.toString(36)].join('-');
+      const flush = async () => {
+        for (let i = 0; i < 20; i += 1) await tick();
+      };
+      const callsOf = (method) => core.calls.filter((call) => call.method === method);
+
+      test('a read back that still has the removed key never restores it; the remove goes again once', async () => {
+        await loadWithKey();
+        let reads = 0;
+        // The core keeps answering with the removed key, beside another
+        // provider's new one.
+        core.secrets.rpcApiKeys = async () => {
+          reads += 1;
+          return {
+            keys: [
+              { id: 'alchemy', api_key: KEY },
+              { id: 'infura', api_key: OTHER },
+            ],
+          };
+        };
+        await expect(rpc.removeApiKey('alchemy', { caller: 'chrome' })).resolves.toEqual({ success: true });
+        expect(rpc.hasApiKey('alchemy')).toBe(false);
+        expect(keyedUrls()).toEqual([]);
+        // The unrelated provider's key applies.
+        expect(rpc.cachedApiKeys().get('infura')).toBe(OTHER);
+        // Sent again once, as its caller, and read back.
+        expect(callsOf('secrets.remove_rpc_api_key').map(({ caller }) => caller)).toEqual(['chrome', 'chrome']);
+        expect(reads).toBe(2);
+        expect(rpc.retiredApiKeys()).toContain(KEY);
+
+        // A later read in the same start of the core: still no key, and not sent again.
+        await rpc.refreshKeys();
+        expect(rpc.hasApiKey('alchemy')).toBe(false);
+        expect(callsOf('secrets.remove_rpc_api_key')).toHaveLength(2);
+        expect(rpc.retiredApiKeys()).toContain(KEY);
+        expect(JSON.stringify(logged)).not.toContain(KEY);
+      });
+
+      test('a rotation the core called not durable, rolled back at a restart, keeps the new key and is sent again', async () => {
+        const NEW = `${KEY}-new`;
+        await loadWithKey();
+        const client = new EventEmitter();
+        rpc.attachCore(client);
+        client.emit('ready');
+        await flush();
+        const served = [];
+        rpc.onKeysChanged(() => served.push(rpc.cachedApiKeys().get('alchemy')));
+
+        const realSet = core.secrets.setRpcApiKey;
+        core.secrets.setRpcApiKey = async (...args) => ({ ...(await realSet(...args)), durable: false });
+        await expect(rpc.setApiKey('alchemy', NEW, { caller: 'chrome' })).resolves.toEqual({ success: true });
+        expect(rpc.cachedApiKeys().get('alchemy')).toBe(NEW);
+        core.secrets.setRpcApiKey = realSet;
+
+        // The core restarts without the change: its file has the old key.
+        fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: KEY, enabled: true, addedAt: 1 } }));
+        client.emit('ready');
+        await flush();
+        // The old key is never served; the set went again with main's key.
+        expect(served).toEqual([NEW]);
+        expect(rpc.cachedApiKeys().get('alchemy')).toBe(NEW);
+        expect(callsOf('secrets.set_rpc_api_key').map(({ caller }) => caller)).toEqual(['chrome', 'chrome']);
+        expect(JSON.parse(fileText()).alchemy.apiKey).toBe(NEW);
+
+        // Confirmed, so the fence is gone: a later read applies as it is.
+        fs.writeFileSync(keysPath, JSON.stringify({}));
+        await rpc.refreshKeys();
+        expect(rpc.hasApiKey('alchemy')).toBe(false);
+        expect(callsOf('secrets.set_rpc_api_key')).toHaveLength(2);
+      });
+
+      test('a send again that fails keeps the change in force, logged without a key', async () => {
+        await loadWithKey();
+        core.secrets.rpcApiKeys = async () => ({ keys: [{ id: 'alchemy', api_key: KEY }] });
+        const realRemove = core.secrets.removeRpcApiKey;
+        let removes = 0;
+        core.secrets.removeRpcApiKey = async (...args) => {
+          removes += 1;
+          if (removes > 1) throw Object.assign(new Error('core busy'), { code: 'unavailable' });
+          return realRemove(...args);
+        };
+        await rpc.removeApiKey('alchemy', { caller: 'chrome' });
+        expect(removes).toBe(2);
+        expect(rpc.hasApiKey('alchemy')).toBe(false);
+        expect(JSON.stringify(logged)).toContain('main keeps it in force');
+        expect(JSON.stringify(logged)).not.toContain(KEY);
+      });
+    });
+
     test("the retries are bounded, and the core's next start reads again", async () => {
       await loadWithKey();
       core.secrets.rpcApiKeys = async () => {

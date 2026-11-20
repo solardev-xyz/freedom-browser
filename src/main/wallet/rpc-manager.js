@@ -22,9 +22,23 @@
  *   replaced is never used again, even when that read fails. A failed read
  *   back keeps the applied copy and is retried with a bounded backoff, and
  *   again at the core's next start.
+ * - **The committed-change fence:** each set or remove the core took leaves
+ *   a fence on its provider: "no key" after a remove, exactly the new key
+ *   after a set. A read that contradicts a provider's fence (a read back
+ *   that still has the removed key, or a core that rolled the change back
+ *   at a restart) never changes that provider's entry in main's copy; the
+ *   other providers apply as usual. The fence clears only when a read
+ *   confirms it. A change the core answered `durable: false` is confirmed
+ *   only by a read from a later start of the core, since a restart may
+ *   lose it. On a contradicting read, main sends the change again once in
+ *   that start of the core (a remove as a remove, a set with the key main
+ *   holds) and reads back. If that fails too, main logs it and keeps
+ *   failing closed until a later start sends it again: a key the user
+ *   removed or replaced is never used again because a core read has it.
  * - **Keys taken out of the copy** stay known to the registry's redaction
- *   (`retiredApiKeys`), never used for a request: one already in flight
- *   may be answered with an error quoting its key.
+ *   (`retiredApiKeys`) for the rest of the process, never used for a
+ *   request: one already in flight may be answered with an error quoting
+ *   its key.
  * - **A set or a remove** goes as its caller's (`chrome` when the settings
  *   page's, relayed by network-ipc.js), after main checks the provider in
  *   its registry, as before. The core refuses a provider id outside its
@@ -58,19 +72,29 @@ let attachedCore = null;
 // applied, takes the next. A read's answer applies only while its
 // generation is still the latest.
 let generation = 0;
+// The core's starts main has seen (`ready`), counted.
+let coreStart = 0;
 const listeners = new Set();
 
-// Keys a change took out of main's copy, oldest first: for redaction only
-// (network-registry.js withoutApiKeys). Bounded; a request built with one
-// has long settled before this many more keys are retired.
-const RETIRED_KEYS_MAX = 64;
+// Every key a change took out of main's copy in this process: for redaction
+// only (network-registry.js withoutApiKeys), never for a request. Never
+// evicted, and kept when the key becomes current again: a request built
+// with it may be answered at any later time, since no request has a
+// deadline. One entry per distinct key: each retirement follows a
+// committed core write (a set or remove from the settings page) or a core
+// read that changed the copy, so the set grows only with those.
 const retired = new Set();
 
-// A set or remove applied to main's copy that no read has confirmed yet,
-// and the read back's retries after a failure (ms): then the core's next
-// start reads again.
+// The committed-change fences, provider id -> { expect, durable, start,
+// caller, resent }: `expect` is the key the provider must have (null: no
+// key); `durable` whether the core said the change was durable; `start` the
+// core start that answered it; `resent` the core start main last sent it
+// again in.
+const fences = new Map();
+
+// The read back's retries after a failure while a fence stands (ms): then
+// the core's next start reads again.
 const RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 16000]);
-let unconfirmed = false;
 let retries = 0;
 let retryTimer = null;
 
@@ -119,22 +143,13 @@ function keysChanged() {
   }
 }
 
-function retire(key) {
-  retired.delete(key);
-  retired.add(key);
-  while (retired.size > RETIRED_KEYS_MAX) {
-    retired.delete(retired.values().next().value);
-  }
-}
-
 /** Main's copy replaced by `next`; whether it changed. */
 function replaceKeys(next) {
   if (sameKeys(apiKeys, next)) return false;
   const kept = new Set(next.values());
   for (const key of apiKeys.values()) {
-    if (!kept.has(key)) retire(key);
+    if (!kept.has(key)) retired.add(key);
   }
-  for (const key of kept) retired.delete(key);
   apiKeys = next;
   keysChanged();
   return true;
@@ -145,9 +160,9 @@ function cancelRetry() {
   retryTimer = null;
 }
 
-/** After the latest read failed: read again later while a change is unconfirmed. */
+/** After the latest read failed: read again later while a fence stands. */
 function scheduleRetry() {
-  if (!unconfirmed || retryTimer) return;
+  if (fences.size === 0 || retryTimer) return;
   if (retries >= RETRY_DELAYS_MS.length) {
     console.error(
       "[RpcManager] The RPC API keys couldn't be read back after a change; " +
@@ -163,26 +178,83 @@ function scheduleRetry() {
 }
 
 /**
- * A set or remove the core has taken, applied to main's copy at once
- * (`change(copy)`), before the read back: no read started earlier applies.
+ * A set (`expect`, the key) or remove (`expect` null) of `providerId` the
+ * core has taken, applied to main's copy at once, before the read back: no
+ * read started earlier applies. It leaves the provider's fence.
  */
-function applyCommitted(change) {
+function applyCommitted(providerId, expect, { durable, caller }) {
   generation += 1;
-  unconfirmed = true;
   retries = 0;
   cancelRetry();
+  fences.set(providerId, { expect, durable, start: coreStart, caller, resent: null });
   const next = new Map(apiKeys);
-  change(next);
+  if (expect === null) next.delete(providerId);
+  else next.set(providerId, expect);
   replaceKeys(next);
+}
+
+/** Whether `keys` (a core read) has `providerId` as its fence expects. */
+const meets = (keys, providerId, { expect }) =>
+  expect === null ? !keys.has(providerId) : keys.get(providerId) === expect;
+
+/**
+ * A fenced change sent again, as it was (a remove as a remove, a set with
+ * the key main holds): whether the core took it. A failure is logged, and
+ * the fence stays.
+ */
+async function resend(providerId, fence) {
+  fence.resent = coreStart;
+  const params = fence.expect === null ? { id: providerId } : { id: providerId, api_key: fence.expect };
+  try {
+    const answer =
+      fence.expect === null
+        ? await vault().secrets.removeRpcApiKey(params, fence.caller)
+        : await vault().secrets.setRpcApiKey(params, fence.caller);
+    if (fences.get(providerId) === fence) {
+      fence.durable = answer?.durable !== false;
+      fence.start = fence.resent;
+    }
+    return true;
+  } catch (err) {
+    console.error(
+      `[RpcManager] Sending the API key change for ${providerId} again failed ` +
+        `(${err?.code || 'error'}); main keeps it in force`
+    );
+    return false;
+  }
+}
+
+/**
+ * The core's keys (`keys`, read in core start `start`) with each fence
+ * applied: a provider whose read meets its fence clears it (a change the
+ * core called not durable only from a later start); one whose read
+ * contradicts it keeps main's entry. The contradicted fences.
+ */
+function fenced(keys, start) {
+  const next = new Map(keys);
+  const contradicted = [];
+  for (const [providerId, fence] of fences) {
+    if (meets(keys, providerId, fence)) {
+      if (fence.durable || start > fence.start) fences.delete(providerId);
+      continue;
+    }
+    if (fence.expect === null) next.delete(providerId);
+    else next.set(providerId, fence.expect);
+    contradicted.push([providerId, fence]);
+  }
+  return { next, contradicted };
 }
 
 /**
  * Main's copy read again from the core. Whether it changed; an answer to
  * a read that is no longer the latest started is dropped. A failure is
- * thrown, and retried while a change is unconfirmed if it is the latest's.
+ * thrown, and retried while a fence stands if it is the latest's. A read
+ * that contradicts a fence sends that change again, once in each start of
+ * the core, and reads back.
  */
 async function refreshKeys() {
   const read = ++generation;
+  const start = coreStart;
   let answer;
   try {
     answer = await vault().secrets.rpcApiKeys();
@@ -191,9 +263,18 @@ async function refreshKeys() {
     throw err;
   }
   if (read !== generation) return false;
-  unconfirmed = false;
   cancelRetry();
-  return replaceKeys(keysOf(answer));
+  const { next, contradicted } = fenced(keysOf(answer), start);
+  const changed = replaceKeys(next);
+  const again = contradicted.filter(([, fence]) => fence.resent !== coreStart);
+  if (again.length > 0) {
+    let taken = false;
+    for (const [providerId, fence] of again) {
+      if (await resend(providerId, fence)) taken = true;
+    }
+    if (taken) return (await refreshQuietly()) || changed;
+  }
+  return changed;
 }
 
 function refreshQuietly() {
@@ -211,6 +292,7 @@ function attachCore(client) {
   if (!client || typeof client.on !== 'function' || client === attachedCore) return;
   attachedCore = client;
   client.on('ready', () => {
+    coreStart += 1;
     retries = 0;
     cancelRetry();
     refreshQuietly();
@@ -291,18 +373,17 @@ async function setApiKey(providerId, apiKey, { caller = null } = {}) {
   if (!inRegistry(providerId)) {
     return { success: false, error: `Unknown provider: ${providerId}` };
   }
+  let durable;
   try {
     const answer = await vault().secrets.setRpcApiKey({ id: providerId, api_key: apiKey }, caller);
-    if (answer?.durable === false) {
+    durable = answer?.durable !== false;
+    if (!durable) {
       console.warn(`[RpcManager] API key for ${providerId} set, but not yet durable`);
     }
   } catch (err) {
     return { success: false, error: keyErrorMessage(err, SAVE) };
   }
-  applyCommitted((copy) => {
-    if (typeof apiKey === 'string' && apiKey) copy.set(providerId, apiKey);
-    else copy.delete(providerId);
-  });
+  applyCommitted(providerId, typeof apiKey === 'string' && apiKey ? apiKey : null, { durable, caller });
   await refreshQuietly();
   console.log(`[RpcManager] API key set for provider: ${providerId}`);
   return { success: true };
@@ -316,15 +397,17 @@ async function removeApiKey(providerId, { caller = null } = {}) {
   if (typeof providerId !== 'string' || !(apiKeys.has(providerId) || inRegistry(providerId))) {
     return { success: false, error: `No API key found for provider: ${providerId}` };
   }
+  let durable;
   try {
     const answer = await vault().secrets.removeRpcApiKey({ id: providerId }, caller);
-    if (answer?.durable === false) {
+    durable = answer?.durable !== false;
+    if (!durable) {
       console.warn(`[RpcManager] API key for ${providerId} removed, but not yet durably`);
     }
   } catch (err) {
     return { success: false, error: keyErrorMessage(err, REMOVE) };
   }
-  applyCommitted((copy) => copy.delete(providerId));
+  applyCommitted(providerId, null, { durable, caller });
   await refreshQuietly();
   console.log(`[RpcManager] API key removed for provider: ${providerId}`);
   return { success: true };

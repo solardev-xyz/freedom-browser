@@ -384,6 +384,19 @@ describe('a key taken out while a request built with it is in flight (PRF-6(e))'
   test.each([
     ['removed', (rpc) => rpc.removeApiKey('test-keyed', { caller: 'chrome' })],
     ['replaced', (rpc) => rpc.setApiKey('test-keyed', `${KEY}-next`, { caller: 'chrome' })],
+    [
+      // More keys retired after it than the old 64-entry bound: none is evicted.
+      'replaced, then 69 more keys retired',
+      async (rpc) => {
+        for (let i = 0; i < 70; i += 1) {
+          const answer = await rpc.setApiKey('test-keyed', `${KEY}-r${i}`, { caller: 'chrome' });
+          if (!answer.success) return answer;
+        }
+        expect(rpc.retiredApiKeys()).toHaveLength(70);
+        expect(rpc.retiredApiKeys()[0]).toBe(KEY);
+        return { success: true };
+      },
+    ],
   ])('%s: its error quoting the old key reaches neither a renderer nor a log', async (_how, change) => {
     const held = await heldKeyedEndpoint();
     await loadWalletIpc();
@@ -424,6 +437,99 @@ describe('a key taken out while a request built with it is in flight (PRF-6(e))'
     expect(logged).toContain('[key redacted]');
     expect(logged).not.toContain(KEY);
     expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(KEY);
+  });
+});
+
+describe("a page's chain read whose error quotes a key (0013 (e), PRF-6(e))", () => {
+  const { EventEmitter } = require('events');
+  const CHROME_URL = 'file:///app/src/renderer/index.html';
+  const DAPP = `bzz://${'a'.repeat(64)}/`;
+
+  /** A tab guest on DAPP, as page-requests.test.js builds one. */
+  function guestOn(url) {
+    const guest = new EventEmitter();
+    let routingId = 1;
+    const frame = (frameUrl) => ({ url: frameUrl, frameTreeNodeId: 1001, processId: 1, routingId: routingId++, detached: false });
+    Object.assign(guest, {
+      id: 1,
+      window: 1,
+      hostWebContents: { isDestroyed: () => false, mainFrame: { url: CHROME_URL } },
+      mainFrame: frame('about:blank'),
+      isDestroyed: () => false,
+      getType: () => 'webview',
+      getURL: () => guest.mainFrame.url,
+    });
+    guest.commit = () => {
+      guest.mainFrame.detached = true;
+      guest.mainFrame = frame(url);
+      guest.emit('did-frame-navigate', {}, url, 200, 'OK', true, 1, guest.mainFrame.routingId);
+    };
+    return guest;
+  }
+
+  test('the page sees neither the current key nor a retired one, in the message or nested data', async () => {
+    const NEXT = `${KEY}-next`;
+    const keysCore = simulatedRpcKeysCore();
+    fs.writeFileSync(
+      path.join(userDataDir, 'rpc-api-keys.json'),
+      JSON.stringify({ alchemy: { apiKey: KEY, enabled: true, addedAt: 1 } })
+    );
+    loadMainModule(require.resolve('../page/page-requests'), {
+      userDataDir,
+      extraMocks: {
+        [require.resolve('../core/vault-backend')]: () => ({ vaultBackend: { secrets: keysCore.secrets } }),
+      },
+    });
+    const rpc = require('./rpc-manager');
+    await rpc.refreshKeys();
+    // KEY retired, NEXT current.
+    await expect(rpc.setApiKey('alchemy', NEXT, { caller: 'chrome' })).resolves.toEqual({ success: true });
+    expect(rpc.retiredApiKeys()).toContain(KEY);
+    expect(rpc.cachedApiKeys().get('alchemy')).toBe(NEXT);
+
+    // The core's answer to the read, as page-eip1193.js pageAnswer passes
+    // it on: the node's free text, quoting both keys, in its message and
+    // nested in its data (a property name included).
+    const quoted = `old ${KEY} new ${NEXT}`;
+    const dispatch = jest.fn(async () => ({
+      error: {
+        code: -32000,
+        message: `invalid key: ${quoted}`,
+        data: { node: { message: quoted, list: [KEY, { deeper: NEXT }] }, [`k-${NEXT}`]: 1 },
+      },
+    }));
+    const { createPageRequests } = require('../page/page-requests');
+    const { createPageDocuments } = require('../page/page-documents');
+    const documents = createPageDocuments({
+      isPrivateWebContents: () => false,
+      isChromeIndexUrl: (url) => url === CHROME_URL,
+      isAgentPage: () => false,
+      windowIdOf: (contents) => contents.window,
+      resolveEnsContent: async () => ({ type: 'not_found' }),
+    });
+    const guest = guestOn(DAPP);
+    const requests = createPageRequests({
+      documents,
+      webContentsFromId: (id) => (id === guest.id ? guest : undefined),
+      hooks: { dispatch },
+      setTimer: () => 0,
+      clearTimer: () => {},
+    });
+    requests.track(guest);
+    guest.commit();
+    const nonce = '1'.padStart(32, '0');
+    const event = () => ({ sender: guest, senderFrame: guest.mainFrame });
+    expect(requests.hello(event(), { nonce })).toEqual(expect.objectContaining({ ok: true }));
+
+    const answer = await requests.request(event(), { nonce, provider: 'ethereum', method: 'eth_blockNumber', params: [] });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(answer.error.code).toBe(-32000);
+    expect(answer.error.message).toBe('invalid key: old [key redacted] new [key redacted]');
+    expect(JSON.parse(JSON.stringify(answer.error.data))).toEqual({
+      node: { message: 'old [key redacted] new [key redacted]', list: ['[key redacted]', { deeper: '[key redacted]' }] },
+      'k-[key redacted]': 1,
+    });
+    expect(JSON.stringify(answer)).not.toContain(KEY);
   });
 });
 

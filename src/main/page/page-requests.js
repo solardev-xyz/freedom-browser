@@ -189,7 +189,10 @@ function isPlainObject(value) {
 }
 
 // A dispatcher's answer as the page gets it: `{ result }` or `{ error }`,
-// the error with a numeric code and a string message.
+// the error with a numeric code and a string message. The error's message
+// and every string in its `data` lose any RPC API key, current or retired
+// (design 0013 (e)): a chain read's error carries the node's free text
+// through the core, and a keyed endpoint can quote its key in it.
 function normalizeAnswer(answer) {
   if (answer && typeof answer === 'object' && Object.prototype.hasOwnProperty.call(answer, 'error') && answer.error) {
     return { error: normalizeError(answer.error) };
@@ -198,11 +201,14 @@ function normalizeAnswer(answer) {
 }
 
 function normalizeError(error) {
+  const { withoutStoredKeys, keyRedactedData } = require('../wallet/rpc-errors');
   const out = {
     code: Number.isInteger(error?.code) ? error.code : INTERNAL_ERROR.code,
-    message: typeof error?.message === 'string' && error.message ? error.message : INTERNAL_ERROR.message,
+    message: withoutStoredKeys(
+      typeof error?.message === 'string' && error.message ? error.message : INTERNAL_ERROR.message
+    ),
   };
-  if (error && typeof error === 'object' && error.data !== undefined) out.data = error.data;
+  if (error && typeof error === 'object' && error.data !== undefined) out.data = keyRedactedData(error.data);
   return out;
 }
 

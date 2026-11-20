@@ -22,7 +22,8 @@
  *   the text of a thrown error, lose their URLs and every stored API key.
  */
 
-const log = require('../logger');
+// Lazy: the page's answers load this module, and only a pool failure logs.
+const log = () => require('../logger');
 const { redactUrls } = require('../url-redaction');
 const { safeErrorMessage } = require('../networks/chain-errors');
 
@@ -36,6 +37,20 @@ function redactRpcText(text) {
   } catch {
     // A registry that can't load has no keys to substitute either.
     return withoutUrls;
+  }
+}
+
+/**
+ * `text` with no API key in it, current or retired (network-registry.js
+ * withoutApiKeys), and its URLs left whole: for a surface whose errors are
+ * not only RPC errors (a page's EIP-1193 answer, ENS and dweb errors).
+ */
+function withoutStoredKeys(text) {
+  try {
+    return require('../networks/network-registry').withoutApiKeys(text);
+  } catch {
+    // A registry that can't load has no keys to substitute either.
+    return String(text);
   }
 }
 
@@ -57,7 +72,7 @@ function coded(message, fields = {}) {
  * @param {{ chainId: number, method?: string }} context - for the log
  */
 function endpointFailure(err, { chainId, method } = {}) {
-  log.warn(
+  log().warn(
     `[ProviderManager] RPC request failed (chain ${chainId}, ${method ?? 'request'}):`,
     safeText(err?.message ?? err)
   );
@@ -138,9 +153,9 @@ function isPlain(value) {
 // Only strings, numbers, booleans, null, arrays and plain records are walked.
 // An Error becomes its redacted message and code. Anything else (a typed
 // array or Buffer, whose bytes would spell a key; a Map, a class instance, a
-// proxy's traps) is replaced, never read.
-function redactValue(value, depth = 0) {
-  if (typeof value === 'string') return redactRpcText(value);
+// proxy's traps) is replaced, never read. `text` redacts each string.
+function redactValue(value, depth = 0, text = redactRpcText) {
+  if (typeof value === 'string') return text(value);
   if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value !== 'object') return undefined;
   if (depth >= MAX_REDACT_DEPTH) return TOO_DEEP;
@@ -150,12 +165,12 @@ function redactValue(value, depth = 0) {
     const length = ownData(value, 'length');
     const count = Number.isInteger(length) ? Math.min(length, MAX_REDACT_ITEMS) : 0;
     const out = [];
-    for (let i = 0; i < count; i += 1) out.push(redactValue(ownData(value, String(i)), depth + 1));
+    for (let i = 0; i < count; i += 1) out.push(redactValue(ownData(value, String(i)), depth + 1, text));
     return out;
   }
   if (value instanceof Error) {
     const message = ownData(value, 'message');
-    const out = { message: typeof message === 'string' ? redactRpcText(message) : 'error' };
+    const out = { message: typeof message === 'string' ? text(message) : 'error' };
     const code = scalarCode(ownData(value, 'code'));
     if (code !== undefined) out.code = code;
     return out;
@@ -165,7 +180,7 @@ function redactValue(value, depth = 0) {
   // like a value, since a node can put its echoed URL in a property name.
   const out = Object.create(null);
   for (const key of Object.keys(value).slice(0, MAX_REDACT_ITEMS)) {
-    out[redactRpcText(key)] = redactValue(ownData(value, key), depth + 1);
+    out[text(key)] = redactValue(ownData(value, key), depth + 1, text);
   }
   return out;
 }
@@ -184,6 +199,22 @@ function redactedReply(reply) {
   } catch {
     // Redaction itself failed (a proxy's trap threw, say): send nothing of it.
     return { ...reply, error: 'RPC error' };
+  }
+}
+
+/**
+ * An error's `data` as a page gets it (design 0013 (e): no renderer channel
+ * returns a key): every string in it, property names included, with no API
+ * key in it, current or retired, walked like a reply's error (bounded depth
+ * and size). A node's JSON-RPC error reaches a page through the core with
+ * its free text, which a keyed endpoint can fill with its key.
+ */
+function keyRedactedData(data) {
+  try {
+    return redactValue(data, 0, withoutStoredKeys);
+  } catch {
+    // Redaction itself failed (a proxy's trap threw, say): send nothing of it.
+    return NOT_PLAIN;
   }
 }
 
@@ -230,6 +261,8 @@ function redactedHandler(listener) {
 module.exports = {
   RPC_UNAVAILABLE,
   redactRpcText,
+  withoutStoredKeys,
+  keyRedactedData,
   endpointFailure,
   providerRpcError,
   redactedReply,
