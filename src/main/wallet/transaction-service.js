@@ -441,6 +441,22 @@ async function broadcastIntent(intent, handoff, extra = {}, { redact = false } =
   return { ...result, outcome, broadcastSource: source };
 }
 
+// The identity core's answer to a commit was lost (it died or hung with the
+// request written: design 0013's coordinator call G9). The intent may be
+// held at its nonce, never handed off: nothing was sent, the commit is never
+// sent again, and once the core answers it shows among the held intents,
+// for the user to send again rather than pay a second time.
+function commitUnknown(err) {
+  const error = new Error(
+    "The wallet couldn't confirm it recorded this payment, and sent nothing. If it shows " +
+      "among the wallet's payments waiting to be sent, send it again from there rather " +
+      'than starting a new one.',
+    { cause: err }
+  );
+  error.code = 'INTENT_COMMIT_UNKNOWN';
+  return error;
+}
+
 // Committed, but not handed off: nothing left main.
 function notSent(err, intentId) {
   const error = toSendError(err);
@@ -533,15 +549,19 @@ async function commitNewIntent(params, signer, { context = {}, key = null, guard
       // The store names the intent: its id comes back with the commit,
       // before anything is handed off.
       const commit = () =>
-        store.commit({
-          chainId,
-          sender: from,
-          nonce,
-          hash: keccak256(raw),
-          raw,
-          via: 'original',
-          context: intentContext(context, key),
-        });
+        store
+          .commit({
+            chainId,
+            sender: from,
+            nonce,
+            hash: keccak256(raw),
+            raw,
+            via: 'original',
+            context: intentContext(context, key),
+          })
+          .catch((err) => {
+            throw err?.code === 'core_unavailable' ? commitUnknown(err) : err;
+          });
       // The caller's guard, after the signature's wait: it commits in the
       // same run as its last checks, or withdraws the send.
       return guardCommit ? runGuarded(guardCommit, commit) : commit();

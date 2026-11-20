@@ -28,7 +28,8 @@
  *   it (Q10).
  * - **`store_moved`** (design 0013, "One writer per store") names the set-A
  *   stores (`STORES`) whose only writer is the core: `STORE_MOVED`, a
- *   property of the build, which names none yet. The core's answer echoes
+ *   property of the build: `intents` (PRF-6(b2)), whose every write main
+ *   sends to the core's `intents.*` (wallet/intent-store.js). The core's answer echoes
  *   the names it took, each once (cored 0.23.0); a core before 0.23.0
  *   (0.22.0) ignores the field, and its answer has none, which reads as
  *   none taken. A store's requests go with `requires: requiresStore(name)`,
@@ -97,10 +98,9 @@ const STORES = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending
  * The stores this build names in every hello's `store_moved`, whose only
  * writer is then the core. It is a property of the build, never a run-time
  * switch: each PRF-6 step adds its store's name in the change that deletes
- * main's writer for it. Absent means none, and the core reads this empty
- * list the same way, so every set-A store is still main's.
+ * main's writer for it. The other set-A stores are still main's.
  */
-const STORE_MOVED = Object.freeze([]);
+const STORE_MOVED = Object.freeze(['intents']);
 
 /**
  * The hello answer's `store_moved`: the names of `sent` whose store the core

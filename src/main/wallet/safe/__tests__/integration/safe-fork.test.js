@@ -70,7 +70,10 @@ jest.mock('../../../intent-store', () => {
   const path = require('path');
   const actual = jest.requireActual('../../../intent-store');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-fork-intents-'));
-  const store = actual.createIntentStore({ filePath: path.join(dir, 'wallet-intents.jsonl') });
+  const { simulatedIntents } = require('../../../../../../test/helpers/simulated-intents-core');
+  const store = actual.createIntentStore({
+    backend: simulatedIntents({ filePath: path.join(dir, 'wallet-intents.jsonl') }).intents,
+  });
   return { ...actual, getIntentStore: () => store };
 });
 

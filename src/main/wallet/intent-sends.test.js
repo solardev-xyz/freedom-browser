@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { Wallet, Transaction, keccak256 } = require('ethers');
-const { readJournal } = require('../lib/durable-journal');
+const { readJournal } = require('../../../test/helpers/reference-durable-journal');
 
 const mockChainRequest = jest.fn();
 const mockGetFeeQuote = jest.fn();
@@ -39,6 +39,11 @@ jest.mock('electron', () => ({
   webContents: { getAllWebContents: () => [] },
 }));
 jest.mock('better-sqlite3', () => require('../../../test/helpers/fake-better-sqlite3-payments'));
+// The core's intent journal (PRF-6(b2)), simulated on the reference store
+// over this run's userData: a fresh one for each fresh run of main.
+jest.mock('../core/vault-backend', () =>
+  require('../../../test/helpers/simulated-intents-core').mockVaultBackend()
+);
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 // Every signature a Safe executor makes, by wallet index and nonce.
 const mockSignatures = [];
@@ -201,6 +206,98 @@ describe('a new intent', () => {
 
     // The reservation is free again, at the same nonce.
     await expect(tx.signAndSendTransaction(PARAMS, signer)).resolves.toMatchObject({ nonce: 7 });
+  });
+
+  // design 0013's coordinator call G9 (PRF-6(b2)): the core's answer to
+  // `intents.commit` is lost (it died or hung after writing the line). The
+  // commit is never sent again and nothing is broadcast; once the core
+  // answers, the held intent floors the next nonce, and its bytes go out
+  // only when the user sends it again.
+  test('a commit whose answer is lost sends nothing, and the next send goes above it', async () => {
+    const { tx, store } = start();
+    await store.ready;
+    const sim = require('../core/vault-backend').simulatedIntents;
+    const changes = [];
+    store.onChange((id) => changes.push(id));
+    sim.loseReply('intents.commit');
+
+    await expect(tx.signAndSendTransaction(PARAMS, signer)).rejects.toMatchObject({
+      code: 'INTENT_COMMIT_UNKNOWN',
+      message: expect.stringContaining('sent nothing'),
+    });
+    expect(mockBroadcast).not.toHaveBeenCalled();
+    expect(sim.calls.filter(([method]) => method === 'intents.commit')).toHaveLength(1);
+    expect(sim.calls.some(([method]) => method === 'intents.handoff')).toBe(false);
+    // It landed: held, never handed off, and announced once the core answered.
+    const [held] = await store.held();
+    expect(held).toMatchObject({ nonce: 7, handoffCount: 0, possiblySent: false });
+    await until(() => changes.includes(held.intentId));
+
+    const next = await tx.signAndSendTransaction(PARAMS, signer);
+    expect(next).toMatchObject({ nonce: 8, outcome: 'sent' });
+    expect(broadcastRaws().map((raw) => Transaction.from(raw).nonce)).toEqual([8]);
+    expect(sim.foreignRuns).toEqual([]);
+  });
+
+  test('a commit the core never got sends nothing, and records nothing', async () => {
+    const { tx, store } = start();
+    await store.ready;
+    const sim = require('../core/vault-backend').simulatedIntents;
+    sim.failBefore('intents.commit');
+    // Main can't tell it from a lost answer.
+    await expect(tx.signAndSendTransaction(PARAMS, signer)).rejects.toMatchObject({
+      code: 'INTENT_COMMIT_UNKNOWN',
+    });
+    expect(mockBroadcast).not.toHaveBeenCalled();
+    expect(await store.list()).toEqual([]);
+    await expect(tx.signAndSendTransaction(PARAMS, signer)).resolves.toMatchObject({ nonce: 7 });
+  });
+
+  test('a handoff whose answer is lost broadcasts nothing; the intent stays possibly sent', async () => {
+    const { tx, store } = start();
+    await store.ready;
+    const sim = require('../core/vault-backend').simulatedIntents;
+    sim.loseReply('intents.handoff');
+    await expect(tx.signAndSendTransaction(PARAMS, signer)).rejects.toMatchObject({
+      outcome: 'not_sent',
+    });
+    expect(mockBroadcast).not.toHaveBeenCalled();
+    const [held] = await store.held();
+    expect(held).toMatchObject({ nonce: 7, possiblySent: true });
+    expect(await store.voidRefusal(held.intentId)).toMatch(/no recorded outcome/);
+    // The user sends it again: the same bytes, at its one nonce.
+    const resent = await tx.resendIntent(held.intentId);
+    expect(resent).toMatchObject({ nonce: 7, resent: true });
+    expect(broadcastRaws()).toEqual([held.raw]);
+  });
+
+  // design 0013, `intents-core-restart` (coordinator call G10): the core
+  // restarting within one run of main reloads the file, so a held intent
+  // is recovered: it can't be voided, though no byte of it left main.
+  test('a core restart makes a held intent recovered, so it is not voided', async () => {
+    const { tx, store, reservations } = start();
+    await store.ready;
+    const sim = require('../core/vault-backend').simulatedIntents;
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw tagged('refused before sending', 'not_sent');
+    });
+    await expect(tx.signAndSendTransaction(PARAMS, signer)).rejects.toMatchObject({
+      outcome: 'not_sent',
+    });
+    const [held] = await store.held();
+    expect(held.recovered).toBe(false);
+    expect(await store.voidRefusal(held.intentId)).toBeNull();
+
+    sim.restart();
+    expect(await store.get(held.intentId)).toMatchObject({ state: 'held', recovered: true });
+    expect(await store.voidRefusal(held.intentId)).toMatch(/recovered from disk/);
+    await expect(
+      reservations.withAccountLock({ chainId: CHAIN, sender: ALICE.address }, (lock) =>
+        store.void(held.intentId, lock)
+      )
+    ).rejects.toMatchObject({ code: 'INTENT_VOID_REFUSED' });
+    // Its nonce stays reserved: the next send goes above it.
+    await expect(tx.signAndSendTransaction(PARAMS, signer)).resolves.toMatchObject({ nonce: 8 });
   });
 
   test('a crash after the commit: on restart the intent is held, and sent again as signed', async () => {
