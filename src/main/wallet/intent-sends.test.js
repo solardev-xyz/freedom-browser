@@ -137,7 +137,7 @@ function start() {
 
 async function until(condition) {
   for (let i = 0; i < 1000; i += 1) {
-    if (condition()) return;
+    if (await condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   throw new Error('condition never met');
@@ -178,7 +178,7 @@ describe('a new intent', () => {
       intentId: onDisk[0].intent_id,
       broadcastSource: 'direct',
     });
-    expect(store.get(result.intentId).handoffs).toEqual([
+    expect((await store.get(result.intentId)).handoffs).toEqual([
       expect.objectContaining({ outcome: expect.objectContaining({ outcome: 'sent' }) }),
     ]);
   });
@@ -197,7 +197,7 @@ describe('a new intent', () => {
       code: 'INTENT_WRITE_FAILED',
     });
     expect(mockBroadcast).not.toHaveBeenCalled();
-    expect(store.list()).toEqual([]);
+    expect(await store.list()).toEqual([]);
 
     // The reservation is free again, at the same nonce.
     await expect(tx.signAndSendTransaction(PARAMS, signer)).resolves.toMatchObject({ nonce: 7 });
@@ -209,13 +209,13 @@ describe('a new intent', () => {
     // Main dies between the commit and the handoff.
     jest.spyOn(main.store, 'handoff').mockImplementationOnce(() => new Promise(() => {}));
     main.tx.signAndSendTransaction(PARAMS, signer);
-    await until(() => main.store.held().length === 1);
-    const [committed] = main.store.held();
+    await until(async () => (await main.store.held()).length === 1);
+    const [committed] = await main.store.held();
     expect(mockBroadcast).not.toHaveBeenCalled();
 
     main = start();
     await main.store.ready;
-    expect(main.store.get(committed.intentId)).toMatchObject({
+    expect(await main.store.get(committed.intentId)).toMatchObject({
       state: 'held',
       recovered: true,
       nonce: 7,
@@ -321,7 +321,7 @@ describe('a new intent', () => {
       expect(retried).toMatchObject({ intentId, nonce: 7, outcome: 'sent' });
       expect(pendingReads()).toHaveLength(1);
       expect(signer.signTransaction).toHaveBeenCalledTimes(1);
-      expect(store.get(intentId).handoffs.map((handoff) => handoff.outcome.outcome)).toEqual([
+      expect((await store.get(intentId)).handoffs.map((handoff) => handoff.outcome.outcome)).toEqual([
         expected.returns ?? expected.throws,
         'sent',
       ]);
@@ -334,7 +334,7 @@ describe('a new intent', () => {
     const result = await tx.signAndSendTransaction(PARAMS, signer);
     const [raw] = broadcastRaws();
     expect(result).toMatchObject({ hash: keccak256(raw), outcome: 'uncertain' });
-    expect(store.get(result.intentId).handoffs[0].outcome.outcome).toBe('uncertain');
+    expect((await store.get(result.intentId)).handoffs[0].outcome.outcome).toBe('uncertain');
   });
 
   test('a rejection on the Ledger leaves no record, and the nonce free', async () => {
@@ -344,7 +344,7 @@ describe('a new intent', () => {
     signer.signTransaction.mockRejectedValueOnce(rejection);
 
     await expect(tx.signAndSendTransaction(PARAMS, signer)).rejects.toBe(rejection);
-    expect(store.list()).toEqual([]);
+    expect(await store.list()).toEqual([]);
     expect(fs.existsSync(intentFile())).toBe(false);
     expect(mockBroadcast).not.toHaveBeenCalled();
     await expect(tx.signAndSendTransaction(PARAMS, signer)).resolves.toMatchObject({ nonce: 7 });
@@ -367,7 +367,7 @@ describe('a new intent', () => {
       code: 'LEDGER_BAD_SIGNATURE',
     });
     expect(mockLedgerEth.signTransaction).toHaveBeenCalledTimes(1);
-    expect(store.list()).toEqual([]);
+    expect(await store.list()).toEqual([]);
     expect(fs.existsSync(intentFile())).toBe(false);
     expect(mockBroadcast).not.toHaveBeenCalled();
     await expect(tx.signAndSendTransaction(PARAMS, signer)).resolves.toMatchObject({ nonce: 7 });
@@ -379,7 +379,7 @@ describe('a new intent', () => {
     signer.signTransaction.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
 
     await expect(tx.signAndSendTransaction(PARAMS, signer)).rejects.toThrow(VAULT_LOCKED_MESSAGE);
-    expect(store.list()).toEqual([]);
+    expect(await store.list()).toEqual([]);
     expect(mockBroadcast).not.toHaveBeenCalled();
     await expect(tx.signAndSendTransaction(PARAMS, signer)).resolves.toMatchObject({ nonce: 7 });
   });
@@ -406,6 +406,28 @@ describe('a new intent', () => {
     const [a, b] = await Promise.all([first, second]);
     expect([a.nonce, b.nonce]).toEqual([7, 8]);
   });
+
+  // PRF-6(b1): the store's reads answer promises. A slow held-nonce read
+  // (a round trip to the identity core, later) still runs under the
+  // account's lock, so the second send reads only after the first commit.
+  test('two sends at once, with a slow read of the held nonces, get N and N+1', async () => {
+    const { tx, store } = start();
+    const heldNonces = store.heldNonces.bind(store);
+    const reads = [];
+    jest.spyOn(store, 'heldNonces').mockImplementation(async (chainId, sender) => {
+      const answer = heldNonces(chainId, sender);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      reads.push(await answer);
+      return answer;
+    });
+    const [a, b] = await Promise.all([
+      tx.signAndSendTransaction(PARAMS, signer),
+      tx.signAndSendTransaction(PARAMS, signer),
+    ]);
+    expect([a.nonce, b.nonce]).toEqual([7, 8]);
+    expect(reads).toEqual([[], [7]]);
+    expect((await store.held()).map((intent) => intent.nonce)).toEqual([7, 8]);
+  });
 });
 
 // "Always allow"'s per-site turn (auto-approve-pause.js) is left when
@@ -413,13 +435,16 @@ describe('a new intent', () => {
 describe('onCommitted', () => {
   test('a new intent: after its commit, before its broadcast', async () => {
     const { tx, store } = start();
+    let heldThen;
     const onCommitted = jest.fn(() => {
-      expect(store.held()).toHaveLength(1);
+      // A read answers the state as it stood when called.
+      heldThen = store.held();
       expect(mockBroadcast).not.toHaveBeenCalled();
     });
     const sent = await tx.signAndSendTransaction(PARAMS, signer, { onCommitted });
     expect(sent).toMatchObject({ nonce: 7 });
     expect(onCommitted).toHaveBeenCalledTimes(1);
+    expect(await heldThen).toHaveLength(1);
   });
 
   test('not when the send fails before its commit', async () => {
@@ -439,8 +464,9 @@ describe('onCommitted', () => {
     const { tx, store } = start();
     const key = 'safe-exec:100:0xabc';
     const seen = [];
+    // Each read answers the state as it stood when called.
     const onCommitted = () =>
-      seen.push({ held: store.held().length, broadcasts: mockBroadcast.mock.calls.length });
+      seen.push({ held: store.held(), broadcasts: mockBroadcast.mock.calls.length });
     mockBroadcast.mockImplementationOnce(async () => {
       throw tagged('insufficient funds for gas * price + value', 'rejected');
     });
@@ -448,6 +474,7 @@ describe('onCommitted', () => {
       tx.signAndSendTransaction(PARAMS, signer, { intentKey: key, onCommitted })
     ).rejects.toMatchObject({ outcome: 'rejected' });
     await tx.signAndSendTransaction(PARAMS, signer, { intentKey: key, onCommitted });
+    for (const entry of seen) entry.held = (await entry.held).length;
     expect(seen).toEqual([
       { held: 1, broadcasts: 0 },
       { held: 1, broadcasts: 1 },
@@ -489,7 +516,7 @@ describe('the phone path', () => {
 
     await expect(tx.signAndSendTransaction(PARAMS, phone)).resolves.toMatchObject({ hash, phoneCheck: 'verified' });
     await store.ready;
-    expect(store.list()).toEqual([]);
+    expect(await store.list()).toEqual([]);
     expect(fs.existsSync(intentFile())).toBe(false);
     expect(pendingReads()).toEqual([]);
     expect(mockBroadcast).not.toHaveBeenCalled();
@@ -510,7 +537,7 @@ describe('the phone path', () => {
     await expect(tx.signAndSendTransaction(PARAMS, phone)).rejects.toBe(lost);
     expect(phone.sendTransaction).toHaveBeenCalledTimes(1);
     await store.ready;
-    expect(store.list()).toEqual([]);
+    expect(await store.list()).toEqual([]);
     expect(pendingReads()).toEqual([]);
     expect(mockBroadcast).not.toHaveBeenCalled();
   });
@@ -533,7 +560,7 @@ describe('sending again', () => {
       throw tagged('Myotis is not ready', 'not_sent');
     });
     const failure = await tx.signAndSendTransaction(PARAMS, signer).catch((err) => err);
-    const intent = store.get(failure.intentId);
+    const intent = await store.get(failure.intentId);
     await reservations.withAccountLock({ chainId: CHAIN, sender: intent.sender }, (lock) =>
       store.void(intent.intentId, lock)
     );
@@ -554,7 +581,7 @@ describe('sending again', () => {
       throw tagged('Myotis is not ready', 'not_sent');
     });
     const failure = await tx.signAndSendTransaction(PARAMS, signer).catch((err) => err);
-    const intent = store.get(failure.intentId);
+    const intent = await store.get(failure.intentId);
 
     let releaseVoid;
     const voiding = reservations.withAccountLock(
@@ -570,7 +597,7 @@ describe('sending again', () => {
     const resend = tx.resendIntent(intent.intentId).catch((err) => err);
     await new Promise((resolve) => setTimeout(resolve, 20));
     // Waiting for the lock: no handoff yet, so the void is still allowed.
-    expect(store.get(intent.intentId).handoffs).toHaveLength(1);
+    expect((await store.get(intent.intentId)).handoffs).toHaveLength(1);
     releaseVoid();
 
     await expect(voiding).resolves.toMatchObject({ state: 'voided' });
@@ -619,7 +646,7 @@ describe('payment history', () => {
       txHash: result.hash,
       metadata: { intentId: result.intentId, outcome: 'uncertain' },
     });
-    expect(store.get(result.intentId).context).toMatchObject({ kind: 'wallet-send' });
+    expect((await store.get(result.intentId)).context).toMatchObject({ kind: 'wallet-send' });
   });
 });
 
@@ -733,7 +760,7 @@ describe('Safe', () => {
     const [firstRaw, secondRaw] = broadcastRaws();
     expect(secondRaw).toBe(firstRaw);
     expect(pendingReads()).toHaveLength(1);
-    expect(store.byKey(`safe-deploy:100:${deployment.safeAddress}`)).toMatchObject({
+    expect(await store.byKey(`safe-deploy:100:${deployment.safeAddress}`)).toMatchObject({
       intentId: first.tx.intentId,
     });
     const rows = history.getRecent({});
@@ -773,7 +800,7 @@ describe('review fixes (#706)', () => {
       const failure = await tx
         .signAndSendTransaction(PARAMS, signer, { intentKey: key, context: { kind: 'safe-send' } })
         .catch((error) => error);
-      const held = store.get(failure.intentId);
+      const held = await store.get(failure.intentId);
       const bob = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
       const caller =
         change.signer === 'bob'
@@ -789,7 +816,7 @@ describe('review fixes (#706)', () => {
       ).rejects.toMatchObject({ code: 'INTENT_KEY_MISMATCH' });
       expect(mockBroadcast).toHaveBeenCalledTimes(1);
       expect(caller.signTransaction).not.toHaveBeenCalled();
-      expect(store.get(held.intentId).handoffs).toHaveLength(1);
+      expect((await store.get(held.intentId)).handoffs).toHaveLength(1);
     });
   });
 
@@ -806,7 +833,7 @@ describe('review fixes (#706)', () => {
       expect(first.tx.resent).toBeUndefined();
       const [a, b] = broadcastRaws();
       expect(b).toBe(a);
-      expect(store.held()).toHaveLength(1);
+      expect(await store.held()).toHaveLength(1);
     });
 
     test('a first deployment through another executor waits, then is refused, unsigned', async () => {
@@ -817,7 +844,7 @@ describe('review fixes (#706)', () => {
       expect(first).toMatchObject({ status: 'fulfilled' });
       expect(second).toMatchObject({ status: 'rejected', reason: { code: 'INTENT_KEY_MISMATCH' } });
       expect(mockSignatures).toEqual([{ index: 0, nonce: 7 }]);
-      expect(store.held()).toHaveLength(1);
+      expect(await store.held()).toHaveLength(1);
     });
   });
 

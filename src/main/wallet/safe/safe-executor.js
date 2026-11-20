@@ -627,7 +627,7 @@ async function execTransaction({
 async function withdrawExecutionSite(chainId, safeTxHash) {
   const store = require('../intent-store').getIntentStore();
   await store.ready;
-  const held = store.byKey(execIntentKey(chainId, safeTxHash));
+  const held = await store.byKey(execIntentKey(chainId, safeTxHash));
   return held ? store.withdrawOrigin(held.intentId) : false;
 }
 

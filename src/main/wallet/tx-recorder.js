@@ -432,7 +432,7 @@ function paymentOf(fields) {
  */
 async function resendAndRecord(intentId, options = {}) {
   const response = await resendIntent(intentId, options);
-  const intent = getIntentStore().get(intentId);
+  const intent = await getIntentStore().get(intentId);
   return recordSend(response, {
     kind: intent?.context?.kind ?? KINDS.WALLET_SEND,
     chainId: response.chainId,
@@ -454,7 +454,7 @@ async function resendAndRecord(intentId, options = {}) {
  */
 async function replaceAndRecord(intentId, fees, signer) {
   const response = await replaceIntent(intentId, fees, signer);
-  const intent = getIntentStore().get(intentId);
+  const intent = await getIntentStore().get(intentId);
   return recordSend(response, {
     kind: intent?.context?.kind ?? KINDS.WALLET_SEND,
     chainId: response.chainId,

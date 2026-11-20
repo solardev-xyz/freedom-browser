@@ -175,19 +175,19 @@ function createIntentTracker({
     timer?.unref?.();
   }
 
-  function heldNow() {
+  async function heldNow() {
     try {
-      return store.held();
+      return await store.held();
     } catch {
       return [];
     }
   }
 
-  // When the next pass is due, after one: none with nothing held. Fast
-  // while a broadcast intent has no label (its bracket's reach depends on
-  // it), or while the newest held intent saw activity in the last hour.
-  function scheduleNext() {
-    const held = heldNow();
+  // When the next pass is due, after one, given the held intents: none with
+  // nothing held. Fast while a broadcast intent has no label (its bracket's
+  // reach depends on it), or while the newest held intent saw activity in
+  // the last hour.
+  function scheduleNext(held) {
     if (held.length === 0) return;
     const newest = Math.max(...held.map((intent) => intent.updatedAt ?? intent.createdAt ?? 0));
     const broadcast = held.some((intent) => intent.possiblySent);
@@ -197,9 +197,9 @@ function createIntentTracker({
 
   // A chain with no held intents releases its verified headers (freedom-
   // core design 0005, rule 2).
-  function releaseIdleSegments() {
+  function releaseIdleSegments(held) {
     if (segments.size === 0) return;
-    const stillHeld = new Set(heldNow().map((intent) => intent.chainId));
+    const stillHeld = new Set(held.map((intent) => intent.chainId));
     for (const chainId of segments.keys()) {
       if (!stillHeld.has(chainId)) segments.delete(chainId);
     }
@@ -210,11 +210,12 @@ function createIntentTracker({
   }
 
   // A write to an intent: a broadcast of a held one is checked about a
-  // minute later; a newly held one wakes an idle tracker.
-  function onStoreChange(intentId) {
+  // minute later; a newly held one wakes an idle tracker. Never rejects:
+  // the store calls it and doesn't wait.
+  async function onStoreChange(intentId) {
     let intent;
     try {
-      intent = store.get(intentId);
+      intent = await store.get(intentId);
     } catch {
       return;
     }
@@ -224,7 +225,7 @@ function createIntentTracker({
       if (observations.delete(intentId) || wasShown) emit();
       // Settled or voided outside a pass: its chain may have nothing held
       // left, and no pass may come to release its headers.
-      releaseIdleSegments();
+      releaseIdleSegments(await heldNow());
       return;
     }
     const handedOff = lastHandoffAt(intent);
@@ -246,7 +247,7 @@ function createIntentTracker({
   // replacement committed meanwhile, even one still being written, keeps
   // it held until the next pass reads it.
   async function settle(intent, result) {
-    const current = store.get(intent.intentId);
+    const current = await store.get(intent.intentId);
     if (!current || current.state !== 'held') return false;
     try {
       await store.settle({
@@ -343,19 +344,14 @@ function createIntentTracker({
     return { since, closable: usedNonces.has(view.intentId) };
   }
 
-  // Whether what Couldn't confirm shows changed for any held intent.
+  // Whether what Couldn't confirm shows changed for any held intent, given
+  // the held intents as one read of the store has them.
   function refreshShown(held) {
     let changed = false;
     const ids = new Set();
     for (const intent of held) {
       ids.add(intent.intentId);
-      let view;
-      try {
-        view = store.get(intent.intentId);
-      } catch {
-        view = intent;
-      }
-      const state = couldntConfirm(view);
+      const state = couldntConfirm(intent);
       const showing = state ? (state.closable ? 'closable' : 'shown') : null;
       if ((shown.get(intent.intentId) ?? null) !== showing) changed = true;
       if (showing) shown.set(intent.intentId, showing);
@@ -376,7 +372,7 @@ function createIntentTracker({
     passing = (async () => {
       try {
         await store.ready;
-        const held = heldNow();
+        const held = await heldNow();
         if (held.length === 0) return;
         if (!coreReady()) {
           scheduleAt(now() + schedule.coreDownMs);
@@ -423,14 +419,16 @@ function createIntentTracker({
         for (const id of usedNonces.keys()) {
           if (!held.some((intent) => intent.intentId === id)) usedNonces.delete(id);
         }
-        const shownChanged = refreshShown(heldNow());
+        const shownChanged = refreshShown(await heldNow());
         if (changed.some(Boolean) || shownChanged) emit();
       } finally {
         // Every pass, an empty one or one the core being down cut short
-        // among them.
-        releaseIdleSegments();
+        // among them. One read serves both, as one state did when reads
+        // were synchronous.
+        const after = await heldNow();
+        releaseIdleSegments(after);
         passing = null;
-        scheduleNext();
+        scheduleNext(after);
       }
     })();
     return passing;
@@ -468,12 +466,12 @@ function createIntentTracker({
      * What closing a held intent by hand rests on: the finalized block
      * (`{ block, hash }`) where a verified read in this run showed its
      * nonce past N, while it is shown as Couldn't confirm. Null otherwise:
-     * then it can't be closed.
+     * then it can't be closed. A promise: it reads the store.
      */
-    closeEvidence(intentId) {
+    async closeEvidence(intentId) {
       let view;
       try {
-        view = store.get(intentId);
+        view = await store.get(intentId);
       } catch {
         return null;
       }

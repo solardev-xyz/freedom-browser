@@ -348,8 +348,8 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
     });
     await tracker.pass();
     tracker.stop();
-    expect(mockStore.get(original.intentId).state).toBe('held');
-    expect(mockStore.byKey(key)?.intentId).toBe(original.intentId);
+    expect((await mockStore.get(original.intentId)).state).toBe('held');
+    expect((await mockStore.byKey(key))?.intentId).toBe(original.intentId);
 
     // The same operation, sent again by its key: the held bytes, at 7.
     mockBroadcast.mockImplementation(async (_chainId, bytes) => ({

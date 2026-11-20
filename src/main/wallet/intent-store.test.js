@@ -135,7 +135,7 @@ describe('commit', () => {
     }
     // Nothing was written, not even the file.
     expect(fs.existsSync(filePath())).toBe(false);
-    expect(store.held()).toEqual([]);
+    expect(await store.held()).toEqual([]);
   });
 
   test('an unsigned transaction and an unsupported type are refused', async () => {
@@ -204,7 +204,7 @@ describe('commit', () => {
     expect(committed).toMatchObject({ state: 'held', recovered: false, hash, raw });
 
     const { store } = await started();
-    expect(store.get(id)).toMatchObject({
+    expect(await store.get(id)).toMatchObject({
       intentId: id,
       chainId: CHAIN,
       sender: ALICE.address.toLowerCase(),
@@ -226,8 +226,8 @@ describe('commit', () => {
         gasPrice: null,
       },
     });
-    expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([7]);
-    expect(store.held().map((intent) => intent.intentId)).toEqual([id]);
+    expect(await store.heldNonces(CHAIN, ALICE.address)).toEqual([7]);
+    expect((await store.held()).map((intent) => intent.intentId)).toEqual([id]);
   });
 
   test('the commit is on disk when it resolves, with this run on the line', async () => {
@@ -269,8 +269,8 @@ describe('commit', () => {
     });
     // Other accounts have their own nonces.
     await expect(commitNew(store, { nonce: 0, signer: BOB })).resolves.toMatchObject({ nonce: 0 });
-    expect(store.byKey('safe-exec:100:0xabc')).toMatchObject({ nonce: 5 });
-    expect(store.byKey('safe-exec:100:0xdef')).toBeNull();
+    expect(await store.byKey('safe-exec:100:0xabc')).toMatchObject({ nonce: 5 });
+    expect(await store.byKey('safe-exec:100:0xdef')).toBeNull();
   });
 
   test('a replacement keeps the nonce and the payment; anything else is refused', async () => {
@@ -412,9 +412,9 @@ describe('settle and void', () => {
     });
 
     const { store } = await started();
-    expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([2]);
-    expect(store.held().map((intent) => intent.intentId)).toEqual([kept.intentId]);
-    expect(store.get(paid.intentId)).toMatchObject({ state: 'settled', raw: null });
+    expect(await store.heldNonces(CHAIN, ALICE.address)).toEqual([2]);
+    expect((await store.held()).map((intent) => intent.intentId)).toEqual([kept.intentId]);
+    expect(await store.get(paid.intentId)).toMatchObject({ state: 'settled', raw: null });
     // Startup compaction left tombstones of the settled ones, without bytes.
     expect((await records()).map((record) => [record.type, record.intent_id])).toEqual([
       ['tombstone', paid.intentId],
@@ -442,8 +442,8 @@ describe('settle and void', () => {
     expect((await records()).map((record) => record.type)).toEqual(['commit', 'void']);
 
     const { store } = await started();
-    expect(store.get(voided.intentId)).toMatchObject({ state: 'voided', raw: null });
-    expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
+    expect(await store.get(voided.intentId)).toMatchObject({ state: 'voided', raw: null });
+    expect(await store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
     expect(await records()).toEqual([
       expect.objectContaining({ type: 'tombstone', intent_id: voided.intentId, closed: 'voided' }),
     ]);
@@ -473,13 +473,13 @@ describe('settle and void', () => {
     await expect(store.void(intent.intentId, stale)).rejects.toMatchObject({
       code: 'INTENT_LOCK_REQUIRED',
     });
-    expect(store.get(intent.intentId).state).toBe('held');
+    expect((await store.get(intent.intentId)).state).toBe('held');
   });
 
   test('an intent with no handoffs, created in this run, can be voided: nothing was sent', async () => {
     const { store, reservations } = await started();
     const intent = await commitNew(store, { nonce: 0 });
-    expect(store.voidRefusal(intent.intentId)).toBeNull();
+    expect(await store.voidRefusal(intent.intentId)).toBeNull();
     await expect(
       underLock(reservations, intent, (lock) => store.void(intent.intentId, lock))
     ).resolves.toMatchObject({ state: 'voided' });
@@ -531,11 +531,11 @@ describe('settle and void', () => {
       outcome: 'not_sent',
     });
     expect(fs.readFileSync(filePath())).toEqual(before);
-    expect(store.get(intent.intentId)).toMatchObject({ handoffCount: 1, possiblySent: true });
+    expect(await store.get(intent.intentId)).toMatchObject({ handoffCount: 1, possiblySent: true });
     // Sent again in this run, and that one provably wasn't sent.
     await sendNotSent(store, intent.intentId);
 
-    expect(store.voidRefusal(intent.intentId)).toMatch(/recovered from disk/);
+    expect(await store.voidRefusal(intent.intentId)).toMatch(/recovered from disk/);
     await expect(
       underLock(reservations, intent, (lock) => store.void(intent.intentId, lock))
     ).rejects.toMatchObject({ code: 'INTENT_VOID_REFUSED' });
@@ -546,17 +546,17 @@ describe('settle and void', () => {
     const intent = await commitNew(first.store, { nonce: 0 });
     await sendNotSent(first.store, intent.intentId);
     await sendNotSent(first.store, intent.intentId);
-    expect(first.store.voidRefusal(intent.intentId)).toBeNull();
+    expect(await first.store.voidRefusal(intent.intentId)).toBeNull();
 
     const { store, reservations } = await started();
-    expect(store.get(intent.intentId).recovered).toBe(true);
+    expect((await store.get(intent.intentId)).recovered).toBe(true);
     await expect(
       underLock(reservations, intent, (lock) => store.void(intent.intentId, lock))
     ).rejects.toMatchObject({
       code: 'INTENT_VOID_REFUSED',
       message: expect.stringContaining('recovered from disk'),
     });
-    expect(store.held()).toHaveLength(1);
+    expect(await store.held()).toHaveLength(1);
   });
 
   test('A@7 and B@8 held: voiding A is refused; B first, then A', async () => {
@@ -573,7 +573,7 @@ describe('settle and void', () => {
     });
     await underLock(reservations, b, (lock) => store.void(b.intentId, lock));
     await underLock(reservations, a, (lock) => store.void(a.intentId, lock));
-    expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
+    expect(await store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
   });
 
   test('a void and a resend racing for the lock: the resend refuses the voided intent', async () => {
@@ -588,7 +588,7 @@ describe('settle and void', () => {
     });
     const resend = underLock(reservations, intent, async () => {
       resendRan = true;
-      const current = store.get(intent.intentId);
+      const current = await store.get(intent.intentId);
       expect(current).toMatchObject({ state: 'voided', raw: null });
       return store.handoff(intent.intentId);
     });
@@ -645,10 +645,10 @@ describe('loading', () => {
   test('a missing file behaves as a restore: nothing held, nothing to send again', async () => {
     const { store, reservations } = await started();
     expect(store.quarantined).toBeNull();
-    expect(store.held()).toEqual([]);
-    expect(store.list()).toEqual([]);
-    expect(store.byKey('safe-deploy:100:0xabc')).toBeNull();
-    expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
+    expect(await store.held()).toEqual([]);
+    expect(await store.list()).toEqual([]);
+    expect(await store.byKey('safe-deploy:100:0xabc')).toBeNull();
+    expect(await store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
     expect(fs.existsSync(filePath())).toBe(false);
     const nonce = await reservations.reserve(
       { chainId: CHAIN, sender: ALICE.address, readPending: async () => 12, store },
@@ -676,8 +676,8 @@ describe('loading', () => {
     });
     expect(fs.readFileSync(quarantined.path, 'utf8')).toBe(damaged);
     expect(fs.existsSync(filePath())).toBe(false);
-    expect(store.held()).toEqual([]);
-    expect(store.get(intent.intentId)).toBeNull();
+    expect(await store.held()).toEqual([]);
+    expect(await store.get(intent.intentId)).toBeNull();
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('were damaged'));
 
     // It works again from empty.
@@ -704,7 +704,7 @@ describe('loading', () => {
 
     const { store } = await started();
     expect(store.quarantined.reason).toContain('must keep its chain, sender and nonce');
-    expect(store.get(intent.intentId)).toBeNull();
+    expect(await store.get(intent.intentId)).toBeNull();
   });
 
   test('a void line its own run could not have written quarantines the file', async () => {
@@ -719,7 +719,7 @@ describe('loading', () => {
 
     const { store } = await started();
     expect(store.quarantined.reason).toContain('not all of it happened in this run of main');
-    expect(store.held()).toEqual([]);
+    expect(await store.held()).toEqual([]);
   });
 
   test('a torn last line is dropped quietly, without quarantine', async () => {
@@ -729,18 +729,16 @@ describe('loading', () => {
 
     const { store } = await started();
     expect(store.quarantined).toBeNull();
-    expect(store.get(intent.intentId)).toMatchObject({ state: 'held' });
+    expect(await store.get(intent.intentId)).toMatchObject({ state: 'held' });
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('unfinished last line'));
     expect((await readJournal(filePath())).tornTail).toBe(0);
   });
 
   test('reads wait for the load; writes start it', async () => {
     const { store } = start();
-    expect(() => store.held()).toThrow(
-      expect.objectContaining({ code: 'INTENT_STORE_UNAVAILABLE' })
-    );
+    await expect(store.held()).rejects.toMatchObject({ code: 'INTENT_STORE_UNAVAILABLE' });
     const intent = await commitNew(store, { nonce: 0 });
-    expect(store.get(intent.intentId)).toMatchObject({ state: 'held' });
+    expect(await store.get(intent.intentId)).toMatchObject({ state: 'held' });
   });
 
   test('a load that fails leaves the store unavailable, and is tried again', async () => {
@@ -762,7 +760,7 @@ describe('loading', () => {
     await expect(commitNew(store, { nonce: 0 })).rejects.toMatchObject({
       code: 'INTENT_WRITE_FAILED',
     });
-    expect(store.held()).toEqual([]);
+    expect(await store.held()).toEqual([]);
     expect(fs.existsSync(filePath())).toBe(false);
   });
 });
@@ -779,7 +777,7 @@ describe('bounds', () => {
     });
     // Other accounts are not affected, and a settled intent makes room.
     await expect(commitNew(store, { nonce: 0, signer: BOB })).resolves.toBeTruthy();
-    const oldest = store.held().find((intent) => intent.sender === ALICE.address.toLowerCase());
+    const oldest = (await store.held()).find((intent) => intent.sender === ALICE.address.toLowerCase());
     await store.settle({ intentId: oldest.intentId, label: 'paid', hash: oldest.hash, block: 9 });
     await expect(commitNew(store, { nonce: 32 })).resolves.toMatchObject({ nonce: 32 });
   });
@@ -788,7 +786,7 @@ describe('bounds', () => {
     // One small intent's budget, measured.
     const scratch = await started();
     await commitNew(scratch.store, { nonce: 0 });
-    const perIntent = scratch.store.usage().budget;
+    const perIntent = (await scratch.store.usage()).budget;
     fs.rmSync(filePath());
 
     // Room for two intents' budgets, not three.
@@ -835,7 +833,7 @@ describe('separate from payment history', () => {
 
     expect(fs.readFileSync(filePath())).toEqual(before);
     const next = await started();
-    expect(next.store.get(intent.intentId)).toMatchObject({ state: 'held', raw: intent.raw });
+    expect(await next.store.get(intent.intentId)).toMatchObject({ state: 'held', raw: intent.raw });
   });
 
   test('main loads the records at startup, near the other wallet stores', () => {
@@ -880,7 +878,7 @@ describe('review fixes (#702)', () => {
         running = await started();
         await running.store.compact();
         expect(running.store.quarantined).toBeNull();
-        expect(running.store.get(intent.intentId)).toMatchObject({ state: closed, raw: null });
+        expect(await running.store.get(intent.intentId)).toMatchObject({ state: closed, raw: null });
         // The reviewer's probe: the same id as a new original at another
         // nonce. The store names originals, so no caller can.
         await expect(
@@ -933,7 +931,7 @@ describe('review fixes (#702)', () => {
 
       const { store } = await started();
       expect(store.quarantined).toBeNull();
-      expect(store.held().map((intent) => intent.intentId)).toEqual([b.intentId]);
+      expect((await store.held()).map((intent) => intent.intentId)).toEqual([b.intentId]);
     });
 
     test('a late outcome before compaction is ignored too', async () => {
@@ -980,7 +978,7 @@ describe('review fixes (#702)', () => {
 
         const { store } = await started();
         expect(store.quarantined).toBeNull();
-        expect(store.get(intent.intentId)).toMatchObject({
+        expect(await store.get(intent.intentId)).toMatchObject({
           state: kind === 'void' ? 'voided' : 'settled',
           raw: null,
         });
@@ -1004,7 +1002,7 @@ describe('review fixes (#702)', () => {
 
       const { store } = await started({ limits });
       expect(store.quarantined).toBeNull();
-      expect(store.get(intent.intentId)).toMatchObject({ state: 'held', handoffCount: 64 });
+      expect(await store.get(intent.intentId)).toMatchObject({ state: 'held', handoffCount: 64 });
     });
 
     test('a bound too small for an intent refuses the intent, and loses nothing', async () => {
@@ -1035,7 +1033,7 @@ describe('review fixes (#702)', () => {
       let refused = 0;
 
       for (let step = 0; step < 220; step += 1) {
-        const held = running.store.held();
+        const held = await running.store.held();
         const pick = random();
         const intent = held.length ? held[Math.floor(random() * held.length)] : null;
         try {
@@ -1123,7 +1121,7 @@ describe('review fixes (#702)', () => {
       for (let n = 0; n < 64; n += 1) await sendNotSent(first.store, intent.intentId);
 
       const running = await started();
-      expect(running.store.get(intent.intentId)).toMatchObject({
+      expect(await running.store.get(intent.intentId)).toMatchObject({
         recovered: true,
         handoffCount: 64,
         possiblySent: false,
@@ -1178,7 +1176,7 @@ describe('review fixes (#702)', () => {
 
       const { store } = await started();
       expect(store.quarantined.reason).toContain('not signed by its sender');
-      expect(store.held()).toEqual([]);
+      expect(await store.held()).toEqual([]);
     });
 
     test('so do they in a snapshot', async () => {
@@ -1214,7 +1212,7 @@ describe('review fixes (#702)', () => {
 
       const { store } = await started();
       expect(store.quarantined.reason).toContain("not above the account's held nonce 7");
-      expect(store.held()).toEqual([]);
+      expect(await store.held()).toEqual([]);
     });
 
     test('two held intents with one key quarantine the file', async () => {
@@ -1264,10 +1262,10 @@ describe('review fixes (#702)', () => {
         for (let restart = 0; restart < 2; restart += 1) {
           const { store } = await started();
           expect(store.quarantined).toBeNull();
-          expect(store.heldNonces(CHAIN, ALICE.address)).toEqual([7]);
-          expect(store.get(c.intentId).state).toBe('held');
-          expect(store.get(a.intentId).state).toBe(kind === 'void' ? 'voided' : 'settled');
-          expect(store.byKey('safe-deploy:100:0xabc').intentId).toBe(c.intentId);
+          expect(await store.heldNonces(CHAIN, ALICE.address)).toEqual([7]);
+          expect((await store.get(c.intentId)).state).toBe('held');
+          expect((await store.get(a.intentId)).state).toBe(kind === 'void' ? 'voided' : 'settled');
+          expect((await store.byKey('safe-deploy:100:0xabc')).intentId).toBe(c.intentId);
         }
       }
     );
@@ -1304,8 +1302,8 @@ describe('review fixes (#702)', () => {
       ]);
 
       const { store } = await started({ limits: { tombstones: 2 } });
-      expect(store.get(closed[0].intentId)).toBeNull();
-      expect(store.get(closed[2].intentId)).toMatchObject({ state: 'settled' });
+      expect(await store.get(closed[0].intentId)).toBeNull();
+      expect(await store.get(closed[2].intentId)).toMatchObject({ state: 'settled' });
       await expect(store.handoff(closed[0].intentId)).rejects.toMatchObject({
         code: 'INTENT_UNKNOWN',
       });
@@ -1348,7 +1346,7 @@ describe('review fixes (#702)', () => {
         handoffs: { count: 3, possibly_sent: true },
       });
       expect(await records()).toHaveLength(1);
-      expect(second.store.get(intent.intentId)).toMatchObject({
+      expect(await second.store.get(intent.intentId)).toMatchObject({
         raw: bump.raw.toLowerCase(),
         hashes: [{ raw: null }, { raw: bump.raw.toLowerCase() }],
         handoffCount: 3,
@@ -1378,7 +1376,7 @@ describe('review fixes (#702)', () => {
 
       const { store } = await started();
       expect(store.quarantined).toBeNull();
-      expect(store.get(intent.intentId)).toMatchObject({ handoffCount: 1, possiblySent: false });
+      expect(await store.get(intent.intentId)).toMatchObject({ handoffCount: 1, possiblySent: false });
     });
 
     test('a void after a compaction mid-run replays as valid', async () => {
@@ -1392,7 +1390,7 @@ describe('review fixes (#702)', () => {
 
       const { store } = await started();
       expect(store.quarantined).toBeNull();
-      expect(store.get(intent.intentId).state).toBe('voided');
+      expect((await store.get(intent.intentId)).state).toBe('voided');
     });
   });
 });
@@ -1429,10 +1427,10 @@ describe('review fixes (#702, round 2)', () => {
           });
         }
         await running.store.compact();
-        expect(running.store.get(old.intentId)).toBeNull();
+        expect(await running.store.get(old.intentId)).toBeNull();
 
         running = await started({ limits });
-        expect(running.store.get(old.intentId)).toBeNull();
+        expect(await running.store.get(old.intentId)).toBeNull();
         const again = await sign({ nonce: 10 });
         await expect(
           running.store.commit({
@@ -1490,7 +1488,7 @@ describe('review fixes (#702, round 2)', () => {
         await sendNotSent(running.store, intent.intentId);
         if (n % 500 === 0) {
           await running.store.compact();
-          expect(running.store.get(intent.intentId)).toMatchObject({
+          expect(await running.store.get(intent.intentId)).toMatchObject({
             handoffs: [],
             handoffCount: n,
             possiblySent: false,
@@ -1500,14 +1498,14 @@ describe('review fixes (#702, round 2)', () => {
       const open = await running.store.handoff(intent.intentId);
       await running.store.compact();
       // Open handoffs stay, as they do in the file.
-      expect(running.store.get(intent.intentId).handoffs).toEqual([
+      expect((await running.store.get(intent.intentId)).handoffs).toEqual([
         expect.objectContaining({ handoffId: open.handoffId, outcome: null }),
       ]);
-      expect(running.store.get(intent.intentId)).toMatchObject({ handoffCount: 2001 });
+      expect(await running.store.get(intent.intentId)).toMatchObject({ handoffCount: 2001 });
 
       // Restart parity: what memory said is what the file says.
       const { store } = await started();
-      expect(store.get(intent.intentId)).toMatchObject({
+      expect(await store.get(intent.intentId)).toMatchObject({
         handoffs: [],
         handoffCount: 2001,
         possiblySent: true, // the open one, at a run boundary
@@ -1538,8 +1536,8 @@ describe('review fixes (#702, round 2)', () => {
       const intent = await commitNew(running.store, { nonce: 0 });
       for (let n = 0; n < 5; n += 1) await sendNotSent(running.store, intent.intentId);
       await running.store.compact();
-      expect(running.store.get(intent.intentId)).toMatchObject({ handoffs: [], handoffCount: 5 });
-      expect(running.store.voidRefusal(intent.intentId)).toBeNull();
+      expect(await running.store.get(intent.intentId)).toMatchObject({ handoffs: [], handoffCount: 5 });
+      expect(await running.store.voidRefusal(intent.intentId)).toBeNull();
       jest
         .spyOn(require('fs/promises'), 'rename')
         .mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }));
@@ -1548,7 +1546,7 @@ describe('review fixes (#702, round 2)', () => {
 
       const { store } = await started();
       expect(store.quarantined).toBeNull();
-      expect(store.get(intent.intentId).state).toBe('voided');
+      expect((await store.get(intent.intentId)).state).toBe('voided');
     });
 
     test('folding keeps a void refused once any folded handoff may have been sent', async () => {
@@ -1562,7 +1560,7 @@ describe('review fixes (#702, round 2)', () => {
       });
       await sendNotSent(running.store, intent.intentId);
       await running.store.compact();
-      expect(running.store.get(intent.intentId)).toMatchObject({
+      expect(await running.store.get(intent.intentId)).toMatchObject({
         handoffs: [],
         possiblySent: true,
       });
@@ -1578,7 +1576,7 @@ describe('review fixes (#702, round 2)', () => {
       const scratch = await started();
       await commitNew(scratch.store, { nonce: 0 });
       await commitNew(scratch.store, { nonce: 1 });
-      const { budget } = scratch.store.usage();
+      const { budget } = await scratch.store.usage();
       fs.rmSync(filePath());
       return budget;
     }
@@ -1651,7 +1649,7 @@ describe('settling against the hashes that were read', () => {
       })
     ).rejects.toMatchObject({ code: 'INTENT_CHANGED' });
     expect((await records()).length).toBe(before);
-    expect(store.get(view.intentId).state).toBe('held');
+    expect((await store.get(view.intentId)).state).toBe('held');
     await expect(
       store.settle({
         intentId: view.intentId,
@@ -1738,7 +1736,7 @@ describe('settling against the hashes that were read', () => {
     await committing;
     await pass;
 
-    const after = store.get(view.intentId);
+    const after = await store.get(view.intentId);
     expect(after.hashes).toHaveLength(2);
     expect(after.state).toBe('held');
     expect(after.hashes.every((entry) => entry.raw !== null)).toBe(true);
@@ -1746,7 +1744,7 @@ describe('settling against the hashes that were read', () => {
 
     // The next pass reads both hashes, and settles.
     await tracker.pass();
-    expect(store.get(view.intentId)).toMatchObject({
+    expect(await store.get(view.intentId)).toMatchObject({
       state: 'settled',
       settlement: { label: 'taken' },
     });
@@ -1797,16 +1795,16 @@ test("voiding a chain's last held intent releases its verified headers, at once 
   });
   tracker.start();
   await tracker.pass();
-  expect(store.get(first.intentId).state).toBe('settled');
-  expect(store.get(last.intentId).state).toBe('held');
+  expect((await store.get(first.intentId)).state).toBe('settled');
+  expect((await store.get(last.intentId)).state).toBe('held');
   expect(tracker.verifiedHeaderCount(CHAIN)).toBe(101); // 200 down to 100
 
   // The user voids the last held intent between passes.
-  expect(store.voidRefusal(last.intentId)).toBeNull();
+  expect(await store.voidRefusal(last.intentId)).toBeNull();
   await reservations.withAccountLock({ chainId: CHAIN, sender: ALICE.address }, (lock) =>
     store.void(last.intentId, lock)
   );
-  expect(store.held()).toHaveLength(0);
+  expect(await store.held()).toHaveLength(0);
   expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
 
   await tracker.pass();
@@ -1848,7 +1846,7 @@ describe('state history (#94)', () => {
 
       // Replayed after a restart, then carried by the compacted snapshot.
       let running = await started();
-      expect(running.store.get(intent.intentId)).toMatchObject({
+      expect(await running.store.get(intent.intentId)).toMatchObject({
         state: 'held',
         bracket: BRACKET,
         unreadSince: 1234,
@@ -1857,7 +1855,7 @@ describe('state history (#94)', () => {
         expect.objectContaining({ type: 'held', bracket: BRACKET, unread_since: 1234 }),
       ]);
       running = await started();
-      expect(running.store.get(intent.intentId)).toMatchObject({
+      expect(await running.store.get(intent.intentId)).toMatchObject({
         bracket: BRACKET,
         unreadSince: 1234,
       });
@@ -1872,7 +1870,7 @@ describe('state history (#94)', () => {
     test("a held intent's budget has room for its widest tracked state", async () => {
       const { store, mod } = await started();
       const intent = await commitNew(store, { nonce: 7 });
-      const { budget } = store.usage();
+      const { budget } = await store.usage();
       const widest = Number.MAX_SAFE_INTEGER;
       await store.track({
         intentId: intent.intentId,
@@ -1880,7 +1878,7 @@ describe('state history (#94)', () => {
         unreadSince: widest,
       });
       await store.compact();
-      expect(store.usage().budget).toBe(budget);
+      expect((await store.usage()).budget).toBe(budget);
       // The file is the intent's snapshot alone, within what its budget
       // keeps for it beside its owed lines.
       const { terminal, handoff, outcome } = mod.LINE_MAX;
@@ -1921,7 +1919,7 @@ describe('state history (#94)', () => {
       // Room for one intent's budget and a little more.
       const scratch = await started();
       await commitNew(scratch.store, { nonce: 0 });
-      const perIntent = scratch.store.usage().budget;
+      const perIntent = (await scratch.store.usage()).budget;
       fs.rmSync(filePath());
 
       const limits = { journalBytes: perIntent + 600, readBytes: perIntent * 8 };
@@ -1935,13 +1933,13 @@ describe('state history (#94)', () => {
         });
         expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(limits.journalBytes);
       }
-      expect(store.get(intent.intentId).bracket.number).toBe(1039);
+      expect((await store.get(intent.intentId)).bracket.number).toBe(1039);
       // A send again still fits.
       await expect(store.handoff(intent.intentId)).resolves.toMatchObject({ hash: intent.hash });
       expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(limits.journalBytes);
       const reloaded = await started({ limits });
       expect(reloaded.store.quarantined).toBeNull();
-      expect(reloaded.store.get(intent.intentId).bracket.number).toBe(1039);
+      expect((await reloaded.store.get(intent.intentId)).bracket.number).toBe(1039);
     });
   });
 
@@ -1975,7 +1973,7 @@ describe('state history (#94)', () => {
         retirement: { block: 3000, at: expect.any(Number) },
         hashes: hashes.map((hash) => expect.objectContaining({ hash, raw: null })),
       });
-      expect(running.store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
+      expect(await running.store.heldNonces(CHAIN, ALICE.address)).toEqual([]);
       await expect(running.store.handoff(intent.intentId)).rejects.toMatchObject({
         code: 'INTENT_NOT_HELD',
         message: 'This payment was closed.',
@@ -1984,7 +1982,7 @@ describe('state history (#94)', () => {
       for (let restart = 0; restart < 3; restart += 1) {
         running = await started();
         expect(running.store.quarantined).toBeNull();
-        expect(running.store.get(intent.intentId)).toMatchObject({
+        expect(await running.store.get(intent.intentId)).toMatchObject({
           state: 'retired',
           raw: null,
           hashes: hashes.map((hash) => expect.objectContaining({ hash })),
@@ -2020,7 +2018,7 @@ describe('state history (#94)', () => {
           { chainId: CHAIN, sender: intent.sender }
         )
       ).rejects.toMatchObject({ code: 'INTENT_LOCK_REQUIRED' });
-      expect(store.get(intent.intentId).state).toBe('held');
+      expect((await store.get(intent.intentId)).state).toBe('held');
     });
 
     test('only for the hashes the user saw: a replacement committed meanwhile, one still being written included, closes nothing', async () => {
@@ -2040,7 +2038,7 @@ describe('state history (#94)', () => {
       const closing = retireUnderLock(running, intent);
       await expect(closing).rejects.toMatchObject({ code: 'INTENT_CHANGED' });
       await replacing;
-      expect(running.store.get(intent.intentId)).toMatchObject({ state: 'held', hash: bump.hash });
+      expect(await running.store.get(intent.intentId)).toMatchObject({ state: 'held', hash: bump.hash });
       expect((await records()).map((record) => record.type)).toEqual(['commit', 'commit']);
       // Without the hashes it closes nothing either.
       await expect(retireUnderLock(running, intent, [])).rejects.toMatchObject({
@@ -2068,7 +2066,7 @@ describe('state history (#94)', () => {
         fs.writeFileSync(filePath(), Buffer.concat([before, line.subarray(0, length)]));
         const { store } = await started();
         expect(store.quarantined).toBeNull();
-        const state = store.get(intent.intentId);
+        const state = await store.get(intent.intentId);
         if (length >= line.length - 1) {
           expect(state).toMatchObject({ state: 'retired', hashes: [{ hash: intent.hash }] });
         } else {
@@ -2076,7 +2074,7 @@ describe('state history (#94)', () => {
         }
         outcomes.add(state.state);
         // Whatever it found, a restart after that finds the same.
-        expect((await started()).store.get(intent.intentId).state).toBe(state.state);
+        expect((await (await started()).store.get(intent.intentId)).state).toBe(state.state);
       }
       expect([...outcomes].sort()).toEqual(['held', 'retired']);
 
@@ -2085,7 +2083,7 @@ describe('state history (#94)', () => {
       fs.writeFileSync(filePath(), after);
       fs.writeFileSync(`${filePath()}.compact-crash.tmp`, 'partial');
       const { store } = await started();
-      expect(store.get(intent.intentId)).toMatchObject({
+      expect(await store.get(intent.intentId)).toMatchObject({
         state: 'retired',
         hashes: [{ hash: intent.hash }],
       });
@@ -2101,8 +2099,8 @@ describe('state history (#94)', () => {
       await expect(retireUnderLock(running, intent)).rejects.toMatchObject({
         code: 'INTENT_WRITE_FAILED',
       });
-      expect(running.store.get(intent.intentId)).toMatchObject({ state: 'held', raw: intent.raw });
-      expect((await started()).store.get(intent.intentId).state).toBe('held');
+      expect(await running.store.get(intent.intentId)).toMatchObject({ state: 'held', raw: intent.raw });
+      expect((await (await started()).store.get(intent.intentId)).state).toBe('held');
     });
 
     test('a tombstone of a retired intent must keep its hashes, and only a retired one has them', async () => {
@@ -2152,7 +2150,7 @@ describe('withdrawOrigin', () => {
     const heard = [];
     store.onChange((id) => heard.push(id));
     await expect(store.withdrawOrigin(intent.intentId)).resolves.toBe(true);
-    const after = store.get(intent.intentId);
+    const after = await store.get(intent.intentId);
     expect(after.context).toEqual({ kind: 'safe-send', origin: null, key: 'safe-exec:100:0xabc', walletIndex: 0 });
     expect(after.state).toBe('held');
     expect(after.hashes.map((entry) => entry.hash)).toEqual([hash]);
@@ -2162,10 +2160,10 @@ describe('withdrawOrigin', () => {
     await expect(store.withdrawOrigin('unknown-intent')).resolves.toBe(false);
     // After a restart of main, from the file: still no site, still sendable.
     const reloaded = (await started()).store;
-    expect(reloaded.get(intent.intentId)).toMatchObject({
+    expect(await reloaded.get(intent.intentId)).toMatchObject({
       state: 'held',
       context: { origin: null, key: 'safe-exec:100:0xabc' },
     });
-    expect(reloaded.byKey('safe-exec:100:0xabc').intentId).toBe(intent.intentId);
+    expect((await reloaded.byKey('safe-exec:100:0xabc')).intentId).toBe(intent.intentId);
   });
 });

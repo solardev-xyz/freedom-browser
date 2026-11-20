@@ -11,7 +11,8 @@ const CHAIN = 100;
 const SENDER = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const OTHER = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
 
-// A stand-in for the intent store: a commit holds the nonce.
+// A stand-in for the intent store: a commit holds the nonce. Its read
+// answers a promise, as the real store's does.
 function fakeStore(held = []) {
   const nonces = held.map((nonce) => ({ chainId: CHAIN, sender: SENDER.toLowerCase(), nonce }));
   return {
@@ -19,7 +20,7 @@ function fakeStore(held = []) {
     commit(chainId, sender, nonce) {
       nonces.push({ chainId, sender: sender.toLowerCase(), nonce });
     },
-    heldNonces: jest.fn((chainId, sender) =>
+    heldNonces: jest.fn(async (chainId, sender) =>
       nonces
         .filter((n) => n.chainId === chainId && n.sender === sender.toLowerCase())
         .map((n) => n.nonce)
@@ -66,6 +67,45 @@ describe('reserve', () => {
     expect(events).toEqual(['first got 7', 'first committed', 'second got 8']);
     // `pending` is read inside the lock, once per reservation.
     expect(readPending).toHaveBeenCalledTimes(2);
+  });
+
+  // PRF-6(b1): the held nonces are an asynchronous read, as a round trip to
+  // the identity core will be. Each reservation reads them under the lock,
+  // so a second one can't read before the first has committed and take the
+  // same nonce, however slow the read.
+  test('a slow read of the held nonces lets no second reservation take the same nonce', async () => {
+    const store = fakeStore();
+    const events = [];
+    const read = store.heldNonces.getMockImplementation();
+    store.heldNonces.mockImplementation(async (chainId, sender) => {
+      // The answer is the state as the read was asked; it arrives later.
+      const answer = read(chainId, sender);
+      events.push('read');
+      await delay(20);
+      return answer;
+    });
+    const readPending = async () => 7;
+    const send = (name) =>
+      reserve({ chainId: CHAIN, sender: SENDER, readPending, store }, async (nonce) => {
+        events.push(`${name} got ${nonce}`);
+        await delay(5); // signing
+        store.commit(CHAIN, SENDER, nonce);
+        events.push(`${name} committed`);
+        return nonce;
+      });
+
+    expect(await Promise.all([send('first'), send('second'), send('third')])).toEqual([7, 8, 9]);
+    expect(events).toEqual([
+      'read',
+      'first got 7',
+      'first committed',
+      'read',
+      'second got 8',
+      'second committed',
+      'read',
+      'third got 9',
+      'third committed',
+    ]);
   });
 
   test('a rejection in the callback releases the reservation with nothing held', async () => {
