@@ -151,6 +151,168 @@ describe('rpc-manager over the identity core (PRF-6(e))', () => {
     expect(rpc.cachedApiKeys().get('alchemy')).toBe(`${KEY}-new`);
   });
 
+  describe('each read takes a new generation: only the latest started applies', () => {
+    function heldReads() {
+      const held = [];
+      core.secrets.rpcApiKeys = () =>
+        new Promise((resolve, reject) => held.push({ resolve, reject }));
+      return held;
+    }
+    const answer = (key) => ({ keys: [{ id: 'alchemy', api_key: key }] });
+
+    test('an older read answered while a newer one is still out is dropped', async () => {
+      load();
+      const held = heldReads();
+      const older = rpc.refreshKeys();
+      const newer = rpc.refreshKeys();
+      held[0].resolve(answer(`${KEY}-old`));
+      await expect(older).resolves.toBe(false);
+      expect(rpc.cachedApiKeys().size).toBe(0);
+      expect(onApiKeysChanged).not.toHaveBeenCalled();
+      held[1].resolve(answer(`${KEY}-new`));
+      await expect(newer).resolves.toBe(true);
+      expect(rpc.cachedApiKeys().get('alchemy')).toBe(`${KEY}-new`);
+    });
+
+    test('an older read answered after a newer one failed is dropped', async () => {
+      load();
+      const held = heldReads();
+      const older = rpc.refreshKeys();
+      const newer = rpc.refreshKeys();
+      held[1].reject(Object.assign(new Error('core gone'), { code: 'unavailable' }));
+      await expect(newer).rejects.toMatchObject({ code: 'unavailable' });
+      held[0].resolve(answer(`${KEY}-old`));
+      await expect(older).resolves.toBe(false);
+      expect(rpc.cachedApiKeys().size).toBe(0);
+      expect(onApiKeysChanged).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a set or remove the core took is applied before it's read back (fail closed)", () => {
+    const failRead = () =>
+      core.failNext('secrets.rpc_api_keys', { code: 'unavailable', message: 'core gone' });
+
+    beforeEach(() => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    async function loadWithKey() {
+      fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: KEY, enabled: true, addedAt: 1 } }));
+      load();
+      await rpc.refreshKeys();
+      onApiKeysChanged.mockClear();
+      const listener = jest.fn();
+      rpc.onKeysChanged(listener);
+      return listener;
+    }
+
+    test('a rotation whose read back fails reports success and serves only the new key', async () => {
+      const listener = await loadWithKey();
+      failRead();
+      await expect(rpc.setApiKey('alchemy', `${KEY}-new`, { caller: 'chrome' })).resolves.toEqual({
+        success: true,
+      });
+      expect(core.calls.slice(-2).map(({ method }) => method)).toEqual([
+        'secrets.set_rpc_api_key',
+        'secrets.rpc_api_keys',
+      ]);
+      expect(rpc.cachedApiKeys().get('alchemy')).toBe(`${KEY}-new`);
+      expect(rpc.getEffectiveRpcUrls(1).filter((url) => url.includes(KEY))).toEqual([
+        expect.stringContaining(`${KEY}-new`),
+      ]);
+      expect(onApiKeysChanged).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledTimes(1);
+      // The replaced key is kept for redaction only.
+      expect(rpc.retiredApiKeys()).toEqual([KEY]);
+      expect(JSON.stringify(logged)).toContain('core gone');
+      expect(JSON.stringify(logged)).not.toContain(KEY);
+    });
+
+    test('a remove whose read back fails never serves the key again, even from an older read', async () => {
+      const listener = await loadWithKey();
+      // A read started before the remove, answered with the key after it.
+      const held = [];
+      const realRead = core.secrets.rpcApiKeys;
+      core.secrets.rpcApiKeys = () => new Promise((resolve) => held.push(resolve));
+      const older = rpc.refreshKeys();
+      core.secrets.rpcApiKeys = realRead;
+
+      failRead();
+      await expect(rpc.removeApiKey('alchemy', { caller: 'chrome' })).resolves.toEqual({
+        success: true,
+      });
+      expect(rpc.hasApiKey('alchemy')).toBe(false);
+      expect(keyedUrls()).toEqual([]);
+      expect(onApiKeysChanged).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      held[0]({ keys: [{ id: 'alchemy', api_key: KEY }] });
+      await expect(older).resolves.toBe(false);
+      expect(rpc.hasApiKey('alchemy')).toBe(false);
+      expect(keyedUrls()).toEqual([]);
+      expect(rpc.retiredApiKeys()).toEqual([KEY]);
+    });
+
+    test("a failed read back is retried with a backoff until it converges on the core's keys", async () => {
+      await loadWithKey();
+      failRead();
+      await rpc.removeApiKey('alchemy', { caller: 'chrome' });
+      const reads = () => core.calls.filter(({ method }) => method === 'secrets.rpc_api_keys').length;
+      const before = reads();
+      // Meanwhile the core holds another provider's key.
+      fs.writeFileSync(keysPath, JSON.stringify({ infura: { apiKey: `${KEY}-i`, enabled: true } }));
+
+      failRead();
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(reads()).toBe(before + 1);
+      expect(rpc.cachedApiKeys().size).toBe(0);
+
+      await jest.advanceTimersByTimeAsync(1999);
+      expect(reads()).toBe(before + 1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(reads()).toBe(before + 2);
+      expect([...rpc.cachedApiKeys()]).toEqual([['infura', `${KEY}-i`]]);
+      expect(rpc.hasApiKey('alchemy')).toBe(false);
+
+      // Confirmed: no more reads.
+      await jest.advanceTimersByTimeAsync(60000);
+      expect(reads()).toBe(before + 2);
+    });
+
+    test("the retries are bounded, and the core's next start reads again", async () => {
+      await loadWithKey();
+      core.secrets.rpcApiKeys = async () => {
+        throw Object.assign(new Error('core gone'), { code: 'unavailable' });
+      };
+      await rpc.removeApiKey('alchemy', { caller: 'chrome' });
+      let reads = 0;
+      core.secrets.rpcApiKeys = async () => {
+        reads += 1;
+        throw Object.assign(new Error('core gone'), { code: 'unavailable' });
+      };
+      await jest.advanceTimersByTimeAsync(10 * 60 * 1000);
+      expect(reads).toBe(5);
+      expect(JSON.stringify(logged)).toContain("main keeps its copy until the core's next start");
+      expect(rpc.hasApiKey('alchemy')).toBe(false);
+
+      core.secrets.rpcApiKeys = async () => {
+        reads += 1;
+        return { keys: [] };
+      };
+      const client = new EventEmitter();
+      rpc.attachCore(client);
+      client.emit('ready');
+      await tick();
+      expect(reads).toBe(6);
+      await jest.advanceTimersByTimeAsync(60000);
+      expect(reads).toBe(6);
+      expect(rpc.cachedApiKeys().size).toBe(0);
+    });
+  });
+
   test('a read the core refuses leaves the copy as it was, logged without a key', async () => {
     fs.writeFileSync(keysPath, JSON.stringify({ alchemy: { apiKey: KEY, enabled: true } }));
     load();

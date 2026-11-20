@@ -480,7 +480,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         throw Object.assign(createRemoteError(reply.code || 'REMOTE_OUTCOME_UNKNOWN'), { requestDelivered: true, otherAttemptDelivered: false });
       },
     }));
-    jest.doMock('./rpc-manager', () => ({ getKeylessRpcUrls: () => [], cachedApiKeys: () => new Map() }));
+    jest.doMock('./rpc-manager', () => ({ getKeylessRpcUrls: () => [], cachedApiKeys: () => new Map(), retiredApiKeys: () => [] }));
     // Main's dApp file, written where the core reads it (its grant root).
     jest.doMock('../freedom-root', () => ({ getFreedomDataPath: (name) => path.join(root, name) }));
     sc = require('./signing-confirmation');

@@ -14,8 +14,17 @@
  *   `secrets.rpc_api_keys` (`shell`) at each start of the core
  *   (`attachCore`) and after each set or remove. Until the first read
  *   answers, the keyed providers are left out and only the keyless pool
- *   is used. A read that changes the keys drops the providers built with
- *   the old ones and tells `onKeysChanged`'s listeners.
+ *   is used. A change to the copy drops the providers built with the old
+ *   keys and tells `onKeysChanged`'s listeners. Each read takes a new
+ *   generation, and an answer to any but the latest started is dropped.
+ * - **A set or a remove the core has taken** is applied to main's copy at
+ *   once, before the keys are read back: a key the user removed or
+ *   replaced is never used again, even when that read fails. A failed read
+ *   back keeps the applied copy and is retried with a bounded backoff, and
+ *   again at the core's next start.
+ * - **Keys taken out of the copy** stay known to the registry's redaction
+ *   (`retiredApiKeys`), never used for a request: one already in flight
+ *   may be answered with an error quoting its key.
  * - **A set or a remove** goes as its caller's (`chrome` when the settings
  *   page's, relayed by network-ipc.js), after main checks the provider in
  *   its registry, as before. The core refuses a provider id outside its
@@ -45,10 +54,25 @@ function vault() {
 /** Main's copy: provider id -> key. Replaced whole, never changed. */
 let apiKeys = new Map();
 let attachedCore = null;
-// Reads of the core's keys started, and the latest whose answer is applied.
-let readsStarted = 0;
-let readApplied = 0;
+// The latest generation of main's copy: each read, and each set or remove
+// applied, takes the next. A read's answer applies only while its
+// generation is still the latest.
+let generation = 0;
 const listeners = new Set();
+
+// Keys a change took out of main's copy, oldest first: for redaction only
+// (network-registry.js withoutApiKeys). Bounded; a request built with one
+// has long settled before this many more keys are retired.
+const RETIRED_KEYS_MAX = 64;
+const retired = new Set();
+
+// A set or remove applied to main's copy that no read has confirmed yet,
+// and the read back's retries after a failure (ms): then the core's next
+// start reads again.
+const RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 16000]);
+let unconfirmed = false;
+let retries = 0;
+let retryTimer = null;
 
 // The keyed-provider catalog (Alchemy/Infura/DRPC) from the network
 // registry, keyed by id. Each entry: { id, role, keyed, name, website,
@@ -95,19 +119,81 @@ function keysChanged() {
   }
 }
 
-/**
- * Main's copy read again from the core. Whether it changed; an answer
- * that arrives after a later read's is dropped.
- */
-async function refreshKeys() {
-  const read = ++readsStarted;
-  const next = keysOf(await vault().secrets.rpcApiKeys());
-  if (read < readApplied) return false;
-  readApplied = read;
+function retire(key) {
+  retired.delete(key);
+  retired.add(key);
+  while (retired.size > RETIRED_KEYS_MAX) {
+    retired.delete(retired.values().next().value);
+  }
+}
+
+/** Main's copy replaced by `next`; whether it changed. */
+function replaceKeys(next) {
   if (sameKeys(apiKeys, next)) return false;
+  const kept = new Set(next.values());
+  for (const key of apiKeys.values()) {
+    if (!kept.has(key)) retire(key);
+  }
+  for (const key of kept) retired.delete(key);
   apiKeys = next;
   keysChanged();
   return true;
+}
+
+function cancelRetry() {
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+}
+
+/** After the latest read failed: read again later while a change is unconfirmed. */
+function scheduleRetry() {
+  if (!unconfirmed || retryTimer) return;
+  if (retries >= RETRY_DELAYS_MS.length) {
+    console.error(
+      "[RpcManager] The RPC API keys couldn't be read back after a change; " +
+        "main keeps its copy until the core's next start"
+    );
+    return;
+  }
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    refreshQuietly();
+  }, RETRY_DELAYS_MS[retries++]);
+  retryTimer.unref?.();
+}
+
+/**
+ * A set or remove the core has taken, applied to main's copy at once
+ * (`change(copy)`), before the read back: no read started earlier applies.
+ */
+function applyCommitted(change) {
+  generation += 1;
+  unconfirmed = true;
+  retries = 0;
+  cancelRetry();
+  const next = new Map(apiKeys);
+  change(next);
+  replaceKeys(next);
+}
+
+/**
+ * Main's copy read again from the core. Whether it changed; an answer to
+ * a read that is no longer the latest started is dropped. A failure is
+ * thrown, and retried while a change is unconfirmed if it is the latest's.
+ */
+async function refreshKeys() {
+  const read = ++generation;
+  let answer;
+  try {
+    answer = await vault().secrets.rpcApiKeys();
+  } catch (err) {
+    if (read === generation) scheduleRetry();
+    throw err;
+  }
+  if (read !== generation) return false;
+  unconfirmed = false;
+  cancelRetry();
+  return replaceKeys(keysOf(answer));
 }
 
 function refreshQuietly() {
@@ -125,6 +211,8 @@ function attachCore(client) {
   if (!client || typeof client.on !== 'function' || client === attachedCore) return;
   attachedCore = client;
   client.on('ready', () => {
+    retries = 0;
+    cancelRetry();
     refreshQuietly();
   });
 }
@@ -137,6 +225,11 @@ function onKeysChanged(listener) {
 /** Main's copy of the keys, provider id -> key: for main's own requests only. */
 function cachedApiKeys() {
   return apiKeys;
+}
+
+/** The keys taken out of main's copy: for redaction only, never a request. */
+function retiredApiKeys() {
+  return [...retired];
 }
 
 const SAVE = Object.freeze({
@@ -206,6 +299,10 @@ async function setApiKey(providerId, apiKey, { caller = null } = {}) {
   } catch (err) {
     return { success: false, error: keyErrorMessage(err, SAVE) };
   }
+  applyCommitted((copy) => {
+    if (typeof apiKey === 'string' && apiKey) copy.set(providerId, apiKey);
+    else copy.delete(providerId);
+  });
   await refreshQuietly();
   console.log(`[RpcManager] API key set for provider: ${providerId}`);
   return { success: true };
@@ -227,6 +324,7 @@ async function removeApiKey(providerId, { caller = null } = {}) {
   } catch (err) {
     return { success: false, error: keyErrorMessage(err, REMOVE) };
   }
+  applyCommitted((copy) => copy.delete(providerId));
   await refreshQuietly();
   console.log(`[RpcManager] API key removed for provider: ${providerId}`);
   return { success: true };
@@ -329,6 +427,7 @@ module.exports = {
   refreshKeys,
   onKeysChanged,
   cachedApiKeys,
+  retiredApiKeys,
   setApiKey,
   removeApiKey,
   hasApiKey,

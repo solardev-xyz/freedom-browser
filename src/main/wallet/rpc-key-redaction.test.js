@@ -326,6 +326,107 @@ describe.each(POOLS)('wallet handlers on %s', (_pool, shape) => {
   });
 });
 
+describe('a key taken out while a request built with it is in flight (PRF-6(e))', () => {
+  /**
+   * Chain 100's pool: the keyed provider alone, on an endpoint that holds
+   * each request until `release()` and then answers a JSON-RPC error
+   * quoting the bare key from the request's path.
+   */
+  async function heldKeyedEndpoint() {
+    const pending = [];
+    let released = false;
+    const answer = (req, res, id) => {
+      const key = decodeURIComponent(req.url.split('/').pop());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: `invalid key ${key}` } })
+      );
+    };
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        const { id } = JSON.parse(body);
+        if (released) answer(req, res, id);
+        else pending.push(() => answer(req, res, id));
+      });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    endpoints = [{ server, url: `${origin}/v2/${KEY}` }];
+    fs.writeFileSync(
+      path.join(userDataDir, 'network-config.json'),
+      JSON.stringify({
+        endpointSources: {
+          'test-keyed': {
+            role: 'rpc',
+            keyed: true,
+            name: 'test-keyed',
+            coverage: { 100: `${origin}/v2/{API_KEY}` },
+          },
+        },
+        removedSources: builtinGnosisRpcs,
+      })
+    );
+    fs.writeFileSync(
+      path.join(userDataDir, 'rpc-api-keys.json'),
+      JSON.stringify({ 'test-keyed': { apiKey: KEY, enabled: true, addedAt: 1 } })
+    );
+    return {
+      pending,
+      release() {
+        released = true;
+        for (const send of pending.splice(0)) send();
+      },
+    };
+  }
+
+  test.each([
+    ['removed', (rpc) => rpc.removeApiKey('test-keyed', { caller: 'chrome' })],
+    ['replaced', (rpc) => rpc.setApiKey('test-keyed', `${KEY}-next`, { caller: 'chrome' })],
+  ])('%s: its error quoting the old key reaches neither a renderer nor a log', async (_how, change) => {
+    const held = await heldKeyedEndpoint();
+    await loadWalletIpc();
+    const rpc = require('./rpc-manager');
+    const providers = require('./provider-manager');
+    const log = require('../logger');
+    for (const level of ['error', 'warn', 'info', 'log']) jest.spyOn(log, level).mockImplementation(() => {});
+
+    // What the Safe handlers send the renderer (getEip1193Provider).
+    const inFlight = providers
+      .getEip1193Provider(100)
+      .request({ method: 'eth_blockNumber' })
+      .then(() => null, (err) => err);
+    while (held.pending.length < 1) await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(change(rpc)).resolves.toEqual({ success: true });
+    expect(rpc.cachedApiKeys().get('test-keyed')).not.toBe(KEY);
+    held.release();
+    const err = await inFlight;
+
+    expect(err).toBeInstanceOf(Error);
+    // The node's text is kept, the key cut out of it.
+    expect(err.message).toBe('invalid key [key redacted]');
+    expect(err.code).toBe(-32000);
+    // Main's per-attempt log of an ethers error quoting the old key.
+    await expect(
+      providers.withRetry(
+        () => Promise.reject(new Error(`could not coalesce error (error={ "message": "invalid key ${KEY}" })`)),
+        0
+      )
+    ).rejects.toThrow();
+
+    const logged = JSON.stringify(
+      [console.error, console.warn, console.log, log.error, log.warn, log.info, log.log].flatMap(
+        (spy) => spy.mock.calls
+      )
+    );
+    expect(logged).toContain('[key redacted]');
+    expect(logged).not.toContain(KEY);
+    expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(KEY);
+  });
+});
+
 describe("the wallet handlers' own redaction", () => {
   // ethers' error for a keyed endpoint's 403, as main's providers would
   // throw it without their own redaction.

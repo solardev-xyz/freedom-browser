@@ -503,13 +503,18 @@ const MIN_REDACTED_KEY_LENGTH = 8;
 
 // `text` with every API key in main's copy cut out: the secrets
 // getEndpoints substitutes into keyed URLs (#1040). For error text that
-// may leave main, whatever form the key is quoted in.
+// may leave main, whatever form the key is quoted in. The keys a set or a
+// remove took out of the copy are cut too: a request built with one may
+// still be answered (rpc-manager.js retiredApiKeys). Longest first, so no
+// key that contains another leaves a part behind.
 function withoutApiKeys(text) {
   let out = String(text);
-  for (const key of load().apiKeys.values()) {
-    if (typeof key === 'string' && key.length >= MIN_REDACTED_KEY_LENGTH) {
-      out = out.split(key).join('[key redacted]');
-    }
+  const keys = [
+    ...load().apiKeys.values(),
+    ...require('../wallet/rpc-manager').retiredApiKeys(),
+  ].filter((key) => typeof key === 'string' && key.length >= MIN_REDACTED_KEY_LENGTH);
+  for (const key of keys.sort((a, b) => b.length - a.length)) {
+    out = out.split(key).join('[key redacted]');
   }
   return out;
 }
