@@ -449,8 +449,7 @@ async function broadcastIntent(intent, handoff, extra = {}, { redact = false } =
 function commitUnknown(err) {
   const error = new Error(
     "The wallet couldn't confirm it recorded this payment, and sent nothing. If it shows " +
-      "among the wallet's payments waiting to be sent, send it again from there rather " +
-      'than starting a new one.',
+      'under Payments waiting, send it again from there rather than starting a new one.',
     { cause: err }
   );
   error.code = 'INTENT_COMMIT_UNKNOWN';
