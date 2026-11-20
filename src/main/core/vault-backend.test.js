@@ -67,6 +67,33 @@ describe('vaultBackend', () => {
     });
   });
 
+  // freedom-core design 0013, "One writer per store": a store's requests
+  // pass `requiresStore(name)`, checked by the client against the hello of
+  // the process the request is written to; every other request none.
+  test('call passes requires through to the client, and null without one', async () => {
+    const core = new FakeCore(() => ({ count: 0 }));
+    const { _internal } = load(core);
+    const requires = () => true;
+    await _internal.call('payments.get_count', { filters: {} }, null, { requires });
+    await _internal.call('payments.get_count', { filters: {} }, 'chrome', { requires });
+    await _internal.call('vault.status');
+    expect(core.calls.map(({ method, context, options }) => [method, context, options])).toEqual([
+      ['payments.get_count', { caller: 'shell' }, { watchdogMs: 15_000, requires }],
+      ['payments.get_count', { caller: 'chrome' }, { watchdogMs: 15_000, requires }],
+      ['vault.status', { caller: 'shell' }, { watchdogMs: 15_000, requires: null }],
+    ]);
+  });
+
+  test('a requirement the core client refuses keeps its code', async () => {
+    const core = new FakeCore(() => {
+      throw coreError('requirement_unmet', "The core can't take this request");
+    });
+    const { _internal } = load(core);
+    await expect(
+      _internal.call('payments.get_count', { filters: {} }, null, { requires: () => false })
+    ).rejects.toMatchObject({ name: 'VaultBackendError', code: 'requirement_unmet' });
+  });
+
   test('no core: a typed unavailable error', async () => {
     const { vaultBackend } = load(null);
     await expect(vaultBackend.status()).rejects.toMatchObject({ code: 'core_unavailable' });
@@ -650,7 +677,10 @@ describe('vaultBackend', () => {
     for (const { method, options } of core.calls) {
       expect([method, options]).toEqual([
         method,
-        { watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : SESSION.has(method) ? 135_000 : 15_000 },
+        {
+          watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : SESSION.has(method) ? 135_000 : 15_000,
+          requires: null,
+        },
       ]);
     }
   });

@@ -19,6 +19,7 @@ tmp/
 .env.agent-tests.local
 ant-bin/
 freedom-cored-bin/
+freedom-cored-bin-previous/
 freedom-ipfsd-bin/
 freedom-radicled-bin/
 myotis-bin/

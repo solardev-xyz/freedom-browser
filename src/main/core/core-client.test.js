@@ -11,6 +11,10 @@ const {
   JsonText,
   ShellError,
   scrubbedEnv,
+  STORES,
+  STORE_MOVED,
+  requiresStore,
+  _internal: coreInternal,
   RESTART_DELAYS_MS,
   MAX_PENDING,
   MAX_INCOMING,
@@ -246,7 +250,7 @@ describe('CoreClient', () => {
       }),
     ]);
     const hello = await client.start();
-    expect(hello).toEqual({ ...helloResult(), node_recovery: null });
+    expect(hello).toEqual({ ...helloResult(), node_recovery: null, store_moved: [] });
     const [command, args, options] = spawn.mock.calls[0];
     expect(command).toBe('/bin/freedom-cored');
     expect(args).toEqual(['serve']);
@@ -279,6 +283,103 @@ describe('CoreClient', () => {
     expect(hello.method).toBe('core.hello');
     expect(hello.params.grant_root).toBe(path.resolve(profile));
     expect([...hello.params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
+  });
+
+  // freedom-core design 0013, "One writer per store": the build names no
+  // set-A store yet (PRF-6(0)); the core echoes the names it took, and a
+  // core before 0.23.0 answers none.
+  test('the hello names no store in store_moved, and an absent echo is none', async () => {
+    expect(STORES).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
+    expect(STORE_MOVED).toEqual([]);
+    expect(Object.isFrozen(STORE_MOVED)).toBe(true);
+    const { client, children } = makeClient([helloHandler()]);
+    const hello = await client.start();
+    expect(children[0].requests[0].params.store_moved).toEqual([]);
+    expect(hello.store_moved).toEqual([]);
+    expect(client.hello.store_moved).toEqual([]);
+    const echoed = makeClient([
+      (m, core) =>
+        m.method === 'core.hello' &&
+        core.reply({ type: 'response', id: m.id, result: helloResult({ store_moved: [] }) }),
+    ]);
+    expect((await echoed.client.start()).store_moved).toEqual([]);
+  });
+
+  test('a service naming stores sends them and takes an echo of some or none', async () => {
+    const echoes = [[], ['payments']];
+    for (const echo of echoes) {
+      const { client, children } = makeClient([
+        (m, core) =>
+          m.method === 'core.hello' &&
+          core.reply({ type: 'response', id: m.id, result: helloResult({ store_moved: echo }) }),
+      ]);
+      client.service = coreInternal.coreService(['payments']);
+      const hello = await client.start();
+      expect(children[0].requests[0].params.store_moved).toEqual(['payments']);
+      expect(hello.store_moved).toEqual(echo);
+      expect(Object.isFrozen(hello.store_moved)).toBe(true);
+    }
+    const all = coreInternal.validHello(helloResult({ store_moved: [...STORES] }), STORES);
+    expect(all.store_moved).toEqual(STORES);
+  });
+
+  test.each([
+    ['a store not sent', ['payments'], ['vault_meta']],
+    ['a store named twice', ['payments'], ['payments', 'payments']],
+    ['a non-array', ['payments'], 'payments'],
+    ['null', ['payments'], null],
+    ['a non-string', ['payments'], [7]],
+    ['an unknown name', [], ['history']],
+    ['more names than stores', STORES, [...STORES, 'payments']],
+  ])('an echo with %s fails the hello', async (_name, sent, echo) => {
+    expect(coreInternal.validHello(helloResult({ store_moved: echo }), sent)).toBeNull();
+    const { client, children, spawn } = makeClient([
+      (m, core) =>
+        m.method === 'core.hello' &&
+        core.reply({ type: 'response', id: m.id, result: helloResult({ store_moved: echo }) }),
+    ]);
+    client.service = coreInternal.coreService(sent);
+    const ready = jest.fn();
+    client.on('ready', ready);
+    client.start().catch(() => {});
+    await tick();
+    expect(children[0].killed).toBe('SIGKILL');
+    await tick();
+    await tick();
+    expect(ready).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    await client.stop();
+  });
+
+  test('requiresStore refuses an unknown store and holds a request to a hello that echoed it', () => {
+    for (const name of ['history', '', undefined, 'VAULT_META']) {
+      expect(() => requiresStore(name)).toThrow(TypeError);
+    }
+    const requires = requiresStore('payments');
+    expect(requires({ store_moved: ['payments'] })).toBe(true);
+    expect(requires({ store_moved: ['vault_meta', 'payments'] })).toBe(true);
+    expect(requires({ store_moved: [] })).toBe(false);
+    expect(requires({ store_moved: ['vault_meta'] })).toBe(false);
+    expect(requires({})).toBe(false);
+    expect(requires(null)).toBe(false);
+    expect(requires(undefined)).toBe(false);
+    expect(requires({ store_moved: 'payments' })).toBe(false);
+    for (const store of STORES) expect(requiresStore(store)({ store_moved: [store] })).toBe(true);
+  });
+
+  test('a store request with requires fails requirement_unmet on a hello without its echo', async () => {
+    const { client, children } = makeClient([
+      helloHandler((message, core) => {
+        core.reply({ type: 'response', id: message.id, result: { count: 0 } });
+      }),
+    ]);
+    await client.start();
+    const options = { requires: requiresStore('payments') };
+    const error = await client
+      .request('payments.get_count', { filters: {} }, { caller: 'shell' }, options)
+      .catch((e) => e);
+    expect(error.code).toBe(REQUIREMENT_UNMET);
+    expect(children[0].requests.map((r) => r.method)).toEqual(['core.hello']);
   });
 
   test('a client is never made without an absolute grantRoot', () => {

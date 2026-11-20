@@ -26,6 +26,15 @@
  *   Main writes none of the four files. Reverting a move gives the file back
  *   to main: the core then writes nothing in it, and older builds still read
  *   it (Q10).
+ * - **`store_moved`** (design 0013, "One writer per store") names the set-A
+ *   stores (`STORES`) whose only writer is the core: `STORE_MOVED`, a
+ *   property of the build, which names none yet. The core's answer echoes
+ *   the names it took, each once (cored 0.23.0); a core before 0.23.0
+ *   (0.22.0) ignores the field, and its answer has none, which reads as
+ *   none taken. A store's requests go with `requires: requiresStore(name)`,
+ *   so on a core that didn't take the store they fail `requirement_unmet`
+ *   in main and are never written to it. An echo naming a store main
+ *   didn't send, or one twice, fails the hello.
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
  *   (0.23.0) speaks only 2: it answers a hello at any other protocol,
@@ -77,9 +86,44 @@ const PROTOCOL_VERSION = 2;
 const PROTOCOL_VERSION_STREAMS = PROTOCOL_VERSION;
 const CORE_VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 
-/** The public part of a valid hello result, or null: protocol 2, and the
- * core's capabilities say `streams`. */
-function validHello(result) {
+/**
+ * The set-A stores (design 0013, "One writer per store: `store_moved`"),
+ * each of which main hands to the core by naming it in the hello's
+ * `store_moved`, in the core's order.
+ */
+const STORES = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
+
+/**
+ * The stores this build names in every hello's `store_moved`, whose only
+ * writer is then the core. It is a property of the build, never a run-time
+ * switch: each PRF-6 step adds its store's name in the change that deletes
+ * main's writer for it. Absent means none, and the core reads this empty
+ * list the same way, so every set-A store is still main's.
+ */
+const STORE_MOVED = Object.freeze([]);
+
+/**
+ * The hello answer's `store_moved`: the names of `sent` whose store the core
+ * serves, each once. Absent (a core before 0.23.0, which ignores the field)
+ * is none, `[]`; undefined for a malformed echo: not an array, longer than
+ * `STORES`, or holding a non-string, a name main didn't send, or a name
+ * twice.
+ */
+function validStoreEcho(value, sent) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > STORES.length) return undefined;
+  const seen = new Set();
+  for (const name of value) {
+    if (typeof name !== 'string' || !sent.includes(name) || seen.has(name)) return undefined;
+    seen.add(name);
+  }
+  return value;
+}
+
+/** The public part of a valid hello result, or null: protocol 2, the
+ * core's capabilities say `streams`, and its `store_moved` echo names only
+ * stores in `sent` (the hello's own `store_moved`), each once. */
+function validHello(result, sent = STORE_MOVED) {
   if (!isObject(result) || result.protocol !== PROTOCOL_VERSION) return null;
   if (typeof result.core_version !== 'string' || !CORE_VERSION.test(result.core_version)) {
     return null;
@@ -95,11 +139,14 @@ function validHello(result) {
   if (!capabilities.includes('streams')) return null;
   const nodeRecovery = validNodeRecovery(result.node_recovery);
   if (nodeRecovery === undefined) return null;
+  const storeMoved = validStoreEcho(result.store_moved, sent);
+  if (storeMoved === undefined) return null;
   return {
     protocol: PROTOCOL_VERSION,
     core_version: result.core_version,
     capabilities,
     node_recovery: nodeRecovery,
+    store_moved: Object.freeze([...storeMoved]),
   };
 }
 
@@ -126,33 +173,55 @@ function validNodeRecovery(value) {
   return out;
 }
 
-/** freedom-cored, as the shared client supervises it. */
-const CORE_SERVICE = Object.freeze({
-  label: '[Core]',
-  noun: 'core',
-  unavailableCode: 'core_unavailable',
-  protocol: PROTOCOL_VERSION,
-  helloMethod: 'core.hello',
-  helloParams: (client) => ({
+/**
+ * freedom-cored, as the shared client supervises it, with the hello naming
+ * `storeMoved` (the build's `STORE_MOVED`; tests name others) and taking an
+ * echo of those names only.
+ */
+function coreService(storeMoved = STORE_MOVED) {
+  return Object.freeze({
+    label: '[Core]',
+    noun: 'core',
+    unavailableCode: 'core_unavailable',
     protocol: PROTOCOL_VERSION,
-    shell_version: client.shellVersion,
-    auto_lock_ms: client.autoLockMs,
-    // Main takes fragmented responses (the handshake grants the core
-    // main's bulk credit) and stream frames, which the core requires.
-    frames: ['fragment', 'stream'],
-    // Where the permission files are (design 0012, APR-3), and those that
-    // have moved to the core, which writes them from then on: the dApp file
-    // (APB-2), Swarm's and Radicle's (APB-3), and x402's caps (X402-2).
-    grant_root: client.grantRoot,
-    grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
-  }),
-  validHello,
-  shutdownMethod: 'core.shutdown',
-  fragments: (hello) => hello.capabilities.includes('fragments'),
-  // Streams both ways once the hello is valid, which says `streams`
-  // (validHello).
-  duplex: () => true,
-});
+    helloMethod: 'core.hello',
+    helloParams: (client) => ({
+      protocol: PROTOCOL_VERSION,
+      shell_version: client.shellVersion,
+      auto_lock_ms: client.autoLockMs,
+      // Main takes fragmented responses (the handshake grants the core
+      // main's bulk credit) and stream frames, which the core requires.
+      frames: ['fragment', 'stream'],
+      // Where the permission files are (design 0012, APR-3), and those that
+      // have moved to the core, which writes them from then on: the dApp file
+      // (APB-2), Swarm's and Radicle's (APB-3), and x402's caps (X402-2).
+      grant_root: client.grantRoot,
+      grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
+      // The set-A stores the core writes from then on (design 0013): none
+      // yet. The core echoes those it took; 0.22.0 ignores the field.
+      store_moved: [...storeMoved],
+    }),
+    validHello: (result) => validHello(result, storeMoved),
+    shutdownMethod: 'core.shutdown',
+    fragments: (hello) => hello.capabilities.includes('fragments'),
+    // Streams both ways once the hello is valid, which says `streams`
+    // (validHello).
+    duplex: () => true,
+  });
+}
+
+const CORE_SERVICE = coreService();
+
+/**
+ * A request's `requires` (service-client.js) for store `name`'s requests:
+ * true only for a process whose hello echoed the name, so on any other,
+ * an older core's included, the request fails `requirement_unmet` in main
+ * and is never written. Throws a TypeError for a name not in `STORES`.
+ */
+function requiresStore(name) {
+  if (!STORES.includes(name)) throw new TypeError(`unknown store ${name}`);
+  return (hello) => Array.isArray(hello?.store_moved) && hello.store_moved.includes(name);
+}
 
 class CoreClient extends ServiceClient {
   /**
@@ -203,4 +272,9 @@ module.exports = {
   MAX_WRITE_BYTES,
   POOL_BYTES,
   POOL_EXEMPT_BYTES,
+  STORES,
+  STORE_MOVED,
+  requiresStore,
+  // For tests.
+  _internal: { coreService, validHello },
 };
