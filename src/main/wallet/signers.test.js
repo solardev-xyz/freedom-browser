@@ -677,6 +677,26 @@ describe('getSigner (ledger-backed dispatch)', () => {
     expect(mockRecordLedgerAddressCheck).toHaveBeenLastCalledWith(2, true);
   });
 
+  // PRF-6(a): the identity core keeps it; the signature doesn't wait, and a
+  // failure (a rejection, or a throw) is logged.
+  test("a check the core doesn't keep is logged, never thrown into the signature", async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getSigner(2);
+      const [, { onAddressCheck }] = mockCreateLedgerBackend.mock.calls[0];
+      mockRecordLedgerAddressCheck.mockRejectedValueOnce(new Error('Storage error'));
+      expect(onAddressCheck(true)).toBeUndefined();
+      mockRecordLedgerAddressCheck.mockImplementationOnce(() => {
+        throw new Error('requirement_unmet');
+      });
+      expect(() => onAddressCheck(false)).not.toThrow();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(warn.mock.calls.map(([, message]) => message)).toEqual(['requirement_unmet', 'Storage error']);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test('factory-level normalization applies to ledger backends too', async () => {
     const signer = getSigner(2);
 

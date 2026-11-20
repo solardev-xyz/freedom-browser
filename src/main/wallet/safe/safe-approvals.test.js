@@ -257,3 +257,16 @@ describe("the Safe's exclusion", () => {
     expect(approvals.held('send', 5, OTHER)).toBeNull();
   });
 });
+
+// PRF-6(a), G12: the identity core ended the Safe's approvals in its
+// removal (`accounts.remove`); main drops both slots without asking it.
+test("forgetSafe drops both of a Safe's slots without asking the core, and only that Safe's", async () => {
+  await approvals.hold('send', 5, A, HASH);
+  await approvals.hold('message', 5, B, OTHER);
+  await approvals.hold('send', 6, { id: 'c'.repeat(32), page: null }, HASH);
+  approvals.forgetSafe(5);
+  expect(approvals.held('send', 5, HASH)).toBeNull();
+  expect(approvals.held('message', 5, OTHER)).toBeNull();
+  expect(approvals.held('send', 6, HASH)).toEqual({ id: 'c'.repeat(32), page: null });
+  expect(mockEnd).not.toHaveBeenCalled();
+});

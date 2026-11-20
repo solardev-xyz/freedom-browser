@@ -285,24 +285,28 @@ describe('CoreClient', () => {
     expect([...hello.params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
   });
 
-  // freedom-core design 0013, "One writer per store": the build names no
-  // set-A store yet (PRF-6(0)); the core echoes the names it took, and a
-  // core before 0.23.0 answers none.
-  test('the hello names no store in store_moved, and an absent echo is none', async () => {
+  // freedom-core design 0013, "One writer per store": the build names
+  // vault-meta.json's store (PRF-6(a)); the core echoes the names it took,
+  // and a core before 0.23.0 answers none.
+  test('the hello names vault_meta in store_moved, and an absent echo is none', async () => {
     expect(STORES).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
-    expect(STORE_MOVED).toEqual([]);
+    expect(STORE_MOVED).toEqual(['vault_meta']);
     expect(Object.isFrozen(STORE_MOVED)).toBe(true);
     const { client, children } = makeClient([helloHandler()]);
     const hello = await client.start();
-    expect(children[0].requests[0].params.store_moved).toEqual([]);
+    expect(children[0].requests[0].params.store_moved).toEqual(['vault_meta']);
     expect(hello.store_moved).toEqual([]);
     expect(client.hello.store_moved).toEqual([]);
     const echoed = makeClient([
       (m, core) =>
         m.method === 'core.hello' &&
-        core.reply({ type: 'response', id: m.id, result: helloResult({ store_moved: [] }) }),
+        core.reply({
+          type: 'response',
+          id: m.id,
+          result: helloResult({ store_moved: ['vault_meta'] }),
+        }),
     ]);
-    expect((await echoed.client.start()).store_moved).toEqual([]);
+    expect((await echoed.client.start()).store_moved).toEqual(['vault_meta']);
   });
 
   test('a service naming stores sends them and takes an echo of some or none', async () => {

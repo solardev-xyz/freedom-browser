@@ -32,13 +32,14 @@ async function checkLedgerAccounts() {
 
   const addresses = await readAddresses(pending.map((record) => record.path));
   const mismatched = [];
-  pending.forEach((record, i) => {
+  // Each kept on its record by the identity core, one after another.
+  for (const [i, record] of pending.entries()) {
     const onDevice = addresses[i];
     const matched = typeof onDevice === 'string' && onDevice.toLowerCase() === record.address.toLowerCase();
-    if (recordLedgerAddressCheck(record.index, matched) === ADDRESS_CHECK.MISMATCHED) {
+    if ((await recordLedgerAddressCheck(record.index, matched)) === ADDRESS_CHECK.MISMATCHED) {
       mismatched.push({ index: record.index, name: record.name, address: record.address, path: record.path });
     }
-  });
+  }
   return mismatched;
 }
 

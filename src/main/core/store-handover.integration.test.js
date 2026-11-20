@@ -1,8 +1,9 @@
 /**
  * The set-A store handover against the real freedom-cored (freedom-core
- * design 0013, "One writer per store: `store_moved`"), before any store
- * moves (PRF-6(0)): this build's hello names none, so the pinned core
- * (0.23.0) writes none of the stores, answers each of their writes
+ * design 0013, "One writer per store: `store_moved`"). This build's hello
+ * names `vault_meta` (PRF-6(a)), and the pinned core echoes it. A hello
+ * naming none, as a build before PRF-6 sends, has the pinned core
+ * (0.23.0) write none of the stores, answer each of their writes
  * `not_moved` and serves the reads it can; a store's request sent with
  * `requires: requiresStore(name)` fails `requirement_unmet` in main, unsent;
  * and the previous release (0.22.0), which ignores `store_moved`, takes a
@@ -100,7 +101,8 @@ describeIfCurrent('the set-A stores before any moves, on the pinned freedom-core
   beforeAll(async () => {
     ({ requiresStore, STORES } = require('./core-client'));
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-'));
-    core = await startCore({ binary: current, root });
+    // The hello of a build before PRF-6, which names none.
+    core = await startCore({ binary: current, root, storeMoved: [] });
   });
 
   afterAll(async () => {
@@ -108,9 +110,19 @@ describeIfCurrent('the set-A stores before any moves, on the pinned freedom-core
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test("the build's hello names no store, and the echo is empty", () => {
+  test("the build's hello names vault_meta, and the echo has it", async () => {
     const { STORE_MOVED } = require('./core-client');
-    expect(STORE_MOVED).toEqual([]);
+    expect(STORE_MOVED).toEqual(['vault_meta']);
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-build-'));
+    let built;
+    try {
+      built = await startCore({ binary: current, root: other });
+      expect(built.service.helloParams(built).store_moved).toEqual(['vault_meta']);
+      expect(built.hello.store_moved).toEqual(['vault_meta']);
+    } finally {
+      await built?.stop();
+      fs.rmSync(other, { recursive: true, force: true });
+    }
     expect(core.service.helloParams(core).store_moved).toEqual([]);
     expect(core.hello.store_moved).toEqual([]);
   });
