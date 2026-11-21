@@ -1,11 +1,14 @@
 // Unit tests for the token registry. `fs` is mocked (mockFiles maps a
-// basename to its JSON string; an absent entry simulates ENOENT) and
-// `electron` auto-resolves to the shared __mocks__/electron.js. The
-// module's init-once cache is reset by re-requiring it per test.
+// basename to its JSON string; an absent entry simulates ENOENT), writes
+// land there through lib/atomic-file.js's mock (set-b-files.test.js tests
+// them on disk; the fs mock has no writeFileSync, so an in-place write would
+// throw), and `electron` auto-resolves to the shared __mocks__/electron.js.
+// The module's init-once cache is reset by re-requiring it per test.
 
 const mockFiles = {};
-const mockWriteFileSync = jest.fn((...args) => {
+const mockWriteFileAtomicSync = jest.fn((...args) => {
   mockFiles[require('path').basename(args[0])] = args[1];
+  return { durable: true };
 });
 jest.mock('fs', () => ({
   readFileSync: (filePath) => {
@@ -15,7 +18,9 @@ jest.mock('fs', () => ({
     }
     return mockFiles[name];
   },
-  writeFileSync: (...args) => mockWriteFileSync(...args),
+}));
+jest.mock('./lib/atomic-file', () => ({
+  writeFileAtomicSync: (...args) => mockWriteFileAtomicSync(...args),
 }));
 
 const BUILTIN_TOKENS = {
@@ -29,7 +34,7 @@ function reload({ custom } = {}) {
   for (const k of Object.keys(mockFiles)) delete mockFiles[k];
   mockFiles['tokens.json'] = JSON.stringify(BUILTIN_TOKENS);
   if (custom !== undefined) mockFiles['custom-tokens.json'] = JSON.stringify(custom);
-  mockWriteFileSync.mockClear();
+  mockWriteFileAtomicSync.mockClear();
   jest.resetModules();
   registry = require('./token-registry');
 }
@@ -85,7 +90,7 @@ describe('addCustomToken', () => {
   });
 
   test('reports failure when the custom-tokens file cannot be written', () => {
-    mockWriteFileSync.mockImplementationOnce(() => {
+    mockWriteFileAtomicSync.mockImplementationOnce(() => {
       throw new Error('disk full');
     });
     const res = registry.addCustomToken({ chainId: 8453, address: '0xabc', symbol: 'DEGEN', decimals: 18 });

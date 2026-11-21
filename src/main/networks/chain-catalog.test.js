@@ -1,8 +1,10 @@
 // Unit tests for the chainlist.org catalog cache. `node:fs` is mocked
-// (mockFiles maps a basename to its JSON string; absent = ENOENT) and
-// global `fetch` is stubbed per test. `electron` auto-resolves to the
-// shared __mocks__/electron.js. Module-level cache state is reset by
-// re-requiring the module in beforeEach.
+// (mockFiles maps a basename to its JSON string; absent = ENOENT), the cache
+// is written through lib/atomic-file.js's mock into mockFiles
+// (set-b-files.test.js tests the write on disk), and global `fetch` is
+// stubbed per test. `electron` auto-resolves to the shared
+// __mocks__/electron.js. Module-level cache state is reset by re-requiring
+// the module in beforeEach.
 
 const mockFiles = {};
 jest.mock('node:fs', () => ({
@@ -13,8 +15,11 @@ jest.mock('node:fs', () => ({
     }
     return mockFiles[name];
   },
-  writeFileSync: (...args) => {
+}));
+jest.mock('../lib/atomic-file', () => ({
+  writeFileAtomicSync: (...args) => {
     mockFiles[require('node:path').basename(args[0])] = args[1];
+    return { durable: true };
   },
 }));
 
