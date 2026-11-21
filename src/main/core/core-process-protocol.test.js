@@ -79,11 +79,12 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   expect(client.userDataDir).toBe(userData);
   expect(params.user_data_dir).toBe(userData);
   expect([...params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
-  expect(params.store_moved).toEqual(['vault_meta', 'intents']);
+  expect(params.store_moved).toEqual(['vault_meta', 'intents', 'safe_pending']);
   expect(client.service.validHello({ ...HELLO, store_moved: ['payments'] })).toBeNull();
   expect(
-    client.service.validHello({ ...HELLO, store_moved: ['vault_meta', 'intents'] }).store_moved
-  ).toEqual(['vault_meta', 'intents']);
+    client.service.validHello({ ...HELLO, store_moved: ['vault_meta', 'intents', 'safe_pending'] })
+      .store_moved
+  ).toEqual(['vault_meta', 'intents', 'safe_pending']);
   expect(start).toHaveBeenCalledTimes(1);
   expect(handle).toHaveBeenCalledWith('shell.dweb_get', expect.any(Function), {
     streams: true,
