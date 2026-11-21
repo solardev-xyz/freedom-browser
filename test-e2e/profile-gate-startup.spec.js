@@ -22,6 +22,7 @@ const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { freedomPath } = require('../test/helpers/freedom-path');
 
 const repoRoot = path.resolve(__dirname, '..');
 const realCored = path.join(
@@ -192,7 +193,7 @@ test.describe('profile gate: startup order', () => {
     userDataDir = path.join(dir, 'user-data');
     fs.mkdirSync(userDataDir);
     standIn = writeStandIn(dir);
-    settingsPath = path.join(userDataDir, 'settings.json');
+    settingsPath = freedomPath(userDataDir, 'settings.json');
     settingsBytes = JSON.stringify(SETTINGS, null, 2);
     fs.writeFileSync(settingsPath, settingsBytes);
     app = null;

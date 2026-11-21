@@ -11,6 +11,8 @@
 // what Chromium marks trusted and what the main-process gesture tracker sees.
 // `executeJavaScript` without its gesture flag is a script with no gesture.
 
+const fs = require('fs');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
 const { chromeWindow } = require('./chrome-window');
 const { evalInWebview } = require('./permission-fixtures');
@@ -329,6 +331,7 @@ test('"Always allow" survives a restart and is removed in Settings > Privacy and
 test('a private window allows pop-ups for its own session only', async ({
   window,
   electronApp,
+  userDataDir,
 }) => {
   const priv = await openPrivateWindow(electronApp);
   await gotoFixture(priv, electronApp);
@@ -341,14 +344,9 @@ test('a private window allows pop-ups for its own session only', async ({
   await expect(tabs(priv)).toHaveCount(2);
 
   // Nothing reached the profile's store, so a normal window still blocks.
-  const stored = () =>
-    electronApp.evaluate(({ app }) => {
-      const fs = process.getBuiltinModule('fs');
-      const path = process.getBuiltinModule('path');
-      const file = path.join(app.getPath('userData'), 'permissions.json');
-      return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-    });
-  expect(await stored()).not.toContain('popups');
+  const file = freedomPath(userDataDir, 'permissions.json');
+  const stored = () => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+  expect(stored()).not.toContain('popups');
   await gotoFixture(window, electronApp);
   await scriptOpen(window, POPUP_A);
   await window.waitForTimeout(1_000);

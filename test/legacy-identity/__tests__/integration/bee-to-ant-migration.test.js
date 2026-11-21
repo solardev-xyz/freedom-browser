@@ -28,6 +28,7 @@ const {
   createAppMock,
   loadMainModule,
 } = require('../../../helpers/main-process-test-utils');
+const { freedomPath } = require('../../../helpers/freedom-path');
 
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -219,7 +220,7 @@ describe('bee-data → ant-data migration (real antd)', () => {
 
       // 2. Build a genuine bee-era data dir with the real injection writers,
       //    plus a statestore/ to stand in for Bee's LevelDB cache.
-      const beeDataDir = path.join(userDataDir, 'bee-data');
+      const beeDataDir = freedomPath(userDataDir, 'bee-data');
       createBeeConfig(beeDataDir, TEST_PASSWORD, 1633, 1634);
       await injectBeeKey(beeDataDir, keys.beeWallet.privateKey, TEST_PASSWORD);
       fs.mkdirSync(path.join(beeDataDir, 'statestore'), { recursive: true });
@@ -229,7 +230,7 @@ describe('bee-data → ant-data migration (real antd)', () => {
       const mod = loadMigrationModule();
       expect(mod.migrateBeeDataToAntData()).toBe(true);
 
-      const antDataDir = path.join(userDataDir, 'ant-data');
+      const antDataDir = freedomPath(userDataDir, 'ant-data');
       expect(fs.existsSync(path.join(antDataDir, 'keys', 'swarm.key'))).toBe(true);
       expect(fs.existsSync(path.join(antDataDir, 'statestore'))).toBe(false);
       expect(fs.existsSync(beeDataDir)).toBe(false);
@@ -279,7 +280,7 @@ describe('bee-data → ant-data migration (real antd)', () => {
       // version wrote keys/swarm.key on self-init, the migration precondition
       // would turn false on the first post-upgrade start and a funded
       // bee-era identity would be silently abandoned with no retry.
-      const antDataDir = path.join(userDataDir, 'ant-data');
+      const antDataDir = freedomPath(userDataDir, 'ant-data');
       fs.mkdirSync(antDataDir, { recursive: true });
       const configPath = writeUltraLightConfig(
         antDataDir,

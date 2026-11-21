@@ -16,6 +16,7 @@ const { test: base, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { freedomPath } = require('../test/helpers/freedom-path');
 
 const {
   isPackagedRun,
@@ -83,7 +84,8 @@ async function browserWindow(app) {
 }
 
 // We want a stable settings shape across runs. The main-process settings
-// store loads JSON from `<userData>/settings.json` and merges over
+// store loads JSON from `settings.json` in the profile's Freedom root
+// (freedomPath: `<userData>/` before PRF-9's move) and merges over
 // DEFAULT_SETTINGS, so writing this file before app launch lets specs
 // pick known initial values without going through the saveSettings IPC
 // (which broadcasts events and would fight with the renderer's bootstrap).
@@ -91,7 +93,7 @@ function seedSettings(userDataDir, overrides) {
   if (!overrides) return;
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(
-    path.join(userDataDir, 'settings.json'),
+    freedomPath(userDataDir, 'settings.json'),
     JSON.stringify(overrides, null, 2),
     'utf-8'
   );
