@@ -23,7 +23,12 @@ jest.mock('electron', () => ({
 // (test/helpers/simulated-approvals.js); the real core's in
 // x402.integration.test.js.
 const mockCore = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
-jest.mock('../core/vault-backend', () => ({ vaultBackend: { approval: mockCore.approval, x402: mockCore.x402 } }));
+// The payment history's core methods: only appendOnce's append is reached
+// here (payment-history.js runs for real, its slots among it).
+const mockPayments = { append: jest.fn() };
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: { approval: mockCore.approval, x402: mockCore.x402, payments: mockPayments },
+}));
 
 // Account 0 is the vault's; 100 a Ledger's, 101 a phone's, 102 a Safe's,
 // and 103 a device account since deleted (the device index range).
@@ -59,14 +64,6 @@ jest.mock('../vault-timer', () => ({ resetVaultAutoLockTimer: jest.fn() }));
 // which the test reads back through the injector.
 jest.mock('../webrequest-dispatcher', () => ({
   registerWebRequestHandler: jest.fn(),
-}));
-// Whether payment-history says too many records wait to land.
-let mockHistoryBacklogFull = false;
-jest.mock('../payment-history', () => ({
-  appendOnce: jest.fn(),
-  historyBacklogFull: () => mockHistoryBacklogFull,
-  KINDS: { X402: 'x402' },
-  STATUSES: { SETTLED: 'settled', NO_RECEIPT: 'no-receipt', FAILED: 'failed' },
 }));
 
 const intercept = require('./intercept');
@@ -275,40 +272,237 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
 // #1044: an allowance pays only for a live tab the user controls, read
 // before the core is asked and again once it has signed.
 // The payment history is the identity core's (design 0013, PRF-6(c)), and
-// an x402 record waits in main until it lands: while 100 wait, nothing more
-// is signed, so no money leaves without a place in the history.
-describe('signAndQueueRetry — the payment history full', () => {
-  afterEach(() => {
-    mockHistoryBacklogFull = false;
+// an x402 record waits in main until it lands. Each payment reserves a slot
+// for its record, in one turn, before the core is asked to sign it: while
+// 100 records and slots wait, nothing more is signed, so no money leaves
+// without a place in the history. The slot becomes the record, or goes back
+// wherever the payment ends without one.
+describe('signAndQueueRetry — a slot in the payment history for each payment', () => {
+  const history = require('../payment-history');
+  const flush = async () => {
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  let unanswered;
+  let authorize;
+
+  beforeEach(async () => {
+    unanswered = [];
+    authorize = mockCore.x402.authorize;
+    mockPayments.append = jest.fn(
+      (entry) =>
+        new Promise((resolve) =>
+          unanswered.push(() => resolve({ id: unanswered.length, ...entry }))
+        )
+    );
+    mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '100000000' });
+    await loadCaps();
+  });
+
+  afterEach(async () => {
+    mockCore.x402.authorize = authorize;
+    intercept.clearAllPendingPayments();
+    intercept.clearAllAwaitingResponse();
+    // Every record lands: nothing waits into the next test.
+    for (const answer of unanswered.splice(0)) answer();
+    await flush();
+    expect(history.historyBacklog()).toEqual({ unlanded: 0, reserved: 0, limit: 100 });
+  });
+
+  /** `n` records on their way to the core, none answered yet. */
+  function waiting(n) {
+    for (let i = 0; i < n; i += 1) {
+      history.appendOnce({ kind: 'x402', chainId: 8453, amount: '1', status: 'settled' });
+    }
+  }
+
+  const autoPay = (tab = 7) =>
+    signAndQueueRetry(tab, { detection: detectionFor(URL_, [baseAccept]), authorizedBy: 'cap' });
+
+  // Codex round 3 on #1299: payments signed at once can't all find room.
+  test('with 99 records waiting, payments signed at once: one reaches the core, the rest are refused', async () => {
+    waiting(99);
+    let open;
+    const gate = new Promise((resolve) => {
+      open = resolve;
+    });
+    const reached = [];
+    mockCore.x402.authorize = (...args) => {
+      reached.push(args);
+      return gate.then(() => authorize.apply(mockCore.x402, args));
+    };
+    const flows = [1, 2, 3, 4, 5].map(() =>
+      autoPay().then(
+        () => 'signed',
+        (err) => err.code
+      )
+    );
+    await flush();
+    expect(reached).toHaveLength(1);
+    open();
+    expect(await Promise.all(flows)).toEqual([
+      'signed',
+      'X402_PAYMENT_HISTORY_FULL',
+      'X402_PAYMENT_HISTORY_FULL',
+      'X402_PAYMENT_HISTORY_FULL',
+      'X402_PAYMENT_HISTORY_FULL',
+    ]);
+    // The signed payment holds its slot until its record or its end.
+    expect(history.historyBacklog()).toMatchObject({ unlanded: 99, reserved: 1 });
+    await expect(autoPay()).rejects.toMatchObject({
+      code: 'X402_PAYMENT_HISTORY_FULL',
+      message: 'Payment history is unavailable; try again shortly',
+    });
+    expect(reached).toHaveLength(1);
   });
 
   test.each([
     ['an approval', true],
     ["a cap's auto-pay", false],
-  ])("%s isn't signed while 100 records wait: nothing charged, signed or stashed", async (_name, manual) => {
-    mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '50000' });
-    await loadCaps();
-    const detection = detectionFor(URL_, [baseAccept]);
-    const optsFor = async () =>
-      manual ? { detection, confirmation: await approved(detection) } : { detection, authorizedBy: 'cap' };
-    const spentBefore = mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount;
-    mockHistoryBacklogFull = true;
-    const err = await signAndQueueRetry(7, await optsFor()).catch((e) => e);
-    expect(err).toMatchObject({
-      code: 'X402_PAYMENT_HISTORY_FULL',
-      message: 'Payment history is unavailable; try again shortly',
-    });
+  ])(
+    "%s isn't signed while 100 records wait: nothing charged, signed or stashed",
+    async (_name, manual) => {
+      waiting(100);
+      const detection = detectionFor(URL_, [baseAccept]);
+      const optsFor = async () =>
+        manual
+          ? { detection, confirmation: await approved(detection) }
+          : { detection, authorizedBy: 'cap' };
+      const spentBefore = mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount;
+      const err = await signAndQueueRetry(7, await optsFor()).catch((e) => e);
+      expect(err).toMatchObject({ code: 'X402_PAYMENT_HISTORY_FULL' });
+      await flushSettles();
+      expect(corePayments()).toEqual([]);
+      expect(mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount).toBe(spentBefore);
+      expect(settles()).toEqual([]);
+      expect(mockDevice.asked).toEqual([]);
+      expect(await consumePending(7, URL_)).toBeNull();
+      // Once one record lands, the next payment is signed.
+      unanswered.shift()();
+      await flush();
+      await signAndQueueRetry(7, await optsFor());
+      expect(corePayments()).toHaveLength(1);
+    }
+  );
+
+  // Each path that ends a payment without a record gives its slot back.
+  test.each([
+    [
+      'refused by the core (no cap covers it)',
+      async () => {
+        mockCore.reset();
+        await loadCaps();
+        await expect(autoPay()).rejects.toMatchObject({ code: CAP_NOT_COVERED });
+      },
+    ],
+    [
+      'a failure before the stash (the core unreachable)',
+      async () => {
+        mockCore.x402.authorize = async () => {
+          throw Object.assign(new Error('The identity core is not running'), {
+            code: 'core_unavailable',
+          });
+        };
+        await expect(autoPay()).rejects.toMatchObject({ code: 'core_unavailable' });
+      },
+    ],
+    [
+      'withheld: the tab navigated away before its retry',
+      async () => {
+        await autoPay();
+        expect(history.historyBacklog().reserved).toBe(1);
+        intercept.settlePendingPaymentsOnNavigation(7, 'https://elsewhere.example/');
+      },
+    ],
+    [
+      'withheld: the cap revoked before its retry',
+      async () => {
+        await autoPay();
+        mockCore.reset();
+        await loadCaps();
+        expect(await consumePending(7, URL_)).toBeNull();
+      },
+    ],
+    [
+      'aborted: the request ended with no response',
+      async () => {
+        await autoPay();
+        const injected = await intercept.injectPaymentSignatureHandler({
+          id: 41,
+          webContentsId: 7,
+          url: URL_,
+          requestHeaders: {},
+        });
+        expect(injected?.requestHeaders?.['PAYMENT-SIGNATURE']).toBeDefined();
+        intercept.clearRequestContextHandler({ id: 41 });
+      },
+    ],
+  ])('%s: its slot goes back', async (_name, run) => {
+    await run();
     await flushSettles();
-    expect(corePayments()).toEqual([]);
-    expect(mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount).toBe(spentBefore);
-    expect(settles()).toEqual([]);
-    expect(mockDevice.asked).toEqual([]);
-    expect(await consumePending(7, URL_)).toBeNull();
-    // Once the records have landed, the next payment is signed.
-    mockHistoryBacklogFull = false;
-    await signAndQueueRetry(7, await optsFor());
-    expect(corePayments()).toHaveLength(1);
-    expect(decodedHeader(await consumePending(7, URL_)).accepted).toEqual(baseAccept);
+    expect(history.historyBacklog()).toMatchObject({ unlanded: 0, reserved: 0 });
+  });
+
+  test('answered: its slot becomes its record, which lands', async () => {
+    await autoPay();
+    await intercept.injectPaymentSignatureHandler({
+      id: 42,
+      webContentsId: 7,
+      url: URL_,
+      requestHeaders: {},
+    });
+    intercept.paymentResponseLoggingHandler({
+      id: 42,
+      webContentsId: 7,
+      url: URL_,
+      statusLine: 'HTTP/1.1 200 OK',
+      responseHeaders: {},
+    });
+    expect(history.historyBacklog()).toMatchObject({ unlanded: 1, reserved: 0 });
+    expect(mockPayments.append).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'x402', status: 'no-receipt', amount: '10000' })
+    );
+    unanswered.shift()();
+    await flush();
+    expect(history.historyBacklog()).toMatchObject({ unlanded: 0, reserved: 0 });
+  });
+
+  test('a mix of outcomes leaves no slot behind', async () => {
+    const outcomes = [];
+    // Refused by the core, failed before the stash, withheld, aborted, answered.
+    mockCore.x402.authorize = async () => {
+      throw Object.assign(new Error('busy'), { code: 'busy' });
+    };
+    outcomes.push(await autoPay().catch((e) => e.code));
+    mockCore.x402.authorize = authorize;
+    await autoPay(7);
+    intercept.settlePendingPaymentsOnNavigation(7, 'https://elsewhere.example/');
+    await autoPay(7);
+    await intercept.injectPaymentSignatureHandler({
+      id: 51,
+      webContentsId: 7,
+      url: URL_,
+      requestHeaders: {},
+    });
+    intercept.clearRequestContextHandler({ id: 51 });
+    await autoPay(7);
+    await intercept.injectPaymentSignatureHandler({
+      id: 52,
+      webContentsId: 7,
+      url: URL_,
+      requestHeaders: {},
+    });
+    intercept.paymentResponseLoggingHandler({
+      id: 52,
+      webContentsId: 7,
+      url: URL_,
+      statusLine: 'HTTP/1.1 500 Internal Server Error',
+      responseHeaders: {},
+    });
+    await autoPay(8);
+    intercept.cleanupWebContents(8);
+    await flushSettles();
+    expect(outcomes).toEqual(['busy']);
+    expect(history.historyBacklog()).toMatchObject({ unlanded: 1, reserved: 0 });
   });
 });
 

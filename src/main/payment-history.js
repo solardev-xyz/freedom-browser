@@ -233,6 +233,10 @@ const kept = [];
 // given up: those kept, and those on their way to the core. None is ever
 // dropped to make room.
 const unlanded = new Set();
+// The slots x402 reserved for payments it is signing, or has signed and not
+// yet recorded (reserveHistorySlot): each becomes a record (appendOnce) or
+// is released.
+const reserved = new Set();
 // The core client attachCore follows, and its starts' work, one at a time.
 let attachedClient = null;
 let settling = Promise.resolve();
@@ -240,9 +244,10 @@ let settling = Promise.resolve();
 /**
  * An append whose row must land exactly once though its caller doesn't wait
  * for it: an x402 payment's (x402/intercept.js), whose money has already
- * left, and whose row is the only record of it. Never dropped to make room:
- * x402 refuses to sign a new payment while KEPT_LIMIT records wait
- * (historyBacklogFull). The entry is stamped with
+ * left, and whose row is the only record of it, with the payment's reserved
+ * slot (reserveHistorySlot), which becomes the record. Never dropped to make
+ * room: x402 refuses to sign a new payment while KEPT_LIMIT records and
+ * slots wait. The entry is stamped with
  * its `createdAt` now, so a later send writes the same row. Sent at once;
  * resolves with the record, or with null when the core didn't answer it,
  * and never rejects. A failure keeps the entry for the core's next start
@@ -254,20 +259,40 @@ let settling = Promise.resolve();
  *     for first (keptRow), and sent again only if it isn't there, so it is
  *     never written twice.
  */
-function appendOnce(entry) {
+function appendOnce(entry, slot = null) {
   const createdAt = Number.isFinite(entry?.createdAt) ? entry.createdAt : Date.now();
   const item = { entry: { ...entry, createdAt }, unknown: false, attempts: 0 };
   unlanded.add(item);
+  // The payment's reserved slot becomes this record, in the same turn.
+  releaseHistorySlot(slot);
   return sendKept(item);
 }
 
 /**
- * Whether KEPT_LIMIT records already wait to land: x402 then signs no new
- * payment (x402/sign-flow.js), so no money leaves without a place in the
- * history, and no waiting record is ever dropped to make room for one.
+ * A slot for one payment's record, reserved before x402 asks the core to
+ * sign it (x402/sign-flow.js), or null when KEPT_LIMIT records and slots
+ * already wait: the payment is then refused, so no money leaves without a
+ * place in the history, and no waiting record is ever dropped to make room.
+ * Taken in one turn, so payments signed at once can't all find room. The
+ * slot rides with the signed payment and becomes its record (appendOnce),
+ * or is released (releaseHistorySlot) wherever the payment ends without
+ * one.
  */
-function historyBacklogFull() {
-  return unlanded.size >= KEPT_LIMIT;
+function reserveHistorySlot() {
+  if (unlanded.size + reserved.size >= KEPT_LIMIT) return null;
+  const slot = Object.freeze({ slot: reserved.size + unlanded.size });
+  reserved.add(slot);
+  return slot;
+}
+
+/** A reserved slot given back (again, or null: nothing). */
+function releaseHistorySlot(slot) {
+  if (slot) reserved.delete(slot);
+}
+
+/** How many records wait to land, and how many slots are reserved. */
+function historyBacklog() {
+  return { unlanded: unlanded.size, reserved: reserved.size, limit: KEPT_LIMIT };
 }
 
 async function sendKept(item) {
@@ -612,7 +637,9 @@ module.exports = {
   getCount,
   clear,
   appendOnce,
-  historyBacklogFull,
+  reserveHistorySlot,
+  releaseHistorySlot,
+  historyBacklog,
   repollPending,
   attachCore,
   DROPPED_CONFIRM_MS,

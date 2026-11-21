@@ -348,11 +348,22 @@ function settlePendingPaymentsOnNavigation(webContentsId, url) {
  * back (#1024), and the sidebar's spend counter is told.
  */
 function giveBackCharge(entry) {
+  // No record will be written for it: its history slot goes back too.
+  releaseSlotOf(entry);
   if (!entry?.reservation) return;
   const { webContentsId, origin } = entry;
   settlePayment(entry.reservation, 'withheld', origin).then((refunded) => {
     if (refunded) sendToHost(webContentsId, 'x402:cap-consumed', { origin });
   });
+}
+
+// The history slot sign-flow reserved for a payment's record
+// (payment-history's reserveHistorySlot), given back once the payment ends
+// without one, and given back once only.
+function releaseSlotOf(entry) {
+  if (!entry?.historySlot) return;
+  paymentHistory.releaseHistorySlot(entry.historySlot);
+  entry.historySlot = null;
 }
 
 // Backstop to each entry's timer, run whenever this Map is touched: a
@@ -380,7 +391,10 @@ function clearDetectedPayment(webContentsId) {
 
 function clearAllPendingPayments() {
   for (const bucket of pendingPayments.values()) {
-    for (const entry of bucket) clearTimeout(entry.timer);
+    for (const entry of bucket) {
+      clearTimeout(entry.timer);
+      releaseSlotOf(entry);
+    }
   }
   pendingPayments.clear();
 }
@@ -390,6 +404,7 @@ function clearAllDetectedPayments() {
 }
 
 function clearAllAwaitingResponse() {
+  for (const entry of awaitingResponse.values()) releaseSlotOf(entry);
   awaitingResponse.clear();
 }
 
@@ -432,6 +447,8 @@ function captureRequestContextHandler(details) {
 
 function clearRequestContextHandler(details) {
   if (typeof details?.id === 'number') {
+    // A request that ended with no response headers writes no record.
+    releaseSlotOf(awaitingResponse.get(details.id));
     awaitingResponse.delete(details.id);
     requestContext.delete(details.id);
   }
@@ -672,6 +689,9 @@ function appendX402PaymentRecord(
   failure = 'receipt append'
 ) {
   const nonce = expected.authorizationNonce ?? null;
+  // The payment's history slot becomes this record.
+  const slot = expected.historySlot ?? null;
+  expected.historySlot = null;
   try {
     const handed = paymentHistory.appendOnce({
       kind: PAYMENT_KINDS.X402,
@@ -685,11 +705,12 @@ function appendX402PaymentRecord(
       txHash,
       status,
       metadata: nonce ? { ...(metadata || {}), authorizationNonce: nonce } : metadata,
-    });
+    }, slot);
     Promise.resolve(handed).catch((err) => {
       log.error(`[x402:settled] ${failure} failed: ${err.message}`);
     });
   } catch (err) {
+    paymentHistory.releaseHistorySlot(slot);
     log.error(`[x402:settled] ${failure} failed: ${err.message}`);
   }
 }
@@ -1492,6 +1513,7 @@ async function sendIfCapStands(signed, details) {
   const settled = await settleSent(signed.reservation, signed.origin);
   if (settled.sent) return attachPayment(signed, details);
   if (settled.reason === 'cap_changed') {
+    releaseSlotOf(signed);
     log.warn(`[x402:inject] the cap ${url} was charged to has changed since (cap_changed); withholding signature`);
   } else {
     log.warn(`[x402:inject] the core didn't accept the payment for ${url} as sent (${settled.reason}); withholding signature`);
@@ -1503,7 +1525,9 @@ async function sendIfCapStands(signed, details) {
 // Attach a pending signature to this request, and arm the receipt logger.
 function attachPayment(signed, details) {
   // Arm the receipt logger by `details.id` — stable through to the
-  // matching response. `webContentsId` rides along for cleanup-by-tab.
+  // matching response. `webContentsId` rides along for cleanup-by-tab, and
+  // the payment's history slot until its record takes it.
+  releaseSlotOf(awaitingResponse.get(details.id));
   awaitingResponse.set(details.id, {
     webContentsId: details.webContentsId,
     url: details.url,
@@ -1515,6 +1539,7 @@ function attachPayment(signed, details) {
     fromAddress: signed.fromAddress ?? null,
     signedHeader: signed.header,
     authorizationNonce: authorizationNonceOf(signed.value),
+    historySlot: signed.historySlot ?? null,
   });
 
   log.info(

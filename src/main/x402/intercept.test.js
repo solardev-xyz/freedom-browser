@@ -18,8 +18,9 @@ jest.mock('../webrequest-dispatcher', () => ({
 
 const mockAppendReceipt = jest.fn();
 jest.mock('../payment-history', () => ({
-  appendOnce: (...args) => mockAppendReceipt(...args),
-  historyBacklogFull: () => false,
+  appendOnce: (entry) => mockAppendReceipt(entry),
+  reserveHistorySlot: () => ({}),
+  releaseHistorySlot: jest.fn(),
   KINDS: { X402: 'x402', WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' },
   STATUSES: {
     PENDING: 'pending', CONFIRMED: 'confirmed', FAILED: 'failed',

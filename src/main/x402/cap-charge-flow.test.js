@@ -49,7 +49,8 @@ jest.mock('../token-registry', () => ({ getToken: () => null, getTokenKey: (c, a
 jest.mock('../payment-history', () => ({
   getRecent: () => [],
   appendOnce: jest.fn(),
-  historyBacklogFull: () => false,
+  reserveHistorySlot: () => ({}),
+  releaseHistorySlot: jest.fn(),
   KINDS: { X402: 'x402' },
   STATUSES: { SETTLED: 'settled', NO_RECEIPT: 'no-receipt', FAILED: 'failed' },
 }));

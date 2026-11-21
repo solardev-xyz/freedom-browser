@@ -934,21 +934,56 @@ describe('payment-history (through the core)', () => {
       expect(await mod.getCount({ kind: 'x402' })).toBe(1);
     });
 
+    // Whether a new payment would find no slot (and nothing kept reserved).
+    const full = (m) => {
+      const slot = m.reserveHistorySlot();
+      m.releaseHistorySlot(slot);
+      return slot === null;
+    };
+
+    // Codex round 3 on #1299: slots reserved for payments being signed
+    // count with the records, are taken in one turn each, become their
+    // records, and go back once only.
+    test('slots count toward the backlog, become records, and are given back once', async () => {
+      sim.failAlways('payments.append', 'storage');
+      for (let i = 0; i < 98; i += 1) await mod.appendOnce(x402({ createdAt: i }));
+      const a = mod.reserveHistorySlot();
+      const b = mod.reserveHistorySlot();
+      expect(a).not.toBeNull();
+      expect(b).not.toBeNull();
+      expect(mod.reserveHistorySlot()).toBeNull();
+      expect(mod.historyBacklog()).toEqual({ unlanded: 98, reserved: 2, limit: 100 });
+      // A slot becomes its record in the same turn: still full.
+      const handed = mod.appendOnce(x402({ createdAt: 98 }), a);
+      expect(mod.historyBacklog()).toEqual({ unlanded: 99, reserved: 1, limit: 100 });
+      await handed;
+      // Given back twice, counted once.
+      mod.releaseHistorySlot(b);
+      mod.releaseHistorySlot(b);
+      mod.releaseHistorySlot(null);
+      expect(mod.historyBacklog()).toEqual({ unlanded: 99, reserved: 0, limit: 100 });
+      expect(full(mod)).toBe(false);
+      sim.stopFailing('payments.append');
+      await restart();
+      expect(mod.historyBacklog()).toEqual({ unlanded: 0, reserved: 0, limit: 100 });
+      expect(await mod.getCount({ kind: 'x402' })).toBe(99);
+    });
+
     // Codex round 2 on #1299: no record that hasn't landed is ever dropped
     // to make room; at 100 waiting, x402 signs no new payment
-    // (historyBacklogFull, checked by sign-flow.js before anything is
+    // (reserveHistorySlot answers null, asked by sign-flow.js before anything is
     // charged or signed: sign-flow.test.js).
     test('records under a definite storage refusal: none dropped, the backlog full at 100, each lands once at the restart', async () => {
       const nonceOf = (i) => `0x${i.toString(16).padStart(64, '0')}`;
       sim.failAlways('payments.append', 'storage');
       for (let i = 0; i < 100; i += 1) {
-        expect(mod.historyBacklogFull()).toBe(false);
+        expect(full(mod)).toBe(false);
         await mod.appendOnce(x402({ metadata: { authorizationNonce: nonceOf(i) } }));
       }
-      expect(mod.historyBacklogFull()).toBe(true);
+      expect(full(mod)).toBe(true);
       // A record of a payment signed before the backlog filled is kept too.
       await mod.appendOnce(x402({ metadata: { authorizationNonce: nonceOf(100) } }));
-      expect(mod.historyBacklogFull()).toBe(true);
+      expect(full(mod)).toBe(true);
       expect(logger.error).not.toHaveBeenCalled();
       expect(await mod.getCount({ kind: 'x402' })).toBe(0);
       sim.stopFailing('payments.append');
@@ -957,7 +992,7 @@ describe('payment-history (through the core)', () => {
         (row) => row.metadata.authorizationNonce
       );
       expect(nonces.sort()).toEqual(Array.from({ length: 101 }, (_, i) => nonceOf(i)).sort());
-      expect(mod.historyBacklogFull()).toBe(false);
+      expect(full(mod)).toBe(false);
       await restart();
       expect(await mod.getCount({ kind: 'x402' })).toBe(101);
     });
@@ -968,7 +1003,7 @@ describe('payment-history (through the core)', () => {
       const appends = [];
       for (let i = 0; i < 99; i += 1) appends.push(mod.appendOnce(x402({ createdAt: i })));
       await Promise.all(appends);
-      expect(mod.historyBacklogFull()).toBe(false);
+      expect(full(mod)).toBe(false);
       // One more, its answer not in yet.
       sim.stopFailing('payments.append');
       const gate = new Promise((resolve) => {
@@ -981,11 +1016,11 @@ describe('payment-history (through the core)', () => {
         return append(entry);
       };
       const inFlight = mod.appendOnce(x402({ createdAt: 99 }));
-      expect(mod.historyBacklogFull()).toBe(true);
+      expect(full(mod)).toBe(true);
       release();
       await inFlight;
       backend.append = append;
-      expect(mod.historyBacklogFull()).toBe(false);
+      expect(full(mod)).toBe(false);
     });
 
     // A third send whose answer is lost is given up, but its owed re-read
