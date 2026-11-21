@@ -20,7 +20,13 @@ jest.mock('../../core/vault-backend', () => ({
 
 const approvals = require('./safe-approvals');
 
-const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
+const PAGE = Object.freeze({
+  origin: 'https://app.example',
+  top_origin: 'https://app.example',
+  frame: 1,
+  navigation: 2,
+  agent: false,
+});
 const A = Object.freeze({ id: 'a'.repeat(32), page: null });
 const B = Object.freeze({ id: 'b'.repeat(32), page: PAGE });
 const HASH = '0x' + '11'.repeat(32);
@@ -105,7 +111,10 @@ describe("approval.end's failures", () => {
     await approvals.hold('send', 5, A, HASH);
     mockEnd.mockRejectedValue(failure('busy'));
     const err = await approvals.end('send', 5, HASH).catch((e) => e);
-    expect(err).toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED', cause: expect.objectContaining({ code: 'busy' }) });
+    expect(err).toMatchObject({
+      code: 'SAFE_APPROVAL_END_FAILED',
+      cause: expect.objectContaining({ code: 'busy' }),
+    });
     expect(mockEnd).toHaveBeenCalledTimes(3);
     expect(approvals.held('send', 5, HASH)).toEqual(A);
     // A failure that passes is an end.
@@ -120,7 +129,9 @@ describe("approval.end's failures", () => {
     mockEnd.mockImplementation(() => {
       throw failure('invalid_argument');
     });
-    await expect(approvals.end('message', 5)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
+    await expect(approvals.end('message', 5)).rejects.toMatchObject({
+      code: 'SAFE_APPROVAL_END_FAILED',
+    });
     expect(approvals.held('message', 5, HASH)).toEqual(B);
   });
 
@@ -134,7 +145,9 @@ describe("approval.end's failures", () => {
   test("an older one whose end fails: the newer isn't held, the older stays", async () => {
     await approvals.hold('send', 5, B, HASH);
     mockEnd.mockRejectedValue(failure());
-    await expect(approvals.hold('send', 5, A, OTHER)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
+    await expect(approvals.hold('send', 5, A, OTHER)).rejects.toMatchObject({
+      code: 'SAFE_APPROVAL_END_FAILED',
+    });
     expect(approvals.held('send', 5, HASH)).toEqual(B);
     expect(approvals.held('send', 5, OTHER)).toBeNull();
   });
@@ -173,7 +186,13 @@ test('forgotten without the core (one it no longer knows); a Safe deleted ends b
 });
 
 test('only an approval the core gave is held', async () => {
-  for (const bad of [null, {}, { id: 'A'.repeat(32), page: null }, { id: 'a'.repeat(31), page: null }, { id: A.id, page: {} }]) {
+  for (const bad of [
+    null,
+    {},
+    { id: 'A'.repeat(32), page: null },
+    { id: 'a'.repeat(31), page: null },
+    { id: A.id, page: {} },
+  ]) {
     expect(approvals.isApproval(bad)).toBe(false);
     await expect(approvals.hold('send', 5, bad, HASH)).rejects.toThrow(/Not a Safe approval/);
   }
@@ -256,4 +275,17 @@ describe("the Safe's exclusion", () => {
     await expect(holding).rejects.toMatchObject({ code: 'SAFE_BUSY' });
     expect(approvals.held('send', 5, OTHER)).toBeNull();
   });
+});
+
+// PRF-6(a), G12: the identity core ended the Safe's approvals in its
+// removal (`accounts.remove`); main drops both slots without asking it.
+test("forgetSafe drops both of a Safe's slots without asking the core, and only that Safe's", async () => {
+  await approvals.hold('send', 5, A, HASH);
+  await approvals.hold('message', 5, B, OTHER);
+  await approvals.hold('send', 6, { id: 'c'.repeat(32), page: null }, HASH);
+  approvals.forgetSafe(5);
+  expect(approvals.held('send', 5, HASH)).toBeNull();
+  expect(approvals.held('message', 5, OTHER)).toBeNull();
+  expect(approvals.held('send', 6, HASH)).toEqual({ id: 'c'.repeat(32), page: null });
+  expect(mockEnd).not.toHaveBeenCalled();
 });

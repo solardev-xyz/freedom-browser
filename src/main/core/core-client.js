@@ -12,10 +12,19 @@
  *   recovery couldn't finish.
  * - **`grant_root`** (design 0012, "The files (Q10)") is the directory of
  *   the profile's four permission files, as an absolute, normalized path:
- *   the core reads them there at its checks. The pinned core (0.23.0)
+ *   the core reads them there at its checks. The pinned core (0.24.0)
  *   requires it, as every core from 0.14.0 (APR-3) does, and answers a hello
  *   without it, or with a relative path, with `invalid_argument` and exits
  *   76, so a client can't be made without one.
+ * - **`user_data_dir`** (design 0013, PRF-8b-lite) is the profile's own
+ *   directory (`app.getPath('userData')`), as an absolute, normalized path,
+ *   when the client is given one: the core imports the legacy
+ *   `x402-receipts.json` from there once, and renames it there. The profile's
+ *   directory and the Freedom root (`grant_root`) are the same directory
+ *   until 0013's move (PRF-9), and the receipts stay at the profile's root
+ *   after it. Cores from 0.24.0 (PRF-8-lite) take it; an older core ignores
+ *   it, as it ignores every hello member it doesn't know, and reads the
+ *   receipts under `grant_root`.
  * - **`grant_moved`** names the files that have moved to the core, which is
  *   their only writer from then on (design 0012, "One writer per file"):
  *   `dapp` (APB-2), whose every write main sends to the core's write methods
@@ -28,8 +37,9 @@
  *   it (Q10).
  * - **`store_moved`** (design 0013, "One writer per store") names the set-A
  *   stores (`STORES`) whose only writer is the core: `STORE_MOVED`, a
- *   property of the build: `intents` (PRF-6(b2)), whose every write main
- *   sends to the core's `intents.*` (wallet/intent-store.js). The core's answer echoes
+ *   property of the build: `vault_meta` from PRF-6(a), and `intents`
+ *   (PRF-6(b2)), whose every write main sends to the core's `intents.*`
+ *   (wallet/intent-store.js). The core's answer echoes
  *   the names it took, each once (cored 0.23.0); a core before 0.23.0
  *   (0.22.0) ignores the field, and its answer has none, which reads as
  *   none taken. A store's requests go with `requires: requiresStore(name)`,
@@ -38,7 +48,7 @@
  *   didn't send, or one twice, fails the hello.
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
- *   (0.23.0) speaks only 2: it answers a hello at any other protocol,
+ *   (0.24.0) speaks only 2: it answers a hello at any other protocol,
  *   1 included, with `protocol_mismatch` and exits 76. A core that answers
  *   another protocol is a mismatch too: main fails, and doesn't restart it.
  *   Protocol 1 is gone (design 0009, Streams in the core), and a client
@@ -98,9 +108,12 @@ const STORES = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending
  * The stores this build names in every hello's `store_moved`, whose only
  * writer is then the core. It is a property of the build, never a run-time
  * switch: each PRF-6 step adds its store's name in the change that deletes
- * main's writer for it. The other set-A stores are still main's.
+ * main's writer for it. `vault_meta` from PRF-6(a): identity-manager.js
+ * writes `vault-meta.json` nowhere. `intents` from PRF-6(b2): the intent
+ * journal's every write goes to the core. The other set-A stores are still
+ * main's.
  */
-const STORE_MOVED = Object.freeze(['intents']);
+const STORE_MOVED = Object.freeze(['vault_meta', 'intents']);
 
 /**
  * The hello answer's `store_moved`: the names of `sent` whose store the core
@@ -196,9 +209,13 @@ function coreService(storeMoved = STORE_MOVED) {
       // have moved to the core, which writes them from then on: the dApp file
       // (APB-2), Swarm's and Radicle's (APB-3), and x402's caps (X402-2).
       grant_root: client.grantRoot,
+      // The profile's directory, where the legacy x402 receipts are (design
+      // 0013, PRF-8b-lite): only when the client was given one.
+      ...(client.userDataDir === null ? {} : { user_data_dir: client.userDataDir }),
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
-      // The set-A stores the core writes from then on (design 0013): none
-      // yet. The core echoes those it took; 0.22.0 ignores the field.
+      // The set-A stores the core writes from then on (design 0013):
+      // vault-meta.json (PRF-6(a)). The core echoes those it took; 0.22.0
+      // ignores the field.
       store_moved: [...storeMoved],
     }),
     validHello: (result) => validHello(result, storeMoved),
@@ -232,6 +249,9 @@ class CoreClient extends ServiceClient {
    *   permission files, sent as the hello's `grant_root`: an absolute path,
    *   sent normalized (no `.` or `..`, no trailing separator, and on Windows
    *   with its drive)
+   * @param {string} [options.userDataDir] - the profile's directory, sent
+   *   as the hello's `user_data_dir`: when given, an absolute path, sent
+   *   normalized as `grantRoot` is; when not, the hello names none
    * @param {number} [options.protocol] - the protocol main asks for: only
    *   2 (the default), so a caller still asking for 1 fails here rather
    *   than at the core's `protocol_mismatch`
@@ -239,13 +259,20 @@ class CoreClient extends ServiceClient {
   constructor(options) {
     const protocol = options.protocol ?? PROTOCOL_VERSION;
     if (protocol !== PROTOCOL_VERSION) throw new TypeError(`unknown core protocol ${protocol}`);
-    const { grantRoot } = options;
+    const { grantRoot, userDataDir } = options;
     if (typeof grantRoot !== 'string' || !path.isAbsolute(grantRoot)) {
       throw new TypeError('the core client needs grantRoot, an absolute path');
+    }
+    if (
+      userDataDir !== undefined &&
+      (typeof userDataDir !== 'string' || !path.isAbsolute(userDataDir))
+    ) {
+      throw new TypeError('the core client takes userDataDir only as an absolute path');
     }
     super({ ...options, service: CORE_SERVICE });
     this.autoLockMs = options.autoLockMs ?? 15 * 60 * 1000;
     this.grantRoot = path.resolve(grantRoot);
+    this.userDataDir = userDataDir === undefined ? null : path.resolve(userDataDir);
   }
 
   /** The protocol main asks for, and every ready hello settled. */
