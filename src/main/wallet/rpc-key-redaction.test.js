@@ -163,6 +163,10 @@ function loadWalletIpc(extraMocks = {}) {
           // One core process throughout (safe-approvals.js).
           coreProcess: () => ({}),
           coreProcessEnded: () => false,
+          // The pending SafeTxs (design 0013, PRF-6(d)), simulated on the
+          // profile's safe-pending.json.
+          safePending: require('../../../test/helpers/simulated-store-core').simulatedSafePending()
+            .safePending,
         },
       }),
       ...extraMocks,
