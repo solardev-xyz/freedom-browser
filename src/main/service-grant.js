@@ -17,14 +17,18 @@
  *   profile's userData directory, or the service's own default directory,
  *   is never a root itself. Its entries are, recursively along that path;
  *   at a profile's root, so are the names that may not exist yet, each
- *   component's directory and the browser's storage. So the default
- *   profile, kept in the app data root itself, has its browser storage,
- *   identity and node directories protected, and the `Profiles` directory
- *   that holds the profile in use has every other profile in it protected.
- *   This profile's own userData directory gives up only the service's own
- *   default directories (`ipfs-data` for freedom-ipfsd; for freedom-radicled
- *   the Radicle home, `radicle-data` or the short one, and its `HOME`,
- *   `radicled-home`).
+ *   component's directory, the browser's storage and the profile's Freedom
+ *   directory (`freedom/`, freedom-core design 0013, PRF-9); inside
+ *   `freedom/`, so are each component's directory and every entry the move
+ *   takes there (`MOVED_ENTRIES`). So the default profile, kept in the app
+ *   data root itself, has its browser storage, identity and node
+ *   directories protected, and the `Profiles` directory that holds the
+ *   profile in use has every other profile in it protected. This profile's
+ *   own userData directory gives up only the service's own default
+ *   directories (`ipfs-data` for freedom-ipfsd, `freedom/ipfs-data` once
+ *   the profile has moved, the rest of `freedom/` staying protected; for
+ *   freedom-radicled the Radicle home, `radicle-data` or the short one, and
+ *   its `HOME`, `radicled-home`, neither of which moves).
  * - **Whatever the profile's source:** this profile's userData directory and
  *   its browser storage are protected for a catalog profile, a
  *   `--profile-dir` one and a test's (`FREEDOM_TEST_USER_DATA`) alike. Only
@@ -107,6 +111,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { FREEDOM_DIR, MOVED_ENTRIES } = require('./freedom-root');
 const { getActiveProfile } = require('./profile-resolver');
 const {
   RADICLED_HOME_DIR,
@@ -370,8 +375,20 @@ const BROWSER_STORAGE = Object.freeze([
   'Crashpad',
 ]);
 
-/** The names that may not exist yet at a profile's root. */
-const PROFILE_ENTRIES = Object.freeze([...ENTRY_NAMES.keys(), ...BROWSER_STORAGE]);
+/** The names that may not exist yet at a profile's root: its Freedom
+ * directory (`freedom/`) among them, before the move makes it. */
+const PROFILE_ENTRIES = Object.freeze([...ENTRY_NAMES.keys(), ...BROWSER_STORAGE, FREEDOM_DIR]);
+
+/** The names that may not exist yet in a profile's `freedom/` (freedom-core
+ * design 0013, PRF-9): each component's directory, and every entry the
+ * move takes there, as `fc-profile` lists them. */
+const FREEDOM_ENTRIES = Object.freeze([...new Set([...ENTRY_NAMES.keys(), ...MOVED_ENTRIES])]);
+
+/** The names that may not exist yet one level down a profile's root, by the
+ * entry that holds them: for a split that descends into `freedom/`, which
+ * only the service's own default directory there (`freedom/ipfs-data`)
+ * makes it do. */
+const PROFILE_INNER_ENTRIES = new Map([[FREEDOM_DIR, FREEDOM_ENTRIES]]);
 
 // A service's own directories that are no component's data directory
 // (`getComponentDataDirs`), by the service's name for each in `own`: its
@@ -395,6 +412,7 @@ function serviceEntries(own) {
 function entryName(entry, extra = new Map()) {
   if (ENTRY_NAMES.has(entry)) return ENTRY_NAMES.get(entry);
   if (extra.has(entry)) return extra.get(entry);
+  if (entry === FREEDOM_DIR) return 'Freedom directory';
   return BROWSER_STORAGE.includes(entry) ? 'browser storage' : 'data';
 }
 
@@ -419,11 +437,17 @@ function layout(target, foldCase) {
  * `dir` as protected roots: the whole directory, named `whole`; or, when it
  * holds one of `keep` by layout (`layout` paths), its entries instead,
  * recursively, each named `nameOf(entry)`, with `known` names added at
- * this level. A directory that is one of `keep` gives none. Each root is
- * compared later as a canonical path, so an entry that is a symlink
- * protects what it resolves to.
+ * this level and, one level down, `inner.get(entry)` inside the entry
+ * `entry` (a profile's `freedom/`, which `known` names, so it is visited
+ * under that very name whatever case a volume shows it in). A directory
+ * that is one of `keep` gives none. Each root is compared later as a
+ * canonical path, so an entry that is a symlink protects what it resolves
+ * to.
  */
-function splitRoots(dir, { whole, nameOf, keep, known = [], foldCase = FOLD_CASE }) {
+function splitRoots(
+  dir,
+  { whole, nameOf, keep, known = [], inner = new Map(), foldCase = FOLD_CASE }
+) {
   if (!dir) return [];
   const resolved = path.resolve(dir);
   const key = fold(resolved, foldCase);
@@ -431,7 +455,13 @@ function splitRoots(dir, { whole, nameOf, keep, known = [], foldCase = FOLD_CASE
   if (!keep.some((kept) => within(kept, key))) return [{ name: whole, dir: resolved }];
   const names = new Set([...known, ...entries(resolved)]);
   return [...names].flatMap((entry) =>
-    splitRoots(path.join(resolved, entry), { whole: nameOf(entry), nameOf, keep, foldCase })
+    splitRoots(path.join(resolved, entry), {
+      whole: nameOf(entry),
+      nameOf,
+      keep,
+      known: inner.get(entry) ?? [],
+      foldCase,
+    })
   );
 }
 
@@ -524,6 +554,7 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
       nameOf: entriesOf("another profile's", extra),
       keep,
       known: [...PROFILE_ENTRIES, ...extra.keys()],
+      inner: PROFILE_INNER_ENTRIES,
       foldCase,
     });
     if (parts.length === 1 && parts[0].name === "another profile's directory") roots.push(...parts);
@@ -548,6 +579,7 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
       nameOf: entriesOf("this profile's"),
       keep: ownKeys,
       known: PROFILE_ENTRIES,
+      inner: PROFILE_INNER_ENTRIES,
       foldCase,
     })
   );
