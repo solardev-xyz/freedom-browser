@@ -25,6 +25,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { HDNodeWallet, Wallet, Transaction, TypedDataEncoder } = require('ethers');
+const { seedAccountRecords } = require('../../../test/helpers/core-account-records');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary =
@@ -131,12 +132,13 @@ function coreFixtures(core, scOf, modulesOf) {
     made.push({ method, params, context });
     return core(method, params, context, options);
   };
-  const vault = HDNodeWallet.fromPhrase(ABANDON, undefined, "m/44'/60'/0'/0");
+  // The vault's account `index` is m/44'/60'/<index>'/0/0, as the core derives it.
+  const vaultAddress = (index) => HDNodeWallet.fromPhrase(ABANDON, undefined, `m/44'/60'/${index}'/0/0`).address;
   const WALLETS = [
-    ...[0, 1, 2].map((index) => ({ index, name: `Account ${index}`, address: vault.deriveChild(index).address, type: 'mnemonic' })),
+    ...[0, 1, 2].map((index) => ({ index, name: `Account ${index}`, address: vaultAddress(index), type: 'mnemonic' })),
     { index: LEDGER_INDEX, name: 'My Ledger', address: DEVICE_ADDRESS, type: 'ledger' },
     { index: PHONE_INDEX, name: 'My Phone', address: DEVICE_ADDRESS, type: 'remote' },
-    { index: SAFE_INDEX, name: 'Safe', address: SAFE_ADDRESS, type: 'safe', deployed: { 100: true } },
+    { index: SAFE_INDEX, name: 'Safe', address: SAFE_ADDRESS, type: 'safe', owners: [0], threshold: 1, deployed: { 100: true } },
   ];
   const addressOf = (index) => WALLETS.find((wallet) => wallet.index === index).address;
   const RELAYED = ['approval.request', 'approval.recheck', 'eip1193.select_chain'];
@@ -332,6 +334,8 @@ function coreFixtures(core, scOf, modulesOf) {
   }
   return {
     calls: made,
+    // Main's world, which the core's own records hold too (seedAccountRecords).
+    wallets: WALLETS,
     pageToken,
     // `approval.grant` asked under `page`, as cored 0.22.0 refuses it for the dApp store.
     grantAsPage: (params, page) => send('approval.grant', params, { caller: 'page', page }),
@@ -489,6 +493,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     ({ toCoreTransaction, toCoreTypedData } = require('./signing-utils'));
     await core.start();
     await vaultBackend.importVault('testpass1', ABANDON);
+    // The core's own records name the accounts main's world does (G20, G20b).
+    await seedAccountRecords(request, path.join(root, 'identity'), fixtures.wallets);
   });
 
   afterAll(async () => {
@@ -1106,23 +1112,29 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       await fixtures.coreConnect(permissions, 0, 100, PAGE);
       expect(await flaggedSend()).toEqual([{ added: true }]);
       const send = (request) => check({ kind: 'transaction', payload: SEND, paused: false, ...request });
-      // A phone picks its own fee: the rule, the account and the pause decide.
-      expect(await send({ accountType: 'remote' })).toEqual({ covered: true, reason: null });
+      // The account's kind is the core's own record (G20): account 0 is the
+      // vault's, so main calling it a phone (which picks its own fee) is
+      // refused, not judged.
+      expect(await send({ accountType: 'remote' })).toEqual({ covered: false, reason: 'invalid_argument' });
+      // The fixture's send left the core's fee evidence (60 s): the rule, the
+      // account and the pause decide.
+      expect(await send({ accountType: 'mnemonic' })).toEqual({ covered: true, reason: null });
       expect(calls.at(-1).params).toMatchObject({
         chain_id: 100,
         paused: false,
-        request: { kind: 'transaction', account_kind: 'phone', tx: { to: TX.to, value: TX.value, data: TX.data } },
+        request: { kind: 'transaction', account_kind: 'vault', tx: { to: TX.to, value: TX.value, data: TX.data } },
       });
       expect(calls.at(-1).params.request.tx).not.toHaveProperty('nonce');
       // D12: paused, or a pause main didn't read, isn't covered.
-      expect(await send({ accountType: 'remote', paused: true })).toEqual({ covered: false, reason: 'paused' });
-      expect(await send({ accountType: 'remote', paused: undefined })).toEqual({ covered: false, reason: 'paused' });
-      // More value than the confirmed send's, a plain transfer, another chain, a Safe.
+      expect(await send({ accountType: 'mnemonic', paused: true })).toEqual({ covered: false, reason: 'paused' });
+      expect(await send({ accountType: 'mnemonic', paused: undefined })).toEqual({ covered: false, reason: 'paused' });
+      // More value than the confirmed send's, a plain transfer, another chain.
       const more = { ...SEND, value: (BigInt(TX.value) + 1n).toString() };
-      expect(await send({ accountType: 'remote', payload: more })).toEqual({ covered: false, reason: 'no_rule' });
-      expect(await send({ accountType: 'remote', payload: { ...SEND, data: '0x' } })).toEqual({ covered: false, reason: 'no_rule' });
-      expect(await send({ accountType: 'remote', payload: { ...SEND, chainId: 1 } })).toEqual({ covered: false, reason: 'no_rule' });
-      expect(await send({ accountType: 'safe' })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await send({ accountType: 'mnemonic', payload: more })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await send({ accountType: 'mnemonic', payload: { ...SEND, data: '0x' } })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await send({ accountType: 'mnemonic', payload: { ...SEND, chainId: 1 } })).toEqual({ covered: false, reason: 'no_rule' });
+      // A Safe: the core's records say account 0 isn't one.
+      expect(await send({ accountType: 'safe' })).toEqual({ covered: false, reason: 'invalid_argument' });
       // A vault account's send needs the core's own fee evidence, which only
       // its `chain.fee_reference` gives: with none (a fresh core, past the
       // fixture's send), the prompt.
@@ -1143,7 +1155,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       );
       // Removed (main's own, from the chrome), the rule answers nothing.
       expect(await permissions.removeTransactionAutoApprove(SITE, TX.to, SELECTOR, 100)).toBe(true);
-      expect(await send({ accountType: 'remote' })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await send({ accountType: 'mnemonic' })).toEqual({ covered: false, reason: 'no_rule' });
       expect(await flaggedSend()).toEqual([{ added: true }]);
       await permissions.revokePermission(SITE);
       expect(await notConfirmed(signer.signTransaction(built))).toBe('no_rule');
@@ -2510,7 +2522,9 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
     return reference;
   };
   const coreRecords = async () => (await vaultBackend.approval.grants({ store: 'dapp' })).records;
-  const check = (request, page = PAGE) => sc.checkStanding(page, { account: 0, accountType: 'remote', ...request });
+  // Account 0 is the vault's in the core's own records (G20): a send it
+  // judges with the fee evidence the fixture's send left.
+  const check = (request, page = PAGE) => sc.checkStanding(page, { account: 0, accountType: 'mnemonic', ...request });
   const message = { kind: 'message', payload: 'hello' };
   const send = { kind: 'transaction', payload: SEND, paused: false };
   async function flaggedSend(page = PAGE) {
@@ -2580,6 +2594,7 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
     await core.start();
     await permissions.whenLoaded();
     await vaultBackend.importVault('testpass1', ABANDON);
+    await seedAccountRecords(request, path.join(root, 'identity'), fixtures.wallets);
   });
 
   afterAll(async () => {

@@ -21,6 +21,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const { HDNodeWallet, Wallet, getBytes, verifyMessage, verifyTypedData } = require('ethers');
+const { seedAccountRecords } = require('../../../test/helpers/core-account-records');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary =
@@ -242,6 +243,8 @@ describeIfBinary('page signatures through the real freedom-cored\'s eip1193.requ
     env = { relay };
     await core.start();
     await vaultBackend.importVault('testpass1', ABANDON);
+    // The core's own records name the accounts main's world does (G20, G20b).
+    await seedAccountRecords(core, path.join(root, 'identity'), wallets);
   });
 
   afterAll(async () => {
