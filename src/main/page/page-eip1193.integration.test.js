@@ -17,6 +17,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
+const { writeAccountRecords } = require('../../../test/helpers/core-account-records');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary =
@@ -33,6 +34,12 @@ const KEY_B = `bzz://${'b'.repeat(64)}`;
 const KEY_C = `bzz://${'c'.repeat(64)}`;
 const ACCOUNT = '0x1111111111111111111111111111111111111111';
 const SECOND = '0x2222222222222222222222222222222222222222';
+// Main's world, which the core's own records hold too (G20b): with no vault
+// to derive them, the core lists the stored addresses.
+const WALLETS = Object.freeze([
+  { index: 0, name: 'Main Wallet', address: ACCOUNT, type: 'mnemonic' },
+  { index: 1, name: 'Second', address: SECOND, type: 'mnemonic' },
+]);
 const NO_ADDRESS = { code: 4100, message: 'This page has no address to connect from yet' };
 const REJECTED = { code: 4001, message: 'User rejected the request' };
 const PENDING = { code: -32002, message: 'Another wallet request is already pending' };
@@ -125,10 +132,7 @@ describeIfBinary('page requests through the real freedom-cored\'s eip1193.reques
       coreClient: () => core,
       identityWalletEnabled: () => true,
       selectedChainOf: (windowId) => (state.selected.has(windowId) ? state.selected.get(windowId) : 100),
-      getDerivedWallets: async () => [
-        { index: 0, name: 'Main Wallet', address: ACCOUNT, type: 'mnemonic' },
-        { index: 1, name: 'Second', address: SECOND, type: 'mnemonic' },
-      ],
+      getDerivedWallets: async () => WALLETS,
       networks: () => ({
         1: { name: 'Ethereum', nativeSymbol: 'ETH' },
         100: { name: 'Gnosis Chain', nativeSymbol: 'xDAI' },
@@ -151,6 +155,7 @@ describeIfBinary('page requests through the real freedom-cored\'s eip1193.reques
         }),
     });
     env = { relay };
+    writeAccountRecords(path.join(root, 'identity'), WALLETS);
     await core.start();
   });
 
