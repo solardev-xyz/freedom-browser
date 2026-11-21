@@ -23,6 +23,7 @@ const { test: base, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { closeApp } = require('./close-app');
 const { chromeWindow } = require('./chrome-window');
 
@@ -64,7 +65,7 @@ const test = base.extend({
       fs.mkdirSync(dir, { recursive: true });
     }
     fs.writeFileSync(
-      path.join(userDataDir, 'settings.json'),
+      freedomPath(userDataDir, 'settings.json'),
       JSON.stringify(SEED_SETTINGS, null, 2),
       'utf-8'
     );

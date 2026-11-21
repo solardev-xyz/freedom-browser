@@ -37,6 +37,7 @@ const {
   createAppMock,
   loadMainModule,
 } = require('../../../helpers/main-process-test-utils');
+const { freedomPath } = require('../../../helpers/freedom-path');
 
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -130,7 +131,7 @@ describe('postage-stamp owner + publisher identity continuity (binary-free)', ()
   }
 
   function writeBeeData(userDataDir) {
-    const beeDataDir = path.join(userDataDir, 'bee-data');
+    const beeDataDir = freedomPath(userDataDir, 'bee-data');
     fs.mkdirSync(path.join(beeDataDir, 'keys'), { recursive: true });
     fs.writeFileSync(path.join(beeDataDir, 'keys', 'swarm.key'), keystoreJson);
     createBeeConfig(beeDataDir, KEYSTORE_PASSWORD, 1633, 1634);
@@ -142,13 +143,13 @@ describe('postage-stamp owner + publisher identity continuity (binary-free)', ()
     async () => {
       const userDataDir = makeUserData();
       writeBeeData(userDataDir);
-      const stamperstore = writeStamperstore(path.join(userDataDir, 'bee-data'));
+      const stamperstore = writeStamperstore(freedomPath(userDataDir, 'bee-data'));
       const stampsBefore = snapshotDir(stamperstore);
 
       const mod = loadMigrationModule(userDataDir);
       expect(mod.migrateBeeDataToAntData()).toBe(true);
 
-      const antDataDir = path.join(userDataDir, 'ant-data');
+      const antDataDir = freedomPath(userDataDir, 'ant-data');
 
       // The password that decrypts the keystore must have ridden along with it.
       const carriedPassword = readConfigPassword(antDataDir);
@@ -174,14 +175,14 @@ describe('postage-stamp owner + publisher identity continuity (binary-free)', ()
     async () => {
       const userDataDir = makeUserData();
       writeBeeData(userDataDir);
-      writeStamperstore(path.join(userDataDir, 'bee-data'));
+      writeStamperstore(freedomPath(userDataDir, 'bee-data'));
 
       // antd already ran once on an empty ant-data and self-generated a
       // throwaway identity with a DIFFERENT keystore password. The merge must
       // leave the keystore and the password consistent — i.e. the carried
       // bee-era password (which matches the carried keystore), not the
       // throwaway one.
-      const antDataDir = path.join(userDataDir, 'ant-data');
+      const antDataDir = freedomPath(userDataDir, 'ant-data');
       fs.mkdirSync(antDataDir, { recursive: true });
       fs.writeFileSync(path.join(antDataDir, 'identity.json'), '{"throwaway":true}');
       fs.writeFileSync(path.join(antDataDir, 'signing.key'), 'throwaway-signing-key');
@@ -217,10 +218,10 @@ describe('postage-stamp owner + publisher identity continuity (binary-free)', ()
       // A v0.7.x install: the vault lives under identity/, the injected node
       // identity + stamps under bee-data/. The bee → ant migration only
       // touches bee-data/; the vault stays in place.
-      const identityDir = path.join(userDataDir, 'identity');
+      const identityDir = freedomPath(userDataDir, 'identity');
       await vault.importVault(identityDir, VAULT_PASSWORD, TEST_MNEMONIC);
       writeBeeData(userDataDir);
-      writeStamperstore(path.join(userDataDir, 'bee-data'));
+      writeStamperstore(freedomPath(userDataDir, 'bee-data'));
 
       // Capture the publisher + overlay identities the vault regenerates today.
       const publisher0Before = derivePublisherKey(TEST_MNEMONIC, 0).address;
@@ -244,10 +245,10 @@ describe('postage-stamp owner + publisher identity continuity (binary-free)', ()
       // keystore — the node overlay and the vault identity stay in lockstep.
       const vaultBeeWallet = deriveAllKeys(mnemonic).beeWallet.address;
       const migratedKeystore = fs.readFileSync(
-        path.join(userDataDir, 'ant-data', 'keys', 'swarm.key'),
+        path.join(freedomPath(userDataDir, 'ant-data'), 'keys', 'swarm.key'),
         'utf-8'
       );
-      const carriedPassword = readConfigPassword(path.join(userDataDir, 'ant-data'));
+      const carriedPassword = readConfigPassword(freedomPath(userDataDir, 'ant-data'));
       const recovered = await Wallet.fromEncryptedJson(migratedKeystore, carriedPassword);
       expect(recovered.address).toBe(vaultBeeWallet);
       expect(recovered.address).toBe(overlayOwner);

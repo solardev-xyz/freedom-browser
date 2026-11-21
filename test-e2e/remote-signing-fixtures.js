@@ -17,6 +17,7 @@
 const { test: base, expect, _electron: electron, chromium } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
+const { freedomPath } = require('../test/helpers/freedom-path');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -63,7 +64,7 @@ const test = base.extend({
     fs.mkdirSync(radicleDir, { recursive: true });
 
     fs.writeFileSync(
-      path.join(userDataDir, 'settings.json'),
+      freedomPath(userDataDir, 'settings.json'),
       JSON.stringify({
         enableIdentityWallet: true,
         startAntAtLaunch: false,

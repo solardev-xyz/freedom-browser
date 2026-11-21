@@ -20,6 +20,7 @@ const { test: base, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { freedomPath } = require('../test/helpers/freedom-path');
 
 const { isPackagedRun, packagedLaunchTarget, launchApp } = require('./packaged-launch');
 const { closeApp } = require('./close-app');
@@ -154,7 +155,7 @@ const test = base.extend({
       : settingsOverride;
     if (seededSettings) {
       fs.writeFileSync(
-        path.join(userDataDir, 'settings.json'),
+        freedomPath(userDataDir, 'settings.json'),
         JSON.stringify(seededSettings, null, 2),
         'utf-8'
       );
@@ -162,7 +163,7 @@ const test = base.extend({
 
     if (externalNodeDecisions) {
       fs.writeFileSync(
-        path.join(userDataDir, 'external-node-decisions.json'),
+        freedomPath(userDataDir, 'external-node-decisions.json'),
         JSON.stringify(externalNodeDecisions, null, 2),
         'utf-8'
       );

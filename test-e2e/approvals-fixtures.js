@@ -8,6 +8,7 @@ const { _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { pathToFileURL } = require('url');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
@@ -30,7 +31,7 @@ const PAST_DELAY_MS = 700;
 async function seedVault(userDataDir, { wallets = [], activeWalletIndex = 0 } = {}) {
   const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
   const identityDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f-approvals-identity-'));
-  const settingsFile = path.join(userDataDir, 'settings.json');
+  const settingsFile = freedomPath(userDataDir, 'settings.json');
   const seeded = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) : {};
   fs.writeFileSync(
     settingsFile,
