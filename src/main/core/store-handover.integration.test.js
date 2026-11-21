@@ -7,7 +7,10 @@
  * `requires: requiresStore(name)` fails `requirement_unmet` in main, unsent;
  * and the previous release (0.22.0), which ignores `store_moved`, takes a
  * hello naming all five and echoes none, so every store's request fails
- * the same way there.
+ * the same way there, and a hello naming the profile's directory too.
+ * With `payments` named and the profile's directory apart from the Freedom
+ * root, as after 0013's move, the pinned core imports the legacy x402
+ * receipts from the profile's directory (PRF-8b-lite).
  *
  * Skipped without the binaries; FREEDOM_CORED_STORES_TEST=1 requires both
  * (npm run core:download, npm run core:download:previous).
@@ -158,6 +161,58 @@ describeIfCurrent('the set-A stores before any moves, on the pinned freedom-core
     }
   });
 
+  // Design 0013, PRF-8b-lite (cored 0.24.0): the legacy x402 receipts are
+  // imported from the hello's user_data_dir, the profile's directory, and
+  // renamed there, while the database stays under grant_root, the Freedom
+  // root, as after 0013's move. A file at the Freedom root is left unread.
+  test('with payments named, the receipts are imported from user_data_dir', async () => {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-user-data-'));
+    const freedom = path.join(userData, 'freedom');
+    fs.mkdirSync(freedom);
+    const receipts = (id) =>
+      JSON.stringify([
+        {
+          id,
+          settledAt: 1699000000,
+          status: 'settled',
+          chainId: 8453,
+          amount: '500',
+          origin: 'https://x.example',
+          url: 'https://x.example/a',
+        },
+      ]);
+    fs.writeFileSync(path.join(userData, 'x402-receipts.json'), receipts('profile'));
+    fs.writeFileSync(path.join(freedom, 'x402-receipts.json'), receipts('freedom'));
+    let moved;
+    try {
+      moved = await startCore({
+        binary: current,
+        root: userData,
+        grantRoot: freedom,
+        userDataDir: userData,
+        storeMoved: ['payments'],
+      });
+      expect(moved.service.helloParams(moved)).toMatchObject({
+        grant_root: freedom,
+        user_data_dir: userData,
+      });
+      expect(moved.hello.store_moved).toEqual(['payments']);
+      const { payments } = await moved.request('payments.get_recent', {}, { caller: 'chrome' });
+      expect(payments.map((p) => [p.kind, p.metadata?.legacyId])).toEqual([['x402', 'profile']]);
+      expect(fs.existsSync(path.join(freedom, 'payment-history.sqlite'))).toBe(true);
+      expect(fs.existsSync(path.join(userData, 'payment-history.sqlite'))).toBe(false);
+      expect(fs.existsSync(path.join(userData, 'x402-receipts.json'))).toBe(false);
+      expect(fs.existsSync(path.join(userData, 'x402-receipts.json.migrated'))).toBe(true);
+      expect(fs.readFileSync(path.join(freedom, 'x402-receipts.json'), 'utf8')).toBe(
+        receipts('freedom')
+      );
+      expect(fs.existsSync(path.join(freedom, 'x402-receipts.json.migrated'))).toBe(false);
+    } finally {
+      await moved?.stop();
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
   test("a store's request with requires fails requirement_unmet in main, unsent", async () => {
     const before = snapshot(root);
     const requires = requiresStore('payments');
@@ -192,7 +247,9 @@ describeIfPrevious('the set-A stores on the previous freedom-cored release', () 
   beforeAll(async () => {
     ({ requiresStore, STORES } = require('./core-client'));
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-previous-'));
-    core = await startCore({ binary: previous, root, storeMoved: STORES });
+    // The hello also names the profile's directory (PRF-8b-lite), which a
+    // core before 0.24.0 ignores, as every member it doesn't know.
+    core = await startCore({ binary: previous, root, storeMoved: STORES, userDataDir: root });
   });
 
   afterAll(async () => {
@@ -200,8 +257,9 @@ describeIfPrevious('the set-A stores on the previous freedom-cored release', () 
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test('a hello naming all five is taken, and echoes none', () => {
+  test("a hello naming all five, and the profile's directory, is taken, and echoes none", () => {
     expect(core.service.helloParams(core).store_moved).toEqual([...STORES]);
+    expect(core.service.helloParams(core).user_data_dir).toBe(root);
     expect(core.hello.store_moved).toEqual([]);
   });
 

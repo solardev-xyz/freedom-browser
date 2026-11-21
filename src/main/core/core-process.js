@@ -63,6 +63,11 @@ async function startCore() {
     // permission files are, the profile's Freedom root (its userData until
     // 0013's move, freedom-root.js), which the stores write them under.
     grantRoot: getFreedomDataDir(),
+    // The hello's `user_data_dir` (design 0013, PRF-8b-lite): the profile's
+    // own directory, where the core imports the legacy `x402-receipts.json`
+    // from once. It stays at the profile's root after 0013's move, when the
+    // Freedom root no longer is.
+    userDataDir: app.getPath('userData'),
   });
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));
   // Every (re)start reports node identity writes recovery couldn't finish;
