@@ -61,7 +61,7 @@ jest.mock('../webrequest-dispatcher', () => ({
   registerWebRequestHandler: jest.fn(),
 }));
 jest.mock('../payment-history', () => ({
-  append: jest.fn(),
+  appendOnce: jest.fn(),
   KINDS: { X402: 'x402' },
   STATUSES: { SETTLED: 'settled', NO_RECEIPT: 'no-receipt', FAILED: 'failed' },
 }));

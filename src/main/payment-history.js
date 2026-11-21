@@ -81,10 +81,50 @@ function broadcastTxRecorded(entry) {
   } : { id: null });
 }
 
+// The codes of a failure the core answered before it wrote anything, or
+// that main refused unsent: the write didn't happen. Any other failure (a
+// lost answer: `core_unavailable`, a hang's `timeout`, `cancelled`,
+// `internal`) leaves its outcome unknown until the core is back.
+const NOT_WRITTEN = new Set([
+  'invalid_argument',
+  'not_moved',
+  'forbidden',
+  'no_profile',
+  'storage',
+  'deadline',
+  'unknown_method',
+  'requirement_unmet',
+  'busy',
+]);
+const outcomeUnknown = (err) => !NOT_WRITTEN.has(err?.code);
+
+// A write whose outcome is unknown changed the history, or didn't, and no
+// one heard of it: at the core's next start, once the history has been
+// read again, every listener is told to read it again too.
+let rereadOwed = false;
+
+/**
+ * One write: the core's record of it (or `removed`), broadcast when it
+ * changed something (`changed`), and the re-read owed when its answer was
+ * lost.
+ */
+async function written(request, changed) {
+  let answer;
+  try {
+    answer = await request();
+  } catch (err) {
+    if (outcomeUnknown(err)) rereadOwed = true;
+    throw err;
+  }
+  changed(answer);
+  return answer;
+}
+
 /** The core's record of a write, broadcast when it names a row. */
-function recorded(entry) {
-  if (entry) broadcastTxRecorded(entry);
-  return entry;
+function recorded(request) {
+  return written(request, (entry) => {
+    if (entry) broadcastTxRecorded(entry);
+  });
 }
 
 /**
@@ -106,8 +146,8 @@ function recorded(entry) {
  * @param {number} [entry.createdAt] — ms epoch; defaults to now
  * @param {object|null} [entry.metadata]
  */
-async function append(entry = {}) {
-  return recorded(await vaultBackend.payments.append(entry));
+function append(entry = {}) {
+  return recorded(() => vaultBackend.payments.append(entry));
 }
 
 /**
@@ -116,16 +156,16 @@ async function append(entry = {}) {
  * `confirmedAt = now()` when the caller didn't supply one. Resolves with
  * the record, or null when no row has `id`.
  */
-async function update(id, patch = {}) {
-  return recorded(await vaultBackend.payments.update(id, patch));
+function update(id, patch = {}) {
+  return recorded(() => vaultBackend.payments.update(id, patch));
 }
 
-async function markConfirmed(id, receipt = {}) {
-  return recorded(await vaultBackend.payments.markConfirmed(id, receipt));
+function markConfirmed(id, receipt = {}) {
+  return recorded(() => vaultBackend.payments.markConfirmed(id, receipt));
 }
 
-async function markFailed(id, info = {}) {
-  return recorded(await vaultBackend.payments.markFailed(id, info));
+function markFailed(id, info = {}) {
+  return recorded(() => vaultBackend.payments.markFailed(id, info));
 }
 
 // Merges into the row's metadata rather than replacing it: a Safe row's
@@ -134,8 +174,8 @@ async function markFailed(id, info = {}) {
 // concurrent finaliser (tx-recorder's markConfirmed/markFailed) may have
 // written the row's final status meanwhile; that status stands. The core
 // reads and writes the row in one transaction, so nothing lands between.
-async function markDropped(id) {
-  return recorded(await vaultBackend.payments.markDropped(id));
+function markDropped(id) {
+  return recorded(() => vaultBackend.payments.markDropped(id));
 }
 
 /**
@@ -163,10 +203,160 @@ function getCount(filters = {}, caller = null) {
   return vaultBackend.payments.getCount(filters, caller);
 }
 
-async function clear(caller = null) {
-  const removed = await vaultBackend.payments.clear(caller);
-  if (removed > 0) broadcastTxRecorded(null);
-  return removed;
+function clear(caller = null) {
+  return written(
+    () => vaultBackend.payments.clear(caller),
+    (removed) => {
+      if (removed > 0) broadcastTxRecorded(null);
+    }
+  );
+}
+
+// === Appends that must land once =========================================
+
+// How many kept appends wait at most, how many times each is sent, and how
+// long one kept while the core is up (refused by a busy database, or
+// failed after the core's restart was already done) waits before it is
+// tried again without a restart.
+const KEPT_LIMIT = 100;
+const KEPT_ATTEMPTS = 3;
+const KEPT_RETRY_MS = 60 * 1000;
+// The most recent rows a kept append's read-back searches, newest first,
+// under its own kind, chain, origin and status (the core's page cap).
+const KEPT_WINDOW = 500;
+// Appends not yet known to have landed, in order: `{ entry, unknown,
+// attempts }`. In memory only: a crash before one lands loses it, as the
+// module before PRF-6(c) lost a row whose synchronous write a crash beat.
+const kept = [];
+// The core client attachCore follows, and its starts' work, one at a time.
+let attachedClient = null;
+let settling = Promise.resolve();
+
+/**
+ * An append whose row must land exactly once though its caller doesn't wait
+ * for it: an x402 payment's (x402/intercept.js), whose money has already
+ * left, and whose row is the only record of it. The entry is stamped with
+ * its `createdAt` now, so a later send writes the same row. Sent at once;
+ * resolves with the record, or with null when the core didn't answer it,
+ * and never rejects. A failure keeps the entry for the core's next start
+ * (attachCore):
+ *   - refused, or never sent (the core wrote nothing): it is sent again,
+ *     up to KEPT_ATTEMPTS times in all (and KEPT_RETRY_MS later when the
+ *     core is up, without waiting for a restart);
+ *   - its answer lost (the core may have written it): the row is looked
+ *     for first (keptRow), and sent again only if it isn't there, so it is
+ *     never written twice.
+ */
+function appendOnce(entry) {
+  const createdAt = Number.isFinite(entry?.createdAt) ? entry.createdAt : Date.now();
+  return sendKept({ entry: { ...entry, createdAt }, unknown: false, attempts: 0 });
+}
+
+async function sendKept(item) {
+  item.attempts += 1;
+  try {
+    return await append(item.entry);
+  } catch (err) {
+    item.unknown = item.unknown || outcomeUnknown(err);
+    if (item.attempts < KEPT_ATTEMPTS) {
+      keep(item);
+      log.warn(
+        `[PaymentHistory] a payment's row was not written (${err.code || err.message}); ` +
+          `kept for the identity core's next start`
+      );
+    } else {
+      log.error(
+        `[PaymentHistory] a payment's row was not written after ${item.attempts} attempts ` +
+          `(${err.code || err.message}); given up`
+      );
+    }
+    return null;
+  }
+}
+
+let keptTimer = null;
+function keep(item) {
+  kept.push(item);
+  if (kept.length > KEPT_LIMIT) {
+    kept.shift();
+    log.error(`[PaymentHistory] more than ${KEPT_LIMIT} payments' rows wait; the oldest is given up`);
+  }
+  if (attachedClient?.state === 'ready' && !keptTimer) {
+    keptTimer = setTimeout(() => {
+      keptTimer = null;
+      settling = settling.then(() =>
+        settleKept().catch((err) => {
+          log.warn(`[PaymentHistory] kept payments not settled: ${err.message}`);
+        })
+      );
+    }, KEPT_RETRY_MS);
+    keptTimer.unref?.();
+  }
+}
+
+/**
+ * Whether `row` is the one `entry` writes. An x402 payment names itself:
+ * its authorization's nonce (EIP-3009's random 32 bytes, or Permit2's), in
+ * the row's metadata. Without one, the fields that set it apart: the time
+ * it was stamped with, its amount, URL, addresses, asset and settlement
+ * transaction.
+ */
+function isKeptRow(row, entry) {
+  const nonce = entry.metadata?.authorizationNonce;
+  if (nonce) return row.metadata?.authorizationNonce === nonce;
+  const same = (key) => (row[key] ?? null) === (entry[key] ?? null);
+  return (
+    row.createdAt === entry.createdAt &&
+    ['amount', 'url', 'fromAddress', 'toAddress', 'asset', 'txHash'].every(same)
+  );
+}
+
+/** The row a kept append wrote, read back, or null. */
+async function keptRow(entry) {
+  const filters = { kind: entry.kind, limit: KEPT_WINDOW };
+  if (entry.chainId !== undefined) filters.chainId = entry.chainId;
+  if (entry.origin) filters.origin = entry.origin;
+  if (entry.status) filters.status = entry.status;
+  const rows = await getRecent(filters);
+  return rows.find((row) => isKeptRow(row, entry)) ?? null;
+}
+
+// The kept appends, settled one at a time: those whose answer was lost are
+// read back first. One whose read fails waits for the next start.
+async function settleKept() {
+  for (const item of kept.splice(0)) {
+    if (item.unknown) {
+      let row;
+      try {
+        row = await keptRow(item.entry);
+      } catch (err) {
+        log.warn(`[PaymentHistory] a kept payment's row could not be looked for: ${err.message}`);
+        keep(item);
+        continue;
+      }
+      if (row) {
+        // Written before its answer was lost: told now, never written again.
+        broadcastTxRecorded(row);
+        continue;
+      }
+      item.unknown = false;
+    }
+    await sendKept(item);
+  }
+}
+
+// After writes whose answer was lost: the history read again (it answers
+// once the core serves it), then every listener told to read it again.
+async function settleReread() {
+  if (!rereadOwed) return;
+  rereadOwed = false;
+  try {
+    await getCount({});
+  } catch (err) {
+    rereadOwed = true;
+    throw err;
+  }
+  broadcastTxRecorded(null);
 }
 
 /**
@@ -178,9 +368,8 @@ async function clear(caller = null) {
  * since taken resolves as 'dropped' instead of staying pending forever.
  *
  * Exposed as an explicit function (not auto-run) so callers can trigger it
- * once the provider stack is up: at each core start (repollOnCoreReady,
- * from `index.js`), and tx-recorder whenever one of its transactions
- * resolves.
+ * once the provider stack is up: at each core start (attachCore, from
+ * `index.js`).
  *
  * A call while a sweep is running cannot just join it: that sweep may have
  * read (or already checked) a row before the chain moved, e.g. before the
@@ -313,24 +502,36 @@ async function repollPendingOnce(getStatusFn) {
 }
 
 /**
- * index.js: the repoll, at each start of the core `client` (main's, by
- * default): the history is the core's, so rows a previous run left pending
- * resolve once it is up, and a write a core restart lost (a receipt's
- * mark, say) is made good once the next one is (design 0013's coordinator
- * call G9: never resent, re-read). At once too if it is up already.
+ * index.js: the history's work at each start of the core `client` (main's,
+ * by default), in turn, and at once too if it is up already:
+ *   - the kept appends (appendOnce) settled: each written once;
+ *   - after a write whose answer was lost, the history read again and
+ *     every listener told to read it again (`{ id: null }`);
+ *   - the repoll: rows a previous run left pending resolve once the core is
+ *     up, and a mark a core restart lost is made good (design 0013's
+ *     coordinator call G9: never resent blindly; re-read).
  */
-let repollClient = null;
-function repollOnCoreReady(getStatusFn, client) {
+function attachCore(getStatusFn, client) {
   const core = client === undefined ? require('./core/core-process').getCoreClient() : client;
-  if (!core || typeof core.on !== 'function' || core === repollClient) return;
-  repollClient = core;
-  const sweep = () => {
-    repollPending(getStatusFn).catch((err) => {
-      log.warn(`[PaymentHistory] repoll failed: ${err.message}`);
-    });
+  if (!core || typeof core.on !== 'function' || core === attachedClient) return;
+  attachedClient = core;
+  const started = () => {
+    settling = settling.then(() => afterStart(getStatusFn));
   };
-  core.on('ready', sweep);
-  if (core.state === 'ready') sweep();
+  core.on('ready', started);
+  if (core.state === 'ready') started();
+}
+
+async function afterStart(getStatusFn) {
+  await settleKept().catch((err) => {
+    log.warn(`[PaymentHistory] kept payments not settled: ${err.message}`);
+  });
+  await settleReread().catch((err) => {
+    log.warn(`[PaymentHistory] the history could not be read again: ${err.message}`);
+  });
+  repollPending(getStatusFn).catch((err) => {
+    log.warn(`[PaymentHistory] repoll failed: ${err.message}`);
+  });
 }
 
 // === IPC =================================================================
@@ -392,8 +593,9 @@ module.exports = {
   getById,
   getCount,
   clear,
+  appendOnce,
   repollPending,
-  repollOnCoreReady,
+  attachCore,
   DROPPED_CONFIRM_MS,
   registerPaymentHistoryIpc,
 };

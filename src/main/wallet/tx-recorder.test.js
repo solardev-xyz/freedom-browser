@@ -246,6 +246,86 @@ describe('read-then-write steps on one history row', () => {
       metadata: { intentId: 'i1', outcome: 'sent', finality: { label: 'paid', block: 9 } },
     });
   });
+
+  /** A history whose every answer comes `delayMs` later, as the row was when asked. */
+  function slowHistory(rows, delayMs = 5) {
+    const answer = (value) => {
+      const copy = JSON.parse(JSON.stringify(value));
+      return new Promise((resolve) => setTimeout(() => resolve(copy), delayMs));
+    };
+    let nextId = Math.max(0, ...rows.keys()) + 1;
+    mockGetRecent.mockReset().mockImplementation(({ status, limit = 50, offset = 0 } = {}) =>
+      answer([...rows.values()].filter((row) => !status || row.status === status).slice(offset, offset + limit))
+    );
+    mockGetById.mockReset().mockImplementation((id) => answer(rows.get(id) ?? null));
+    mockUpdate.mockReset().mockImplementation((id, patch) => {
+      const row = rows.get(id);
+      Object.assign(row, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+      return answer(row);
+    });
+    mockAppend.mockReset().mockImplementation((entry) => {
+      const row = { id: nextId++, status: 'pending', ...entry };
+      rows.set(row.id, row);
+      return answer(row);
+    });
+  }
+
+  test("a phone check and the intent's settlement on one row both keep what they add", async () => {
+    const { recordSettlement } = require('./tx-recorder');
+    const job = 'core-job-shared';
+    const rows = new Map([
+      [
+        9,
+        {
+          id: 9,
+          kind: 'wallet-send',
+          chainId: 1,
+          txHash: '0x9',
+          status: 'unverified',
+          metadata: { intentId: 'i9', phoneCheck: { state: 'unverified', job, answeredAt: 1 } },
+        },
+      ],
+    ]);
+    slowHistory(rows);
+    mockWaitForTransaction.mockReturnValue(new Promise(() => {}));
+    const checked = phoneChecked({ job, outcome: 'verified' });
+    const settled = recordSettlement(
+      { intentId: 'i9', chainId: 1, hashes: [{ hash: '0x9' }], context: { kind: 'wallet-send' } },
+      { label: 'paid', hash: '0x9', block: 4 }
+    );
+    await Promise.all([checked, settled]);
+    expect(rows.get(9).metadata).toMatchObject({
+      intentId: 'i9',
+      phoneCheck: { state: 'verified', job },
+      finality: { label: 'paid', block: 4 },
+    });
+  });
+
+  test("a long scan of old phone rows doesn't hold a new send's first append", async () => {
+    const rows = new Map();
+    for (let id = 1; id <= 40; id += 1) {
+      rows.set(id, { id, kind: 'wallet-send', chainId: 1, status: 'unverified', metadata: {} });
+    }
+    slowHistory(rows, 10);
+    mockWaitForTransaction.mockReturnValue(new Promise(() => {}));
+    let scanDone = false;
+    const scan = phoneLost().then((ended) => {
+      scanDone = true;
+      return ended;
+    });
+    // The scan has read its rows and is ending them, one write at a time.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    mockSignAndSendTransaction.mockResolvedValue({ hash: '0xnew', from: '0xfrom' });
+    const sent = await signAndRecord({ to: '0xr', value: '1', chainId: 1 }, fakeSigner, { kind: 'wallet-send' });
+    expect(sent).toMatchObject({ recorded: true, hash: '0xnew' });
+    expect(scanDone).toBe(false);
+    // An intent's first send, too: its key is its own.
+    mockSignAndSendTransaction.mockResolvedValue({ hash: '0xint', from: '0xfrom', intentId: 'i-new', outcome: 'sent' });
+    const intent = await signAndRecord({ to: '0xr', value: '1', chainId: 1 }, fakeSigner, { kind: 'wallet-send' });
+    expect(intent).toMatchObject({ recorded: true });
+    expect(scanDone).toBe(false);
+    await expect(scan).resolves.toBe(40);
+  });
 });
 
 // Design 0012, PHN-2: a phone payment the identity core couldn't verify at

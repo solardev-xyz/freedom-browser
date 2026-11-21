@@ -595,6 +595,58 @@ describeIfCurrent('payment-history.sqlite through freedom-cored (0013, PRF-6(c))
     expect(await again.history.getCount({})).toBe(2);
   });
 
+  // Codex round 1 on #1299: an x402 row (appendOnce) the core didn't
+  // answer is kept, read back at the core's next start, and written once.
+  test('(T1) an x402 record made while the core is down is written once at its next start', async () => {
+    core = makeCore(root);
+    const main = loadMain(root, core);
+    const { history } = main;
+    const nonce = `0x${'ef'.repeat(32)}`;
+    const record = {
+      kind: 'x402',
+      chainId: 8453,
+      origin: 'https://x.example',
+      url: 'https://x.example/a',
+      asset: USDC,
+      amount: '500',
+      toAddress: RECIPIENT,
+      status: 'settled',
+      txHash: hash(7),
+      metadata: { authorizationNonce: nonce },
+    };
+    const until = async (check) => {
+      for (let i = 0; i < 100 && !(await check()); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    await asMain(async () => {
+      history.attachCore(async () => ({ status: 'pending' }), core);
+      await core.start();
+      await core.stop();
+      await expect(history.appendOnce(record)).resolves.toBeNull();
+      expect(main.sent).toEqual([]);
+      await core.start();
+      await until(() => main.sent.length >= 2);
+      const rows = await history.getRecent({ kind: 'x402' });
+      expect(rows).toEqual([
+        expect.objectContaining({
+          amount: '500',
+          txHash: hash(7),
+          metadata: { authorizationNonce: nonce },
+        }),
+      ]);
+      expect(main.sent).toEqual([
+        [RECORDED, { id: rows[0].id, kind: 'x402', status: 'settled', txHash: hash(7) }],
+        [RECORDED, { id: null }],
+      ]);
+      // Settled: a later start writes nothing more.
+      await core.stop();
+      await core.start();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await history.getCount({ kind: 'x402' })).toBe(1);
+    });
+  });
+
   test("Rollback: the reference reads the core's database as the core answers it", async () => {
     core = makeCore(root);
     const main = loadMain(root, core);

@@ -14,7 +14,9 @@
  *     `getCount` and `clear`; `pending` is the reference's `getPending`
  *     statement (its raw rows), and `setDroppedSeen` its `setDroppedSeenAt`
  *     (neither exported), answering nothing;
- *   - the answer holds the reference's return value, copied through JSON;
+ *   - the answer holds the reference's return value, copied through JSON,
+ *     and the reference's own broadcasts are silenced, as the core sends
+ *     none;
  *   - the reference module is loaded in the suite's registry at the first
  *     request (its logger, paths and better-sqlite3 the suite's, so a suite
  *     mocking better-sqlite3 with fake-better-sqlite3-payments.js gets that),
@@ -86,6 +88,24 @@ const RUNS = {
   'payments.clear': (ref) => ({ removed: ref.clear() }),
 };
 
+/**
+ * `run()` with the reference's own broadcasts silenced: the core sends
+ * none, and main broadcasts after its answers. The reference reaches the
+ * webContents through the suite's electron mock at each broadcast, so its
+ * list is empty while it runs.
+ */
+function silently(run) {
+  const contents = require('electron')?.webContents;
+  const all = contents?.getAllWebContents;
+  if (typeof all !== 'function') return run();
+  contents.getAllWebContents = () => [];
+  try {
+    return run();
+  } finally {
+    contents.getAllWebContents = all;
+  }
+}
+
 /** A reference error, as the core answers it and vault-backend throws it again. */
 function asCoreError(err) {
   const isDriver =
@@ -124,7 +144,7 @@ function simulatedPayments({ moved = true } = {}) {
     const sent = JSON.parse(JSON.stringify(params));
     let answer;
     try {
-      answer = RUNS[method](reference(), sent);
+      answer = silently(() => RUNS[method](reference(), sent));
     } catch (err) {
       throw asCoreError(err);
     }

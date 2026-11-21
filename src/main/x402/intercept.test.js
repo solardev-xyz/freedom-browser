@@ -18,7 +18,7 @@ jest.mock('../webrequest-dispatcher', () => ({
 
 const mockAppendReceipt = jest.fn();
 jest.mock('../payment-history', () => ({
-  append: (...args) => mockAppendReceipt(...args),
+  appendOnce: (...args) => mockAppendReceipt(...args),
   KINDS: { X402: 'x402', WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' },
   STATUSES: {
     PENDING: 'pending', CONFIRMED: 'confirmed', FAILED: 'failed',
@@ -2343,12 +2343,13 @@ describe('paymentResponseLoggingHandler', () => {
   });
 
   // The history is the identity core's (design 0013, PRF-6(c)): the
-  // handler sends the record in its own turn and doesn't wait for it, and
-  // a write the core refuses or can't make is logged.
+  // handler hands the record to payment-history's appendOnce, which keeps
+  // it until it lands, in its own turn, and doesn't wait for it; a record
+  // it can't hand over is logged.
   test.each([
-    ['refuses', () => Promise.reject(new Error("The core can't take this request"))],
+    ['rejects', () => Promise.reject(new Error("The core can't take this request"))],
     ['throws', () => { throw new Error('not serializable'); }],
-  ])('a record the core %s is logged, and the response passes', async (_name, failing) => {
+  ])('a record the history %s is logged, and the response passes', async (_name, failing) => {
     armInjection();
     mockAppendReceipt.mockImplementationOnce(failing);
     expect(paymentResponseLoggingHandler({
@@ -2362,6 +2363,26 @@ describe('paymentResponseLoggingHandler', () => {
     expect(log.error).toHaveBeenCalledWith(
       expect.stringMatching(/^\[x402:settled\] receipt append failed: /)
     );
+  });
+
+  // The record names its payment by the authorization's nonce, from the
+  // signed header, so a record whose answer was lost is recognised when it
+  // is read back, and never written twice.
+  test.each([
+    ['EIP-3009', { authorization: { from: '0xf', nonce: `0x${'ab'.repeat(32)}` } }, `0x${'ab'.repeat(32)}`],
+    ['Permit2', { permit2Authorization: { from: '0xf', nonce: '12345' } }, '12345'],
+    ['no nonce', { authorization: { from: '0xf' } }, null],
+  ])("the record carries the %s authorization's nonce", (_name, inner, nonce) => {
+    const value = Buffer.from(JSON.stringify({ x402Version: 2, payload: inner })).toString('base64');
+    armInjection({ value });
+    paymentResponseLoggingHandler({
+      webContentsId: 7,
+      url: 'https://api.example/article',
+      statusLine: 'HTTP/1.1 200 OK',
+      responseHeaders: { 'PAYMENT-RESPONSE': [responseB64] },
+    });
+    const [record] = mockAppendReceipt.mock.calls[0];
+    expect(record.metadata).toEqual(nonce ? { authorizationNonce: nonce } : undefined);
   });
 
   test('no injection awaiting: no receipt is written and headers are not touched', () => {

@@ -661,17 +661,19 @@ function deleteByWebContents(map, webContentsId) {
 
 // The payment's record, sent to the identity core, which keeps the history
 // (design 0013, PRF-6(c)), in this turn: the caller (a webRequest handler,
-// a tab's teardown) doesn't wait for the answer, and a failure is logged as
-// `failure`.
+// a tab's teardown) doesn't wait for the answer. payment-history's
+// appendOnce keeps a record the core didn't answer until it has landed,
+// exactly once, recognised by the authorization's nonce kept in its
+// metadata. A failure to hand it over is logged as `failure`.
 function appendX402PaymentRecord(
   expected,
   status,
   { txHash = null, metadata = undefined } = {},
   failure = 'receipt append'
 ) {
-  let written;
+  const nonce = expected.authorizationNonce ?? null;
   try {
-    written = paymentHistory.append({
+    const handed = paymentHistory.appendOnce({
       kind: PAYMENT_KINDS.X402,
       url: expected.url,
       origin: expected.origin,
@@ -682,14 +684,27 @@ function appendX402PaymentRecord(
       toAddress: expected.payTo,
       txHash,
       status,
-      metadata,
+      metadata: nonce ? { ...(metadata || {}), authorizationNonce: nonce } : metadata,
+    });
+    Promise.resolve(handed).catch((err) => {
+      log.error(`[x402:settled] ${failure} failed: ${err.message}`);
     });
   } catch (err) {
-    written = Promise.reject(err);
-  }
-  Promise.resolve(written).catch((err) => {
     log.error(`[x402:settled] ${failure} failed: ${err.message}`);
-  });
+  }
+}
+
+// The nonce of the authorization a payment header carries (EIP-3009's
+// random 32 bytes, or Permit2's), which names the payment, or null.
+function authorizationNonceOf(headerValue) {
+  try {
+    const inner = JSON.parse(Buffer.from(String(headerValue), 'base64').toString('utf8'))?.payload;
+    const nonce = inner?.authorization?.nonce ?? inner?.permit2Authorization?.nonce;
+    if (typeof nonce === 'string' && nonce) return nonce;
+    return Number.isSafeInteger(nonce) ? String(nonce) : null;
+  } catch {
+    return null;
+  }
 }
 
 function finalizeAwaitingResponsesForWebContents(webContentsId, cleanupReason) {
@@ -1499,6 +1514,7 @@ function attachPayment(signed, details) {
     payTo: signed.payTo ?? null,
     fromAddress: signed.fromAddress ?? null,
     signedHeader: signed.header,
+    authorizationNonce: authorizationNonceOf(signed.value),
   });
 
   log.info(

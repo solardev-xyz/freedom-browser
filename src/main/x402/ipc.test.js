@@ -82,7 +82,7 @@ jest.mock('../token-registry', () => ({
 const mockGetRecentReceipts = jest.fn();
 jest.mock('../payment-history', () => ({
   getRecent: (...args) => mockGetRecentReceipts(...args),
-  append: jest.fn(),
+  appendOnce: jest.fn(),
   KINDS: { X402: 'x402', WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' },
   STATUSES: { SETTLED: 'settled', NO_RECEIPT: 'no-receipt', FAILED: 'failed' },
 }));

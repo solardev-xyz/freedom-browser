@@ -682,7 +682,7 @@ describe('payment-history (through the core)', () => {
 
   // === the repoll at each start of the core ==============================
 
-  describe('repollOnCoreReady', () => {
+  describe('attachCore: the repoll at each start of the core', () => {
     const flush = async () => {
       for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
     };
@@ -691,9 +691,9 @@ describe('payment-history (through the core)', () => {
       await mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
       const client = Object.assign(new EventEmitter(), { state: 'starting' });
       const status = jest.fn(async () => ({ status: 'pending' }));
-      mod.repollOnCoreReady(status, client);
+      mod.attachCore(status, client);
       // Attached once per client.
-      mod.repollOnCoreReady(status, client);
+      mod.attachCore(status, client);
       await flush();
       expect(status).not.toHaveBeenCalled();
       client.emit('ready', {});
@@ -705,7 +705,7 @@ describe('payment-history (through the core)', () => {
       expect(status).toHaveBeenCalledTimes(2);
 
       const up = Object.assign(new EventEmitter(), { state: 'ready' });
-      mod.repollOnCoreReady(status, up);
+      mod.attachCore(status, up);
       await flush();
       expect(status).toHaveBeenCalledTimes(3);
     });
@@ -718,7 +718,7 @@ describe('payment-history (through the core)', () => {
         }),
       });
       const client = Object.assign(new EventEmitter(), { state: 'starting' });
-      fresh.repollOnCoreReady(jest.fn(), client);
+      fresh.attachCore(jest.fn(), client);
       client.emit('ready', {});
       await flush();
       expect(logger.warn).toHaveBeenCalledWith(
@@ -733,7 +733,279 @@ describe('payment-history (through the core)', () => {
           [require.resolve('./core/core-process')]: () => ({ getCoreClient: () => null }),
         },
       });
-      expect(() => fresh.repollOnCoreReady(jest.fn())).not.toThrow();
+      expect(() => fresh.attachCore(jest.fn())).not.toThrow();
+    });
+  });
+
+  // === after a restart: lost answers and the kept appends =================
+
+  // A write whose answer was lost may or may not have happened, and no
+  // listener heard of it; the core's next start settles both (attachCore).
+  describe('a lost answer, then a restart of the core', () => {
+    let send;
+    let client;
+    let logger;
+    const flush = async () => {
+      for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    };
+    const restart = async () => {
+      client.emit('ready', {});
+      await flush();
+    };
+    const events = () => send.mock.calls.map(([, payload]) => payload);
+    const NONCE = `0x${'cd'.repeat(32)}`;
+    const x402 = (extra = {}) => ({
+      kind: 'x402',
+      chainId: BASE_CHAIN,
+      origin: ORIGIN,
+      url: URL_FULL,
+      asset: USDC_BASE,
+      amount: TEN_USDC,
+      toAddress: PAY_TO,
+      status: 'settled',
+      txHash: '0xsettled',
+      ...extra,
+    });
+
+    beforeEach(() => {
+      send = jest.fn();
+      ({ mod, sim, logger } = loadPaymentHistoryModule({
+        userDataDir,
+        webContents: { getAllWebContents: () => [{ send }] },
+      }));
+      client = Object.assign(new EventEmitter(), { state: 'starting' });
+      mod.attachCore(async () => ({ status: 'pending' }), client);
+    });
+
+    // Codex round 1 on #1299: each write, its answer lost (it happened)
+    // or failed unsent with its outcome unknown (it didn't): after the
+    // restart the history is read again, then every listener told to read
+    // it again, and the write is in the history once or not at all.
+    test.each([
+      [
+        'append',
+        'payments.append',
+        async () => mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' }),
+        async () => expect(await mod.getCount({ kind: 'wallet-send' })).toBe(1),
+        async () => expect(await mod.getCount({ kind: 'wallet-send' })).toBe(0),
+      ],
+      [
+        'update',
+        'payments.update',
+        async (row) => mod.update(row.id, { txHash: '0xnew' }),
+        async (row) => expect((await mod.getById(row.id)).txHash).toBe('0xnew'),
+        async (row) => expect((await mod.getById(row.id)).txHash).toBe('0xa'),
+      ],
+      [
+        'markConfirmed',
+        'payments.mark_confirmed',
+        async (row) => mod.markConfirmed(row.id, { gasUsed: '21000' }),
+        async (row) => expect((await mod.getById(row.id)).status).toBe('confirmed'),
+        async (row) => expect((await mod.getById(row.id)).status).toBe('pending'),
+      ],
+      [
+        'markFailed',
+        'payments.mark_failed',
+        async (row) => mod.markFailed(row.id, { reason: 'reverted' }),
+        async (row) => expect((await mod.getById(row.id)).status).toBe('failed'),
+        async (row) => expect((await mod.getById(row.id)).status).toBe('pending'),
+      ],
+      [
+        'markDropped',
+        'payments.mark_dropped',
+        async (row) => mod.markDropped(row.id),
+        async (row) => expect((await mod.getById(row.id)).status).toBe('dropped'),
+        async (row) => expect((await mod.getById(row.id)).status).toBe('pending'),
+      ],
+      [
+        'clear',
+        'payments.clear',
+        async () => mod.clear(),
+        async () => expect(await mod.getCount({})).toBe(0),
+        async () => expect(await mod.getCount({})).toBe(1),
+      ],
+    ])(
+      '%s: applied or not, the restart re-reads and tells every listener once',
+      async (_name, method, write, applied, notApplied) => {
+        for (const [lose, check] of [
+          [() => sim.loseReply(method), applied],
+          [() => sim.failBefore(method, 'core_unavailable'), notApplied],
+        ]) {
+          await mod.clear().catch(() => {});
+          const row =
+            method === 'payments.append'
+              ? null
+              : await mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+          send.mockClear();
+          lose();
+          await expect(write(row)).rejects.toMatchObject({ code: 'core_unavailable' });
+          expect(send).not.toHaveBeenCalled();
+          const reads = sim.calls.length;
+          await restart();
+          // Read again first (`get_count`), then told.
+          expect(sim.calls.slice(reads, reads + 1)).toEqual([['payments.get_count', 'shell']]);
+          expect(events()).toEqual([{ id: null }]);
+          await check(row);
+          // Owed once: the next start tells no one.
+          send.mockClear();
+          await restart();
+          expect(send).not.toHaveBeenCalled();
+        }
+      }
+    );
+
+    test('a write the core refused or main never sent owes nothing', async () => {
+      const row = await mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      send.mockClear();
+      sim.failBefore('payments.mark_confirmed', 'storage');
+      await expect(mod.markConfirmed(row.id, {})).rejects.toMatchObject({ code: 'storage' });
+      await expect(mod.append({ kind: 'lightning', chainId: 1, amount: '1' })).rejects.toThrow(
+        /unknown kind/
+      );
+      await restart();
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    test('a re-read the core fails is owed to the start after', async () => {
+      const row = await mod.append({ kind: 'wallet-send', chainId: 1, txHash: '0xa', amount: '1' });
+      sim.loseReply('payments.mark_confirmed');
+      await expect(mod.markConfirmed(row.id, {})).rejects.toMatchObject({
+        code: 'core_unavailable',
+      });
+      send.mockClear();
+      sim.failBefore('payments.get_count', 'core_unavailable');
+      await restart();
+      expect(send).not.toHaveBeenCalled();
+      await restart();
+      expect(events()).toEqual([{ id: null }]);
+    });
+
+    // The x402 rows (appendOnce): the money has left, so the row must land,
+    // and land once.
+    test.each([
+      ['with its nonce', { metadata: { authorizationNonce: NONCE } }],
+      ['without a nonce', {}],
+    ])(
+      'a kept append %s whose answer was lost is found at the restart, never written twice',
+      async (_name, extra) => {
+        sim.loseReply('payments.append');
+        await expect(mod.appendOnce(x402(extra))).resolves.toBeNull();
+        expect(await mod.getCount({ kind: 'x402' })).toBe(1);
+        expect(send).not.toHaveBeenCalled();
+        await restart();
+        expect(await mod.getCount({ kind: 'x402' })).toBe(1);
+        const [row] = await mod.getRecent({ kind: 'x402' });
+        // Told with its row (x402's balance refresh listens for its kind), and re-read.
+        expect(events()).toEqual([
+          { id: row.id, kind: 'x402', status: 'settled', txHash: '0xsettled' },
+          { id: null },
+        ]);
+        expect(sim.calls.filter(([m]) => m === 'payments.append')).toHaveLength(1);
+      }
+    );
+
+    test.each([
+      ['never sent, its outcome unknown', 'core_unavailable'],
+      ['refused before it was written', 'storage'],
+      ['refused by main', 'requirement_unmet'],
+    ])('a kept append %s is written once at the restart', async (_name, code) => {
+      sim.failBefore('payments.append', code);
+      await expect(
+        mod.appendOnce(x402({ metadata: { authorizationNonce: NONCE } }))
+      ).resolves.toBeNull();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(0);
+      await restart();
+      const rows = await mod.getRecent({ kind: 'x402' });
+      expect(rows).toEqual([
+        expect.objectContaining({
+          amount: TEN_USDC,
+          status: 'settled',
+          metadata: { authorizationNonce: NONCE },
+        }),
+      ]);
+      expect(events()[0]).toEqual({
+        id: rows[0].id,
+        kind: 'x402',
+        status: 'settled',
+        txHash: '0xsettled',
+      });
+      // Nothing left: the next start writes nothing.
+      await restart();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(1);
+    });
+
+    test('a kept append is written with the time it was first sent', async () => {
+      jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+      sim.failBefore('payments.append', 'core_unavailable');
+      await mod.appendOnce(x402());
+      Date.now.mockReturnValue(1_700_000_999_000);
+      await restart();
+      expect((await mod.getRecent({ kind: 'x402' }))[0].createdAt).toBe(1_700_000_000_000);
+    });
+
+    test('a kept append refused while the core is up is tried again a minute later', async () => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+      client.state = 'ready';
+      sim.failBefore('payments.append', 'storage');
+      await mod.appendOnce(x402({ metadata: { authorizationNonce: NONCE } }));
+      expect(await mod.getCount({ kind: 'x402' })).toBe(0);
+      jest.advanceTimersByTime(59_000);
+      await flush();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(0);
+      jest.advanceTimersByTime(1_000);
+      await flush();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(1);
+    });
+
+    test('a kept append whose read-back fails waits for the next start, and is still found then', async () => {
+      sim.loseReply('payments.append');
+      await mod.appendOnce(x402({ metadata: { authorizationNonce: NONCE } }));
+      sim.failBefore('payments.get_recent', 'core_unavailable');
+      await restart();
+      sim.failBefore('payments.append', 'core_unavailable');
+      await restart();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(1);
+      expect(sim.calls.filter(([m]) => m === 'payments.append')).toHaveLength(1);
+    });
+
+    test('a kept append the core refuses each time is given up after three attempts, and logged', async () => {
+      const refused = x402({ amount: 'not-digits' });
+      await expect(mod.appendOnce(refused)).resolves.toBeNull();
+      await restart();
+      await restart();
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('after 3 attempts'));
+      const appends = sim.calls.filter(([m]) => m === 'payments.append').length;
+      await restart();
+      expect(sim.calls.filter(([m]) => m === 'payments.append')).toHaveLength(appends);
+      expect(appends).toBe(3);
+    });
+
+    test('a kept append the core answers at once is written once and told once', async () => {
+      const row = await mod.appendOnce(x402({ metadata: { authorizationNonce: NONCE } }));
+      expect(row).toMatchObject({ kind: 'x402', metadata: { authorizationNonce: NONCE } });
+      expect(events()).toEqual([
+        { id: row.id, kind: 'x402', status: 'settled', txHash: '0xsettled' },
+      ]);
+      await restart();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(1);
+      expect(events()).toHaveLength(1);
+    });
+
+    test('two payments alike but for their nonces are told apart', async () => {
+      await mod.appendOnce(x402({ metadata: { authorizationNonce: `0x${'01'.repeat(32)}` } }));
+      sim.loseReply('payments.append');
+      await mod.appendOnce(x402({ metadata: { authorizationNonce: `0x${'02'.repeat(32)}` } }));
+      sim.failBefore('payments.append', 'core_unavailable');
+      await mod.appendOnce(x402({ metadata: { authorizationNonce: `0x${'03'.repeat(32)}` } }));
+      await restart();
+      const nonces = (await mod.getRecent({ kind: 'x402' }))
+        .map((r) => r.metadata.authorizationNonce)
+        .sort();
+      expect(nonces).toEqual([
+        `0x${'01'.repeat(32)}`,
+        `0x${'02'.repeat(32)}`,
+        `0x${'03'.repeat(32)}`,
+      ]);
     });
   });
 
