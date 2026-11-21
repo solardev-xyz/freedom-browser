@@ -2,7 +2,7 @@
  * The set-A store handover against the real freedom-cored (freedom-core
  * design 0013, "One writer per store: `store_moved`"), before any store
  * moves (PRF-6(0)): this build's hello names none, so the pinned core
- * (0.23.0) writes none of the stores, answers each of their writes
+ * (0.24.0) writes none of the stores, answers each of their writes
  * `not_moved` and serves the reads it can; a store's request sent with
  * `requires: requiresStore(name)` fails `requirement_unmet` in main, unsent;
  * and the previous release (0.22.0), which ignores `store_moved`, takes a
