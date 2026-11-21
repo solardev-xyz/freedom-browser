@@ -391,6 +391,100 @@ describe('each core process', () => {
     expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
   });
 
+  // Codex round 2 on #1298: a write queued under the old process.
+  describe('a write queued before the process changed', () => {
+    const coreDown = () =>
+      Object.assign(new Error('The identity core is not running'), { code: 'core_unavailable' });
+    let failFirst;
+    beforeEach(() => {
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      // The first write, of index 6, held in the core until the process ends.
+      const held = new Promise((_resolve, reject) => {
+        failFirst = reject;
+      });
+      held.catch(() => {});
+      pendingSim.fail = (method, params) =>
+        method === 'safe_pending.set' && params.index === 6 ? held : undefined;
+    });
+    async function restartWith(store) {
+      client.emit('exit');
+      seed(store);
+      client.emit('ready');
+      failFirst(coreDown());
+    }
+
+    test("a set waits for the successor's load, and never writes over its different entry", async () => {
+      const first = pendingStore.setPending(6, entry('0x66'));
+      const held = pendingStore.getPending(5);
+      held.signatures = [sig(1)];
+      const second = pendingStore.setPending(5, held);
+      await flush();
+      expect(methods()).toEqual(['safe_pending.set']);
+      await restartWith({ 5: entry('0x55'), 6: entry('0x06') });
+      await expect(first).rejects.toMatchObject({ code: 'core_unavailable' });
+      await expect(second).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(methods()).toEqual([
+        'safe_pending.set',
+        'safe_pending.get',
+        'safe_pending.list',
+        'safe_pending.get',
+        'safe_pending.get',
+      ]);
+      expect(JSON.parse(pendingSim.text())[5]).toEqual(entry('0x55'));
+      expect(pendingStore.getPending(5)).toEqual(entry('0x55'));
+    });
+
+    test("a set over an entry the successor's load kept goes, after that load", async () => {
+      const first = pendingStore.setPending(6, entry('0x66'));
+      const second = pendingStore.setPending(5, entry('0x57'));
+      await flush();
+      await restartWith({ 5: entry('0x05'), 6: entry('0x06') });
+      await expect(first).rejects.toMatchObject({ code: 'core_unavailable' });
+      await second;
+      expect(methods()).toEqual([
+        'safe_pending.set',
+        'safe_pending.get',
+        'safe_pending.list',
+        'safe_pending.get',
+        'safe_pending.get',
+        'safe_pending.set',
+      ]);
+      expect(pendingStore.getPending(5)).toEqual(entry('0x57'));
+    });
+
+    test("a clear waits for the successor's load, and never clears its different entry", async () => {
+      const first = pendingStore.setPending(6, entry('0x66'));
+      const second = pendingStore.clearPending(5);
+      await flush();
+      await restartWith({ 5: entry('0x55'), 6: entry('0x06') });
+      await expect(first).rejects.toMatchObject({ code: 'core_unavailable' });
+      await expect(second).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(methods()).not.toContain('safe_pending.clear');
+      expect(JSON.parse(pendingSim.text())[5]).toEqual(entry('0x55'));
+    });
+  });
+
+  test("an older process's load that fails after a newer ready doesn't fail the newer one's wait", async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    let failOld;
+    const old = new Promise((_resolve, reject) => {
+      failOld = reject;
+    });
+    old.catch(() => {});
+    let lists = 0;
+    pendingSim.fail = (method) =>
+      method === 'safe_pending.list' && ++lists === 1 ? old : undefined;
+    client.emit('ready');
+    const waiting = pendingStore.ready;
+    client.emit('ready');
+    failOld(
+      Object.assign(new Error('The identity core is not running'), { code: 'core_unavailable' })
+    );
+    await expect(waiting).resolves.toBeUndefined();
+    expect(lists).toBe(2);
+    expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
+  });
+
   describe('a write the core applied and then lost the answer to', () => {
     const lose = (method) => {
       pendingSim.loseReply = (called) => called === method;

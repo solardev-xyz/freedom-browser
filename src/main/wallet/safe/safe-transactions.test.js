@@ -1289,6 +1289,89 @@ describe('across core processes and lost answers', () => {
     expect(getPending(5).signatures).toEqual([signatureOf(0)]);
   });
 
+  // Codex round 2 on #1298: the fence comes before the nonce is judged.
+  test('a core restart during the nonce read that finds another SafeTx, the nonce moved: not marked superseded, nothing written', async () => {
+    const other = `0x${'ef'.repeat(32)}`;
+    mockApprovalEnd.mockClear();
+    mockRpcRequest.mockImplementationOnce(async () => {
+      client.emit('exit');
+      const store = coreText();
+      store[5] = { ...store[5], safeTxHash: other, signatures: [] };
+      writeAsCore(store);
+      client.emit('ready');
+      return '0x4';
+    });
+    pendingSim.calls = [];
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(pendingSim.calls.map(([method]) => method)).not.toContain('safe_pending.set');
+    expect(coreText()[5]).toMatchObject({ safeTxHash: other, signatures: [] });
+    expect(coreText()[5].superseded).toBeUndefined();
+    expect(mockApprovalEnd).not.toHaveBeenCalled();
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+  });
+
+  // Codex round 2 on #1298: a chosen owner's signature across a restart.
+  describe("a chosen owner's signature made while the core restarts", () => {
+    let signing;
+    let releaseList;
+    async function signAcrossRestart(change) {
+      await cancelSafeSend(5);
+      await start();
+      signing = deferred();
+      mockCollectOwnerSignature.mockImplementationOnce(() => signing.promise);
+      const signed = signSafePending(5, 2);
+      await flushMicrotasks();
+      client.emit('exit');
+      const store = coreText();
+      change(store);
+      writeAsCore(store);
+      const listGate = new Promise((resolve) => {
+        releaseList = resolve;
+      });
+      pendingSim.fail = (method) => (method === 'safe_pending.list' ? listGate : undefined);
+      client.emit('ready');
+      pendingSim.calls = [];
+      signing.resolve(signatureOf(2));
+      await flushMicrotasks();
+      // Wrapped: an async function returning the promise would wait on it.
+      return { signed };
+    }
+
+    test("waits for the reload, and refuses an entry the core changed: nothing is written", async () => {
+      const { signed } = await signAcrossRestart((store) => {
+        store[5].signatures = [];
+      });
+      let settledEarly = false;
+      signed.then(
+        () => (settledEarly = true),
+        () => (settledEarly = true)
+      );
+      await flushMicrotasks();
+      expect(settledEarly).toBe(false);
+      releaseList();
+      await expect(signed).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(pendingSim.calls.map(([method]) => method)).not.toContain('safe_pending.set');
+      expect(coreText()[5].signatures).toEqual([]);
+    });
+
+    test('waits for the reload, and refuses an entry the core no longer holds', async () => {
+      const { signed } = await signAcrossRestart((store) => {
+        delete store[5];
+      });
+      releaseList();
+      await expect(signed).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(pendingSim.calls.map(([method]) => method)).not.toContain('safe_pending.set');
+      expect(coreText()[5]).toBeUndefined();
+    });
+
+    test('keeps the signature in an entry the reload confirmed as it was', async () => {
+      const { signed } = await signAcrossRestart(() => {});
+      releaseList();
+      await expect(signed).resolves.toMatchObject({ collected: 2 });
+      expect(coreText()[5].signatures).toEqual([signatureOf(0), signatureOf(2)]);
+    });
+  });
+
   test('a core restart during an execution that finds the SafeTx as it was executes it, the same entry', async () => {
     const held = getPending(5);
     mockRpcRequest.mockImplementationOnce(async () => {

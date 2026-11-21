@@ -34,8 +34,8 @@
  *
  * The pending SafeTx is the identity core's (`pending-store.js`, design
  * 0013 PRF-6(d)): each step waits for main's copy of the store to be the
- * running core's, loaded, first (and an execution again just before it
- * runs), and each change to it waits for the core's answer. A change the
+ * running core's, loaded, first (and an execution again after its nonce
+ * read), and each change to it waits for the core's answer. A change the
  * core reports failed (or whose answer is lost) fails the step, with the
  * entry as the core holds it read again; an approval held for a SafeTx that
  * couldn't be saved is ended.
@@ -482,6 +482,14 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
     // an earlier broadcast landed after all, or the Safe was used
     // elsewhere (app.safe.global). Terminal, not retryable.
     const chainNonce = await chainSafeNonce(pending.safeAddress);
+    // What follows acts on the SafeTx the core holds: after the nonce read,
+    // main's copy is the running core's (a core that restarted meanwhile is
+    // read again first), and still holds this very entry, before it is
+    // judged, marked or executed.
+    await pendingStore.ready;
+    if (getPending(safeIndex) !== pending) {
+      throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
+    }
     if (chainNonce > BigInt(pending.safeTxData.nonce)) {
       // Superseded: its approval ended first (design 0012).
       await safeApprovals.end(SEND, safeIndex, pending.safeTxHash);
@@ -496,13 +504,6 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
       );
     }
 
-    // What executes is the SafeTx the core holds: after the nonce read, main's
-    // copy is the running core's (a core that restarted meanwhile is read
-    // again first), and still holds this very entry.
-    await pendingStore.ready;
-    if (getPending(safeIndex) !== pending) {
-      throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
-    }
 
     const guard = pending.display?.site ? siteGuards.get(pending.safeTxHash) : null;
     const execute = () =>

@@ -27,7 +27,9 @@
  *   new object, so a loop that holds the old one stops.
  * - **Written through:** `setPending` and `clearPending` wait for the copy,
  *   send the change to the core and apply it to the copy only once the core
- *   has answered it. A change the core refuses or reports failed
+ *   has answered it. A write queued before the core process changed waits
+ *   for its successor's load, and is refused (SAFE_DISCARDED) unless that
+ *   reload kept the entry the caller read. A change the core refuses or reports failed
  *   (`storage`, the store as it was), or whose answer is lost (written or
  *   not), throws, and the index is read again from the core into a new
  *   object, so a loop that holds the old one stops; if the core can't
@@ -42,6 +44,8 @@
  *   then drops it from main's copy (`forgetPending`), or reads it again
  *   when the removal failed partway (`refreshPending`).
  */
+
+const { codedError, SAFE_DISCARDED } = require('./errors');
 
 const LOG = '[SafePending]';
 
@@ -158,8 +162,15 @@ async function whenLoaded() {
     if (available) return;
     if (waiter && !waiter.done) {
       await waiter.promise;
-    } else if (await load()) {
-      return;
+      continue;
+    }
+    const began = epoch;
+    try {
+      if (await load()) return;
+    } catch (err) {
+      // A load for a process that has since been replaced decides nothing:
+      // its successor's load does.
+      if (epoch === began) throw err;
     }
   }
 }
@@ -210,6 +221,7 @@ function attachCore(client) {
   client.on('ready', () => {
     invalidate();
     const wait = waiter;
+    const began = epoch;
     load().then(
       (applied) => {
         if (applied) settle(wait);
@@ -219,7 +231,9 @@ function attachCore(client) {
           `${LOG} Failed to load the pending Safe transactions (${err?.code || 'error'}):`,
           err?.message || err
         );
-        settle(wait, err);
+        // Only the running process's load settles the wait: an older one's
+        // failure, like its success, is its successor's to decide.
+        if (epoch === began) settle(wait, err);
       }
     );
   });
@@ -240,42 +254,76 @@ function getPending(safeIndex) {
   return (available && cache.get(safeIndex)) || null;
 }
 
+// A write's turn that came while no core process's copy was loaded: it
+// waits for the running one's load and takes its turn again.
+const AGAIN = Symbol('again');
+
+function replaced() {
+  return codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
+}
+
+/**
+ * A write of `index`, sent in its turn (`send`, then `apply` once the core
+ * has answered), on the copy the caller read: the entry it held then
+ * (`basis`) in that process's copy. It is sent only once the running
+ * process's copy is loaded, never ahead of that load, even when it was
+ * queued before the process changed; and if the process changed since the
+ * caller read it, only while the reload kept the caller's entry, so it
+ * never writes over a different entry of a successor (SAFE_DISCARDED).
+ */
+async function write(index, send, apply) {
+  const basis = cache.get(index);
+  let seen = available ? epoch : null;
+  for (;;) {
+    await whenLoaded();
+    const done = await inTurn(async () => {
+      if (!available) return AGAIN;
+      if (epoch !== seen) {
+        if (cache.get(index) !== basis) throw replaced();
+        seen = epoch;
+      }
+      let reply;
+      try {
+        reply = await send();
+      } catch (err) {
+        await readAgain(index);
+        throw err;
+      }
+      apply(reply);
+      return true;
+    });
+    if (done !== AGAIN) return;
+  }
+}
+
 /**
  * Sets the Safe's pending entry in the core, then in main's copy: `entry`
  * itself, which `getPending` answers from then on. Waits for the copy
- * first, and rejects as that wait or the core's answer does, with the
- * index read again (see above).
+ * first (see `write`), and rejects as that wait or the core's answer does,
+ * with the index read again (see above).
  */
-async function setPending(safeIndex, entry) {
-  await whenLoaded();
-  return inTurn(async () => {
-    let reply;
-    try {
-      reply = await vault().safePending.set(safeIndex, entry);
-    } catch (err) {
-      await readAgain(safeIndex);
-      throw err;
+function setPending(safeIndex, entry) {
+  return write(
+    safeIndex,
+    () => vault().safePending.set(safeIndex, entry),
+    (reply) => {
+      notDurable('A pending Safe transaction was saved', reply);
+      cache.set(safeIndex, entry);
+      confirmed.set(safeIndex, JSON.stringify(entry));
     }
-    notDurable('A pending Safe transaction was saved', reply);
-    cache.set(safeIndex, entry);
-    confirmed.set(safeIndex, JSON.stringify(entry));
-  });
+  );
 }
 
 /** Clears the Safe's pending entry in the core, then in main's copy; rejects as `setPending` does. */
-async function clearPending(safeIndex) {
-  await whenLoaded();
-  return inTurn(async () => {
-    let reply;
-    try {
-      reply = await vault().safePending.clear(safeIndex);
-    } catch (err) {
-      await readAgain(safeIndex);
-      throw err;
+function clearPending(safeIndex) {
+  return write(
+    safeIndex,
+    () => vault().safePending.clear(safeIndex),
+    (reply) => {
+      notDurable('A pending Safe transaction was cleared', reply);
+      drop(safeIndex);
     }
-    notDurable('A pending Safe transaction was cleared', reply);
-    drop(safeIndex);
-  });
+  );
 }
 
 /** Safe wallet indexes that currently have a pending SafeTx, ascending. */
