@@ -42,6 +42,9 @@ const PAYMENT_ERROR_CLASSES = Object.freeze({ Error, TypeError, RangeError, Synt
 // and `vault.create`'s and `vault.import`'s, which write it with the vault,
 // go only to a core whose hello echoed `vault_meta`.
 const VAULT_META = requiresStore('vault_meta');
+// `safe-pending.json` is the core's (design 0013, PRF-6(d)): its requests go
+// only to a core whose hello echoed `safe_pending`.
+const SAFE_PENDING = requiresStore('safe_pending');
 // The mutations that write vault-meta.json with the vault, and so their
 // reconcile too.
 const META_OPS = new Set(['create', 'import']);
@@ -126,6 +129,31 @@ async function call(method, params = {}, page = null, { requires = null } = {}) 
     if (err instanceof VaultBackendError) throw err;
     const code = err.code || CORE_UNAVAILABLE;
     throw new VaultBackendError(code, keyStoreMessage(code, err.data) ?? err.message, err.data);
+  }
+}
+
+/**
+ * A `safe_pending.*` request (design 0013, PRF-6(d)), main's own, with
+ * `requires: SAFE_PENDING`. With `mark` (`coreProcess()`), it goes to that
+ * very process or nowhere: one that has ended, or a client main has
+ * replaced, fails it `core_unavailable`, unsent, so a request meant for one
+ * process's copy of the store never reaches its successor. Without one, to
+ * whichever process serves.
+ */
+async function safePendingCall(method, params, mark) {
+  if (!mark) return call(method, params, null, { requires: SAFE_PENDING });
+  try {
+    if (getCoreClient() !== mark.core) {
+      throw new VaultBackendError(CORE_UNAVAILABLE, 'The identity core is not running');
+    }
+    return await mark.core.requestTo(mark.gen, method, params, { caller: 'shell' }, {
+      watchdogMs: watchdogMs(method),
+      requires: SAFE_PENDING,
+    });
+  } catch (err) {
+    if (err instanceof VaultBackendError) throw err;
+    const code = err.code || CORE_UNAVAILABLE;
+    throw new VaultBackendError(code, err.message, err.data);
   }
 }
 
@@ -665,6 +693,39 @@ const vaultBackend = {
         if (err.code === 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE') err.references = swarmReferences;
         throw err;
       }
+    },
+  },
+
+  /**
+   * The pending Safe transactions, `safe-pending.json` (design 0013,
+   * "Pending Safe transactions"; cored 0.23.0), which the core keeps once
+   * the hello names `safe_pending` (wallet/safe/pending-store.js is main's
+   * copy). Each is main's own (`shell`: the core refuses them from the
+   * chrome or a page), with `requires: requiresStore('safe_pending')`, so a
+   * core that didn't take the store fails it `requirement_unmet` in main,
+   * unsent. `index` is the Safe's wallet index; an entry is any JSON value,
+   * kept as main sent it. A failed write is `storage` (and a set past the
+   * file's 1 MiB bound `invalid_argument`), the store as it was; a write
+   * may answer `durable: false` (written, not yet flushed). Each takes an
+   * optional `mark` (`coreProcess()`): the request then goes to that
+   * process only, and fails `core_unavailable` once it has ended.
+   */
+  safePending: {
+    /** `getPending(index)`: the entry, or null for none. */
+    async get(index, mark = null) {
+      return (await safePendingCall('safe_pending.get', { index }, mark)).entry;
+    },
+    /** `listPendingIndexes()`: the indices with an entry, in the file's key order. */
+    async list(mark = null) {
+      return (await safePendingCall('safe_pending.list', {}, mark)).indices;
+    },
+    /** `setPending(index, entry)` → `{ durable }`. */
+    set(index, entry, mark = null) {
+      return safePendingCall('safe_pending.set', { index, entry }, mark);
+    },
+    /** `clearPending(index)` → `{ cleared, durable }` (`cleared`: it had an entry). */
+    clear(index, mark = null) {
+      return safePendingCall('safe_pending.clear', { index }, mark);
     },
   },
 

@@ -7,9 +7,11 @@
  *   a create and an import write the metadata with the vault, an unlock adds
  *   missing addresses, the list's default is written once, and every
  *   account change goes through `accounts.*`, the reference's refusals
- *   with their codes.
+ *   with their codes. A Safe's removal clears its pending SafeTx in the
+ *   core too (`safe_pending` named, PRF-6(d)), and main only drops its copy.
  * - (T2) main writes none of the store's files (`vault-meta.json`,
- *   `vault-meta-journal.json`, the staged `*.freedom-new`): a spy on `fs`.
+ *   `vault-meta-journal.json`, the staged `*.freedom-new`), nor
+ *   `safe-pending.json`: a spy on `fs`.
  * - (T3) the reference identity-manager.js (test/helpers/reference-vault-meta.js,
  *   9d4ea6251), with a client sending the hello of a build before PRF-6
  *   (no `store_moved`, no `requires`), on the pinned core: every account
@@ -61,8 +63,9 @@ function writeAsOlderBuild(file, text) {
   }
 }
 
-// The store's files (design 0013, "The vault and its metadata, one write").
-const STORE_FILES = /vault-meta\.json|vault-meta-journal\.json|\.freedom-new/;
+// The store's files (design 0013, "The vault and its metadata, one write"),
+// and safe-pending.json (PRF-6(d)), which a Safe's removal clears.
+const STORE_FILES = /vault-meta\.json|vault-meta-journal\.json|\.freedom-new|safe-pending\.json/;
 const PASSWORD = 'vault-meta-pass-1';
 const ABANDON =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -129,13 +132,22 @@ function loadMain(core, root, swarm) {
   return loaded;
 }
 
-/** Records every request main sends `core`: `{ method, params, context, options }`. */
+/**
+ * Records every request main sends `core`: `{ method, params, context,
+ * options }`, those sent to a named process (`requestTo`, as the pending
+ * Safe store sends its own) included.
+ */
 function recordCalls(core) {
   const calls = [];
   const request = core.request.bind(core);
   core.request = (method, params, context, options) => {
     calls.push({ method, params, context, options });
     return request(method, params, context, options);
+  };
+  const requestTo = core.requestTo.bind(core);
+  core.requestTo = (gen, method, params, context, options) => {
+    calls.push({ method, params, context, options });
+    return requestTo(gen, method, params, context, options);
   };
   return calls;
 }
@@ -213,10 +225,10 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     }
   });
 
-  test("the build's hello names vault_meta, and the core echoes it", () => {
-    // The build's stores, vault-meta.json's among them, all echoed.
+  test("the build's hello names vault_meta (and safe_pending), and the core echoes them", () => {
+    // The build's stores, vault-meta.json's and safe-pending.json's among them, all echoed.
     const { STORE_MOVED } = require('./core/core-client');
-    expect(STORE_MOVED).toContain('vault_meta');
+    expect(STORE_MOVED).toEqual(expect.arrayContaining(['vault_meta', 'safe_pending']));
     expect(core.service.helloParams(core).store_moved).toEqual([...STORE_MOVED]);
     expect(core.hello.store_moved).toEqual([...STORE_MOVED]);
   });
@@ -442,12 +454,23 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
     swarm.references = () => [];
 
     // A Safe: main's own slot for it goes once the core has removed it (the
-    // core ended its approvals in the same request).
+    // core ended its approvals in the same request), and so does its pending
+    // SafeTx, which the core cleared in it too (both stores named, PRF-6(d)):
+    // main sends no clear, and drops its copy.
     const safeApprovals = require('./wallet/safe/safe-approvals');
+    const pendingStore = require('./wallet/safe/pending-store');
     const hash = `0x${'11'.repeat(32)}`;
     await safeApprovals.hold('send', HW + 3, { id: 'a'.repeat(32), page: null }, hash);
+    const pendingFile = path.join(p.root, 'safe-pending.json');
+    const entry = { safeTxHash: hash, threshold: 1, signatures: [], createdAt: 1700000000000 };
+    await pendingStore.setPending(HW + 3, entry);
+    expect(JSON.parse(fs.readFileSync(pendingFile, 'utf8'))).toEqual({ [HW + 3]: entry });
     await expect(mod.deleteDerivedWallet(HW + 3)).resolves.toBeUndefined();
     expect(safeApprovals.held('send', HW + 3, hash)).toBeNull();
+    expect(pendingStore.getPending(HW + 3)).toBeNull();
+    await expect(vaultBackend.safePending.get(HW + 3)).resolves.toBeNull();
+    expect(fs.readFileSync(pendingFile, 'utf8')).toBe('{}');
+    expect(calls.map((call) => call.method)).not.toContain('safe_pending.clear');
     expect(mod.getWalletRecord(HW + 3)).toBeNull();
     expect(mod.getActiveWalletIndex()).toBe(0);
 

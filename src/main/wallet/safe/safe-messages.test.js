@@ -144,7 +144,8 @@ const mockTypedDataHash = jest.fn(async ({ domain, types, message }) =>
   require('ethers').TypedDataEncoder.hash(domain, types, message)
 );
 // The core's `approval.end` (freedom-core design 0012), and whether the
-// core process that gave an approval has ended since.
+// core process that gave an approval has ended since. The send flow's
+// pending SafeTxs are the core's too (design 0013, PRF-6(d)), simulated.
 const mockApprovalEnd = jest.fn(async () => ({}));
 const mockProcessEnded = jest.fn(() => false);
 jest.mock('../../core/vault-backend', () => ({
@@ -153,6 +154,8 @@ jest.mock('../../core/vault-backend', () => ({
     approval: { end: (...args) => mockApprovalEnd(...args) },
     coreProcess: () => ({ process: 'core' }),
     coreProcessEnded: (...args) => mockProcessEnded(...args),
+    safePending: require('../../../../test/helpers/simulated-store-core').simulatedSafePending()
+      .safePending,
   },
 }));
 

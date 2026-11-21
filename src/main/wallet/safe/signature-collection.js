@@ -11,7 +11,13 @@
  * signature landing after a discard-and-replace is dropped, never
  * attached to the wrong payload. `get` answers the same object while an
  * entry lives, so the free sweep keeps a signature only in the entry it
- * was made for, never one discarded meanwhile.
+ * was made for, never one discarded meanwhile. `set` is awaited: a SafeTx's
+ * goes to the identity core (pending-store.js), and when it fails it
+ * rejects and `get` answers a new object from then on, so nothing more is
+ * kept in the old one. `ready()`, if the adapter has it, resolves once `get`
+ * answers the store as it now stands (a SafeTx's: the running core's,
+ * reloaded after a restart), and a chosen owner's signature waits for it
+ * before the entry is checked again.
  *
  * Every owner's signature presents the Safe approval main holds for the
  * entry (freedom-core design 0012, APB-1c; `safe-approvals.js`): the
@@ -167,7 +173,14 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
     // written back, and nothing more is signed for it.
     if (store.get(safeIndex) !== entry || ended(store, entry)) break;
     entry.signatures = [...entry.signatures, signature];
-    store.set(safeIndex, entry);
+    try {
+      await store.set(safeIndex, entry);
+    } catch (err) {
+      // Not saved (the store reported it, and reads the entry again
+      // without it): this owner and the rest stay rows on the board.
+      console.warn(`[SafeSign] auto-signature not saved for owner ${ownerIndex}:`, err.message);
+      break;
+    }
     try {
       await store.signed?.(safeIndex, entry);
     } catch (err) {
@@ -184,8 +197,9 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
  * Collect one owner's signature (the user tapped that row, the device is
  * in their hand) — or, called without an ownerIndex, sweep the free
  * signatures instead. Persists through the store immediately; errors
- * (device not connected, rejection, locked vault) leave the entry
- * intact — they belong to the row, not the pending item.
+ * (device not connected, rejection, locked vault, a store that couldn't
+ * save it) leave the entry as it was — they belong to the row, not the
+ * pending item.
  *
  * Callers own the existence/terminal-state checks on the entry; this
  * owns membership, idempotency, mutual exclusion, and the
@@ -248,6 +262,7 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expe
     // approval's end): re-validate that THIS entry is still the pending
     // one, and not ended meanwhile (its page gone), before persisting into
     // it.
+    if (store.ready) await store.ready();
     const current = store.get(safeIndex);
     if (!current || current !== entry || store.idOf(current) !== signedId || ended(store, current)) {
       throw codedError(
@@ -256,7 +271,7 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expe
       );
     }
     current.signatures = [...current.signatures, signature];
-    store.set(safeIndex, current);
+    await store.set(safeIndex, current);
     await store.signed?.(safeIndex, current);
   } finally {
     release(safeIndex);
