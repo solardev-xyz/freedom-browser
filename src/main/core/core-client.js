@@ -40,9 +40,11 @@
  *   property of the build: `vault_meta` from PRF-6(a), `intents`
  *   (PRF-6(b2)), whose every write main sends to the core's `intents.*`
  *   (wallet/intent-store.js), `payments` (PRF-6(c)), whose every read and
- *   write main sends to the core's `payments.*` (payment-history.js), and
+ *   write main sends to the core's `payments.*` (payment-history.js),
  *   `safe_pending` (PRF-6(d)), whose every write main sends to the core's
- *   `safe_pending.*` (wallet/safe/pending-store.js). The core's answer echoes
+ *   `safe_pending.*` (wallet/safe/pending-store.js), and `rpc_api_keys`
+ *   (PRF-6(e)), whose every read and write main sends to the core's
+ *   `secrets.*` RPC-key methods (wallet/rpc-manager.js). The core's answer echoes
  *   the names it took, each once (cored 0.23.0); a core before 0.23.0
  *   (0.22.0) ignores the field, and its answer has none, which reads as
  *   none taken. A store's requests go with `requires: requiresStore(name)`,
@@ -116,10 +118,17 @@ const STORES = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending
  * PRF-6(b2): the intent journal's every write goes to the core. `payments`
  * from PRF-6(c): main opens `payment-history.sqlite` nowhere, and reads and
  * writes it only through the core. `safe_pending` from PRF-6(d): main keeps
- * a copy of `safe-pending.json` and writes it nowhere. The other set-A
- * stores are still main's.
+ * a copy of `safe-pending.json` and writes it nowhere. `rpc_api_keys` from
+ * PRF-6(e): the RPC API keys are the core's (wallet/rpc-manager.js). With
+ * it, every set-A store is the core's.
  */
-const STORE_MOVED = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending']);
+const STORE_MOVED = Object.freeze([
+  'vault_meta',
+  'intents',
+  'payments',
+  'safe_pending',
+  'rpc_api_keys',
+]);
 
 /**
  * The hello answer's `store_moved`: the names of `sent` whose store the core
@@ -221,9 +230,9 @@ function coreService(storeMoved = STORE_MOVED) {
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
       // The set-A stores the core writes from then on (design 0013):
       // vault-meta.json (PRF-6(a)), the intent journal (PRF-6(b2)), the
-      // payment history (PRF-6(c)) and safe-pending.json (PRF-6(d)). The core
-      // echoes those it took; 0.22.0
-      // ignores the field.
+      // payment history (PRF-6(c)), safe-pending.json (PRF-6(d)) and the RPC
+      // API keys (PRF-6(e)). The core echoes those it took; 0.22.0 ignores
+      // the field.
       store_moved: [...storeMoved],
     }),
     validHello: (result) => validHello(result, storeMoved),

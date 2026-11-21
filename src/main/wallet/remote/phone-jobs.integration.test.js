@@ -149,7 +149,7 @@ describeIfBinary('phone jobs with the real freedom-cored (PHN-2)', () => {
     }));
     jest.doMock('../../approvals/approvals-document', () => ({ isApprovalsDocumentEnabled: () => false }));
     jest.doMock('../../windows/request-window', () => ({ requestWindowId: () => null }));
-    jest.doMock('../rpc-manager', () => ({ getKeylessRpcUrls: () => [] }));
+    jest.doMock('../rpc-manager', () => ({ getKeylessRpcUrls: () => [], cachedApiKeys: () => new Map(), retiredApiKeys: () => [] }));
     jest.doMock('../chains', () => ({ getChain: () => ({ name: 'Gnosis', nativeCurrency: { name: 'xDAI', symbol: 'xDAI', decimals: 18 } }) }));
     jest.doMock('../../logger', () => ({ info() {}, warn() {}, error() {}, debug() {} }));
     // Main's payment history, in memory: what the wallet shows of each payment.

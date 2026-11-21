@@ -11,6 +11,8 @@ jest.mock('electron', () => ({
   webContents: { fromId: jest.fn() },
 }));
 jest.mock('electron-log', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+// No stored RPC key; a redactor that can't list them fails closed (wallet/rpc-errors.js).
+jest.mock('../networks/network-registry', () => ({ withoutApiKeys: (text) => String(text) }));
 
 // Main's backends, in memory. Every answer names the key it was asked under,
 // so a wrong key shows in the answer itself.

@@ -99,6 +99,9 @@ async function startCore() {
   // The pending Safe transactions, which the core writes (design 0013,
   // PRF-6(d)): main's copy loaded at each handshake.
   require('../wallet/safe/pending-store').attachCore(client);
+  // The RPC API keys, which the core keeps (design 0013, PRF-6(e)): main's
+  // copy, for the requests main runs itself, read at each handshake.
+  require('../wallet/rpc-manager').attachCore(client);
   // A phone payment's later check (design 0012, PHN-2): the core's
   // `phone.checked` and `phone.lost`, which it sends from its start on.
   require('../wallet/tx-recorder').attachPhoneEvents(client);

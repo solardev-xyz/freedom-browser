@@ -45,6 +45,8 @@ const VAULT_META = requiresStore('vault_meta');
 // `safe-pending.json` is the core's (design 0013, PRF-6(d)): its requests go
 // only to a core whose hello echoed `safe_pending`.
 const SAFE_PENDING = requiresStore('safe_pending');
+// The RPC-key requests' `requires` (PRF-6(e)).
+const RPC_KEYS = Object.freeze({ requires: requiresStore('rpc_api_keys') });
 // The mutations that write vault-meta.json with the vault, and so their
 // reconcile too.
 const META_OPS = new Set(['create', 'import']);
@@ -1054,6 +1056,33 @@ const vaultBackend = {
     /** Every row deleted: how many. */
     async clear(caller = null) {
       return (await paymentsCall('payments.clear', {}, caller)).removed;
+    },
+  },
+
+  /**
+   * The RPC API keys (freedom-core design 0013, "RPC API keys"; PRF-6(e)),
+   * which the core keeps once the hello names `rpc_api_keys`
+   * (wallet/rpc-manager.js). Each request goes with `requires`, so a core
+   * that didn't take the store (0.22.0) fails it `requirement_unmet` in
+   * main, unsent. `caller` is `'chrome'` (the settings page's, relayed) or
+   * null (`shell`, main's own).
+   */
+  secrets: {
+    /** `{}` → `{ keys: [{ id, api_key }] }`, `shell` only. Never logged. */
+    rpcApiKeys() {
+      return call('secrets.rpc_api_keys', {}, null, RPC_KEYS);
+    },
+    /** `{}` → `{ providers: [{ id, present }] }`, never a key */
+    rpcApiKeyStatus(caller = null) {
+      return call('secrets.rpc_api_key_status', {}, caller, RPC_KEYS);
+    },
+    /** `{ id, api_key }` → `{ providers, durable? }`: replaces the provider's key */
+    setRpcApiKey(params, caller = null) {
+      return call('secrets.set_rpc_api_key', params, caller, RPC_KEYS);
+    },
+    /** `{ id }` → `{ providers, durable? }` */
+    removeRpcApiKey(params, caller = null) {
+      return call('secrets.remove_rpc_api_key', params, caller, RPC_KEYS);
     },
   },
 

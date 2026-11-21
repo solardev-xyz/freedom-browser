@@ -139,7 +139,9 @@ function openFailure(err, url, tag, answer) {
       } catch {
         // the label falls back to ENS's
       }
-      return answer(502, `${nameSystemLabelForHost(host)} resolver error: ${err.message}`);
+      // The page shows the text: no RPC API key in it (design 0013 (e)).
+      const text = require('../wallet/rpc-errors').withoutStoredKeys(err.message);
+      return answer(502, `${nameSystemLabelForHost(host)} resolver error: ${text}`);
     }
     default:
       if (err?.name === 'AbortError') return answer(502, 'Cancelled');

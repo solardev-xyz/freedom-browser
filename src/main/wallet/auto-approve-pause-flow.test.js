@@ -31,7 +31,7 @@ jest.mock('electron', () => ({
 }));
 jest.mock('qrcode', () => ({}));
 jest.mock('./balance-service', () => ({}));
-jest.mock('./rpc-manager', () => ({ getEffectiveRpcUrls: () => [] }));
+jest.mock('./rpc-manager', () => ({ getEffectiveRpcUrls: () => [], retiredApiKeys: () => [] }));
 jest.mock('./chains', () => ({
   getChain: () => null,
   getAllChains: () => [],
