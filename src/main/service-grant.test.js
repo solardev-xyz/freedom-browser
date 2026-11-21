@@ -293,6 +293,154 @@ describe('a packaged build with the default profile in use', () => {
   });
 });
 
+describe("a profile's Freedom directory, `freedom/` (0013, PRF-9), in either layout", () => {
+  const PACKAGED = { packaged: true };
+  const { MOVED_ENTRIES } = jest.requireActual('./freedom-root');
+
+  // How a refusal names each component's directory; any other entry is a
+  // profile's data.
+  const COMPONENT_KINDS = {
+    identity: 'identity directory',
+    'bee-data': 'Bee data directory',
+    'ant-data': 'Ant data directory',
+    'ipfs-data': 'IPFS data directory',
+    myotis: 'Myotis data directory',
+    'tor-data': 'Tor data directory',
+    'radicle-data': 'Radicle data directory',
+  };
+  const kind = (name) => COMPONENT_KINDS[name] ?? 'data';
+  // The names in `freedom/` protected before they exist: each component's
+  // directory and every entry the move takes there, but freedom-ipfsd's
+  // own `ipfs-data`.
+  const INSIDE = [...new Set([...Object.keys(COMPONENT_KINDS), ...MOVED_ENTRIES])].filter(
+    (name) => name !== 'ipfs-data'
+  );
+
+  /** The move's marker in the profile kept in `dir`: the moved layout. */
+  function markMoved(dir) {
+    fs.mkdirSync(path.join(dir, 'freedom'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'freedom', 'layout.json'),
+      JSON.stringify({ version: 1, moved_at: '2026-11-21T00:00:00.000Z', by: 'test' })
+    );
+  }
+
+  /** A packaged catalog with `id` in use, every profile moved when
+   * `moved`. */
+  function setUp(id, moved) {
+    const appRoot = path.join(tempRoot, 'Freedom');
+    const records = catalog(appRoot, ['default', 'work', 'home'], PACKAGED);
+    if (moved) for (const record of Object.values(records)) markMoved(record.dir);
+    const grant = loadGrant(activeProfile(appRoot, records[id], PACKAGED));
+    return { appRoot, records, grant };
+  }
+
+  describe.each([
+    ['the root layout', false],
+    ['the moved layout', true],
+  ])('%s', (_layout, moved) => {
+    /** What refuses a grant of `name` in this profile's `freedom/`. */
+    const mine = (name) =>
+      moved
+        ? `the grant is this profile's ${kind(name)}`
+        : "the grant lies inside this profile's Freedom directory";
+
+    test.each([
+      ['a named profile', 'work'],
+      ['the packaged default profile, at the app root', 'default'],
+    ])(
+      "in use, %s: each entry of this profile's freedom/ is refused, its own IPFS directory passes",
+      (_who, id) => {
+        const { records, grant } = setUp(id, moved);
+        const me = records[id].dir;
+        for (const name of INSIDE) {
+          expect([name, grant.ipfsGrantRefusal(path.join(me, 'freedom', name))]).toEqual([
+            name,
+            mine(name),
+          ]);
+          expect(grant.ipfsGrantRefusal(path.join(me, 'freedom', name, 'x'))).toMatch(
+            /^the grant lies inside this profile's /
+          );
+        }
+        expect(grant.ipfsGrantRefusal(path.join(me, 'freedom'))).toMatch(
+          moved ? /^the grant contains this profile's / : /^the grant is this profile's Freedom/
+        );
+        // freedom-ipfsd's own directory: freedom/ipfs-data once moved,
+        // ipfs-data before, and the other one a profile's entry.
+        const own = path.join(me, moved ? 'freedom' : '', 'ipfs-data', 'freedom-ipfs');
+        const other = path.join(me, moved ? '' : 'freedom', 'ipfs-data', 'freedom-ipfs');
+        expect(grant.ipfsGrantRefusal(own)).toBeNull();
+        expect(grant.ipfsGrantRefusal(own, { win32: true, foldCase: true })).toBeNull();
+        fs.mkdirSync(path.join(own, 'blocks'), { recursive: true });
+        fs.writeFileSync(path.join(own, 'blocks', 'block'), 'x');
+        expect(grant.ipfsGrantRefusal(own)).toBeNull();
+        expect(grant.ipfsGrantRefusal(other)).toBe(
+          moved
+            ? "the grant lies inside this profile's IPFS data directory"
+            : "the grant lies inside this profile's Freedom directory"
+        );
+        // The marker is this profile's data too.
+        if (moved) {
+          expect(grant.ipfsGrantRefusal(path.join(me, 'freedom', 'layout.json'))).toBe(
+            "the grant is this profile's data"
+          );
+        }
+      }
+    );
+
+    test("another named profile's freedom/ is refused, as its whole directory", () => {
+      const { records, grant } = setUp('work', moved);
+      for (const name of [...INSIDE, 'ipfs-data']) {
+        expect([
+          name,
+          grant.ipfsGrantRefusal(path.join(records.home.dir, 'freedom', name)),
+        ]).toEqual([name, "the grant lies inside another profile's directory"]);
+      }
+    });
+
+    test("the packaged default profile's freedom/, in the app root, is refused with a named profile in use", () => {
+      const { appRoot, grant } = setUp('work', moved);
+      for (const name of [...INSIDE, 'ipfs-data']) {
+        expect([name, grant.ipfsGrantRefusal(path.join(appRoot, 'freedom', name))]).toEqual([
+          name,
+          "the grant lies inside another profile's Freedom directory",
+        ]);
+      }
+      expect(grant.ipfsGrantRefusal(path.join(appRoot, 'freedom'))).toBe(
+        "the grant is another profile's Freedom directory"
+      );
+    });
+
+    test("the named profiles' freedom/ is refused with the packaged default profile in use", () => {
+      const { records, grant } = setUp('default', moved);
+      for (const name of [...INSIDE, 'ipfs-data']) {
+        expect([
+          name,
+          grant.ipfsGrantRefusal(path.join(records.work.dir, 'freedom', name)),
+        ]).toEqual([name, "the grant lies inside another profile's directory"]);
+      }
+    });
+
+    test("freedom-radicled's grants pass, and this profile's freedom/ is refused to it", () => {
+      const { appRoot, records, grant } = setUp('work', moved);
+      const me = records.work.dir;
+      const own = path.join(me, 'radicled-home');
+      expect(
+        grant.radicleGrantRefusal(path.join(appRoot, 'R', String(records.work.slot)), own)
+      ).toBeNull();
+      expect(grant.radicleGrantRefusal(path.join(me, 'radicle-data'), own)).toBeNull();
+      for (const name of INSIDE) {
+        expect(
+          grant.radicleGrantRefusal(path.join(me, 'radicle-data'), path.join(me, 'freedom', name))
+        ).toMatch(/^the grant (is|lies inside) this profile's /);
+      }
+      expect(grant.radicleGrantRefusal(path.join(me, 'freedom', 'ipfs-data'), own)).toMatch(
+        /^the grant (is|lies inside) this profile's /
+      );
+    });
+  });
+});
+
 describe('a development build: Radicle homes beside the app root', () => {
   const DEV = { packaged: false, checkoutHash: 'abcd1234' };
 
