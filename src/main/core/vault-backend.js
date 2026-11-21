@@ -30,6 +30,9 @@ const { keyStoreMessage } = require('./key-store-messages');
 const { requiresStore } = require('./core-client');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
+// The intent journal is the core's (design 0013, PRF-6(b)): its requests go
+// only to a core whose hello echoed `intents`.
+const INTENTS = Object.freeze({ requires: requiresStore('intents') });
 // `vault-meta.json` is the core's (design 0013, PRF-6(a)): its requests,
 // and `vault.create`'s and `vault.import`'s, which write it with the vault,
 // go only to a core whose hello echoed `vault_meta`.
@@ -121,6 +124,32 @@ async function call(method, params = {}, page = null, { requires = null } = {}) 
     if (err instanceof VaultBackendError) throw err;
     const code = err.code || CORE_UNAVAILABLE;
     throw new VaultBackendError(code, keyStoreMessage(code, err.data) ?? err.message, err.data);
+  }
+}
+
+/**
+ * An intent-journal request (`intents.*`, design 0013, "The intent
+ * journal"), always main's own (`shell`: the core refuses every one from
+ * the chrome or a page). It goes with `requires: INTENTS`, so a core that
+ * didn't take the store fails it `requirement_unmet` in main, unsent. A
+ * rule's refusal (`invalid_argument`), a failed append and a load that
+ * can't read the file (`storage`) carry the reference's `INTENT_*` code as
+ * `data.code`: that code becomes the error's, with the reference's
+ * message, so callers keep branching on today's codes (`INTENT_NOT_HELD`,
+ * `INTENT_CHANGED`, `INTENT_STORE_FULL`, …). Anything else keeps its own
+ * code: `core_unavailable` for a request whose reply was lost, whose
+ * outcome is then unknown (main never sends it again: design 0013's
+ * coordinator call G9).
+ */
+async function intentsCall(method, params) {
+  try {
+    return await call(method, params, null, INTENTS);
+  } catch (err) {
+    const code = err.data?.code;
+    if (typeof code === 'string' && code.startsWith('INTENT_')) {
+      throw new VaultBackendError(code, err.message, err.data);
+    }
+    throw err;
   }
 }
 
@@ -231,7 +260,9 @@ async function reconcile(record) {
   );
   if (result.status !== 'committed') return null;
   if (result.meta === 'pending') {
-    log.warn("[VaultBackend] A lost vault operation committed; the core's recovery installs its metadata");
+    log.warn(
+      "[VaultBackend] A lost vault operation committed; the core's recovery installs its metadata"
+    );
   }
   return result;
 }
@@ -670,7 +701,8 @@ const vaultBackend = {
     /** @param {Uint8Array} bytes @returns {string} 65-byte signature, v 27/28 */
     async message(key, bytes, options = {}) {
       const message = '0x' + Buffer.from(bytes).toString('hex');
-      return (await call('sign.message', signed({ key, message }, options), options.page)).signature;
+      return (await call('sign.message', signed({ key, message }, options), options.page))
+        .signature;
     },
     /**
      * Signs only if the data's digest is `expectedHash`, the hash the user
@@ -830,6 +862,84 @@ const vaultBackend = {
      */
     update(params, caller = 'chrome') {
       return call('x402.update', params, caller);
+    },
+  },
+
+  /**
+   * The intent journal, `wallet-intents.jsonl` (freedom-core design 0013,
+   * "The intent journal"; PRF-6(b)), which the core keeps once the hello
+   * names `intents` (wallet/intent-store.js is main's adapter). Members are
+   * snake_case, the reference's argument names otherwise; each answer holds
+   * the reference's return value as it is (its views' camelCase keys
+   * included). Every write that appends a line carries main's `run`
+   * (intent-store.js's `RUN_ID`), which the core writes on the line;
+   * `void` and `retire` carry `lock: true`, main's word that it holds the
+   * account's reservation lock (until 0012's APR-6).
+   */
+  intents: {
+    /** `{ run, chain_id, sender, nonce, hash, raw, via, intent_id?, context? }` → `{ intent }` */
+    commit(params) {
+      return intentsCall('intents.commit', params);
+    },
+    /** `{ run, intent_id, hash? }` → `{ handoff: { handoffId, hash, raw } }` */
+    handoff(params) {
+      return intentsCall('intents.handoff', params);
+    },
+    /** `{ run, intent_id, handoff_id, outcome, source?, reason_class? }` → `{ intent }` (null for an unknown intent) */
+    outcome(params) {
+      return intentsCall('intents.outcome', params);
+    },
+    /** `{ run, intent_id, label, hash?, block, hashes? }` → `{ intent }` */
+    settle(params) {
+      return intentsCall('intents.settle', params);
+    },
+    /** `{ run, intent_id, lock }` → `{ intent }` */
+    void(params) {
+      return intentsCall('intents.void', params);
+    },
+    /** `{ run, intent_id, block, hashes, lock }` → `{ intent }` */
+    retire(params) {
+      return intentsCall('intents.retire', params);
+    },
+    /** `{ run, intent_id, bracket?, unread_since? }` → `{ intent }` */
+    track(params) {
+      return intentsCall('intents.track', params);
+    },
+    /** `{ intent_id }` → `{ withdrawn }`: no line, so no `run` */
+    withdrawOrigin(params) {
+      return intentsCall('intents.withdraw_origin', params);
+    },
+    /** `{}` → `{}` */
+    compact() {
+      return intentsCall('intents.compact', {});
+    },
+    /** `{ intent_id }` → `{ intent }`, null for none */
+    get(params) {
+      return intentsCall('intents.get', params);
+    },
+    /** `{ key }` → `{ intent }`, the held intent with that key or null */
+    byKey(params) {
+      return intentsCall('intents.by_key', params);
+    },
+    /** `{}` → `{ intents }`, the held ones by account and nonce */
+    held() {
+      return intentsCall('intents.held', {});
+    },
+    /** `{}` → `{ intents }` */
+    list() {
+      return intentsCall('intents.list', {});
+    },
+    /** `{ chain_id, sender }` → `{ nonces }`, ascending */
+    heldNonces(params) {
+      return intentsCall('intents.held_nonces', params);
+    },
+    /** `{}` → `{ usage: { file, owed, budget, limit } }`; the first request loads the store */
+    usage() {
+      return intentsCall('intents.usage', {});
+    },
+    /** `{ intent_id, run }` → `{ refusal }`, null when a void of that run would pass (lock aside) */
+    voidRefusal(params) {
+      return intentsCall('intents.void_refusal', params);
     },
   },
 

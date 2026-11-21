@@ -36,8 +36,9 @@ beforeEach(() => {
   mockGetLedgerRecordsToCheck.mockReset();
   // The real one's answers, from the identity core (PRF-6(a)): a match is
   // matched, a mismatch mismatched.
-  mockRecordLedgerAddressCheck.mockReset().mockImplementation(async (_index, matched) =>
-    matched ? 'matched' : 'mismatched');
+  mockRecordLedgerAddressCheck
+    .mockReset()
+    .mockImplementation(async (_index, matched) => (matched ? 'matched' : 'mismatched'));
 });
 
 test('with nothing to check, the device is not touched', async () => {
@@ -78,7 +79,9 @@ test('a record without a path is left unchecked', async () => {
 
 test('a device that cannot be read changes nothing', async () => {
   mockGetLedgerRecordsToCheck.mockReturnValue([HELD]);
-  mockReadAddresses.mockRejectedValue(Object.assign(new Error('locked'), { code: 'LEDGER_DEVICE_LOCKED' }));
+  mockReadAddresses.mockRejectedValue(
+    Object.assign(new Error('locked'), { code: 'LEDGER_DEVICE_LOCKED' })
+  );
   await expect(checkLedgerAccounts()).rejects.toMatchObject({ code: 'LEDGER_DEVICE_LOCKED' });
   expect(mockRecordLedgerAddressCheck).not.toHaveBeenCalled();
 });
@@ -102,6 +105,8 @@ test("each result is kept in turn, and a failure to keep one is the check's", as
     ['start', PLANTED.index],
     ['end', PLANTED.index],
   ]);
-  mockRecordLedgerAddressCheck.mockRejectedValue(Object.assign(new Error('Storage error'), { code: 'storage' }));
+  mockRecordLedgerAddressCheck.mockRejectedValue(
+    Object.assign(new Error('Storage error'), { code: 'storage' })
+  );
   await expect(checkLedgerAccounts()).rejects.toMatchObject({ code: 'storage' });
 });

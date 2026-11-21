@@ -17,7 +17,16 @@ const mkdirAsCore = fs.mkdirSync;
 
 /** Spies on main's writes; `metaWrites()` lists those that named vault-meta. */
 function watchMetaWrites() {
-  const names = ['writeFileSync', 'appendFileSync', 'renameSync', 'copyFileSync', 'unlinkSync', 'rmSync', 'openSync', 'mkdirSync'];
+  const names = [
+    'writeFileSync',
+    'appendFileSync',
+    'renameSync',
+    'copyFileSync',
+    'unlinkSync',
+    'rmSync',
+    'openSync',
+    'mkdirSync',
+  ];
   const spies = names.map((name) => [name, jest.spyOn(fs, name)]);
   return {
     metaWrites: () =>
@@ -131,13 +140,19 @@ function makeVaultBackendMock({ exists = true, unlocked = true, accounts = {} } 
       fingerprint: null,
     })),
     createVault: jest.fn(async (_password, _strength, { userKnowsPassword = true } = {}) => {
-      if (!sim.moved) throw Object.assign(new Error("The core can't take this request"), { code: 'requirement_unmet' });
+      if (!sim.moved)
+        throw Object.assign(new Error("The core can't take this request"), {
+          code: 'requirement_unmet',
+        });
       Object.assign(state, { exists: true, unlocked: true });
       writeNewMeta(userKnowsPassword);
       return { mnemonic: 'test mnemonic', addresses };
     }),
     importVault: jest.fn(async (_password, _mnemonic, { userKnowsPassword = true } = {}) => {
-      if (!sim.moved) throw Object.assign(new Error("The core can't take this request"), { code: 'requirement_unmet' });
+      if (!sim.moved)
+        throw Object.assign(new Error("The core can't take this request"), {
+          code: 'requirement_unmet',
+        });
       Object.assign(state, { exists: true, unlocked: true });
       writeNewMeta(userKnowsPassword);
       return { addresses };
@@ -421,7 +436,7 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
   // a lost one's reconcile included, leaves main nothing to write or finish.
   // PRF-2d: the core wrote a Quick Setup vault's credential with it too, and
   // no quick-unlock.dat is written.
-  test('a create or an import is the core\'s write: main writes no metadata and finishes nothing', async () => {
+  test("a create or an import is the core's write: main writes no metadata and finishes nothing", async () => {
     const quickUnlock = jest.fn(() => ({}));
     const backend = makeVaultBackendMock({ exists: false, unlocked: false });
     const { mod, dirs } = setup(backend, {
@@ -429,7 +444,9 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
     });
     const watch = watchMetaWrites();
     try {
-      await mod.importExistingMnemonic('random-pass', 'abandon about', false, { quickUnlock: true });
+      await mod.importExistingMnemonic('random-pass', 'abandon about', false, {
+        quickUnlock: true,
+      });
       backend.state.exists = false;
       await mod.createNewVault('password123', 128);
       expect(watch.metaWrites()).toEqual([]);
@@ -449,9 +466,15 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
   });
 
   test("a core that didn't take vault_meta: a create or an import fails requirement_unmet, and nothing is written", async () => {
-    const backend = makeVaultBackendMock({ exists: false, unlocked: false, accounts: { moved: false } });
+    const backend = makeVaultBackendMock({
+      exists: false,
+      unlocked: false,
+      accounts: { moved: false },
+    });
     const { mod, dirs } = setup(backend);
-    await expect(mod.createNewVault('password123', 128)).rejects.toMatchObject({ code: 'requirement_unmet' });
+    await expect(mod.createNewVault('password123', 128)).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
     await expect(mod.importExistingMnemonic('password123', 'abandon about')).rejects.toMatchObject({
       code: 'requirement_unmet',
     });
@@ -471,17 +494,23 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
       success: false,
       error: 'Invalid parameters',
     });
-    await expect(invoke(IPC.IDENTITY_IMPORT_MNEMONIC, 'password123', 'abandon about', 1)).resolves.toEqual({
+    await expect(
+      invoke(IPC.IDENTITY_IMPORT_MNEMONIC, 'password123', 'abandon about', 1)
+    ).resolves.toEqual({
       success: false,
       error: 'Invalid parameters',
     });
     expect(backend.createVault).not.toHaveBeenCalled();
     expect(backend.importVault).not.toHaveBeenCalled();
-    await expect(invoke(IPC.IDENTITY_IMPORT_MNEMONIC, 'password123', 'abandon about')).resolves.toEqual({
+    await expect(
+      invoke(IPC.IDENTITY_IMPORT_MNEMONIC, 'password123', 'abandon about')
+    ).resolves.toEqual({
       success: true,
     });
     backend.state.exists = false;
-    await expect(invoke(IPC.IDENTITY_CREATE_VAULT, 'password123', 128, false)).resolves.toMatchObject({
+    await expect(
+      invoke(IPC.IDENTITY_CREATE_VAULT, 'password123', 128, false)
+    ).resolves.toMatchObject({
       success: true,
     });
     expect(backend.importVault.mock.calls[0][2].userKnowsPassword).toBe(true);
@@ -498,8 +527,9 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
       overwrite: false,
       quickUnlock: true,
     });
-    expect(JSON.parse(fs.readFileSync(path.join(dirs.identity, 'vault-meta.json'), 'utf-8')))
-      .toMatchObject({ userKnowsPassword: false });
+    expect(
+      JSON.parse(fs.readFileSync(path.join(dirs.identity, 'vault-meta.json'), 'utf-8'))
+    ).toMatchObject({ userKnowsPassword: false });
     await mod.importExistingMnemonic('password123', 'abandon about');
     expect(backend.importVault.mock.calls[1][2]).toMatchObject({ quickUnlock: false });
   });
@@ -586,13 +616,15 @@ describe('identity-manager wallet deletion', () => {
   }
 
   test('blocks deleting wallets referenced by Swarm publisher identities', async () => {
-    const references = [{
-      origin: 'myapp.eth',
-      identityId: 'ethereum-wallet:2',
-      active: true,
-      feedNames: ['blog'],
-      feedCount: 1,
-    }];
+    const references = [
+      {
+        origin: 'myapp.eth',
+        identityId: 'ethereum-wallet:2',
+        active: true,
+        feedNames: ['blog'],
+        feedCount: 1,
+      },
+    ];
     mockGetEthereumWalletIdentityReferences.mockReturnValue(references);
     writeVaultMeta({
       activeWalletIndex: 2,
@@ -602,11 +634,10 @@ describe('identity-manager wallet deletion', () => {
       ],
     });
 
-    await expect(identityManager.deleteDerivedWallet(2))
-      .rejects.toMatchObject({
-        code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE',
-        references,
-      });
+    await expect(identityManager.deleteDerivedWallet(2)).rejects.toMatchObject({
+      code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE',
+      references,
+    });
 
     expect(mockGetEthereumWalletIdentityReferences).toHaveBeenCalledWith(2);
     expect(readVaultMeta().derivedWallets.map((wallet) => wallet.index)).toEqual([0, 2]);
@@ -632,14 +663,15 @@ describe('identity-manager wallet deletion', () => {
   // Design 0013, `accounts-remove-forget-first`: the core forgets the
   // account's dApp grants in the removal's request, before the record, and
   // main's copy follows `approval.changed`; main asks for no separate forget.
-  test('the core forgets the deleted wallet\'s dApp grants; main revokes nothing itself', async () => {
+  test("the core forgets the deleted wallet's dApp grants; main revokes nothing itself", async () => {
     const revokePermissionsForWalletIndex = jest.fn();
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
         ...vaultBackendMocks(backend),
         [require.resolve('./swarm/feed-store')]: () => ({
-          getEthereumWalletIdentityReferences: (...args) => mockGetEthereumWalletIdentityReferences(...args),
+          getEthereumWalletIdentityReferences: (...args) =>
+            mockGetEthereumWalletIdentityReferences(...args),
         }),
         [require.resolve('./wallet/dapp-permissions')]: () => ({ revokePermissionsForWalletIndex }),
       },
@@ -675,7 +707,9 @@ describe('identity-manager wallet deletion', () => {
       addresses: { userWallet: '0xuser', beeWallet: '0xbee' },
     });
     const invoke = (channel, ...args) => ipcMain.handlers.get(channel)({}, ...args);
-    await expect(invoke('identity:get-vault-meta')).resolves.toMatchObject({ userKnowsPassword: false });
+    await expect(invoke('identity:get-vault-meta')).resolves.toMatchObject({
+      userKnowsPassword: false,
+    });
     await expect(invoke('wallet:get-derived-wallets')).resolves.toEqual({
       success: true,
       wallets: [{ index: 0, name: 'Main Wallet', address: '0xuser', type: 'mnemonic' }],
@@ -704,7 +738,10 @@ describe('identity-manager wallet deletion', () => {
     ]);
     // Main's synchronous lookups read the core's file.
     expect(identityManager.getActiveWalletIndex()).toBe(1);
-    expect(identityManager.getWalletRecord(1)).toMatchObject({ name: 'Spare 2', address: '0xderived1' });
+    expect(identityManager.getWalletRecord(1)).toMatchObject({
+      name: 'Spare 2',
+      address: '0xderived1',
+    });
     // No core: the meta reads as none, as an unreadable file did.
     backend.sim.moved = false;
     await expect(invoke('identity:get-vault-meta')).resolves.toBeNull();
@@ -723,7 +760,9 @@ describe('identity-manager wallet deletion', () => {
       success: false,
       error: 'Cannot delete the main wallet (index 0)',
     });
-    await expect(ipcMain.handlers.get('wallet:delete-wallet')({}, 2)).resolves.toEqual({ success: true });
+    await expect(ipcMain.handlers.get('wallet:delete-wallet')({}, 2)).resolves.toEqual({
+      success: true,
+    });
     expect(backend.sim.calls).toEqual([
       ['accounts.remove', 'chrome'],
       ['accounts.remove', 'chrome'],
@@ -749,7 +788,9 @@ describe('identity-manager ledger accounts', () => {
       extraMocks: {
         // Vault locked — ledger ops must not need it.
         ...vaultBackendMocks(makeVaultBackendMock({ unlocked: false })),
-        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({
+          readAddresses: device.readAddresses,
+        }),
         [require.resolve('./wallet/remote/bridge')]: () => ({
           requestRemoteSignature: phone.requestRemoteSignature,
         }),
@@ -816,11 +857,12 @@ describe('identity-manager ledger accounts', () => {
     const before = readVaultMeta();
     device.address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
-    await expect(identityManager.addLedgerWallet('Planted', LEDGER_ADDRESS, LEDGER_PATH))
-      .rejects.toMatchObject({
-        code: 'LEDGER_ADDRESS_MISMATCH',
-        message: expect.stringMatching(/different address at that path/),
-      });
+    await expect(
+      identityManager.addLedgerWallet('Planted', LEDGER_ADDRESS, LEDGER_PATH)
+    ).rejects.toMatchObject({
+      code: 'LEDGER_ADDRESS_MISMATCH',
+      message: expect.stringMatching(/different address at that path/),
+    });
     expect(readVaultMeta()).toEqual(before);
   });
 
@@ -831,8 +873,9 @@ describe('identity-manager ledger accounts', () => {
       Object.assign(new Error('No Ledger device found.'), { code: 'LEDGER_DEVICE_NOT_FOUND' })
     );
 
-    await expect(identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH))
-      .rejects.toMatchObject({ code: 'LEDGER_DEVICE_NOT_FOUND' });
+    await expect(
+      identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH)
+    ).rejects.toMatchObject({ code: 'LEDGER_DEVICE_NOT_FOUND' });
     expect(readVaultMeta()).toEqual(before);
   });
 
@@ -842,14 +885,17 @@ describe('identity-manager ledger accounts', () => {
       userDataDir: tmpDir,
       extraMocks: {
         ...vaultBackendMocks(makeVaultBackendMock({ unlocked: false })),
-        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({
+          readAddresses: device.readAddresses,
+        }),
       },
     });
     mod.registerIdentityIpc();
     device.address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
-    await expect(ipcMain.invoke('wallet:add-ledger-wallet', 'Planted', LEDGER_ADDRESS, LEDGER_PATH))
-      .resolves.toMatchObject({ success: false, code: 'LEDGER_ADDRESS_MISMATCH' });
+    await expect(
+      ipcMain.invoke('wallet:add-ledger-wallet', 'Planted', LEDGER_ADDRESS, LEDGER_PATH)
+    ).resolves.toMatchObject({ success: false, code: 'LEDGER_ADDRESS_MISMATCH' });
   });
 
   test('a record added before the device check starts unchecked and is never deleted (#1065)', async () => {
@@ -858,7 +904,13 @@ describe('identity-manager ledger accounts', () => {
       addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
       derivedWallets: [
         { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
-        { index: HARDWARE_INDEX_BASE, name: 'Old', address: LEDGER_ADDRESS, type: 'ledger', path: LEDGER_PATH },
+        {
+          index: HARDWARE_INDEX_BASE,
+          name: 'Old',
+          address: LEDGER_ADDRESS,
+          type: 'ledger',
+          path: LEDGER_PATH,
+        },
         {
           index: HARDWARE_INDEX_BASE + 1,
           name: 'Checked',
@@ -870,27 +922,37 @@ describe('identity-manager ledger accounts', () => {
       ],
     });
 
-    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'unchecked' });
-    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index))
-      .toEqual([HARDWARE_INDEX_BASE]);
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({
+      addressCheck: 'unchecked',
+    });
+    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index)).toEqual([
+      HARDWARE_INDEX_BASE,
+    ]);
 
     // A device that doesn't hold it marks it mismatched, and keeps it.
-    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe(
+      'mismatched'
+    );
     expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({
       address: LEDGER_ADDRESS,
       addressCheck: 'mismatched',
     });
-    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index))
-      .toEqual([HARDWARE_INDEX_BASE]);
+    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index)).toEqual([
+      HARDWARE_INDEX_BASE,
+    ]);
 
     // One that does makes it matched.
-    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, true)).toBe(
+      'matched'
+    );
     expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
     expect(identityManager.getLedgerRecordsToCheck()).toEqual([]);
 
     // A matched record stays matched: a later device that doesn't hold it
     // is another Ledger.
-    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, false)).toBe('matched');
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, false)).toBe(
+      'matched'
+    );
     expect(readVaultMeta().derivedWallets[2]).toMatchObject({ addressCheck: 'matched' });
 
     // Only Ledger records carry the state.
@@ -904,28 +966,55 @@ describe('identity-manager ledger accounts', () => {
       addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
       derivedWallets: [
         { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
-        { index: HARDWARE_INDEX_BASE, name: 'Old Ledger', address: LEDGER_ADDRESS, type: 'ledger', path: LEDGER_PATH },
-        { index: HARDWARE_INDEX_BASE + 1, name: 'Old Phone', address: phone.wallet.address, type: 'remote' },
+        {
+          index: HARDWARE_INDEX_BASE,
+          name: 'Old Ledger',
+          address: LEDGER_ADDRESS,
+          type: 'ledger',
+          path: LEDGER_PATH,
+        },
+        {
+          index: HARDWARE_INDEX_BASE + 1,
+          name: 'Old Phone',
+          address: phone.wallet.address,
+          type: 'remote',
+        },
       ],
       nextHardwareWalletIndex: HARDWARE_INDEX_BASE + 2,
     });
 
     // Both kinds read the same states.
-    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'unchecked' });
-    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE + 1)).toMatchObject({ addressCheck: 'unchecked' });
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({
+      addressCheck: 'unchecked',
+    });
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE + 1)).toMatchObject({
+      addressCheck: 'unchecked',
+    });
 
     // A Ledger's answer can't mark a phone record, nor a phone's a Ledger one.
-    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, true)).toBeNull();
+    expect(
+      await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, true)
+    ).toBeNull();
     expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBeNull();
     expect(readVaultMeta().derivedWallets[1]).not.toHaveProperty('addressCheck');
     expect(readVaultMeta().derivedWallets[2]).not.toHaveProperty('addressCheck');
 
     // Each kind's own check marks its own record, and only that one.
-    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
-    expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE + 1, true)).toBe('matched');
-    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'mismatched' });
-    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE + 1)).toMatchObject({ addressCheck: 'matched' });
-    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index)).toEqual([HARDWARE_INDEX_BASE]);
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe(
+      'mismatched'
+    );
+    expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE + 1, true)).toBe(
+      'matched'
+    );
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({
+      addressCheck: 'mismatched',
+    });
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE + 1)).toMatchObject({
+      addressCheck: 'matched',
+    });
+    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index)).toEqual([
+      HARDWARE_INDEX_BASE,
+    ]);
   });
 
   test('addLedgerWallet auto-names and works with the vault locked', async () => {
@@ -938,15 +1027,19 @@ describe('identity-manager ledger accounts', () => {
     seedMainWallet();
     await identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH);
 
-    await expect(identityManager.addLedgerWallet('Again', LEDGER_ADDRESS.toLowerCase(), LEDGER_PATH))
-      .rejects.toThrow(/already in your wallet list/);
-    await expect(identityManager.addLedgerWallet('Bad', '0x123', LEDGER_PATH))
-      .rejects.toThrow('Invalid Ledger account address');
+    await expect(
+      identityManager.addLedgerWallet('Again', LEDGER_ADDRESS.toLowerCase(), LEDGER_PATH)
+    ).rejects.toThrow(/already in your wallet list/);
+    await expect(identityManager.addLedgerWallet('Bad', '0x123', LEDGER_PATH)).rejects.toThrow(
+      'Invalid Ledger account address'
+    );
     // Mixed-case address with a broken EIP-55 checksum must be rejected too
-    await expect(identityManager.addLedgerWallet('Bad', LEDGER_ADDRESS.replace('9', 'a'), LEDGER_PATH))
-      .rejects.toThrow('Invalid Ledger account address');
-    await expect(identityManager.addLedgerWallet('Bad', '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', ''))
-      .rejects.toThrow('Missing derivation path');
+    await expect(
+      identityManager.addLedgerWallet('Bad', LEDGER_ADDRESS.replace('9', 'a'), LEDGER_PATH)
+    ).rejects.toThrow('Invalid Ledger account address');
+    await expect(
+      identityManager.addLedgerWallet('Bad', '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '')
+    ).rejects.toThrow('Missing derivation path');
   });
 
   test('getDerivedWallets returns the stored device address without derivation', async () => {
@@ -1027,11 +1120,13 @@ describe('identity-manager ledger accounts', () => {
     const { Wallet } = require('ethers');
     phone.wallet = new Wallet(STRANGER_KEY);
 
-    await expect(identityManager.addRemoteWallet('Planted', new Wallet(PHONE_KEY).address))
-      .rejects.toMatchObject({
-        code: 'REMOTE_ADDRESS_MISMATCH',
-        message: "Your phone answered from a different account than the one you picked. The account wasn't added.",
-      });
+    await expect(
+      identityManager.addRemoteWallet('Planted', new Wallet(PHONE_KEY).address)
+    ).rejects.toMatchObject({
+      code: 'REMOTE_ADDRESS_MISMATCH',
+      message:
+        "Your phone answered from a different account than the one you picked. The account wasn't added.",
+    });
     expect(readVaultMeta()).toEqual(before);
   });
 
@@ -1042,15 +1137,22 @@ describe('identity-manager ledger accounts', () => {
       throw Object.assign(new Error('Unauthorized'), { code: 'REMOTE_WRONG_ACCOUNT' });
     };
 
-    await expect(identityManager.addRemoteWallet('Planted', phone.wallet.address))
-      .rejects.toMatchObject({ code: 'REMOTE_ADDRESS_MISMATCH' });
+    await expect(
+      identityManager.addRemoteWallet('Planted', phone.wallet.address)
+    ).rejects.toMatchObject({ code: 'REMOTE_ADDRESS_MISMATCH' });
     expect(readVaultMeta()).toEqual(before);
   });
 
   test.each([
     ['no answer in time', () => Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' })],
-    ['the user cancels', () => Object.assign(new Error('cancelled'), { code: 'REMOTE_USER_CANCELLED' })],
-    ['a rejection on the phone', () => Object.assign(new Error('rejected'), { code: 'REMOTE_USER_REJECTED' })],
+    [
+      'the user cancels',
+      () => Object.assign(new Error('cancelled'), { code: 'REMOTE_USER_CANCELLED' }),
+    ],
+    [
+      'a rejection on the phone',
+      () => Object.assign(new Error('rejected'), { code: 'REMOTE_USER_REJECTED' }),
+    ],
   ])('addRemoteWallet adds nothing on %s (#1078)', async (_label, makeError) => {
     seedMainWallet();
     const before = readVaultMeta();
@@ -1061,7 +1163,9 @@ describe('identity-manager ledger accounts', () => {
     const refusal = identityManager.addRemoteWallet('My Phone', phone.wallet.address);
     await expect(refusal).rejects.toMatchObject({
       code: 'REMOTE_ADDRESS_UNPROVEN',
-      message: expect.stringMatching(/didn't confirm that it holds this account, so it wasn't added/),
+      message: expect.stringMatching(
+        /didn't confirm that it holds this account, so it wasn't added/
+      ),
     });
     await expect(refusal).rejects.toHaveProperty('cause.code', makeError().code);
     expect(readVaultMeta()).toEqual(before);
@@ -1072,8 +1176,9 @@ describe('identity-manager ledger accounts', () => {
     const before = readVaultMeta();
     phone.answer = async () => 'not-a-signature';
 
-    await expect(identityManager.addRemoteWallet('My Phone', phone.wallet.address))
-      .rejects.toMatchObject({ code: 'REMOTE_ADDRESS_UNPROVEN' });
+    await expect(
+      identityManager.addRemoteWallet('My Phone', phone.wallet.address)
+    ).rejects.toMatchObject({ code: 'REMOTE_ADDRESS_UNPROVEN' });
     expect(readVaultMeta()).toEqual(before);
   });
 
@@ -1084,19 +1189,22 @@ describe('identity-manager ledger accounts', () => {
     const { Wallet } = require('ethers');
     phone.wallet = new Wallet(STRANGER_KEY);
 
-    await expect(ipcMain.invoke('wallet:add-remote-wallet', 'Planted', new Wallet(PHONE_KEY).address))
-      .resolves.toMatchObject({ success: false, code: 'REMOTE_ADDRESS_MISMATCH' });
+    await expect(
+      ipcMain.invoke('wallet:add-remote-wallet', 'Planted', new Wallet(PHONE_KEY).address)
+    ).resolves.toMatchObject({ success: false, code: 'REMOTE_ADDRESS_MISMATCH' });
   });
 
   test('addRemoteWallet rejects bad addresses and duplicates across account types', async () => {
     seedMainWallet();
     await identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH);
 
-    await expect(identityManager.addRemoteWallet('Bad', '0x123'))
-      .rejects.toThrow('Invalid Phone account address');
+    await expect(identityManager.addRemoteWallet('Bad', '0x123')).rejects.toThrow(
+      'Invalid Phone account address'
+    );
     // The same address already added as a Ledger account is still a duplicate.
-    await expect(identityManager.addRemoteWallet('Again', LEDGER_ADDRESS.toLowerCase()))
-      .rejects.toThrow(/already in your wallet list/);
+    await expect(
+      identityManager.addRemoteWallet('Again', LEDGER_ADDRESS.toLowerCase())
+    ).rejects.toThrow(/already in your wallet list/);
     // Neither asks the phone.
     expect(phone.requestRemoteSignature).not.toHaveBeenCalled();
   });
@@ -1126,7 +1234,13 @@ describe('identity-manager ledger accounts', () => {
         addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
         derivedWallets: [
           { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
-          { index: HARDWARE_INDEX_BASE, name: 'Old Phone', address: phone.wallet.address, type: 'remote', ...extra },
+          {
+            index: HARDWARE_INDEX_BASE,
+            name: 'Old Phone',
+            address: phone.wallet.address,
+            type: 'remote',
+            ...extra,
+          },
         ],
         nextHardwareWalletIndex: HARDWARE_INDEX_BASE + 1,
       });
@@ -1134,20 +1248,28 @@ describe('identity-manager ledger accounts', () => {
     test('starts unchecked, becomes mismatched and then matched, and is never deleted', async () => {
       seedOldPhone();
 
-      expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'unchecked' });
+      expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({
+        addressCheck: 'unchecked',
+      });
 
-      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe(
+        'mismatched'
+      );
       expect(readVaultMeta().derivedWallets[1]).toMatchObject({
         address: phone.wallet.address,
         addressCheck: 'mismatched',
       });
 
-      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
+      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBe(
+        'matched'
+      );
       expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
 
       // A matched record stays matched: a later answer from another account
       // is the phone on another account.
-      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('matched');
+      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe(
+        'matched'
+      );
       expect(readVaultMeta().derivedWallets).toHaveLength(2);
 
       // Only phone records carry the state.
@@ -1191,15 +1313,18 @@ describe('identity-manager ledger accounts', () => {
         throw Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' });
       };
 
-      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE))
-        .rejects.toMatchObject({ code: 'REMOTE_TIMEOUT' });
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE)).rejects.toMatchObject({
+        code: 'REMOTE_TIMEOUT',
+      });
       expect(readVaultMeta()).toEqual(before);
     });
 
     test('checkRemoteWallet only checks phone records', async () => {
       seedOldPhone();
       await expect(identityManager.checkRemoteWallet(0)).rejects.toThrow(/not a phone account/);
-      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE + 5)).rejects.toThrow(/not a phone account/);
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE + 5)).rejects.toThrow(
+        /not a phone account/
+      );
       expect(phone.requestRemoteSignature).not.toHaveBeenCalled();
     });
 
@@ -1208,7 +1333,9 @@ describe('identity-manager ledger accounts', () => {
       const { mod, ipcMain } = loadIdentityManager();
       mod.registerIdentityIpc();
 
-      await expect(ipcMain.invoke('wallet:check-remote-wallet', HARDWARE_INDEX_BASE)).resolves.toMatchObject({
+      await expect(
+        ipcMain.invoke('wallet:check-remote-wallet', HARDWARE_INDEX_BASE)
+      ).resolves.toMatchObject({
         success: true,
         wallet: { index: HARDWARE_INDEX_BASE, addressCheck: 'matched' },
       });
@@ -1216,7 +1343,9 @@ describe('identity-manager ledger accounts', () => {
       phone.answer = async () => {
         throw Object.assign(new Error('Request cancelled.'), { code: 'REMOTE_USER_CANCELLED' });
       };
-      await expect(ipcMain.invoke('wallet:check-remote-wallet', HARDWARE_INDEX_BASE)).resolves.toEqual({
+      await expect(
+        ipcMain.invoke('wallet:check-remote-wallet', HARDWARE_INDEX_BASE)
+      ).resolves.toEqual({
         success: false,
         error: 'Request cancelled.',
         code: 'REMOTE_USER_CANCELLED',
@@ -1248,7 +1377,9 @@ describe('identity-manager safe accounts', () => {
       extraMocks: {
         // Vault locked — safe ops must not need it.
         ...vaultBackendMocks(makeVaultBackendMock({ unlocked: false })),
-        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({
+          readAddresses: device.readAddresses,
+        }),
         [require.resolve('./wallet/remote/bridge')]: () => ({
           requestRemoteSignature: phone.requestRemoteSignature,
         }),
@@ -1324,7 +1455,13 @@ describe('identity-manager safe accounts', () => {
       addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
       derivedWallets: [
         { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
-        { index: 1000000, name: 'Old Ledger', address: LEDGER_ADDRESS, type: 'ledger', path: "44'/60'/0'/0/0" },
+        {
+          index: 1000000,
+          name: 'Old Ledger',
+          address: LEDGER_ADDRESS,
+          type: 'ledger',
+          path: "44'/60'/0'/0/0",
+        },
       ],
       nextHardwareWalletIndex: 1000001,
     });
@@ -1362,7 +1499,9 @@ describe('identity-manager safe accounts', () => {
 
     await expect(addSafe()).rejects.toMatchObject({
       code: 'REMOTE_ACCOUNT_UNCHECKED',
-      message: expect.stringMatching(/"Old Phone" can't own a Safe until it has been checked on your phone/),
+      message: expect.stringMatching(
+        /"Old Phone" can't own a Safe until it has been checked on your phone/
+      ),
     });
     expect(readVaultMeta().derivedWallets).toHaveLength(2);
 
@@ -1395,7 +1534,13 @@ describe('identity-manager safe accounts', () => {
       addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
       derivedWallets: [
         { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
-        { index: 1000000, name: 'Old Ledger', address: LEDGER_ADDRESS, type: 'ledger', path: "44'/60'/0'/0/0" },
+        {
+          index: 1000000,
+          name: 'Old Ledger',
+          address: LEDGER_ADDRESS,
+          type: 'ledger',
+          path: "44'/60'/0'/0/0",
+        },
         { index: 1000001, name: 'Old Phone', address: phone.wallet.address, type: 'remote' },
         {
           index: 1000002,
@@ -1453,10 +1598,14 @@ describe('identity-manager safe accounts', () => {
 
     // 2/2 is deliberately not offered (lose either device → bricked)
     await expect(addSafe('Bad', { threshold: 2 })).rejects.toThrow(/1 of 2 or 2 of 3/);
-    await expect(addSafe('Bad', { owners: threeOwners, threshold: 3 })).rejects.toThrow(/1 of 2 or 2 of 3/);
+    await expect(addSafe('Bad', { owners: threeOwners, threshold: 3 })).rejects.toThrow(
+      /1 of 2 or 2 of 3/
+    );
     await expect(addSafe('Bad', { owners: [0], threshold: 1 })).rejects.toThrow(/1 of 2 or 2 of 3/);
     // valid 2/3
-    await expect(addSafe('Resilient', { owners: threeOwners, threshold: 2 })).resolves.toMatchObject({
+    await expect(
+      addSafe('Resilient', { owners: threeOwners, threshold: 2 })
+    ).resolves.toMatchObject({
       threshold: 2,
     });
   });
@@ -1491,7 +1640,6 @@ describe('identity-manager safe accounts', () => {
 
     const wallets = await identityManager.getDerivedWallets();
     expect(wallets[2]).toMatchObject({ type: 'safe', owners: ownerIndexes, threshold: 1 });
-
   });
 
   test('markSafeDeployed persists per-chain deployment state', async () => {
@@ -1516,7 +1664,9 @@ describe('identity-manager safe accounts', () => {
     writeVaultMeta(meta);
 
     expect(identityManager.getWalletRecord(wallet.index).deployed).toEqual({});
-    const listed = (await identityManager.getDerivedWallets()).find((w) => w.index === wallet.index);
+    const listed = (await identityManager.getDerivedWallets()).find(
+      (w) => w.index === wallet.index
+    );
     expect(listed.deployed).toEqual({});
     // Nothing is deleted: the record and its old mark stay on disk.
     expect(readVaultMeta().derivedWallets[2]).toMatchObject({
@@ -1538,7 +1688,9 @@ describe('identity-manager safe accounts', () => {
     await seedOwners();
     const safe = await addSafe();
 
-    await expect(identityManager.deleteDerivedWallet(ownerIndexes[1])).rejects.toThrow(/owner of "Joint"/);
+    await expect(identityManager.deleteDerivedWallet(ownerIndexes[1])).rejects.toThrow(
+      /owner of "Joint"/
+    );
 
     // deleting the safe frees its owners
     await identityManager.deleteDerivedWallet(safe.index);
@@ -1608,7 +1760,9 @@ describe('identity-manager safe accounts', () => {
     vaultBackend.sim.moved = true;
 
     expect(getPending(safe.index)).not.toBeNull();
-    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'storage' });
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+      code: 'storage',
+    });
     expect(vaultBackend.sim.endedSafes).toEqual([safe.index]);
     // Cleared by the core before its forget failed, and read again by main.
     expect(getPending(safe.index)).toBeNull();
@@ -1649,10 +1803,14 @@ describe('identity-manager safe accounts', () => {
 
     // An execution (or a signature) of the Safe's is running: refused, nothing deleted.
     safeApprovals.beginStep(safe.index);
-    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+      code: 'SAFE_BUSY',
+    });
     safeApprovals.endStep(safe.index);
     const reservation = safeApprovals.reserveSend(safe.index);
-    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+      code: 'SAFE_BUSY',
+    });
     reservation.release();
     expect(getPending(safe.index)).not.toBeNull();
     expect(vaultBackend.accounts.remove).not.toHaveBeenCalled();
@@ -1662,7 +1820,9 @@ describe('identity-manager safe accounts', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(() => safeApprovals.beginStep(safe.index)).toThrow(/being deleted/);
     expect(() => safeApprovals.reserveSend(safe.index)).toThrow(/being deleted/);
-    await expect(safeApprovals.hold('message', safe.index, { id: 'b'.repeat(32), page: null }, '0xbeef')).rejects.toMatchObject({
+    await expect(
+      safeApprovals.hold('message', safe.index, { id: 'b'.repeat(32), page: null }, '0xbeef')
+    ).rejects.toMatchObject({
       code: 'SAFE_BUSY',
     });
     answer();
@@ -1681,7 +1841,9 @@ describe('identity-manager safe accounts', () => {
     const { vaultBackend } = require('./core/vault-backend');
     safeApprovals._reset({ retryDelays: [0, 0] });
     vaultBackend.sim.moved = false;
-    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'requirement_unmet' });
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
     safeApprovals.beginStep(safe.index);
     safeApprovals.endStep(safe.index);
     safeApprovals.reserveSend(safe.index).release();
@@ -1739,7 +1901,9 @@ describe('identity-manager wallet index allocation', () => {
       extraMocks: {
         // Unlocked: the core derives `0xderived<index>`.
         ...vaultBackendMocks(makeVaultBackendMock()),
-        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({
+          readAddresses: device.readAddresses,
+        }),
         [require.resolve('./swarm/feed-store')]: () => ({
           getEthereumWalletIdentityReferences: jest.fn(() => []),
         }),
@@ -1765,11 +1929,15 @@ describe('identity-manager wallet index allocation', () => {
   function seedMainWallet() {
     fs.writeFileSync(
       path.join(tmpDir, 'vault-meta.json'),
-      JSON.stringify({
-        activeWalletIndex: 0,
-        addresses: { userWallet: '0xderived0' },
-        derivedWallets: [{ index: 0, name: 'Main Wallet', address: '0xderived0' }],
-      }, null, 2),
+      JSON.stringify(
+        {
+          activeWalletIndex: 0,
+          addresses: { userWallet: '0xderived0' },
+          derivedWallets: [{ index: 0, name: 'Main Wallet', address: '0xderived0' }],
+        },
+        null,
+        2
+      ),
       'utf-8'
     );
   }
@@ -1799,8 +1967,11 @@ describe('identity-manager wallet index allocation', () => {
     const next = await identityManager.createDerivedWallet('Wallet 2');
 
     expect(next.index).toBe(1);
-    expect(readVaultMeta().derivedWallets.map((wallet) => wallet.index))
-      .toEqual([0, HARDWARE_INDEX_BASE, 1]);
+    expect(readVaultMeta().derivedWallets.map((wallet) => wallet.index)).toEqual([
+      0,
+      HARDWARE_INDEX_BASE,
+      1,
+    ]);
   });
 
   test('a deleted ledger does not hand its index to the next device account', async () => {
@@ -1817,20 +1988,24 @@ describe('identity-manager wallet index allocation', () => {
   test('stays above ledger indexes already on disk when the counter is missing', async () => {
     fs.writeFileSync(
       path.join(tmpDir, 'vault-meta.json'),
-      JSON.stringify({
-        activeWalletIndex: 0,
-        addresses: { userWallet: '0xderived0' },
-        derivedWallets: [
-          { index: 0, name: 'Main Wallet', address: '0xderived0' },
-          {
-            index: HARDWARE_INDEX_BASE + 4,
-            name: 'Ledger 1',
-            address: LEDGER_A,
-            type: 'ledger',
-            path: LEDGER_PATH,
-          },
-        ],
-      }, null, 2),
+      JSON.stringify(
+        {
+          activeWalletIndex: 0,
+          addresses: { userWallet: '0xderived0' },
+          derivedWallets: [
+            { index: 0, name: 'Main Wallet', address: '0xderived0' },
+            {
+              index: HARDWARE_INDEX_BASE + 4,
+              name: 'Ledger 1',
+              address: LEDGER_A,
+              type: 'ledger',
+              path: LEDGER_PATH,
+            },
+          ],
+        },
+        null,
+        2
+      ),
       'utf-8'
     );
 
@@ -1842,14 +2017,18 @@ describe('identity-manager wallet index allocation', () => {
   test('skips a legacy low-index ledger when minting a mnemonic wallet', async () => {
     fs.writeFileSync(
       path.join(tmpDir, 'vault-meta.json'),
-      JSON.stringify({
-        activeWalletIndex: 0,
-        addresses: { userWallet: '0xderived0' },
-        derivedWallets: [
-          { index: 0, name: 'Main Wallet', address: '0xderived0' },
-          { index: 1, name: 'Ledger 1', address: LEDGER_A, type: 'ledger', path: LEDGER_PATH },
-        ],
-      }, null, 2),
+      JSON.stringify(
+        {
+          activeWalletIndex: 0,
+          addresses: { userWallet: '0xderived0' },
+          derivedWallets: [
+            { index: 0, name: 'Main Wallet', address: '0xderived0' },
+            { index: 1, name: 'Ledger 1', address: LEDGER_A, type: 'ledger', path: LEDGER_PATH },
+          ],
+        },
+        null,
+        2
+      ),
       'utf-8'
     );
 
@@ -1949,7 +2128,10 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
       return b;
     };
     const blob = Buffer.concat([u32(11), Buffer.from('ssh-ed25519'), u32(32), Buffer.alloc(32, 9)]);
-    fs.writeFileSync(path.join(dataDirs.radicle, 'keys', 'radicle.pub'), `ssh-ed25519 ${blob.toString('base64')} me`);
+    fs.writeFileSync(
+      path.join(dataDirs.radicle, 'keys', 'radicle.pub'),
+      `ssh-ed25519 ${blob.toString('base64')} me`
+    );
     const backend = makeVaultBackendMock();
     const mgr = loadIdentityManager(dataDirs, null, backend);
     await mgr.createNewVault('password-123');
@@ -1957,7 +2139,10 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
 
     const status = await mgr.getIdentityStatus();
 
-    expect(status).toMatchObject({ radicleInjected: true, addresses: { radicleDid: 'did:key:zTest' } });
+    expect(status).toMatchObject({
+      radicleInjected: true,
+      addresses: { radicleDid: 'did:key:zTest' },
+    });
     expect(status).not.toHaveProperty('radicle');
     expect(backend.radicleDid).toHaveBeenCalledWith(Buffer.alloc(32, 9));
   });
@@ -2283,9 +2468,11 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
       const mgr = loadIdentityManager(dataDirs, { removePath: rmSpy });
       const wiping = mgr.wipeStaleBeeState(beeDir);
       let done = false;
-      const settled = expect(wiping).rejects.toThrow(/still in use/).finally(() => {
-        done = true;
-      });
+      const settled = expect(wiping)
+        .rejects.toThrow(/still in use/)
+        .finally(() => {
+          done = true;
+        });
       // The back-off timers are scheduled after real (un-faked) fs I/O, so keep
       // advancing until the wipe gives up rather than flushing once.
       for (let i = 0; i < 200 && !done; i += 1) {
@@ -2705,7 +2892,8 @@ describe('Swarm keystore password (K-3)', () => {
     }));
     const written = [];
     backend.writeNodeIdentity.mockImplementation(async (spec) => {
-      if (spec.node !== 'bee') return { status: 'installed', did: 'did:key:zTest', node_id: 'zTest' };
+      if (spec.node !== 'bee')
+        return { status: 'installed', did: 'did:key:zTest', node_id: 'zTest' };
       const password = require('crypto').randomBytes(32).toString('hex');
       written.push(password);
       if (hold) await hold(written.length);
@@ -2743,7 +2931,10 @@ describe('Swarm keystore password (K-3)', () => {
       shouldReEncrypt: false,
     })),
   });
-  const noKeyring = () => ({ ...keychain(), isAsyncEncryptionAvailable: jest.fn(async () => false) });
+  const noKeyring = () => ({
+    ...keychain(),
+    isAsyncEncryptionAvailable: jest.fn(async () => false),
+  });
 
   const settle = async () => {
     for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
@@ -2837,40 +3028,43 @@ describe('Swarm keystore password (K-3)', () => {
   test.each([
     ['a password unlock', (mod) => mod.unlockVault('password123')],
     ['a quick unlock', (mod) => mod.quickUnlockVault()],
-  ])('%s re-encrypts the keystore the node could not open, then starts it', async (_kind, unlock) => {
-    writeKeystore(VAULT_BEE);
-    writeSeal('lost-password');
-    writeNodeState();
-    const { mod, backend, written, guard } = load(keychain());
-    let needed = true;
-    const stop = jest.fn(async () => true);
-    const start = jest.fn(async () => {
-      needed = false;
-    });
-    mod.setBeeLifecycle({ stop, start, needsKeyReinjection: () => needed });
+  ])(
+    '%s re-encrypts the keystore the node could not open, then starts it',
+    async (_kind, unlock) => {
+      writeKeystore(VAULT_BEE);
+      writeSeal('lost-password');
+      writeNodeState();
+      const { mod, backend, written, guard } = load(keychain());
+      let needed = true;
+      const stop = jest.fn(async () => true);
+      const start = jest.fn(async () => {
+        needed = false;
+      });
+      mod.setBeeLifecycle({ stop, start, needsKeyReinjection: () => needed });
 
-    await unlock(mod);
-    await settle();
+      await unlock(mod);
+      await settle();
 
-    // The core writes the same derived key with a new password; nothing is
-    // wiped, the seal that would not open is gone, the node starts again.
-    expect(backend.writeNodeIdentity).toHaveBeenCalledTimes(1);
-    expect(backend.writeNodeIdentity).toHaveBeenCalledWith(beeWrite(), expect.any(String));
-    expect(keystoreOnDisk()).toMatchObject({ address: VAULT_BEE.slice(2), password: written[0] });
-    expect(configPassword()).toBe(written[0]);
-    expect(fs.existsSync(sealPath())).toBe(false);
-    expect(fs.existsSync(statestore())).toBe(true);
-    expect(fs.existsSync(pssKey())).toBe(true);
-    expect(stop).not.toHaveBeenCalled();
-    expect(start).toHaveBeenCalledTimes(1);
-    expect(guard.nodeBlockReason('bee')).toBeNull();
-    expect(mod.isBeeIdentityInjected()).toBe(true);
+      // The core writes the same derived key with a new password; nothing is
+      // wiped, the seal that would not open is gone, the node starts again.
+      expect(backend.writeNodeIdentity).toHaveBeenCalledTimes(1);
+      expect(backend.writeNodeIdentity).toHaveBeenCalledWith(beeWrite(), expect.any(String));
+      expect(keystoreOnDisk()).toMatchObject({ address: VAULT_BEE.slice(2), password: written[0] });
+      expect(configPassword()).toBe(written[0]);
+      expect(fs.existsSync(sealPath())).toBe(false);
+      expect(fs.existsSync(statestore())).toBe(true);
+      expect(fs.existsSync(pssKey())).toBe(true);
+      expect(stop).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(guard.nodeBlockReason('bee')).toBeNull();
+      expect(mod.isBeeIdentityInjected()).toBe(true);
 
-    // Nothing to do on an unlock when the node opened its keystore.
-    await unlock(mod);
-    await settle();
-    expect(backend.writeNodeIdentity).toHaveBeenCalledTimes(1);
-  });
+      // Nothing to do on an unlock when the node opened its keystore.
+      await unlock(mod);
+      await settle();
+      expect(backend.writeNodeIdentity).toHaveBeenCalledTimes(1);
+    }
+  );
 
   test('a recovery waits for a keystore operation in progress before it checks or writes', async () => {
     writeKeystore(VAULT_BEE);
@@ -2943,7 +3137,11 @@ describe('Swarm keystore password (K-3)', () => {
     fs.writeFileSync(swarmKeyPath(), JSON.stringify({ version: 3, crypto: {} }));
     const { mod, backend } = load(keychain());
     const refuseKeyReinjection = jest.fn();
-    mod.setBeeLifecycle({ start: jest.fn(), needsKeyReinjection: () => true, refuseKeyReinjection });
+    mod.setBeeLifecycle({
+      start: jest.fn(),
+      needsKeyReinjection: () => true,
+      refuseKeyReinjection,
+    });
 
     await mod.unlockVault('password123');
     await settle();
@@ -3082,44 +3280,49 @@ describe('node identities are written into owner-only roots (K-3)', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  posixTest("an older build's 0755 Ant data dir and Radicle home are 0700 when the core writes", async () => {
-    const antDir = path.join(root, 'ant-data');
-    const radicleDir = path.join(root, 'radicle-data');
-    for (const dir of [antDir, radicleDir]) {
-      fs.mkdirSync(dir, { mode: 0o755 });
-      fs.chmodSync(dir, 0o755);
+  posixTest(
+    "an older build's 0755 Ant data dir and Radicle home are 0700 when the core writes",
+    async () => {
+      const antDir = path.join(root, 'ant-data');
+      const radicleDir = path.join(root, 'radicle-data');
+      for (const dir of [antDir, radicleDir]) {
+        fs.mkdirSync(dir, { mode: 0o755 });
+        fs.chmodSync(dir, 0o755);
+      }
+      const backend = makeVaultBackendMock();
+      const modeAtWrite = {};
+      const write = backend.writeNodeIdentity.getMockImplementation();
+      backend.writeNodeIdentity.mockImplementation(async (spec) => {
+        modeAtWrite[spec.node] = fs.statSync(spec.data_dir || spec.home).mode & 0o777;
+        return write(spec);
+      });
+      const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+        userDataDir: root,
+        extraMocks: {
+          ...vaultBackendMocks(backend),
+          [require.resolve('./profile-resolver')]: () => ({
+            getActiveProfile: jest.fn(() => null),
+          }),
+          // The real modules: mocks an earlier describe registered stay registered.
+          [require.resolve('./profile-paths')]: () => jest.requireActual('./profile-paths'),
+          [require.resolve('./fs-offload')]: () => jest.requireActual('./fs-offload'),
+        },
+      });
+
+      await mod.injectBeeIdentity();
+      await mod.injectRadicleIdentity('Alias');
+
+      expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
+        expect.objectContaining({ node: 'bee', data_dir: antDir }),
+        expect.any(String)
+      );
+      expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
+        { node: 'radicle', home: radicleDir, alias: 'Alias' },
+        expect.any(String)
+      );
+      expect(modeAtWrite).toEqual({ bee: 0o700, radicle: 0o700 });
     }
-    const backend = makeVaultBackendMock();
-    const modeAtWrite = {};
-    const write = backend.writeNodeIdentity.getMockImplementation();
-    backend.writeNodeIdentity.mockImplementation(async (spec) => {
-      modeAtWrite[spec.node] = fs.statSync(spec.data_dir || spec.home).mode & 0o777;
-      return write(spec);
-    });
-    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
-      userDataDir: root,
-      extraMocks: {
-        ...vaultBackendMocks(backend),
-        [require.resolve('./profile-resolver')]: () => ({ getActiveProfile: jest.fn(() => null) }),
-        // The real modules: mocks an earlier describe registered stay registered.
-        [require.resolve('./profile-paths')]: () => jest.requireActual('./profile-paths'),
-        [require.resolve('./fs-offload')]: () => jest.requireActual('./fs-offload'),
-      },
-    });
-
-    await mod.injectBeeIdentity();
-    await mod.injectRadicleIdentity('Alias');
-
-    expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
-      expect.objectContaining({ node: 'bee', data_dir: antDir }),
-      expect.any(String)
-    );
-    expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
-      { node: 'radicle', home: radicleDir, alias: 'Alias' },
-      expect.any(String)
-    );
-    expect(modeAtWrite).toEqual({ bee: 0o700, radicle: 0o700 });
-  });
+  );
 
   // Review #1029 R1-2: a root that cannot be made owner-only is never handed
   // to the core.

@@ -94,6 +94,99 @@ describe('vaultBackend', () => {
     ).rejects.toMatchObject({ name: 'VaultBackendError', code: 'requirement_unmet' });
   });
 
+  // design 0013, "The intent journal" (PRF-6(b)): sixteen shell methods,
+  // each with the store's `requires`, whose INTENT_* refusals keep their code.
+  test('intents.* go as shell with the intents requirement, and keep the INTENT_* codes', async () => {
+    const core = new FakeCore((method, params) => {
+      if (method === 'intents.void') {
+        throw Object.assign(coreError('invalid_argument', "This payment can't be voided: x."), {
+          data: { code: 'INTENT_VOID_REFUSED' },
+        });
+      }
+      if (method === 'intents.commit') {
+        throw Object.assign(coreError('storage', "Could not save the wallet's payment record."), {
+          data: { code: 'INTENT_WRITE_FAILED' },
+        });
+      }
+      if (method === 'intents.track') {
+        throw Object.assign(coreError('invalid_argument', 'Invalid parameters'), { data: {} });
+      }
+      return { method, params };
+    });
+    const { vaultBackend } = load(core);
+    const { requiresStore } = require('./core-client');
+    const run = 'run-0123456789';
+    const id = { intent_id: 'i-0123456789' };
+    const calls = [
+      [
+        'commit',
+        { run, chain_id: 1, sender: '0x1', nonce: 0, hash: '0x2', raw: '0x3', via: 'original' },
+      ],
+      ['handoff', { run, ...id }],
+      ['outcome', { run, ...id, handoff_id: 'h', outcome: 'sent' }],
+      ['settle', { run, ...id, label: 'paid', hash: null, block: 1 }],
+      ['void', { run, ...id, lock: true }],
+      ['retire', { run, ...id, block: 1, hashes: ['0x2'], lock: true }],
+      ['track', { run, ...id, bracket: null }],
+      ['withdrawOrigin', id],
+      ['compact', undefined],
+      ['get', id],
+      ['byKey', { key: 'k' }],
+      ['held', undefined],
+      ['list', undefined],
+      ['heldNonces', { chain_id: 1, sender: '0x1' }],
+      ['usage', undefined],
+      ['voidRefusal', { ...id, run }],
+    ];
+    const answers = [];
+    for (const [name, params] of calls) {
+      answers.push(
+        await vaultBackend.intents[name](params).then(
+          (result) => result,
+          (err) => ({ code: err.code, name: err.name, message: err.message })
+        )
+      );
+    }
+    expect(Object.keys(vaultBackend.intents).sort()).toEqual(calls.map(([name]) => name).sort());
+    expect(core.calls.map((c) => c.method)).toEqual([
+      'intents.commit',
+      'intents.handoff',
+      'intents.outcome',
+      'intents.settle',
+      'intents.void',
+      'intents.retire',
+      'intents.track',
+      'intents.withdraw_origin',
+      'intents.compact',
+      'intents.get',
+      'intents.by_key',
+      'intents.held',
+      'intents.list',
+      'intents.held_nonces',
+      'intents.usage',
+      'intents.void_refusal',
+    ]);
+    calls.forEach(([, params], i) => {
+      expect(core.calls[i].params).toEqual(params ?? {});
+      expect(core.calls[i].context).toEqual({ caller: 'shell' });
+    });
+    // One requirement for all: the `intents` echo.
+    const [requires] = new Set(core.calls.map((c) => c.options.requires));
+    expect(new Set(core.calls.map((c) => c.options.requires)).size).toBe(1);
+    expect(requires({ store_moved: ['intents'] })).toBe(true);
+    expect(requires({ store_moved: ['vault_meta'] })).toBe(false);
+    expect(requires({})).toBe(requiresStore('intents')({}));
+    expect(answers[0]).toEqual({
+      code: 'INTENT_WRITE_FAILED',
+      name: 'VaultBackendError',
+      message: "Could not save the wallet's payment record.",
+    });
+    expect(answers[4]).toMatchObject({ code: 'INTENT_VOID_REFUSED', name: 'VaultBackendError' });
+    // The members' own error has no code: it stays invalid_argument.
+    expect(answers[6]).toMatchObject({ code: 'invalid_argument', message: 'Invalid parameters' });
+    expect(answers[9]).toEqual({ method: 'intents.get', params: id });
+  });
+
   // vault-meta.json's methods (design 0013, PRF-6(a)): each with
   // `requires: requiresStore('vault_meta')`, as the chrome or as main, the
   // reference's refusals with their codes.
@@ -128,12 +221,20 @@ describe('vaultBackend', () => {
     await accounts.addLedger({ name: '', address: '0xA', path: "44'/60'/0'/0/0" });
     await accounts.addRemote({ address: '0xB' });
     await expect(accounts.recordAddressCheck('remote', 1000000, false)).resolves.toBe('matched');
-    await accounts.addSafe({ name: 'S', address: '0xC', owners: [0, 1], threshold: 1, saltNonce: '5' });
+    await accounts.addSafe({
+      name: 'S',
+      address: '0xC',
+      owners: [0, 1],
+      threshold: 1,
+      saltNonce: '5',
+    });
     await accounts.markSafeDeployed(1000001, 100);
     await accounts.setActive(2, 'chrome');
     await accounts.rename(2, 'Two', 'chrome');
     await accounts.remove(2, [{ origin: 'a.eth' }], 'chrome');
-    expect(core.calls.map(({ method, params, context }) => [method, params, context.caller])).toEqual([
+    expect(
+      core.calls.map(({ method, params, context }) => [method, params, context.caller])
+    ).toEqual([
       ['accounts.list', {}, 'chrome'],
       ['accounts.list', {}, 'shell'],
       ['accounts.meta', {}, 'chrome'],
@@ -142,7 +243,11 @@ describe('vaultBackend', () => {
       ['accounts.add_mnemonic', {}, 'shell'],
       ['accounts.add_ledger', { name: '', address: '0xA', path: "44'/60'/0'/0/0" }, 'shell'],
       ['accounts.add_remote', { address: '0xB' }, 'shell'],
-      ['accounts.record_address_check', { type: 'remote', index: 1000000, matched: false }, 'shell'],
+      [
+        'accounts.record_address_check',
+        { type: 'remote', index: 1000000, matched: false },
+        'shell',
+      ],
       [
         'accounts.add_safe',
         { name: 'S', address: '0xC', owners: [0, 1], threshold: 1, salt_nonce: '5' },
@@ -178,8 +283,16 @@ describe('vaultBackend', () => {
     });
     const { vaultBackend } = load(core);
     await expect(
-      vaultBackend.accounts.addSafe({ address: '0xC', owners: [0, 1], threshold: 1, saltNonce: '1' })
-    ).rejects.toMatchObject({ code: 'LEDGER_ACCOUNT_UNCHECKED', message: '"L" can\'t own a Safe until …' });
+      vaultBackend.accounts.addSafe({
+        address: '0xC',
+        owners: [0, 1],
+        threshold: 1,
+        saltNonce: '1',
+      })
+    ).rejects.toMatchObject({
+      code: 'LEDGER_ACCOUNT_UNCHECKED',
+      message: '"L" can\'t own a Safe until …',
+    });
     const swarm = await vaultBackend.accounts.remove(2, references).catch((e) => e);
     expect(swarm).toMatchObject({ code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE', references });
     await expect(vaultBackend.accounts.rename(9, 'x')).rejects.toMatchObject({
@@ -354,7 +467,9 @@ describe('vaultBackend', () => {
       return {};
     });
     const { vaultBackend, _internal } = load(core);
-    await expect(vaultBackend.createVault('pw1')).rejects.toMatchObject({ code: 'requirement_unmet' });
+    await expect(vaultBackend.createVault('pw1')).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
     await expect(vaultBackend.importVault('pw1', 'abandon about')).rejects.toMatchObject({
       code: 'requirement_unmet',
     });
@@ -374,7 +489,12 @@ describe('vaultBackend', () => {
         if (method === 'vault.reconcile') {
           expect(self.calls.at(-1).options.requires({ store_moved: ['vault_meta'] })).toBe(true);
           expect(self.calls.at(-1).options.requires({ store_moved: [] })).toBe(false);
-          return { status: 'committed', meta, mnemonic_b64: b64('m'), addresses: { user_wallet: '0x2' } };
+          return {
+            status: 'committed',
+            meta,
+            mnemonic_b64: b64('m'),
+            addresses: { user_wallet: '0x2' },
+          };
         }
         return {};
       });
@@ -383,7 +503,9 @@ describe('vaultBackend', () => {
         jest.spyOn(fs, name)
       );
       try {
-        await expect(vaultBackend.createVault('password1', 256, { userKnowsPassword: false })).resolves.toEqual({
+        await expect(
+          vaultBackend.createVault('password1', 256, { userKnowsPassword: false })
+        ).resolves.toEqual({
           mnemonic: 'm',
           addresses: { user_wallet: '0x2' },
         });
@@ -400,7 +522,8 @@ describe('vaultBackend', () => {
       if (method === 'vault.import' || method === 'vault.change_password') {
         throw coreError('core_unavailable', 'The core exited');
       }
-      if (method === 'vault.reconcile') return { status: 'committed', meta: 'written', addresses: {} };
+      if (method === 'vault.reconcile')
+        return { status: 'committed', meta: 'written', addresses: {} };
       return {};
     });
     const { vaultBackend } = load(core);
@@ -516,7 +639,8 @@ describe('vaultBackend', () => {
     const core = new FakeCore(async (method) => {
       order.push(method);
       if (method === 'vault.status') return { exists: true, fingerprint: FP };
-      if (method === 'vault.change_password') await new Promise((resolve) => (releaseChange = resolve));
+      if (method === 'vault.change_password')
+        await new Promise((resolve) => (releaseChange = resolve));
       return {};
     });
     const { vaultBackend } = load(core);
@@ -698,7 +822,13 @@ describe('vaultBackend', () => {
   test("a revoke's caller: a page under its PageContext, the chrome's as chrome, main's own as shell", async () => {
     const core = new FakeCore(() => ({ revoked: true }));
     const { vaultBackend } = load(core);
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 1, agent: false };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 1,
+      agent: false,
+    };
     const params = { store: 'dapp', key: 'https://app.example', what: 'grant' };
     await vaultBackend.approval.revoke(params, page);
     await vaultBackend.approval.revoke(params, 'chrome');
@@ -723,9 +853,10 @@ describe('vaultBackend', () => {
 
   // Design 0013, "The re-wrap"; cored 0.17.0's callers: enroll is main's
   // own (`shell`), the other five the chrome's, after main's Touch ID.
-  test("quick unlock: enroll as shell, the rest as chrome; secrets as base64", async () => {
+  test('quick unlock: enroll as shell, the rest as chrome; secrets as base64', async () => {
     const core = new FakeCore((method) => {
-      if (method === 'quick_unlock.status') return { enabled: true, policy: 'unattended', available: true };
+      if (method === 'quick_unlock.status')
+        return { enabled: true, policy: 'unattended', available: true };
       if (method === 'quick_unlock.unlock') return { addresses: { user_wallet: '0x1' } };
       if (method === 'quick_unlock.export_mnemonic') return { mnemonic_b64: b64('abandon about') };
       if (method === 'quick_unlock.export_private_key') return { private_key_hex: '0xabc' };
@@ -738,7 +869,9 @@ describe('vaultBackend', () => {
       available: true,
     });
     await expect(vaultBackend.quickUnlockEnroll('pässwörd1')).resolves.toBeUndefined();
-    await expect(vaultBackend.quickUnlock()).resolves.toEqual({ addresses: { user_wallet: '0x1' } });
+    await expect(vaultBackend.quickUnlock()).resolves.toEqual({
+      addresses: { user_wallet: '0x1' },
+    });
     await expect(vaultBackend.quickExportMnemonic()).resolves.toBe('abandon about');
     await expect(vaultBackend.quickExportPrivateKey(3)).resolves.toBe('0xabc');
     await expect(vaultBackend.quickUnlockDisable()).resolves.toBeUndefined();
@@ -777,15 +910,18 @@ describe('vaultBackend', () => {
     ['storage', { kind: 'malformed', file: 'secrets' }, /secrets\.json.*damaged/],
     ['key_store_unavailable', { reason: 'timeout' }, /didn't answer in time/],
     ['key_store_cancelled', undefined, /cancelled/],
-  ])('a %s refusal gets a cause and a way forward, its code and data kept', async (code, data, message) => {
-    const core = new FakeCore(() => {
-      throw Object.assign(coreError(code, 'Storage error'), { data });
-    });
-    const { vaultBackend } = load(core);
-    const refused = await vaultBackend.changePassword('a', 'b').catch((err) => err);
-    expect(refused).toMatchObject({ code, data });
-    expect(refused.message).toMatch(message);
-  });
+  ])(
+    'a %s refusal gets a cause and a way forward, its code and data kept',
+    async (code, data, message) => {
+      const core = new FakeCore(() => {
+        throw Object.assign(coreError(code, 'Storage error'), { data });
+      });
+      const { vaultBackend } = load(core);
+      const refused = await vaultBackend.changePassword('a', 'b').catch((err) => err);
+      expect(refused).toMatchObject({ code, data });
+      expect(refused.message).toMatch(message);
+    }
+  );
 
   test("other storage errors keep the core's message", async () => {
     const core = new FakeCore(() => {
@@ -879,7 +1015,12 @@ describe('vaultBackend', () => {
     });
     const { vaultBackend } = load(core);
     const key = { kind: 'account', index: 0 };
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 1 };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 1,
+    };
     await vaultBackend.status();
     await vaultBackend.generateMnemonic(128);
     await vaultBackend.validateMnemonic('abandon about');
@@ -909,16 +1050,29 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.check({ request: {} }, { ...page, agent: false });
     await vaultBackend.approval.grant({ store: 'dapp', change: {} }, { ...page, agent: false });
     await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, page);
-    await vaultBackend.approval.revoke({ store: 'dapp', key: 'https://app.example', what: 'grant' });
-    await vaultBackend.approval.revoke({ store: 'swarm', key: 'https://app.example', what: 'grant' }, 'chrome');
+    await vaultBackend.approval.revoke({
+      store: 'dapp',
+      key: 'https://app.example',
+      what: 'grant',
+    });
+    await vaultBackend.approval.revoke(
+      { store: 'swarm', key: 'https://app.example', what: 'grant' },
+      'chrome'
+    );
     await vaultBackend.approval.touch({ store: 'dapp' }, { ...page, agent: false });
     await vaultBackend.approval.touch({ store: 'radicle' }, page);
-    await vaultBackend.approval.radicleWrite({ key: 'https://app.example' }, { ...page, agent: false });
+    await vaultBackend.approval.radicleWrite(
+      { key: 'https://app.example' },
+      { ...page, agent: false }
+    );
     await vaultBackend.approval.forgetAccount(0);
     await vaultBackend.approval.grants({ store: 'dapp' });
     await vaultBackend.approval.grants({ store: 'radicle' });
     await vaultBackend.typedDataHash({});
-    await vaultBackend.phone.job({ account: 0, method: 'message', payload: {}, target: 7 }, { ...page, agent: false });
+    await vaultBackend.phone.job(
+      { account: 0, method: 'message', payload: {}, target: 7 },
+      { ...page, agent: false }
+    );
     await vaultBackend.phone.sent({ job: 'j', sender: 7 });
     await vaultBackend.phone.result({ job: 'j', sender: 7, result: null });
     await vaultBackend.quickUnlockStatus();
@@ -986,19 +1140,33 @@ describe('vaultBackend', () => {
   test('grant writes and SOCs go as the page, the chrome or main itself', async () => {
     const core = new FakeCore(() => ({}));
     const { vaultBackend } = load(core);
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 2,
+      agent: false,
+    };
     const chunk = { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) };
     const authorization = { swarm: 'user', soc: 'raw' };
     await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, page);
-    await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect', key: page.origin } });
-    await vaultBackend.approval.revoke({ store: 'radicle', key: page.origin, what: 'grant' }, 'chrome');
+    await vaultBackend.approval.grant({
+      store: 'swarm',
+      change: { op: 'connect', key: page.origin },
+    });
+    await vaultBackend.approval.revoke(
+      { store: 'radicle', key: page.origin, what: 'grant' },
+      'chrome'
+    );
     await vaultBackend.approval.touch({ store: 'radicle' }, page);
     await vaultBackend.approval.remember({ receipt: 'e'.repeat(32) }, page);
     await vaultBackend.approval.grants({ store: 'swarm' });
     await vaultBackend.approval.radicleWrite({ key: page.origin }, page);
     await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, { page, authorization });
     await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk);
-    expect(core.calls.map(({ method, context, params }) => [method, context, params.authorization])).toEqual([
+    expect(
+      core.calls.map(({ method, context, params }) => [method, context, params.authorization])
+    ).toEqual([
       ['approval.grant', { caller: 'page', page }, undefined],
       ['approval.grant', { caller: 'shell' }, undefined],
       ['approval.revoke', { caller: 'chrome' }, undefined],
@@ -1021,19 +1189,38 @@ describe('vaultBackend', () => {
   test('phone jobs go as the page or main, their marks and answers as the chrome or main', async () => {
     const core = new FakeCore(() => ({}));
     const { vaultBackend } = load(core);
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
-    const job = { account: 1, address: '0xabc', method: 'message', payload: { message: '0x00' }, target: 7 };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 2,
+      agent: false,
+    };
+    const job = {
+      account: 1,
+      address: '0xabc',
+      method: 'message',
+      payload: { message: '0x00' },
+      target: 7,
+    };
     await vaultBackend.phone.job({ ...job, authorization: { token: 't' } }, page);
     await vaultBackend.phone.job(job);
     await vaultBackend.phone.sent({ job: 'j-1', sender: 7 });
     await vaultBackend.phone.result({ job: 'j-1', sender: 7, result: '0x' });
-    await vaultBackend.phone.result({ job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } }, null);
+    await vaultBackend.phone.result(
+      { job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } },
+      null
+    );
     expect(core.calls.map(({ method, context, params }) => [method, context, params])).toEqual([
       ['phone.job', { caller: 'page', page }, { ...job, authorization: { token: 't' } }],
       ['phone.job', { caller: 'shell' }, job],
       ['phone.sent', { caller: 'chrome' }, { job: 'j-1', sender: 7 }],
       ['phone.result', { caller: 'chrome' }, { job: 'j-1', sender: 7, result: '0x' }],
-      ['phone.result', { caller: 'shell' }, { job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } }],
+      [
+        'phone.result',
+        { caller: 'shell' },
+        { job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } },
+      ],
     ]);
   });
 
@@ -1042,7 +1229,13 @@ describe('vaultBackend', () => {
   test("a PageContext the core can't decode is refused invalid_argument, never sent", async () => {
     const core = new FakeCore(() => ({}));
     const { vaultBackend } = load(core);
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 2,
+      agent: false,
+    };
     const chunk = { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) };
     const undecodable = [
       { ...page, origin: null },
@@ -1065,9 +1258,16 @@ describe('vaultBackend', () => {
       for (const send of [
         () => vaultBackend.approval.touch({ store: 'dapp', chain_id: 1 }, bad),
         () => vaultBackend.approval.radicleWrite({ key: page.origin }, bad),
-        () => vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, { page: bad, authorization: { swarm: 'user', soc: 'raw' } }),
+        () =>
+          vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, {
+            page: bad,
+            authorization: { swarm: 'user', soc: 'raw' },
+          }),
       ]) {
-        await expect(send()).rejects.toMatchObject({ name: 'VaultBackendError', code: 'invalid_argument' });
+        await expect(send()).rejects.toMatchObject({
+          name: 'VaultBackendError',
+          code: 'invalid_argument',
+        });
       }
     }
     expect(core.calls).toEqual([]);
@@ -1075,7 +1275,12 @@ describe('vaultBackend', () => {
     // own invalid_argument). No agent field, or a null one, decodes too:
     // the core then lets no standing rule answer.
     // A transport key absent, null or a string decodes (cored 0.21.0).
-    const named = { ...page, origin: 'docs.example.org', top_origin: 'docs.example.org', transport_key: 'ipns://k51abc' };
+    const named = {
+      ...page,
+      origin: 'docs.example.org',
+      top_origin: 'docs.example.org',
+      transport_key: 'ipns://k51abc',
+    };
     const goods = [
       { ...page, origin: '', top_origin: '' },
       { ...page, agent: undefined },
@@ -1087,7 +1292,9 @@ describe('vaultBackend', () => {
     for (const good of goods) {
       await vaultBackend.approval.touch({ store: 'dapp', chain_id: 1 }, good);
     }
-    expect(core.calls.map(({ context }) => context)).toEqual(goods.map((good) => ({ caller: 'page', page: good })));
+    expect(core.calls.map(({ context }) => context)).toEqual(
+      goods.map((good) => ({ caller: 'page', page: good }))
+    );
   });
 
   // A Safe approval lives in the memory of the core process that gave it

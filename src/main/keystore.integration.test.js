@@ -79,7 +79,11 @@ const testKeychain = (() => {
     }
   };
   const out = spawnSync('security', ['default-keychain', '-d', 'user'], { encoding: 'utf8' });
-  const actual = real(String(out.stdout || '').trim().replace(/^"|"$/g, ''));
+  const actual = real(
+    String(out.stdout || '')
+      .trim()
+      .replace(/^"|"$/g, '')
+  );
   const expected = [keychain, `${keychain}-db`].map(real).filter(Boolean);
   return actual && expected.includes(actual) ? actual : null;
 })();
@@ -244,7 +248,12 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
       await expect(
         client.request(
           'vault.import',
-          { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: false, quick_unlock: true },
+          {
+            password_b64: b64(PASSWORD),
+            mnemonic_b64: b64(ABANDON),
+            user_knows_password: false,
+            quick_unlock: true,
+          },
           shell
         )
       ).rejects.toMatchObject({ code: 'key_store_unavailable', data: { reason: 'unsupported' } });
@@ -359,7 +368,12 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
           await client.start();
           await client.request(
             'vault.import',
-            { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: false, quick_unlock: true },
+            {
+              password_b64: b64(PASSWORD),
+              mnemonic_b64: b64(ABANDON),
+              user_knows_password: false,
+              quick_unlock: true,
+            },
             { caller: 'shell' }
           );
           await stop(client);
@@ -677,7 +691,12 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
       const chrome = { caller: 'chrome' };
       await client.request(
         'vault.import',
-        { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: false, quick_unlock: true },
+        {
+          password_b64: b64(PASSWORD),
+          mnemonic_b64: b64(ABANDON),
+          user_knows_password: false,
+          quick_unlock: true,
+        },
         { caller: 'shell' }
       );
       await expect(client.request('quick_unlock.status', {}, chrome)).resolves.toEqual({
@@ -746,7 +765,12 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
         await first.start();
         await first.request(
           'vault.import',
-          { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: false, quick_unlock: true },
+          {
+            password_b64: b64(PASSWORD),
+            mnemonic_b64: b64(ABANDON),
+            user_knows_password: false,
+            quick_unlock: true,
+          },
           { caller: 'shell' }
         );
         await stop(first);

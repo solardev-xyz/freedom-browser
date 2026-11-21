@@ -57,7 +57,10 @@ const { withRadicleGate } = require('../../src/main/radicle/radicled-gate');
 const { radicleBackendKind } = require('../../src/main/radicle/radicle-backend-kind');
 const { withPrivateDir } = require('../../src/main/private-files');
 const keystorePassword = require('../../src/main/swarm/ant-keystore-password');
-const { verifiedDeployedMark, verifiedDeployments } = require('../../src/main/wallet/safe/deployed-mark');
+const {
+  verifiedDeployedMark,
+  verifiedDeployments,
+} = require('../../src/main/wallet/safe/deployed-mark');
 
 // Optional Bee node lifecycle hooks, wired by the main process (see index.js).
 // Bee holds an exclusive LevelDB lock on statestore while running, so it must be
@@ -467,7 +470,6 @@ async function readRadicleDid() {
   }
 }
 
-
 function getBeeApiPortForIdentityConfig() {
   const profile = getActiveProfile();
   const apiPort = profile?.metadata?.nodes?.bee?.apiPort;
@@ -626,7 +628,10 @@ const nodeInjections = new Map();
 
 function serializedInjection(node, task) {
   const run = (nodeInjections.get(node) || Promise.resolve()).then(task);
-  nodeInjections.set(node, run.catch(() => {}));
+  nodeInjections.set(
+    node,
+    run.catch(() => {})
+  );
   return run;
 }
 
@@ -1741,7 +1746,9 @@ function assertSafeOwnerAddressChecked(record) {
     return;
   }
   const err = new Error(
-    state === ADDRESS_CHECK.MISMATCHED ? check.mismatched(record.name) : check.unchecked(record.name)
+    state === ADDRESS_CHECK.MISMATCHED
+      ? check.mismatched(record.name)
+      : check.unchecked(record.name)
   );
   err.code = check.code;
   throw err;
@@ -1982,7 +1989,9 @@ async function deleteDerivedWallet(index) {
 
   const publisherIdentityReferences = getSwarmPublisherIdentityReferences(index);
   if (publisherIdentityReferences.length > 0) {
-    const err = new Error(formatPublisherIdentityReferenceError(index, publisherIdentityReferences));
+    const err = new Error(
+      formatPublisherIdentityReferenceError(index, publisherIdentityReferences)
+    );
     err.code = 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE';
     err.references = publisherIdentityReferences;
     throw err;
@@ -2098,7 +2107,10 @@ async function getActiveWalletAddress() {
  */
 async function changeVaultPassword(currentPassword, newPassword) {
   // Quick unlock stays on through the change (design 0013).
-  await require('../../src/main/quick-unlock').changePasswordKeepingQuickUnlock(currentPassword, newPassword);
+  await require('../../src/main/quick-unlock').changePasswordKeepingQuickUnlock(
+    currentPassword,
+    newPassword
+  );
   console.log('[IdentityManager] Vault password changed');
 }
 
@@ -2349,24 +2361,30 @@ function registerIdentityIpc() {
   // Add a remote (phone) account (address reported over openlv)
   // Both run for the window that asked (APS-4): the phone's QR shows in
   // its sidebar.
-  ipcMain.handle('wallet:add-remote-wallet', forSenderWindow(async (_event, name, address) => {
-    try {
-      const wallet = await addRemoteWallet(name, address);
-      return { success: true, wallet };
-    } catch (err) {
-      return { success: false, error: err.message, code: err.code };
-    }
-  }));
+  ipcMain.handle(
+    'wallet:add-remote-wallet',
+    forSenderWindow(async (_event, name, address) => {
+      try {
+        const wallet = await addRemoteWallet(name, address);
+        return { success: true, wallet };
+      } catch (err) {
+        return { success: false, error: err.message, code: err.code };
+      }
+    })
+  );
 
   // Check an existing phone account on the phone (#1078)
-  ipcMain.handle('wallet:check-remote-wallet', forSenderWindow(async (_event, index) => {
-    try {
-      const wallet = await checkRemoteWallet(index);
-      return { success: true, wallet };
-    } catch (err) {
-      return { success: false, error: err.message, code: err.code };
-    }
-  }));
+  ipcMain.handle(
+    'wallet:check-remote-wallet',
+    forSenderWindow(async (_event, index) => {
+      try {
+        const wallet = await checkRemoteWallet(index);
+        return { success: true, wallet };
+      } catch (err) {
+        return { success: false, error: err.message, code: err.code };
+      }
+    })
+  );
 
   // Rename wallet
   ipcMain.handle('wallet:rename-wallet', async (_event, index, newName) => {

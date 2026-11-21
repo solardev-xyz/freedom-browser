@@ -217,8 +217,11 @@ describeIfCurrent('vault-meta.json through the pinned freedom-cored (T1, T2, rol
   });
 
   test("the build's hello names vault_meta (and safe_pending), and the core echoes them", () => {
-    expect(core.service.helloParams(core).store_moved).toEqual(['vault_meta', 'safe_pending']);
-    expect(core.hello.store_moved).toEqual(['vault_meta', 'safe_pending']);
+    // The build's stores, vault-meta.json's and safe-pending.json's among them, all echoed.
+    const { STORE_MOVED } = require('./core/core-client');
+    expect(STORE_MOVED).toEqual(expect.arrayContaining(['vault_meta', 'safe_pending']));
+    expect(core.service.helloParams(core).store_moved).toEqual([...STORE_MOVED]);
+    expect(core.hello.store_moved).toEqual([...STORE_MOVED]);
   });
 
   test('a create (userKnowsPassword false, then true) and an import write the metadata with the vault', async () => {
@@ -716,8 +719,8 @@ describeIfPrevious(
       else process.env.FREEDOM_IDENTITY_DATA = envBefore;
     });
 
-    test('the hello names vault_meta (and safe_pending), and the previous release echoes none', () => {
-      expect(core.service.helloParams(core).store_moved).toEqual(['vault_meta', 'safe_pending']);
+    test('the hello names vault_meta, and the previous release echoes none', () => {
+      expect(core.service.helloParams(core).store_moved).toContain('vault_meta');
       expect(core.hello.store_moved).toEqual([]);
     });
 

@@ -761,9 +761,12 @@ async function bootstrap() {
   registerLedgerIpc();
   registerRemoteSignerIpc();
   // The wallet's durable intent records (freedom-core design 0005, "Retrying
-  // an intent"): read, checked and compacted once at startup. A damaged file
-  // is set aside here. Then the finality tracker labels the held ones at
-  // the finalized block, settling those paid, failed or taken.
+  // an intent"), which the identity core keeps (design 0013, "The intent
+  // journal"; PRF-6(b2)): its first `intents.usage`, once the core is up,
+  // loads them, checks them and compacts them, and sets a damaged file
+  // aside. Then the finality tracker labels the held ones at the finalized
+  // block, settling those paid, failed or taken. On a core that didn't take
+  // the store, the load fails `requirement_unmet`, and no tracker starts.
   getIntentStore()
     .load()
     .then(() => getIntentTracker().start())

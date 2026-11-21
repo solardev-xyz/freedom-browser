@@ -1,3 +1,9 @@
+// The reference: src/main/lib/durable-journal.js as the build before
+// PRF-6(b2) has it (freedom-browser integration/rust-core at 9d4ea6251,
+// freedom-core's STORES_REFERENCE_COMMIT), verbatim. Its one user,
+// wallet/intent-store.js, became the identity core's client in PRF-6(b2)
+// (the core's port of this journal writes wallet-intents.jsonl); this copy
+// serves the reference store (reference-intent-store.js): never main's code.
 /**
  * Durable journal: an append-only JSON Lines file whose appends are on disk
  * by the time they are acknowledged.

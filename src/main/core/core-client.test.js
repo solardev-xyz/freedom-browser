@@ -310,27 +310,32 @@ describe('CoreClient', () => {
   });
 
   // freedom-core design 0013, "One writer per store": the build names
-  // vault-meta.json's store (PRF-6(a)) and safe-pending.json's (PRF-6(d));
-  // the core echoes the names it took, and a core before 0.23.0 answers none.
-  test('the hello names vault_meta and safe_pending in store_moved, and an absent echo is none', async () => {
+  // vault-meta.json's store (PRF-6(a)), the intent journal (PRF-6(b2)) and
+  // safe-pending.json's (PRF-6(d)); the core echoes the names it took, and a
+  // core before 0.23.0 answers none.
+  test("the hello names the build's stores in store_moved, and an absent echo is none", async () => {
     expect(STORES).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
-    expect(STORE_MOVED).toEqual(['vault_meta', 'safe_pending']);
+    expect(STORE_MOVED).toEqual(['vault_meta', 'intents', 'safe_pending']);
     expect(Object.isFrozen(STORE_MOVED)).toBe(true);
     const { client, children } = makeClient([helloHandler()]);
     const hello = await client.start();
-    expect(children[0].requests[0].params.store_moved).toEqual(['vault_meta', 'safe_pending']);
+    expect(children[0].requests[0].params.store_moved).toEqual(['vault_meta', 'intents', 'safe_pending']);
     expect(hello.store_moved).toEqual([]);
     expect(client.hello.store_moved).toEqual([]);
-    const echoed = makeClient([
-      (m, core) =>
-        m.method === 'core.hello' &&
-        core.reply({
-          type: 'response',
-          id: m.id,
-          result: helloResult({ store_moved: ['vault_meta', 'safe_pending'] }),
-        }),
-    ]);
-    expect((await echoed.client.start()).store_moved).toEqual(['vault_meta', 'safe_pending']);
+    for (const echo of [
+      [],
+      ['vault_meta'],
+      ['intents'],
+      ['safe_pending'],
+      ['vault_meta', 'intents', 'safe_pending'],
+    ]) {
+      const echoed = makeClient([
+        (m, core) =>
+          m.method === 'core.hello' &&
+          core.reply({ type: 'response', id: m.id, result: helloResult({ store_moved: echo }) }),
+      ]);
+      expect((await echoed.client.start()).store_moved).toEqual(echo);
+    }
   });
 
   test('a service naming stores sends them and takes an echo of some or none', async () => {
