@@ -310,18 +310,25 @@ describe('CoreClient', () => {
   });
 
   // freedom-core design 0013, "One writer per store": the build names
-  // vault-meta.json's store (PRF-6(a)) and the intent journal (PRF-6(b2));
-  // the core echoes the names it took, and a core before 0.23.0 answers none.
+  // vault-meta.json's store (PRF-6(a)), the intent journal (PRF-6(b2)) and
+  // safe-pending.json's (PRF-6(d)); the core echoes the names it took, and a
+  // core before 0.23.0 answers none.
   test("the hello names the build's stores in store_moved, and an absent echo is none", async () => {
     expect(STORES).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
-    expect(STORE_MOVED).toEqual(['vault_meta', 'intents']);
+    expect(STORE_MOVED).toEqual(['vault_meta', 'intents', 'safe_pending']);
     expect(Object.isFrozen(STORE_MOVED)).toBe(true);
     const { client, children } = makeClient([helloHandler()]);
     const hello = await client.start();
-    expect(children[0].requests[0].params.store_moved).toEqual(['vault_meta', 'intents']);
+    expect(children[0].requests[0].params.store_moved).toEqual(['vault_meta', 'intents', 'safe_pending']);
     expect(hello.store_moved).toEqual([]);
     expect(client.hello.store_moved).toEqual([]);
-    for (const echo of [[], ['vault_meta'], ['intents'], ['vault_meta', 'intents']]) {
+    for (const echo of [
+      [],
+      ['vault_meta'],
+      ['intents'],
+      ['safe_pending'],
+      ['vault_meta', 'intents', 'safe_pending'],
+    ]) {
       const echoed = makeClient([
         (m, core) =>
           m.method === 'core.hello' &&

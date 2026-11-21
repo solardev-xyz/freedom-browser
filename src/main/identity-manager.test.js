@@ -6,7 +6,10 @@ const {
   loadMainModule,
   removeTempUserDataDir,
 } = require('../../test/helpers/main-process-test-utils');
-const { simulatedAccounts } = require('../../test/helpers/simulated-store-core');
+const {
+  simulatedAccounts,
+  simulatedSafePending,
+} = require('../../test/helpers/simulated-store-core');
 
 // The fake core's own writes, which a spy on main's `fs` doesn't see.
 const writeAsCore = fs.writeFileSync;
@@ -96,11 +99,15 @@ function restoreEnv(snapshot) {
  * simulated core's (test/helpers/simulated-store-core.js), run by the
  * reference identity-manager.js on the suite's identity directory, and
  * `sim` its record. A create or an import writes the file as the core
- * does, with the vault (`createdAt` from the clock).
+ * does, with the vault (`createdAt` from the clock). safe-pending.json is
+ * the core's too (PRF-6(d)): `safePending` is the simulated core's, on the
+ * suite's Freedom root, and `pendingSim` its record; `accounts.remove`
+ * clears a Safe's entry there.
  */
 function makeVaultBackendMock({ exists = true, unlocked = true, accounts = {} } = {}) {
   const state = { exists, unlocked };
-  const sim = simulatedAccounts(accounts);
+  const pendingSim = simulatedSafePending();
+  const sim = simulatedAccounts({ pending: pendingSim, ...accounts });
   const writeNewMeta = (userKnowsPassword) => {
     const dir = process.env.FREEDOM_IDENTITY_DATA;
     if (!dir || !sim.moved) return;
@@ -123,7 +130,9 @@ function makeVaultBackendMock({ exists = true, unlocked = true, accounts = {} } 
   return {
     state,
     sim,
+    pendingSim,
     accounts: sim.accounts,
+    safePending: pendingSim.safePending,
     status: jest.fn(async () => ({
       exists: state.exists,
       unlocked: state.unlocked,
@@ -1697,7 +1706,7 @@ describe('identity-manager safe accounts', () => {
     // would inherit (or be blocked by) them.
     const { setPending, getPending } = require('./wallet/safe/pending-store');
     const messageSessions = require('./wallet/safe/message-sessions');
-    setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
+    await setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
     const detach = jest.fn();
     messageSessions.setSession(safe.index, { token: 'session-token', detach });
 
@@ -1706,19 +1715,28 @@ describe('identity-manager safe accounts', () => {
     expect(getPending(safe.index)).toBeNull();
     expect(messageSessions.getSession(safe.index)).toBeNull();
     expect(detach).toHaveBeenCalled(); // webContents lifecycle listeners unhooked
-    // the on-disk store no longer carries the entry either
+    // the on-disk store no longer carries the entry either: the core cleared
+    // it in accounts.remove (design 0013, PRF-6(d)), and main sent no clear
     const pendingFile = path.join(tmpDir, 'safe-pending.json');
     expect(JSON.parse(fs.readFileSync(pendingFile, 'utf-8'))).toEqual({});
+    const { vaultBackend } = require('./core/vault-backend');
+    // (The list is main's copy loading before its first write.)
+    expect(vaultBackend.pendingSim.calls.map(([method]) => method)).toEqual([
+      'safe_pending.list',
+      'safe_pending.set',
+    ]);
   });
 
   // Design 0013, "`accounts.remove`" (G12): the core ends a Safe's open
-  // approvals and removes its record in one request; main then drops its
-  // own slots, pending entry and session. A removal that fails after the
-  // core's cleanup (a forget that failed) keeps the account and its pending
-  // entry, but main drops its approval slots, which the core ended: the
-  // Safe's next step takes a new approval (review of #1293, round 1). A
-  // request never sent (requirement_unmet) keeps them.
-  test("a Safe's approvals are ended by the core's removal; main then drops its own state, and a failed removal drops only the approvals the core ended", async () => {
+  // approvals, clears its pending entry (PRF-6(d)) and removes its record in
+  // one request; main then drops its own slots, its copy of the pending
+  // entry and the session. A removal that fails after the core's cleanup (a
+  // forget that failed) keeps the account, but main drops its approval
+  // slots, which the core ended (the Safe's next step takes a new approval:
+  // review of #1293, round 1), and reads the pending entry again, which the
+  // core cleared before the forget. A request never sent (requirement_unmet)
+  // keeps them.
+  test("a Safe's approvals are ended by the core's removal; main then drops its own state, and a failed removal drops only what the core ended", async () => {
     await seedOwners();
     const safe = await addSafe();
     const { setPending, getPending } = require('./wallet/safe/pending-store');
@@ -1730,7 +1748,7 @@ describe('identity-manager safe accounts', () => {
       coreProcessEnded: () => false,
     });
     safeApprovals._reset({ retryDelays: [0, 0] });
-    setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
+    await setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
     const approval = { id: 'a'.repeat(32), page: null };
     await safeApprovals.hold('send', safe.index, approval, '0xdead');
 
@@ -1745,11 +1763,18 @@ describe('identity-manager safe accounts', () => {
     expect(safeApprovals.held('send', safe.index, '0xdead')).toEqual(approval);
     vaultBackend.sim.moved = true;
 
+    expect(getPending(safe.index)).not.toBeNull();
     await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
       code: 'storage',
     });
     expect(vaultBackend.sim.endedSafes).toEqual([safe.index]);
-    expect(getPending(safe.index)).not.toBeNull();
+    // Cleared by the core before its forget failed, and read again by main.
+    expect(getPending(safe.index)).toBeNull();
+    expect(vaultBackend.pendingSim.calls.map(([method]) => method)).toEqual([
+      'safe_pending.list',
+      'safe_pending.set',
+      'safe_pending.get',
+    ]);
     expect(safeApprovals.held('send', safe.index, '0xdead')).toBeNull();
     expect(readVaultMeta().derivedWallets.map((w) => w.index)).toContain(safe.index);
     // The Safe stays usable: its next step holds a new approval.
@@ -1776,7 +1801,7 @@ describe('identity-manager safe accounts', () => {
     const safeApprovals = require('./wallet/safe/safe-approvals');
     const { vaultBackend } = require('./core/vault-backend');
     safeApprovals._reset({ retryDelays: [0, 0] });
-    setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
+    await setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
     const remove = vaultBackend.accounts.remove;
     let answer;
     vaultBackend.accounts.remove = jest.fn(async (...args) => {
@@ -1837,7 +1862,7 @@ describe('identity-manager safe accounts', () => {
     const safe = await addSafe(); // highest index in the vault
 
     const { setPending, getPending } = require('./wallet/safe/pending-store');
-    setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
+    await setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
 
     await identityManager.deleteDerivedWallet(safe.index);
 

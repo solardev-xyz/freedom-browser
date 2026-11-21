@@ -319,7 +319,7 @@ describe('the hello at protocol 2', () => {
       frames: ['fragment', 'stream'],
       grant_root: path.resolve(os.tmpdir()),
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
-      store_moved: ['vault_meta', 'intents'],
+      store_moved: ['vault_meta', 'intents', 'safe_pending'],
     });
     expect(client.streamStats()).toEqual({
       outstanding: 0,
