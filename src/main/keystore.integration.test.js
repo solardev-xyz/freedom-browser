@@ -244,13 +244,13 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
       await expect(
         client.request(
           'vault.import',
-          { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), quick_unlock: true },
+          { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: false, quick_unlock: true },
           shell
         )
       ).rejects.toMatchObject({ code: 'key_store_unavailable', data: { reason: 'unsupported' } });
       await client.request(
         'vault.import',
-        { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON) },
+        { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: true },
         shell
       );
       await expect(
@@ -359,7 +359,7 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
           await client.start();
           await client.request(
             'vault.import',
-            { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), quick_unlock: true },
+            { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: false, quick_unlock: true },
             { caller: 'shell' }
           );
           await stop(client);
@@ -677,7 +677,7 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
       const chrome = { caller: 'chrome' };
       await client.request(
         'vault.import',
-        { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), quick_unlock: true },
+        { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: false, quick_unlock: true },
         { caller: 'shell' }
       );
       await expect(client.request('quick_unlock.status', {}, chrome)).resolves.toEqual({
@@ -746,7 +746,7 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
         await first.start();
         await first.request(
           'vault.import',
-          { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), quick_unlock: true },
+          { password_b64: b64(PASSWORD), mnemonic_b64: b64(ABANDON), user_knows_password: false, quick_unlock: true },
           { caller: 'shell' }
         );
         await stop(first);

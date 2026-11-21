@@ -6,6 +6,27 @@ const {
   loadMainModule,
   removeTempUserDataDir,
 } = require('../../test/helpers/main-process-test-utils');
+const { simulatedAccounts } = require('../../test/helpers/simulated-store-core');
+
+// The fake core's own writes, which a spy on main's `fs` doesn't see.
+const writeAsCore = fs.writeFileSync;
+const mkdirAsCore = fs.mkdirSync;
+
+/** Spies on main's writes; `metaWrites()` lists those that named vault-meta. */
+function watchMetaWrites() {
+  const names = ['writeFileSync', 'appendFileSync', 'renameSync', 'copyFileSync', 'unlinkSync', 'rmSync', 'openSync', 'mkdirSync'];
+  const spies = names.map((name) => [name, jest.spyOn(fs, name)]);
+  return {
+    metaWrites: () =>
+      spies.flatMap(([name, spy]) =>
+        spy.mock.calls
+          .filter(([, flags]) => !(name === 'openSync' && (flags === undefined || flags === 'r')))
+          .filter(([target]) => /vault-meta/.test(String(target)))
+          .map(([target]) => [name, String(target)])
+      ),
+    restore: () => spies.forEach(([, spy]) => spy.mockRestore()),
+  };
+}
 
 // The Radicle home's gate (radicle/radicled-gate.js), faked for every load
 // (a registration outlives resetModules): held at once, unless a test sets
@@ -62,25 +83,54 @@ function restoreEnv(snapshot) {
 /**
  * A fake of core/vault-backend: the identity core's vault, as main sees it.
  * Addresses are derived as `0xderived<index>`; the Bee wallet is `0xbee`.
+ * vault-meta.json is the core's (design 0013, PRF-6(a)): `accounts` is the
+ * simulated core's (test/helpers/simulated-store-core.js), run by the
+ * reference identity-manager.js on the suite's identity directory, and
+ * `sim` its record. A create or an import writes the file as the core
+ * does, with the vault (`createdAt` from the clock).
  */
-function makeVaultBackendMock({ exists = true, unlocked = true } = {}) {
+function makeVaultBackendMock({ exists = true, unlocked = true, accounts = {} } = {}) {
   const state = { exists, unlocked };
+  const sim = simulatedAccounts(accounts);
+  const writeNewMeta = (userKnowsPassword) => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    if (!dir || !sim.moved) return;
+    mkdirAsCore(dir, { recursive: true });
+    writeAsCore(
+      path.join(dir, 'vault-meta.json'),
+      JSON.stringify(
+        {
+          userKnowsPassword,
+          createdAt: new Date().toISOString(),
+          addresses: { userWallet: addresses.user_wallet, beeWallet: addresses.bee_wallet },
+        },
+        null,
+        2
+      )
+    );
+  };
   const locked = () => Object.assign(new Error('Vault is locked'), { code: 'vault_locked' });
   const addresses = { user_wallet: '0xuser', bee_wallet: '0xbee' };
   return {
     state,
+    sim,
+    accounts: sim.accounts,
     status: jest.fn(async () => ({
       exists: state.exists,
       unlocked: state.unlocked,
       epoch: null,
       fingerprint: null,
     })),
-    createVault: jest.fn(async () => {
+    createVault: jest.fn(async (_password, _strength, { userKnowsPassword = true } = {}) => {
+      if (!sim.moved) throw Object.assign(new Error("The core can't take this request"), { code: 'requirement_unmet' });
       Object.assign(state, { exists: true, unlocked: true });
+      writeNewMeta(userKnowsPassword);
       return { mnemonic: 'test mnemonic', addresses };
     }),
-    importVault: jest.fn(async () => {
+    importVault: jest.fn(async (_password, _mnemonic, { userKnowsPassword = true } = {}) => {
+      if (!sim.moved) throw Object.assign(new Error("The core can't take this request"), { code: 'requirement_unmet' });
       Object.assign(state, { exists: true, unlocked: true });
+      writeNewMeta(userKnowsPassword);
       return { addresses };
     }),
     unlock: jest.fn(async () => {
@@ -357,27 +407,76 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
     await expect(mod.hasVault()).rejects.toThrow('bad');
   });
 
-  // Design 0013, PRF-2d: the core wrote a Quick Setup vault's credential
-  // with it, and no quick-unlock.dat is written, so quick-unlock.js has
-  // nothing to finish.
-  test('a lost Quick Setup is finished by main: the metadata, and no quick-unlock.dat', async () => {
+  // Design 0013, "The vault and its metadata, one write" (PRF-6(a)): the
+  // core writes vault-meta.json with the vault, so a create or an import,
+  // a lost one's reconcile included, leaves main nothing to write or finish.
+  // PRF-2d: the core wrote a Quick Setup vault's credential with it too, and
+  // no quick-unlock.dat is written.
+  test('a create or an import is the core\'s write: main writes no metadata and finishes nothing', async () => {
     const quickUnlock = jest.fn(() => ({}));
     const backend = makeVaultBackendMock({ exists: false, unlocked: false });
     const { mod, dirs } = setup(backend, {
       [require.resolve('./quick-unlock')]: quickUnlock,
     });
-    await mod.importExistingMnemonic('random-pass', 'abandon about', false, { quickUnlock: true });
-    const { onCommitted } = backend.importVault.mock.calls[0][2];
-    const metaPath = path.join(dirs.identity, 'vault-meta.json');
-    fs.rmSync(metaPath);
-    await onCommitted({ addresses: { user_wallet: '0xu', bee_wallet: '0xb' } });
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    expect(meta).toMatchObject({
+    const watch = watchMetaWrites();
+    try {
+      await mod.importExistingMnemonic('random-pass', 'abandon about', false, { quickUnlock: true });
+      backend.state.exists = false;
+      await mod.createNewVault('password123', 128);
+      expect(watch.metaWrites()).toEqual([]);
+    } finally {
+      watch.restore();
+    }
+    expect(backend.importVault.mock.calls[0][2]).toEqual({
+      overwrite: false,
+      quickUnlock: true,
       userKnowsPassword: false,
-      addresses: { userWallet: '0xu', beeWallet: '0xb' },
     });
+    expect(backend.createVault.mock.calls[0][2]).toEqual({ userKnowsPassword: true });
+    const meta = JSON.parse(fs.readFileSync(path.join(dirs.identity, 'vault-meta.json'), 'utf-8'));
+    expect(meta).toMatchObject({ userKnowsPassword: true, addresses: { userWallet: '0xuser' } });
     expect(quickUnlock).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(dirs.identity, 'quick-unlock.dat'))).toBe(false);
+  });
+
+  test("a core that didn't take vault_meta: a create or an import fails requirement_unmet, and nothing is written", async () => {
+    const backend = makeVaultBackendMock({ exists: false, unlocked: false, accounts: { moved: false } });
+    const { mod, dirs } = setup(backend);
+    await expect(mod.createNewVault('password123', 128)).rejects.toMatchObject({ code: 'requirement_unmet' });
+    await expect(mod.importExistingMnemonic('password123', 'abandon about')).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
+    await expect(mod.getDerivedWallets()).rejects.toMatchObject({ code: 'requirement_unmet' });
+    expect(fs.existsSync(path.join(dirs.identity, 'vault-meta.json'))).toBe(false);
+  });
+
+  // G14: the renderer's choice; absent means it knows it.
+  test('the create and import IPC pass userKnowsPassword, absent as true, and refuse a non-boolean', async () => {
+    const backend = makeVaultBackendMock({ exists: false, unlocked: false });
+    const { mod } = setup(backend);
+    const { ipcMain } = require('electron');
+    mod.registerIdentityIpc();
+    const IPC = require('../shared/ipc-channels');
+    const invoke = (channel, ...args) => ipcMain.handlers.get(channel)({}, ...args);
+    await expect(invoke(IPC.IDENTITY_CREATE_VAULT, 'password123', 128, 'yes')).resolves.toEqual({
+      success: false,
+      error: 'Invalid parameters',
+    });
+    await expect(invoke(IPC.IDENTITY_IMPORT_MNEMONIC, 'password123', 'abandon about', 1)).resolves.toEqual({
+      success: false,
+      error: 'Invalid parameters',
+    });
+    expect(backend.createVault).not.toHaveBeenCalled();
+    expect(backend.importVault).not.toHaveBeenCalled();
+    await expect(invoke(IPC.IDENTITY_IMPORT_MNEMONIC, 'password123', 'abandon about')).resolves.toEqual({
+      success: true,
+    });
+    backend.state.exists = false;
+    await expect(invoke(IPC.IDENTITY_CREATE_VAULT, 'password123', 128, false)).resolves.toMatchObject({
+      success: true,
+    });
+    expect(backend.importVault.mock.calls[0][2].userKnowsPassword).toBe(true);
+    expect(backend.createVault.mock.calls[0][2].userKnowsPassword).toBe(false);
   });
 
   // Design 0013, PRF-2b: Quick Setup's vault comes with quick unlock's
@@ -396,18 +495,24 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
     expect(backend.importVault.mock.calls[1][2]).toMatchObject({ quickUnlock: false });
   });
 
-  test("a quick unlock does what a password unlock does after: the old metadata's addresses", async () => {
+  // Design 0013, "The unlock's migration": an older file without addresses
+  // gains them in the core, at either unlock; main writes nothing.
+  test('an unlock, by password or quick unlock, leaves the metadata to the core', async () => {
     const backend = makeVaultBackendMock({ exists: true, unlocked: false });
     const { mod, dirs } = setup(backend);
     const metaPath = path.join(dirs.identity, 'vault-meta.json');
     fs.writeFileSync(metaPath, JSON.stringify({ userKnowsPassword: false }));
-    await mod.quickUnlockVault();
+    const watch = watchMetaWrites();
+    try {
+      await mod.quickUnlockVault();
+      await mod.unlockVault('password123');
+      expect(watch.metaWrites()).toEqual([]);
+    } finally {
+      watch.restore();
+    }
     expect(backend.quickUnlock).toHaveBeenCalledTimes(1);
-    expect(backend.unlock).not.toHaveBeenCalled();
-    expect(JSON.parse(fs.readFileSync(metaPath, 'utf-8')).addresses).toEqual({
-      userWallet: '0xuser',
-      beeWallet: '0xbee',
-    });
+    expect(backend.unlock).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(metaPath, 'utf-8')).toBe(JSON.stringify({ userKnowsPassword: false }));
   });
 
   test("the quick exports: the core's, and a device account refused before it", async () => {
@@ -438,15 +543,18 @@ describe('identity-manager wallet deletion', () => {
   let envSnapshot;
   let mockGetEthereumWalletIdentityReferences;
   let identityManager;
+  let backend;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-test-'));
     envSnapshot = snapshotEnv();
     process.env.FREEDOM_IDENTITY_DATA = tmpDir;
     mockGetEthereumWalletIdentityReferences = jest.fn(() => []);
+    backend = makeVaultBackendMock();
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
+        ...vaultBackendMocks(backend),
         [require.resolve('./swarm/feed-store')]: () => ({
           getEthereumWalletIdentityReferences: (...args) =>
             mockGetEthereumWalletIdentityReferences(...args),
@@ -512,25 +620,15 @@ describe('identity-manager wallet deletion', () => {
     expect(readVaultMeta().activeWalletIndex).toBe(0);
   });
 
-  test('revokes dApp permissions bound to the deleted wallet, through the identity core', async () => {
-    // A permission is a standing authorisation to sign with one account
-    // (plus its auto-approve rules). Left behind, its walletIndex dangles
-    // — for a deleted hardware account, at an index with no signer at all.
-    // The core writes the dApp file from APB-2 (freedom-core design 0012):
-    // main asks it to forget the account, and waits for it.
-    let forgotten = null;
-    const revokePermissionsForWalletIndex = jest.fn(
-      (index) =>
-        new Promise((resolve) => {
-          setImmediate(() => {
-            forgotten = index;
-            resolve(['https://swap.example']);
-          });
-        })
-    );
+  // Design 0013, `accounts-remove-forget-first`: the core forgets the
+  // account's dApp grants in the removal's request, before the record, and
+  // main's copy follows `approval.changed`; main asks for no separate forget.
+  test('the core forgets the deleted wallet\'s dApp grants; main revokes nothing itself', async () => {
+    const revokePermissionsForWalletIndex = jest.fn();
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
+        ...vaultBackendMocks(backend),
         [require.resolve('./swarm/feed-store')]: () => ({
           getEthereumWalletIdentityReferences: (...args) => mockGetEthereumWalletIdentityReferences(...args),
         }),
@@ -542,14 +640,86 @@ describe('identity-manager wallet deletion', () => {
       derivedWallets: [
         { index: 0, name: 'Main Wallet', address: '0x0' },
         { index: 2, name: 'Trading Wallet', address: '0x2' },
+        { index: 3, name: 'Spare', address: '0x3' },
       ],
     });
 
     await identityManager.deleteDerivedWallet(2);
+    expect(backend.sim.forgotten).toEqual([2]);
+    expect(revokePermissionsForWalletIndex).not.toHaveBeenCalled();
+    expect(backend.sim.calls.at(-1)).toEqual(['accounts.remove', 'shell']);
 
-    expect(revokePermissionsForWalletIndex).toHaveBeenCalledWith(2);
-    expect(forgotten).toBe(2);
-    expect(fs.existsSync(path.join(tmpDir, 'dapp-permissions.json'))).toBe(false);
+    // A forget that fails refuses the removal: the account stays.
+    backend.sim.forget = () => {
+      throw Object.assign(new Error('Storage error'), { code: 'storage' });
+    };
+    await expect(identityManager.deleteDerivedWallet(3)).rejects.toMatchObject({ code: 'storage' });
+    expect(readVaultMeta().derivedWallets.map((wallet) => wallet.index)).toEqual([0, 3]);
+  });
+
+  // G23: the chrome's requests go to the core as the chrome's.
+  test("the chrome's vault-meta reads and changes go to the core as the chrome's", async () => {
+    const { ipcMain } = require('electron');
+    identityManager.registerIdentityIpc();
+    writeVaultMeta({
+      userKnowsPassword: false,
+      addresses: { userWallet: '0xuser', beeWallet: '0xbee' },
+    });
+    const invoke = (channel, ...args) => ipcMain.handlers.get(channel)({}, ...args);
+    await expect(invoke('identity:get-vault-meta')).resolves.toMatchObject({ userKnowsPassword: false });
+    await expect(invoke('wallet:get-derived-wallets')).resolves.toEqual({
+      success: true,
+      wallets: [{ index: 0, name: 'Main Wallet', address: '0xuser', type: 'mnemonic' }],
+    });
+    // The first list's default, written once (by the core).
+    expect(readVaultMeta()).toMatchObject({ activeWalletIndex: 0, derivedWallets: [{ index: 0 }] });
+    await expect(invoke('wallet:create-derived-wallet', 'Spare')).resolves.toEqual({
+      success: true,
+      wallet: { index: 1, name: 'Spare', address: '0xderived1' },
+    });
+    await expect(invoke('wallet:rename-wallet', 1, 'Spare 2')).resolves.toEqual({ success: true });
+    await expect(invoke('wallet:set-active-wallet', 1)).resolves.toEqual({ success: true });
+    await expect(invoke('wallet:get-active-index')).resolves.toEqual({ success: true, index: 1 });
+    await expect(invoke('wallet:set-active-wallet', 9)).resolves.toEqual({
+      success: false,
+      error: 'Wallet with index 9 does not exist',
+    });
+    expect(backend.sim.calls).toEqual([
+      ['accounts.meta', 'chrome'],
+      ['accounts.list', 'chrome'],
+      ['accounts.add_mnemonic', 'chrome'],
+      ['accounts.rename', 'chrome'],
+      ['accounts.set_active', 'chrome'],
+      ['accounts.active', 'chrome'],
+      ['accounts.set_active', 'chrome'],
+    ]);
+    // Main's synchronous lookups read the core's file.
+    expect(identityManager.getActiveWalletIndex()).toBe(1);
+    expect(identityManager.getWalletRecord(1)).toMatchObject({ name: 'Spare 2', address: '0xderived1' });
+    // No core: the meta reads as none, as an unreadable file did.
+    backend.sim.moved = false;
+    await expect(invoke('identity:get-vault-meta')).resolves.toBeNull();
+  });
+
+  test("the delete IPC goes as the chrome's, and answers the core's refusal", async () => {
+    const { ipcMain } = require('electron');
+    identityManager.registerIdentityIpc();
+    writeVaultMeta({
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0' },
+        { index: 2, name: 'Trading Wallet', address: '0x2' },
+      ],
+    });
+    await expect(ipcMain.handlers.get('wallet:delete-wallet')({}, 0)).resolves.toEqual({
+      success: false,
+      error: 'Cannot delete the main wallet (index 0)',
+    });
+    await expect(ipcMain.handlers.get('wallet:delete-wallet')({}, 2)).resolves.toEqual({ success: true });
+    expect(backend.sim.calls).toEqual([
+      ['accounts.remove', 'chrome'],
+      ['accounts.remove', 'chrome'],
+    ]);
+    expect(readVaultMeta().derivedWallets.map((wallet) => wallet.index)).toEqual([0]);
   });
 });
 
@@ -696,7 +866,7 @@ describe('identity-manager ledger accounts', () => {
       .toEqual([HARDWARE_INDEX_BASE]);
 
     // A device that doesn't hold it marks it mismatched, and keeps it.
-    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
     expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({
       address: LEDGER_ADDRESS,
       addressCheck: 'mismatched',
@@ -705,21 +875,21 @@ describe('identity-manager ledger accounts', () => {
       .toEqual([HARDWARE_INDEX_BASE]);
 
     // One that does makes it matched.
-    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
     expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
     expect(identityManager.getLedgerRecordsToCheck()).toEqual([]);
 
     // A matched record stays matched: a later device that doesn't hold it
     // is another Ledger.
-    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, false)).toBe('matched');
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, false)).toBe('matched');
     expect(readVaultMeta().derivedWallets[2]).toMatchObject({ addressCheck: 'matched' });
 
     // Only Ledger records carry the state.
-    expect(identityManager.recordLedgerAddressCheck(0, true)).toBeNull();
+    expect(await identityManager.recordLedgerAddressCheck(0, true)).toBeNull();
     expect(readVaultMeta().derivedWallets[0]).not.toHaveProperty('addressCheck');
   });
 
-  test("a Ledger check and a phone check each keep only their own kind's records (#1065, #1078)", () => {
+  test("a Ledger check and a phone check each keep only their own kind's records (#1065, #1078)", async () => {
     writeVaultMeta({
       activeWalletIndex: 0,
       addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
@@ -736,14 +906,14 @@ describe('identity-manager ledger accounts', () => {
     expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE + 1)).toMatchObject({ addressCheck: 'unchecked' });
 
     // A Ledger's answer can't mark a phone record, nor a phone's a Ledger one.
-    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, true)).toBeNull();
-    expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBeNull();
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, true)).toBeNull();
+    expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBeNull();
     expect(readVaultMeta().derivedWallets[1]).not.toHaveProperty('addressCheck');
     expect(readVaultMeta().derivedWallets[2]).not.toHaveProperty('addressCheck');
 
     // Each kind's own check marks its own record, and only that one.
-    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
-    expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE + 1, true)).toBe('matched');
+    expect(await identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+    expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE + 1, true)).toBe('matched');
     expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'mismatched' });
     expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE + 1)).toMatchObject({ addressCheck: 'matched' });
     expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index)).toEqual([HARDWARE_INDEX_BASE]);
@@ -952,27 +1122,27 @@ describe('identity-manager ledger accounts', () => {
         nextHardwareWalletIndex: HARDWARE_INDEX_BASE + 1,
       });
 
-    test('starts unchecked, becomes mismatched and then matched, and is never deleted', () => {
+    test('starts unchecked, becomes mismatched and then matched, and is never deleted', async () => {
       seedOldPhone();
 
       expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'unchecked' });
 
-      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
       expect(readVaultMeta().derivedWallets[1]).toMatchObject({
         address: phone.wallet.address,
         addressCheck: 'mismatched',
       });
 
-      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
+      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
       expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
 
       // A matched record stays matched: a later answer from another account
       // is the phone on another account.
-      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('matched');
+      expect(await identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('matched');
       expect(readVaultMeta().derivedWallets).toHaveLength(2);
 
       // Only phone records carry the state.
-      expect(identityManager.recordRemoteAddressCheck(0, true)).toBeNull();
+      expect(await identityManager.recordRemoteAddressCheck(0, true)).toBeNull();
       expect(readVaultMeta().derivedWallets[0]).not.toHaveProperty('addressCheck');
     });
 
@@ -1389,20 +1559,21 @@ describe('identity-manager safe accounts', () => {
     expect(JSON.parse(fs.readFileSync(pendingFile, 'utf-8'))).toEqual({});
   });
 
-  // Review of #1245, round 1: a Safe's approvals are ended in the core
-  // before its leftovers go, and a failed end deletes nothing.
-  test("a Safe whose approval's end fails isn't deleted; once ended it is, keeping changes saved meanwhile", async () => {
+  // Design 0013, "`accounts.remove`" (G12): the core ends a Safe's open
+  // approvals and removes its record in one request; main then drops its
+  // own slots, pending entry and session. A removal that fails after the
+  // core's cleanup (a forget that failed) keeps the account and its pending
+  // entry, but main drops its approval slots, which the core ended: the
+  // Safe's next step takes a new approval (review of #1293, round 1). A
+  // request never sent (requirement_unmet) keeps them.
+  test("a Safe's approvals are ended by the core's removal; main then drops its own state, and a failed removal drops only the approvals the core ended", async () => {
     await seedOwners();
     const safe = await addSafe();
     const { setPending, getPending } = require('./wallet/safe/pending-store');
     const safeApprovals = require('./wallet/safe/safe-approvals');
     const { vaultBackend } = require('./core/vault-backend');
     Object.assign(vaultBackend, {
-      approval: {
-        end: jest.fn(async () => {
-          throw Object.assign(new Error('Too many requests'), { code: 'busy' });
-        }),
-      },
+      approval: { end: jest.fn(async () => ({})) },
       coreProcess: () => ({ process: 'core' }),
       coreProcessEnded: () => false,
     });
@@ -1411,25 +1582,34 @@ describe('identity-manager safe accounts', () => {
     const approval = { id: 'a'.repeat(32), page: null };
     await safeApprovals.hold('send', safe.index, approval, '0xdead');
 
+    vaultBackend.sim.forget = () => {
+      throw Object.assign(new Error('Storage error'), { code: 'storage' });
+    };
+    // Never sent: the core ended nothing, and main keeps its approval.
+    vaultBackend.sim.moved = false;
     await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
-      code: 'SAFE_APPROVAL_END_FAILED',
+      code: 'requirement_unmet',
     });
-    expect(getPending(safe.index)).not.toBeNull();
     expect(safeApprovals.held('send', safe.index, '0xdead')).toEqual(approval);
-    expect(readVaultMeta().derivedWallets.map((w) => w.index)).toContain(safe.index);
+    vaultBackend.sim.moved = true;
 
-    // The core ends it, after a rename saved while its end was asked.
-    let answer;
-    vaultBackend.approval.end.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
-    const deleting = identityManager.deleteDerivedWallet(safe.index);
-    await new Promise((resolve) => setImmediate(resolve));
-    await identityManager.renameDerivedWallet(ownerIndexes[1], 'Renamed Stax');
-    answer({});
-    await deleting;
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'storage' });
+    expect(vaultBackend.sim.endedSafes).toEqual([safe.index]);
+    expect(getPending(safe.index)).not.toBeNull();
+    expect(safeApprovals.held('send', safe.index, '0xdead')).toBeNull();
+    expect(readVaultMeta().derivedWallets.map((w) => w.index)).toContain(safe.index);
+    // The Safe stays usable: its next step holds a new approval.
+    const renewed = { id: 'b'.repeat(32), page: null };
+    await safeApprovals.hold('send', safe.index, renewed, '0xdead');
+    expect(safeApprovals.held('send', safe.index, '0xdead')).toEqual(renewed);
+
+    vaultBackend.sim.forget = null;
+    await identityManager.deleteDerivedWallet(safe.index);
+    expect(vaultBackend.sim.endedSafes).toEqual([safe.index, safe.index]);
+    expect(vaultBackend.approval.end).not.toHaveBeenCalled();
+    expect(safeApprovals.held('send', safe.index, '0xdead')).toBeNull();
     expect(getPending(safe.index)).toBeNull();
-    const after = readVaultMeta().derivedWallets;
-    expect(after.map((w) => w.index)).not.toContain(safe.index);
-    expect(after.find((w) => w.index === ownerIndexes[1]).name).toBe('Renamed Stax');
+    expect(readVaultMeta().derivedWallets.map((w) => w.index)).not.toContain(safe.index);
   });
 
   // Review of #1245, round 2: a Safe's deletion takes the Safe's exclusion:
@@ -1441,15 +1621,14 @@ describe('identity-manager safe accounts', () => {
     const { setPending, getPending } = require('./wallet/safe/pending-store');
     const safeApprovals = require('./wallet/safe/safe-approvals');
     const { vaultBackend } = require('./core/vault-backend');
-    let answer;
-    Object.assign(vaultBackend, {
-      approval: { end: jest.fn(() => new Promise((resolve) => (answer = resolve))) },
-      coreProcess: () => ({ process: 'core' }),
-      coreProcessEnded: () => false,
-    });
     safeApprovals._reset({ retryDelays: [0, 0] });
     setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
-    await safeApprovals.hold('send', safe.index, { id: 'a'.repeat(32), page: null }, '0xdead');
+    const remove = vaultBackend.accounts.remove;
+    let answer;
+    vaultBackend.accounts.remove = jest.fn(async (...args) => {
+      await new Promise((resolve) => (answer = resolve));
+      return remove(...args);
+    });
 
     // An execution (or a signature) of the Safe's is running: refused, nothing deleted.
     safeApprovals.beginStep(safe.index);
@@ -1459,9 +1638,9 @@ describe('identity-manager safe accounts', () => {
     await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
     reservation.release();
     expect(getPending(safe.index)).not.toBeNull();
-    expect(vaultBackend.approval.end).not.toHaveBeenCalled();
+    expect(vaultBackend.accounts.remove).not.toHaveBeenCalled();
 
-    // Deleting (its approval's end awaited): no step, send or approval of the Safe starts.
+    // Deleting (the core's answer awaited): no step, send or approval of the Safe starts.
     const deleting = identityManager.deleteDerivedWallet(safe.index);
     await new Promise((resolve) => setImmediate(resolve));
     expect(() => safeApprovals.beginStep(safe.index)).toThrow(/being deleted/);
@@ -1469,7 +1648,7 @@ describe('identity-manager safe accounts', () => {
     await expect(safeApprovals.hold('message', safe.index, { id: 'b'.repeat(32), page: null }, '0xbeef')).rejects.toMatchObject({
       code: 'SAFE_BUSY',
     });
-    answer({});
+    answer();
     await deleting;
     expect(getPending(safe.index)).toBeNull();
     expect(readVaultMeta().derivedWallets.map((w) => w.index)).not.toContain(safe.index);
@@ -1483,18 +1662,9 @@ describe('identity-manager safe accounts', () => {
     const safe = await addSafe();
     const safeApprovals = require('./wallet/safe/safe-approvals');
     const { vaultBackend } = require('./core/vault-backend');
-    Object.assign(vaultBackend, {
-      approval: {
-        end: jest.fn(async () => {
-          throw Object.assign(new Error('Too many requests'), { code: 'busy' });
-        }),
-      },
-      coreProcess: () => ({ process: 'core' }),
-      coreProcessEnded: () => false,
-    });
     safeApprovals._reset({ retryDelays: [0, 0] });
-    await safeApprovals.hold('send', safe.index, { id: 'a'.repeat(32), page: null }, '0xdead');
-    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
+    vaultBackend.sim.moved = false;
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'requirement_unmet' });
     safeApprovals.beginStep(safe.index);
     safeApprovals.endStep(safe.index);
     safeApprovals.reserveSend(safe.index).release();

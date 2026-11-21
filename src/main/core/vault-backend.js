@@ -27,8 +27,16 @@ const log = require('../logger');
 const { getCoreClient } = require('./core-process');
 const { watchdogMs } = require('./core-deadlines');
 const { keyStoreMessage } = require('./key-store-messages');
+const { requiresStore } = require('./core-client');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
+// `vault-meta.json` is the core's (design 0013, PRF-6(a)): its requests,
+// and `vault.create`'s and `vault.import`'s, which write it with the vault,
+// go only to a core whose hello echoed `vault_meta`.
+const VAULT_META = requiresStore('vault_meta');
+// The mutations that write vault-meta.json with the vault, and so their
+// reconcile too.
+const META_OPS = new Set(['create', 'import']);
 // @scure/bip39 strengths (bits) and their word counts.
 const WORDS_BY_STRENGTH = { 128: 12, 160: 15, 192: 18, 224: 21, 256: 24 };
 
@@ -114,6 +122,32 @@ async function call(method, params = {}, page = null, { requires = null } = {}) 
 }
 
 /**
+ * A `vault-meta.json` request (`accounts.*`, design 0013, "`vault-meta.json`"),
+ * from main itself (`caller` null: `shell`) or relayed for the chrome
+ * (`'chrome'`). It goes with `requires: VAULT_META`, so a core that didn't
+ * take the store fails it `requirement_unmet` in main, unsent. A refusal is
+ * `invalid_argument` with the reference's message, and its `err.code` as
+ * `data.code` where it set one: that code becomes the error's, so callers
+ * keep branching on today's codes (`LEDGER_ACCOUNT_UNCHECKED`,
+ * `SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE`, …).
+ */
+async function accountsCall(method, params, caller = null) {
+  try {
+    return await call(method, params, caller, { requires: VAULT_META });
+  } catch (err) {
+    if (err.code === 'invalid_argument' && typeof err.data?.code === 'string') {
+      throw new VaultBackendError(err.data.code, err.message, err.data);
+    }
+    throw err;
+  }
+}
+
+/** `params` with `name` when one is given: absent means the core's default. */
+function named(params, name) {
+  return name === undefined ? params : { ...params, name };
+}
+
+/**
  * `sign.*`'s caller and `authorization` (freedom-core design 0012, API):
  * `{ token, handle? }`, or `{ token, intent: { id } }` for an
  * intent-replace, or `{ standing: { paused? } }` for a request a site's
@@ -167,15 +201,36 @@ function serialized(task) {
  */
 let pending = null;
 
+/** A mutation's `requires`: `VAULT_META` for a create or an import. */
+function requiresFor(op) {
+  return META_OPS.has(op) ? VAULT_META : null;
+}
+
+/**
+ * Whether the lost mutation committed: its committed result, or null. A
+ * create's or an import's carries `meta` (design 0013, "The vault and its
+ * metadata, one write"): `"written"`, or `"pending"` while the core's
+ * journal waits for its recovery to install the metadata. Main writes
+ * nothing for either.
+ */
 async function reconcile(record) {
-  const result = await call('vault.reconcile', {
-    op: record.op,
-    fingerprint_before: record.before,
-    password_b64: b64(record.password),
-    ...(record.mnemonic ? { mnemonic_b64: b64(record.mnemonic) } : {}),
-    install: record.install && locks === record.locksAtStart,
-  });
-  return result.status === 'committed' ? result : null;
+  const result = await call(
+    'vault.reconcile',
+    {
+      op: record.op,
+      fingerprint_before: record.before,
+      password_b64: b64(record.password),
+      ...(record.mnemonic ? { mnemonic_b64: b64(record.mnemonic) } : {}),
+      install: record.install && locks === record.locksAtStart,
+    },
+    null,
+    { requires: requiresFor(record.op) }
+  );
+  if (result.status !== 'committed') return null;
+  if (result.meta === 'pending') {
+    log.warn("[VaultBackend] A lost vault operation committed; the core's recovery installs its metadata");
+  }
+  return result;
 }
 
 /**
@@ -250,7 +305,7 @@ function mutate(method, params, record, precheck) {
     const status = await call('vault.status');
     const full = { ...record, before: status.fingerprint, locksAtStart: locks };
     try {
-      return await call(method, request);
+      return await call(method, request, null, { requires: requiresFor(record.op) });
     } catch (err) {
       // Error replies always mean "not committed"; only a missing reply needs
       // reconciliation.
@@ -306,9 +361,14 @@ const vaultBackend = {
   },
 
   /**
+   * The vault and its `vault-meta.json`, written by the core as one
+   * operation (design 0013, PRF-6(a)), and only on a core that took
+   * `vault_meta` (`requirement_unmet` on any other, nothing written).
    * @returns {{ mnemonic: string, addresses: { user_wallet, bee_wallet } }}
+   * @param {boolean} [userKnowsPassword] - the metadata's
+   *   `userKnowsPassword` (false for Quick Setup), required by the core
    * @param {Function} [onCommitted] - continuation if the reply was lost and
-   *   the core only came back later (e.g. writing vault-meta.json)
+   *   the core only came back later
    */
   async createVault(password, strength = 256, { userKnowsPassword = true, onCommitted } = {}) {
     let words;
@@ -331,11 +391,17 @@ const vaultBackend = {
   },
 
   /**
+   * The vault and its `vault-meta.json`, as `createVault` writes them.
+   * @param {boolean} [userKnowsPassword] - as `createVault`'s
    * @param {boolean} [quickUnlock] - Quick Setup (design 0013, "The re-wrap's
    *   two entries"): the core writes quick unlock's credential for the new
    *   vault before the vault commits, so the vault never exists without it
    */
-  async importVault(password, mnemonic, { overwrite = false, quickUnlock = false, onCommitted } = {}) {
+  async importVault(
+    password,
+    mnemonic,
+    { overwrite = false, quickUnlock = false, userKnowsPassword = true, onCommitted } = {}
+  ) {
     if (typeof mnemonic !== 'string' || !mnemonic.isWellFormed()) {
       throw new VaultBackendError('invalid_mnemonic', 'Invalid mnemonic');
     }
@@ -345,6 +411,7 @@ const vaultBackend = {
         password_b64: b64(password),
         mnemonic_b64: b64(mnemonic),
         overwrite,
+        user_knows_password: userKnowsPassword,
         ...(quickUnlock ? { quick_unlock: true } : {}),
       },
       { op: 'import', password, mnemonic, install: true, onCommitted }
@@ -458,6 +525,84 @@ const vaultBackend = {
   /** Removes the credential (both names); its key is forgotten after. */
   async quickUnlockDisable() {
     await call('quick_unlock.disable', {}, 'chrome');
+  },
+
+  /**
+   * `vault-meta.json`'s methods (design 0013, "`vault-meta.json`";
+   * cored 0.23.0), one per change identity-manager.js made to it before
+   * PRF-6(a). The core writes the file alone, in today's text; main reads it
+   * only for its synchronous lookups. `caller` is `'chrome'` for a request
+   * the chrome made over IPC and null (`shell`) for main's own; the device,
+   * phone and Safe methods are main's only. A write may answer `durable:
+   * false` (written, not yet flushed).
+   */
+  accounts: {
+    /** `getDerivedWallets()`: the list, its first-list default written once. */
+    async list(caller = null) {
+      return (await accountsCall('accounts.list', {}, caller)).wallets;
+    },
+    /** The whole file (`identity:get-vault-meta`), or null without one. */
+    async meta(caller = null) {
+      return (await accountsCall('accounts.meta', {}, caller)).meta;
+    },
+    /** `getActiveWalletIndex()`. */
+    async active(caller = null) {
+      return (await accountsCall('accounts.active', {}, caller)).index;
+    },
+    /** A mnemonic account at the core's next index, needing the vault unlocked: `{ index, name, address }`. */
+    async addMnemonic(name, caller = null) {
+      return (await accountsCall('accounts.add_mnemonic', named({}, name), caller)).wallet;
+    },
+    /** A Ledger record main read back from the device at `path`, `matched`. */
+    async addLedger({ name, address, path }) {
+      return (await accountsCall('accounts.add_ledger', named({ address, path }, name))).wallet;
+    },
+    /** A phone record whose account the phone proved, `matched`. */
+    async addRemote({ name, address }) {
+      return (await accountsCall('accounts.add_remote', named({ address }, name))).wallet;
+    },
+    /**
+     * What a device's answer showed about a `'ledger'` or `'remote'`
+     * record: its check state after it (a matched record stays matched),
+     * or null for no such record.
+     */
+    async recordAddressCheck(type, index, matched) {
+      return (await accountsCall('accounts.record_address_check', { type, index, matched }))
+        .address_check;
+    },
+    /** A Safe record over existing owners, under the reference's checks. */
+    async addSafe({ name, address, owners, threshold, saltNonce }) {
+      const params = named({ address, owners, threshold, salt_nonce: saltNonce }, name);
+      return (await accountsCall('accounts.add_safe', params)).wallet;
+    },
+    /** A Safe's verified deployment on `chainId`: `{ verified: true }`. */
+    async markSafeDeployed(index, chainId) {
+      await accountsCall('accounts.mark_safe_deployed', { index, chain_id: chainId });
+    },
+    async setActive(index, caller = null) {
+      await accountsCall('accounts.set_active', { index }, caller);
+    },
+    /** The name as given. */
+    async rename(index, name, caller = null) {
+      await accountsCall('accounts.rename', named({ index }, name), caller);
+    },
+    /**
+     * Removes an account, in one request: the refusals (the main wallet, a
+     * Safe's owner, and an account the Swarm feeds in `swarmReferences`
+     * still name, `[{ origin, … }]` as main's feed store found them); for a
+     * Safe, its open Safe approvals ended; the account's dApp grants
+     * forgotten (a forget that fails refuses the removal); then the
+     * record. The Swarm refusal gets back the references main passed
+     * (`err.references`), as before.
+     */
+    async remove(index, swarmReferences = [], caller = null) {
+      try {
+        await accountsCall('accounts.remove', { index, swarm_references: swarmReferences }, caller);
+      } catch (err) {
+        if (err.code === 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE') err.references = swarmReferences;
+        throw err;
+      }
+    },
   },
 
   /** Public data only; needs the vault unlocked. */

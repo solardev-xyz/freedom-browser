@@ -197,6 +197,15 @@ async function endSafe(safeIndex) {
   if (failed) throw failed.reason;
 }
 
+/**
+ * A Safe deleted through the identity core (`accounts.remove`, design 0013),
+ * which ended its approvals itself in the same request: both slots dropped
+ * here, without asking the core.
+ */
+function forgetSafe(safeIndex) {
+  for (const kind of KIND_SET) slots.delete(slotKey(kind, safeIndex));
+}
+
 // ---- The Safe's exclusion ----
 
 // The Safes with a live step (`beginStep`). In memory only: a main-process
@@ -307,6 +316,7 @@ module.exports = {
   release,
   forget,
   endSafe,
+  forgetSafe,
   beginStep,
   endStep,
   stepRunning,

@@ -954,8 +954,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       # freedom-core design 0013, "One writer per store: `store_moved`":
-      # before any set-A store moves (PRF-6(0)), the build's hello names
-      # none, and the pinned core echoes none, answers every store write
+      # the build's hello names vault_meta (PRF-6(a)), and the pinned core
+      # echoes it. With a hello naming none, the pinned core echoes none,
+      # answers every store write
       # `not_moved` with nothing in the profile changed, and opens neither
       # payment-history.sqlite nor rpc-api-keys.json; a hello naming all
       # five gets all five back; a store's request with `requires` fails
@@ -1159,6 +1160,24 @@ jobs:
         env:
           FREEDOM_CORED_KEYSTORE_TEST: '1'
           # On macOS the keychain legs must run, not skip.
+          FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
+
+      # freedom-core design 0013, PRF-6(a): vault-meta.json is the core's,
+      # and the build's hello names vault_meta. On the pinned core,
+      # identity-manager.js's store-touching cases (a create and an import
+      # writing the metadata with the vault, the unlock's migration, every
+      # account change and refusal through accounts.*, Quick Setup under
+      # the temporary keychain on macOS), with main writing none of the
+      # store's files; the reference (9d4ea6251) with a hello naming none,
+      # whose account writes answer not_moved and whose file no core request
+      # changes; this build on the previous release, where a create, an
+      # import and every account operation fail requirement_unmet; and the
+      # reference reading the core's file as the core answers it.
+      - name: vault-meta.json through the core
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/identity-manager.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
           FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
 
       - name: Quick Setup with a stubbed Touch ID E2E (macOS)

@@ -290,6 +290,22 @@ function phoneJobTx({ to, value, data, chainId, gasLimit, maxFeePerGas, maxPrior
  *   it was spent under (null when it gave none); or a Safe approval
  * @returns {Signer}
  */
+/**
+ * What a device's answer showed about its record, kept by the identity core
+ * (`accounts.record_address_check`) without holding up the signature: a
+ * failure is logged, and the next answer is kept again.
+ */
+function keepAddressCheck(record, walletIndex, matched) {
+  const warn = (err) => {
+    console.warn(`[Signers] Account ${walletIndex}'s address check was not kept:`, err?.message);
+  };
+  try {
+    Promise.resolve(record(walletIndex, matched)).catch(warn);
+  } catch (err) {
+    warn(err);
+  }
+}
+
 function getSigner(walletIndex, authorized = {}) {
   if (!isValidWalletIndex(walletIndex)) {
     throw new Error('Invalid wallet index');
@@ -328,8 +344,9 @@ function getSigner(walletIndex, authorized = {}) {
   if (record && record.type === WALLET_TYPES.LEDGER) {
     backend = createLedgerBackend(record, {
       // What the device said about a record no device has matched yet
-      // (#1065): kept on the record.
-      onAddressCheck: (matched) => recordLedgerAddressCheck(walletIndex, matched),
+      // (#1065): kept on the record by the identity core, without holding
+      // up the signature; a failure is logged.
+      onAddressCheck: (matched) => keepAddressCheck(recordLedgerAddressCheck, walletIndex, matched),
       ...(authorized?.beforeSign ? { beforeSign: authorized.beforeSign } : {}),
     });
     backendChecks = true;
@@ -337,7 +354,7 @@ function getSigner(walletIndex, authorized = {}) {
     backend = createRemoteBackend(record, {
       // What the phone's answer showed about the record (#1078): kept on
       // it, so a record added before the phone check gets checked.
-      onAddressCheck: (matched) => recordRemoteAddressCheck(walletIndex, matched),
+      onAddressCheck: (matched) => keepAddressCheck(recordRemoteAddressCheck, walletIndex, matched),
     });
     phoneJob = true;
   } else {
