@@ -7,6 +7,7 @@ const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { findOwnLiveAntd } = require('./ant-process-marker');
 const { resolveFreedomRoot } = require('./freedom-root');
+const { writeFileAtomicSync } = require('./lib/atomic-file');
 const { probeSocks5Endpoint } = require('./socks-probe');
 const {
   IPFS_GATEWAY_PROBE_PATH,
@@ -196,11 +197,20 @@ function getLegacyExternalCandidateChoice(profile, protocol) {
   return choice === 'external' || choice === 'managed' ? choice : null;
 }
 
-function saveLegacyDecision(profile, protocol, updates) {
+// The file replaced whole (lib/atomic-file.js, design 0013's set B): a crash
+// mid-save leaves the old answers or the new ones, never a torn file. Throws
+// as an in-place write did.
+function saveLegacyDecision(profile, protocol, updates, logger = console) {
   const decisions = readLegacyDecisions(profile);
   decisions[protocol] = updates[EXTERNAL_CANDIDATE_PROMPT_KEY];
   fs.mkdirSync(profile.userDataDir, { recursive: true });
-  fs.writeFileSync(getLegacyDecisionsPath(profile), JSON.stringify(decisions, null, 2), 'utf-8');
+  const { durable } = writeFileAtomicSync(
+    getLegacyDecisionsPath(profile),
+    JSON.stringify(decisions, null, 2)
+  );
+  if (!durable) {
+    logger.warn?.(`[profile] ${LEGACY_DECISIONS_FILE} saved, but not flushed (durable: false)`);
+  }
 }
 
 function shouldPromptForProtocol(profile, protocol) {
@@ -406,17 +416,17 @@ async function presentExternalCandidatesInWindow(profile, candidates, options = 
 
 async function promptForDefaultExternalCandidates(profile, options = {}) {
   if (!profile) return [];
+  const logger = options.logger || console;
   if (isLegacyProfile(profile)) {
     options = {
       ...options,
       updateNodeConfig: options.updateNodeConfig
-        || ((protocol, updates) => saveLegacyDecision(profile, protocol, updates)),
+        || ((protocol, updates) => saveLegacyDecision(profile, protocol, updates, logger)),
     };
   } else if (profile.source !== 'catalog') {
     return [];
   }
 
-  const logger = options.logger || console;
   const dialog = options.dialog || require('electron').dialog;
   const candidates = await detectDefaultExternalCandidates(profile, options);
   if (!candidates.length) return [];

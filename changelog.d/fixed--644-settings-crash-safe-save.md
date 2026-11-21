@@ -1,0 +1,2 @@
+- Settings survive a crash during save ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Settings, networks, custom tokens, site permissions and ad-block exceptions no longer reset to defaults after a crash mid-save
