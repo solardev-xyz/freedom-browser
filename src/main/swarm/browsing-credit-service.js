@@ -42,6 +42,7 @@ const fs = require('fs');
 const { ipcMain } = require('electron');
 const { getFreedomDataPath } = require('../freedom-root');
 const log = require('../logger');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 const IPC = require('../../shared/ipc-channels');
 const antStorageApi = require('./ant-storage-api');
 
@@ -272,10 +273,13 @@ function createSpendStore(filePath) {
     },
     set(chequebook, ledger) {
       load().chequebooks[chequebook] = ledger;
+      // Replaced whole (lib/atomic-file.js, design 0013's set B): a temp file
+      // of its own, synced before the rename, and the rename flushed.
       try {
-        const tmp = `${filePath}.tmp`;
-        fs.writeFileSync(tmp, JSON.stringify(data), 'utf-8');
-        fs.renameSync(tmp, filePath);
+        const { durable } = writeFileAtomicSync(filePath, JSON.stringify(data));
+        if (!durable) {
+          log.warn('[BrowsingCredit] spend history saved, but not flushed (durable: false)');
+        }
       } catch (err) {
         log.warn(`[BrowsingCredit] could not save spend history: ${err.message}`);
       }

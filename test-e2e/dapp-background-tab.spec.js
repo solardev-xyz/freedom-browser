@@ -14,6 +14,7 @@ const { _electron: electron } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
@@ -42,7 +43,7 @@ const test = base.extend({
     fs.mkdirSync(userDataDir, { recursive: true });
     fs.mkdirSync(identityDir, { recursive: true });
     fs.writeFileSync(
-      path.join(userDataDir, 'settings.json'),
+      freedomPath(userDataDir, 'settings.json'),
       JSON.stringify({
         enableIdentityWallet: true,
         startAntAtLaunch: false,

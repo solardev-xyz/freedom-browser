@@ -37,6 +37,7 @@ const { _electron: electron } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { approvalsPage, approvalsState, chromeWindowId, decideInPanel, panelArmed } = require('./approvals-fixtures');
@@ -90,7 +91,7 @@ const test = base.extend({
     fs.mkdirSync(userDataDir, { recursive: true });
     fs.mkdirSync(identityDir, { recursive: true });
     fs.writeFileSync(
-      path.join(userDataDir, 'settings.json'),
+      freedomPath(userDataDir, 'settings.json'),
       JSON.stringify({
         enableIdentityWallet: true,
         startAntAtLaunch: false,
@@ -112,7 +113,7 @@ const test = base.extend({
       'utf-8'
     );
     fs.writeFileSync(
-      path.join(userDataDir, 'network-config.json'),
+      freedomPath(userDataDir, 'network-config.json'),
       JSON.stringify({
         endpointSources: {
           'e2e-fees-a': { role: 'rpc', keyed: false, coverage: { 100: fees.urls[0] } },

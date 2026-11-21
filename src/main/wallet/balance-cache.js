@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const { getFreedomDataPath } = require('../freedom-root');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 
 // The cache file, under the profile's Freedom root: resolved at first use,
 // once main has settled the profile's layout.
@@ -56,11 +57,13 @@ function loadCache() {
 }
 
 /**
- * Save cache to disk
+ * Save cache to disk, the file replaced whole (lib/atomic-file.js, design
+ * 0013's set B): a crash mid-save leaves the old file or the new one.
  */
 function saveCache() {
   try {
-    fs.writeFileSync(cacheFile(), JSON.stringify(cache, null, 2));
+    const { durable } = writeFileAtomicSync(cacheFile(), JSON.stringify(cache, null, 2));
+    if (!durable) console.warn('[BalanceCache] Cache saved, but not flushed (durable: false)');
   } catch (err) {
     console.error('[BalanceCache] Failed to save cache:', err.message);
   }

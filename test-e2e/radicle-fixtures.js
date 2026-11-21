@@ -18,6 +18,7 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { closeApp } = require('./close-app');
 const { chromeWindow } = require('./chrome-window');
 
@@ -152,7 +153,7 @@ const test = base.extend({
 
     // Radicle on, auto-start on, wallet features off.
     fs.writeFileSync(
-      path.join(userDataDir, 'settings.json'),
+      freedomPath(userDataDir, 'settings.json'),
       JSON.stringify({ startRadicleAtLaunch: true })
     );
 

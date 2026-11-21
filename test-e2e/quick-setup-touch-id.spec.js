@@ -19,6 +19,7 @@ const { test: base, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { closeApp } = require('./close-app');
 const { chromeStarted } = require('./chrome-window');
 
@@ -53,7 +54,7 @@ const test = base.extend({
     fs.mkdirSync(dirs.userData);
     fs.mkdirSync(dirs.identity, { mode: 0o700 });
     fs.mkdirSync(dirs.radicle, { mode: 0o700 });
-    fs.writeFileSync(path.join(dirs.userData, 'settings.json'), JSON.stringify(SETTINGS), 'utf-8');
+    fs.writeFileSync(freedomPath(dirs.userData, 'settings.json'), JSON.stringify(SETTINGS), 'utf-8');
     await use(dirs);
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   },

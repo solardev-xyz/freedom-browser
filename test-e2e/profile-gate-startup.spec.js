@@ -22,6 +22,7 @@ const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { freedomPath } = require('../test/helpers/freedom-path');
 
 const repoRoot = path.resolve(__dirname, '..');
 const realCored = path.join(
@@ -183,7 +184,8 @@ test.describe('profile gate: startup order', () => {
   let dir;
   let userDataDir;
   let standIn;
-  let settingsPath;
+  // Resolved at each read: the first start may move the profile (PRF-9).
+  const settingsPath = () => freedomPath(userDataDir, 'settings.json');
   let settingsBytes;
   let app;
 
@@ -192,9 +194,8 @@ test.describe('profile gate: startup order', () => {
     userDataDir = path.join(dir, 'user-data');
     fs.mkdirSync(userDataDir);
     standIn = writeStandIn(dir);
-    settingsPath = path.join(userDataDir, 'settings.json');
     settingsBytes = JSON.stringify(SETTINGS, null, 2);
-    fs.writeFileSync(settingsPath, settingsBytes);
+    fs.writeFileSync(settingsPath(), settingsBytes);
     app = null;
   });
 
@@ -217,7 +218,7 @@ test.describe('profile gate: startup order', () => {
   }
 
   function expectUntouched(request) {
-    expect(fs.readFileSync(settingsPath, 'utf8'), 'settings.json before `locked`').toBe(
+    expect(fs.readFileSync(settingsPath(), 'utf8'), 'settings.json before `locked`').toBe(
       settingsBytes
     );
     expect(fs.existsSync(request.own), "the focus request's own file").toBe(true);
@@ -251,11 +252,11 @@ test.describe('profile gate: startup order', () => {
     expect(fs.existsSync(request.own)).toBe(false);
     expect(fs.existsSync(request.shared)).toBe(false);
     await waitFor(
-      () => !fs.readFileSync(settingsPath, 'utf8').includes('antNodeMode'),
+      () => !fs.readFileSync(settingsPath(), 'utf8').includes('antNodeMode'),
       60_000,
       'the migrated settings to be written back'
     );
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const settings = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
     expect(settings).toMatchObject({ theme: 'dark', startAntAtLaunch: false });
     expect(settings).not.toHaveProperty('startBeeAtLaunch');
   });

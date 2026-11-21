@@ -22,7 +22,7 @@
 // plus the manual item in release-process.md §6.
 
 const fs = require('fs');
-const path = require('path');
+const { freedomPath } = require('../../test/helpers/freedom-path');
 
 const { test, expect, browserWindow } = require('../fixtures');
 const {
@@ -155,7 +155,7 @@ test('Allow with remember survives a full quit and relaunch', async ({
 
   // The decision has to reach disk before the process goes away, or the
   // relaunch below would only be re-reading a race.
-  const permissionsFile = path.join(userDataDir, 'permissions.json');
+  const permissionsFile = freedomPath(userDataDir, 'permissions.json');
   await expect
     .poll(
       () => {
