@@ -39,7 +39,12 @@
  * exclusion and end its approvals without loading the Safe stack.
  */
 
-const { codedError, SAFE_APPROVAL_END_FAILED, SAFE_BUSY, SAFE_PENDING_EXISTS } = require('./errors');
+const {
+  codedError,
+  SAFE_APPROVAL_END_FAILED,
+  SAFE_BUSY,
+  SAFE_PENDING_EXISTS,
+} = require('./errors');
 
 // `${kind}:${safeIndex}` -> { id, page, subject, core, ending }: `core` the
 // core process when main held it (`vaultBackend.coreProcess()`), `ending`
@@ -82,7 +87,8 @@ async function endInCore(approval) {
   const vaultBackend = backend();
   let failure = null;
   for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
-    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt - 1]));
+    if (attempt > 0)
+      await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt - 1]));
     try {
       await vaultBackend.approval.end(approval.id, approval.page || null);
       return;
@@ -105,7 +111,8 @@ function isApproval(approval) {
     Boolean(approval) &&
     typeof approval.id === 'string' &&
     ID.test(approval.id) &&
-    (approval.page === null || (typeof approval.page === 'object' && typeof approval.page.origin === 'string'))
+    (approval.page === null ||
+      (typeof approval.page === 'object' && typeof approval.page.origin === 'string'))
   );
 }
 
@@ -118,7 +125,8 @@ function isApproval(approval) {
  */
 async function hold(kind, safeIndex, approval, subject) {
   if (!isApproval(approval)) throw new Error('Not a Safe approval');
-  if (typeof subject !== 'string' || !subject) throw new Error('A Safe approval is held for its SafeTx or SafeMessage');
+  if (typeof subject !== 'string' || !subject)
+    throw new Error('A Safe approval is held for its SafeTx or SafeMessage');
   const key = slotKey(kind, safeIndex);
   // None for a Safe being deleted, or deleted while this waited.
   if (deleting.has(safeIndex)) throw deletionUnderWay();
@@ -126,10 +134,17 @@ async function hold(kind, safeIndex, approval, subject) {
   for (let older = slots.get(key); older && older.id !== approval.id; older = slots.get(key)) {
     await end(kind, safeIndex);
   }
-  if (deleting.has(safeIndex) || (deletions.get(safeIndex) ?? 0) !== deletion) throw deletionUnderWay();
+  if (deleting.has(safeIndex) || (deletions.get(safeIndex) ?? 0) !== deletion)
+    throw deletionUnderWay();
   // The process that answers now gave it, or one after that one: its end
   // proves the approval gone, and nothing earlier's would.
-  slots.set(key, { id: approval.id, page: approval.page ?? null, subject, core: backend().coreProcess(), ending: null });
+  slots.set(key, {
+    id: approval.id,
+    page: approval.page ?? null,
+    subject,
+    core: backend().coreProcess(),
+    ending: null,
+  });
 }
 
 /**
@@ -230,7 +245,8 @@ function deletionUnderWay() {
  */
 function beginStep(safeIndex) {
   if (deleting.has(safeIndex)) throw deletionUnderWay();
-  if (steps.has(safeIndex)) throw codedError('Another step of this transaction is still running', SAFE_BUSY);
+  if (steps.has(safeIndex))
+    throw codedError('Another step of this transaction is still running', SAFE_BUSY);
   steps.add(safeIndex);
 }
 

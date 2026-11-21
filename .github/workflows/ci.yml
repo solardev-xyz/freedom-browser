@@ -954,9 +954,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       # freedom-core design 0013, "One writer per store: `store_moved`":
-      # the build's hello names vault_meta (PRF-6(a)), and the pinned core
-      # echoes it. With a hello naming none, the pinned core echoes none,
-      # answers every store write
+      # the build's hello names vault_meta (PRF-6(a)) and intents (PRF-6(b2)),
+      # and the pinned core echoes them. With a hello naming none, the pinned
+      # core echoes none, answers every store write
       # `not_moved` with nothing in the profile changed, and opens neither
       # payment-history.sqlite nor rpc-api-keys.json; a hello naming all
       # five gets all five back; a store's request with `requires` fails
@@ -966,6 +966,23 @@ jobs:
       - name: Store handover (real freedom-cored, pinned and previous)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/core/store-handover.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
+      # freedom-core design 0013, "The intent journal" (PRF-6(b2)): this
+      # build names `intents`, so the core is wallet-intents.jsonl's one
+      # writer. Main's intent store, nonce reservations and send path
+      # against the pinned core (commit and handoff before the broadcast,
+      # main's run on every line, the held nonces flooring the next send,
+      # the INTENT_* codes, a core restart making held intents recovered),
+      # with no write of the file by main; the reference store with the
+      # hello before this step (every write `not_moved`, the file
+      # unchanged, reads served); the previous release, where every
+      # intents.* request fails `requirement_unmet` and a send signs and
+      # broadcasts nothing; and the reference reading the core's file.
+      - name: The intent journal through the core (real freedom-cored, pinned and previous)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/wallet/intent-store.integration.test.js
         env:
           FREEDOM_CORED_STORES_TEST: '1'
 

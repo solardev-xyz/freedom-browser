@@ -51,6 +51,7 @@ jest.mock('./intent-store', () => ({
 const { readLabel, LABELS } = require('./intent-labels');
 const { createIntentTracker } = require('./intent-tracker');
 const { createIntentStore } = require('./intent-store');
+const { simulatedIntents } = require('../../../test/helpers/simulated-intents-core');
 
 const binary = process.env.FREEDOM_CORED_PATH;
 // A real core reads on real timers.
@@ -326,7 +327,9 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
 
   test('false-paid-key-retry: the intent stays held and keyed, so its retry resends nonce 7, never signs 8', async () => {
     const { raw, hash } = await signed();
-    mockStore = createIntentStore({ filePath: path.join(root, 'intents.jsonl') });
+    mockStore = createIntentStore({
+      backend: simulatedIntents({ filePath: path.join(root, 'intents.jsonl') }).intents,
+    });
     await mockStore.load();
     const key = 'review-payment-operation';
     const original = await mockStore.commit({

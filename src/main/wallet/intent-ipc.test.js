@@ -63,11 +63,14 @@ jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'read
 // wallet's kinds are minted through it, and each signer presents its
 // confirmation to it as it signs.
 const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+// The core's intent journal (PRF-6(b2)), simulated on the reference store
+// over this run's userData: a fresh one for each fresh run of main.
 jest.mock('../core/vault-backend', () => ({
   vaultBackend: {
     get approval() {
       return mockApprovals.approval;
     },
+    intents: require('../../../test/helpers/simulated-intents-core').simulatedIntents().intents,
   },
 }));
 jest.mock('./signers', () => ({

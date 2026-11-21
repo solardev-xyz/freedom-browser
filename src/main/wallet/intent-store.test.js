@@ -7,7 +7,8 @@ const {
   loadMainModule,
   removeTempUserDataDir,
 } = require('../../../test/helpers/main-process-test-utils');
-const { encodeLine, readJournal } = require('../lib/durable-journal');
+const { encodeLine, readJournal } = require('../../../test/helpers/reference-durable-journal');
+const { mockVaultBackend } = require('../../../test/helpers/simulated-intents-core');
 
 // Deterministic test keys (not real wallets)
 const ALICE = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
@@ -29,22 +30,32 @@ afterEach(() => {
 
 const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
-// A fresh module, as after a restart of main: a new run, the same userData.
+// The adapter's store over the identity core's intent journal, simulated on
+// the reference store (PRF-6(b2); test/helpers/simulated-intents-core.js),
+// which writes wallet-intents.jsonl in the format these tests pin. Each
+// store's sim, for what only the reference keeps (`quarantined`).
+const sims = new WeakMap();
+const quarantinedOf = (store) => sims.get(store).store().quarantined;
+const referenceOf = (store) => sims.get(store).reference();
+
+// A fresh module, as after a restart of main (and so of its core): a new
+// run, the same userData. `limits` are the core's.
 function start({ limits, extraMocks = {} } = {}) {
   const { mod } = loadMainModule(require.resolve('./intent-store'), {
     userDataDir,
     extraMocks: {
       [require.resolve('../logger')]: () => logger,
       'better-sqlite3': () => FakeBetterSqlite3PaymentsDatabase,
+      [require.resolve('../core/vault-backend')]: () => mockVaultBackend({ limits }),
       ...extraMocks,
     },
   });
-  const store = limits
-    ? mod.createIntentStore({ filePath: path.join(userDataDir, mod.FILE_NAME), limits })
-    : mod.getIntentStore();
+  const store = mod.getIntentStore();
+  const sim = require('../core/vault-backend').simulatedIntents;
+  sims.set(store, sim);
   // The same module registry as the store's, so the lock tokens agree.
   const reservations = require('./nonce-reservations');
-  return { mod, store, reservations };
+  return { mod, store, reservations, sim };
 }
 
 async function started(options) {
@@ -644,7 +655,7 @@ describe('settle and void', () => {
 describe('loading', () => {
   test('a missing file behaves as a restore: nothing held, nothing to send again', async () => {
     const { store, reservations } = await started();
-    expect(store.quarantined).toBeNull();
+    expect(quarantinedOf(store)).toBeNull();
     expect(await store.held()).toEqual([]);
     expect(await store.list()).toEqual([]);
     expect(await store.byKey('safe-deploy:100:0xabc')).toBeNull();
@@ -668,7 +679,7 @@ describe('loading', () => {
     fs.writeFileSync(filePath(), damaged);
 
     const { store } = await started();
-    const quarantined = store.quarantined;
+    const quarantined = quarantinedOf(store);
     expect(quarantined).toEqual({
       path: expect.stringMatching(/wallet-intents\.jsonl\.corrupt-\d+$/),
       at: expect.any(Number),
@@ -703,7 +714,7 @@ describe('loading', () => {
     );
 
     const { store } = await started();
-    expect(store.quarantined.reason).toContain('must keep its chain, sender and nonce');
+    expect(quarantinedOf(store).reason).toContain('must keep its chain, sender and nonce');
     expect(await store.get(intent.intentId)).toBeNull();
   });
 
@@ -718,7 +729,7 @@ describe('loading', () => {
     );
 
     const { store } = await started();
-    expect(store.quarantined.reason).toContain('not all of it happened in this run of main');
+    expect(quarantinedOf(store).reason).toContain('not all of it happened in this run of main');
     expect(await store.held()).toEqual([]);
   });
 
@@ -728,15 +739,17 @@ describe('loading', () => {
     fs.appendFileSync(filePath(), '{"v":1,"sha256":"00');
 
     const { store } = await started();
-    expect(store.quarantined).toBeNull();
+    expect(quarantinedOf(store)).toBeNull();
     expect(await store.get(intent.intentId)).toMatchObject({ state: 'held' });
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('unfinished last line'));
     expect((await readJournal(filePath())).tornTail).toBe(0);
   });
 
-  test('reads wait for the load; writes start it', async () => {
+  // The core loads the store at its first request, a read's too
+  // (design 0013, "The intent journal"): nothing waits on main's `load()`.
+  test('a read before the load loads the records, and so does a write', async () => {
     const { store } = start();
-    await expect(store.held()).rejects.toMatchObject({ code: 'INTENT_STORE_UNAVAILABLE' });
+    await expect(store.held()).resolves.toEqual([]);
     const intent = await commitNew(store, { nonce: 0 });
     expect(await store.get(intent.intentId)).toMatchObject({ state: 'held' });
   });
@@ -777,7 +790,9 @@ describe('bounds', () => {
     });
     // Other accounts are not affected, and a settled intent makes room.
     await expect(commitNew(store, { nonce: 0, signer: BOB })).resolves.toBeTruthy();
-    const oldest = (await store.held()).find((intent) => intent.sender === ALICE.address.toLowerCase());
+    const oldest = (await store.held()).find(
+      (intent) => intent.sender === ALICE.address.toLowerCase()
+    );
     await store.settle({ intentId: oldest.intentId, label: 'paid', hash: oldest.hash, block: 9 });
     await expect(commitNew(store, { nonce: 32 })).resolves.toMatchObject({ nonce: 32 });
   });
@@ -877,7 +892,7 @@ describe('review fixes (#702)', () => {
       for (let restart = 0; restart < 3; restart += 1) {
         running = await started();
         await running.store.compact();
-        expect(running.store.quarantined).toBeNull();
+        expect(quarantinedOf(running.store)).toBeNull();
         expect(await running.store.get(intent.intentId)).toMatchObject({ state: closed, raw: null });
         // The reviewer's probe: the same id as a new original at another
         // nonce. The store names originals, so no caller can.
@@ -930,7 +945,7 @@ describe('review fixes (#702)', () => {
       expect(fs.readFileSync(filePath())).toEqual(before);
 
       const { store } = await started();
-      expect(store.quarantined).toBeNull();
+      expect(quarantinedOf(store)).toBeNull();
       expect((await store.held()).map((intent) => intent.intentId)).toEqual([b.intentId]);
     });
 
@@ -950,7 +965,7 @@ describe('review fixes (#702)', () => {
         'settle',
       ]);
       const { store } = await started();
-      expect(store.quarantined).toBeNull();
+      expect(quarantinedOf(store)).toBeNull();
     });
   });
 
@@ -977,7 +992,7 @@ describe('review fixes (#702)', () => {
         fs.writeFileSync(filePath(), bytes.subarray(0, bytes.length - 1));
 
         const { store } = await started();
-        expect(store.quarantined).toBeNull();
+        expect(quarantinedOf(store)).toBeNull();
         expect(await store.get(intent.intentId)).toMatchObject({
           state: kind === 'void' ? 'voided' : 'settled',
           raw: null,
@@ -1001,7 +1016,7 @@ describe('review fixes (#702)', () => {
       }
 
       const { store } = await started({ limits });
-      expect(store.quarantined).toBeNull();
+      expect(quarantinedOf(store)).toBeNull();
       expect(await store.get(intent.intentId)).toMatchObject({ state: 'held', handoffCount: 64 });
     });
 
@@ -1080,7 +1095,7 @@ describe('review fixes (#702)', () => {
             await voidUnderLock(running, intent);
           } else {
             running = await started({ limits });
-            expect(running.store.quarantined).toBeNull();
+            expect(quarantinedOf(running.store)).toBeNull();
             open.clear();
           }
         } catch (error) {
@@ -1095,12 +1110,13 @@ describe('review fixes (#702)', () => {
       }
       expect(refused).toBeGreaterThan(0);
       const { store } = await started({ limits });
-      expect(store.quarantined).toBeNull();
+      expect(quarantinedOf(store)).toBeNull();
     }, 60000);
 
     test('the arithmetic: the reader cap is above anything the store can write', () => {
-      const { mod } = start();
-      const { LIMITS, LINE_MAX } = mod;
+      const { mod, store } = start();
+      const { LIMITS } = mod;
+      const { LINE_MAX } = referenceOf(store);
       // The file never exceeds journalBytes (`budget` in intent-store.js).
       // Even a file written under other bounds, at journalBytes, can only
       // grow by the lines still owed to it before its first compaction.
@@ -1175,7 +1191,7 @@ describe('review fixes (#702)', () => {
       fs.writeFileSync(filePath(), encodeLine({ ...commit, sender: BOB.address.toLowerCase() }));
 
       const { store } = await started();
-      expect(store.quarantined.reason).toContain('not signed by its sender');
+      expect(quarantinedOf(store).reason).toContain('not signed by its sender');
       expect(await store.held()).toEqual([]);
     });
 
@@ -1188,7 +1204,7 @@ describe('review fixes (#702)', () => {
       fs.writeFileSync(filePath(), encodeLine({ ...held, sender: BOB.address.toLowerCase() }));
 
       const { store } = await started();
-      expect(store.quarantined.reason).toContain('not signed by its sender');
+      expect(quarantinedOf(store).reason).toContain('not signed by its sender');
     });
   });
 
@@ -1211,7 +1227,7 @@ describe('review fixes (#702)', () => {
       );
 
       const { store } = await started();
-      expect(store.quarantined.reason).toContain("not above the account's held nonce 7");
+      expect(quarantinedOf(store).reason).toContain("not above the account's held nonce 7");
       expect(await store.held()).toEqual([]);
     });
 
@@ -1232,7 +1248,7 @@ describe('review fixes (#702)', () => {
       );
 
       const { store } = await started();
-      expect(store.quarantined.reason).toContain('same key');
+      expect(quarantinedOf(store).reason).toContain('same key');
     });
 
     test.each(['void', 'settle'])(
@@ -1261,7 +1277,7 @@ describe('review fixes (#702)', () => {
         // The whole history, then its compacted form.
         for (let restart = 0; restart < 2; restart += 1) {
           const { store } = await started();
-          expect(store.quarantined).toBeNull();
+          expect(quarantinedOf(store)).toBeNull();
           expect(await store.heldNonces(CHAIN, ALICE.address)).toEqual([7]);
           expect((await store.get(c.intentId)).state).toBe('held');
           expect((await store.get(a.intentId)).state).toBe(kind === 'void' ? 'voided' : 'settled');
@@ -1375,7 +1391,7 @@ describe('review fixes (#702)', () => {
       });
 
       const { store } = await started();
-      expect(store.quarantined).toBeNull();
+      expect(quarantinedOf(store)).toBeNull();
       expect(await store.get(intent.intentId)).toMatchObject({ handoffCount: 1, possiblySent: false });
     });
 
@@ -1389,7 +1405,7 @@ describe('review fixes (#702)', () => {
       expect((await records()).map((record) => record.type)).toEqual(['held', 'void']);
 
       const { store } = await started();
-      expect(store.quarantined).toBeNull();
+      expect(quarantinedOf(store)).toBeNull();
       expect((await store.get(intent.intentId)).state).toBe('voided');
     });
   });
@@ -1545,7 +1561,7 @@ describe('review fixes (#702, round 2)', () => {
       expect((await records()).map((record) => record.type)).toEqual(['held', 'void']);
 
       const { store } = await started();
-      expect(store.quarantined).toBeNull();
+      expect(quarantinedOf(store)).toBeNull();
       expect((await store.get(intent.intentId)).state).toBe('voided');
     });
 
@@ -1595,7 +1611,7 @@ describe('review fixes (#702, round 2)', () => {
     });
 
     test('genuine slack still takes extra open handoffs, and only that', async () => {
-      const { LINE_MAX } = start().mod;
+      const { LINE_MAX } = referenceOf(start().store);
       const pair = LINE_MAX.handoff + LINE_MAX.outcome;
       // Room for two more open handoffs than the two intents' pairs.
       const cap = (await twoIntentBudget()) + 2 * pair;
@@ -1664,7 +1680,7 @@ describe('settling against the hashes that were read', () => {
   test('commit-during-queued-settle: a replacement still being written keeps the intent held', async () => {
     const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
     const { createIntentTracker } = require('./intent-tracker');
-    const journalModule = jest.requireActual('../lib/durable-journal');
+    const journalModule = jest.requireActual('../../../test/helpers/reference-durable-journal');
     let release;
     let reached;
     const paused = new Promise((resolve) => {
@@ -1675,7 +1691,7 @@ describe('settling against the hashes that were read', () => {
     });
     const { store } = await started({
       extraMocks: {
-        [require.resolve('../lib/durable-journal')]: () => ({
+        [require.resolve('../../../test/helpers/reference-durable-journal')]: () => ({
           ...journalModule,
           createJournal: (...args) => {
             const journal = journalModule.createJournal(...args);
@@ -1805,6 +1821,11 @@ test("voiding a chain's last held intent releases its verified headers, at once 
     store.void(last.intentId, lock)
   );
   expect(await store.held()).toHaveLength(0);
+  // The tracker hears of the void at once (its change listener reads the
+  // core), not at its next pass.
+  for (let i = 0; i < 100 && tracker.verifiedHeaderCount(CHAIN) !== 0; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   expect(tracker.verifiedHeaderCount(CHAIN)).toBe(0);
 
   await tracker.pass();
@@ -1868,7 +1889,7 @@ describe('state history (#94)', () => {
     });
 
     test("a held intent's budget has room for its widest tracked state", async () => {
-      const { store, mod } = await started();
+      const { store } = await started();
       const intent = await commitNew(store, { nonce: 7 });
       const { budget } = await store.usage();
       const widest = Number.MAX_SAFE_INTEGER;
@@ -1881,7 +1902,7 @@ describe('state history (#94)', () => {
       expect((await store.usage()).budget).toBe(budget);
       // The file is the intent's snapshot alone, within what its budget
       // keeps for it beside its owed lines.
-      const { terminal, handoff, outcome } = mod.LINE_MAX;
+      const { terminal, handoff, outcome } = referenceOf(store).LINE_MAX;
       expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(
         budget - terminal - handoff - outcome
       );
@@ -1912,7 +1933,7 @@ describe('state history (#94)', () => {
         encodeLine({ type: 'track', run: RUN_ID, at: 5, intent_id: intent.intentId, bracket: null })
       );
       const { store } = await started();
-      expect(store.quarantined).toMatchObject({ reason: expect.stringContaining('is settled') });
+      expect(quarantinedOf(store)).toMatchObject({ reason: expect.stringContaining('is settled') });
     });
 
     test('never past the journal bound: compacted to make room, else refused, and the intent can still be sent', async () => {
@@ -1938,7 +1959,7 @@ describe('state history (#94)', () => {
       await expect(store.handoff(intent.intentId)).resolves.toMatchObject({ hash: intent.hash });
       expect(fs.statSync(filePath()).size).toBeLessThanOrEqual(limits.journalBytes);
       const reloaded = await started({ limits });
-      expect(reloaded.store.quarantined).toBeNull();
+      expect(quarantinedOf(reloaded.store)).toBeNull();
       expect((await reloaded.store.get(intent.intentId)).bracket.number).toBe(1039);
     });
   });
@@ -1981,7 +2002,7 @@ describe('state history (#94)', () => {
 
       for (let restart = 0; restart < 3; restart += 1) {
         running = await started();
-        expect(running.store.quarantined).toBeNull();
+        expect(quarantinedOf(running.store)).toBeNull();
         expect(await running.store.get(intent.intentId)).toMatchObject({
           state: 'retired',
           raw: null,
@@ -2065,7 +2086,7 @@ describe('state history (#94)', () => {
       for (const length of [...lengths, line.length - 1, line.length]) {
         fs.writeFileSync(filePath(), Buffer.concat([before, line.subarray(0, length)]));
         const { store } = await started();
-        expect(store.quarantined).toBeNull();
+        expect(quarantinedOf(store)).toBeNull();
         const state = await store.get(intent.intentId);
         if (length >= line.length - 1) {
           expect(state).toMatchObject({ state: 'retired', hashes: [{ hash: intent.hash }] });
@@ -2124,7 +2145,7 @@ describe('state history (#94)', () => {
           })
         );
         const { store } = await started();
-        expect(store.quarantined).not.toBeNull();
+        expect(quarantinedOf(store)).not.toBeNull();
       }
     });
   });
@@ -2165,5 +2186,142 @@ describe('withdrawOrigin', () => {
       context: { origin: null, key: 'safe-exec:100:0xabc' },
     });
     expect((await reloaded.byKey('safe-exec:100:0xabc')).intentId).toBe(intent.intentId);
+  });
+});
+
+// PRF-6(b2): this module is main's adapter to the identity core's
+// `intents.*` (freedom-core design 0013, "The intent journal"), here the
+// simulated core, which checks each request's members as the core does.
+describe('through the identity core', () => {
+  const methods = (sim) => sim.calls.map(([method]) => method);
+
+  test("every line carries main's run, and a lifecycle's members are the wire's", async () => {
+    const { mod, store, sim } = await started();
+    const intent = await commitNew(store, { nonce: 7, key: 'k' });
+    const handoff = await store.handoff(intent.intentId);
+    await store.outcome({
+      intentId: intent.intentId,
+      handoffId: handoff.handoffId,
+      outcome: 'sent',
+      source: 42, // not a text: kept as null, never a refusal
+      reasonClass: undefined,
+    });
+    expect((await store.get(intent.intentId)).handoffs[0].outcome).toMatchObject({
+      outcome: 'sent',
+      source: null,
+    });
+    await store.track({ intentId: intent.intentId, bracket: null, unreadSince: 5 });
+    await store.settle({ intentId: intent.intentId, label: 'paid', hash: intent.hash, block: 9 });
+    expect(sim.foreignRuns).toEqual([]);
+    expect((await records()).map((record) => record.run)).toEqual(Array(5).fill(mod.RUN_ID));
+    const [, commit] = sim.calls.find(([method]) => method === 'intents.commit');
+    expect(commit).toEqual({
+      run: mod.RUN_ID,
+      chain_id: CHAIN,
+      sender: ALICE.address,
+      nonce: 7,
+      hash: intent.hash,
+      raw: intent.raw,
+      via: 'original',
+      context: { kind: 'wallet-send', origin: null, key: 'k', wallet_index: 0 },
+    });
+    const [, outcome] = sim.calls.find(([method]) => method === 'intents.outcome');
+    expect(outcome).toMatchObject({ source: null, reason_class: null });
+  });
+
+  test('listeners hear each write but the tracker’s, and a withdrawal only when it withdrew', async () => {
+    const { store, reservations } = await started();
+    const heard = [];
+    store.onChange((id) => heard.push(id));
+    const intent = await commitNew(store, { nonce: 7, origin: 'https://site.example' });
+    await store.track({ intentId: intent.intentId, bracket: null, unreadSince: 1 });
+    expect(await store.withdrawOrigin(intent.intentId)).toBe(false); // no site
+    const handoff = await store.handoff(intent.intentId);
+    await store.outcome({
+      intentId: intent.intentId,
+      handoffId: handoff.handoffId,
+      outcome: 'not_sent',
+    });
+    await underLock(reservations, intent, (lock) => store.void(intent.intentId, lock));
+    expect(heard).toEqual(Array(4).fill(intent.intentId));
+  });
+
+  test("void and retire go only under main's lock for the intent's account, as lock: true", async () => {
+    const { store, reservations, sim } = await started();
+    const intent = await commitNew(store, { nonce: 7 });
+    const before = sim.calls.length;
+    await expect(store.void(intent.intentId, null)).rejects.toMatchObject({
+      code: 'INTENT_LOCK_REQUIRED',
+    });
+    // Another account's lock is not this one's.
+    await reservations.withAccountLock({ chainId: CHAIN, sender: BOB.address }, async (lock) => {
+      await expect(store.void(intent.intentId, lock)).rejects.toMatchObject({
+        code: 'INTENT_LOCK_REQUIRED',
+      });
+      await expect(
+        store.retire({ intentId: intent.intentId, block: 9, hashes: [intent.hash] }, lock)
+      ).rejects.toMatchObject({ code: 'INTENT_LOCK_REQUIRED' });
+    });
+    await expect(
+      store.retire({ intentId: intent.intentId, block: 9, hashes: [] }, null)
+    ).rejects.toMatchObject({
+      code: 'INTENT_INVALID',
+    });
+    // Only reads went out: nothing reached the core's writes.
+    expect(
+      methods(sim)
+        .slice(before)
+        .every((m) => m === 'intents.get')
+    ).toBe(true);
+    // An unknown intent goes without the lock; the core refuses it first.
+    await expect(store.void('00000000-0000-4000-8000-000000000000', null)).rejects.toMatchObject({
+      code: 'INTENT_UNKNOWN',
+    });
+    expect(sim.calls.at(-1)).toEqual(['intents.void', expect.objectContaining({ lock: false })]);
+
+    await underLock(reservations, intent, (lock) =>
+      store.retire({ intentId: intent.intentId, block: 9, hashes: [intent.hash] }, lock)
+    );
+    expect(sim.calls.at(-1)).toEqual([
+      'intents.retire',
+      expect.objectContaining({ lock: true, hashes: [intent.hash], block: 9 }),
+    ]);
+    expect(await store.get(intent.intentId)).toMatchObject({ state: 'retired' });
+  });
+
+  test('writes go to the core one at a time, in the order they were made', async () => {
+    const { store, sim } = await started();
+    const intents = await Promise.all([7, 8, 9].map((nonce) => commitNew(store, { nonce })));
+    expect(intents.map((intent) => intent.nonce)).toEqual([7, 8, 9]);
+    expect(methods(sim).filter((m) => m === 'intents.commit')).toHaveLength(3);
+    expect(await store.heldNonces(CHAIN, ALICE.address)).toEqual([7, 8, 9]);
+  });
+
+  test("on a core that didn't take the store, every operation fails requirement_unmet", async () => {
+    const { store, sim } = start();
+    sim.moved = false;
+    await expect(store.ready).rejects.toMatchObject({ code: 'requirement_unmet' });
+    const { raw, hash } = await sign({ nonce: 7 });
+    for (const operation of [
+      () =>
+        store.commit({
+          chainId: CHAIN,
+          sender: ALICE.address,
+          nonce: 7,
+          hash,
+          raw,
+          via: 'original',
+          context: { kind: 'wallet-send' },
+        }),
+      () => store.held(),
+      () => store.heldNonces(CHAIN, ALICE.address),
+      () => store.byKey('k'),
+    ]) {
+      await expect(operation()).rejects.toMatchObject({ code: 'requirement_unmet' });
+    }
+    expect(fs.existsSync(filePath())).toBe(false);
+    // The load is tried again once a core takes it.
+    sim.moved = true;
+    await expect(store.ready).resolves.toBeUndefined();
   });
 });

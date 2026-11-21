@@ -34,10 +34,13 @@ jest.mock('./intent-store', () => ({
   getIntentStore: () => mockIntentStore,
 }));
 const { createIntentStore } = require('./intent-store');
+const { simulatedIntents } = require('../../../test/helpers/simulated-intents-core');
 let intentDir;
 beforeEach(() => {
   intentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tx-service-intents-'));
-  mockIntentStore = createIntentStore({ filePath: path.join(intentDir, 'wallet-intents.jsonl') });
+  mockIntentStore = createIntentStore({
+    backend: simulatedIntents({ filePath: path.join(intentDir, 'wallet-intents.jsonl') }).intents,
+  });
 });
 afterEach(() => {
   fs.rmSync(intentDir, { recursive: true, force: true });

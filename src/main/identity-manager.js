@@ -403,7 +403,6 @@ async function readRadicleDid() {
   }
 }
 
-
 function getBeeApiPortForIdentityConfig() {
   const profile = getActiveProfile();
   const apiPort = profile?.metadata?.nodes?.bee?.apiPort;
@@ -562,7 +561,10 @@ const nodeInjections = new Map();
 
 function serializedInjection(node, task) {
   const run = (nodeInjections.get(node) || Promise.resolve()).then(task);
-  nodeInjections.set(node, run.catch(() => {}));
+  nodeInjections.set(
+    node,
+    run.catch(() => {})
+  );
   return run;
 }
 
@@ -1643,7 +1645,10 @@ async function deleteDerivedWallet(index, caller = null) {
       try {
         require('./wallet/safe/pending-store').clearPending(index);
       } catch (err) {
-        console.warn('[IdentityManager] A deleted Safe\'s pending transaction was not cleared:', err.message);
+        console.warn(
+          "[IdentityManager] A deleted Safe's pending transaction was not cleared:",
+          err.message
+        );
       }
     }
   } finally {
@@ -1959,24 +1964,30 @@ function registerIdentityIpc() {
   // Add a remote (phone) account (address reported over openlv)
   // Both run for the window that asked (APS-4): the phone's QR shows in
   // its sidebar.
-  ipcMain.handle('wallet:add-remote-wallet', forSenderWindow(async (_event, name, address) => {
-    try {
-      const wallet = await addRemoteWallet(name, address);
-      return { success: true, wallet };
-    } catch (err) {
-      return { success: false, error: err.message, code: err.code };
-    }
-  }));
+  ipcMain.handle(
+    'wallet:add-remote-wallet',
+    forSenderWindow(async (_event, name, address) => {
+      try {
+        const wallet = await addRemoteWallet(name, address);
+        return { success: true, wallet };
+      } catch (err) {
+        return { success: false, error: err.message, code: err.code };
+      }
+    })
+  );
 
   // Check an existing phone account on the phone (#1078)
-  ipcMain.handle('wallet:check-remote-wallet', forSenderWindow(async (_event, index) => {
-    try {
-      const wallet = await checkRemoteWallet(index);
-      return { success: true, wallet };
-    } catch (err) {
-      return { success: false, error: err.message, code: err.code };
-    }
-  }));
+  ipcMain.handle(
+    'wallet:check-remote-wallet',
+    forSenderWindow(async (_event, index) => {
+      try {
+        const wallet = await checkRemoteWallet(index);
+        return { success: true, wallet };
+      } catch (err) {
+        return { success: false, error: err.message, code: err.code };
+      }
+    })
+  );
 
   // Rename wallet
   ipcMain.handle('wallet:rename-wallet', async (_event, index, newName) => {

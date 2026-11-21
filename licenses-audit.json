@@ -136,7 +136,12 @@
       "type": "native-binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/ggml-org/whisper.cpp" },
-      "license": { "spdx": ["MIT", "MIT-0"], "raw": "MIT (whisper.cpp, ggml, stb_vorbis); MIT-0 (miniaudio)", "license_files": ["NOTICES.txt"], "notice_required": true },
+      "license": {
+        "spdx": ["MIT", "MIT-0"],
+        "raw": "MIT (whisper.cpp, ggml, stb_vorbis); MIT-0 (miniaudio)",
+        "license_files": ["NOTICES.txt"],
+        "notice_required": true
+      },
       "version_pin": "src/shared/dictation-runtime.js WHISPER_VERSION",
       "bundled_with_app": true,
       "linking_or_integration": "native CLI and CPU libraries built from checksum-pinned upstream source",
@@ -149,7 +154,12 @@
       "type": "native-binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/openai/codex" },
-      "license": { "spdx": ["Apache-2.0"], "raw": "Apache-2.0", "license_files": ["CODEX-LICENSE.txt", "CODEX-NOTICE.txt"], "notice_required": true },
+      "license": {
+        "spdx": ["Apache-2.0"],
+        "raw": "Apache-2.0",
+        "license_files": ["CODEX-LICENSE.txt", "CODEX-NOTICE.txt"],
+        "notice_required": true
+      },
       "version_pin": "scripts/build-windows-workspace.js REVISION",
       "bundled_with_app": true,
       "platforms": ["win"],
@@ -866,9 +876,7 @@
         "url": "https://github.com/earendil-works/pi"
       },
       "license": {
-        "spdx": [
-          "MIT"
-        ],
+        "spdx": ["MIT"],
         "raw": "MIT",
         "license_files": [],
         "notice_required": false
@@ -894,9 +902,7 @@
         "url": "https://github.com/Phala-Network/dcap-qvl"
       },
       "license": {
-        "spdx": [
-          "Apache-2.0"
-        ],
+        "spdx": ["Apache-2.0"],
         "raw": "Apache-2.0",
         "license_files": [],
         "notice_required": true
@@ -922,13 +928,7 @@
         "url": "https://github.com/mozilla/pdf.js"
       },
       "license": {
-        "spdx": [
-          "Apache-2.0",
-          "BSD-3-Clause",
-          "BSD-2-Clause",
-          "MIT",
-          "CC0-1.0"
-        ],
+        "spdx": ["Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "MIT", "CC0-1.0"],
         "raw": "Apache-2.0 (PDF.js); bundles PDFium's JBIG2 decoder (BSD-3-Clause), OpenJPEG (BSD-2-Clause), qcms and QuickJS (MIT), Adobe CMaps (BSD-3-Clause) and ICC profiles (CC0-1.0)",
         "license_files": [
           "LICENSE",
@@ -984,7 +984,11 @@
       "name": "optional local dictation notices",
       "path": "src/main/agent/dictation-local-notices.txt",
       "type": "license-text",
-      "license": { "spdx": ["MIT", "MIT-0"], "raw": "Upstream license texts for whisper.cpp, its decoder utilities, and Whisper", "notice_required": true },
+      "license": {
+        "spdx": ["MIT", "MIT-0"],
+        "raw": "Upstream license texts for whisper.cpp, its decoder utilities, and Whisper",
+        "notice_required": true
+      },
       "risk": "green",
       "issues": [],
       "notes": "The whisper.cpp 1.9.5 CLI is compiled from pinned source and bundled with the app. The checksum-pinned multilingual Whisper Base GGML model is an optional user-requested download. License texts ship in app.asar, beside the CLI, and beside the downloaded model as NOTICES.txt."
@@ -994,9 +998,7 @@
       "path": "src/renderer/assets/provider-logos/",
       "type": "asset",
       "license": {
-        "spdx": [
-          "UNKNOWN"
-        ],
+        "spdx": ["UNKNOWN"],
         "raw": "Third-party provider marks; nominative identification, no ownership claimed",
         "notice_required": true
       },
@@ -1014,15 +1016,9 @@
       "path": "src/renderer/assets/pdf-fonts/",
       "type": "asset",
       "license": {
-        "spdx": [
-          "OFL-1.1",
-          "BSD-3-Clause"
-        ],
+        "spdx": ["OFL-1.1", "BSD-3-Clause"],
         "raw": "Liberation Sans 2.1.5 (OFL-1.1, unmodified, Reserved Font Name Liberation); FoxitSymbol.pfb and FoxitDingbats.pfb copied from pdfjs-dist (BSD-3-Clause, PDFium)",
-        "license_files": [
-          "LICENSE_LIBERATION",
-          "LICENSE_FOXIT"
-        ],
+        "license_files": ["LICENSE_LIBERATION", "LICENSE_FOXIT"],
         "notice_required": true
       },
       "risk": "green",

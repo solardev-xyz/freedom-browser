@@ -71,12 +71,16 @@ describe('AgentManagedWorkspaceStore', () => {
     expect(store.rememberServer('conversation_one', input)).toEqual(server);
     expect(server.serverId).toMatch(/^workspace_server_[a-f0-9]{24}$/);
     expect(server.previewToken).toMatch(/^[a-f0-9]{40}$/);
-    expect(server.processId).toBeUndefined(); expect(server.grants).toBeUndefined();
+    expect(server.processId).toBeUndefined();
+    expect(server.grants).toBeUndefined();
     store.close();
     expect(store.listServers('conversation_one')).toEqual([server]);
     expect(store.listServers('other')).toEqual([]);
-    for (let i = 0; i < 7; i++) store.rememberServer('conversation_one', { ...input, port: 5200 + i });
-    expect(() => store.rememberServer('conversation_one', { ...input, port: 5300 })).toThrow('limit');
+    for (let i = 0; i < 7; i++)
+      store.rememberServer('conversation_one', { ...input, port: 5200 + i });
+    expect(() => store.rememberServer('conversation_one', { ...input, port: 5300 })).toThrow(
+      'limit'
+    );
     await store.deleteConversation('conversation_one');
     expect(store.listServers('conversation_one')).toEqual([]);
   });
@@ -84,15 +88,31 @@ describe('AgentManagedWorkspaceStore', () => {
   test('migrates and reopens server recipes with real SQLite constraints', async () => {
     const { DatabaseSync } = require('node:sqlite');
     class SqliteAdapter {
-      constructor(filename) { this.database = new DatabaseSync(filename); }
-      transaction(fn) { return () => {
-        this.database.exec('BEGIN');
-        try { const result = fn(); this.database.exec('COMMIT'); return result; }
-        catch (error) { this.database.exec('ROLLBACK'); throw error; }
-      }; }
-      exec(sql) { this.database.exec(sql); }
-      prepare(sql) { return this.database.prepare(sql); }
-      close() { this.database.close(); }
+      constructor(filename) {
+        this.database = new DatabaseSync(filename);
+      }
+      transaction(fn) {
+        return () => {
+          this.database.exec('BEGIN');
+          try {
+            const result = fn();
+            this.database.exec('COMMIT');
+            return result;
+          } catch (error) {
+            this.database.exec('ROLLBACK');
+            throw error;
+          }
+        };
+      }
+      exec(sql) {
+        this.database.exec(sql);
+      }
+      prepare(sql) {
+        return this.database.prepare(sql);
+      }
+      close() {
+        this.database.close();
+      }
       pragma(sql, options = {}) {
         const rows = this.database.prepare(`PRAGMA ${sql}`).all();
         return options.simple ? Object.values(rows[0])[0] : rows;
@@ -203,12 +223,19 @@ describe('AgentManagedWorkspaceStore', () => {
 
   test('a timed-out workspace removal is retried in the background and again after a restart', async () => {
     const realRemove = (directory) => fs.promises.rm(directory, { recursive: true, force: false });
-    const removeDirectory = jest.fn()
+    const removeDirectory = jest
+      .fn()
       .mockRejectedValueOnce(new Error('cleanup timed out'))
       .mockImplementation(realRemove);
     store.close();
-    store = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, now: () => now,
-      workspaceIdFactory: () => 'workspace_aaaaaaaaaaaaaaaaaaaa', removeDirectory, removalRetryDelaysMs: [1] });
+    store = new AgentManagedWorkspaceStore({
+      userDataDir,
+      Database: FakeDatabase,
+      now: () => now,
+      workspaceIdFactory: () => 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      removeDirectory,
+      removalRetryDelaysMs: [1],
+    });
     const workspace = await store.ensureForConversation('conversation_one');
     const workspacePath = await store.resolvePath(workspace.workspaceId);
     fs.writeFileSync(path.join(workspacePath, 'large-tree'), 'x');
@@ -229,14 +256,24 @@ describe('AgentManagedWorkspaceStore', () => {
     // A failure whose retries never ran before quit is finished on the next start.
     const quitting = jest.fn().mockRejectedValue(new Error('cleanup timed out'));
     store.close();
-    store = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, now: () => now,
-      workspaceIdFactory: () => 'workspace_cccccccccccccccccccc', removeDirectory: quitting, removalRetryDelaysMs: [] });
+    store = new AgentManagedWorkspaceStore({
+      userDataDir,
+      Database: FakeDatabase,
+      now: () => now,
+      workspaceIdFactory: () => 'workspace_cccccccccccccccccccc',
+      removeDirectory: quitting,
+      removalRetryDelaysMs: [],
+    });
     const second = await store.ensureForConversation('conversation_two');
     const secondPath = await store.resolvePath(second.workspaceId);
     await expect(store.deleteConversation('conversation_two')).rejects.toThrow('cleanup timed out');
     store.close();
     const restarted = jest.fn(realRemove);
-    store = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, removeDirectory: restarted });
+    store = new AgentManagedWorkspaceStore({
+      userDataDir,
+      Database: FakeDatabase,
+      removeDirectory: restarted,
+    });
     await expect(store.retryPendingRemovals()).resolves.toBe(0);
     expect(restarted).toHaveBeenCalledWith(secondPath);
     expect(fs.existsSync(secondPath)).toBe(false);
@@ -248,18 +285,34 @@ describe('AgentManagedWorkspaceStore', () => {
   test('close() during a removal pass does not reopen the database or schedule a retry', async () => {
     const failing = jest.fn().mockRejectedValue(new Error('cleanup timed out'));
     store.close();
-    store = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, now: () => now,
-      workspaceIdFactory: () => 'workspace_dddddddddddddddddddd', removeDirectory: failing, removalRetryDelaysMs: [] });
+    store = new AgentManagedWorkspaceStore({
+      userDataDir,
+      Database: FakeDatabase,
+      now: () => now,
+      workspaceIdFactory: () => 'workspace_dddddddddddddddddddd',
+      removeDirectory: failing,
+      removalRetryDelaysMs: [],
+    });
     const workspace = await store.ensureForConversation('conversation_one');
     await expect(store.deleteConversation('conversation_one')).rejects.toThrow('cleanup timed out');
     store.close();
 
     let release;
-    const helper = jest.fn(() => new Promise((resolve) => { release = resolve; }));
-    store = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, removeDirectory: helper,
-      removalRetryDelaysMs: [1] });
+    const helper = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    store = new AgentManagedWorkspaceStore({
+      userDataDir,
+      Database: FakeDatabase,
+      removeDirectory: helper,
+      removalRetryDelaysMs: [1],
+    });
     const pass = store.retryPendingRemovals();
-    for (let i = 0; i < 400 && !release; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    for (let i = 0; i < 400 && !release; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 5));
     expect(helper).toHaveBeenCalledTimes(1);
     // Quit while the startup pass waits on the cleanup helper.
     store.close();
@@ -269,7 +322,11 @@ describe('AgentManagedWorkspaceStore', () => {
     expect(store.db).toBeNull();
     expect(store.removalTimer).toBeNull();
     // Still pending for the next start.
-    const restarted = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase, removeDirectory: jest.fn() });
+    const restarted = new AgentManagedWorkspaceStore({
+      userDataDir,
+      Database: FakeDatabase,
+      removeDirectory: jest.fn(),
+    });
     expect(restarted.get(workspace.workspaceId)).not.toBeNull();
     restarted.close();
   });
