@@ -214,10 +214,11 @@ function clear(caller = null) {
 
 // === Appends that must land once =========================================
 
-// How many kept appends wait at most, how many times each is sent, and how
-// long one kept while the core is up (refused by a busy database, or
-// failed after the core's restart was already done) waits before it is
-// tried again without a restart.
+// How many records may wait to land before x402 signs no new payment
+// (historyBacklogFull), how many times each is sent, and how long one kept
+// while the core is up (refused by a busy database, or failed after the
+// core's restart was already done) waits before it is tried again without a
+// restart.
 const KEPT_LIMIT = 100;
 const KEPT_ATTEMPTS = 3;
 const KEPT_RETRY_MS = 60 * 1000;
@@ -228,6 +229,10 @@ const KEPT_WINDOW = 500;
 // attempts }`. In memory only: a crash before one lands loses it, as the
 // module before PRF-6(c) lost a row whose synchronous write a crash beat.
 const kept = [];
+// Every record appendOnce took that hasn't landed, been found, or been
+// given up: those kept, and those on their way to the core. None is ever
+// dropped to make room.
+const unlanded = new Set();
 // The core client attachCore follows, and its starts' work, one at a time.
 let attachedClient = null;
 let settling = Promise.resolve();
@@ -235,7 +240,9 @@ let settling = Promise.resolve();
 /**
  * An append whose row must land exactly once though its caller doesn't wait
  * for it: an x402 payment's (x402/intercept.js), whose money has already
- * left, and whose row is the only record of it. The entry is stamped with
+ * left, and whose row is the only record of it. Never dropped to make room:
+ * x402 refuses to sign a new payment while KEPT_LIMIT records wait
+ * (historyBacklogFull). The entry is stamped with
  * its `createdAt` now, so a later send writes the same row. Sent at once;
  * resolves with the record, or with null when the core didn't answer it,
  * and never rejects. A failure keeps the entry for the core's next start
@@ -249,13 +256,26 @@ let settling = Promise.resolve();
  */
 function appendOnce(entry) {
   const createdAt = Number.isFinite(entry?.createdAt) ? entry.createdAt : Date.now();
-  return sendKept({ entry: { ...entry, createdAt }, unknown: false, attempts: 0 });
+  const item = { entry: { ...entry, createdAt }, unknown: false, attempts: 0 };
+  unlanded.add(item);
+  return sendKept(item);
+}
+
+/**
+ * Whether KEPT_LIMIT records already wait to land: x402 then signs no new
+ * payment (x402/sign-flow.js), so no money leaves without a place in the
+ * history, and no waiting record is ever dropped to make room for one.
+ */
+function historyBacklogFull() {
+  return unlanded.size >= KEPT_LIMIT;
 }
 
 async function sendKept(item) {
   item.attempts += 1;
   try {
-    return await append(item.entry);
+    const row = await append(item.entry);
+    unlanded.delete(item);
+    return row;
   } catch (err) {
     item.unknown = item.unknown || outcomeUnknown(err);
     if (item.attempts < KEPT_ATTEMPTS) {
@@ -265,6 +285,7 @@ async function sendKept(item) {
           `kept for the identity core's next start`
       );
     } else {
+      unlanded.delete(item);
       log.error(
         `[PaymentHistory] a payment's row was not written after ${item.attempts} attempts ` +
           `(${err.code || err.message}); given up`
@@ -277,10 +298,6 @@ async function sendKept(item) {
 let keptTimer = null;
 function keep(item) {
   kept.push(item);
-  if (kept.length > KEPT_LIMIT) {
-    kept.shift();
-    log.error(`[PaymentHistory] more than ${KEPT_LIMIT} payments' rows wait; the oldest is given up`);
-  }
   if (attachedClient?.state === 'ready' && !keptTimer) {
     keptTimer = setTimeout(() => {
       keptTimer = null;
@@ -336,6 +353,7 @@ async function settleKept() {
       }
       if (row) {
         // Written before its answer was lost: told now, never written again.
+        unlanded.delete(item);
         broadcastTxRecorded(row);
         continue;
       }
@@ -594,6 +612,7 @@ module.exports = {
   getCount,
   clear,
   appendOnce,
+  historyBacklogFull,
   repollPending,
   attachCore,
   DROPPED_CONFIRM_MS,

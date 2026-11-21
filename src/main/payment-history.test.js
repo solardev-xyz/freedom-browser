@@ -934,6 +934,80 @@ describe('payment-history (through the core)', () => {
       expect(await mod.getCount({ kind: 'x402' })).toBe(1);
     });
 
+    // Codex round 2 on #1299: no record that hasn't landed is ever dropped
+    // to make room; at 100 waiting, x402 signs no new payment
+    // (historyBacklogFull, checked by sign-flow.js before anything is
+    // charged or signed: sign-flow.test.js).
+    test('records under a definite storage refusal: none dropped, the backlog full at 100, each lands once at the restart', async () => {
+      const nonceOf = (i) => `0x${i.toString(16).padStart(64, '0')}`;
+      sim.failAlways('payments.append', 'storage');
+      for (let i = 0; i < 100; i += 1) {
+        expect(mod.historyBacklogFull()).toBe(false);
+        await mod.appendOnce(x402({ metadata: { authorizationNonce: nonceOf(i) } }));
+      }
+      expect(mod.historyBacklogFull()).toBe(true);
+      // A record of a payment signed before the backlog filled is kept too.
+      await mod.appendOnce(x402({ metadata: { authorizationNonce: nonceOf(100) } }));
+      expect(mod.historyBacklogFull()).toBe(true);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(0);
+      sim.stopFailing('payments.append');
+      await restart();
+      const nonces = (await mod.getRecent({ kind: 'x402', limit: 500 })).map(
+        (row) => row.metadata.authorizationNonce
+      );
+      expect(nonces.sort()).toEqual(Array.from({ length: 101 }, (_, i) => nonceOf(i)).sort());
+      expect(mod.historyBacklogFull()).toBe(false);
+      await restart();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(101);
+    });
+
+    test('records still on their way to the core count toward the backlog', async () => {
+      let release;
+      sim.failAlways('payments.append', 'storage');
+      const appends = [];
+      for (let i = 0; i < 99; i += 1) appends.push(mod.appendOnce(x402({ createdAt: i })));
+      await Promise.all(appends);
+      expect(mod.historyBacklogFull()).toBe(false);
+      // One more, its answer not in yet.
+      sim.stopFailing('payments.append');
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      const backend = require('./core/vault-backend').vaultBackend.payments;
+      const append = backend.append;
+      backend.append = async (entry) => {
+        await gate;
+        return append(entry);
+      };
+      const inFlight = mod.appendOnce(x402({ createdAt: 99 }));
+      expect(mod.historyBacklogFull()).toBe(true);
+      release();
+      await inFlight;
+      backend.append = append;
+      expect(mod.historyBacklogFull()).toBe(false);
+    });
+
+    // A third send whose answer is lost is given up, but its owed re-read
+    // still tells every listener, x402's balance refresh among them
+    // (dapp-x402.js reads `{ id: null }` as a reason to refresh).
+    test("a kept append's third send, its answer lost, is given up, and the re-read is still told", async () => {
+      sim.failBefore('payments.append', 'storage');
+      await mod.appendOnce(x402({ metadata: { authorizationNonce: NONCE } }));
+      sim.failBefore('payments.append', 'storage');
+      await restart();
+      send.mockClear();
+      sim.loseReply('payments.append');
+      await restart();
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('after 3 attempts'));
+      expect(await mod.getCount({ kind: 'x402' })).toBe(1);
+      expect(events()).toEqual([{ id: null }]);
+      send.mockClear();
+      await restart();
+      expect(send).not.toHaveBeenCalled();
+      expect(await mod.getCount({ kind: 'x402' })).toBe(1);
+    });
+
     test('a kept append is written with the time it was first sent', async () => {
       jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
       sim.failBefore('payments.append', 'core_unavailable');

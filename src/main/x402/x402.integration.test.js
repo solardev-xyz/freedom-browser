@@ -177,6 +177,7 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
     jest.doMock('../payment-history', () => ({
       getRecent: () => [],
       appendOnce: () => {},
+      historyBacklogFull: () => false,
       KINDS: { X402: 'x402' },
       STATUSES: { SETTLED: 'settled', NO_RECEIPT: 'no-receipt', FAILED: 'failed' },
     }));

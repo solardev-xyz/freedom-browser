@@ -60,8 +60,11 @@ jest.mock('../vault-timer', () => ({ resetVaultAutoLockTimer: jest.fn() }));
 jest.mock('../webrequest-dispatcher', () => ({
   registerWebRequestHandler: jest.fn(),
 }));
+// Whether payment-history says too many records wait to land.
+let mockHistoryBacklogFull = false;
 jest.mock('../payment-history', () => ({
   appendOnce: jest.fn(),
+  historyBacklogFull: () => mockHistoryBacklogFull,
   KINDS: { X402: 'x402' },
   STATUSES: { SETTLED: 'settled', NO_RECEIPT: 'no-receipt', FAILED: 'failed' },
 }));
@@ -271,6 +274,44 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
 
 // #1044: an allowance pays only for a live tab the user controls, read
 // before the core is asked and again once it has signed.
+// The payment history is the identity core's (design 0013, PRF-6(c)), and
+// an x402 record waits in main until it lands: while 100 wait, nothing more
+// is signed, so no money leaves without a place in the history.
+describe('signAndQueueRetry — the payment history full', () => {
+  afterEach(() => {
+    mockHistoryBacklogFull = false;
+  });
+
+  test.each([
+    ['an approval', true],
+    ["a cap's auto-pay", false],
+  ])("%s isn't signed while 100 records wait: nothing charged, signed or stashed", async (_name, manual) => {
+    mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '50000' });
+    await loadCaps();
+    const detection = detectionFor(URL_, [baseAccept]);
+    const optsFor = async () =>
+      manual ? { detection, confirmation: await approved(detection) } : { detection, authorizedBy: 'cap' };
+    const spentBefore = mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount;
+    mockHistoryBacklogFull = true;
+    const err = await signAndQueueRetry(7, await optsFor()).catch((e) => e);
+    expect(err).toMatchObject({
+      code: 'X402_PAYMENT_HISTORY_FULL',
+      message: 'Payment history is unavailable; try again shortly',
+    });
+    await flushSettles();
+    expect(corePayments()).toEqual([]);
+    expect(mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount).toBe(spentBefore);
+    expect(settles()).toEqual([]);
+    expect(mockDevice.asked).toEqual([]);
+    expect(await consumePending(7, URL_)).toBeNull();
+    // Once the records have landed, the next payment is signed.
+    mockHistoryBacklogFull = false;
+    await signAndQueueRetry(7, await optsFor());
+    expect(corePayments()).toHaveLength(1);
+    expect(decodedHeader(await consumePending(7, URL_)).accepted).toEqual(baseAccept);
+  });
+});
+
 describe('signAndQueueRetry — custody', () => {
   beforeEach(async () => {
     mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '50000' });

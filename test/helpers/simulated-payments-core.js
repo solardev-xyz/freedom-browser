@@ -34,7 +34,8 @@
  *   - `failBefore(method, code)`: the next request of `method` (wire name)
  *     fails `code` (default `core_unavailable`) before the store sees it;
  *     `loseReply(method)`: the next one runs, then its answer is lost
- *     (`core_unavailable`);
+ *     (`core_unavailable`); `failAlways(method, code)`: every one fails `code`
+ *     before the store sees it, until `stopFailing(method)`;
  *   - `calls` records `[method, caller]`, the caller `'chrome'` or
  *     `'shell'`; `reference()` is the reference module.
  *
@@ -125,7 +126,7 @@ function asCoreError(err) {
 }
 
 function simulatedPayments({ moved = true } = {}) {
-  const sim = { moved, calls: [], lost: new Set(), failing: new Map() };
+  const sim = { moved, calls: [], lost: new Set(), failing: new Map(), always: new Map() };
   const reference = () => require('./reference-payment-history');
 
   async function request(method, params, caller) {
@@ -135,6 +136,8 @@ function simulatedPayments({ moved = true } = {}) {
     if (from === 'chrome' && !CHROME_METHODS.has(method)) {
       throw coded('forbidden', 'not callable by this caller');
     }
+    if (sim.always.has(method))
+      throw coded(sim.always.get(method), 'The payment history could not be read or written');
     const failing = sim.failing.get(method);
     if (failing) {
       sim.failing.delete(method);
@@ -176,6 +179,8 @@ function simulatedPayments({ moved = true } = {}) {
   };
   sim.failBefore = (method, code = 'core_unavailable') => sim.failing.set(method, code);
   sim.loseReply = (method) => sim.lost.add(method);
+  sim.failAlways = (method, code) => sim.always.set(method, code);
+  sim.stopFailing = (method) => sim.always.delete(method);
   sim.reference = reference;
   return sim;
 }

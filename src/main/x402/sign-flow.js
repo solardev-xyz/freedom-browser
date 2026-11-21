@@ -49,11 +49,16 @@ const { tupleFromAccept } = require('./payment-utils');
 const { isUserPageId, isAgentPageId } = require('../wallet/agent-tab-custody');
 const { withVaultAccount } = require('../wallet/vault-access');
 const { discardConfirmation } = require('../wallet/signing-confirmation');
+const { historyBacklogFull } = require('../payment-history');
 
 // An auto-pay whose cap no longer covers it, at the moment it would be
 // signed: nothing is signed, and the charge goes to the approval card.
 // A tab that has gone into Agent custody is not covered either.
 const CAP_NOT_COVERED = 'X402_CAP_NOT_COVERED';
+// Too many x402 records wait to land in the payment history, which the
+// identity core keeps (design 0013, PRF-6(c)): nothing more is signed, so
+// no money leaves without a place in the history.
+const PAYMENT_HISTORY_FULL = 'X402_PAYMENT_HISTORY_FULL';
 
 function capNotCoveredError(message = "This payment is no longer within the site's auto-pay allowance") {
   const err = new Error(message);
@@ -268,6 +273,12 @@ async function signAndStash(webContentsId, opts, held) {
 async function authorizeAndStash(webContentsId, opts, held, presenting) {
   const detected = opts.detection ?? getDetectedPayment(webContentsId);
   if (!detected) throw new Error('No pending x402 payment for this tab');
+  // Before the core is asked: nothing is charged, signed or spent.
+  if (historyBacklogFull()) {
+    throw Object.assign(new Error('Payment history is unavailable; try again shortly'), {
+      code: PAYMENT_HISTORY_FULL,
+    });
+  }
 
   let origin;
   try {
@@ -480,5 +491,6 @@ module.exports = {
   signAndQueueRetry,
   isCapNotCoveredError,
   CAP_NOT_COVERED,
+  PAYMENT_HISTORY_FULL,
   X402_HEADERS,
 };
