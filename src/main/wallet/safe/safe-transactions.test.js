@@ -195,7 +195,7 @@ beforeEach(() => {
   mockApprovalEnd.mockReset().mockResolvedValue({});
   mockProcessEnded.mockReset().mockReturnValue(false);
   // A new safe-pending.json each test (its directory), and main's copy empty.
-  Object.assign(pendingSim, { moved: true, fail: null, calls: [] });
+  Object.assign(pendingSim, { moved: true, fail: null, loseReply: null, calls: [] });
   pendingStore._reset();
   safeApprovals._reset({ retryDelays: [0, 0] });
 });
@@ -1250,5 +1250,119 @@ describe("the pending SafeTx's store in the core", () => {
     expect(endedIds()).toEqual([approval.id]);
     await expect(cancelSafeSend(5)).rejects.toMatchObject({ code: 'requirement_unmet' });
     expect(fs.existsSync(path.join(mockTmpDir, 'safe-pending.json'))).toBe(false);
+  });
+});
+
+// Codex round 1 on #1298: no Safe step acts on main's copy of a core
+// process that has exited, or on an entry the core never confirmed.
+describe('across core processes and lost answers', () => {
+  const { EventEmitter } = require('events');
+  const pendingFile = () => path.join(mockTmpDir, 'safe-pending.json');
+  const coreText = () => JSON.parse(fs.readFileSync(pendingFile(), 'utf-8'));
+  const writeAsCore = (store) => fs.writeFileSync(pendingFile(), JSON.stringify(store, null, 2), 'utf-8');
+  let client;
+  let warn;
+  beforeEach(async () => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    client = new EventEmitter();
+    pendingStore.attachCore(client);
+    client.emit('ready');
+    await pendingStore.ready;
+    await start();
+    await signSafePending(5, 2);
+  });
+  afterEach(() => warn.mockRestore());
+
+  test('a core restart during an execution: it waits for the reload, and a SafeTx the core holds otherwise is not executed', async () => {
+    mockRpcRequest.mockImplementationOnce(async () => {
+      client.emit('exit');
+      expect(getPending(5)).toBeNull();
+      // A lost write left the core's entry other than main's copy.
+      const store = coreText();
+      store[5].signatures = [signatureOf(0)];
+      writeAsCore(store);
+      client.emit('ready');
+      return '0x3';
+    });
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    expect(getPending(5).signatures).toEqual([signatureOf(0)]);
+  });
+
+  test('a core restart during an execution that finds the SafeTx as it was executes it, the same entry', async () => {
+    const held = getPending(5);
+    mockRpcRequest.mockImplementationOnce(async () => {
+      client.emit('exit');
+      client.emit('ready');
+      return '0x3';
+    });
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+    expect(mockExecTransaction).toHaveBeenCalledTimes(1);
+    expect(mockExecTransaction.mock.calls[0][0].signatures).toBe(held.signatures);
+    expect(getPending(5)).toBeNull();
+  });
+
+  test("a core process whose load fails stops every step: nothing reads, signs, executes or discards", async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    client.emit('exit');
+    pendingSim.moved = false;
+    client.emit('ready');
+    const unmet = { code: 'requirement_unmet' };
+    await expect(executeSafePending(5)).rejects.toMatchObject(unmet);
+    await expect(signSafePending(5, 4)).rejects.toMatchObject(unmet);
+    await expect(cancelSafeSend(5)).rejects.toMatchObject(unmet);
+    expect(getSafeSendState(5)).toBeNull();
+    expect(getAllSafeSendStates()).toEqual([]);
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    expect(coreText()[5].signatures).toHaveLength(2);
+    // Once a load succeeds, the SafeTx is there again, and executes.
+    pendingSim.moved = true;
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+  });
+
+  test("an owner's signature the core applied but whose answer was lost: the row fails, and the entry is the core's, a new object", async () => {
+    await cancelSafeSend(5);
+    await start();
+    const held = getPending(5);
+    pendingSim.loseReply = (method) => method === 'safe_pending.set';
+    await expect(signSafePending(5, 2)).rejects.toMatchObject({ code: 'core_unavailable' });
+    pendingSim.loseReply = null;
+    expect(getPending(5)).not.toBe(held);
+    expect(getPending(5).signatures).toEqual([signatureOf(0), signatureOf(2)]);
+    // The next step goes on from the core's entry.
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+    expect(mockExecTransaction.mock.calls[0][0].signatures).toEqual([signatureOf(0), signatureOf(2)]);
+  });
+
+  test("an owner's signature applied, its answer and the read back lost: the execution waits for the restart and runs on the core's entry", async () => {
+    await cancelSafeSend(5);
+    await start();
+    pendingSim.loseReply = (method) => method === 'safe_pending.set';
+    pendingSim.fail = (method) => {
+      if (method === 'safe_pending.get') {
+        throw Object.assign(new Error('The identity core is not running'), { code: 'core_unavailable' });
+      }
+    };
+    await expect(signSafePending(5, 2)).rejects.toMatchObject({ code: 'core_unavailable' });
+    const fallback = getPending(5);
+    expect(fallback.signatures).toEqual([signatureOf(0)]);
+    // The core went down: nothing runs until its successor's load.
+    client.emit('exit');
+    pendingSim.loseReply = null;
+    pendingSim.fail = null;
+    const executing = executeSafePending(5);
+    await flushMicrotasks();
+    expect(mockRpcRequest).not.toHaveBeenCalled();
+    client.emit('ready');
+    await expect(executing).resolves.toMatchObject({ status: 'executed' });
+    expect(mockExecTransaction.mock.calls[0][0].signatures).toEqual([signatureOf(0), signatureOf(2)]);
+  });
+
+  test("a discard the core applied but whose answer was lost fails, and the SafeTx is gone, as the core read it back", async () => {
+    pendingSim.loseReply = (method) => method === 'safe_pending.clear';
+    await expect(cancelSafeSend(5)).rejects.toMatchObject({ code: 'core_unavailable' });
+    expect(getPending(5)).toBeNull();
+    await expect(executeSafePending(5)).rejects.toThrow('No pending transaction for this account');
+    expect(mockExecTransaction).not.toHaveBeenCalled();
   });
 });

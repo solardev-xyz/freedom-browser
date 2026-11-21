@@ -1720,7 +1720,11 @@ describe('identity-manager safe accounts', () => {
     const pendingFile = path.join(tmpDir, 'safe-pending.json');
     expect(JSON.parse(fs.readFileSync(pendingFile, 'utf-8'))).toEqual({});
     const { vaultBackend } = require('./core/vault-backend');
-    expect(vaultBackend.pendingSim.calls.map(([method]) => method)).toEqual(['safe_pending.set']);
+    // (The list is main's copy loading before its first write.)
+    expect(vaultBackend.pendingSim.calls.map(([method]) => method)).toEqual([
+      'safe_pending.list',
+      'safe_pending.set',
+    ]);
   });
 
   // Design 0013, "`accounts.remove`" (G12): the core ends a Safe's open
@@ -1766,7 +1770,11 @@ describe('identity-manager safe accounts', () => {
     expect(vaultBackend.sim.endedSafes).toEqual([safe.index]);
     // Cleared by the core before its forget failed, and read again by main.
     expect(getPending(safe.index)).toBeNull();
-    expect(vaultBackend.pendingSim.calls.map(([method]) => method)).toEqual(['safe_pending.set', 'safe_pending.get']);
+    expect(vaultBackend.pendingSim.calls.map(([method]) => method)).toEqual([
+      'safe_pending.list',
+      'safe_pending.set',
+      'safe_pending.get',
+    ]);
     expect(safeApprovals.held('send', safe.index, '0xdead')).toBeNull();
     expect(readVaultMeta().derivedWallets.map((w) => w.index)).toContain(safe.index);
     // The Safe stays usable: its next step holds a new approval.

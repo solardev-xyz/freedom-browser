@@ -160,12 +160,16 @@ function pendingFile() {
  * every method fails `requirement_unmet`, and nothing is written. `fail`,
  * when set, is called with `(method, params)` before each request and
  * fails it by throwing, the file unchanged (`storage` unless it sets a
- * code). `calls` records `[method, params]`. `clearForRemoval(index)` is
+ * code). `loseReply`, when set, is called with `(method, params)` after
+ * each request has been applied, and a truthy answer loses its reply: the
+ * request fails `core_unavailable` though the file has changed, as when the
+ * core wrote and then exited before answering. `calls` records
+ * `[method, params]`. `clearForRemoval(index)` is
  * the clear `accounts.remove` makes for a Safe, the core's own: nothing
  * until the store is moved. `text()` is the file's text, or null.
  */
-function simulatedSafePending({ moved = true, fail = null } = {}) {
-  const sim = { moved, fail, calls: [] };
+function simulatedSafePending({ moved = true, fail = null, loseReply = null } = {}) {
+  const sim = { moved, fail, loseReply, calls: [] };
   const fresh = () => {
     let reference;
     jest.isolateModules(() => {
@@ -186,7 +190,11 @@ function simulatedSafePending({ moved = true, fail = null } = {}) {
         throw err;
       }
     }
-    return answer(fresh());
+    const result = answer(fresh());
+    if (sim.loseReply?.(method, params)) {
+      throw coded('core_unavailable', 'The identity core stopped before it answered');
+    }
+    return result;
   }
 
   const clearIn = (reference, index) => {

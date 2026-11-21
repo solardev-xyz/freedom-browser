@@ -33,8 +33,9 @@
  * reserves the Safe's SafeTx before its token is spent (`reserveSafeSend`).
  *
  * The pending SafeTx is the identity core's (`pending-store.js`, design
- * 0013 PRF-6(d)): each step waits for main's copy of the store to load
- * first, and each change to it waits for the core's answer. A change the
+ * 0013 PRF-6(d)): each step waits for main's copy of the store to be the
+ * running core's, loaded, first (and an execution again just before it
+ * runs), and each change to it waits for the core's answer. A change the
  * core reports failed (or whose answer is lost) fails the step, with the
  * entry as the core holds it read again; an approval held for a SafeTx that
  * couldn't be saved is ended.
@@ -83,6 +84,8 @@ const SEND = safeApprovals.KINDS.SEND;
 const store = {
   get: getPending,
   set: setPending,
+  // After a ceremony, main's copy as the running core loaded it.
+  ready: () => pendingStore.ready,
   idOf: (entry) => entry.safeTxHash,
   approvalOf: (safeIndex, entry) => safeApprovals.held(SEND, safeIndex, entry.safeTxHash),
   forgetApproval: (safeIndex, entry) => safeApprovals.forget(SEND, safeIndex, entry.safeTxHash),
@@ -491,6 +494,14 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
       throw new Error(
         `Not enough signatures yet (${pending.signatures.length} of ${pending.threshold})`
       );
+    }
+
+    // What executes is the SafeTx the core holds: after the nonce read, main's
+    // copy is the running core's (a core that restarted meanwhile is read
+    // again first), and still holds this very entry.
+    await pendingStore.ready;
+    if (getPending(safeIndex) !== pending) {
+      throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
     }
 
     const guard = pending.display?.site ? siteGuards.get(pending.safeTxHash) : null;

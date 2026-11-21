@@ -14,7 +14,10 @@
  * was made for, never one discarded meanwhile. `set` is awaited: a SafeTx's
  * goes to the identity core (pending-store.js), and when it fails it
  * rejects and `get` answers a new object from then on, so nothing more is
- * kept in the old one.
+ * kept in the old one. `ready()`, if the adapter has it, resolves once `get`
+ * answers the store as it now stands (a SafeTx's: the running core's,
+ * reloaded after a restart), and a chosen owner's signature waits for it
+ * before the entry is checked again.
  *
  * Every owner's signature presents the Safe approval main holds for the
  * entry (freedom-core design 0012, APB-1c; `safe-approvals.js`): the
@@ -259,6 +262,7 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expe
     // approval's end): re-validate that THIS entry is still the pending
     // one, and not ended meanwhile (its page gone), before persisting into
     // it.
+    if (store.ready) await store.ready();
     const current = store.get(safeIndex);
     if (!current || current !== entry || store.idOf(current) !== signedId || ended(store, current)) {
       throw codedError(

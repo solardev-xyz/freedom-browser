@@ -50,7 +50,7 @@ const fakeClient = () => new EventEmitter();
 
 beforeEach(() => {
   mockTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-pending-store-'));
-  Object.assign(pendingSim, { moved: true, fail: null, calls: [] });
+  Object.assign(pendingSim, { moved: true, fail: null, loseReply: null, calls: [] });
   pendingStore._reset();
 });
 
@@ -121,7 +121,7 @@ describe('loading', () => {
     expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
   });
 
-  test('a core that fails to start settles the first load; ready then tries its own', async () => {
+  test('a core that gives up fails the wait for its load; a later wait tries a load of its own', async () => {
     const client = fakeClient();
     pendingStore.attachCore(client);
     pendingSim.fail = () => {
@@ -132,6 +132,8 @@ describe('loading', () => {
     const waiting = pendingStore.ready;
     client.emit('failed', 'spawn');
     await expect(waiting).rejects.toMatchObject({ code: 'core_unavailable' });
+    expect(methods()).toEqual([]);
+    await expect(pendingStore.ready).rejects.toMatchObject({ code: 'core_unavailable' });
     expect(methods()).toEqual(['safe_pending.list']);
   });
 
@@ -163,6 +165,8 @@ describe('loading', () => {
 
 describe('writes', () => {
   test("a set reaches the copy only once the core has answered it, as the very object set, in the reference's text", async () => {
+    await pendingStore.ready;
+    pendingSim.calls = [];
     const gate = deferred();
     pendingSim.fail = () => gate.promise;
     const value = entry('0x05');
@@ -181,6 +185,7 @@ describe('writes', () => {
   });
 
   test('writes go to the core one at a time, in the order made', async () => {
+    await pendingStore.ready;
     const gate = deferred();
     const order = [];
     pendingSim.fail = async (method, params) => {
@@ -276,6 +281,196 @@ describe('writes', () => {
     expect(warn).toHaveBeenCalledWith(
       '[SafePending] A pending Safe transaction was saved, but it may not survive a power loss yet (the flush after the rename failed)'
     );
+  });
+});
+
+// Codex round 1 on #1298: the copy is one core process's. From an exit (or
+// a new `ready`) until that process's load succeeds, nothing reads or acts
+// on it; an entry keeps its object only where the reload confirms it.
+describe('each core process', () => {
+  const sig = (n) => ({ signer: `0x${n}`, data: '0x01' });
+  let client;
+  beforeEach(async () => {
+    seed({ 5: entry('0x05'), 6: entry('0x06') });
+    client = fakeClient();
+    pendingStore.attachCore(client);
+    client.emit('ready');
+    await pendingStore.ready;
+    pendingSim.calls = [];
+  });
+  const gateList = () => {
+    const gate = deferred();
+    pendingSim.fail = (method) => (method === 'safe_pending.list' ? gate.promise : undefined);
+    return gate;
+  };
+  const settledYet = (promise) => {
+    const state = { settled: false };
+    promise.then(
+      () => (state.settled = true),
+      () => (state.settled = true)
+    );
+    return state;
+  };
+
+  test("an exit makes the copy unavailable at once; the next process's load gates ready and every write, and confirms what it keeps", async () => {
+    const five = pendingStore.getPending(5);
+    const six = pendingStore.getPending(6);
+    client.emit('exit');
+    expect(pendingStore.getPending(5)).toBeNull();
+    expect(pendingStore.listPendingIndexes()).toEqual([]);
+    const waiting = settledYet(pendingStore.ready);
+    const writing = pendingStore.setPending(7, entry('0x07'));
+    await flush();
+    expect(waiting.settled).toBe(false);
+    expect(pendingSim.calls).toEqual([]);
+
+    const gate = gateList();
+    client.emit('ready');
+    // Written meanwhile (a lost answer's write): the next load finds it.
+    seed({ 5: entry('0x05'), 6: entry('0x66') });
+    await flush();
+    expect(waiting.settled).toBe(false);
+    expect(pendingStore.getPending(5)).toBeNull();
+    expect(methods()).toEqual(['safe_pending.list']);
+
+    gate.resolve();
+    await pendingStore.ready;
+    await writing;
+    expect(waiting.settled).toBe(true);
+    // Confirmed as it was: the same object. Changed: a new one.
+    expect(pendingStore.getPending(5)).toBe(five);
+    expect(pendingStore.getPending(6)).not.toBe(six);
+    expect(pendingStore.getPending(6)).toEqual(entry('0x66'));
+    expect(pendingStore.getPending(7)).toEqual(entry('0x07'));
+    expect(methods()).toEqual([
+      'safe_pending.list',
+      'safe_pending.get',
+      'safe_pending.get',
+      'safe_pending.set',
+    ]);
+  });
+
+  test('a new ready with no exit seen makes the copy unavailable until its own load', async () => {
+    const gate = gateList();
+    client.emit('ready');
+    expect(pendingStore.getPending(5)).toBeNull();
+    const waiting = settledYet(pendingStore.ready);
+    await flush();
+    expect(waiting.settled).toBe(false);
+    gate.resolve();
+    await pendingStore.ready;
+    expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
+  });
+
+  test("an entry changed in place and never confirmed isn't kept by the reload: the core's is a new object", async () => {
+    const held = pendingStore.getPending(5);
+    held.signatures = [sig(1)];
+    client.emit('exit');
+    client.emit('ready');
+    await pendingStore.ready;
+    expect(pendingStore.getPending(5)).not.toBe(held);
+    expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
+  });
+
+  test('a process whose load fails leaves everything stopped until a load succeeds', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    client.emit('exit');
+    pendingSim.moved = false;
+    client.emit('ready');
+    await expect(pendingStore.ready).rejects.toMatchObject({ code: 'requirement_unmet' });
+    expect(pendingStore.getPending(5)).toBeNull();
+    expect(pendingStore.listPendingIndexes()).toEqual([]);
+    await expect(pendingStore.setPending(5, entry('0x55'))).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
+    await expect(pendingStore.clearPending(5)).rejects.toMatchObject({ code: 'requirement_unmet' });
+    expect(methods().filter((method) => method !== 'safe_pending.list')).toEqual([]);
+    expect(pendingSim.text()).toBe(JSON.stringify({ 5: entry('0x05'), 6: entry('0x06') }, null, 2));
+    pendingSim.moved = true;
+    await pendingStore.ready;
+    expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
+  });
+
+  describe('a write the core applied and then lost the answer to', () => {
+    const lose = (method) => {
+      pendingSim.loseReply = (called) => called === method;
+    };
+    const failReads = () => {
+      pendingSim.fail = (method) => {
+        if (method === 'safe_pending.get') {
+          throw Object.assign(new Error('The identity core is not running'), {
+            code: 'core_unavailable',
+          });
+        }
+      };
+    };
+    beforeEach(() => {
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      pendingSim.loseReply = null;
+    });
+
+    test('a set: it throws, and the entry is the one the core read back, a new object', async () => {
+      const held = pendingStore.getPending(5);
+      held.signatures = [sig(1)];
+      lose('safe_pending.set');
+      await expect(pendingStore.setPending(5, held)).rejects.toMatchObject({
+        code: 'core_unavailable',
+      });
+      const now = pendingStore.getPending(5);
+      expect(now).not.toBe(held);
+      expect(now).toEqual(entry('0x05', [sig(1)]));
+      expect(methods()).toEqual(['safe_pending.set', 'safe_pending.get']);
+    });
+
+    test("a set whose read back fails: the last confirmed entry, new, until the restart's load gives the core's, new again", async () => {
+      const held = pendingStore.getPending(5);
+      held.signatures = [sig(1)];
+      lose('safe_pending.set');
+      failReads();
+      await expect(pendingStore.setPending(5, held)).rejects.toMatchObject({
+        code: 'core_unavailable',
+      });
+      const fallback = pendingStore.getPending(5);
+      expect(fallback).not.toBe(held);
+      expect(fallback).toEqual(entry('0x05'));
+      client.emit('exit');
+      expect(pendingStore.getPending(5)).toBeNull();
+      pendingSim.fail = null;
+      client.emit('ready');
+      await pendingStore.ready;
+      const reloaded = pendingStore.getPending(5);
+      expect(reloaded).not.toBe(held);
+      expect(reloaded).not.toBe(fallback);
+      expect(reloaded).toEqual(entry('0x05', [sig(1)]));
+    });
+
+    test('a clear: it throws, and the entry is gone, as the core read it back', async () => {
+      lose('safe_pending.clear');
+      await expect(pendingStore.clearPending(5)).rejects.toMatchObject({
+        code: 'core_unavailable',
+      });
+      expect(pendingStore.getPending(5)).toBeNull();
+      expect(pendingStore.listPendingIndexes()).toEqual([6]);
+    });
+
+    test("a clear whose read back fails: the entry as last confirmed, new, until the restart's load drops it", async () => {
+      const held = pendingStore.getPending(5);
+      lose('safe_pending.clear');
+      failReads();
+      await expect(pendingStore.clearPending(5)).rejects.toMatchObject({
+        code: 'core_unavailable',
+      });
+      expect(pendingStore.getPending(5)).not.toBe(held);
+      expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
+      client.emit('exit');
+      pendingSim.fail = null;
+      client.emit('ready');
+      await pendingStore.ready;
+      expect(pendingStore.getPending(5)).toBeNull();
+      expect(pendingStore.listPendingIndexes()).toEqual([6]);
+    });
   });
 });
 

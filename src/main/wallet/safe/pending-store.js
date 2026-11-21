@@ -14,20 +14,26 @@
  * it, so its reads stay synchronous (`getPending`, `listPendingIndexes`)
  * and an entry read is the same object while it lives, which the
  * signature loops check (`signature-collection.js`):
- * - **Loaded** whole at each start of the core (`attachCore`):
- *   `safe_pending.list`, then `safe_pending.get` for each index. A reload
- *   keeps an entry's object when the core's entry is the one main had.
- *   Until a load has succeeded the copy is empty, so `getPending` answers
- *   null (design 0013's G29). Safe flows wait on `ready` first: the first
- *   load, then another if that one failed, which rejects as it fails.
- * - **Written through:** `setPending` and `clearPending` send the change to
- *   the core and apply it to the copy only once the core has answered it.
- *   A change the core refuses or reports failed (`storage`, the store as it
- *   was), or whose answer is lost, throws, and the index is read again from
- *   the core into a new object, so a loop that holds the old one stops; if
- *   the core can't answer that read, the new object is the entry as the core
- *   last confirmed it. Nothing is sent again (design 0013's G9): the next
- *   start of the core loads the store again.
+ * - **One core process at a time:** the copy is the store as the running
+ *   core process loaded it (`attachCore`): `safe_pending.list`, then
+ *   `safe_pending.get` for each index, at each `ready`. From the core's
+ *   exit (or a new `ready`) until that process's load has succeeded, the
+ *   copy is unavailable: `getPending` answers null and
+ *   `listPendingIndexes` none (design 0013's G29), and `ready`, which Safe
+ *   flows and every write wait on, waits for that load. A load that fails
+ *   rejects it, and nothing acts on the store until a load succeeds: each
+ *   later wait tries one. An entry keeps its object only when the reload
+ *   finds it as it was (the core's answer deep-equal to it); any other is a
+ *   new object, so a loop that holds the old one stops.
+ * - **Written through:** `setPending` and `clearPending` wait for the copy,
+ *   send the change to the core and apply it to the copy only once the core
+ *   has answered it. A change the core refuses or reports failed
+ *   (`storage`, the store as it was), or whose answer is lost (written or
+ *   not), throws, and the index is read again from the core into a new
+ *   object, so a loop that holds the old one stops; if the core can't
+ *   answer that read, the new object is the entry as the core last
+ *   confirmed it, until the next start of the core loads the store again.
+ *   Nothing is sent again (design 0013's G9).
  * - **In turn:** loads, writes and their reads go to the core one at a
  *   time, each once the one before has answered, so a later answer is
  *   never overtaken by an earlier one.
@@ -39,7 +45,8 @@
 
 const LOG = '[SafePending]';
 
-// Main's copy, as the core holds it: wallet index -> entry.
+// Main's copy, as the core holds it: wallet index -> entry. Read only
+// while `available`.
 const cache = new Map();
 // Each entry's JSON text as the core last confirmed it: what a failed
 // write falls back to when the core can't be read.
@@ -51,12 +58,14 @@ let turn = Promise.resolve();
 let drops = 0;
 const droppedAt = new Map();
 
-// The core client the copy follows, whether a load has succeeded, and the
-// first load after attaching (settled however it ends).
+// Whether the copy is the running core process's, loaded. `epoch` counts
+// each process (an exit, a `ready`): a load applies only within the one it
+// began in. `waiter` is the wait for the running process's load, settled
+// by it (or by the core giving up).
+let available = false;
+let epoch = 0;
+let waiter = null;
 let attachedCore = null;
-let loaded = false;
-let firstLoad = null;
-let settleFirstLoad = null;
 
 function vault() {
   return require('../../core/vault-backend').vaultBackend;
@@ -68,22 +77,45 @@ function inTurn(task) {
   return run;
 }
 
+function newWaiter() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  promise.catch(() => {});
+  return { promise, resolve, reject, done: false };
+}
+
+function settle(wait, error = null) {
+  if (wait.done) return;
+  wait.done = true;
+  if (error) wait.reject(error);
+  else wait.resolve();
+}
+
+/** A core process ended or began: the copy is unavailable until its load. */
+function invalidate() {
+  available = false;
+  epoch += 1;
+  if (!waiter || waiter.done) waiter = newWaiter();
+}
+
 function drop(index) {
   cache.delete(index);
   confirmed.delete(index);
 }
 
-/** The core's entry for `index` into the copy; the one main has is kept when equal. */
-function adopt(index, entry) {
-  const text = JSON.stringify(entry);
-  if (!cache.has(index) || confirmed.get(index) !== text) cache.set(index, entry);
-  confirmed.set(index, text);
-}
-
 const isIndex = (value) => Number.isSafeInteger(value) && value >= 0;
 
-/** The store, whole, from the core into the copy. Throws as a request fails. */
+/**
+ * The store, whole, from the core into the copy, which is then available:
+ * true, or false when another core process began meanwhile (whose own load
+ * decides). Throws as a request fails, the copy left unavailable.
+ */
 async function loadAll() {
+  const began = epoch;
   const since = drops;
   const indices = await vault().safePending.list();
   if (!Array.isArray(indices) || !indices.every(isIndex)) {
@@ -94,18 +126,42 @@ async function loadAll() {
     const entry = await vault().safePending.get(index);
     if (entry) entries.set(index, entry);
   }
+  if (epoch !== began) return false;
   const droppedSince = (index) => (droppedAt.get(index) ?? 0) > since;
   for (const index of [...cache.keys()]) {
     if (!entries.has(index) && !droppedSince(index)) drop(index);
   }
   for (const [index, entry] of entries) {
-    if (!droppedSince(index)) adopt(index, entry);
+    if (droppedSince(index)) continue;
+    const text = JSON.stringify(entry);
+    // The object main had, only where the core's entry is that object as
+    // it stands now: confirmed, it lives on; anything else is new.
+    const held = cache.get(index);
+    if (!held || JSON.stringify(held) !== text) cache.set(index, entry);
+    confirmed.set(index, text);
   }
-  loaded = true;
+  available = true;
+  return true;
 }
 
 function load() {
   return inTurn(loadAll);
+}
+
+/**
+ * Resolves once the copy is the running core process's, loaded; rejects
+ * when that load fails. With none under way (no core attached, or its load
+ * failed), it loads now.
+ */
+async function whenLoaded() {
+  for (;;) {
+    if (available) return;
+    if (waiter && !waiter.done) {
+      await waiter.promise;
+    } else if (await load()) {
+      return;
+    }
+  }
 }
 
 /**
@@ -142,48 +198,56 @@ function notDurable(what, reply) {
 }
 
 /**
- * core-process.js: main's copy follows `client`, the core client, loaded
- * whole at each start of the core (a restarted core reads the file again).
+ * core-process.js: main's copy follows `client`, the core client: loaded
+ * whole at each start of the core (a restarted core reads the file again),
+ * and unavailable from each exit until then.
  */
 function attachCore(client) {
   if (!client || typeof client.on !== 'function' || client === attachedCore) return;
   attachedCore = client;
-  firstLoad = new Promise((resolve) => {
-    settleFirstLoad = resolve;
-  });
-  const settle = settleFirstLoad;
+  invalidate();
+  client.on('exit', invalidate);
   client.on('ready', () => {
-    load()
-      .catch((err) =>
+    invalidate();
+    const wait = waiter;
+    load().then(
+      (applied) => {
+        if (applied) settle(wait);
+      },
+      (err) => {
         console.error(
           `${LOG} Failed to load the pending Safe transactions (${err?.code || 'error'}):`,
           err?.message || err
-        )
-      )
-      .finally(settle);
+        );
+        settle(wait, err);
+      }
+    );
   });
-  // A core that fails to start leaves the copy unread: `ready` then tries
-  // a load of its own, which fails as the core is down.
-  client.on('failed', settle);
-}
-
-/** Resolves once main's copy has been loaded; rejects if it can't be. */
-async function whenLoaded() {
-  if (!loaded && firstLoad) await firstLoad;
-  if (!loaded) await load();
+  // A core that gives up leaves the copy unloaded: the wait fails, and each
+  // later one tries a load of its own, which fails while the core is down.
+  client.on('failed', () => {
+    if (waiter && !waiter.done) {
+      settle(
+        waiter,
+        Object.assign(new Error('The identity core is not running'), { code: 'core_unavailable' })
+      );
+    }
+  });
 }
 
 /** @returns {Object|null} The pending entry for a safe wallet index */
 function getPending(safeIndex) {
-  return cache.get(safeIndex) || null;
+  return (available && cache.get(safeIndex)) || null;
 }
 
 /**
  * Sets the Safe's pending entry in the core, then in main's copy: `entry`
- * itself, which `getPending` answers from then on. Rejects as the core's
- * answer does, with the index read again (see above).
+ * itself, which `getPending` answers from then on. Waits for the copy
+ * first, and rejects as that wait or the core's answer does, with the
+ * index read again (see above).
  */
-function setPending(safeIndex, entry) {
+async function setPending(safeIndex, entry) {
+  await whenLoaded();
   return inTurn(async () => {
     let reply;
     try {
@@ -199,7 +263,8 @@ function setPending(safeIndex, entry) {
 }
 
 /** Clears the Safe's pending entry in the core, then in main's copy; rejects as `setPending` does. */
-function clearPending(safeIndex) {
+async function clearPending(safeIndex) {
+  await whenLoaded();
   return inTurn(async () => {
     let reply;
     try {
@@ -215,7 +280,7 @@ function clearPending(safeIndex) {
 
 /** Safe wallet indexes that currently have a pending SafeTx, ascending. */
 function listPendingIndexes() {
-  return [...cache.keys()].sort((a, b) => a - b);
+  return available ? [...cache.keys()].sort((a, b) => a - b) : [];
 }
 
 /**
@@ -243,14 +308,17 @@ function _reset() {
   droppedAt.clear();
   drops = 0;
   turn = Promise.resolve();
+  available = false;
+  epoch = 0;
+  waiter = null;
   attachedCore = null;
-  loaded = false;
-  firstLoad = null;
-  settleFirstLoad = null;
 }
 
 module.exports = {
-  /** Resolves once main's copy has been loaded from the core; rejects if it can't be. */
+  /**
+   * Resolves once main's copy is the running core process's, loaded;
+   * rejects if that load fails (each later wait tries again).
+   */
   get ready() {
     return whenLoaded();
   },
