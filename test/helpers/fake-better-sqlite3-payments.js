@@ -1,5 +1,7 @@
 // In-memory fake of better-sqlite3 sized to the `payments` table only.
-// Mirrors the SQL strings emitted by src/main/payment-history.js — both
+// Mirrors the SQL strings emitted by the reference payment-history module
+// (reference-payment-history.js; main's own is the identity core's client
+// since PRF-6(c), and the simulated core runs the reference) — both
 // the static prepared statements and the dynamic getRecent/getCount
 // queries (whose WHERE clauses vary by filter set). Unknown SQL throws
 // so schema drift surfaces as a test failure.

@@ -756,9 +756,12 @@ async function bootstrap() {
   registerLedgerIpc();
   registerRemoteSignerIpc();
   // The wallet's durable intent records (freedom-core design 0005, "Retrying
-  // an intent"): read, checked and compacted once at startup. A damaged file
-  // is set aside here. Then the finality tracker labels the held ones at
-  // the finalized block, settling those paid, failed or taken.
+  // an intent"), which the identity core keeps (design 0013, "The intent
+  // journal"; PRF-6(b2)): its first `intents.usage`, once the core is up,
+  // loads them, checks them and compacts them, and sets a damaged file
+  // aside. Then the finality tracker labels the held ones at the finalized
+  // block, settling those paid, failed or taken. On a core that didn't take
+  // the store, the load fails `requirement_unmet`, and no tracker starts.
   getIntentStore()
     .load()
     .then(() => getIntentTracker().start())
@@ -853,15 +856,17 @@ async function bootstrap() {
   }
 
   // Resolve any pending broadcast txs that didn't get a final receipt
-  // before the previous run exited. Fire-and-forget — the wallet stack
-  // is up by now (registerWalletIpc above wires the provider pool) and
-  // the sweep updates rows in place.
-  paymentHistory.repollPending(getTxStatus).catch((err) => {
-    log.warn(`[App] payment-history repoll failed: ${err.message}`);
-  });
+  // before the previous run exited, once the identity core, which keeps
+  // the payment history (design 0013, PRF-6(c)), is up, and again at each
+  // restart of it, after the writes a restart left unanswered are settled.
+  // Fire-and-forget — the wallet stack is up by now (registerWalletIpc
+  // above wires the provider pool) and the sweep updates rows in place.
+  paymentHistory.attachCore(getTxStatus);
   // Phone payments an earlier run left unverified: each waits for the
   // core's `phone.checked`, up to its deadline (design 0012, PHN-2).
-  resumePhoneChecks();
+  resumePhoneChecks().catch((err) => {
+    log.warn(`[App] unverified phone payments not resumed: ${err.message}`);
+  });
 
   if (!TEST_MODE) {
     // Skip registering the real bzz/ipfs/ipns/web3 handlers in test mode —
@@ -1257,7 +1262,6 @@ async function windDown() {
   closeHistoryDb();
   closeDownloadsDb();
   closePublishHistoryDb();
-  paymentHistory.closeDb();
 
   // Clean up any GitHub bridge temp directories
   cleanupTempDirs();

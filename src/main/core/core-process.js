@@ -56,13 +56,18 @@ async function startCore() {
     shellVersion: app.getVersion(),
     // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
     // `dweb.forget`. It's the client's only protocol, and the only one the
-    // pinned core (0.23.0) takes; a core that answers another is a
+    // pinned core (0.25.0) takes; a core that answers another is a
     // mismatch, not restarted.
     protocol: PROTOCOL_VERSION_STREAMS,
     // The hello's `grant_root` (design 0012, APR-3): where the four
     // permission files are, the profile's Freedom root (its userData until
     // 0013's move, freedom-root.js), which the stores write them under.
     grantRoot: getFreedomDataDir(),
+    // The hello's `user_data_dir` (design 0013, PRF-8b-lite): the profile's
+    // own directory, where the core imports the legacy `x402-receipts.json`
+    // from once. It stays at the profile's root after 0013's move, when the
+    // Freedom root no longer is.
+    userDataDir: app.getPath('userData'),
   });
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));
   // Every (re)start reports node identity writes recovery couldn't finish;
@@ -91,6 +96,9 @@ async function startCore() {
   // The dApp grants, which the core writes (design 0012, APB-2): main's
   // copy read at each handshake, and again for each change the core sends.
   require('../wallet/dapp-permissions').attachCore(client);
+  // The pending Safe transactions, which the core writes (design 0013,
+  // PRF-6(d)): main's copy loaded at each handshake.
+  require('../wallet/safe/pending-store').attachCore(client);
   // The RPC API keys, which the core keeps (design 0013, PRF-6(e)): main's
   // copy, for the requests main runs itself, read at each handshake.
   require('../wallet/rpc-manager').attachCore(client);

@@ -120,7 +120,9 @@ function createVaultBackend(walletIndex, authorized = {}) {
   // for something else or from another key.
   const mismatch = () => new Error('The identity core returned a signature that does not match');
   const wrapped = (label, err) =>
-    err?.code === 'vault_locked' ? err : refusal(err) || new Error(`${label}: ${err.message}`, { cause: err });
+    err?.code === 'vault_locked'
+      ? err
+      : refusal(err) || new Error(`${label}: ${err.message}`, { cause: err });
   const options = signOptions(authorized);
   // The caller's last check, whenever the caller gives one: for a signature
   // no token answers, main's own (a Safe owner's) or a standing rule's; and
@@ -162,7 +164,8 @@ function createVaultBackend(walletIndex, authorized = {}) {
     signMessage: (message) =>
       withVaultAccount(walletIndex, async (key) => {
         // Strings sign as UTF-8, as ethers' signMessage does.
-        const bytes = typeof message === 'string' ? Buffer.from(message, 'utf8') : Buffer.from(message);
+        const bytes =
+          typeof message === 'string' ? Buffer.from(message, 'utf8') : Buffer.from(message);
         const expected = await ownAddress();
         if (lastCheck) await lastCheck();
         let signature;
@@ -219,7 +222,16 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * quoted none for is named as zero. The core relays only `to`, `value`,
  * `data` and the chain.
  */
-function phoneJobTx({ to, value, data, chainId, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice }) {
+function phoneJobTx({
+  to,
+  value,
+  data,
+  chainId,
+  gasLimit,
+  maxFeePerGas,
+  maxPriorityFeePerGas,
+  gasPrice,
+}) {
   const { tx } = toCoreTransaction(
     buildTransaction({
       to,
@@ -290,6 +302,22 @@ function phoneJobTx({ to, value, data, chainId, gasLimit, maxFeePerGas, maxPrior
  *   it was spent under (null when it gave none); or a Safe approval
  * @returns {Signer}
  */
+/**
+ * What a device's answer showed about its record, kept by the identity core
+ * (`accounts.record_address_check`) without holding up the signature: a
+ * failure is logged, and the next answer is kept again.
+ */
+function keepAddressCheck(record, walletIndex, matched) {
+  const warn = (err) => {
+    console.warn(`[Signers] Account ${walletIndex}'s address check was not kept:`, err?.message);
+  };
+  try {
+    Promise.resolve(record(walletIndex, matched)).catch(warn);
+  } catch (err) {
+    warn(err);
+  }
+}
+
 function getSigner(walletIndex, authorized = {}) {
   if (!isValidWalletIndex(walletIndex)) {
     throw new Error('Invalid wallet index');
@@ -328,8 +356,9 @@ function getSigner(walletIndex, authorized = {}) {
   if (record && record.type === WALLET_TYPES.LEDGER) {
     backend = createLedgerBackend(record, {
       // What the device said about a record no device has matched yet
-      // (#1065): kept on the record.
-      onAddressCheck: (matched) => recordLedgerAddressCheck(walletIndex, matched),
+      // (#1065): kept on the record by the identity core, without holding
+      // up the signature; a failure is logged.
+      onAddressCheck: (matched) => keepAddressCheck(recordLedgerAddressCheck, walletIndex, matched),
       ...(authorized?.beforeSign ? { beforeSign: authorized.beforeSign } : {}),
     });
     backendChecks = true;
@@ -337,7 +366,7 @@ function getSigner(walletIndex, authorized = {}) {
     backend = createRemoteBackend(record, {
       // What the phone's answer showed about the record (#1078): kept on
       // it, so a record added before the phone check gets checked.
-      onAddressCheck: (matched) => recordRemoteAddressCheck(walletIndex, matched),
+      onAddressCheck: (matched) => keepAddressCheck(recordRemoteAddressCheck, walletIndex, matched),
     });
     phoneJob = true;
   } else {
@@ -354,7 +383,8 @@ function getSigner(walletIndex, authorized = {}) {
   // whether a token answers it or not. A phone's backend asks the phone in
   // the same run as it is called; a Ledger's waits on its device session
   // first, so its backend runs the check there, right before the APDU.
-  const beforeSign = vaultSigned || backendChecks || phoneJob ? null : authorized?.beforeSign || null;
+  const beforeSign =
+    vaultSigned || backendChecks || phoneJob ? null : authorized?.beforeSign || null;
   // A phone job's authorization and PageContext (`signOptions`, as a vault
   // signature presents them), `payload` the `sign.*` params without the
   // key, and the caller's last check, which the bridge awaits once the core
@@ -374,7 +404,8 @@ function getSigner(walletIndex, authorized = {}) {
   const spendAndCheck = async () => {
     if (confirmation) {
       const spent = await spendConfirmation(confirmation);
-      if (typeof authorized?.onReceipt === 'function') authorized.onReceipt(finalizeReceiptOf(spent, confirmation.page));
+      if (typeof authorized?.onReceipt === 'function')
+        authorized.onReceipt(finalizeReceiptOf(spent, confirmation.page));
     }
     if (beforeSign) await beforeSign();
   };
@@ -449,7 +480,8 @@ function getSigner(walletIndex, authorized = {}) {
       // transaction showed and matched.
       const bound = authorized?.confirmation?.payload?.tx;
       const sent = await backend.sendTransaction(tx, jobOf({ tx: bound ?? phoneJobTx(tx) }));
-      if (phoneJob && typeof authorized?.onRule === 'function') authorized.onRule(sent?.rule ?? null);
+      if (phoneJob && typeof authorized?.onRule === 'function')
+        authorized.onRule(sent?.rule ?? null);
       return sent;
     };
   }

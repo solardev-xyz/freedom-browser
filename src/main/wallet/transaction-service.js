@@ -441,6 +441,21 @@ async function broadcastIntent(intent, handoff, extra = {}, { redact = false } =
   return { ...result, outcome, broadcastSource: source };
 }
 
+// The identity core's answer to a commit was lost (it died or hung with the
+// request written: design 0013's coordinator call G9). The intent may be
+// held at its nonce, never handed off: nothing was sent, the commit is never
+// sent again, and once the core answers it shows among the held intents,
+// for the user to send again rather than pay a second time.
+function commitUnknown(err) {
+  const error = new Error(
+    "The wallet couldn't confirm it recorded this payment, and sent nothing. If it shows " +
+      'under Payments waiting, send it again from there rather than starting a new one.',
+    { cause: err }
+  );
+  error.code = 'INTENT_COMMIT_UNKNOWN';
+  return error;
+}
+
 // Committed, but not handed off: nothing left main.
 function notSent(err, intentId) {
   const error = toSendError(err);
@@ -533,15 +548,19 @@ async function commitNewIntent(params, signer, { context = {}, key = null, guard
       // The store names the intent: its id comes back with the commit,
       // before anything is handed off.
       const commit = () =>
-        store.commit({
-          chainId,
-          sender: from,
-          nonce,
-          hash: keccak256(raw),
-          raw,
-          via: 'original',
-          context: intentContext(context, key),
-        });
+        store
+          .commit({
+            chainId,
+            sender: from,
+            nonce,
+            hash: keccak256(raw),
+            raw,
+            via: 'original',
+            context: intentContext(context, key),
+          })
+          .catch((err) => {
+            throw err?.code === 'core_unavailable' ? commitUnknown(err) : err;
+          });
       // The caller's guard, after the signature's wait: it commits in the
       // same run as its last checks, or withdraws the send.
       return guardCommit ? runGuarded(guardCommit, commit) : commit();
@@ -601,7 +620,7 @@ function intentContext(context, key) {
 async function resendIntent(intentId, { hash, guardHandoff = null } = {}) {
   const store = getIntentStore();
   await store.ready;
-  const intent = store.get(intentId);
+  const intent = await store.get(intentId);
   if (!intent) {
     const error = new Error(
       "This payment is not in the wallet's records, so it can't be sent again."
@@ -689,8 +708,8 @@ function replacementFeesFor(fields, fees) {
   return { gasPrice: gasPrice.toString() };
 }
 
-function heldIntent(store, intentId) {
-  const intent = store.get(intentId);
+async function heldIntent(store, intentId) {
+  const intent = await store.get(intentId);
   if (!intent) {
     const error = new Error("This payment is not in the wallet's records.");
     error.code = 'INTENT_UNKNOWN';
@@ -714,7 +733,7 @@ function heldIntent(store, intentId) {
 async function replacementFees(intentId) {
   const store = getIntentStore();
   await store.ready;
-  const { fields, chainId } = heldIntent(store, intentId);
+  const { fields, chainId } = await heldIntent(store, intentId);
   let quote = null;
   try {
     quote = await getGasPrices(chainId);
@@ -771,7 +790,7 @@ async function replacementFees(intentId) {
 async function replaceIntent(intentId, fees, signer) {
   const store = getIntentStore();
   await store.ready;
-  const intent = heldIntent(store, intentId);
+  const intent = await heldIntent(store, intentId);
   replacementFeesFor(intent.fields, fees);
 
   let committed = null;
@@ -781,7 +800,7 @@ async function replaceIntent(intentId, fees, signer) {
       { chainId: intent.chainId, sender: intent.sender },
       async () => {
         // As it stands under the lock: another replacement may have landed.
-        const current = heldIntent(store, intentId);
+        const current = await heldIntent(store, intentId);
         const checked = replacementFeesFor(current.fields, fees);
         if (String(await signer.getAddress()).toLowerCase() !== current.sender) {
           const error = new Error("This payment's account is not the one asked to sign it.");

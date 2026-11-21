@@ -1,6 +1,6 @@
 /**
  * The app's core client speaks protocol 2 (freedom-core design 0009, step
- * 6), the only one the pinned core (0.23.0) takes, so `shell.dweb_get` is
+ * 6), the only one the pinned core (0.25.0) takes, so `shell.dweb_get` is
  * registered and the `dweb.verify` verifier attaches.
  * Every 0009 feature in main waits for that verifier: the captured
  * backends' `verify`, `unsupported` and `strict`, the error page, and
@@ -8,9 +8,22 @@
  * CoreClient; only its process is stubbed.
  */
 
-jest.mock('electron', () => ({ app: { isPackaged: false, getVersion: () => '0.0.0-test' } }), {
-  virtual: true,
-});
+// The profile's directory (`userData`), apart from its Freedom root below
+// as after 0013's move, so the hello's two paths can be told apart.
+jest.mock(
+  'electron',
+  () => ({
+    app: {
+      isPackaged: false,
+      getVersion: () => '0.0.0-test',
+      getPath: (name) => {
+        if (name !== 'userData') throw new Error(`unexpected app.getPath(${name})`);
+        return require('path').join(require('os').tmpdir(), 'freedom-user-data');
+      },
+    },
+  }),
+  { virtual: true }
+);
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../profile-paths', () => ({ getIdentityDataDir: () => '/nonexistent/identity' }));
 jest.mock('../service-locks', () => ({ getLockDir: () => '/nonexistent/locks' }));
@@ -33,7 +46,7 @@ const core = require('./core-process');
 
 const HELLO = {
   protocol: PROTOCOL_VERSION_STREAMS,
-  core_version: '0.23.0',
+  core_version: '0.25.0',
   capabilities: ['streams', 'fragments'],
   node_recovery: null,
 };
@@ -53,18 +66,40 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   // freedom-core design 0012, "The APR-3 pin": the hello carries grant_root,
   // the directory of the four permission files; grant_moved names the files
   // the core writes from then on: the dApp file (APB-2), Swarm's and
-  // Radicle's (APB-3). Design 0013's store_moved names the RPC API keys
-  // (PRF-6(e)), and the app's client takes an echo of no other store.
+  // Radicle's (APB-3). Design 0013's store_moved names vault-meta.json's
+  // store (PRF-6(a)), the intent journal (PRF-6(b2)), the payment history
+  // (PRF-6(c)), safe-pending.json's (PRF-6(d)) and the RPC API keys
+  // (PRF-6(e)), and the app's client takes an echo of no other.
   const root = path.join(os.tmpdir(), 'freedom-profile');
   expect(client.grantRoot).toBe(root);
   const params = client.service.helloParams(client);
   expect(params.grant_root).toBe(root);
+  // Design 0013, PRF-8b-lite: the profile's directory, where the core
+  // imports the legacy x402 receipts from.
+  const userData = path.join(os.tmpdir(), 'freedom-user-data');
+  expect(client.userDataDir).toBe(userData);
+  expect(params.user_data_dir).toBe(userData);
   expect([...params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
-  expect(params.store_moved).toEqual(['rpc_api_keys']);
-  expect(client.service.validHello({ ...HELLO, store_moved: ['payments'] })).toBeNull();
-  expect(client.service.validHello({ ...HELLO, store_moved: ['rpc_api_keys'] }).store_moved).toEqual(
-    ['rpc_api_keys']
-  );
+  expect(params.store_moved).toEqual([
+    'vault_meta',
+    'intents',
+    'payments',
+    'safe_pending',
+    'rpc_api_keys',
+  ]);
+  expect(client.service.validHello({ ...HELLO, store_moved: ['history'] })).toBeNull();
+  expect(
+    client.service.validHello({ ...HELLO, store_moved: ['rpc_api_keys', 'rpc_api_keys'] })
+  ).toBeNull();
+  expect(
+    client.service.validHello({ ...HELLO, store_moved: ['rpc_api_keys'] }).store_moved
+  ).toEqual(['rpc_api_keys']);
+  expect(
+    client.service.validHello({
+      ...HELLO,
+      store_moved: ['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys'],
+    }).store_moved
+  ).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
   expect(start).toHaveBeenCalledTimes(1);
   expect(handle).toHaveBeenCalledWith('shell.dweb_get', expect.any(Function), {
     streams: true,

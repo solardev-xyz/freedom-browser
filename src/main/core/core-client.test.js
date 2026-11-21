@@ -204,6 +204,7 @@ function makeClient(handlers, options = {}) {
     args: ['serve'],
     log,
     grantRoot: options.grantRoot ?? os.tmpdir(),
+    userDataDir: options.userDataDir,
     setTimer: (fn, ms) => {
       const timer = { fn, ms, cleared: false };
       timers.push(timer);
@@ -269,7 +270,7 @@ describe('CoreClient', () => {
     expect(error.message).toBe('Vault is locked');
   });
 
-  // freedom-core design 0012, APR-3: the pinned core (0.23.0, as every core
+  // freedom-core design 0012, APR-3: the pinned core (0.25.0, as every core
   // from 0.14.0) requires `grant_root`, the permission files' directory; APB-2
   // moves the dApp file to the core and APB-3 Swarm's and Radicle's
   // (`grant_moved`): x402's too, from X402-2.
@@ -285,19 +286,64 @@ describe('CoreClient', () => {
     expect([...hello.params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
   });
 
-  // freedom-core design 0013, "One writer per store": the build names the
-  // RPC API keys (PRF-6(e)); the core echoes the names it took, and a core
+  // freedom-core design 0013, PRF-8b-lite: the profile's directory, where the
+  // core imports the legacy x402-receipts.json from (cored 0.24.0); an older
+  // core ignores the member. A client given none names none.
+  test('the hello names user_data_dir, absolute and normalized, only when given one', async () => {
+    const profile = path.join(os.tmpdir(), 'freedom-user-data');
+    const given = `${profile}${path.sep}.${path.sep}x${path.sep}..${path.sep}`;
+    const root = path.join(profile, 'freedom');
+    const { client, children } = makeClient([helloHandler()], {
+      grantRoot: root,
+      userDataDir: given,
+    });
+    expect(client.userDataDir).toBe(path.resolve(profile));
+    await client.start();
+    const { params } = children[0].requests[0];
+    expect(params.user_data_dir).toBe(path.resolve(profile));
+    expect(params.grant_root).toBe(path.resolve(root));
+
+    const without = makeClient([helloHandler()]);
+    expect(without.client.userDataDir).toBeNull();
+    await without.client.start();
+    expect(without.children[0].requests[0].params).not.toHaveProperty('user_data_dir');
+  });
+
+  // freedom-core design 0013, "One writer per store": the build names
+  // vault-meta.json's store (PRF-6(a)), the intent journal (PRF-6(b2)), the
+  // payment history (PRF-6(c)), safe-pending.json's (PRF-6(d)) and the RPC
+  // API keys (PRF-6(e)); the core echoes the names it took, and a core
   // before 0.23.0 answers none.
   test("the hello names the build's stores in store_moved, and an absent echo is none", async () => {
     expect(STORES).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
-    expect(STORE_MOVED).toEqual(['rpc_api_keys']);
+    expect(STORE_MOVED).toEqual([
+      'vault_meta',
+      'intents',
+      'payments',
+      'safe_pending',
+      'rpc_api_keys',
+    ]);
     expect(Object.isFrozen(STORE_MOVED)).toBe(true);
     const { client, children } = makeClient([helloHandler()]);
     const hello = await client.start();
-    expect(children[0].requests[0].params.store_moved).toEqual(['rpc_api_keys']);
+    expect(children[0].requests[0].params.store_moved).toEqual([
+      'vault_meta',
+      'intents',
+      'payments',
+      'safe_pending',
+      'rpc_api_keys',
+    ]);
     expect(hello.store_moved).toEqual([]);
     expect(client.hello.store_moved).toEqual([]);
-    for (const echo of [[], ['rpc_api_keys']]) {
+    for (const echo of [
+      [],
+      ['vault_meta'],
+      ['payments'],
+      ['safe_pending'],
+      ['rpc_api_keys'],
+      ['vault_meta', 'intents'],
+      ['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys'],
+    ]) {
       const echoed = makeClient([
         (m, core) =>
           m.method === 'core.hello' &&
@@ -391,6 +437,21 @@ describe('CoreClient', () => {
         'the core client needs grantRoot, an absolute path'
       );
     }
+  });
+
+  test('a client takes userDataDir only as an absolute path', () => {
+    const options = {
+      spawn: jest.fn(),
+      command: '/bin/freedom-cored',
+      args: ['serve'],
+      grantRoot: os.tmpdir(),
+    };
+    for (const userDataDir of [null, '', 'profile', `.${path.sep}profile`, 7]) {
+      expect(() => new CoreClient({ ...options, userDataDir })).toThrow(
+        'the core client takes userDataDir only as an absolute path'
+      );
+    }
+    expect(new CoreClient({ ...options, userDataDir: undefined }).userDataDir).toBeNull();
   });
 
   test('scrubs the environment', () => {
@@ -621,16 +682,23 @@ describe('CoreClient', () => {
   test('a held watchdog counts only the time outside its holds (0012 Steps, APB-4a)', async () => {
     const WATCHDOG = 135_000;
     let clock = 0;
-    const { client, children, runTimers, timers } = makeClient([helloHandler()], { now: () => clock });
+    const { client, children, runTimers, timers } = makeClient([helloHandler()], {
+      now: () => clock,
+    });
     await client.start();
     let sent = null;
     const hung = client
-      .request('eip1193.request', {}, { caller: 'shell' }, {
-        watchdogMs: WATCHDOG,
-        onSent: (id, generation) => {
-          sent = { id, generation };
-        },
-      })
+      .request(
+        'eip1193.request',
+        {},
+        { caller: 'shell' },
+        {
+          watchdogMs: WATCHDOG,
+          onSent: (id, generation) => {
+            sent = { id, generation };
+          },
+        }
+      )
       .catch((e) => e);
     await tick();
     expect(sent).toEqual({ id: children[0].requests.at(-1).id, generation: client.current.number });
@@ -1441,7 +1509,7 @@ describe('CoreClient', () => {
       ]);
     });
 
-    test("`shell.keystore`, which main has no executor for yet, is answered unknown_method, and the core goes on", async () => {
+    test('`shell.keystore`, which main has no executor for yet, is answered unknown_method, and the core goes on', async () => {
       // freedom-core design 0013 (PRF-1b, cored 0.16.0): the core's key store
       // asks main through `shell.keystore`, which the core sends from 0.17.0
       // (PRF-1c) on macOS when quick unlock is used. Main's executor is
@@ -1464,9 +1532,19 @@ describe('CoreClient', () => {
       send({
         id: 1,
         method: 'shell.keystore',
-        params: { op: 'open', policy: 'unattended', item, reply_key: replyKey, reason: 'quick_unlock' },
+        params: {
+          op: 'open',
+          policy: 'unattended',
+          item,
+          reply_key: replyKey,
+          reason: 'quick_unlock',
+        },
       });
-      send({ id: 2, method: 'shell.keystore', params: { op: 'forget', policy: 'unattended', item } });
+      send({
+        id: 2,
+        method: 'shell.keystore',
+        params: { op: 'forget', policy: 'unattended', item },
+      });
       send({ id: 3, method: 'shell.rpc', params: {} });
       for (let i = 0; i < 4; i++) await tick();
       expect(replies().sort((a, b) => a.id - b.id)).toEqual([

@@ -1,0 +1,2 @@
+- The payment history behind the Payments page is kept by Freedom's identity core ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - While the core isn't running, the Payments page can't list payments; payments still waiting for the network are checked again once it is back

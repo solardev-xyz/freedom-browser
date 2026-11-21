@@ -167,7 +167,7 @@ function toNonce(value) {
  * @param {string} options.sender
  * @param {() => Promise<number|bigint|string>} options.readPending the
  *   account's `pending` transaction count
- * @param {{ ready?: Promise<unknown>, heldNonces: (chainId: number, sender: string) => number[] }} options.store
+ * @param {{ ready?: Promise<unknown>, heldNonces: (chainId: number, sender: string) => Promise<number[]> }} options.store
  *   the intent store
  * @param {number} [options.waitMs]
  * @param {(nonce: number, lock: object) => Promise<T>} fn
@@ -177,7 +177,10 @@ async function reserve({ chainId, sender, readPending, store, waitMs }, fn) {
   return withAccountLock({ chainId, sender, waitMs }, async (lock) => {
     await store.ready;
     const pending = toNonce(await readPending());
-    const floor = store.heldNonces(chainId, sender).reduce((max, n) => Math.max(max, n + 1), 0);
+    // Read under the lock, as every new intent's commit is made: no other
+    // reservation of the account can commit between this read and `fn`'s.
+    const held = await store.heldNonces(chainId, sender);
+    const floor = held.reduce((max, n) => Math.max(max, n + 1), 0);
     return fn(Math.max(pending, floor), lock);
   });
 }

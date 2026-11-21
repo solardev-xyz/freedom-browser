@@ -291,7 +291,9 @@ describe('RPC API keys through freedom-cored (0013, PRF-6(e))', () => {
       main = loadMain(core);
       await asMain(async () => {
         await core.start();
-        expect(core.hello.store_moved).toEqual(['rpc_api_keys']);
+        // The build's whole store list, rpc_api_keys among them.
+        expect(core.hello.store_moved).toEqual([...require('../core/core-client').STORE_MOVED]);
+        expect(core.hello.store_moved).toContain('rpc_api_keys');
         await expect(
           main.ipcMain.invoke('networks:set-api-key', 'alchemy', KEY)
         ).resolves.toEqual({ success: true });

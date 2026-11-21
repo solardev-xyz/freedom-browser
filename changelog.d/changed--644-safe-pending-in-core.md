@@ -1,0 +1,2 @@
+- A multi-signature account's transaction that is waiting for signatures is kept by Freedom's identity core ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - A signature, a discard or an execution step the core couldn't save now says so, and the transaction shows as the core holds it, rather than looking saved until the next restart

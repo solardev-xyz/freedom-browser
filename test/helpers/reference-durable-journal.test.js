@@ -1,3 +1,6 @@
+// The reference journal (reference-durable-journal.js, at 9d4ea6251), which
+// the reference intent store writes for the unit suites (PRF-6(b2)): its
+// format and rules, as freedom-core's port keeps them.
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const fsp = require('fs/promises');
@@ -9,7 +12,7 @@ const {
   encodeLine,
   parseJournal,
   readJournal,
-} = require('./durable-journal');
+} = require('./reference-durable-journal');
 
 const POSIX = process.platform !== 'win32';
 const posixOnly = POSIX ? test : test.skip;
@@ -246,7 +249,7 @@ describe('append', () => {
     const result = spawnSync(process.execPath, ['-e', script], {
       env: {
         ...process.env,
-        JOURNAL_MODULE: require.resolve('./durable-journal'),
+        JOURNAL_MODULE: require.resolve('./reference-durable-journal'),
         JOURNAL_FILE: file,
       },
       timeout: 30000,

@@ -1,0 +1,3 @@
+- The wallet's record of signed payments, which keeps each one to a single nonce, is kept by Freedom's identity core ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - If the core stops before it confirms a payment was recorded, nothing is sent, and the wallet says so: the payment then shows under "Payments waiting" to send again, rather than being started a second time
+  - A payment that was never sent can't be dropped from "Payments waiting" after the core restarts; send it again instead

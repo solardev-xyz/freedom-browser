@@ -4,7 +4,11 @@
  * Orchestrates the unified identity system on top of the identity core
  * (freedom-cored, through core/vault-backend.js):
  * - vault lifecycle and lock state live in the core; nothing here holds keys
- * - vault-meta.json (public addresses, wallet records) stays here
+ * - vault-meta.json (public addresses, wallet records) is the core's from
+ *   PRF-6(a) (freedom-core design 0013, "`vault-meta.json`"): every change
+ *   goes through `accounts.*`, and the core writes the file with the vault
+ *   on a create or an import. Main reads the file, never writing it, only
+ *   for its synchronous lookups (`getVaultMeta`)
  * - node identities are written by the core (nodes.write_identity)
  * - IPC handlers for the renderer
  */
@@ -38,7 +42,7 @@ const { withRadicleGate } = require('./radicle/radicled-gate');
 const { radicleBackendKind } = require('./radicle/radicle-backend-kind');
 const { withPrivateDir } = require('./private-files');
 const keystorePassword = require('./swarm/ant-keystore-password');
-const { verifiedDeployedMark, verifiedDeployments } = require('./wallet/safe/deployed-mark');
+const { verifiedDeployments } = require('./wallet/safe/deployed-mark');
 
 // Optional Bee node lifecycle hooks, wired by the main process (see index.js).
 // Bee holds an exclusive LevelDB lock on statestore while running, so it must be
@@ -112,7 +116,10 @@ function getVaultMetaPath() {
 }
 
 /**
- * Get vault metadata
+ * Get vault metadata, read from the file the core writes: main's
+ * synchronous lookups only (the account seams below, the locked status).
+ * The chrome's reads go through the core (`accounts.meta`, `accounts.list`,
+ * `accounts.active`).
  * @returns {Object|null} Metadata or null if not found
  */
 function getVaultMeta() {
@@ -126,20 +133,6 @@ function getVaultMeta() {
     console.error('[IdentityManager] Failed to read vault meta:', err.message);
     return null;
   }
-}
-
-/**
- * Save vault metadata
- * @param {Object} meta - Metadata to save
- */
-function saveVaultMeta(meta) {
-  const metaPath = getVaultMetaPath();
-  const dir = path.dirname(metaPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
-  console.log('[IdentityManager] Vault metadata saved, userKnowsPassword:', meta.userKnowsPassword);
 }
 
 /**
@@ -166,30 +159,6 @@ async function deriveAddresses({ accounts = [], publishers = [] } = {}) {
     if (isVaultLockedError(err)) return null;
     throw err;
   }
-}
-
-/** Writes vault-meta.json for a freshly created or imported vault. */
-function saveNewVaultMeta(addresses, userKnowsPassword) {
-  saveVaultMeta({
-    userKnowsPassword,
-    createdAt: new Date().toISOString(),
-    addresses: {
-      userWallet: addresses.user_wallet,
-      beeWallet: addresses.bee_wallet,
-    },
-  });
-}
-
-/**
- * Finishes a create or import whose reply was lost, once the core has
- * confirmed it committed (design 0001, "Reconciliation"): main does what the
- * caller's success path would have done. vault-meta.json must be written (a
- * failure is retried). A Quick Setup vault's credential needs nothing more:
- * the core wrote it with the vault (`quick_unlock: true`), and no
- * quick-unlock.dat is written for it (freedom-core design 0013, PRF-2d).
- */
-async function finishLostSetup(found, userKnowsPassword) {
-  saveNewVaultMeta(found.addresses, userKnowsPassword);
 }
 
 /**
@@ -223,14 +192,13 @@ async function isVaultUnlocked() {
  * @returns {Promise<string>} The generated mnemonic (for backup display)
  */
 async function createNewVault(password, strength = 256, userKnowsPassword = true) {
-  const { mnemonic, addresses } = await vaultBackend.createVault(password, strength, {
-    userKnowsPassword,
-    onCommitted: (found) => finishLostSetup(found, userKnowsPassword),
-  });
+  // The core writes the vault and its vault-meta.json (the public addresses,
+  // shown without unlocking) as one operation, and unlocks after creation,
+  // as before (design 0013, "The vault and its metadata, one write"). A lost
+  // reply's reconcile needs nothing from main either: Quick Setup's
+  // credential is written with the vault too (`quick_unlock: true`).
+  const { mnemonic } = await vaultBackend.createVault(password, strength, { userKnowsPassword });
   console.log('[IdentityManager] New vault created');
-  // The core unlocks after creation, as before; save the public addresses
-  // so they can be shown without unlocking.
-  saveNewVaultMeta(addresses, userKnowsPassword);
   return mnemonic;
 }
 
@@ -249,13 +217,13 @@ async function importExistingMnemonic(
   userKnowsPassword = true,
   { quickUnlock = false } = {}
 ) {
-  const { addresses } = await vaultBackend.importVault(password, mnemonic, {
+  // The vault and its vault-meta.json, written by the core as one operation.
+  await vaultBackend.importVault(password, mnemonic, {
     overwrite: false,
     quickUnlock,
-    onCommitted: (found) => finishLostSetup(found, userKnowsPassword),
+    userKnowsPassword,
   });
   console.log('[IdentityManager] Mnemonic imported to vault');
-  saveNewVaultMeta(addresses, userKnowsPassword);
 }
 
 /**
@@ -264,9 +232,9 @@ async function importExistingMnemonic(
  * @returns {Promise<void>}
  */
 async function unlockVault(password) {
-  const { addresses } = await vaultBackend.unlock(password);
+  await vaultBackend.unlock(password);
   console.log('[IdentityManager] Vault unlocked');
-  afterUnlock(addresses);
+  afterUnlock();
 }
 
 /**
@@ -275,9 +243,9 @@ async function unlockVault(password) {
  * @returns {Promise<void>}
  */
 async function quickUnlockVault() {
-  const { addresses } = await vaultBackend.quickUnlock();
+  await vaultBackend.quickUnlock();
   console.log('[IdentityManager] Vault unlocked with quick unlock');
-  afterUnlock(addresses);
+  afterUnlock();
 }
 
 /**
@@ -287,7 +255,7 @@ async function quickUnlockVault() {
  */
 async function quickExportMnemonic() {
   const mnemonic = await vaultBackend.quickExportMnemonic();
-  afterUnlock(null);
+  afterUnlock();
   return mnemonic;
 }
 
@@ -299,34 +267,21 @@ async function quickExportMnemonic() {
 async function quickExportPrivateKeyForAccount(accountIndex) {
   assertPrivateKeyExportable(accountIndex);
   const privateKey = await vaultBackend.quickExportPrivateKey(accountIndex);
-  afterUnlock(null);
+  afterUnlock();
   return privateKey;
 }
 
 /**
- * What follows every unlock. `addresses` is the unlock's answer, or null
- * when the unlock came with an export (the metadata migration waits for the
- * next one).
+ * What follows every unlock. An older vault-meta.json without `addresses`
+ * gains them in the core, which writes them as both unlocks answer (design
+ * 0013, "The unlock's migration").
  */
-function afterUnlock(addresses) {
+function afterUnlock() {
   // The Swarm node could not open its keystore at its last start: the core
   // writes it again, same key, with a new password (K-3).
   if (beeLifecycle.needsKeyReinjection?.() === true) {
     void reencryptBeeKeystore().catch((err) => {
       console.warn('[IdentityManager] Could not re-inject the Swarm key:', err.message);
-    });
-  }
-
-  // Migrate old vaults: save addresses to metadata if not present
-  const meta = getVaultMeta();
-  if (addresses && meta && !meta.addresses) {
-    console.log('[IdentityManager] Migrating vault metadata to include addresses');
-    saveVaultMeta({
-      ...meta,
-      addresses: {
-        userWallet: addresses.user_wallet,
-        beeWallet: addresses.bee_wallet,
-      },
     });
   }
 }
@@ -447,7 +402,6 @@ async function readRadicleDid() {
     return null;
   }
 }
-
 
 function getBeeApiPortForIdentityConfig() {
   const profile = getActiveProfile();
@@ -607,7 +561,10 @@ const nodeInjections = new Map();
 
 function serializedInjection(node, task) {
   const run = (nodeInjections.get(node) || Promise.resolve()).then(task);
-  nodeInjections.set(node, run.catch(() => {}));
+  nodeInjections.set(
+    node,
+    run.catch(() => {})
+  );
   return run;
 }
 
@@ -1297,39 +1254,13 @@ function extraRecordFields(record) {
  * at the squatted derivation index can never be re-created (the hardware
  * guards block derivation at that index), stranding any funds it holds,
  * and every persisted reference to that index silently rebinds to a
- * different address and signing backend.
- *
- * @see nextHardwareWalletIndex
+ * different address and signing backend. The core allocates hardware
+ * indices, monotonic and never reused (`accounts.add_ledger`, …).
  */
 const HARDWARE_INDEX_BASE = 1000000;
 
 function isHardwareWalletIndex(index) {
   return Number.isInteger(index) && index >= HARDWARE_INDEX_BASE;
-}
-
-/**
- * Allocate the index for a new hardware account: monotonic and never
- * reused, so deleting a Ledger does not hand its index — and with it
- * every dApp permission and publisher identity pinned to that index — to
- * the next device account that gets added.
- *
- * The counter lives in vault-meta; the on-disk wallet list is used as a
- * high-water mark so a missing or stale counter can never produce a
- * collision.
- *
- * @param {Object} meta - Parsed vault-meta
- * @param {Array<Object>} wallets - Current wallet list
- * @returns {number}
- */
-function nextHardwareWalletIndex(meta, wallets) {
-  const counter = Number.isInteger(meta.nextHardwareWalletIndex)
-    ? meta.nextHardwareWalletIndex
-    : HARDWARE_INDEX_BASE;
-  const highWater = wallets.reduce(
-    (max, wallet) => (isHardwareWalletIndex(wallet.index) ? Math.max(max, wallet.index + 1) : max),
-    HARDWARE_INDEX_BASE
-  );
-  return Math.max(counter, highWater);
 }
 
 /**
@@ -1400,81 +1331,20 @@ function findWalletRecordByAddress(address, meta = getVaultMeta()) {
 }
 
 /**
- * Get list of derived user wallets
- * @returns {Array<{index: number, name: string, address: string, type: string}>}
+ * Get list of derived user wallets, from the core (`accounts.list`): mnemonic
+ * accounts' addresses derived while the vault is unlocked, the stored ones
+ * otherwise; the first list's default written once. `caller` is `'chrome'`
+ * for the chrome's request, null for main's own.
+ * @returns {Promise<Array<{index: number, name: string, address: string, type: string}>>}
  */
-async function getDerivedWallets() {
-  const meta = getVaultMeta();
-
-  if (!meta) {
-    return [];
-  }
-
-  // Initialize with default wallet if derivedWallets not present
-  if (!meta.derivedWallets) {
-    const mainWalletAddress = meta.addresses?.userWallet || null;
-    const wallets = [
-      {
-        index: 0,
-        name: 'Main Wallet',
-        address: mainWalletAddress,
-      },
-    ];
-
-    // Update meta with derivedWallets (include address for persistence)
-    saveVaultMeta({
-      ...meta,
-      derivedWallets: wallets,
-      activeWalletIndex: 0,
-    });
-
-    return wallets.map((wallet) => ({ ...wallet, type: WALLET_TYPES.MNEMONIC }));
-  }
-
-  // If vault is unlocked, derive addresses; otherwise use stored addresses
-  const mnemonicIndices = meta.derivedWallets
-    .filter((wallet) => (wallet.type || WALLET_TYPES.MNEMONIC) === WALLET_TYPES.MNEMONIC)
-    .map((wallet) => wallet.index);
-  const derived = await deriveAddresses({ accounts: mnemonicIndices });
-  const derivedByIndex = new Map(
-    (derived?.user_wallets || []).map((wallet) => [wallet.account, wallet.address])
-  );
-  const wallets = [];
-
-  for (const wallet of meta.derivedWallets) {
-    const type = wallet.type || WALLET_TYPES.MNEMONIC;
-    let address = null;
-
-    if (type !== WALLET_TYPES.MNEMONIC) {
-      // Device accounts (Ledger, phone): the address was read from the
-      // device when the account was added; nothing to derive locally.
-      address = wallet.address || null;
-    } else if (derived) {
-      address = derivedByIndex.get(wallet.index) ?? null;
-    } else {
-      // Use stored address from wallet object, or fallback to meta.addresses for index 0
-      if (wallet.address) {
-        address = wallet.address;
-      } else if (wallet.index === 0) {
-        address = meta.addresses?.userWallet || null;
-      }
-    }
-
-    wallets.push({
-      index: wallet.index,
-      name: wallet.name,
-      address,
-      type,
-      ...extraRecordFields(wallet),
-    });
-  }
-
-  return wallets;
+async function getDerivedWallets(caller = null) {
+  return vaultBackend.accounts.list(caller);
 }
 
 /**
  * Refuse a device account address that is malformed or already in the
- * wallet list, or a wallet list that doesn't exist yet.
+ * wallet list, or a wallet list that doesn't exist yet: main's check before
+ * it asks the phone (the core checks again as it adds the record).
  *
  * @returns {Object} The vault meta
  */
@@ -1497,44 +1367,6 @@ function assertDeviceWalletAddable(type, address) {
     throw new Error(`This account is already in your wallet list as "${duplicate.name}"`);
   }
   return meta;
-}
-
-/**
- * Add a device account (Ledger, phone) to the wallet list.
- *
- * The address comes from the device when the account is added and is
- * persisted — it can never be re-derived locally. Does not require the
- * vault to be unlocked (no mnemonic involved), only that a vault exists
- * so there is a wallet list to add to.
- *
- * @param {string} type - WALLET_TYPES.LEDGER or WALLET_TYPES.REMOTE
- * @param {string} name - Display name ('' → auto "<label> N")
- * @param {string} address - Checksummed address reported by the device
- * @param {object} [extra] - Extra record fields (e.g. Ledger's path)
- */
-async function addDeviceWallet(type, name, address, extra = {}) {
-  const label = DEVICE_LABELS[type];
-  const meta = assertDeviceWalletAddable(type, address);
-  const wallets = getWalletList(meta);
-
-  const newIndex = nextHardwareWalletIndex(meta, wallets);
-  const sameTypeCount = wallets.filter((w) => w.type === type).length;
-  const newWallet = {
-    index: newIndex,
-    name: (name || '').trim() || `${label} ${sameTypeCount + 1}`,
-    address,
-    type,
-    ...extra,
-  };
-  wallets.push(newWallet);
-
-  saveVaultMeta({
-    ...meta,
-    derivedWallets: wallets,
-    nextHardwareWalletIndex: newIndex + 1,
-  });
-
-  return { ...newWallet };
 }
 
 /**
@@ -1565,10 +1397,9 @@ async function addLedgerWallet(name, address, path) {
   if (typeof onDevice !== 'string' || onDevice.toLowerCase() !== address.toLowerCase()) {
     throw createLedgerError(LEDGER_ERROR_CODES.ADDRESS_MISMATCH);
   }
-  return addDeviceWallet(WALLET_TYPES.LEDGER, name, address, {
-    path,
-    addressCheck: ADDRESS_CHECK.MATCHED,
-  });
+  // The core adds the record main checked, `matched`, at its next hardware
+  // index (refusing a duplicate or a missing vault).
+  return vaultBackend.accounts.addLedger({ name, address, path });
 }
 
 /**
@@ -1617,9 +1448,7 @@ async function addRemoteWallet(name, address) {
   if (!matched) {
     throw createRemoteError(REMOTE_ERROR_CODES.ADDRESS_MISMATCH);
   }
-  return addDeviceWallet(WALLET_TYPES.REMOTE, name, address, {
-    addressCheck: ADDRESS_CHECK.MATCHED,
-  });
+  return vaultBackend.accounts.addRemote({ name, address });
 }
 
 /**
@@ -1637,7 +1466,7 @@ async function checkRemoteWallet(index) {
   }
   const { proveRemoteAccount } = require('./wallet/remote/account-proof');
   const matched = await proveRemoteAccount(record.address, index);
-  return { ...record, addressCheck: recordRemoteAddressCheck(index, matched) };
+  return { ...record, addressCheck: await recordRemoteAddressCheck(index, matched) };
 }
 
 /**
@@ -1646,32 +1475,16 @@ async function checkRemoteWallet(index) {
  * address at the record's path). A `matched` record stays matched: a
  * later answer that doesn't match is another Ledger, or the phone on
  * another account, and every signature is checked against the record
- * anyway. Never deletes a record.
+ * anyway. Never deletes a record. The core keeps it on the record
+ * (`accounts.record_address_check`).
  *
  * @param {string} type - A type in ADDRESS_CHECKED_TYPES
  * @param {number} index - Wallet index of the record
  * @param {boolean} matched
- * @returns {string|null} The record's check state, or null if it isn't such a record
+ * @returns {Promise<string|null>} The record's check state, or null if it isn't such a record
  */
 function recordAddressCheck(type, index, matched) {
-  const meta = getVaultMeta();
-  if (!meta) {
-    return null;
-  }
-  const wallets = getWalletList(meta);
-  const record = wallets.find((w) => w.index === index && w.type === type);
-  if (!record) {
-    return null;
-  }
-  const next =
-    matched || addressCheckOf(record) === ADDRESS_CHECK.MATCHED
-      ? ADDRESS_CHECK.MATCHED
-      : ADDRESS_CHECK.MISMATCHED;
-  if (record.addressCheck !== next) {
-    record.addressCheck = next;
-    saveVaultMeta({ ...meta, derivedWallets: wallets });
-  }
-  return next;
+  return vaultBackend.accounts.recordAddressCheck(type, index, matched);
 }
 
 /** What a device said about a Ledger record (see recordAddressCheck). */
@@ -1685,50 +1498,6 @@ function recordRemoteAddressCheck(index, matched) {
 }
 
 /**
- * Safe owners whose address their device must have proven (#1065 for
- * Ledger, #1078 for phones): in a 1-of-2 Safe an owner address planted by
- * the chrome would control the funds alone. Each entry gives the
- * refusal's code and text for a record that is `unchecked` or
- * `mismatched`.
- */
-const SAFE_OWNER_ADDRESS_CHECKS = {
-  [WALLET_TYPES.LEDGER]: {
-    code: LEDGER_ERROR_CODES.ACCOUNT_UNCHECKED,
-    unchecked: (name) =>
-      `"${name}" can't own a Safe until it has been checked on its Ledger. ` +
-      'Connect that Ledger and open Connect Hardware Wallet, then try again.',
-    mismatched: (name) =>
-      `"${name}" can't own a Safe: the Ledger last connected doesn't hold it. ` +
-      'Connect the Ledger that does and open Connect Hardware Wallet, then try again.',
-  },
-  [WALLET_TYPES.REMOTE]: {
-    code: REMOTE_ERROR_CODES.ACCOUNT_UNCHECKED,
-    unchecked: (name) =>
-      `"${name}" can't own a Safe until it has been checked on your phone. ` +
-      'Select it, open Wallet Settings and choose Check on Phone, then try again.',
-    mismatched: (name) =>
-      `"${name}" can't own a Safe: your phone last answered from a different account. ` +
-      'Select this account on your phone, check it again from Wallet Settings, then try again.',
-  },
-};
-
-function assertSafeOwnerAddressChecked(record) {
-  const check = SAFE_OWNER_ADDRESS_CHECKS[record.type];
-  if (!check) {
-    return;
-  }
-  const state = addressCheckOf(record);
-  if (state === ADDRESS_CHECK.MATCHED) {
-    return;
-  }
-  const err = new Error(
-    state === ADDRESS_CHECK.MISMATCHED ? check.mismatched(record.name) : check.unchecked(record.name)
-  );
-  err.code = check.code;
-  throw err;
-}
-
-/**
  * Add a Safe smart-account record.
  *
  * The init params (owners, threshold, saltNonce) are FROZEN once stored —
@@ -1739,7 +1508,9 @@ function assertSafeOwnerAddressChecked(record) {
  * before storing.
  *
  * Only the shipped presets are accepted: 1-of-2 and 2-of-3. 2-of-2 is
- * deliberately not offered — losing either device bricks the funds.
+ * deliberately not offered — losing either device bricks the funds. Each
+ * device owner must be `matched` (#1065, #1078): in a 1-of-2 Safe an owner
+ * address planted by the chrome would control the funds alone.
  *
  * @param {string} name - Display name ('' → auto "Safe N")
  * @param {Object} params
@@ -1750,35 +1521,10 @@ function assertSafeOwnerAddressChecked(record) {
  * @returns {Promise<Object>} The stored record
  */
 async function addSafeWallet(name, { address, owners, threshold, saltNonce }) {
-  const validPreset =
-    Array.isArray(owners) &&
-    ((owners.length === 2 && threshold === 1) || (owners.length === 3 && threshold === 2));
-  if (!validPreset) {
-    throw new Error('A Safe needs 1 of 2 or 2 of 3 owners');
-  }
-  if (new Set(owners).size !== owners.length) {
-    throw new Error('Duplicate owner accounts');
-  }
-  for (const ownerIndex of owners) {
-    const record = getWalletRecord(ownerIndex);
-    if (!record) {
-      throw new Error(`Owner wallet index ${ownerIndex} does not exist`);
-    }
-    if (record.type === WALLET_TYPES.SAFE) {
-      throw new Error('A Safe cannot own another Safe');
-    }
-    assertSafeOwnerAddressChecked(record);
-  }
-  if (typeof saltNonce !== 'string' || !/^\d+$/.test(saltNonce)) {
-    throw new Error('Invalid Safe salt nonce');
-  }
-
-  return addDeviceWallet(WALLET_TYPES.SAFE, name, address, {
-    owners: [...owners],
-    threshold,
-    saltNonce,
-    deployed: {},
-  });
+  // The core checks the preset, the owners (existing, no Safe, a device
+  // owner `matched`: LEDGER_ACCOUNT_UNCHECKED, REMOTE_ACCOUNT_UNCHECKED) and
+  // the salt, then stores the record.
+  return vaultBackend.accounts.addSafe({ name, address, owners, threshold, saltNonce });
 }
 
 /**
@@ -1793,21 +1539,12 @@ async function addSafeWallet(name, { address, owners, threshold, saltNonce }) {
  * @param {number} chainId
  */
 async function markSafeDeployed(index, chainId) {
-  const meta = getVaultMeta();
-  if (!meta) {
-    throw new Error('No vault found');
-  }
-  const wallets = getWalletList(meta);
-  const record = wallets.find((w) => w.index === index);
-  if (!record || record.type !== WALLET_TYPES.SAFE) {
-    throw new Error(`Wallet ${index} is not a Safe account`);
-  }
-  record.deployed = { ...(record.deployed || {}), [chainId]: verifiedDeployedMark() };
-  saveVaultMeta({ ...meta, derivedWallets: wallets });
+  await vaultBackend.accounts.markSafeDeployed(index, chainId);
 }
 
 /**
- * Get the active wallet index
+ * Get the active wallet index, read from the core's file (main's
+ * synchronous lookups; the chrome's goes through `accounts.active`)
  * @returns {number}
  */
 function getActiveWalletIndex() {
@@ -1818,113 +1555,31 @@ function getActiveWalletIndex() {
 /**
  * Set the active wallet index
  * @param {number} index - Wallet index to set as active
+ * @param {'chrome'|null} [caller] - the chrome's request, or main's own
  */
-async function setActiveWalletIndex(index) {
-  const meta = getVaultMeta();
-  if (!meta) {
-    throw new Error('No vault found');
-  }
-
-  // Verify wallet exists
-  const wallets = getWalletList(meta);
-  const walletExists = wallets.some((w) => w.index === index);
-
-  if (!walletExists) {
-    throw new Error(`Wallet with index ${index} does not exist`);
-  }
-
-  saveVaultMeta({
-    ...meta,
-    activeWalletIndex: index,
-  });
+async function setActiveWalletIndex(index, caller = null) {
+  await vaultBackend.accounts.setActive(index, caller);
 }
 
 /**
- * Create a new derived wallet
+ * Create a new derived wallet: the core picks the next mnemonic index and
+ * derives its address, and needs the vault unlocked.
  * @param {string} name - Wallet name
+ * @param {'chrome'|null} [caller] - the chrome's request, or main's own
  * @returns {Promise<{index: number, name: string, address: string}>}
  */
-async function createDerivedWallet(name) {
-  if (!(await isVaultUnlocked())) {
-    throw new Error('Vault must be unlocked to create a new wallet');
-  }
-
-  const meta = getVaultMeta();
-  if (!meta) {
-    throw new Error('No vault found');
-  }
-
-  // Get current wallets
-  const wallets = getWalletList(meta);
-
-  // Find next available index (use account index, starting from max + 1).
-  // Only mnemonic accounts constrain it — this index *is* the BIP-44
-  // account index the key is derived at, and hardware accounts live in
-  // their own range (see HARDWARE_INDEX_BASE). The taken-index skip is a
-  // safety net for vault-meta written before that split, where a Ledger
-  // may still sit on a low index.
-  const taken = new Set(wallets.map((w) => w.index));
-  const maxIndex = wallets.reduce(
-    (max, w) => (isHardwareWalletIndex(w.index) ? max : Math.max(max, w.index)),
-    -1
-  );
-  let newIndex = maxIndex + 1;
-  while (taken.has(newIndex)) {
-    newIndex += 1;
-  }
-
-  // Derive the new wallet's address
-  const addresses = await deriveAddresses({ accounts: [newIndex] });
-  if (!addresses) {
-    throw new Error('Vault must be unlocked to create a new wallet');
-  }
-  const derived = { address: addresses.user_wallets[0].address };
-
-  // Add to list (include address so it persists when vault is locked)
-  const newWallet = {
-    index: newIndex,
-    name: name || `Wallet ${newIndex + 1}`,
-    address: derived.address,
-  };
-  wallets.push(newWallet);
-
-  // Save updated metadata
-  saveVaultMeta({
-    ...meta,
-    derivedWallets: wallets,
-  });
-
-  return {
-    index: newIndex,
-    name: newWallet.name,
-    address: derived.address,
-  };
+async function createDerivedWallet(name, caller = null) {
+  return vaultBackend.accounts.addMnemonic(name, caller);
 }
 
 /**
  * Rename a derived wallet
  * @param {number} index - Wallet index
  * @param {string} newName - New wallet name
+ * @param {'chrome'|null} [caller] - the chrome's request, or main's own
  */
-async function renameDerivedWallet(index, newName) {
-  const meta = getVaultMeta();
-  if (!meta) {
-    throw new Error('No vault found');
-  }
-
-  const wallets = getWalletList(meta);
-  const walletIndex = wallets.findIndex((w) => w.index === index);
-
-  if (walletIndex === -1) {
-    throw new Error(`Wallet with index ${index} does not exist`);
-  }
-
-  wallets[walletIndex].name = newName;
-
-  saveVaultMeta({
-    ...meta,
-    derivedWallets: wallets,
-  });
+async function renameDerivedWallet(index, newName, caller = null) {
+  await vaultBackend.accounts.rename(index, newName, caller);
 }
 
 function getSwarmPublisherIdentityReferences(walletIndex) {
@@ -1932,115 +1587,70 @@ function getSwarmPublisherIdentityReferences(walletIndex) {
   return getEthereumWalletIdentityReferences(walletIndex);
 }
 
-function formatPublisherIdentityReferenceError(walletIndex, references) {
-  const origins = references.map((reference) => reference.origin);
-  const shownOrigins = origins.slice(0, 3).join(', ');
-  const extraCount = origins.length - 3;
-  const extra = extraCount > 0 ? ` and ${extraCount} more` : '';
-  return `Cannot delete wallet with index ${walletIndex}; it is active or pinned to Swarm feeds for ${shownOrigins}${extra}. Switch the affected publisher identities before deleting this wallet.`;
+/**
+ * Whether `accounts.remove` failed before the core ended anything: a refusal
+ * (`invalid_argument`, whose `data.code`, when it set one, became the error's
+ * code) or a request main never sent (`requirement_unmet`).
+ */
+function removalRefusedBeforeCleanup(err) {
+  if (err?.code === 'requirement_unmet' || err?.code === 'invalid_argument') return true;
+  return typeof err?.data?.code === 'string' && err.code === err.data.code;
 }
 
 /**
- * Delete a derived wallet
+ * Delete a derived wallet, through the core (`accounts.remove`, design 0013),
+ * which refuses the main wallet, a missing index, a Safe's owner and an
+ * account the Swarm feeds still name (main's feed store finds those, and
+ * passes them), then ends a Safe's open approvals, clears its pending
+ * SafeTx (safe-pending.json, the core's from PRF-6(d)), forgets the
+ * account's dApp grants (main's copy follows `approval.changed`) and
+ * removes the record, in one request.
+ *
+ * A Safe's exclusion is main's: taken before the request, refused
+ * (SAFE_BUSY) while one of its steps runs or a send has reserved it, and
+ * released after. Its half-signed state in main, keyed by wallet index (the
+ * in-memory approval slots and SafeMessage session, and main's copy of its
+ * pending entry), goes once the record has: a later account that reuses
+ * the index must neither inherit nor be blocked by it.
+ *
+ * A removal that fails after it may have reached the core's cleanup (a
+ * `storage` or `not_moved` answer from a later step, or no answer at all)
+ * may have ended the Safe's approvals and cleared its pending SafeTx in the
+ * core while the account stays: main drops its own approval slots too, so
+ * the Safe's next step asks for a new approval instead of presenting a
+ * token the core ended, and reads the pending entry again. A refusal the
+ * core answers before any cleanup (`invalid_argument`, carried as its
+ * `data.code`) and a request never sent (`requirement_unmet`) leave them.
+ *
  * @param {number} index - Wallet index (cannot be 0)
+ * @param {'chrome'|null} [caller] - the chrome's request, or main's own
  */
-async function deleteDerivedWallet(index) {
-  if (index === 0) {
-    throw new Error('Cannot delete the main wallet (index 0)');
-  }
-
-  const meta = getVaultMeta();
-  if (!meta) {
-    throw new Error('No vault found');
-  }
-
-  const wallets = getWalletList(meta);
-  const walletIndex = wallets.findIndex((w) => w.index === index);
-
-  if (walletIndex === -1) {
-    throw new Error(`Wallet with index ${index} does not exist`);
-  }
-
-  const publisherIdentityReferences = getSwarmPublisherIdentityReferences(index);
-  if (publisherIdentityReferences.length > 0) {
-    const err = new Error(formatPublisherIdentityReferenceError(index, publisherIdentityReferences));
-    err.code = 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE';
-    err.references = publisherIdentityReferences;
-    throw err;
-  }
-
-  // Safe owners are referenced by index; deleting one would leave the
-  // Safe unable to collect that signature (and break executor selection).
-  const owningSafe = wallets.find(
-    (w) => w.type === WALLET_TYPES.SAFE && (w.owners || []).includes(index)
-  );
-  if (owningSafe) {
-    throw new Error(
-      `This account is an owner of "${owningSafe.name}" — delete that Safe account first`
-    );
-  }
-
-  // A Safe's half-signed state is keyed by wallet index (safe-pending.json
-  // entry, in-memory SafeMessage session). Discard both WITH the record:
-  // a later account that reuses the index must neither inherit nor be
-  // blocked by the deleted Safe's leftovers. Cleanup precedes the meta
-  // write so a failure never leaves a deleted record with live state.
-  // (Lazy requires — both modules are dependency-light — keep the Safe
-  // stack out of ordinary wallet operations.)
-  let deletion = null;
+async function deleteDerivedWallet(index, caller = null) {
+  const references =
+    Number.isInteger(index) && index >= 0 ? getSwarmPublisherIdentityReferences(index) : [];
+  const isSafe = getWalletRecord(index)?.type === WALLET_TYPES.SAFE;
+  // Lazy requires (the Safe modules are dependency-light) keep the Safe
+  // stack out of ordinary wallet operations.
+  const safeApprovals = isSafe ? require('./wallet/safe/safe-approvals') : null;
+  const deletion = safeApprovals ? safeApprovals.beginDeletion(index) : null;
   try {
-    if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
-      const safeApprovals = require('./wallet/safe/safe-approvals');
-      // The Safe's exclusion first: refused (SAFE_BUSY) while one of its
-      // steps runs (a signature, an execution up to its broadcast) or a
-      // send has reserved it; from here no step, send or approval of it
-      // starts until the deletion ends, failed or done.
-      deletion = safeApprovals.beginDeletion(index);
-      // Its Safe approvals (freedom-core design 0012): ended in the core
-      // before the state they sign for goes. If an end fails, nothing is
-      // deleted (SAFE_APPROVAL_END_FAILED), and the user tries again.
-      await safeApprovals.endSafe(index);
-      require('./wallet/safe/message-sessions').discardSession(index);
-      require('./wallet/safe/pending-store').clearPending(index);
+    try {
+      await vaultBackend.accounts.remove(index, references, caller);
+    } catch (err) {
+      if (isSafe && !removalRefusedBeforeCleanup(err)) {
+        safeApprovals.forgetSafe(index);
+        await require('./wallet/safe/pending-store').refreshPending(index);
+      }
+      throw err;
     }
-    removeWalletRecord(index, meta);
+    if (isSafe) {
+      safeApprovals.forgetSafe(index);
+      require('./wallet/safe/message-sessions').discardSession(index);
+      require('./wallet/safe/pending-store').forgetPending(index);
+    }
   } finally {
     deletion?.release();
   }
-
-  // A dApp permission is a standing authorisation to sign with this one
-  // account (plus any auto-approve rules on top). It cannot outlive the
-  // account: the stored index would dangle, and for a hardware account it
-  // would dangle into an index that has no signer at all. The identity core
-  // revokes them (`approval.forget_account`, design 0012, APB-2); a failure
-  // is logged, as a failed save was.
-  // Lazy require: dapp-permissions pulls in electron's `ipcMain`, which
-  // identity-manager must not need at load time.
-  const { revokePermissionsForWalletIndex } = require('./wallet/dapp-permissions');
-  await revokePermissionsForWalletIndex(index);
-}
-
-/**
- * `deleteDerivedWallet`'s meta write: the record removed from the meta as
- * it is now (a Safe's approvals' end was an await, and a change saved
- * meanwhile stays), and the active wallet reset to the main one if it was
- * this one.
- */
-function removeWalletRecord(index, meta) {
-  const latest = getVaultMeta() || meta;
-  const remaining = getWalletList(latest).filter((w) => w.index !== index);
-
-  // If active wallet was deleted, reset to main wallet
-  let activeIndex = latest.activeWalletIndex ?? 0;
-  if (activeIndex === index) {
-    activeIndex = 0;
-  }
-
-  saveVaultMeta({
-    ...latest,
-    derivedWallets: remaining,
-    activeWalletIndex: activeIndex,
-  });
 }
 
 /**
@@ -2115,7 +1725,21 @@ function repairIdentityFiles() {
 }
 
 /**
- * Register IPC handlers for identity operations
+ * The renderer's `userKnowsPassword` for a new vault (its setup choice),
+ * which the core writes into vault-meta.json and requires as a boolean:
+ * absent means true, the reference's default; anything else that isn't a
+ * boolean is refused here, "Invalid parameters".
+ */
+function knowsPasswordFrom(value) {
+  if (value === undefined) return true;
+  if (typeof value !== 'boolean') throw new Error('Invalid parameters');
+  return value;
+}
+
+/**
+ * Register IPC handlers for identity operations. The chrome's vault-meta
+ * requests go to the core as the chrome's (`'chrome'`); the device, phone
+ * and Safe additions stay main's own, after its checks.
  */
 function registerIdentityIpc() {
   repairIdentityFiles();
@@ -2152,7 +1776,8 @@ function registerIdentityIpc() {
     IPC.IDENTITY_CREATE_VAULT,
     async (_event, password, strength, userKnowsPassword) => {
       try {
-        const mnemonic = await createNewVault(password, strength, userKnowsPassword);
+        const knows = knowsPasswordFrom(userKnowsPassword);
+        const mnemonic = await createNewVault(password, strength, knows);
         return { success: true, mnemonic };
       } catch (err) {
         return { success: false, error: err.message };
@@ -2165,7 +1790,7 @@ function registerIdentityIpc() {
     IPC.IDENTITY_IMPORT_MNEMONIC,
     async (_event, password, mnemonic, userKnowsPassword) => {
       try {
-        await importExistingMnemonic(password, mnemonic, userKnowsPassword);
+        await importExistingMnemonic(password, mnemonic, knowsPasswordFrom(userKnowsPassword));
         return { success: true };
       } catch (err) {
         return { success: false, error: err.message };
@@ -2173,9 +1798,15 @@ function registerIdentityIpc() {
     }
   );
 
-  // Get vault metadata (setup type, etc.)
-  ipcMain.handle('identity:get-vault-meta', () => {
-    return getVaultMeta();
+  // Get vault metadata (setup type, etc.), the core's file; null without
+  // one, or when the core can't answer (as an unreadable file read before).
+  ipcMain.handle('identity:get-vault-meta', async () => {
+    try {
+      return await vaultBackend.accounts.meta('chrome');
+    } catch (err) {
+      console.warn('[IdentityManager] Vault metadata not read:', err.message);
+      return null;
+    }
   });
 
   // Unlock vault
@@ -2280,7 +1911,7 @@ function registerIdentityIpc() {
   // Get list of derived wallets
   ipcMain.handle('wallet:get-derived-wallets', async () => {
     try {
-      const wallets = await getDerivedWallets();
+      const wallets = await getDerivedWallets('chrome');
       return { success: true, wallets };
     } catch (err) {
       return { success: false, error: err.message };
@@ -2288,9 +1919,9 @@ function registerIdentityIpc() {
   });
 
   // Get active wallet index
-  ipcMain.handle('wallet:get-active-index', () => {
+  ipcMain.handle('wallet:get-active-index', async () => {
     try {
-      const index = getActiveWalletIndex();
+      const index = await vaultBackend.accounts.active('chrome');
       return { success: true, index };
     } catch (err) {
       return { success: false, error: err.message };
@@ -2300,7 +1931,7 @@ function registerIdentityIpc() {
   // Set active wallet
   ipcMain.handle('wallet:set-active-wallet', async (_event, index) => {
     try {
-      await setActiveWalletIndex(index);
+      await setActiveWalletIndex(index, 'chrome');
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -2310,7 +1941,7 @@ function registerIdentityIpc() {
   // Create new derived wallet
   ipcMain.handle('wallet:create-derived-wallet', async (_event, name) => {
     try {
-      const wallet = await createDerivedWallet(name);
+      const wallet = await createDerivedWallet(name, 'chrome');
       return { success: true, wallet };
     } catch (err) {
       return { success: false, error: err.message };
@@ -2330,29 +1961,35 @@ function registerIdentityIpc() {
   // Add a remote (phone) account (address reported over openlv)
   // Both run for the window that asked (APS-4): the phone's QR shows in
   // its sidebar.
-  ipcMain.handle('wallet:add-remote-wallet', forSenderWindow(async (_event, name, address) => {
-    try {
-      const wallet = await addRemoteWallet(name, address);
-      return { success: true, wallet };
-    } catch (err) {
-      return { success: false, error: err.message, code: err.code };
-    }
-  }));
+  ipcMain.handle(
+    'wallet:add-remote-wallet',
+    forSenderWindow(async (_event, name, address) => {
+      try {
+        const wallet = await addRemoteWallet(name, address);
+        return { success: true, wallet };
+      } catch (err) {
+        return { success: false, error: err.message, code: err.code };
+      }
+    })
+  );
 
   // Check an existing phone account on the phone (#1078)
-  ipcMain.handle('wallet:check-remote-wallet', forSenderWindow(async (_event, index) => {
-    try {
-      const wallet = await checkRemoteWallet(index);
-      return { success: true, wallet };
-    } catch (err) {
-      return { success: false, error: err.message, code: err.code };
-    }
-  }));
+  ipcMain.handle(
+    'wallet:check-remote-wallet',
+    forSenderWindow(async (_event, index) => {
+      try {
+        const wallet = await checkRemoteWallet(index);
+        return { success: true, wallet };
+      } catch (err) {
+        return { success: false, error: err.message, code: err.code };
+      }
+    })
+  );
 
   // Rename wallet
   ipcMain.handle('wallet:rename-wallet', async (_event, index, newName) => {
     try {
-      await renameDerivedWallet(index, newName);
+      await renameDerivedWallet(index, newName, 'chrome');
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -2362,7 +1999,7 @@ function registerIdentityIpc() {
   // Delete wallet
   ipcMain.handle('wallet:delete-wallet', async (_event, index) => {
     try {
-      await deleteDerivedWallet(index);
+      await deleteDerivedWallet(index, 'chrome');
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };

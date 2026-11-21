@@ -203,13 +203,13 @@ jobs:
       # does, at one reviewed commit: moved on purpose when the protocol's
       # vectors, method table, Radicle vectors or key-store vectors change,
       # never with freedom-core's main. It is the commit
-      # `cored-v0.23.0` was built from. Each suite fails if a file it is
+      # `cored-v0.25.0` was built from. Each suite fails if a file it is
       # pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 27724467f6dd783f2c77d034fd87020fb08e0ce6
+          ref: a6e0d43d836f43a3ce03a686054b27fc40f0a809
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
@@ -954,9 +954,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       # freedom-core design 0013, "One writer per store: `store_moved`":
-      # before any set-A store moves (PRF-6(0)), the build's hello names
-      # none, and the pinned core echoes none, answers every store write
-      # `not_moved` with nothing in the profile changed, and opens neither
+      # the build's hello names vault_meta (PRF-6(a)), intents (PRF-6(b2)),
+      # payments (PRF-6(c)) and safe_pending (PRF-6(d)), and the pinned core
+      # echoes them. With a hello naming none, the pinned core echoes none,
+      # answers every store write `not_moved` with nothing in the profile
+      # changed, and opens neither
       # payment-history.sqlite nor rpc-api-keys.json; a hello naming all
       # five gets all five back; a store's request with `requires` fails
       # `requirement_unmet` in main. On the previous release, which ignores
@@ -965,6 +967,42 @@ jobs:
       - name: Store handover (real freedom-cored, pinned and previous)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/core/store-handover.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
+      # freedom-core design 0013, "The intent journal" (PRF-6(b2)): this
+      # build names `intents`, so the core is wallet-intents.jsonl's one
+      # writer. Main's intent store, nonce reservations and send path
+      # against the pinned core (commit and handoff before the broadcast,
+      # main's run on every line, the held nonces flooring the next send,
+      # the INTENT_* codes, a core restart making held intents recovered),
+      # with no write of the file by main; the reference store with the
+      # hello before this step (every write `not_moved`, the file
+      # unchanged, reads served); the previous release, where every
+      # intents.* request fails `requirement_unmet` and a send signs and
+      # broadcasts nothing; and the reference reading the core's file.
+      - name: The intent journal through the core (real freedom-cored, pinned and previous)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/wallet/intent-store.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
+      # freedom-core design 0013, "Payment history" (PRF-6(c)): this build
+      # names `payments`, so the core is payment-history.sqlite's one writer
+      # and reader. Main's payment-history.js against the pinned core
+      # (append, update and the marks, each broadcast after the core's
+      # answer; the refusals' classes; the repoll sweep; filters and paging,
+      # also through the chrome's IPC; clear; x402-receipts.json imported
+      # from user_data_dir and renamed .migrated), with main writing,
+      # reading and opening none of the database's files (an fs spy, a spy
+      # on better-sqlite3's constructor, and on Linux /proc's descriptors);
+      # the reference with a hello naming none (every payments.* not_moved,
+      # no database made by the core); the previous release, where every
+      # payments.* fails requirement_unmet; and the reference reading the
+      # core's database as the core answers it.
+      - name: The payment history through the core (real freedom-cored, pinned and previous)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/payment-history.integration.test.js
         env:
           FREEDOM_CORED_STORES_TEST: '1'
 
@@ -1160,6 +1198,41 @@ jobs:
           FREEDOM_CORED_KEYSTORE_TEST: '1'
           # On macOS the keychain legs must run, not skip.
           FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
+
+      # freedom-core design 0013, PRF-6(a): vault-meta.json is the core's,
+      # and the build's hello names vault_meta. On the pinned core,
+      # identity-manager.js's store-touching cases (a create and an import
+      # writing the metadata with the vault, the unlock's migration, every
+      # account change and refusal through accounts.*, Quick Setup under
+      # the temporary keychain on macOS), with main writing none of the
+      # store's files; the reference (9d4ea6251) with a hello naming none,
+      # whose account writes answer not_moved and whose file no core request
+      # changes; this build on the previous release, where a create, an
+      # import and every account operation fail requirement_unmet; and the
+      # reference reading the core's file as the core answers it.
+      - name: vault-meta.json through the core
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/identity-manager.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+          FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
+
+      # freedom-core design 0013, PRF-6(d): safe-pending.json is the core's,
+      # and the build's hello names safe_pending. On the pinned core, main's
+      # copy loading the file an older build left, and the Safe flows over
+      # it (a send saved with its free signature, an owner's signature, the
+      # execution and a discard clearing it), with main writing no
+      # safe-pending.json (a Safe's removal clearing its entry is in the
+      # vault-meta step); the reference (9d4ea6251) with a hello naming none,
+      # whose set and clear answer not_moved and whose file no core request
+      # changes; this build on the previous release, where every request
+      # fails requirement_unmet; and the reference loading the core's file
+      # as the core answers it.
+      - name: safe-pending.json through the core
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/wallet/safe/pending-store.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
 
       # freedom-core design 0013, "RPC API keys" (PRF-6(e)): the hello names
       # `rpc_api_keys`, and the core keeps the keys. With no key store

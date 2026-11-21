@@ -65,11 +65,16 @@ jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'read
 // wallet's kinds are minted through it, and each signer presents its
 // confirmation to it as it signs.
 const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+// The core's intent journal (PRF-6(b2)) and payment history (PRF-6(c)),
+// simulated on the reference modules over this run's userData: a fresh one
+// for each fresh run of main.
 jest.mock('../core/vault-backend', () => ({
   vaultBackend: {
     get approval() {
       return mockApprovals.approval;
     },
+    intents: require('../../../test/helpers/simulated-intents-core').simulatedIntents().intents,
+    payments: require('../../../test/helpers/simulated-payments-core').simulatedPayments().payments,
   },
 }));
 jest.mock('./signers', () => ({
@@ -175,7 +180,7 @@ async function heldDeployment(running, safeAddress = '0x' + '5a'.repeat(20)) {
     })
     .catch((error) => expect(error.outcome).toBe('not_sent'));
   const key = `safe-deploy:100:${safeAddress}`;
-  const held = running.store.byKey(key);
+  const held = await running.store.byKey(key);
   expect(held).toBeTruthy();
   return { key, held };
 }
@@ -216,7 +221,7 @@ describe('a wallet send whose context names an intent key', () => {
     });
     expect(mockSigners[1].signTransaction).toHaveBeenCalledTimes(1);
     // Alice's deployment was not sent again.
-    expect(running.store.get(held.intentId).handoffs).toHaveLength(1);
+    expect((await running.store.get(held.intentId)).handoffs).toHaveLength(1);
     expect(mockBroadcast).toHaveBeenCalledTimes(2);
   });
 
@@ -229,7 +234,7 @@ describe('a wallet send whose context names an intent key', () => {
     expect(reply).toMatchObject({ success: true, chainId: 1, from: ALICE.address });
     expect(reply.intentId).not.toBe(held.intentId);
     expect(broadcasts().at(-1).chainId).toBe(1n);
-    expect(running.store.get(held.intentId).handoffs).toHaveLength(1);
+    expect((await running.store.get(held.intentId)).handoffs).toHaveLength(1);
   });
 
   test("a request can't reserve another workflow's key", async () => {
@@ -240,9 +245,9 @@ describe('a wallet send whose context names an intent key', () => {
     for (const name of ['intentKey', 'intent_key', 'key', 'KEY']) {
       const reply = await running.walletSend({}, tx, { [name]: futureKey }, await authorize(running, 1, tx));
       expect(reply.success).toBe(true);
-      expect(running.store.get(reply.intentId).context.key).toBeNull();
+      expect((await running.store.get(reply.intentId)).context.key).toBeNull();
     }
-    expect(running.store.byKey(futureKey)).toBeNull();
+    expect(await running.store.byKey(futureKey)).toBeNull();
 
     // The real deployment under that key later creates its own intent.
     const before = mockBroadcast.mock.calls.length;
@@ -279,13 +284,13 @@ test("a site's Safe execution not sent, then withdrawn: its held intent is the w
   await expect(
     recorder.signAndRecord(params, mockSigners[0], { kind: 'safe-send', origin: SITE }, { intentKey })
   ).rejects.toMatchObject({ outcome: 'not_sent' });
-  const held = running.store.byKey(intentKey);
+  const held = await running.store.byKey(intentKey);
   expect(held.context.origin).toBe(SITE);
   await expect(pause.sitePaymentWaiting(SITE)).resolves.toBe(true);
 
   await expect(running.safe.withdrawExecutionSite(100, safeTxHash)).resolves.toBe(true);
-  expect(running.store.byKey(intentKey)).toMatchObject({ intentId: held.intentId, context: { origin: null } });
-  expect(running.store.get(held.intentId).hashes).toEqual(held.hashes);
+  expect(await running.store.byKey(intentKey)).toMatchObject({ intentId: held.intentId, context: { origin: null } });
+  expect((await running.store.get(held.intentId)).hashes).toEqual(held.hashes);
   await expect(pause.sitePaymentWaiting(SITE)).resolves.toBe(false);
   const waiting = await require('./intent-ipc').waitingIntents();
   expect(waiting.filter((intent) => intent.intentId === held.intentId).map((intent) => intent.origin)).toEqual([null]);
@@ -295,7 +300,7 @@ test("a site's Safe execution not sent, then withdrawn: its held intent is the w
   const sent = await recorder.signAndRecord(params, mockSigners[0], { kind: 'safe-send' }, { intentKey });
   expect(sent).toMatchObject({ intentId: held.intentId, resent: true });
   expect(mockBroadcast).toHaveBeenCalledTimes(before + 1);
-  const row = require('../payment-history').getRecent({}).find((entry) => entry.txHash === sent.hash);
+  const row = (await require('../payment-history').getRecent({})).find((entry) => entry.txHash === sent.hash);
   expect(row.origin).toBeNull();
   // Nothing more to withdraw.
   await expect(running.safe.withdrawExecutionSite(100, safeTxHash)).resolves.toBe(false);
@@ -320,7 +325,7 @@ test('the wallet send handler drops a renderer key too', async () => {
   const reply = await running.walletSend({}, tx, { intentKey: key }, { confirmation: token });
   expect(reply).toMatchObject({ success: true, from: ALICE.address, to: BOB.address });
   expect(reply.intentId).not.toBe(held.intentId);
-  expect(running.store.get(held.intentId).handoffs).toHaveLength(1);
+  expect((await running.store.get(held.intentId)).handoffs).toHaveLength(1);
 });
 
 describe('held payments over IPC (4b)', () => {
@@ -540,7 +545,7 @@ describe('held payments over IPC (4b)', () => {
     const { sendDappPayment } = require('../page/page-core-sends');
     const failed = await sendDappPayment({ walletIndex: 1, tx: call(100), site: SITE }).then(
       (sent) => ({ success: true, ...sent }),
-      (err) => ({ success: false, error: err.message, ...require('./intent-ipc').intentFailure(err) })
+      async (err) => ({ success: false, error: err.message, ...(await require('./intent-ipc').intentFailure(err)) })
     );
     expect(failed).toMatchObject({
       success: false,
@@ -918,7 +923,7 @@ describe('replacement at the same nonce (9)', () => {
       gasPrice: 1100000000n,
     });
     // The intent keeps both hashes at its one nonce; no pending read.
-    expect(running.store.get(intent.intentId).hashes.map((entry) => entry.hash)).toEqual([
+    expect((await running.store.get(intent.intentId)).hashes.map((entry) => entry.hash)).toEqual([
       intent.hash,
       reply.hash,
     ]);
@@ -927,7 +932,7 @@ describe('replacement at the same nonce (9)', () => {
     );
     // Its history row now names the replacement.
     const history = require('../payment-history');
-    expect(history.getRecent({})).toEqual([
+    expect(await history.getRecent({})).toEqual([
       expect.objectContaining({
         txHash: reply.hash,
         metadata: expect.objectContaining({ intentId: intent.intentId }),
@@ -952,7 +957,7 @@ describe('replacement at the same nonce (9)', () => {
       });
     }
     expect(mockSigners[0].signTransaction).not.toHaveBeenCalled();
-    expect(running.store.get(intent.intentId).hashes).toHaveLength(1);
+    expect((await running.store.get(intent.intentId)).hashes).toHaveLength(1);
   });
 
   test('a replacement needs a confirmation of exactly that payment and those fees', async () => {
@@ -1102,7 +1107,7 @@ describe('the list knows which payments are mined (6)', () => {
     let rows = [];
     for (let i = 0; i < 50 && !rows.some((row) => row.status === 'confirmed'); i += 1) {
       await new Promise((resolve) => setImmediate(resolve));
-      rows = history.getRecent({});
+      rows = await history.getRecent({});
     }
     const { intents } = await handlers['wallet:intents-list']({});
     expect(intents.map((intent) => [intent.intentId, intent.receipt])).toEqual([
@@ -1144,7 +1149,7 @@ describe('replacement fees (9)', () => {
     });
     const reply = await running.walletSend({}, params, {}, { confirmation: token });
     expect(reply).toMatchObject({ success: false, outcome: 'rejected' });
-    return running.store.get(reply.intentId);
+    return await running.store.get(reply.intentId);
   }
 
   // A request the core can't confirm (one whose fees can't form a
@@ -1223,7 +1228,7 @@ describe('replacement fees (9)', () => {
         }
       );
     }
-    expect(running.store.get(intent.intentId).hashes).toHaveLength(1);
+    expect((await running.store.get(intent.intentId)).hashes).toHaveLength(1);
 
     await expect(replaceConfirmed(running, intent, fees)).resolves.toMatchObject({ success: true });
     const replacement = broadcasts().at(-1);
@@ -1378,7 +1383,7 @@ describe('replacement fees (9)', () => {
         success: false,
       });
     }
-    expect(running.store.get(eip1559.intentId).hashes).toHaveLength(1);
+    expect((await running.store.get(eip1559.intentId)).hashes).toHaveLength(1);
   });
 
   test('a second replacement raises the fee over the first, not over the original', async () => {
@@ -1389,7 +1394,7 @@ describe('replacement fees (9)', () => {
     ).resolves.toMatchObject({
       success: true,
     });
-    const after = running.store.get(intent.intentId);
+    const after = await running.store.get(intent.intentId);
     expect(after.fields.gasPrice).toBe('1100000000');
     await expect(
       replaceConfirmed(running, after, { gasPrice: '1150000000' })
@@ -1403,7 +1408,7 @@ describe('replacement fees (9)', () => {
       success: true,
       nonce: 7,
     });
-    expect(running.store.get(intent.intentId).hashes).toHaveLength(3);
+    expect((await running.store.get(intent.intentId)).hashes).toHaveLength(3);
   });
 
   test("the account at the payment's recorded index must be the one that signed it", async () => {
@@ -1418,7 +1423,7 @@ describe('replacement fees (9)', () => {
       success: false,
       code: 'INTENT_KEY_MISMATCH',
     });
-    expect(running.store.get(intent.intentId).hashes).toHaveLength(1);
+    expect((await running.store.get(intent.intentId)).hashes).toHaveLength(1);
     expect(broadcasts()).toHaveLength(1);
   });
 
@@ -1440,7 +1445,7 @@ describe('replacement fees (9)', () => {
       {},
       { confirmation: token }
     );
-    const intent = running.store.get(sent.intentId);
+    const intent = await running.store.get(sent.intentId);
     await running.store.settle({
       intentId: intent.intentId,
       label: 'paid',
@@ -1525,13 +1530,13 @@ describe('the finality tracker settles held payments (7)', () => {
 
     await running.tracker.pass();
 
-    expect(running.store.get(sent.intentId)).toMatchObject({
+    expect(await running.store.get(sent.intentId)).toMatchObject({
       state: 'settled',
       settlement: { label: 'paid', hash: sent.hash, block: 100 },
     });
     // Its bytes are forgotten once settled.
-    expect(running.store.get(sent.intentId).hashes.every((entry) => entry.raw === null)).toBe(true);
-    expect(running.history.getRecent({})).toEqual([
+    expect((await running.store.get(sent.intentId)).hashes.every((entry) => entry.raw === null)).toBe(true);
+    expect(await running.history.getRecent({})).toEqual([
       expect.objectContaining({
         txHash: sent.hash,
         status: 'confirmed',
@@ -1552,8 +1557,8 @@ describe('the finality tracker settles held payments (7)', () => {
     const sent = await running.send();
     finality({ mined: { [sent.hash]: 0 } });
     await running.tracker.pass();
-    expect(running.store.get(sent.intentId).settlement).toMatchObject({ label: 'failed' });
-    expect(running.history.getRecent({})[0]).toMatchObject({ status: 'failed' });
+    expect((await running.store.get(sent.intentId)).settlement).toMatchObject({ label: 'failed' });
+    expect((await running.history.getRecent({}))[0]).toMatchObject({ status: 'failed' });
   });
 
   test('a refused payment whose nonce another transaction used is taken; the history gets its row', async () => {
@@ -1563,16 +1568,16 @@ describe('the finality tracker settles held payments (7)', () => {
     });
     const refused = await running.send();
     expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
-    expect(running.history.getRecent({})).toEqual([]);
+    expect(await running.history.getRecent({})).toEqual([]);
     finality({ taken: true });
 
     await running.tracker.pass();
 
-    expect(running.store.get(refused.intentId)).toMatchObject({
+    expect(await running.store.get(refused.intentId)).toMatchObject({
       state: 'settled',
       settlement: { label: 'taken', hash: null, block: 100 },
     });
-    expect(running.history.getRecent({})).toEqual([
+    expect(await running.history.getRecent({})).toEqual([
       expect.objectContaining({
         kind: 'wallet-send',
         chainId: 100,
@@ -1597,7 +1602,7 @@ describe('the finality tracker settles held payments (7)', () => {
     finality({ mined: { [refused.intent.hash]: 1 }, at: 101 });
     running.sent.length = 0;
     await running.tracker.pass();
-    expect(running.store.get(refused.intentId).state).toBe('held');
+    expect((await running.store.get(refused.intentId)).state).toBe('held');
     expect(await running.list()).toEqual([
       expect.objectContaining({
         intentId: refused.intentId,
@@ -1751,8 +1756,8 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
 
     // A receipt someone saw (its history row says confirmed): not waiting,
     // as long as it isn't shown as Couldn't confirm.
-    const [row] = running.history.getRecent({});
-    running.history.update(row.id, { status: 'confirmed' });
+    const [row] = await running.history.getRecent({});
+    await running.history.update(row.id, { status: 'confirmed' });
     const { waitingIntents } = require('./intent-ipc');
     await running.tracker.pass();
     expect(await running.list()).toEqual([
@@ -1789,13 +1794,13 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
     const closed = await closeConfirmed(running, payment);
     expect(closed).toMatchObject({ success: true, intentId: sent.intentId });
     expect(closed.intent).toMatchObject({ state: 'retired' });
-    expect(running.store.get(sent.intentId)).toMatchObject({
+    expect(await running.store.get(sent.intentId)).toMatchObject({
       state: 'retired',
       raw: null,
       retirement: { block: 3000 },
       hashes: [expect.objectContaining({ hash: sent.hash, raw: null })],
     });
-    expect(running.history.getRecent({})).toEqual([
+    expect(await running.history.getRecent({})).toEqual([
       expect.objectContaining({
         txHash: sent.hash,
         status: 'unconfirmed',
@@ -1811,7 +1816,7 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
     // After a restart it stays closed, with its hashes, and can't be sent.
     const later = startClosing();
     await later.store.ready;
-    expect(later.store.get(sent.intentId)).toMatchObject({
+    expect(await later.store.get(sent.intentId)).toMatchObject({
       state: 'retired',
       hashes: [expect.objectContaining({ hash: sent.hash })],
     });
@@ -1851,7 +1856,7 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
       success: false,
       code: 'INTENT_CLOSE_REFUSED',
     });
-    expect(running.store.get(sent.intentId).state).toBe('held');
+    expect((await running.store.get(sent.intentId)).state).toBe('held');
   });
 
   test("not closable when the nonce at F came from Direct or a quorum of one, or couldn't be read", async () => {
@@ -1890,7 +1895,7 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
         code: 'INTENT_CLOSE_REFUSED',
         intent: expect.objectContaining({ intentId: sent.intentId, state: 'held' }),
       });
-      expect(running.store.get(sent.intentId).state).toBe('held');
+      expect((await running.store.get(sent.intentId)).state).toBe('held');
     }
   });
 
@@ -1911,7 +1916,7 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
       async () => {
         closing = running.close(payment.intentId, { confirmation: token });
         await new Promise((resolve) => setImmediate(resolve));
-        expect(running.store.get(sent.intentId).state).toBe('held');
+        expect((await running.store.get(sent.intentId)).state).toBe('held');
         const raw = await ALICE.signTransaction({
           type: 0,
           chainId: 100,
@@ -1937,8 +1942,8 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
       code: 'INTENT_CHANGED',
       intent: expect.objectContaining({ state: 'held' }),
     });
-    expect(running.store.get(sent.intentId)).toMatchObject({ state: 'held' });
-    expect(running.store.get(sent.intentId).hashes).toHaveLength(2);
+    expect(await running.store.get(sent.intentId)).toMatchObject({ state: 'held' });
+    expect((await running.store.get(sent.intentId)).hashes).toHaveLength(2);
 
     // A confirmation of the revision before the replacement is refused.
     await expect(closeConfirmed(running, payment)).resolves.toMatchObject({
@@ -1948,7 +1953,7 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
     // One of what main has now closes it.
     const [now] = await running.list();
     await expect(closeConfirmed(running, now)).resolves.toMatchObject({ success: true });
-    expect(running.store.get(sent.intentId).state).toBe('retired');
+    expect((await running.store.get(sent.intentId)).state).toBe('retired');
   });
 
   test('closing needs a confirmation of this payment', async () => {
@@ -1973,7 +1978,7 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
       success: false,
       code: 'SIGNING_NOT_CONFIRMED',
     });
-    expect(running.store.get(sent.intentId).state).toBe('held');
+    expect((await running.store.get(sent.intentId)).state).toBe('held');
   });
 });
 
@@ -2013,7 +2018,7 @@ describe("a held Safe execution, sent again or replaced, and its Safe's deletion
     await expect(
       require('./tx-recorder').signAndRecord(params, mockSigners[0], { kind: 'safe-send' }, { intentKey, walletIndex: 0 })
     ).rejects.toMatchObject({ outcome: 'rejected' });
-    const held = running.store.byKey(intentKey);
+    const held = await running.store.byKey(intentKey);
     expect(held).toMatchObject({ state: 'held', context: { walletIndex: 0 } });
     return held;
   }
@@ -2081,7 +2086,7 @@ describe("a held Safe execution, sent again or replaced, and its Safe's deletion
       });
       expect(mockBroadcast).toHaveBeenCalledTimes(before);
       expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
-      expect(running.store.get(view.intentId).hashes).toEqual(view.hashes);
+      expect((await running.store.get(view.intentId)).hashes).toEqual(view.hashes);
       // Nothing of it holds the Safe's step.
       expect(running.safeApprovals.stepRunning(SAFE_INDEX)).toBe(false);
     });
@@ -2144,7 +2149,7 @@ describe("a held Safe execution, sent again or replaced, and its Safe's deletion
     const tx = { chainId: 100, to: SAFE, value: '1', gasLimit: '21000', gasPrice: '1000000000' };
     const sent = await running.walletSend({}, tx, {}, await authorize(running, 1, tx));
     expect(sent.success).toBe(false);
-    const view = running.store.get(sent.intentId);
+    const view = await running.store.get(sent.intentId);
     const deletion = running.safeApprovals.beginDeletion(SAFE_INDEX);
     await expect(ACTIONS.resend(running, view)).resolves.toMatchObject({ success: true });
     deletion.release();

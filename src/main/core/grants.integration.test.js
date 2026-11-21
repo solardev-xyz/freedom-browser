@@ -21,6 +21,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { seedAccountRecords } = require('../../../test/helpers/core-account-records');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary = process.env.FREEDOM_CORED_PATH || (required ? require('./cored-binary').getCoredBinaryPath() : null);
@@ -407,14 +408,18 @@ describeIfBinary('the Swarm and Radicle files with the real freedom-cored (APB-3
   // gets a new ID. Main sends no `eip1193.request` of its own here: the test
   // does, as APB-4 will.
   describe("a page's connect while main has no handler for the core's prompts (cored 0.19.0)", () => {
+    // The vault's first two accounts (m/44'/60'/<index>'/0/0), which the
+    // core's own records hold too (G20b: its list replaces the world's for
+    // a connect, its mnemonic addresses derived from the vault).
+    const WALLETS = [
+      { index: 0, name: 'Main Wallet', address: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94', type: 'mnemonic' },
+      { index: 1, name: 'Wallet 2', address: '0x78839F6054d7ed13918bAe0473BA31b1Ca9D7265', type: 'mnemonic' },
+    ];
     const WORLD = {
       enabled: true,
       window_chain: 100,
       active: 0,
-      wallets: [
-        { index: 0, address: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94' },
-        { index: 1, address: '0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0' },
-      ],
+      wallets: WALLETS,
       networks: { 100: { name: 'Gnosis', available: true } },
     };
     const MISMATCH = {
@@ -426,6 +431,10 @@ describeIfBinary('the Swarm and Radicle files with the real freedom-cored (APB-3
     const dappText = () => (fs.existsSync(dappFile()) ? fs.readFileSync(dappFile(), 'utf8') : null);
     let lookups;
     let replies;
+
+    beforeAll(async () => {
+      await seedAccountRecords(core, path.join(root, 'identity'), WALLETS);
+    });
 
     beforeEach(() => {
       lookups = jest.spyOn(core, 'handlerFor');

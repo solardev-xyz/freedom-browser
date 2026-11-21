@@ -70,7 +70,10 @@ jest.mock('../../../intent-store', () => {
   const path = require('path');
   const actual = jest.requireActual('../../../intent-store');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-fork-intents-'));
-  const store = actual.createIntentStore({ filePath: path.join(dir, 'wallet-intents.jsonl') });
+  const { simulatedIntents } = require('../../../../../../test/helpers/simulated-intents-core');
+  const store = actual.createIntentStore({
+    backend: simulatedIntents({ filePath: path.join(dir, 'wallet-intents.jsonl') }).intents,
+  });
   return { ...actual, getIntentStore: () => store };
 });
 
@@ -310,9 +313,9 @@ describeFork('Safe on forked Gnosis (pinned addresses, retroactive deploy)', () 
     // them unresolved into protocol-kit blew up with `Address "0" is
     // invalid`. This walks the REAL start → sign → execute path, un-mocked.
     const { startSafeSend, signSafePending, executeSafePending } = require('../../safe-transactions');
-    // The mocked electron userData dir is shared across runs — drop any
-    // pending entry a previous run left behind.
-    require('../../pending-store').clearPending(5);
+    // Main's copy of the pending SafeTxs (the identity core's store since
+    // PRF-6(d)) starts empty for this run.
+    require('../../pending-store')._reset();
 
     // Fund the (deployed, previous test) safe on the Gnosis fork.
     const gnosisProvider = new JsonRpcProvider(anvilUrl(FORKS.gnosis), 100, { staticNetwork: true });

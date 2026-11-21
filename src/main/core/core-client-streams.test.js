@@ -5,7 +5,7 @@
  * from the core and end only with its verified bodies' codes; the bodies
  * main sends in answer to the core's requests (`StreamedReply`) go under
  * the core's credit and end only with a piece's codes. Protocol 2 is the
- * only one CoreClient speaks: the pinned core (0.23.0) refuses 1.
+ * only one CoreClient speaks: the pinned core (0.25.0) refuses 1.
  */
 
 const { EventEmitter } = require('events');
@@ -18,6 +18,7 @@ const {
   StreamedReply,
   PROTOCOL_VERSION,
   PROTOCOL_VERSION_STREAMS,
+  STORE_MOVED,
 } = require('./core-client');
 const {
   encodeAbort,
@@ -167,7 +168,7 @@ class FakeCore extends EventEmitter {
 }
 
 function hello(protocol, capabilities = ['vault.status', 'fragments', 'streams']) {
-  return { protocol, core_version: '0.23.0', capabilities };
+  return { protocol, core_version: '0.25.0', capabilities };
 }
 
 /** Answers the hello at `protocol` (with `result` if given), shutdown, and
@@ -307,7 +308,7 @@ describe('the hello at protocol 2', () => {
     const ready = await client.start();
     expect(ready).toEqual({
       protocol: 2,
-      core_version: '0.23.0',
+      core_version: '0.25.0',
       capabilities: ['vault.status', 'fragments', 'streams'],
       node_recovery: null,
       store_moved: [],
@@ -319,7 +320,8 @@ describe('the hello at protocol 2', () => {
       frames: ['fragment', 'stream'],
       grant_root: path.resolve(os.tmpdir()),
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
-      store_moved: ['rpc_api_keys'],
+      // The build's stores (core-client.test.js pins the list).
+      store_moved: [...STORE_MOVED],
     });
     expect(client.streamStats()).toEqual({
       outstanding: 0,

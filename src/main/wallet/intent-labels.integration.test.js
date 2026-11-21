@@ -51,6 +51,7 @@ jest.mock('./intent-store', () => ({
 const { readLabel, LABELS } = require('./intent-labels');
 const { createIntentTracker } = require('./intent-tracker');
 const { createIntentStore } = require('./intent-store');
+const { simulatedIntents } = require('../../../test/helpers/simulated-intents-core');
 
 const binary = process.env.FREEDOM_CORED_PATH;
 // A real core reads on real timers.
@@ -326,7 +327,9 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
 
   test('false-paid-key-retry: the intent stays held and keyed, so its retry resends nonce 7, never signs 8', async () => {
     const { raw, hash } = await signed();
-    mockStore = createIntentStore({ filePath: path.join(root, 'intents.jsonl') });
+    mockStore = createIntentStore({
+      backend: simulatedIntents({ filePath: path.join(root, 'intents.jsonl') }).intents,
+    });
     await mockStore.load();
     const key = 'review-payment-operation';
     const original = await mockStore.commit({
@@ -348,8 +351,8 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
     });
     await tracker.pass();
     tracker.stop();
-    expect(mockStore.get(original.intentId).state).toBe('held');
-    expect(mockStore.byKey(key)?.intentId).toBe(original.intentId);
+    expect((await mockStore.get(original.intentId)).state).toBe('held');
+    expect((await mockStore.byKey(key))?.intentId).toBe(original.intentId);
 
     // The same operation, sent again by its key: the held bytes, at 7.
     mockBroadcast.mockImplementation(async (_chainId, bytes) => ({

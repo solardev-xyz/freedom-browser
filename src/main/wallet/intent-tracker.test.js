@@ -29,16 +29,18 @@ function intent(n, overrides = {}) {
   };
 }
 
-// The store's surface the tracker uses, over a map.
+// The store's surface the tracker uses, over a map. Reads answer promises,
+// as the real store's do.
 function fakeStore(intents = []) {
   const map = new Map(intents.map((i) => [i.intentId, i]));
   const listeners = new Set();
-  const changed = (id) => listeners.forEach((listener) => listener(id));
+  // Resolves once every listener has done with the change.
+  const changed = (id) => Promise.all([...listeners].map((listener) => listener(id)));
   return {
     ready: Promise.resolve(),
-    held: () =>
+    held: async () =>
       [...map.values()].filter((i) => i.state === 'held').sort((a, b) => a.nonce - b.nonce),
-    get: (id) => map.get(id) ?? null,
+    get: async (id) => map.get(id) ?? null,
     // As the real store: conditional on the hashes the label was read for.
     settle: jest.fn(async ({ intentId, label, hash, block, hashes }) => {
       const settled = map.get(intentId);
@@ -67,7 +69,7 @@ function fakeStore(intents = []) {
     },
     put(i) {
       map.set(i.intentId, i);
-      changed(i.intentId);
+      return changed(i.intentId);
     },
   };
 }
@@ -152,7 +154,7 @@ describe('the schedule', () => {
     expect(finalizedReads(request)).toBe(passes + 1);
 
     // A new broadcast of a held intent: back to checking soon.
-    store.put(intent(6, { handoffs: [{ handoffId: 'h', hash: hashOf(6), at: Date.now() }] }));
+    await store.put(intent(6, { handoffs: [{ handoffId: 'h', hash: hashOf(6), at: Date.now() }] }));
     expect(instance.nextPassAt()).toBe(Date.now() + SCHEDULE.afterBroadcastMs);
     await jest.advanceTimersByTimeAsync(SCHEDULE.afterBroadcastMs);
     expect(finalizedReads(request)).toBe(passes + 2);
@@ -169,7 +171,7 @@ describe('the schedule', () => {
 
     await jest.advanceTimersByTimeAsync(10 * SECOND);
     const broadcastAt = Date.now();
-    store.put(intent(5, { handoffs: [{ handoffId: 'h1', hash: hashOf(5), at: broadcastAt }] }));
+    await store.put(intent(5, { handoffs: [{ handoffId: 'h1', hash: hashOf(5), at: broadcastAt }] }));
     expect(instance.nextPassAt()).toBe(broadcastAt + MINUTE);
     await jest.advanceTimersByTimeAsync(MINUTE);
     expect(finalizedReads(request)).toBe(2);
@@ -185,12 +187,38 @@ describe('the schedule', () => {
     expect(instance.nextPassAt()).toBeNull();
 
     // Committed, not handed off yet: checked at the regular pace.
-    store.put(intent(5));
+    await store.put(intent(5));
     expect(instance.nextPassAt()).toBe(Date.now() + 2 * MINUTE);
     // Its broadcast: about a minute after it.
-    store.put(intent(5, { handoffs: [{ handoffId: 'h1', hash: hashOf(5), at: Date.now() }] }));
+    await store.put(intent(5, { handoffs: [{ handoffId: 'h1', hash: hashOf(5), at: Date.now() }] }));
     expect(instance.nextPassAt()).toBe(Date.now() + MINUTE);
     await jest.advanceTimersByTimeAsync(MINUTE);
+    expect(finalizedReads(request)).toBe(1);
+    instance.stop();
+  });
+
+  // Review of #1294, round 1: a first intent committed while an empty
+  // pass's last read yields (that read's answer is from before it) still
+  // wakes the tracker once the pass ends.
+  test('an intent committed during a pass\'s last read is still checked', async () => {
+    const store = fakeStore([]);
+    const held = store.held;
+    let reads = 0;
+    store.held = async () => {
+      const answer = await held();
+      reads += 1;
+      // An empty pass reads twice: its start and its end. The commit lands
+      // while the end's read yields.
+      if (reads === 2) await store.put(intent(5));
+      return answer;
+    };
+    const { instance, request } = tracker({ store });
+    instance.start();
+    await jest.advanceTimersByTimeAsync(SCHEDULE.startupMs);
+    expect(reads).toBe(2);
+    expect(request).not.toHaveBeenCalled();
+    expect(instance.nextPassAt()).toBe(Date.now() + SCHEDULE.fastMs);
+    await jest.advanceTimersByTimeAsync(SCHEDULE.fastMs);
     expect(finalizedReads(request)).toBe(1);
     instance.stop();
   });
@@ -269,7 +297,7 @@ describe('the bounds', () => {
       eth_getTransactionReceipt: 12,
       header: 10,
     });
-    expect(store.get('intent-0001').state).toBe('settled');
+    expect((await store.get('intent-0001')).state).toBe('settled');
   });
 
   test('a replacement committed while the reads ran is read again before it settles', async () => {
@@ -279,7 +307,7 @@ describe('the bounds', () => {
     const request = jest.fn(async (...args) => {
       // The user replaced it at nonce 5 meanwhile.
       if (args[1] === 'eth_getTransactionReceipt') {
-        store.put({ ...first, hashes: [...first.hashes, { hash: hashOf(0x55) }] });
+        await store.put({ ...first, hashes: [...first.hashes, { hash: hashOf(0x55) }] });
       }
       return reads(...args);
     });
@@ -287,7 +315,7 @@ describe('the bounds', () => {
     await instance.pass();
     // Asked to settle the hashes it read; the store refuses: they changed.
     expect(store.settle).toHaveBeenCalledWith(expect.objectContaining({ hashes: [hashOf(5)] }));
-    expect(store.get('intent-0005').state).toBe('held');
+    expect((await store.get('intent-0005')).state).toBe('held');
     expect(recordSettlement).not.toHaveBeenCalled();
   });
 });
@@ -328,14 +356,14 @@ test("a chain's verified headers are released with its last held intent", async 
       .length;
 
   await instance.pass();
-  expect(store.get('intent-0001').state).toBe('settled');
+  expect((await store.get('intent-0001')).state).toBe('settled');
   expect(headerReads()).toBe(10);
 
   // Nothing was held on the chain after that pass: a new intent walks its
   // headers afresh.
-  store.put(intent(2));
+  await store.put(intent(2));
   await instance.pass();
-  expect(store.get('intent-0002').state).toBe('settled');
+  expect((await store.get('intent-0002')).state).toBe('settled');
   expect(headerReads()).toBe(20);
   instance.stop();
 });
@@ -397,7 +425,7 @@ describe('state history (#94)', () => {
 
       chain.views.canonical.finalized = 100;
       await instance.pass();
-      expect(store.get('intent-0005')).toMatchObject({
+      expect(await store.get('intent-0005')).toMatchObject({
         state: 'settled',
         settlement: { label: 'taken', block: 100 },
       });
@@ -412,7 +440,7 @@ describe('state history (#94)', () => {
       const fresh = fakeStore([intent(5)]);
       const other = tracker({ store: fresh, request: takenChain(80, { head: 200 }).request });
       await other.instance.pass();
-      expect(fresh.get('intent-0005').state).toBe('held');
+      expect((await fresh.get('intent-0005')).state).toBe('held');
     });
 
     test('moved up on each pass while unused, and kept with the record', async () => {
@@ -422,7 +450,7 @@ describe('state history (#94)', () => {
       for (const finalized of [100, 110, 125]) {
         chain.views.canonical.finalized = finalized;
         await instance.pass();
-        expect(store.get('intent-0005').bracket).toEqual({
+        expect((await store.get('intent-0005')).bracket).toEqual({
           number: finalized,
           hash: chain.canonicalHash(finalized),
         });
@@ -450,7 +478,7 @@ describe('state history (#94)', () => {
     instance.start();
     await jest.advanceTimersByTimeAsync(SCHEDULE.startupMs);
     // Intent 5 is on chain at 110, above F: no label yet.
-    expect(store.get('intent-0005').state).toBe('held');
+    expect((await store.get('intent-0005')).state).toBe('held');
     expect(instance.nextPassAt() - Date.now()).toBe(SCHEDULE.fastMs);
     await jest.advanceTimersByTimeAsync(30 * MINUTE);
     expect(instance.nextPassAt() - Date.now()).toBeLessThanOrEqual(SCHEDULE.fastMs);
@@ -458,7 +486,7 @@ describe('state history (#94)', () => {
     // F passes 110: it is paid, and only the unbroadcast intent 4 is held.
     chain.views.canonical.finalized = 115;
     await jest.advanceTimersByTimeAsync(SCHEDULE.fastMs);
-    expect(store.get('intent-0005').state).toBe('settled');
+    expect((await store.get('intent-0005')).state).toBe('settled');
     expect(instance.nextPassAt() - Date.now()).toBe(SCHEDULE.slowMs);
     instance.stop();
   });
@@ -480,27 +508,27 @@ describe('state history (#94)', () => {
       instance.start();
       await jest.advanceTimersByTimeAsync(SCHEDULE.startupMs);
       const firstFailed = Date.now();
-      expect(store.get('intent-0005').unreadSince).toBe(firstFailed);
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toBeNull();
-      expect(instance.closeEvidence('intent-0005')).toBeNull();
+      expect((await store.get('intent-0005')).unreadSince).toBe(firstFailed);
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toBeNull();
+      expect(await instance.closeEvidence('intent-0005')).toBeNull();
 
       await jest.advanceTimersByTimeAsync(DAY - SCHEDULE.startupMs - SCHEDULE.fastMs);
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toBeNull();
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toBeNull();
       changed.mockClear();
       await jest.advanceTimersByTimeAsync(SCHEDULE.startupMs + SCHEDULE.fastMs);
       expect(Date.now() - firstFailed).toBeGreaterThanOrEqual(DAY);
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toEqual({
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toEqual({
         since: firstFailed,
         closable: true,
       });
       // The chrome hears of it.
       expect(changed).toHaveBeenCalled();
-      expect(instance.closeEvidence('intent-0005')).toEqual({
+      expect(await instance.closeEvidence('intent-0005')).toEqual({
         block: 3000,
         hash: chain.canonicalHash(3000),
       });
       // Still held, its record as it was.
-      expect(store.get('intent-0005')).toMatchObject({
+      expect(await store.get('intent-0005')).toMatchObject({
         state: 'held',
         hashes: [{ hash: hashOf(5) }],
       });
@@ -516,8 +544,8 @@ describe('state history (#94)', () => {
       const { instance } = tracker({ store, request: chain.request });
       instance.start();
       await runFor(instance, DAY + SCHEDULE.startupMs);
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({ closable: false });
-      expect(instance.closeEvidence('intent-0005')).toBeNull();
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toMatchObject({ closable: false });
+      expect(await instance.closeEvidence('intent-0005')).toBeNull();
       instance.stop();
     });
 
@@ -541,10 +569,10 @@ describe('state history (#94)', () => {
         const { instance } = tracker({ store, request: chain.request });
         instance.start();
         await runFor(instance, DAY + SCHEDULE.startupMs);
-        expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({
+        expect(instance.couldntConfirm(await store.get('intent-0005'))).toMatchObject({
           closable: false,
         });
-        expect(instance.closeEvidence('intent-0005')).toBeNull();
+        expect(await instance.closeEvidence('intent-0005')).toBeNull();
         instance.stop();
       }
     });
@@ -559,9 +587,9 @@ describe('state history (#94)', () => {
       const { instance } = tracker({ store, request: chain.request });
       instance.start();
       await runFor(instance, 2 * DAY);
-      expect(store.get('intent-0005').unreadSince).toBeNull();
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toBeNull();
-      expect(instance.closeEvidence('intent-0005')).toBeNull();
+      expect((await store.get('intent-0005')).unreadSince).toBeNull();
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toBeNull();
+      expect(await instance.closeEvidence('intent-0005')).toBeNull();
       instance.stop();
     });
 
@@ -575,17 +603,17 @@ describe('state history (#94)', () => {
       const store = fakeStore([intent(5, { possiblySent: true })]);
       const { instance } = tracker({ store, request });
       await instance.pass();
-      const since = store.get('intent-0005').unreadSince;
+      const since = (await store.get('intent-0005')).unreadSince;
       expect(since).toBe(Date.now());
       await jest.advanceTimersByTimeAsync(DAY / 2);
       failing = false;
       await instance.pass();
-      expect(store.get('intent-0005').unreadSince).toBeNull();
+      expect((await store.get('intent-0005')).unreadSince).toBeNull();
       failing = true;
       await jest.advanceTimersByTimeAsync(DAY / 2 + MINUTE);
       await instance.pass();
-      expect(store.get('intent-0005').unreadSince).toBe(Date.now());
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toBeNull();
+      expect((await store.get('intent-0005')).unreadSince).toBe(Date.now());
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toBeNull();
     });
 
     test("once a read saw its nonce used, a lagging pair's older F where it was unused doesn't reset the day", async () => {
@@ -593,7 +621,7 @@ describe('state history (#94)', () => {
       const store = fakeStore([intent(5, { possiblySent: true })]);
       const { instance } = tracker({ store, request: chain.request });
       await instance.pass();
-      const since = store.get('intent-0005').unreadSince;
+      const since = (await store.get('intent-0005')).unreadSince;
       expect(since).toBe(Date.now());
 
       chain.defineView('lagging', { head: 950, finalized: 900, stateWindow: W });
@@ -601,8 +629,8 @@ describe('state history (#94)', () => {
       chain.route('eth_getTransactionCount', 'lagging');
       await jest.advanceTimersByTimeAsync(DAY);
       await instance.pass();
-      expect(store.get('intent-0005').unreadSince).toBe(since);
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({ closable: true });
+      expect((await store.get('intent-0005')).unreadSince).toBe(since);
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toMatchObject({ closable: true });
     });
 
     test('counted from the first failed pass, across restarts', async () => {
@@ -613,8 +641,8 @@ describe('state history (#94)', () => {
       ]);
       const { instance } = tracker({ store, request: chain.request });
       await instance.pass();
-      expect(store.get('intent-0005').unreadSince).toBe(Date.now() - DAY - MINUTE);
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({ closable: true });
+      expect((await store.get('intent-0005')).unreadSince).toBe(Date.now() - DAY - MINUTE);
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toMatchObject({ closable: true });
     });
 
     test('it stays held and read: a later pass that reaches the evidence settles it', async () => {
@@ -636,16 +664,16 @@ describe('state history (#94)', () => {
       const { instance, recordSettlement } = tracker({ store, request });
       instance.start();
       await runFor(instance, DAY + SCHEDULE.startupMs);
-      expect(instance.couldntConfirm(store.get('intent-0005'))).toMatchObject({ closable: true });
+      expect(instance.couldntConfirm(await store.get('intent-0005'))).toMatchObject({ closable: true });
 
       colibri = true;
       await instance.pass();
-      expect(store.get('intent-0005')).toMatchObject({
+      expect(await store.get('intent-0005')).toMatchObject({
         state: 'settled',
         settlement: { label: 'taken', block: 3000 },
       });
       expect(recordSettlement).toHaveBeenCalled();
-      expect(instance.closeEvidence('intent-0005')).toBeNull();
+      expect(await instance.closeEvidence('intent-0005')).toBeNull();
       instance.stop();
     });
   });

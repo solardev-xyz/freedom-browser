@@ -176,9 +176,9 @@ function phoneSigner(walletIndex) {
  * an intent-replace token binds (freedom-core design 0012, "Replacing an
  * intent"). Null when unknown: its replacement is refused when signed.
  */
-function intentAccount(intentId) {
+async function intentAccount(intentId) {
   try {
-    const view = typeof intentId === 'string' ? require('./intent-store').getIntentStore().get(intentId) : null;
+    const view = typeof intentId === 'string' ? await require('./intent-store').getIntentStore().get(intentId) : null;
     const walletIndex = view?.context?.walletIndex;
     return Number.isSafeInteger(walletIndex) && walletIndex >= 0 ? walletIndex : null;
   } catch {
@@ -221,7 +221,7 @@ async function handleSendTransaction(walletIndex, params, context = {}, authoriz
     return {
       success: false,
       error: err.message,
-      ...intentFailure(err),
+      ...(await intentFailure(err)),
       ...(err.feeCheck ? { feeCheck: err.feeCheck } : {}),
     };
   }
@@ -440,7 +440,7 @@ function registerWalletIpc() {
         kind === CONFIRM_KINDS.WALLET_SEND || kind === CONFIRM_KINDS.X402_PAYMENT
           ? getActiveWalletIndex()
           : kind === CONFIRM_KINDS.INTENT_REPLACE
-            ? intentAccount(payload?.intentId)
+            ? await intentAccount(payload?.intentId)
             : accountIndex;
       // A phone account's send: the phone picks its fee, so the core's fee
       // check at minting skips it, as main's does.

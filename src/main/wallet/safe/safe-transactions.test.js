@@ -109,16 +109,28 @@ const deferred = () => {
 
 // The identity core's `approval.end` (freedom-core design 0012): each call
 // records what main still held then, so a test can check the order. And
-// whether the core process that gave an approval has ended since.
+// whether the core process that gave an approval has ended since. The
+// pending SafeTxs are the core's (design 0013, PRF-6(d)): its
+// `safe_pending.*`, simulated on the reference store over the test's
+// safe-pending.json (test/helpers/simulated-store-core.js), `pendingSim` its
+// record.
 const mockApprovalEnd = jest.fn(async () => ({}));
 const mockProcessEnded = jest.fn(() => false);
-jest.mock('../../core/vault-backend', () => ({
-  vaultBackend: {
-    approval: { end: (...args) => mockApprovalEnd(...args) },
-    coreProcess: () => ({ process: 'core' }),
-    coreProcessEnded: (...args) => mockProcessEnded(...args),
-  },
-}));
+// The core process serving now, as a mark: a restart is the next number.
+const mockProcess = { number: 1 };
+jest.mock('../../core/vault-backend', () => {
+  const { simulatedSafePending } = require('../../../../test/helpers/simulated-store-core');
+  const pendingSim = simulatedSafePending();
+  return {
+    vaultBackend: {
+      approval: { end: (...args) => mockApprovalEnd(...args) },
+      coreProcess: () => ({ process: mockProcess.number }),
+      coreProcessEnded: (...args) => mockProcessEnded(...args),
+      safePending: pendingSim.safePending,
+      pendingSim,
+    },
+  };
+});
 
 // Chain reads (the Safe nonce guard).
 const mockRpcRequest = jest.fn(async () => '0x3'); // == pending nonce → executable
@@ -137,7 +149,9 @@ const {
   onSafeSendSettled,
   guardSiteSafeSend,
 } = require('./safe-transactions');
-const { getPending, setPending, clearPending } = require('./pending-store');
+const pendingStore = require('./pending-store');
+const { getPending, setPending, clearPending, forgetPending } = pendingStore;
+const { pendingSim } = require('../../core/vault-backend').vaultBackend;
 const safeApprovals = require('./safe-approvals');
 
 // A Safe approval as the core gives one at a `safe-send` spend: the
@@ -182,7 +196,10 @@ beforeEach(() => {
   mockRpcRequest.mockResolvedValue('0x3');
   mockApprovalEnd.mockReset().mockResolvedValue({});
   mockProcessEnded.mockReset().mockReturnValue(false);
-  for (const index of [5, 6, 7]) clearPending(index);
+  mockProcess.number = 1;
+  // A new safe-pending.json each test (its directory), and main's copy empty.
+  Object.assign(pendingSim, { moved: true, fail: null, loseReply: null, calls: [] });
+  pendingStore._reset();
   safeApprovals._reset({ retryDelays: [0, 0] });
 });
 
@@ -333,7 +350,7 @@ describe('signSafePending', () => {
     mockCollectOwnerSignature.mockImplementationOnce(async ({ ownerIndex }) => {
       // While the device ceremony runs, the pending entry disappears
       // (simulates a discard path that bypassed the guard).
-      clearPending(5);
+      await clearPending(5);
       return signatureOf(ownerIndex);
     });
 
@@ -350,7 +367,7 @@ describe('executeSafePending', () => {
 
   test('refuses a SafeTx of a Safe whose deployed mark no verified check wrote (#1066)', async () => {
     // Saved while a release before #1066 trusted the old mark, fully signed.
-    setPending(7, {
+    await setPending(7, {
       chainId: 100,
       safeAddress: mockWalletRecords[7].address,
       safeTxData: { ...builtResult.safeTxData, nonce: 3 },
@@ -770,7 +787,7 @@ describe("a SafeTx's Safe approval", () => {
     await start();
     const third = newApproval();
     await expect(start(6, 100, third)).rejects.toThrow(/activate/i);
-    clearPending(5);
+    await clearPending(5);
     safeApprovals._reset();
     mockBuildSafeTransaction.mockRejectedValueOnce(new Error('rpc down'));
     const fourth = newApproval();
@@ -922,7 +939,7 @@ describe("a SafeTx's Safe approval", () => {
     const started = start();
     await flushMicrotasks();
     expect(getPending(5)).not.toBeNull();
-    clearPending(5);
+    forgetPending(5);
     signing.resolve(signatureOf(0));
     await started;
     expect(getPending(5)).toBeNull();
@@ -952,8 +969,10 @@ describe("a SafeTx's Safe approval", () => {
       await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
       expect(getPending(5).superseded).toBeFalsy();
       expect(heard).toEqual([]);
-      // The process that gave it has ended (a restart): its approval with it.
-      mockProcessEnded.mockReturnValue(true);
+      // The process that gave it has ended (a restart): its approval with it,
+      // and main's copy of the pending SafeTxs is read from its successor.
+      mockProcess.number = 2;
+      mockProcessEnded.mockImplementation((mark) => mark.process < 2);
       await cancelSafeSend(5);
       expect(getPending(5)).toBeNull();
       expect(heard).toEqual([expect.objectContaining({ outcome: 'discarded' })]);
@@ -1007,7 +1026,7 @@ describe("a SafeTx's Safe approval", () => {
       // Started: its deletion now ends its approval and clears it.
       const deletion = safeApprovals.beginDeletion(5);
       await safeApprovals.endSafe(5);
-      clearPending(5);
+      forgetPending(5);
       deletion.release();
       expect(endedIds()).toEqual([lastApproval.id]);
       expect(getPending(5)).toBeNull();
@@ -1042,7 +1061,7 @@ describe("a SafeTx's Safe approval", () => {
       await expect(signSafePending(5, 2, { approval: newApproval() })).rejects.toMatchObject({ code: 'SAFE_BUSY' });
       expect(mockExecTransaction).not.toHaveBeenCalled();
       expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
-      clearPending(5);
+      forgetPending(5);
       expect(codeOf(() => reserveSafeSend(5))).toBe('SAFE_BUSY');
       deletion.release();
       reserveSafeSend(5).release();
@@ -1057,5 +1076,381 @@ describe('getAllSafeSendStates', () => {
     const states = getAllSafeSendStates();
     expect(states).toHaveLength(1);
     expect(states[0]).toMatchObject({ safeIndex: 5, collected: 1, threshold: 2 });
+  });
+});
+
+// The pending SafeTx is the identity core's (freedom-core design 0013,
+// PRF-6(d); pending-store.js): each step waits for main's copy to load, and
+// a change the core reports failed fails its step, with the entry read
+// again from the core, where it was never written.
+describe("the pending SafeTx's store in the core", () => {
+  const storageError = () =>
+    Object.assign(new Error('The pending Safe transactions could not be written'), { code: 'storage' });
+  // Fails the core's `method` while `when()` holds (each time, by default).
+  const failing = (method, when = () => true) => {
+    pendingSim.fail = (called) => {
+      if (called === method && when()) throw storageError();
+    };
+  };
+  const coreEntry = (index) => pendingSim.safePending.get(index);
+  let warn;
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  test("a step waits for main's copy to load: a SafeTx the core holds is pending before any start", async () => {
+    // Pending in the core already (saved before this start of main).
+    await start();
+    pendingStore._reset();
+    const { EventEmitter } = require('events');
+    const client = new EventEmitter();
+    pendingStore.attachCore(client);
+    expect(getPending(5)).toBeNull();
+    const starting = start(5, 100, newApproval());
+    await flushMicrotasks();
+    expect(mockBuildSafeTransaction).toHaveBeenCalledTimes(1);
+    client.emit('ready');
+    await expect(starting).rejects.toMatchObject({ code: 'SAFE_PENDING_EXISTS' });
+    expect(mockBuildSafeTransaction).toHaveBeenCalledTimes(1);
+    expect(getPending(5).safeTxHash).toBe(SAFE_TX_HASH);
+  });
+
+  test("a new SafeTx the core couldn't save fails its start, and the approval held for it is ended", async () => {
+    failing('safe_pending.set');
+    const approval = newApproval();
+    await expect(start(5, 100, approval)).rejects.toMatchObject({ code: 'storage' });
+    expect(getPending(5)).toBeNull();
+    await expect(coreEntry(5)).resolves.toBeNull();
+    expect(endedIds()).toEqual([approval.id]);
+    expect(safeApprovals.held('send', 5, SAFE_TX_HASH)).toBeNull();
+    expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+    // Nothing is left reserved or held: the next send starts.
+    pendingSim.fail = null;
+    await expect(start()).resolves.toMatchObject({ collected: 1 });
+  });
+
+  test("a free signature the core couldn't save leaves the owner a row; the SafeTx is pending without it", async () => {
+    let sets = 0;
+    failing('safe_pending.set', () => ++sets === 2);
+    const state = await start();
+    expect(state).toMatchObject({ collected: 0, status: 'awaiting' });
+    expect(state.owners[0]).toMatchObject({ index: 0, signed: false });
+    expect((await coreEntry(5)).signatures).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      '[SafeSign] auto-signature not saved for owner 0:',
+      'The pending Safe transactions could not be written'
+    );
+    // The sweep again, once the core saves it.
+    pendingSim.fail = null;
+    await expect(signSafePending(5)).resolves.toMatchObject({ collected: 1 });
+  });
+
+  test("an owner's signature the core couldn't save fails that row, and the entry is the core's again, a new object", async () => {
+    await start();
+    const before = getPending(5);
+    failing('safe_pending.set');
+    await expect(signSafePending(5, 2)).rejects.toMatchObject({ code: 'storage' });
+    expect(getPending(5)).not.toBe(before);
+    expect(getPending(5).signatures).toEqual([signatureOf(0)]);
+    expect(await coreEntry(5)).toEqual(getPending(5));
+    pendingSim.fail = null;
+    await expect(signSafePending(5, 2)).resolves.toMatchObject({ collected: 2 });
+  });
+
+  test('an execution whose executed mark the core couldn\'t save still finishes: cleared, executed, told', async () => {
+    await start();
+    await signSafePending(5, 2);
+    failing('safe_pending.set');
+    const heard = [];
+    const stop = onSafeSendSettled((event) => heard.push(event));
+    try {
+      await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed', executed: { hash: TX_HASH } });
+    } finally {
+      stop();
+    }
+    expect(getPending(5)).toBeNull();
+    await expect(coreEntry(5)).resolves.toBeNull();
+    expect(heard).toEqual([{ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: TX_HASH }]);
+    expect(warn).toHaveBeenCalledWith(
+      '[SafeTransactions] An executed SafeTx was not marked executed:',
+      'The pending Safe transactions could not be written'
+    );
+  });
+
+  test("an executed SafeTx whose clear the core couldn't save stays, marked executed, for the next attempt to finish", async () => {
+    await start();
+    await signSafePending(5, 2);
+    failing('safe_pending.clear');
+    const heard = [];
+    const stop = onSafeSendSettled((event) => heard.push(event));
+    try {
+      await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'storage' });
+      expect(heard).toEqual([]);
+      expect(getPending(5).executed).toEqual({ hash: TX_HASH, explorerUrl: `https://gnosisscan.io/tx/${TX_HASH}` });
+      pendingSim.fail = null;
+      await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+    } finally {
+      stop();
+    }
+    expect(mockExecTransaction).toHaveBeenCalledTimes(1);
+    expect(getPending(5)).toBeNull();
+    expect(heard).toEqual([{ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: TX_HASH }]);
+  });
+
+  test("a superseded mark the core couldn't save fails the step, and the SafeTx isn't marked", async () => {
+    await start();
+    mockRpcRequest.mockResolvedValue('0x4');
+    failing('safe_pending.set');
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'storage' });
+    expect(getPending(5).superseded).toBeUndefined();
+    pendingSim.fail = null;
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'superseded' });
+    expect((await coreEntry(5)).superseded).toBe(true);
+  });
+
+  test("a site's SafeTx whose withdrawal the core couldn't save isn't sent, and the next attempt finishes it", async () => {
+    await reserved({
+      safeIndex: 5,
+      tx: TX,
+      display: { ...DISPLAY, site: 'https://app.example' },
+      chainId: 100,
+      approval: newApproval(PAGE),
+    });
+    await signSafePending(5, 2);
+    failing('safe_pending.set');
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWING' });
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    expect(getPending(5).display.site).toBe('https://app.example');
+    pendingSim.fail = null;
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+    expect(getPending(5).display).toEqual(DISPLAY);
+    expect((await coreEntry(5)).display).toEqual(DISPLAY);
+  });
+
+  test("a discard the core couldn't save fails, and the SafeTx stays, its approval ended", async () => {
+    await start();
+    const heard = [];
+    const stop = onSafeSendSettled((event) => heard.push(event));
+    failing('safe_pending.clear');
+    try {
+      await expect(cancelSafeSend(5)).rejects.toMatchObject({ code: 'storage' });
+      expect(heard).toEqual([]);
+      expect(getPending(5)).not.toBeNull();
+      expect(endedIds()).toEqual([lastApproval.id]);
+      pendingSim.fail = null;
+      await cancelSafeSend(5);
+    } finally {
+      stop();
+    }
+    expect(getPending(5)).toBeNull();
+    expect(heard).toEqual([{ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' }]);
+  });
+
+  test("on a core that didn't take the store, a step fails requirement_unmet and nothing is pending", async () => {
+    pendingSim.moved = false;
+    const approval = newApproval();
+    await expect(start(5, 100, approval)).rejects.toMatchObject({ code: 'requirement_unmet' });
+    expect(mockBuildSafeTransaction).not.toHaveBeenCalled();
+    expect(endedIds()).toEqual([approval.id]);
+    await expect(cancelSafeSend(5)).rejects.toMatchObject({ code: 'requirement_unmet' });
+    expect(fs.existsSync(path.join(mockTmpDir, 'safe-pending.json'))).toBe(false);
+  });
+});
+
+// Codex round 1 on #1298: no Safe step acts on main's copy of a core
+// process that has exited, or on an entry the core never confirmed.
+describe('across core processes and lost answers', () => {
+  const { EventEmitter } = require('events');
+  const pendingFile = () => path.join(mockTmpDir, 'safe-pending.json');
+  const coreText = () => JSON.parse(fs.readFileSync(pendingFile(), 'utf-8'));
+  const writeAsCore = (store) => fs.writeFileSync(pendingFile(), JSON.stringify(store, null, 2), 'utf-8');
+  let client;
+  let warn;
+  beforeEach(async () => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    client = new EventEmitter();
+    pendingStore.attachCore(client);
+    client.emit('ready');
+    await pendingStore.ready;
+    await start();
+    await signSafePending(5, 2);
+  });
+  afterEach(() => warn.mockRestore());
+
+  test('a core restart during an execution: it waits for the reload, and a SafeTx the core holds otherwise is not executed', async () => {
+    mockRpcRequest.mockImplementationOnce(async () => {
+      client.emit('exit');
+      expect(getPending(5)).toBeNull();
+      // A lost write left the core's entry other than main's copy.
+      const store = coreText();
+      store[5].signatures = [signatureOf(0)];
+      writeAsCore(store);
+      client.emit('ready');
+      return '0x3';
+    });
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    expect(getPending(5).signatures).toEqual([signatureOf(0)]);
+  });
+
+  // Codex round 2 on #1298: the fence comes before the nonce is judged.
+  test('a core restart during the nonce read that finds another SafeTx, the nonce moved: not marked superseded, nothing written', async () => {
+    const other = `0x${'ef'.repeat(32)}`;
+    mockApprovalEnd.mockClear();
+    mockRpcRequest.mockImplementationOnce(async () => {
+      client.emit('exit');
+      const store = coreText();
+      store[5] = { ...store[5], safeTxHash: other, signatures: [] };
+      writeAsCore(store);
+      client.emit('ready');
+      return '0x4';
+    });
+    pendingSim.calls = [];
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(pendingSim.calls.map(([method]) => method)).not.toContain('safe_pending.set');
+    expect(coreText()[5]).toMatchObject({ safeTxHash: other, signatures: [] });
+    expect(coreText()[5].superseded).toBeUndefined();
+    expect(mockApprovalEnd).not.toHaveBeenCalled();
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+  });
+
+  // Codex round 2 on #1298: a chosen owner's signature across a restart.
+  describe("a chosen owner's signature made while the core restarts", () => {
+    let signing;
+    let releaseList;
+    async function signAcrossRestart(change) {
+      await cancelSafeSend(5);
+      await start();
+      signing = deferred();
+      mockCollectOwnerSignature.mockImplementationOnce(() => signing.promise);
+      const signed = signSafePending(5, 2);
+      await flushMicrotasks();
+      client.emit('exit');
+      const store = coreText();
+      change(store);
+      writeAsCore(store);
+      const listGate = new Promise((resolve) => {
+        releaseList = resolve;
+      });
+      pendingSim.fail = (method) => (method === 'safe_pending.list' ? listGate : undefined);
+      client.emit('ready');
+      pendingSim.calls = [];
+      signing.resolve(signatureOf(2));
+      await flushMicrotasks();
+      // Wrapped: an async function returning the promise would wait on it.
+      return { signed };
+    }
+
+    test("waits for the reload, and refuses an entry the core changed: nothing is written", async () => {
+      const { signed } = await signAcrossRestart((store) => {
+        store[5].signatures = [];
+      });
+      let settledEarly = false;
+      signed.then(
+        () => (settledEarly = true),
+        () => (settledEarly = true)
+      );
+      await flushMicrotasks();
+      expect(settledEarly).toBe(false);
+      releaseList();
+      await expect(signed).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(pendingSim.calls.map(([method]) => method)).not.toContain('safe_pending.set');
+      expect(coreText()[5].signatures).toEqual([]);
+    });
+
+    test('waits for the reload, and refuses an entry the core no longer holds', async () => {
+      const { signed } = await signAcrossRestart((store) => {
+        delete store[5];
+      });
+      releaseList();
+      await expect(signed).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(pendingSim.calls.map(([method]) => method)).not.toContain('safe_pending.set');
+      expect(coreText()[5]).toBeUndefined();
+    });
+
+    test('keeps the signature in an entry the reload confirmed as it was', async () => {
+      const { signed } = await signAcrossRestart(() => {});
+      releaseList();
+      await expect(signed).resolves.toMatchObject({ collected: 2 });
+      expect(coreText()[5].signatures).toEqual([signatureOf(0), signatureOf(2)]);
+    });
+  });
+
+  test('a core restart during an execution that finds the SafeTx as it was executes it, the same entry', async () => {
+    const held = getPending(5);
+    mockRpcRequest.mockImplementationOnce(async () => {
+      client.emit('exit');
+      client.emit('ready');
+      return '0x3';
+    });
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+    expect(mockExecTransaction).toHaveBeenCalledTimes(1);
+    expect(mockExecTransaction.mock.calls[0][0].signatures).toBe(held.signatures);
+    expect(getPending(5)).toBeNull();
+  });
+
+  test("a core process whose load fails stops every step: nothing reads, signs, executes or discards", async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    client.emit('exit');
+    pendingSim.moved = false;
+    client.emit('ready');
+    const unmet = { code: 'requirement_unmet' };
+    await expect(executeSafePending(5)).rejects.toMatchObject(unmet);
+    await expect(signSafePending(5, 4)).rejects.toMatchObject(unmet);
+    await expect(cancelSafeSend(5)).rejects.toMatchObject(unmet);
+    expect(getSafeSendState(5)).toBeNull();
+    expect(getAllSafeSendStates()).toEqual([]);
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    expect(coreText()[5].signatures).toHaveLength(2);
+    // Once a load succeeds, the SafeTx is there again, and executes.
+    pendingSim.moved = true;
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+  });
+
+  test("an owner's signature the core applied but whose answer was lost: the row fails, and the entry is the core's, a new object", async () => {
+    await cancelSafeSend(5);
+    await start();
+    const held = getPending(5);
+    pendingSim.loseReply = (method) => method === 'safe_pending.set';
+    await expect(signSafePending(5, 2)).rejects.toMatchObject({ code: 'core_unavailable' });
+    pendingSim.loseReply = null;
+    expect(getPending(5)).not.toBe(held);
+    expect(getPending(5).signatures).toEqual([signatureOf(0), signatureOf(2)]);
+    // The next step goes on from the core's entry.
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+    expect(mockExecTransaction.mock.calls[0][0].signatures).toEqual([signatureOf(0), signatureOf(2)]);
+  });
+
+  test("an owner's signature applied, its answer and the read back lost: the execution waits for the restart and runs on the core's entry", async () => {
+    await cancelSafeSend(5);
+    await start();
+    pendingSim.loseReply = (method) => method === 'safe_pending.set';
+    pendingSim.fail = (method) => {
+      if (method === 'safe_pending.get') {
+        throw Object.assign(new Error('The identity core is not running'), { code: 'core_unavailable' });
+      }
+    };
+    await expect(signSafePending(5, 2)).rejects.toMatchObject({ code: 'core_unavailable' });
+    const fallback = getPending(5);
+    expect(fallback.signatures).toEqual([signatureOf(0)]);
+    // The core went down: nothing runs until its successor's load.
+    client.emit('exit');
+    pendingSim.loseReply = null;
+    pendingSim.fail = null;
+    const executing = executeSafePending(5);
+    await flushMicrotasks();
+    expect(mockRpcRequest).not.toHaveBeenCalled();
+    client.emit('ready');
+    await expect(executing).resolves.toMatchObject({ status: 'executed' });
+    expect(mockExecTransaction.mock.calls[0][0].signatures).toEqual([signatureOf(0), signatureOf(2)]);
+  });
+
+  test("a discard the core applied but whose answer was lost fails, and the SafeTx is gone, as the core read it back", async () => {
+    pendingSim.loseReply = (method) => method === 'safe_pending.clear';
+    await expect(cancelSafeSend(5)).rejects.toMatchObject({ code: 'core_unavailable' });
+    expect(getPending(5)).toBeNull();
+    await expect(executeSafePending(5)).rejects.toThrow('No pending transaction for this account');
+    expect(mockExecTransaction).not.toHaveBeenCalled();
   });
 });

@@ -94,6 +94,397 @@ describe('vaultBackend', () => {
     ).rejects.toMatchObject({ name: 'VaultBackendError', code: 'requirement_unmet' });
   });
 
+  // design 0013, "The intent journal" (PRF-6(b)): sixteen shell methods,
+  // each with the store's `requires`, whose INTENT_* refusals keep their code.
+  test('intents.* go as shell with the intents requirement, and keep the INTENT_* codes', async () => {
+    const core = new FakeCore((method, params) => {
+      if (method === 'intents.void') {
+        throw Object.assign(coreError('invalid_argument', "This payment can't be voided: x."), {
+          data: { code: 'INTENT_VOID_REFUSED' },
+        });
+      }
+      if (method === 'intents.commit') {
+        throw Object.assign(coreError('storage', "Could not save the wallet's payment record."), {
+          data: { code: 'INTENT_WRITE_FAILED' },
+        });
+      }
+      if (method === 'intents.track') {
+        throw Object.assign(coreError('invalid_argument', 'Invalid parameters'), { data: {} });
+      }
+      return { method, params };
+    });
+    const { vaultBackend } = load(core);
+    const { requiresStore } = require('./core-client');
+    const run = 'run-0123456789';
+    const id = { intent_id: 'i-0123456789' };
+    const calls = [
+      [
+        'commit',
+        { run, chain_id: 1, sender: '0x1', nonce: 0, hash: '0x2', raw: '0x3', via: 'original' },
+      ],
+      ['handoff', { run, ...id }],
+      ['outcome', { run, ...id, handoff_id: 'h', outcome: 'sent' }],
+      ['settle', { run, ...id, label: 'paid', hash: null, block: 1 }],
+      ['void', { run, ...id, lock: true }],
+      ['retire', { run, ...id, block: 1, hashes: ['0x2'], lock: true }],
+      ['track', { run, ...id, bracket: null }],
+      ['withdrawOrigin', id],
+      ['compact', undefined],
+      ['get', id],
+      ['byKey', { key: 'k' }],
+      ['held', undefined],
+      ['list', undefined],
+      ['heldNonces', { chain_id: 1, sender: '0x1' }],
+      ['usage', undefined],
+      ['voidRefusal', { ...id, run }],
+    ];
+    const answers = [];
+    for (const [name, params] of calls) {
+      answers.push(
+        await vaultBackend.intents[name](params).then(
+          (result) => result,
+          (err) => ({ code: err.code, name: err.name, message: err.message })
+        )
+      );
+    }
+    expect(Object.keys(vaultBackend.intents).sort()).toEqual(calls.map(([name]) => name).sort());
+    expect(core.calls.map((c) => c.method)).toEqual([
+      'intents.commit',
+      'intents.handoff',
+      'intents.outcome',
+      'intents.settle',
+      'intents.void',
+      'intents.retire',
+      'intents.track',
+      'intents.withdraw_origin',
+      'intents.compact',
+      'intents.get',
+      'intents.by_key',
+      'intents.held',
+      'intents.list',
+      'intents.held_nonces',
+      'intents.usage',
+      'intents.void_refusal',
+    ]);
+    calls.forEach(([, params], i) => {
+      expect(core.calls[i].params).toEqual(params ?? {});
+      expect(core.calls[i].context).toEqual({ caller: 'shell' });
+    });
+    // One requirement for all: the `intents` echo.
+    const [requires] = new Set(core.calls.map((c) => c.options.requires));
+    expect(new Set(core.calls.map((c) => c.options.requires)).size).toBe(1);
+    expect(requires({ store_moved: ['intents'] })).toBe(true);
+    expect(requires({ store_moved: ['vault_meta'] })).toBe(false);
+    expect(requires({})).toBe(requiresStore('intents')({}));
+    expect(answers[0]).toEqual({
+      code: 'INTENT_WRITE_FAILED',
+      name: 'VaultBackendError',
+      message: "Could not save the wallet's payment record.",
+    });
+    expect(answers[4]).toMatchObject({ code: 'INTENT_VOID_REFUSED', name: 'VaultBackendError' });
+    // The members' own error has no code: it stays invalid_argument.
+    expect(answers[6]).toMatchObject({ code: 'invalid_argument', message: 'Invalid parameters' });
+    expect(answers[9]).toEqual({ method: 'intents.get', params: id });
+  });
+
+  // payment-history.sqlite's methods (design 0013, PRF-6(c)): each with
+  // `requires: requiresStore('payments')`, the reads and clear as the chrome
+  // or as main, the rest as main; a refusal thrown again as the class the
+  // core names (G13), and anything else keeping its code.
+  test('payments.*: wire shapes, callers, requires and the refusals’ classes', async () => {
+    const record = { id: 1, kind: 'x402', status: 'settled' };
+    const answers = {
+      'payments.append': { payment: record },
+      'payments.update': { payment: null },
+      'payments.mark_confirmed': { payment: record },
+      'payments.mark_failed': { payment: record },
+      'payments.mark_dropped': { payment: null },
+      'payments.set_dropped_seen': {},
+      'payments.pending': { payments: [{ id: 1, tx_hash: '0x1' }] },
+      'payments.get_recent': { payments: [record] },
+      'payments.get_by_id': { payment: record },
+      'payments.get_count': { count: 3 },
+      'payments.clear': { removed: 2 },
+    };
+    const core = new FakeCore((method) => answers[method]);
+    const { vaultBackend } = load(core);
+    const { requiresStore } = require('./core-client');
+    const p = vaultBackend.payments;
+    expect(Object.keys(p).sort()).toEqual(
+      [
+        'append',
+        'update',
+        'markConfirmed',
+        'markFailed',
+        'markDropped',
+        'setDroppedSeen',
+        'pending',
+        'getRecent',
+        'getById',
+        'getCount',
+        'clear',
+      ].sort()
+    );
+    expect(await p.append({ kind: 'x402' })).toEqual(record);
+    expect(await p.update(1, { status: 'confirmed' })).toBeNull();
+    expect(await p.markConfirmed(1, { gasUsed: '1' })).toEqual(record);
+    expect(await p.markFailed(1, { reason: 'r' })).toEqual(record);
+    expect(await p.markDropped(1)).toBeNull();
+    expect(await p.setDroppedSeen(1, null)).toBeUndefined();
+    expect(await p.pending()).toEqual([{ id: 1, tx_hash: '0x1' }]);
+    expect(await p.getRecent({ kind: 'x402' }, 'chrome')).toEqual([record]);
+    expect(await p.getById(1)).toEqual(record);
+    expect(await p.getCount({}, 'chrome')).toBe(3);
+    expect(await p.clear('chrome')).toBe(2);
+    expect(core.calls.map((c) => [c.method, c.params, c.context.caller])).toEqual([
+      ['payments.append', { entry: { kind: 'x402' } }, 'shell'],
+      ['payments.update', { id: 1, patch: { status: 'confirmed' } }, 'shell'],
+      ['payments.mark_confirmed', { id: 1, receipt: { gasUsed: '1' } }, 'shell'],
+      ['payments.mark_failed', { id: 1, info: { reason: 'r' } }, 'shell'],
+      ['payments.mark_dropped', { id: 1 }, 'shell'],
+      ['payments.set_dropped_seen', { id: 1, seen_at: null }, 'shell'],
+      ['payments.pending', {}, 'shell'],
+      ['payments.get_recent', { filters: { kind: 'x402' } }, 'chrome'],
+      ['payments.get_by_id', { id: 1 }, 'shell'],
+      ['payments.get_count', { filters: {} }, 'chrome'],
+      ['payments.clear', {}, 'chrome'],
+    ]);
+    // One requirement for all: the `payments` echo, under the immediate watchdog.
+    const [requires] = new Set(core.calls.map((c) => c.options.requires));
+    expect(new Set(core.calls.map((c) => c.options.requires)).size).toBe(1);
+    expect(requires({ store_moved: ['payments'] })).toBe(true);
+    expect(requires({ store_moved: ['vault_meta', 'intents'] })).toBe(false);
+    expect(requires({})).toBe(requiresStore('payments')({}));
+    expect(new Set(core.calls.map((c) => c.options.watchdogMs))).toEqual(new Set([15_000]));
+
+    const refusing = new FakeCore((method) => {
+      if (method === 'payments.append') {
+        throw Object.assign(coreError('invalid_argument', "payment-history: unknown kind 'x'"), {
+          data: { name: 'Error' },
+        });
+      }
+      if (method === 'payments.get_recent') {
+        throw Object.assign(
+          coreError('invalid_argument', "Cannot read properties of null (reading 'kind')"),
+          {
+            data: { name: 'TypeError' },
+          }
+        );
+      }
+      if (method === 'payments.get_count') {
+        throw Object.assign(coreError('invalid_argument', 'Invalid parameters'), {
+          data: { name: 'EvalError' },
+        });
+      }
+      if (method === 'payments.clear') {
+        throw Object.assign(
+          coreError('storage', 'The payment history could not be read or written'),
+          {
+            data: { store: 'payments', kind: 'busy' },
+          }
+        );
+      }
+      throw coreError('requirement_unmet', "The core can't take this request");
+    });
+    const backend = load(refusing).vaultBackend.payments;
+    const failure = (promise) =>
+      promise.then(
+        () => null,
+        (err) => err
+      );
+    const unknown = await failure(backend.append({ kind: 'x' }));
+    expect(unknown.constructor).toBe(Error);
+    expect(unknown).toMatchObject({
+      message: "payment-history: unknown kind 'x'",
+      code: 'invalid_argument',
+      data: { name: 'Error' },
+    });
+    const typeError = await failure(backend.getRecent(null));
+    expect(typeError).toBeInstanceOf(TypeError);
+    expect(typeError.data).toEqual({ name: 'TypeError' });
+    // A class the core doesn't name stays the core's answer.
+    expect(await failure(backend.getCount({}))).toMatchObject({
+      name: 'VaultBackendError',
+      code: 'invalid_argument',
+    });
+    expect(await failure(backend.clear())).toMatchObject({
+      name: 'VaultBackendError',
+      code: 'storage',
+      data: { store: 'payments', kind: 'busy' },
+    });
+    expect(await failure(backend.pending())).toMatchObject({
+      name: 'VaultBackendError',
+      code: 'requirement_unmet',
+    });
+  });
+
+  // vault-meta.json's methods (design 0013, PRF-6(a)): each with
+  // `requires: requiresStore('vault_meta')`, as the chrome or as main, the
+  // reference's refusals with their codes.
+  test('accounts.*: wire shapes, callers and requires', async () => {
+    const core = new FakeCore((method) => {
+      switch (method) {
+        case 'accounts.list':
+          return { wallets: [{ index: 0 }] };
+        case 'accounts.meta':
+          return { meta: { userKnowsPassword: true } };
+        case 'accounts.active':
+          return { index: 2 };
+        case 'accounts.record_address_check':
+          return { address_check: 'matched' };
+        case 'accounts.add_mnemonic':
+        case 'accounts.add_ledger':
+        case 'accounts.add_remote':
+        case 'accounts.add_safe':
+          return { wallet: { index: 7 } };
+        default:
+          return { durable: false };
+      }
+    });
+    const { vaultBackend } = load(core);
+    const { accounts } = vaultBackend;
+    await expect(accounts.list('chrome')).resolves.toEqual([{ index: 0 }]);
+    await expect(accounts.list()).resolves.toEqual([{ index: 0 }]);
+    await expect(accounts.meta('chrome')).resolves.toEqual({ userKnowsPassword: true });
+    await expect(accounts.active()).resolves.toBe(2);
+    await expect(accounts.addMnemonic('Spare', 'chrome')).resolves.toEqual({ index: 7 });
+    await expect(accounts.addMnemonic(undefined)).resolves.toEqual({ index: 7 });
+    await accounts.addLedger({ name: '', address: '0xA', path: "44'/60'/0'/0/0" });
+    await accounts.addRemote({ address: '0xB' });
+    await expect(accounts.recordAddressCheck('remote', 1000000, false)).resolves.toBe('matched');
+    await accounts.addSafe({
+      name: 'S',
+      address: '0xC',
+      owners: [0, 1],
+      threshold: 1,
+      saltNonce: '5',
+    });
+    await accounts.markSafeDeployed(1000001, 100);
+    await accounts.setActive(2, 'chrome');
+    await accounts.rename(2, 'Two', 'chrome');
+    await accounts.remove(2, [{ origin: 'a.eth' }], 'chrome');
+    expect(
+      core.calls.map(({ method, params, context }) => [method, params, context.caller])
+    ).toEqual([
+      ['accounts.list', {}, 'chrome'],
+      ['accounts.list', {}, 'shell'],
+      ['accounts.meta', {}, 'chrome'],
+      ['accounts.active', {}, 'shell'],
+      ['accounts.add_mnemonic', { name: 'Spare' }, 'chrome'],
+      ['accounts.add_mnemonic', {}, 'shell'],
+      ['accounts.add_ledger', { name: '', address: '0xA', path: "44'/60'/0'/0/0" }, 'shell'],
+      ['accounts.add_remote', { address: '0xB' }, 'shell'],
+      [
+        'accounts.record_address_check',
+        { type: 'remote', index: 1000000, matched: false },
+        'shell',
+      ],
+      [
+        'accounts.add_safe',
+        { name: 'S', address: '0xC', owners: [0, 1], threshold: 1, salt_nonce: '5' },
+        'shell',
+      ],
+      ['accounts.mark_safe_deployed', { index: 1000001, chain_id: 100 }, 'shell'],
+      ['accounts.set_active', { index: 2 }, 'chrome'],
+      ['accounts.rename', { index: 2, name: 'Two' }, 'chrome'],
+      ['accounts.remove', { index: 2, swarm_references: [{ origin: 'a.eth' }] }, 'chrome'],
+    ]);
+    for (const { options } of core.calls) {
+      expect(options.watchdogMs).toBe(45_000);
+      expect(options.requires({ store_moved: ['vault_meta'] })).toBe(true);
+      expect(options.requires({ store_moved: ['payments'] })).toBe(false);
+    }
+  });
+
+  test("accounts.*: a refusal's data.code becomes its code; the Swarm refusal gets main's references back", async () => {
+    const references = [{ origin: 'myapp.eth', identityId: 'ethereum-wallet:2', active: true }];
+    const core = new FakeCore((method) => {
+      const refusal = (message, data) =>
+        Object.assign(new Error(message), { code: 'invalid_argument', data });
+      if (method === 'accounts.add_safe') {
+        throw refusal('"L" can\'t own a Safe until …', { code: 'LEDGER_ACCOUNT_UNCHECKED' });
+      }
+      if (method === 'accounts.remove') {
+        throw refusal('Cannot delete wallet with index 2; …', {
+          code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE',
+        });
+      }
+      if (method === 'accounts.rename') throw refusal('Wallet with index 9 does not exist');
+      throw coreError('requirement_unmet', "The core can't take this request");
+    });
+    const { vaultBackend } = load(core);
+    await expect(
+      vaultBackend.accounts.addSafe({
+        address: '0xC',
+        owners: [0, 1],
+        threshold: 1,
+        saltNonce: '1',
+      })
+    ).rejects.toMatchObject({
+      code: 'LEDGER_ACCOUNT_UNCHECKED',
+      message: '"L" can\'t own a Safe until …',
+    });
+    const swarm = await vaultBackend.accounts.remove(2, references).catch((e) => e);
+    expect(swarm).toMatchObject({ code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE', references });
+    await expect(vaultBackend.accounts.rename(9, 'x')).rejects.toMatchObject({
+      code: 'invalid_argument',
+      message: 'Wallet with index 9 does not exist',
+    });
+    await expect(vaultBackend.accounts.list()).rejects.toMatchObject({ code: 'requirement_unmet' });
+  });
+
+  // safe-pending.json's methods (design 0013, PRF-6(d)): main's own, each
+  // with `requires: requiresStore('safe_pending')`; the core's errors as
+  // they come.
+  test('safePending.*: wire shapes, shell and requires', async () => {
+    const entry = { safeTxHash: '0x05', signatures: [] };
+    const core = new FakeCore((method, params) => {
+      switch (method) {
+        case 'safe_pending.get':
+          return { entry: params.index === 5 ? entry : null };
+        case 'safe_pending.list':
+          return { indices: [5] };
+        case 'safe_pending.set':
+          return { durable: false };
+        case 'safe_pending.clear':
+          if (params.index === 6) {
+            throw Object.assign(new Error('The pending Safe transactions could not be written'), {
+              code: 'storage',
+              data: { store: 'safe_pending' },
+            });
+          }
+          return { cleared: true, durable: true };
+        default:
+          throw coreError('unknown_method', 'Unknown method');
+      }
+    });
+    const { vaultBackend } = load(core);
+    const { safePending } = vaultBackend;
+    await expect(safePending.get(5)).resolves.toEqual(entry);
+    await expect(safePending.get(6)).resolves.toBeNull();
+    await expect(safePending.list()).resolves.toEqual([5]);
+    await expect(safePending.set(5, entry)).resolves.toEqual({ durable: false });
+    await expect(safePending.clear(5)).resolves.toEqual({ cleared: true, durable: true });
+    await expect(safePending.clear(6)).rejects.toMatchObject({
+      code: 'storage',
+      message: 'The pending Safe transactions could not be written',
+      data: { store: 'safe_pending' },
+    });
+    expect(core.calls.map(({ method, params, context }) => [method, params, context.caller])).toEqual([
+      ['safe_pending.get', { index: 5 }, 'shell'],
+      ['safe_pending.get', { index: 6 }, 'shell'],
+      ['safe_pending.list', {}, 'shell'],
+      ['safe_pending.set', { index: 5, entry }, 'shell'],
+      ['safe_pending.clear', { index: 5 }, 'shell'],
+      ['safe_pending.clear', { index: 6 }, 'shell'],
+    ]);
+    for (const { options } of core.calls) {
+      expect(options.watchdogMs).toBe(15_000);
+      expect(options.requires({ store_moved: ['safe_pending'] })).toBe(true);
+      expect(options.requires({ store_moved: ['vault_meta'] })).toBe(false);
+    }
+  });
+
   test('no core: a typed unavailable error', async () => {
     const { vaultBackend } = load(null);
     await expect(vaultBackend.status()).rejects.toMatchObject({ code: 'core_unavailable' });
@@ -161,6 +552,118 @@ describe('vaultBackend', () => {
     await expect(
       vaultBackend.importVault('password1', 'abandon about', { overwrite: true })
     ).resolves.toEqual({ addresses: { user_wallet: '0x3' } });
+  });
+
+  // freedom-core design 0013, PRF-6(a): the core writes vault-meta.json with
+  // the vault, so a create, an import and their reconcile go only to a core
+  // that took `vault_meta`, and both send `user_knows_password`.
+  test('create and import send user_knows_password and require vault_meta; other mutations require nothing', async () => {
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: false, fingerprint: null };
+      if (method === 'vault.create') return { mnemonic_b64: b64('m'), addresses: {} };
+      return { addresses: {} };
+    });
+    const { vaultBackend } = load(core);
+    const { requiresStore } = require('./core-client');
+    await vaultBackend.createVault('pw1', 256, { userKnowsPassword: false });
+    await vaultBackend.importVault('pw2', 'abandon about', { userKnowsPassword: false });
+    await vaultBackend.importVault('pw3', 'abandon about');
+    await vaultBackend.changePassword('pw3', 'pw4');
+    const sent = core.calls.filter((c) => c.method !== 'vault.status');
+    expect(sent.map((c) => [c.method, c.params.user_knows_password])).toEqual([
+      ['vault.create', false],
+      ['vault.import', false],
+      ['vault.import', true],
+      ['vault.change_password', undefined],
+    ]);
+    const [create, imported, , change] = sent.map((c) => c.options.requires);
+    for (const requires of [create, imported]) {
+      expect(requires({ store_moved: ['vault_meta'] })).toBe(true);
+      expect(requires({ store_moved: [] })).toBe(false);
+    }
+    expect(create.toString()).toBe(requiresStore('vault_meta').toString());
+    expect(change).toBeNull();
+    for (const c of core.calls.filter((call) => call.method === 'vault.status')) {
+      expect(c.options.requires).toBeNull();
+    }
+  });
+
+  test('a core that did not take vault_meta: create fails requirement_unmet, nothing pending', async () => {
+    const core = new FakeCore((method, params, self) => {
+      if (method === 'vault.status') return { exists: false, fingerprint: null };
+      const requires = self.calls.at(-1).options.requires;
+      if (requires && !requires({ store_moved: [] })) {
+        throw coreError('requirement_unmet', "The core can't take this request");
+      }
+      return {};
+    });
+    const { vaultBackend, _internal } = load(core);
+    await expect(vaultBackend.createVault('pw1')).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
+    await expect(vaultBackend.importVault('pw1', 'abandon about')).rejects.toMatchObject({
+      code: 'requirement_unmet',
+    });
+    expect(_internal.hasPending()).toBe(false);
+  });
+
+  test.each(['written', 'pending'])(
+    "a lost create whose reconcile answers meta: '%s' resolves with its result; main writes nothing",
+    async (meta) => {
+      let created = false;
+      const core = new FakeCore((method, params, self) => {
+        if (method === 'vault.status') return { exists: created, fingerprint: created ? FP : null };
+        if (method === 'vault.create') {
+          created = true;
+          throw coreError('core_unavailable', 'The core exited');
+        }
+        if (method === 'vault.reconcile') {
+          expect(self.calls.at(-1).options.requires({ store_moved: ['vault_meta'] })).toBe(true);
+          expect(self.calls.at(-1).options.requires({ store_moved: [] })).toBe(false);
+          return {
+            status: 'committed',
+            meta,
+            mnemonic_b64: b64('m'),
+            addresses: { user_wallet: '0x2' },
+          };
+        }
+        return {};
+      });
+      const { vaultBackend } = load(core);
+      const writes = ['writeFileSync', 'renameSync', 'openSync', 'mkdirSync'].map((name) =>
+        jest.spyOn(fs, name)
+      );
+      try {
+        await expect(
+          vaultBackend.createVault('password1', 256, { userKnowsPassword: false })
+        ).resolves.toEqual({
+          mnemonic: 'm',
+          addresses: { user_wallet: '0x2' },
+        });
+        for (const spy of writes) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of writes) spy.mockRestore();
+      }
+    }
+  );
+
+  test('a lost import reconciles under vault_meta; a lost password change requires nothing', async () => {
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: true, fingerprint: FP };
+      if (method === 'vault.import' || method === 'vault.change_password') {
+        throw coreError('core_unavailable', 'The core exited');
+      }
+      if (method === 'vault.reconcile')
+        return { status: 'committed', meta: 'written', addresses: {} };
+      return {};
+    });
+    const { vaultBackend } = load(core);
+    await vaultBackend.importVault('pw1', 'abandon about', { overwrite: true });
+    await vaultBackend.changePassword('pw1', 'pw2');
+    const reconciles = core.calls.filter((c) => c.method === 'vault.reconcile');
+    expect(reconciles.map((c) => c.params.op)).toEqual(['import', 'change_password']);
+    expect(reconciles[0].options.requires({ store_moved: ['vault_meta'] })).toBe(true);
+    expect(reconciles[1].options.requires).toBeNull();
   });
 
   test('not committed: the original error', async () => {
@@ -267,7 +770,8 @@ describe('vaultBackend', () => {
     const core = new FakeCore(async (method) => {
       order.push(method);
       if (method === 'vault.status') return { exists: true, fingerprint: FP };
-      if (method === 'vault.change_password') await new Promise((resolve) => (releaseChange = resolve));
+      if (method === 'vault.change_password')
+        await new Promise((resolve) => (releaseChange = resolve));
       return {};
     });
     const { vaultBackend } = load(core);
@@ -449,7 +953,13 @@ describe('vaultBackend', () => {
   test("a revoke's caller: a page under its PageContext, the chrome's as chrome, main's own as shell", async () => {
     const core = new FakeCore(() => ({ revoked: true }));
     const { vaultBackend } = load(core);
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 1, agent: false };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 1,
+      agent: false,
+    };
     const params = { store: 'dapp', key: 'https://app.example', what: 'grant' };
     await vaultBackend.approval.revoke(params, page);
     await vaultBackend.approval.revoke(params, 'chrome');
@@ -474,9 +984,10 @@ describe('vaultBackend', () => {
 
   // Design 0013, "The re-wrap"; cored 0.17.0's callers: enroll is main's
   // own (`shell`), the other five the chrome's, after main's Touch ID.
-  test("quick unlock: enroll as shell, the rest as chrome; secrets as base64", async () => {
+  test('quick unlock: enroll as shell, the rest as chrome; secrets as base64', async () => {
     const core = new FakeCore((method) => {
-      if (method === 'quick_unlock.status') return { enabled: true, policy: 'unattended', available: true };
+      if (method === 'quick_unlock.status')
+        return { enabled: true, policy: 'unattended', available: true };
       if (method === 'quick_unlock.unlock') return { addresses: { user_wallet: '0x1' } };
       if (method === 'quick_unlock.export_mnemonic') return { mnemonic_b64: b64('abandon about') };
       if (method === 'quick_unlock.export_private_key') return { private_key_hex: '0xabc' };
@@ -489,7 +1000,9 @@ describe('vaultBackend', () => {
       available: true,
     });
     await expect(vaultBackend.quickUnlockEnroll('pässwörd1')).resolves.toBeUndefined();
-    await expect(vaultBackend.quickUnlock()).resolves.toEqual({ addresses: { user_wallet: '0x1' } });
+    await expect(vaultBackend.quickUnlock()).resolves.toEqual({
+      addresses: { user_wallet: '0x1' },
+    });
     await expect(vaultBackend.quickExportMnemonic()).resolves.toBe('abandon about');
     await expect(vaultBackend.quickExportPrivateKey(3)).resolves.toBe('0xabc');
     await expect(vaultBackend.quickUnlockDisable()).resolves.toBeUndefined();
@@ -516,6 +1029,7 @@ describe('vaultBackend', () => {
       password_b64: b64('pw'),
       mnemonic_b64: b64('abandon about'),
       overwrite: false,
+      user_knows_password: true,
       quick_unlock: true,
     });
     expect(imports[1].params).not.toHaveProperty('quick_unlock');
@@ -527,15 +1041,18 @@ describe('vaultBackend', () => {
     ['storage', { kind: 'malformed', file: 'secrets' }, /secrets\.json.*damaged/],
     ['key_store_unavailable', { reason: 'timeout' }, /didn't answer in time/],
     ['key_store_cancelled', undefined, /cancelled/],
-  ])('a %s refusal gets a cause and a way forward, its code and data kept', async (code, data, message) => {
-    const core = new FakeCore(() => {
-      throw Object.assign(coreError(code, 'Storage error'), { data });
-    });
-    const { vaultBackend } = load(core);
-    const refused = await vaultBackend.changePassword('a', 'b').catch((err) => err);
-    expect(refused).toMatchObject({ code, data });
-    expect(refused.message).toMatch(message);
-  });
+  ])(
+    'a %s refusal gets a cause and a way forward, its code and data kept',
+    async (code, data, message) => {
+      const core = new FakeCore(() => {
+        throw Object.assign(coreError(code, 'Storage error'), { data });
+      });
+      const { vaultBackend } = load(core);
+      const refused = await vaultBackend.changePassword('a', 'b').catch((err) => err);
+      expect(refused).toMatchObject({ code, data });
+      expect(refused.message).toMatch(message);
+    }
+  );
 
   test("other storage errors keep the core's message", async () => {
     const core = new FakeCore(() => {
@@ -595,6 +1112,18 @@ describe('vaultBackend', () => {
       'quick_unlock.export_mnemonic',
       'quick_unlock.export_private_key',
       'quick_unlock.disable',
+      'accounts.list',
+      'accounts.meta',
+      'accounts.active',
+      'accounts.add_mnemonic',
+      'accounts.add_ledger',
+      'accounts.add_remote',
+      'accounts.record_address_check',
+      'accounts.add_safe',
+      'accounts.mark_safe_deployed',
+      'accounts.set_active',
+      'accounts.rename',
+      'accounts.remove',
       'secrets.rpc_api_keys',
       'secrets.rpc_api_key_status',
       'secrets.set_rpc_api_key',
@@ -621,7 +1150,12 @@ describe('vaultBackend', () => {
     });
     const { vaultBackend } = load(core);
     const key = { kind: 'account', index: 0 };
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 1 };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 1,
+    };
     await vaultBackend.status();
     await vaultBackend.generateMnemonic(128);
     await vaultBackend.validateMnemonic('abandon about');
@@ -651,16 +1185,29 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.check({ request: {} }, { ...page, agent: false });
     await vaultBackend.approval.grant({ store: 'dapp', change: {} }, { ...page, agent: false });
     await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, page);
-    await vaultBackend.approval.revoke({ store: 'dapp', key: 'https://app.example', what: 'grant' });
-    await vaultBackend.approval.revoke({ store: 'swarm', key: 'https://app.example', what: 'grant' }, 'chrome');
+    await vaultBackend.approval.revoke({
+      store: 'dapp',
+      key: 'https://app.example',
+      what: 'grant',
+    });
+    await vaultBackend.approval.revoke(
+      { store: 'swarm', key: 'https://app.example', what: 'grant' },
+      'chrome'
+    );
     await vaultBackend.approval.touch({ store: 'dapp' }, { ...page, agent: false });
     await vaultBackend.approval.touch({ store: 'radicle' }, page);
-    await vaultBackend.approval.radicleWrite({ key: 'https://app.example' }, { ...page, agent: false });
+    await vaultBackend.approval.radicleWrite(
+      { key: 'https://app.example' },
+      { ...page, agent: false }
+    );
     await vaultBackend.approval.forgetAccount(0);
     await vaultBackend.approval.grants({ store: 'dapp' });
     await vaultBackend.approval.grants({ store: 'radicle' });
     await vaultBackend.typedDataHash({});
-    await vaultBackend.phone.job({ account: 0, method: 'message', payload: {}, target: 7 }, { ...page, agent: false });
+    await vaultBackend.phone.job(
+      { account: 0, method: 'message', payload: {}, target: 7 },
+      { ...page, agent: false }
+    );
     await vaultBackend.phone.sent({ job: 'j', sender: 7 });
     await vaultBackend.phone.result({ job: 'j', sender: 7, result: null });
     await vaultBackend.quickUnlockStatus();
@@ -670,6 +1217,24 @@ describe('vaultBackend', () => {
     await vaultBackend.quickExportPrivateKey(0);
     await vaultBackend.quickUnlockDisable();
     await vaultBackend.deleteVault('password2');
+    const { accounts } = vaultBackend;
+    await accounts.list();
+    await accounts.meta();
+    await accounts.active();
+    await accounts.addMnemonic('n');
+    await accounts.addLedger({ address: '0xA', path: 'p' });
+    await accounts.addRemote({ address: '0xB' });
+    await accounts.recordAddressCheck('ledger', 1, true);
+    await accounts.addSafe({ address: '0xC', owners: [0, 1], threshold: 1, saltNonce: '1' });
+    await accounts.markSafeDeployed(1, 100);
+    await accounts.setActive(0);
+    await accounts.rename(0, 'm');
+    await accounts.remove(1, []);
+    const { safePending } = vaultBackend;
+    await safePending.get(1);
+    await safePending.list();
+    await safePending.set(1, {});
+    await safePending.clear(1);
     await vaultBackend.secrets.rpcApiKeys();
     await vaultBackend.secrets.rpcApiKeyStatus('chrome');
     await vaultBackend.secrets.setRpcApiKey({ id: 'alchemy', api_key: 'k' }, 'chrome');
@@ -679,18 +1244,36 @@ describe('vaultBackend', () => {
     // Every method vault-backend.js sends was sent above.
     const source = fs.readFileSync(path.join(__dirname, 'vault-backend.js'), 'utf8');
     const named = new Set(
-      [...source.matchAll(/(?:call|mutate)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
+      [...source.matchAll(/(?:call|mutate|accountsCall|safePendingCall)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
     );
     expect([...named].sort()).toEqual([...sent].sort());
-    for (const { method, options } of core.calls) {
-      expect([method, options]).toEqual([
+    // vault-meta.json's requests, and the create and import that write it
+    // with the vault, require `vault_meta` (design 0013, PRF-6(a)).
+    const metaWrites = (method, params) =>
+      method.startsWith('accounts.') ||
+      method === 'vault.create' ||
+      method === 'vault.import' ||
+      (method === 'vault.reconcile' && ['create', 'import'].includes(params.op));
+    for (const { method, params, options } of core.calls) {
+      const { requires, ...rest } = options;
+      expect([method, rest]).toEqual([
         method,
-        {
-          watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : SESSION.has(method) ? 135_000 : 15_000,
-          // The RPC API keys' requests need a core that took the store.
-          requires: method.startsWith('secrets.') ? expect.any(Function) : null,
-        },
+        { watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : SESSION.has(method) ? 135_000 : 15_000 },
       ]);
+      if (metaWrites(method, params)) {
+        expect([method, requires({ store_moved: ['vault_meta'] })]).toEqual([method, true]);
+        expect([method, requires({ store_moved: [] })]).toEqual([method, false]);
+      } else if (method.startsWith('safe_pending.')) {
+        // safe-pending.json's (PRF-6(d)) require `safe_pending`.
+        expect([method, requires({ store_moved: ['safe_pending'] })]).toEqual([method, true]);
+        expect([method, requires({ store_moved: ['vault_meta'] })]).toEqual([method, false]);
+      } else if (method.startsWith('secrets.')) {
+        // The RPC API keys' requests (PRF-6(e)) need a core that took the store.
+        expect([method, requires({ store_moved: ['rpc_api_keys'] })]).toEqual([method, true]);
+        expect([method, requires({ store_moved: ['vault_meta'] })]).toEqual([method, false]);
+      } else {
+        expect([method, requires]).toEqual([method, null]);
+      }
     }
   });
 
@@ -724,19 +1307,33 @@ describe('vaultBackend', () => {
   test('grant writes and SOCs go as the page, the chrome or main itself', async () => {
     const core = new FakeCore(() => ({}));
     const { vaultBackend } = load(core);
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 2,
+      agent: false,
+    };
     const chunk = { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) };
     const authorization = { swarm: 'user', soc: 'raw' };
     await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, page);
-    await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect', key: page.origin } });
-    await vaultBackend.approval.revoke({ store: 'radicle', key: page.origin, what: 'grant' }, 'chrome');
+    await vaultBackend.approval.grant({
+      store: 'swarm',
+      change: { op: 'connect', key: page.origin },
+    });
+    await vaultBackend.approval.revoke(
+      { store: 'radicle', key: page.origin, what: 'grant' },
+      'chrome'
+    );
     await vaultBackend.approval.touch({ store: 'radicle' }, page);
     await vaultBackend.approval.remember({ receipt: 'e'.repeat(32) }, page);
     await vaultBackend.approval.grants({ store: 'swarm' });
     await vaultBackend.approval.radicleWrite({ key: page.origin }, page);
     await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, { page, authorization });
     await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk);
-    expect(core.calls.map(({ method, context, params }) => [method, context, params.authorization])).toEqual([
+    expect(
+      core.calls.map(({ method, context, params }) => [method, context, params.authorization])
+    ).toEqual([
       ['approval.grant', { caller: 'page', page }, undefined],
       ['approval.grant', { caller: 'shell' }, undefined],
       ['approval.revoke', { caller: 'chrome' }, undefined],
@@ -759,19 +1356,38 @@ describe('vaultBackend', () => {
   test('phone jobs go as the page or main, their marks and answers as the chrome or main', async () => {
     const core = new FakeCore(() => ({}));
     const { vaultBackend } = load(core);
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
-    const job = { account: 1, address: '0xabc', method: 'message', payload: { message: '0x00' }, target: 7 };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 2,
+      agent: false,
+    };
+    const job = {
+      account: 1,
+      address: '0xabc',
+      method: 'message',
+      payload: { message: '0x00' },
+      target: 7,
+    };
     await vaultBackend.phone.job({ ...job, authorization: { token: 't' } }, page);
     await vaultBackend.phone.job(job);
     await vaultBackend.phone.sent({ job: 'j-1', sender: 7 });
     await vaultBackend.phone.result({ job: 'j-1', sender: 7, result: '0x' });
-    await vaultBackend.phone.result({ job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } }, null);
+    await vaultBackend.phone.result(
+      { job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } },
+      null
+    );
     expect(core.calls.map(({ method, context, params }) => [method, context, params])).toEqual([
       ['phone.job', { caller: 'page', page }, { ...job, authorization: { token: 't' } }],
       ['phone.job', { caller: 'shell' }, job],
       ['phone.sent', { caller: 'chrome' }, { job: 'j-1', sender: 7 }],
       ['phone.result', { caller: 'chrome' }, { job: 'j-1', sender: 7, result: '0x' }],
-      ['phone.result', { caller: 'shell' }, { job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } }],
+      [
+        'phone.result',
+        { caller: 'shell' },
+        { job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } },
+      ],
     ]);
   });
 
@@ -780,7 +1396,13 @@ describe('vaultBackend', () => {
   test("a PageContext the core can't decode is refused invalid_argument, never sent", async () => {
     const core = new FakeCore(() => ({}));
     const { vaultBackend } = load(core);
-    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    const page = {
+      origin: 'https://app.example',
+      top_origin: 'https://app.example',
+      frame: 1,
+      navigation: 2,
+      agent: false,
+    };
     const chunk = { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) };
     const undecodable = [
       { ...page, origin: null },
@@ -803,9 +1425,16 @@ describe('vaultBackend', () => {
       for (const send of [
         () => vaultBackend.approval.touch({ store: 'dapp', chain_id: 1 }, bad),
         () => vaultBackend.approval.radicleWrite({ key: page.origin }, bad),
-        () => vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, { page: bad, authorization: { swarm: 'user', soc: 'raw' } }),
+        () =>
+          vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, {
+            page: bad,
+            authorization: { swarm: 'user', soc: 'raw' },
+          }),
       ]) {
-        await expect(send()).rejects.toMatchObject({ name: 'VaultBackendError', code: 'invalid_argument' });
+        await expect(send()).rejects.toMatchObject({
+          name: 'VaultBackendError',
+          code: 'invalid_argument',
+        });
       }
     }
     expect(core.calls).toEqual([]);
@@ -813,7 +1442,12 @@ describe('vaultBackend', () => {
     // own invalid_argument). No agent field, or a null one, decodes too:
     // the core then lets no standing rule answer.
     // A transport key absent, null or a string decodes (cored 0.21.0).
-    const named = { ...page, origin: 'docs.example.org', top_origin: 'docs.example.org', transport_key: 'ipns://k51abc' };
+    const named = {
+      ...page,
+      origin: 'docs.example.org',
+      top_origin: 'docs.example.org',
+      transport_key: 'ipns://k51abc',
+    };
     const goods = [
       { ...page, origin: '', top_origin: '' },
       { ...page, agent: undefined },
@@ -825,7 +1459,9 @@ describe('vaultBackend', () => {
     for (const good of goods) {
       await vaultBackend.approval.touch({ store: 'dapp', chain_id: 1 }, good);
     }
-    expect(core.calls.map(({ context }) => context)).toEqual(goods.map((good) => ({ caller: 'page', page: good })));
+    expect(core.calls.map(({ context }) => context)).toEqual(
+      goods.map((good) => ({ caller: 'page', page: good }))
+    );
   });
 
   // A Safe approval lives in the memory of the core process that gave it

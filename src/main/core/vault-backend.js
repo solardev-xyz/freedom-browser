@@ -30,8 +30,26 @@ const { keyStoreMessage } = require('./key-store-messages');
 const { requiresStore } = require('./core-client');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
+// The intent journal is the core's (design 0013, PRF-6(b)): its requests go
+// only to a core whose hello echoed `intents`.
+const INTENTS = Object.freeze({ requires: requiresStore('intents') });
+// payment-history.sqlite is the core's (design 0013, PRF-6(c)): its requests
+// go only to a core whose hello echoed `payments`.
+const PAYMENTS = Object.freeze({ requires: requiresStore('payments') });
+// The JavaScript classes a payment-history refusal names (`data.name`).
+const PAYMENT_ERROR_CLASSES = Object.freeze({ Error, TypeError, RangeError, SyntaxError });
+// `vault-meta.json` is the core's (design 0013, PRF-6(a)): its requests,
+// and `vault.create`'s and `vault.import`'s, which write it with the vault,
+// go only to a core whose hello echoed `vault_meta`.
+const VAULT_META = requiresStore('vault_meta');
+// `safe-pending.json` is the core's (design 0013, PRF-6(d)): its requests go
+// only to a core whose hello echoed `safe_pending`.
+const SAFE_PENDING = requiresStore('safe_pending');
 // The RPC-key requests' `requires` (PRF-6(e)).
 const RPC_KEYS = Object.freeze({ requires: requiresStore('rpc_api_keys') });
+// The mutations that write vault-meta.json with the vault, and so their
+// reconcile too.
+const META_OPS = new Set(['create', 'import']);
 // @scure/bip39 strengths (bits) and their word counts.
 const WORDS_BY_STRENGTH = { 128: 12, 160: 15, 192: 18, 224: 21, 256: 24 };
 
@@ -117,6 +135,110 @@ async function call(method, params = {}, page = null, { requires = null } = {}) 
 }
 
 /**
+ * A `safe_pending.*` request (design 0013, PRF-6(d)), main's own, with
+ * `requires: SAFE_PENDING`. With `mark` (`coreProcess()`), it goes to that
+ * very process or nowhere: one that has ended, or a client main has
+ * replaced, fails it `core_unavailable`, unsent, so a request meant for one
+ * process's copy of the store never reaches its successor. Without one, to
+ * whichever process serves.
+ */
+async function safePendingCall(method, params, mark) {
+  if (!mark) return call(method, params, null, { requires: SAFE_PENDING });
+  try {
+    if (getCoreClient() !== mark.core) {
+      throw new VaultBackendError(CORE_UNAVAILABLE, 'The identity core is not running');
+    }
+    return await mark.core.requestTo(mark.gen, method, params, { caller: 'shell' }, {
+      watchdogMs: watchdogMs(method),
+      requires: SAFE_PENDING,
+    });
+  } catch (err) {
+    if (err instanceof VaultBackendError) throw err;
+    const code = err.code || CORE_UNAVAILABLE;
+    throw new VaultBackendError(code, err.message, err.data);
+  }
+}
+
+/**
+ * An intent-journal request (`intents.*`, design 0013, "The intent
+ * journal"), always main's own (`shell`: the core refuses every one from
+ * the chrome or a page). It goes with `requires: INTENTS`, so a core that
+ * didn't take the store fails it `requirement_unmet` in main, unsent. A
+ * rule's refusal (`invalid_argument`), a failed append and a load that
+ * can't read the file (`storage`) carry the reference's `INTENT_*` code as
+ * `data.code`: that code becomes the error's, with the reference's
+ * message, so callers keep branching on today's codes (`INTENT_NOT_HELD`,
+ * `INTENT_CHANGED`, `INTENT_STORE_FULL`, …). Anything else keeps its own
+ * code: `core_unavailable` for a request whose reply was lost, whose
+ * outcome is then unknown (main never sends it again: design 0013's
+ * coordinator call G9).
+ */
+async function intentsCall(method, params) {
+  try {
+    return await call(method, params, null, INTENTS);
+  } catch (err) {
+    const code = err.data?.code;
+    if (typeof code === 'string' && code.startsWith('INTENT_')) {
+      throw new VaultBackendError(code, err.message, err.data);
+    }
+    throw err;
+  }
+}
+
+/**
+ * A payment-history request (`payments.*`, design 0013, "Payment history"),
+ * from main itself (`caller` null: `shell`) or relayed for the chrome
+ * (`'chrome'`, which the core takes only for `get_recent`, `get_by_id`,
+ * `get_count` and `clear`). It goes with `requires: PAYMENTS`, so a core
+ * that didn't take the store fails it `requirement_unmet` in main, unsent.
+ * A refusal is `invalid_argument` with payment-history.js's message and its
+ * class as `data.name`: it is thrown again as that class (coordinator call
+ * G13), with the core's code and data, so callers see what the module threw
+ * before. A database the core can't use is `storage` with `{ store:
+ * 'payments', kind }`, and that and anything else keep their own code:
+ * `core_unavailable` for a request whose reply was lost, whose outcome is
+ * then unknown (main never sends it again: G9).
+ */
+async function paymentsCall(method, params, caller = null) {
+  try {
+    return await call(method, params, caller, PAYMENTS);
+  } catch (err) {
+    const name = err.code === 'invalid_argument' ? err.data?.name : undefined;
+    if (typeof name === 'string' && Object.hasOwn(PAYMENT_ERROR_CLASSES, name)) {
+      const ErrorClass = PAYMENT_ERROR_CLASSES[name];
+      throw Object.assign(new ErrorClass(err.message), { code: err.code, data: err.data });
+    }
+    throw err;
+  }
+}
+
+/**
+ * A `vault-meta.json` request (`accounts.*`, design 0013, "`vault-meta.json`"),
+ * from main itself (`caller` null: `shell`) or relayed for the chrome
+ * (`'chrome'`). It goes with `requires: VAULT_META`, so a core that didn't
+ * take the store fails it `requirement_unmet` in main, unsent. A refusal is
+ * `invalid_argument` with the reference's message, and its `err.code` as
+ * `data.code` where it set one: that code becomes the error's, so callers
+ * keep branching on today's codes (`LEDGER_ACCOUNT_UNCHECKED`,
+ * `SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE`, …).
+ */
+async function accountsCall(method, params, caller = null) {
+  try {
+    return await call(method, params, caller, { requires: VAULT_META });
+  } catch (err) {
+    if (err.code === 'invalid_argument' && typeof err.data?.code === 'string') {
+      throw new VaultBackendError(err.data.code, err.message, err.data);
+    }
+    throw err;
+  }
+}
+
+/** `params` with `name` when one is given: absent means the core's default. */
+function named(params, name) {
+  return name === undefined ? params : { ...params, name };
+}
+
+/**
  * `sign.*`'s caller and `authorization` (freedom-core design 0012, API):
  * `{ token, handle? }`, or `{ token, intent: { id } }` for an
  * intent-replace, or `{ standing: { paused? } }` for a request a site's
@@ -170,15 +292,38 @@ function serialized(task) {
  */
 let pending = null;
 
+/** A mutation's `requires`: `VAULT_META` for a create or an import. */
+function requiresFor(op) {
+  return META_OPS.has(op) ? VAULT_META : null;
+}
+
+/**
+ * Whether the lost mutation committed: its committed result, or null. A
+ * create's or an import's carries `meta` (design 0013, "The vault and its
+ * metadata, one write"): `"written"`, or `"pending"` while the core's
+ * journal waits for its recovery to install the metadata. Main writes
+ * nothing for either.
+ */
 async function reconcile(record) {
-  const result = await call('vault.reconcile', {
-    op: record.op,
-    fingerprint_before: record.before,
-    password_b64: b64(record.password),
-    ...(record.mnemonic ? { mnemonic_b64: b64(record.mnemonic) } : {}),
-    install: record.install && locks === record.locksAtStart,
-  });
-  return result.status === 'committed' ? result : null;
+  const result = await call(
+    'vault.reconcile',
+    {
+      op: record.op,
+      fingerprint_before: record.before,
+      password_b64: b64(record.password),
+      ...(record.mnemonic ? { mnemonic_b64: b64(record.mnemonic) } : {}),
+      install: record.install && locks === record.locksAtStart,
+    },
+    null,
+    { requires: requiresFor(record.op) }
+  );
+  if (result.status !== 'committed') return null;
+  if (result.meta === 'pending') {
+    log.warn(
+      "[VaultBackend] A lost vault operation committed; the core's recovery installs its metadata"
+    );
+  }
+  return result;
 }
 
 /**
@@ -253,7 +398,7 @@ function mutate(method, params, record, precheck) {
     const status = await call('vault.status');
     const full = { ...record, before: status.fingerprint, locksAtStart: locks };
     try {
-      return await call(method, request);
+      return await call(method, request, null, { requires: requiresFor(record.op) });
     } catch (err) {
       // Error replies always mean "not committed"; only a missing reply needs
       // reconciliation.
@@ -309,9 +454,14 @@ const vaultBackend = {
   },
 
   /**
+   * The vault and its `vault-meta.json`, written by the core as one
+   * operation (design 0013, PRF-6(a)), and only on a core that took
+   * `vault_meta` (`requirement_unmet` on any other, nothing written).
    * @returns {{ mnemonic: string, addresses: { user_wallet, bee_wallet } }}
+   * @param {boolean} [userKnowsPassword] - the metadata's
+   *   `userKnowsPassword` (false for Quick Setup), required by the core
    * @param {Function} [onCommitted] - continuation if the reply was lost and
-   *   the core only came back later (e.g. writing vault-meta.json)
+   *   the core only came back later
    */
   async createVault(password, strength = 256, { userKnowsPassword = true, onCommitted } = {}) {
     let words;
@@ -334,11 +484,17 @@ const vaultBackend = {
   },
 
   /**
+   * The vault and its `vault-meta.json`, as `createVault` writes them.
+   * @param {boolean} [userKnowsPassword] - as `createVault`'s
    * @param {boolean} [quickUnlock] - Quick Setup (design 0013, "The re-wrap's
    *   two entries"): the core writes quick unlock's credential for the new
    *   vault before the vault commits, so the vault never exists without it
    */
-  async importVault(password, mnemonic, { overwrite = false, quickUnlock = false, onCommitted } = {}) {
+  async importVault(
+    password,
+    mnemonic,
+    { overwrite = false, quickUnlock = false, userKnowsPassword = true, onCommitted } = {}
+  ) {
     if (typeof mnemonic !== 'string' || !mnemonic.isWellFormed()) {
       throw new VaultBackendError('invalid_mnemonic', 'Invalid mnemonic');
     }
@@ -348,6 +504,7 @@ const vaultBackend = {
         password_b64: b64(password),
         mnemonic_b64: b64(mnemonic),
         overwrite,
+        user_knows_password: userKnowsPassword,
         ...(quickUnlock ? { quick_unlock: true } : {}),
       },
       { op: 'import', password, mnemonic, install: true, onCommitted }
@@ -463,6 +620,117 @@ const vaultBackend = {
     await call('quick_unlock.disable', {}, 'chrome');
   },
 
+  /**
+   * `vault-meta.json`'s methods (design 0013, "`vault-meta.json`";
+   * cored 0.23.0), one per change identity-manager.js made to it before
+   * PRF-6(a). The core writes the file alone, in today's text; main reads it
+   * only for its synchronous lookups. `caller` is `'chrome'` for a request
+   * the chrome made over IPC and null (`shell`) for main's own; the device,
+   * phone and Safe methods are main's only. A write may answer `durable:
+   * false` (written, not yet flushed).
+   */
+  accounts: {
+    /** `getDerivedWallets()`: the list, its first-list default written once. */
+    async list(caller = null) {
+      return (await accountsCall('accounts.list', {}, caller)).wallets;
+    },
+    /** The whole file (`identity:get-vault-meta`), or null without one. */
+    async meta(caller = null) {
+      return (await accountsCall('accounts.meta', {}, caller)).meta;
+    },
+    /** `getActiveWalletIndex()`. */
+    async active(caller = null) {
+      return (await accountsCall('accounts.active', {}, caller)).index;
+    },
+    /** A mnemonic account at the core's next index, needing the vault unlocked: `{ index, name, address }`. */
+    async addMnemonic(name, caller = null) {
+      return (await accountsCall('accounts.add_mnemonic', named({}, name), caller)).wallet;
+    },
+    /** A Ledger record main read back from the device at `path`, `matched`. */
+    async addLedger({ name, address, path }) {
+      return (await accountsCall('accounts.add_ledger', named({ address, path }, name))).wallet;
+    },
+    /** A phone record whose account the phone proved, `matched`. */
+    async addRemote({ name, address }) {
+      return (await accountsCall('accounts.add_remote', named({ address }, name))).wallet;
+    },
+    /**
+     * What a device's answer showed about a `'ledger'` or `'remote'`
+     * record: its check state after it (a matched record stays matched),
+     * or null for no such record.
+     */
+    async recordAddressCheck(type, index, matched) {
+      return (await accountsCall('accounts.record_address_check', { type, index, matched }))
+        .address_check;
+    },
+    /** A Safe record over existing owners, under the reference's checks. */
+    async addSafe({ name, address, owners, threshold, saltNonce }) {
+      const params = named({ address, owners, threshold, salt_nonce: saltNonce }, name);
+      return (await accountsCall('accounts.add_safe', params)).wallet;
+    },
+    /** A Safe's verified deployment on `chainId`: `{ verified: true }`. */
+    async markSafeDeployed(index, chainId) {
+      await accountsCall('accounts.mark_safe_deployed', { index, chain_id: chainId });
+    },
+    async setActive(index, caller = null) {
+      await accountsCall('accounts.set_active', { index }, caller);
+    },
+    /** The name as given. */
+    async rename(index, name, caller = null) {
+      await accountsCall('accounts.rename', named({ index }, name), caller);
+    },
+    /**
+     * Removes an account, in one request: the refusals (the main wallet, a
+     * Safe's owner, and an account the Swarm feeds in `swarmReferences`
+     * still name, `[{ origin, … }]` as main's feed store found them); for a
+     * Safe, its open Safe approvals ended; the account's dApp grants
+     * forgotten (a forget that fails refuses the removal); then the
+     * record. The Swarm refusal gets back the references main passed
+     * (`err.references`), as before.
+     */
+    async remove(index, swarmReferences = [], caller = null) {
+      try {
+        await accountsCall('accounts.remove', { index, swarm_references: swarmReferences }, caller);
+      } catch (err) {
+        if (err.code === 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE') err.references = swarmReferences;
+        throw err;
+      }
+    },
+  },
+
+  /**
+   * The pending Safe transactions, `safe-pending.json` (design 0013,
+   * "Pending Safe transactions"; cored 0.23.0), which the core keeps once
+   * the hello names `safe_pending` (wallet/safe/pending-store.js is main's
+   * copy). Each is main's own (`shell`: the core refuses them from the
+   * chrome or a page), with `requires: requiresStore('safe_pending')`, so a
+   * core that didn't take the store fails it `requirement_unmet` in main,
+   * unsent. `index` is the Safe's wallet index; an entry is any JSON value,
+   * kept as main sent it. A failed write is `storage` (and a set past the
+   * file's 1 MiB bound `invalid_argument`), the store as it was; a write
+   * may answer `durable: false` (written, not yet flushed). Each takes an
+   * optional `mark` (`coreProcess()`): the request then goes to that
+   * process only, and fails `core_unavailable` once it has ended.
+   */
+  safePending: {
+    /** `getPending(index)`: the entry, or null for none. */
+    async get(index, mark = null) {
+      return (await safePendingCall('safe_pending.get', { index }, mark)).entry;
+    },
+    /** `listPendingIndexes()`: the indices with an entry, in the file's key order. */
+    async list(mark = null) {
+      return (await safePendingCall('safe_pending.list', {}, mark)).indices;
+    },
+    /** `setPending(index, entry)` → `{ durable }`. */
+    set(index, entry, mark = null) {
+      return safePendingCall('safe_pending.set', { index, entry }, mark);
+    },
+    /** `clearPending(index)` → `{ cleared, durable }` (`cleared`: it had an entry). */
+    clear(index, mark = null) {
+      return safePendingCall('safe_pending.clear', { index }, mark);
+    },
+  },
+
   /** Public data only; needs the vault unlocked. */
   addresses({ accounts = [], publishers = [] } = {}) {
     return call('keys.addresses', { accounts, publishers });
@@ -494,7 +762,8 @@ const vaultBackend = {
     /** @param {Uint8Array} bytes @returns {string} 65-byte signature, v 27/28 */
     async message(key, bytes, options = {}) {
       const message = '0x' + Buffer.from(bytes).toString('hex');
-      return (await call('sign.message', signed({ key, message }, options), options.page)).signature;
+      return (await call('sign.message', signed({ key, message }, options), options.page))
+        .signature;
     },
     /**
      * Signs only if the data's digest is `expectedHash`, the hash the user
@@ -654,6 +923,139 @@ const vaultBackend = {
      */
     update(params, caller = 'chrome') {
       return call('x402.update', params, caller);
+    },
+  },
+
+  /**
+   * The intent journal, `wallet-intents.jsonl` (freedom-core design 0013,
+   * "The intent journal"; PRF-6(b)), which the core keeps once the hello
+   * names `intents` (wallet/intent-store.js is main's adapter). Members are
+   * snake_case, the reference's argument names otherwise; each answer holds
+   * the reference's return value as it is (its views' camelCase keys
+   * included). Every write that appends a line carries main's `run`
+   * (intent-store.js's `RUN_ID`), which the core writes on the line;
+   * `void` and `retire` carry `lock: true`, main's word that it holds the
+   * account's reservation lock (until 0012's APR-6).
+   */
+  intents: {
+    /** `{ run, chain_id, sender, nonce, hash, raw, via, intent_id?, context? }` → `{ intent }` */
+    commit(params) {
+      return intentsCall('intents.commit', params);
+    },
+    /** `{ run, intent_id, hash? }` → `{ handoff: { handoffId, hash, raw } }` */
+    handoff(params) {
+      return intentsCall('intents.handoff', params);
+    },
+    /** `{ run, intent_id, handoff_id, outcome, source?, reason_class? }` → `{ intent }` (null for an unknown intent) */
+    outcome(params) {
+      return intentsCall('intents.outcome', params);
+    },
+    /** `{ run, intent_id, label, hash?, block, hashes? }` → `{ intent }` */
+    settle(params) {
+      return intentsCall('intents.settle', params);
+    },
+    /** `{ run, intent_id, lock }` → `{ intent }` */
+    void(params) {
+      return intentsCall('intents.void', params);
+    },
+    /** `{ run, intent_id, block, hashes, lock }` → `{ intent }` */
+    retire(params) {
+      return intentsCall('intents.retire', params);
+    },
+    /** `{ run, intent_id, bracket?, unread_since? }` → `{ intent }` */
+    track(params) {
+      return intentsCall('intents.track', params);
+    },
+    /** `{ intent_id }` → `{ withdrawn }`: no line, so no `run` */
+    withdrawOrigin(params) {
+      return intentsCall('intents.withdraw_origin', params);
+    },
+    /** `{}` → `{}` */
+    compact() {
+      return intentsCall('intents.compact', {});
+    },
+    /** `{ intent_id }` → `{ intent }`, null for none */
+    get(params) {
+      return intentsCall('intents.get', params);
+    },
+    /** `{ key }` → `{ intent }`, the held intent with that key or null */
+    byKey(params) {
+      return intentsCall('intents.by_key', params);
+    },
+    /** `{}` → `{ intents }`, the held ones by account and nonce */
+    held() {
+      return intentsCall('intents.held', {});
+    },
+    /** `{}` → `{ intents }` */
+    list() {
+      return intentsCall('intents.list', {});
+    },
+    /** `{ chain_id, sender }` → `{ nonces }`, ascending */
+    heldNonces(params) {
+      return intentsCall('intents.held_nonces', params);
+    },
+    /** `{}` → `{ usage: { file, owed, budget, limit } }`; the first request loads the store */
+    usage() {
+      return intentsCall('intents.usage', {});
+    },
+    /** `{ intent_id, run }` → `{ refusal }`, null when a void of that run would pass (lock aside) */
+    voidRefusal(params) {
+      return intentsCall('intents.void_refusal', params);
+    },
+  },
+
+  /**
+   * The payment history, `payment-history.sqlite` (design 0013, "Payment
+   * history"; cored 0.23.0), which the core keeps once the hello names
+   * `payments` (payment-history.js is its client). Each is one function of
+   * the module before PRF-6(c), answered as it answered: a record (camelCase,
+   * `metadata` parsed) or null, a list of them, a count. `caller` is
+   * `'chrome'` for a read or clear the chrome made over IPC and null
+   * (`shell`) for main's own; the writes and the repoll's methods are main's
+   * only.
+   */
+  payments: {
+    /** `append(entry)`: the record written. */
+    async append(entry) {
+      return (await paymentsCall('payments.append', { entry })).payment;
+    },
+    /** `update(id, patch)`: the record, or null when no row has `id`. */
+    async update(id, patch) {
+      return (await paymentsCall('payments.update', { id, patch })).payment;
+    },
+    async markConfirmed(id, receipt) {
+      return (await paymentsCall('payments.mark_confirmed', { id, receipt })).payment;
+    },
+    async markFailed(id, info) {
+      return (await paymentsCall('payments.mark_failed', { id, info })).payment;
+    },
+    /** Only a row still pending, read and written in one step: null otherwise. */
+    async markDropped(id) {
+      return (await paymentsCall('payments.mark_dropped', { id })).payment;
+    },
+    /**
+     * The repoll's sighting of a dropped transaction on a row still pending:
+     * `metadata.txDroppedSeenAt` set to `seenAt`, or removed for null.
+     */
+    async setDroppedSeen(id, seenAt) {
+      await paymentsCall('payments.set_dropped_seen', { id, seen_at: seenAt });
+    },
+    /** The repoll's rows: every pending one, oldest first, as SQLite holds it (snake_case, `metadata` its text). */
+    async pending() {
+      return (await paymentsCall('payments.pending', {})).payments;
+    },
+    async getRecent(filters, caller = null) {
+      return (await paymentsCall('payments.get_recent', { filters }, caller)).payments;
+    },
+    async getById(id, caller = null) {
+      return (await paymentsCall('payments.get_by_id', { id }, caller)).payment;
+    },
+    async getCount(filters, caller = null) {
+      return (await paymentsCall('payments.get_count', { filters }, caller)).count;
+    },
+    /** Every row deleted: how many. */
+    async clear(caller = null) {
+      return (await paymentsCall('payments.clear', {}, caller)).removed;
     },
   },
 
