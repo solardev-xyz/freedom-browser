@@ -51,11 +51,12 @@ function coredBinaries() {
 
 /**
  * A started CoreClient on `binary`, with its identity and lock directories
- * under `root`, which is also its grant root. With `storeMoved`, its hello
- * names those stores (and takes an echo of those only) rather than the
- * build's `STORE_MOVED`.
+ * under `root`, which is also its grant root unless `grantRoot` names
+ * another. With `storeMoved`, its hello names those stores (and takes an
+ * echo of those only) rather than the build's `STORE_MOVED`; with
+ * `userDataDir`, it names that as the profile's directory (PRF-8b-lite).
  */
-async function startCore({ binary, root, storeMoved }) {
+async function startCore({ binary, root, storeMoved, grantRoot = root, userDataDir }) {
   const { CoreClient, _internal } = require('../../src/main/core/core-client');
   const client = new CoreClient({
     spawn,
@@ -69,7 +70,8 @@ async function startCore({ binary, root, storeMoved }) {
     ],
     log: quietLog,
     shellVersion: 'jest',
-    grantRoot: root,
+    grantRoot,
+    userDataDir,
   });
   if (storeMoved) client.service = _internal.coreService(storeMoved);
   await client.start();
