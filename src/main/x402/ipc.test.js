@@ -993,14 +993,24 @@ describe('x402:get-receipts', () => {
     expect(result).toEqual({ success: true, receipts: [
       { id: 1, url: 'https://api.example/x', status: 'settled', kind: 'x402' },
     ] });
-    expect(mockGetRecentReceipts).toHaveBeenCalledWith({ kind: 'x402', limit: 50 });
+    // The chrome's read, relayed to the core as the chrome's.
+    expect(mockGetRecentReceipts).toHaveBeenCalledWith({ kind: 'x402', limit: 50 }, 'chrome');
   });
 
   test('passes through undefined limit when none provided', async () => {
     mockGetRecentReceipts.mockReturnValueOnce([]);
     const result = await ipcHandlers['x402:get-receipts'](senderEvent(42));
     expect(result.success).toBe(true);
-    expect(mockGetRecentReceipts).toHaveBeenCalledWith({ kind: 'x402', limit: undefined });
+    expect(mockGetRecentReceipts).toHaveBeenCalledWith({ kind: 'x402', limit: undefined }, 'chrome');
+  });
+
+  // The history is the identity core's (design 0013, PRF-6(c)).
+  test("a core that can't answer is the handler's failure", async () => {
+    mockGetRecentReceipts.mockRejectedValueOnce(
+      Object.assign(new Error("The core can't take this request"), { code: 'requirement_unmet' })
+    );
+    const result = await ipcHandlers['x402:get-receipts'](senderEvent(42), { limit: 5 });
+    expect(result).toEqual({ success: false, error: "The core can't take this request" });
   });
 });
 

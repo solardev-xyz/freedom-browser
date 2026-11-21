@@ -37,9 +37,11 @@
  *   it (Q10).
  * - **`store_moved`** (design 0013, "One writer per store") names the set-A
  *   stores (`STORES`) whose only writer is the core: `STORE_MOVED`, a
- *   property of the build: `vault_meta` from PRF-6(a), and `intents`
+ *   property of the build: `vault_meta` from PRF-6(a), `intents`
  *   (PRF-6(b2)), whose every write main sends to the core's `intents.*`
- *   (wallet/intent-store.js). The core's answer echoes
+ *   (wallet/intent-store.js), and `payments` (PRF-6(c)), whose every read
+ *   and write main sends to the core's `payments.*` (payment-history.js).
+ *   The core's answer echoes
  *   the names it took, each once (cored 0.23.0); a core before 0.23.0
  *   (0.22.0) ignores the field, and its answer has none, which reads as
  *   none taken. A store's requests go with `requires: requiresStore(name)`,
@@ -110,10 +112,11 @@ const STORES = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending
  * switch: each PRF-6 step adds its store's name in the change that deletes
  * main's writer for it. `vault_meta` from PRF-6(a): identity-manager.js
  * writes `vault-meta.json` nowhere. `intents` from PRF-6(b2): the intent
- * journal's every write goes to the core. The other set-A stores are still
- * main's.
+ * journal's every write goes to the core. `payments` from PRF-6(c): main
+ * opens `payment-history.sqlite` nowhere, and reads and writes it only
+ * through the core. The other set-A stores are still main's.
  */
-const STORE_MOVED = Object.freeze(['vault_meta', 'intents']);
+const STORE_MOVED = Object.freeze(['vault_meta', 'intents', 'payments']);
 
 /**
  * The hello answer's `store_moved`: the names of `sent` whose store the core
@@ -214,7 +217,8 @@ function coreService(storeMoved = STORE_MOVED) {
       ...(client.userDataDir === null ? {} : { user_data_dir: client.userDataDir }),
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
       // The set-A stores the core writes from then on (design 0013):
-      // vault-meta.json (PRF-6(a)). The core echoes those it took; 0.22.0
+      // vault-meta.json (PRF-6(a)), the intent journal (PRF-6(b2)) and the
+      // payment history (PRF-6(c)). The core echoes those it took; 0.22.0
       // ignores the field.
       store_moved: [...storeMoved],
     }),

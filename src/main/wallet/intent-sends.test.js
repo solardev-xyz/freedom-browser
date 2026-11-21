@@ -39,10 +39,13 @@ jest.mock('electron', () => ({
   webContents: { getAllWebContents: () => [] },
 }));
 jest.mock('better-sqlite3', () => require('../../../test/helpers/fake-better-sqlite3-payments'));
-// The core's intent journal (PRF-6(b2)), simulated on the reference store
-// over this run's userData: a fresh one for each fresh run of main.
+// The core's intent journal (PRF-6(b2)) and payment history (PRF-6(c)),
+// simulated on the reference modules over this run's userData: a fresh one
+// for each fresh run of main.
 jest.mock('../core/vault-backend', () =>
-  require('../../../test/helpers/simulated-intents-core').mockVaultBackend()
+  require('../../../test/helpers/simulated-payments-core').withSimulatedPayments(
+    require('../../../test/helpers/simulated-intents-core').mockVaultBackend()
+  )
 );
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 // Every signature a Safe executor makes, by wallet index and nonce.
@@ -737,7 +740,7 @@ describe('payment history', () => {
 
     const result = await signAndRecord(PARAMS, signer, { kind: 'wallet-send' });
     expect(result).toMatchObject({ outcome: 'uncertain', recorded: true });
-    const rows = history.getRecent({});
+    const rows = await history.getRecent({});
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       txHash: result.hash,
@@ -807,7 +810,7 @@ describe('Safe', () => {
       message: 'Insufficient funds for transaction',
       outcome: 'rejected',
     });
-    expect(history.getCount()).toBe(0);
+    expect(await history.getCount()).toBe(0);
 
     // The executor is funded; the user presses "Try again".
     const result = await execute();
@@ -818,7 +821,7 @@ describe('Safe', () => {
     expect(
       mockChainRequest.mock.calls.filter(([, method]) => method === 'eth_estimateGas')
     ).toHaveLength(1);
-    const rows = history.getRecent({});
+    const rows = await history.getRecent({});
     expect(rows).toHaveLength(1);
     expect(rows[0].metadata).toMatchObject({
       safeTxHash: built.safeTxHash,
@@ -860,7 +863,7 @@ describe('Safe', () => {
     expect(await store.byKey(`safe-deploy:100:${deployment.safeAddress}`)).toMatchObject({
       intentId: first.tx.intentId,
     });
-    const rows = history.getRecent({});
+    const rows = await history.getRecent({});
     expect(rows).toHaveLength(1);
     expect(rows[0].metadata).toMatchObject({ intentId: first.tx.intentId, outcome: 'sent' });
   });
@@ -969,7 +972,7 @@ describe('review fixes (#706)', () => {
       const first = await original;
 
       expect(first).toMatchObject({ intentId: resent.intentId, paymentId: resent.paymentId });
-      const rows = history.getRecent({});
+      const rows = await history.getRecent({});
       expect(rows).toHaveLength(1);
       expect(rows[0].metadata).toMatchObject({ intentId: resent.intentId });
     });

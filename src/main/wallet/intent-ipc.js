@@ -170,10 +170,12 @@ async function intentFailure(err) {
 // stays held until its label is read at the finalized block.
 const RECEIPT_LOOKBACK = 500;
 
-function receiptsByIntent() {
+// Main's own read (the core keeps the history: design 0013, PRF-6(c)),
+// not the chrome's request relayed, so it goes as `shell`.
+async function receiptsByIntent() {
   const receipts = new Map();
   try {
-    for (const row of paymentHistory.getRecent({ limit: RECEIPT_LOOKBACK })) {
+    for (const row of await paymentHistory.getRecent({ limit: RECEIPT_LOOKBACK })) {
       const intentId = row.metadata?.intentId;
       if (intentId && (row.status === 'confirmed' || row.status === 'failed')) {
         receipts.set(intentId, row.status);
@@ -230,7 +232,7 @@ function couldntConfirmOf(view, tracker) {
 async function listHeldIntents() {
   const store = getIntentStore();
   await store.ready;
-  const receipts = receiptsByIntent();
+  const receipts = await receiptsByIntent();
   const tracker = getIntentTracker();
   return (await store.held()).map((view) => {
     const observation = tracker.observation(view.intentId);
@@ -419,7 +421,7 @@ async function closeHeldIntent(intentId, authorization) {
     `[WalletIPC] Closed intent ${view.intentId} by hand; its nonce ${view.nonce} was used ` +
       `by finalized block ${evidence.block}`
   );
-  recordSettlement(view, { label: 'closed', hash: null, block: evidence.block });
+  await recordSettlement(view, { label: 'closed', hash: null, block: evidence.block });
   return { intentId: closed.intentId, intent: intentSummary(closed) };
 }
 

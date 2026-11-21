@@ -659,19 +659,36 @@ function deleteByWebContents(map, webContentsId) {
   }
 }
 
-function appendX402PaymentRecord(expected, status, { txHash = null, metadata = undefined } = {}) {
-  paymentHistory.append({
-    kind: PAYMENT_KINDS.X402,
-    url: expected.url,
-    origin: expected.origin,
-    chainId: expected.chainId,
-    asset: expected.asset,
-    amount: expected.amount,
-    fromAddress: expected.fromAddress,
-    toAddress: expected.payTo,
-    txHash,
-    status,
-    metadata,
+// The payment's record, sent to the identity core, which keeps the history
+// (design 0013, PRF-6(c)), in this turn: the caller (a webRequest handler,
+// a tab's teardown) doesn't wait for the answer, and a failure is logged as
+// `failure`.
+function appendX402PaymentRecord(
+  expected,
+  status,
+  { txHash = null, metadata = undefined } = {},
+  failure = 'receipt append'
+) {
+  let written;
+  try {
+    written = paymentHistory.append({
+      kind: PAYMENT_KINDS.X402,
+      url: expected.url,
+      origin: expected.origin,
+      chainId: expected.chainId,
+      asset: expected.asset,
+      amount: expected.amount,
+      fromAddress: expected.fromAddress,
+      toAddress: expected.payTo,
+      txHash,
+      status,
+      metadata,
+    });
+  } catch (err) {
+    written = Promise.reject(err);
+  }
+  Promise.resolve(written).catch((err) => {
+    log.error(`[x402:settled] ${failure} failed: ${err.message}`);
   });
 }
 
@@ -679,13 +696,12 @@ function finalizeAwaitingResponsesForWebContents(webContentsId, cleanupReason) {
   for (const [requestId, entry] of [...awaitingResponse]) {
     if (entry?.webContentsId !== webContentsId) continue;
     awaitingResponse.delete(requestId);
-    try {
-      appendX402PaymentRecord(entry, PAYMENT_STATUSES.NO_RECEIPT, {
-        metadata: { cleanupReason },
-      });
-    } catch (err) {
-      log.error(`[x402:settled] cleanup receipt append failed: ${err.message}`);
-    }
+    appendX402PaymentRecord(
+      entry,
+      PAYMENT_STATUSES.NO_RECEIPT,
+      { metadata: { cleanupReason } },
+      'cleanup receipt append'
+    );
   }
 }
 
@@ -1360,11 +1376,7 @@ function paymentResponseLoggingHandler(details) {
   else if (txHash) status = PAYMENT_STATUSES.SETTLED;
   else status = PAYMENT_STATUSES.NO_RECEIPT;
 
-  try {
-    appendX402PaymentRecord(expected, status, { txHash });
-  } catch (err) {
-    log.error(`[x402:settled] receipt append failed: ${err.message}`);
-  }
+  appendX402PaymentRecord(expected, status, { txHash });
 
   if (txHash) {
     log.info(`[x402:settled] ${sanitizeUrlForLog(details.url)} txHash=${txHash}`);

@@ -656,11 +656,21 @@ function registerX402Ipc() {
 
   // Legacy x402-only receipts channel. Now a thin alias over the unified
   // payment-history store; new callers should use the `payments:*` IPC.
+  // The chrome's read, relayed to the core, which keeps the history
+  // (design 0013, PRF-6(c)); a core that can't answer is a failure.
   ipcMain.handle(IPC.X402_GET_RECEIPTS, async (_event, { limit } = {}) => {
-    return {
-      success: true,
-      receipts: paymentHistory.getRecent({ kind: paymentHistory.KINDS.X402, limit }),
-    };
+    try {
+      return {
+        success: true,
+        receipts: await paymentHistory.getRecent(
+          { kind: paymentHistory.KINDS.X402, limit },
+          'chrome'
+        ),
+      };
+    } catch (err) {
+      log.error(`[x402] receipts read failed: ${err.message}`);
+      return { success: false, error: err.message };
+    }
   });
 
   // A revoke narrows: the core's (`approval.revoke`, as the chrome).

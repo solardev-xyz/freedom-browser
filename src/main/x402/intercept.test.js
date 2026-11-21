@@ -2342,6 +2342,28 @@ describe('paymentResponseLoggingHandler', () => {
     expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
   });
 
+  // The history is the identity core's (design 0013, PRF-6(c)): the
+  // handler sends the record in its own turn and doesn't wait for it, and
+  // a write the core refuses or can't make is logged.
+  test.each([
+    ['refuses', () => Promise.reject(new Error("The core can't take this request"))],
+    ['throws', () => { throw new Error('not serializable'); }],
+  ])('a record the core %s is logged, and the response passes', async (_name, failing) => {
+    armInjection();
+    mockAppendReceipt.mockImplementationOnce(failing);
+    expect(paymentResponseLoggingHandler({
+      webContentsId: 7,
+      url: 'https://api.example/article',
+      statusLine: 'HTTP/1.1 200 OK',
+      responseHeaders: { 'PAYMENT-RESPONSE': [responseB64] },
+    })).toBeNull();
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[x402:settled\] receipt append failed: /)
+    );
+  });
+
   test('no injection awaiting: no receipt is written and headers are not touched', () => {
     paymentResponseLoggingHandler({
       webContentsId: 7,

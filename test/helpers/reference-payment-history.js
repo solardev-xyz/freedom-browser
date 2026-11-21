@@ -1,0 +1,734 @@
+// The reference: src/main/payment-history.js as the build before PRF-6(c)
+// has it (freedom-browser integration/rust-core at 9d4ea6251, freedom-core
+// design 0013's STORES_REFERENCE_COMMIT), verbatim but for its require
+// paths. It is how an older build reads and writes payment-history.sqlite
+// (with better-sqlite3, in WAL) and imports x402-receipts.json: for the
+// simulated core of the unit suites (simulated-payments-core.js), and for
+// the rollout and rollback tests of the database the identity core keeps
+// from PRF-6(c) (src/main/payment-history.integration.test.js). Never
+// main's code.
+/**
+ * Payment history (SQLite-backed). Unified ledger of every outgoing
+ * payment the browser signs or sends — x402 micropayments, wallet sends,
+ * dapp-routed sends. Replaces the legacy x402-receipts.json store.
+ *
+ * Schema is intentionally a superset of what any current source produces;
+ * source-specific extras go in the `metadata` JSON blob so future kinds
+ * (Lightning, rollups, …) don't need migrations. See KINDS / STATUSES.
+ *
+ * Broadcast txs are born 'pending' and need a follow-up markConfirmed /
+ * markFailed; if the app exits in between, repollPending picks them up
+ * next boot. x402 receipts are born final.
+ */
+
+const log = require('../../src/main/logger');
+const { app, ipcMain } = require('electron');
+const { getFreedomDataPath } = require('../../src/main/freedom-root');
+const path = require('path');
+const fs = require('fs');
+const Database = require('better-sqlite3');
+const IPC = require('../../src/shared/ipc-channels');
+const { broadcastToAllWebContents } = require('../../src/main/lib/broadcast-to-all-webcontents');
+
+const SCHEMA_VERSION = 1;
+const DB_FILE = 'payment-history.sqlite';
+const LEGACY_JSON_FILE = 'x402-receipts.json';
+const MIGRATED_SUFFIX = '.migrated';
+
+const KINDS = Object.freeze({
+  X402: 'x402',
+  WALLET_SEND: 'wallet-send',
+  DAPP_SEND: 'dapp-send',
+  SAFE_SEND: 'safe-send',
+  SAFE_DEPLOY: 'safe-deploy',
+});
+const STATUSES = Object.freeze({
+  PENDING: 'pending',
+  CONFIRMED: 'confirmed',
+  FAILED: 'failed',
+  SETTLED: 'settled',
+  NO_RECEIPT: 'no-receipt',
+  // A wallet intent whose nonce another transaction used, read at the
+  // finalized block: this payment may or may not have happened (it may
+  // have been signed elsewhere too).
+  TAKEN: 'taken',
+  // Never mined, and never can be: another transaction took its nonce.
+  DROPPED: 'dropped',
+  // A wallet intent the user closed by hand once its label couldn't be
+  // read (Couldn't confirm): whether it paid is unknown.
+  UNCONFIRMED: 'unconfirmed',
+  // A phone account's payment whose reported transaction main hasn't seen
+  // yet, so hasn't compared with the one confirmed (tx-recorder.js, design
+  // 0012 "Unverified payments"). Not polled for a receipt: once checked
+  // and the same, it goes on as 'pending'.
+  UNVERIFIED: 'unverified',
+  // A phone payment whose reported transaction, once visible, isn't the
+  // one confirmed (its sender, recipient, amount, data or chain differs).
+  // Never confirmed.
+  WRONG_TRANSACTION: 'wrong-transaction',
+  // A phone payment never seen on chain within a day of its answer, or
+  // whose check a clock set back ended: whether it is the one confirmed is
+  // unknown.
+  UNKNOWN: 'unknown',
+});
+const FINAL_STATUSES = new Set([
+  STATUSES.CONFIRMED,
+  STATUSES.FAILED,
+  STATUSES.SETTLED,
+  STATUSES.NO_RECEIPT,
+  STATUSES.TAKEN,
+  STATUSES.DROPPED,
+  STATUSES.UNCONFIRMED,
+  STATUSES.WRONG_TRANSACTION,
+  STATUSES.UNKNOWN,
+]);
+const isFinalStatus = (status) => FINAL_STATUSES.has(status);
+
+let db = null;
+let statements = null;
+
+function getDb() {
+  if (db) return db;
+
+  const dbPath = getFreedomDataPath(DB_FILE);
+  log.info('[PaymentHistory] Opening database:', dbPath);
+
+  db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+
+  migrateDatabase();
+  migrateFromJson();
+
+  return db;
+}
+
+function closeDb() {
+  cancelDroppedConfirm();
+  if (db) {
+    log.info('[PaymentHistory] Closing database');
+    db.close();
+    db = null;
+    statements = null;
+  }
+}
+
+function migrateDatabase() {
+  const version = db.pragma('user_version', { simple: true });
+
+  if (version < SCHEMA_VERSION) {
+    log.info(`[PaymentHistory] Migrating schema ${version} → ${SCHEMA_VERSION}`);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS payments (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind          TEXT    NOT NULL,
+        chain_id      INTEGER NOT NULL,
+        tx_hash       TEXT,
+        from_address  TEXT,
+        to_address    TEXT,
+        asset         TEXT,
+        amount        TEXT    NOT NULL,
+        origin        TEXT,
+        url           TEXT,
+        status        TEXT    NOT NULL,
+        created_at    INTEGER NOT NULL,
+        confirmed_at  INTEGER,
+        gas_used      TEXT,
+        gas_price     TEXT,
+        metadata      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_payments_created ON payments(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_payments_kind    ON payments(kind);
+      CREATE INDEX IF NOT EXISTS idx_payments_chain   ON payments(chain_id);
+      CREATE INDEX IF NOT EXISTS idx_payments_origin  ON payments(origin);
+      CREATE INDEX IF NOT EXISTS idx_payments_tx_hash ON payments(tx_hash);
+      CREATE INDEX IF NOT EXISTS idx_payments_status  ON payments(status);
+    `);
+    db.pragma(`user_version = ${SCHEMA_VERSION}`);
+  }
+}
+
+// One-shot import of the legacy x402-receipts.json store. Renamed to
+// `.migrated` on success because the table has no natural unique key —
+// re-importing would duplicate every row.
+function migrateFromJson() {
+  const jsonPath = path.join(app.getPath('userData'), LEGACY_JSON_FILE);
+  if (!fs.existsSync(jsonPath)) return;
+
+  const migratedPath = jsonPath + MIGRATED_SUFFIX;
+  if (fs.existsSync(migratedPath)) {
+    try {
+      fs.unlinkSync(jsonPath);
+      log.info('[PaymentHistory] Dropped stray x402-receipts.json (already migrated)');
+    } catch (err) {
+      log.error('[PaymentHistory] Failed to remove stray x402-receipts.json:', err.message);
+    }
+    return;
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+    const entries = Array.isArray(raw) ? raw : [];
+
+    if (entries.length > 0) {
+      let imported = 0;
+      const insertOne = (e) => {
+        // settledAt was stored in seconds; the new store uses ms.
+        const hasSettledAt = Number.isFinite(e.settledAt);
+        const settledMs = hasSettledAt ? e.settledAt * 1000 : Date.now();
+        const status = typeof e.status === 'string' ? e.status : STATUSES.NO_RECEIPT;
+        const metadata = legacyMetadataFor(e, status);
+        const row = legacyRowFor(e, settledMs, status, hasSettledAt);
+        if (legacyAlreadyImported(row, metadata)) return;
+        insertRow({
+          ...row,
+          kind: KINDS.X402,
+          metadata,
+        });
+        imported++;
+      };
+
+      db.transaction((items) => { for (const e of items) insertOne(e); })(entries);
+      log.info(`[PaymentHistory] Migrated ${imported} entries from x402-receipts.json`);
+    }
+
+    fs.renameSync(jsonPath, migratedPath);
+  } catch (err) {
+    log.error('[PaymentHistory] Failed to migrate from JSON:', err.message);
+  }
+}
+
+function legacyMetadataFor(entry, status) {
+  const legacyId = typeof entry.id === 'string' && entry.id
+    ? entry.id
+    : [
+      'legacy',
+      Number.isFinite(entry.settledAt) ? entry.settledAt : '',
+      status,
+      entry.chainId ?? '',
+      entry.txHash ?? '',
+      entry.url ?? '',
+      entry.amount ?? '',
+    ].join(':');
+  return JSON.stringify({ legacyId });
+}
+
+function legacyRowFor(entry, settledMs, status, hasSettledAt) {
+  return {
+    chainId: Number.isFinite(entry.chainId) ? entry.chainId : 0,
+    txHash: typeof entry.txHash === 'string' ? entry.txHash : null,
+    asset: typeof entry.asset === 'string' ? entry.asset : null,
+    amount: typeof entry.amount === 'string' ? entry.amount : '0',
+    origin: typeof entry.origin === 'string' ? entry.origin : null,
+    url: typeof entry.url === 'string' ? entry.url : null,
+    status,
+    createdAt: settledMs,
+    confirmedAt: isFinalStatus(status) ? settledMs : null,
+    hasSettledAt,
+  };
+}
+
+function legacyAlreadyImported(legacy, metadata) {
+  return getDb()
+    .prepare('SELECT * FROM payments WHERE kind = ? ORDER BY created_at DESC LIMIT ? OFFSET ?')
+    .all(KINDS.X402, 100_000, 0)
+    .some((row) => row.metadata === metadata || legacyRowMatches(row, legacy));
+}
+
+function legacyRowMatches(row, legacy) {
+  return (
+    row.chain_id === legacy.chainId &&
+    (row.tx_hash ?? null) === legacy.txHash &&
+    (row.asset ?? null) === legacy.asset &&
+    row.amount === legacy.amount &&
+    (row.origin ?? null) === legacy.origin &&
+    (row.url ?? null) === legacy.url &&
+    row.status === legacy.status &&
+    (!legacy.hasSettledAt || row.created_at === legacy.createdAt)
+  );
+}
+
+// Shared row builder so the migration path doesn't need a bespoke INSERT
+// SQL (and the test fake doesn't need a second recogniser for it).
+function insertRow(row) {
+  return getStatements().insert.run(
+    row.kind,
+    row.chainId,
+    row.txHash ?? null,
+    row.fromAddress ?? null,
+    row.toAddress ?? null,
+    row.asset ?? null,
+    row.amount,
+    row.origin ?? null,
+    row.url ?? null,
+    row.status,
+    row.createdAt,
+    row.confirmedAt ?? null,
+    row.gasUsed ?? null,
+    row.gasPrice ?? null,
+    row.metadata ?? null,
+  );
+}
+
+function getStatements() {
+  if (statements) return statements;
+
+  const database = getDb();
+  statements = {
+    insert: database.prepare(`
+      INSERT INTO payments (
+        kind, chain_id, tx_hash, from_address, to_address, asset, amount,
+        origin, url, status, created_at, confirmed_at, gas_used, gas_price, metadata
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+    update: database.prepare(`
+      UPDATE payments SET
+        tx_hash      = COALESCE(?, tx_hash),
+        status       = COALESCE(?, status),
+        confirmed_at = COALESCE(?, confirmed_at),
+        gas_used     = COALESCE(?, gas_used),
+        gas_price    = COALESCE(?, gas_price),
+        metadata     = COALESCE(?, metadata)
+      WHERE id = ?
+    `),
+    getById: database.prepare(`SELECT * FROM payments WHERE id = ?`),
+    getPending: database.prepare(`
+      SELECT * FROM payments WHERE status = '${STATUSES.PENDING}' ORDER BY created_at ASC
+    `),
+    clear: database.prepare(`DELETE FROM payments`),
+    deleteById: database.prepare(`DELETE FROM payments WHERE id = ?`),
+  };
+  return statements;
+}
+
+// SQLite columns are snake_case; the renderer-facing API is camelCase.
+function rowToEntry(row) {
+  if (!row) return null;
+  let metadata = null;
+  if (row.metadata) {
+    try { metadata = JSON.parse(row.metadata); } catch { /* ignore */ }
+  }
+  return {
+    id: row.id,
+    kind: row.kind,
+    chainId: row.chain_id,
+    txHash: row.tx_hash,
+    fromAddress: row.from_address,
+    toAddress: row.to_address,
+    asset: row.asset,
+    amount: row.amount,
+    origin: row.origin,
+    url: row.url,
+    status: row.status,
+    createdAt: row.created_at,
+    confirmedAt: row.confirmed_at,
+    gasUsed: row.gas_used,
+    gasPrice: row.gas_price,
+    metadata,
+  };
+}
+
+/**
+ * Insert a payment record. Status defaults to 'pending' for broadcast
+ * kinds (wallet-send / dapp-send) and is required for x402 (which is
+ * born final). Returns the persisted record.
+ *
+ * @param {object} entry
+ * @param {'x402'|'wallet-send'|'dapp-send'} entry.kind
+ * @param {number} entry.chainId
+ * @param {string} entry.amount — atomic units, digit string
+ * @param {string|null} [entry.txHash]
+ * @param {string|null} [entry.fromAddress]
+ * @param {string|null} [entry.toAddress]
+ * @param {string|null} [entry.asset] — ERC-20 contract; null = native
+ * @param {string|null} [entry.origin]
+ * @param {string|null} [entry.url]
+ * @param {string} [entry.status]
+ * @param {number} [entry.createdAt] — ms epoch; defaults to now
+ * @param {object|null} [entry.metadata]
+ */
+// "Table changed, re-query." Receivers ignore the payload and pull
+// fresh state via `payments:get-recent`; the id/kind/status/txHash
+// fields are forward-compat for receivers that may want to filter
+// (e.g. "ignore unless kind === 'x402'") without an extra IPC.
+function broadcastTxRecorded(entry) {
+  broadcastToAllWebContents(IPC.PAYMENTS_TX_RECORDED, entry ? {
+    id: entry.id,
+    kind: entry.kind,
+    status: entry.status,
+    txHash: entry.txHash ?? null,
+  } : { id: null });
+}
+
+function append(entry = {}) {
+  if (!Object.values(KINDS).includes(entry.kind)) {
+    throw new Error(`payment-history: unknown kind '${entry.kind}'`);
+  }
+  if (!Number.isFinite(entry.chainId)) {
+    throw new Error('payment-history: chainId must be a finite number');
+  }
+  if (typeof entry.amount !== 'string' || !/^\d+$/.test(entry.amount)) {
+    throw new Error('payment-history: amount must be a digit string');
+  }
+
+  const createdAt = Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now();
+  const status = entry.status || (entry.kind === KINDS.X402 ? STATUSES.SETTLED : STATUSES.PENDING);
+
+  const result = insertRow({
+    ...entry,
+    createdAt,
+    status,
+    confirmedAt: isFinalStatus(status) ? createdAt : null,
+    metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
+  });
+
+  const inserted = rowToEntry(getStatements().getById.get(result.lastInsertRowid));
+  broadcastTxRecorded(inserted);
+  return inserted;
+}
+
+/**
+ * Patch a row by id. Any field omitted is ignored (COALESCE keeps the
+ * existing value). Status transitioning to a final value also stamps
+ * `confirmed_at = now()` when the caller didn't supply one.
+ */
+function update(id, patch = {}) {
+  const transitioningToFinal = patch.status && isFinalStatus(patch.status);
+  const confirmedAt = patch.confirmedAt ?? (transitioningToFinal ? Date.now() : null);
+
+  const result = getStatements().update.run(
+    patch.txHash ?? null,
+    patch.status ?? null,
+    confirmedAt,
+    patch.gasUsed ?? null,
+    patch.gasPrice ?? null,
+    patch.metadata ? JSON.stringify(patch.metadata) : null,
+    id,
+  );
+  if (result.changes === 0) return null;
+  const updated = rowToEntry(getStatements().getById.get(id));
+  broadcastTxRecorded(updated);
+  return updated;
+}
+
+function markConfirmed(id, receipt = {}) {
+  return update(id, {
+    status: STATUSES.CONFIRMED,
+    gasUsed: receipt.gasUsed,
+    gasPrice: receipt.gasPrice ?? receipt.effectiveGasPrice,
+    confirmedAt: receipt.confirmedAt,
+  });
+}
+
+function markFailed(id, { reason, gasUsed, gasPrice } = {}) {
+  return update(id, {
+    status: STATUSES.FAILED,
+    gasUsed,
+    gasPrice,
+    metadata: reason ? { failureReason: reason } : undefined,
+  });
+}
+
+// Merges into the row's metadata rather than replacing it: a Safe row's
+// own metadata must survive the status change. Only a row still pending
+// is marked: the sweep decides 'dropped' from a lookup it awaited, and a
+// concurrent finaliser (tx-recorder's markConfirmed/markFailed) may have
+// written the row's final status meanwhile; that status stands. The read
+// and the write run in one synchronous step, so nothing lands between.
+function markDropped(id) {
+  const existing = getById(id);
+  if (!existing || existing.status !== STATUSES.PENDING) return null;
+  return update(id, {
+    status: STATUSES.DROPPED,
+    metadata: { ...(existing.metadata || {}), failureReason: 'nonce used by another transaction' },
+  });
+}
+
+// Filter keys the store accepts; anything else is silently dropped so the
+// renderer can pass through UI state without breaking. Clamping `limit`
+// and `offset` guards against a runaway page-size request pulling the
+// entire table across IPC.
+const FILTER_KEYS = ['kind', 'chainId', 'origin', 'status'];
+const MAX_LIMIT = 500;
+
+function sanitizeFilters(raw = {}) {
+  const out = {};
+  for (const key of FILTER_KEYS) {
+    if (raw[key] !== undefined) out[key] = raw[key];
+  }
+  if (raw.limit !== undefined) {
+    out.limit = Math.min(Math.max(0, Number(raw.limit) | 0), MAX_LIMIT);
+  }
+  if (raw.offset !== undefined) {
+    out.offset = Math.max(0, Number(raw.offset) | 0);
+  }
+  return out;
+}
+
+// Build a WHERE fragment + parameter array from a sanitised filter object.
+// Used by both getRecent and getCount so the filter shape stays in lock-step.
+function buildWhere(filters) {
+  const where = [];
+  const params = [];
+  if (filters.kind)               { where.push('kind = ?');     params.push(filters.kind); }
+  if (filters.chainId !== undefined) { where.push('chain_id = ?'); params.push(filters.chainId); }
+  if (filters.origin)             { where.push('origin = ?');   params.push(filters.origin); }
+  if (filters.status)             { where.push('status = ?');   params.push(filters.status); }
+  const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  return { clause, params };
+}
+
+/**
+ * Filtered, paginated read. Filters are AND-combined. All optional.
+ *
+ * @param {object} filters
+ * @param {string} [filters.kind]
+ * @param {number} [filters.chainId]
+ * @param {string} [filters.origin]
+ * @param {string} [filters.status]
+ * @param {number} [filters.limit=50]
+ * @param {number} [filters.offset=0]
+ */
+function getRecent(filters = {}) {
+  const safe = sanitizeFilters(filters);
+  const { clause, params } = buildWhere(safe);
+  const sql = `SELECT * FROM payments ${clause} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+  return getDb()
+    .prepare(sql)
+    .all(...params, safe.limit ?? 50, safe.offset ?? 0)
+    .map(rowToEntry);
+}
+
+function getById(id) {
+  return rowToEntry(getStatements().getById.get(id));
+}
+
+function getCount(filters = {}) {
+  const { clause, params } = buildWhere(sanitizeFilters(filters));
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM payments ${clause}`).get(...params).n;
+}
+
+function clear() {
+  const changes = getStatements().clear.run().changes;
+  if (changes > 0) broadcastTxRecorded(null);
+  return changes;
+}
+
+function removeById(id) {
+  const removed = getStatements().deleteById.run(id).changes > 0;
+  if (removed) broadcastTxRecorded(null);
+  return removed;
+}
+
+/**
+ * Re-poll every `pending` row's status. For each row, the caller-supplied
+ * `getStatusFn(txHash, chainId, sent)` is awaited; if it returns a final status
+ * the row is updated. Anything that throws or stays pending is left alone.
+ * `sent` is `{ from, nonce }` as the row's metadata recorded them at send
+ * time (tx-recorder), so a transaction whose nonce another transaction has
+ * since taken resolves as 'dropped' instead of staying pending forever.
+ *
+ * Exposed as an explicit function (not auto-run on open) so callers can
+ * trigger it once the provider stack is up: `index.js` at boot, and
+ * tx-recorder whenever one of its transactions resolves.
+ *
+ * A call while a sweep is running cannot just join it: that sweep may have
+ * read (or already checked) a row before the chain moved, e.g. before the
+ * re-send that leaves the row 'dropped' was mined. So it queues one more
+ * sweep to start once the running one ends, and resolves with that. Every
+ * call made before the queued sweep starts shares it (including one landing
+ * after the running sweep settled but before the queued one began), so a
+ * burst of settled transactions still polls each row at most twice.
+ *
+ * 'dropped' is final, but one sighting of it is not proof: the nonce and
+ * receipt reads behind it can be answered by different endpoints of one
+ * source (quorum members, Direct's URL list), one of them lagging, which
+ * reads a just-mined transaction as dropped. So the first sighting is only
+ * recorded on the row (`txDroppedSeenAt`) and the row stays pending; a sweep
+ * at least DROPPED_CONFIRM_MS later that sees it again marks it dropped. Any
+ * 'pending' answer in between clears the sighting. When a sighting is
+ * waiting, a confirming sweep is scheduled, so it does not wait for the next
+ * transaction or boot.
+ *
+ * @param {(txHash:string, chainId:number, sent:{from?:string, nonce?:number}) => Promise<{status:string, gasUsed?:string, gasPrice?:string}>} getStatusFn
+ * @returns {Promise<{ resolved:number, stillPending:number, errors:number }>}
+ */
+// Long enough for a lagging endpoint to catch up (10 mainnet blocks,
+// 24 on Gnosis); short enough that a dropped row resolves in the same session.
+const DROPPED_CONFIRM_MS = 2 * 60 * 1000;
+let repollInFlight = null;
+let repollQueued = null;
+let confirmTimer = null;
+function repollPending(getStatusFn) {
+  // Not started yet, so it reads every row after this call: join it.
+  if (repollQueued) return repollQueued;
+  if (!repollInFlight) return startRepoll(getStatusFn);
+  repollQueued = repollInFlight
+    .catch(() => { /* the caller of that sweep sees its error */ })
+    .then(() => {
+      repollQueued = null;
+      return startRepoll(getStatusFn);
+    });
+  return repollQueued;
+}
+
+function startRepoll(getStatusFn) {
+  const sweep = repollPendingOnce(getStatusFn).finally(() => {
+    if (repollInFlight === sweep) repollInFlight = null;
+  });
+  repollInFlight = sweep;
+  return sweep;
+}
+
+function scheduleDroppedConfirm(getStatusFn, delayMs) {
+  if (confirmTimer) return;
+  confirmTimer = setTimeout(() => {
+    confirmTimer = null;
+    repollPending(getStatusFn).catch((err) => {
+      log.warn(`[PaymentHistory] dropped-confirm sweep failed: ${err.message}`);
+    });
+  }, Math.max(1000, delayMs));
+  confirmTimer.unref?.();
+}
+
+function cancelDroppedConfirm() {
+  if (confirmTimer) clearTimeout(confirmTimer);
+  confirmTimer = null;
+}
+
+function rowMetadata(row) {
+  try { return row.metadata ? JSON.parse(row.metadata) : null; } catch { return null; }
+}
+
+// Re-reads the row rather than reusing the sweep's snapshot: the status
+// lookup awaited in between, and a concurrent finaliser (tx-recorder's
+// markFailed with its failureReason) may have written the row meanwhile.
+// A row no longer pending is left alone.
+function setDroppedSeenAt(row, seenAt) {
+  const current = getStatements().getById.get(row.id);
+  if (!current || current.status !== STATUSES.PENDING) return;
+  const metadata = { ...(rowMetadata(current) || {}) };
+  if (seenAt === null) delete metadata.txDroppedSeenAt;
+  else metadata.txDroppedSeenAt = seenAt;
+  update(row.id, { metadata });
+}
+
+function sentFields(row) {
+  const metadata = rowMetadata(row);
+  return {
+    from: typeof metadata?.txFrom === 'string' ? metadata.txFrom : undefined,
+    nonce: Number.isSafeInteger(metadata?.txNonce) ? metadata.txNonce : undefined,
+    sweep: true,
+  };
+}
+
+async function repollPendingOnce(getStatusFn) {
+  const pending = getStatements().getPending.all();
+  let resolved = 0;
+  let stillPending = 0;
+  let errors = 0;
+  let nextConfirmIn = null;
+
+  for (const row of pending) {
+    if (!row.tx_hash) { stillPending++; continue; }
+    try {
+      const r = await getStatusFn(row.tx_hash, row.chain_id, sentFields(row));
+      const seenAt = rowMetadata(row)?.txDroppedSeenAt;
+      if (r?.status === STATUSES.DROPPED) {
+        const now = Date.now();
+        if (Number.isFinite(seenAt) && now - seenAt >= DROPPED_CONFIRM_MS) {
+          if (markDropped(row.id)) resolved++;
+          continue;
+        }
+        if (!Number.isFinite(seenAt) || seenAt > now) setDroppedSeenAt(row, now);
+        const waitMs = Number.isFinite(seenAt) && seenAt <= now
+          ? DROPPED_CONFIRM_MS - (now - seenAt)
+          : DROPPED_CONFIRM_MS;
+        nextConfirmIn = nextConfirmIn === null ? waitMs : Math.min(nextConfirmIn, waitMs);
+        stillPending++;
+      } else if (r?.status === STATUSES.CONFIRMED) {
+        markConfirmed(row.id, { gasUsed: r.gasUsed, gasPrice: r.gasPrice ?? r.effectiveGasPrice });
+        resolved++;
+      } else if (r?.status === STATUSES.FAILED) {
+        markFailed(row.id, { gasUsed: r.gasUsed, gasPrice: r.gasPrice ?? r.effectiveGasPrice });
+        resolved++;
+      } else {
+        // Not seen dropped this time: a later sighting starts over.
+        if (r?.status === STATUSES.PENDING && seenAt !== undefined) setDroppedSeenAt(row, null);
+        stillPending++;
+      }
+    } catch (err) {
+      log.warn(`[PaymentHistory] repoll failed for row ${row.id}: ${err.message}`);
+      errors++;
+    }
+  }
+
+  if (resolved > 0) log.info(`[PaymentHistory] repoll resolved ${resolved} pending row(s)`);
+  if (nextConfirmIn !== null) scheduleDroppedConfirm(getStatusFn, nextConfirmIn);
+  return { resolved, stillPending, errors };
+}
+
+// === IPC =================================================================
+
+function registerPaymentHistoryIpc() {
+  ipcMain.handle(IPC.PAYMENTS_GET_RECENT, (_event, filters) => {
+    try {
+      return { success: true, payments: getRecent(filters) };
+    } catch (err) {
+      log.error('[PaymentHistory] get-recent failed:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle(IPC.PAYMENTS_GET_BY_ID, (_event, id) => {
+    if (!Number.isInteger(id)) {
+      return { success: false, error: 'id must be an integer' };
+    }
+    try {
+      return { success: true, payment: getById(id) };
+    } catch (err) {
+      log.error('[PaymentHistory] get-by-id failed:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle(IPC.PAYMENTS_GET_COUNT, (_event, filters) => {
+    try {
+      return { success: true, count: getCount(filters) };
+    } catch (err) {
+      log.error('[PaymentHistory] get-count failed:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle(IPC.PAYMENTS_CLEAR, () => {
+    try {
+      return { success: true, removed: clear() };
+    } catch (err) {
+      log.error('[PaymentHistory] clear failed:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  log.info('[PaymentHistory] IPC handlers registered');
+}
+
+module.exports = {
+  KINDS,
+  STATUSES,
+  getDb,
+  closeDb,
+  append,
+  update,
+  markConfirmed,
+  markFailed,
+  markDropped,
+  getRecent,
+  getById,
+  getCount,
+  clear,
+  removeById,
+  repollPending,
+  DROPPED_CONFIRM_MS,
+  registerPaymentHistoryIpc,
+  _migrateFromJsonForTest: migrateFromJson,
+};

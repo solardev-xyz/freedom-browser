@@ -18,6 +18,7 @@ const {
   StreamedReply,
   PROTOCOL_VERSION,
   PROTOCOL_VERSION_STREAMS,
+  STORE_MOVED,
 } = require('./core-client');
 const {
   encodeAbort,
@@ -319,7 +320,8 @@ describe('the hello at protocol 2', () => {
       frames: ['fragment', 'stream'],
       grant_root: path.resolve(os.tmpdir()),
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
-      store_moved: ['vault_meta', 'intents'],
+      // The build's stores (core-client.test.js pins the list).
+      store_moved: [...STORE_MOVED],
     });
     expect(client.streamStats()).toEqual({
       outstanding: 0,

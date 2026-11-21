@@ -272,7 +272,7 @@ function createIntentTracker({
     log.info(
       `[IntentTracker] Intent ${intent.intentId} is ${result.label} at finalized block ${result.block}`
     );
-    recordSettlement(intent, { label: result.label, hash: result.hash, block: result.block });
+    await recordSettlement(intent, { label: result.label, hash: result.hash, block: result.block });
     return true;
   }
 

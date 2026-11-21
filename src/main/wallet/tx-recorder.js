@@ -2,7 +2,10 @@
  * History writes are best-effort: a store-side failure logs and lets the
  * tx through (broadcast already returned). Confirmation is polled in the
  * background; if the app exits before resolution, payment-history's
- * repollPending picks the row up on next boot.
+ * repollPending picks the row up at the core's next start. The history is
+ * the identity core's (design 0013, PRF-6(c)), so every read and write here
+ * awaits its answer; main's read-then-write steps on rows run one at a time
+ * (`serialized`).
  *
  * A phone payment whose transaction wasn't visible at the answer is
  * written `unverified`, with the identity core's job id in the row's
@@ -42,17 +45,18 @@ function toAtomicDecimal(value) {
 
 function pollReceipt(rowId, hash, chainId) {
   waitForTransaction(hash, chainId)
-    .then((receipt) => {
+    .then(async (receipt) => {
       const gas = { gasUsed: receipt.gasUsed, gasPrice: receipt.effectiveGasPrice };
       try {
         if (receipt.status === STATUSES.CONFIRMED) {
-          paymentHistory.markConfirmed(rowId, gas);
+          await paymentHistory.markConfirmed(rowId, gas);
         } else {
-          paymentHistory.markFailed(rowId, gas);
+          await paymentHistory.markFailed(rowId, gas);
         }
       } catch (err) {
-        // The store throws when the DB closes mid-poll (app quitting). Log
-        // and drop; repollPending on next boot resolves the row from chain.
+        // The core couldn't write it (stopped as the app quits, or
+        // restarted). Log and drop; repollPending at the core's next start
+        // resolves the row from chain.
         log.warn(`[TxRecorder] post-receipt write failed for row ${rowId}: ${err.message}`);
       }
     })
@@ -88,14 +92,25 @@ const rowsByIntent = new Map();
 // How far back a resend after a restart looks for its intent's row.
 const ROW_LOOKBACK = 500;
 
-function findIntentRow(response, kind) {
+// Main's steps that read a history row (or find it) and write it back with
+// what they read, one at a time: the core answers each request in turn, so
+// two such steps on one row could otherwise interleave, and the later write
+// would drop what the earlier one added to the row's metadata. (They ran in
+// one synchronous turn each while main kept the database.)
+let historyQueue = Promise.resolve();
+function serialized(task) {
+  const run = historyQueue.then(task, task);
+  historyQueue = run.catch(() => {});
+  return run;
+}
+
+async function findIntentRow(response, kind) {
   const { intentId } = response;
   if (rowsByIntent.has(intentId)) return paymentHistory.getById(rowsByIntent.get(intentId));
   // Only a resend or a replacement can follow a row written by an earlier run.
   if (!response.resent && !response.replaced) return null;
   return (
-    paymentHistory
-      .getRecent({ chainId: response.chainId, kind, limit: ROW_LOOKBACK })
+    (await paymentHistory.getRecent({ chainId: response.chainId, kind, limit: ROW_LOOKBACK }))
       .find((row) => row.metadata?.intentId === intentId) ?? null
   );
 }
@@ -182,6 +197,10 @@ function withPhoneRecord(metadata, state, phoneRecord) {
 // phone payment not yet checked is written `unverified` and watched
 // instead, for the core's `phone.checked` (phoneChecked).
 function recordSend(response, row) {
+  return serialized(() => writeSendRow(response, row));
+}
+
+async function writeSendRow(response, row) {
   const { phoneRecord, ...reply } = response;
   const unverified = reply.phoneCheck === 'unverified';
   // The core couldn't save its record, and still checks it in memory.
@@ -189,15 +208,15 @@ function recordSend(response, row) {
   let written;
   let existing;
   try {
-    existing = reply.intentId ? findIntentRow(reply, row.kind) : null;
+    existing = reply.intentId ? await findIntentRow(reply, row.kind) : null;
     if (existing) {
       written =
-        paymentHistory.update(existing.id, {
+        (await paymentHistory.update(existing.id, {
           txHash: reply.hash,
           metadata: withSentFields(metadataFor(existing.metadata, reply), reply),
-        }) ?? existing;
+        })) ?? existing;
     } else {
-      written = paymentHistory.append({
+      written = await paymentHistory.append({
         ...row,
         txHash: reply.hash,
         ...(unverified ? { status: STATUSES.UNVERIFIED } : unsaved ? { status: STATUSES.UNKNOWN } : {}),
@@ -264,10 +283,10 @@ function waitingJob(row) {
 const PHONE_PAGE = 500;
 
 // Every row of `status`, page by page. Best-effort, like every history read.
-function rowsWithStatus(status) {
+async function rowsWithStatus(status) {
   const rows = [];
   for (let offset = 0; ; offset += PHONE_PAGE) {
-    const page = paymentHistory.getRecent({ status, limit: PHONE_PAGE, offset });
+    const page = await paymentHistory.getRecent({ status, limit: PHONE_PAGE, offset });
     rows.push(...page);
     if (page.length < PHONE_PAGE) break;
   }
@@ -275,9 +294,9 @@ function rowsWithStatus(status) {
 }
 
 // The row waiting on `job`, or null.
-function rowOfJob(job) {
+async function rowOfJob(job) {
   for (const status of [STATUSES.UNVERIFIED, STATUSES.UNKNOWN]) {
-    const row = rowsWithStatus(status).find((candidate) => waitingJob(candidate) === job);
+    const row = (await rowsWithStatus(status)).find((candidate) => waitingJob(candidate) === job);
     if (row) return row;
   }
   return null;
@@ -285,10 +304,10 @@ function rowOfJob(job) {
 
 // A row's check, ended: its status and its record's state, with what the
 // core said.
-function endPhoneCheck(row, state, extra = {}) {
+async function endPhoneCheck(row, state, extra = {}) {
   clearTimeout(phoneDeadlines.get(row.id));
   phoneDeadlines.delete(row.id);
-  paymentHistory.update(row.id, {
+  await paymentHistory.update(row.id, {
     status: PHONE_CHECK_STATUS[state],
     metadata: {
       ...(row.metadata || {}),
@@ -303,44 +322,51 @@ function endPhoneCheck(row, state, extra = {}) {
  * receipt poll follows; `mismatch` is another transaction the phone sent,
  * kept with its fields (`observed`), never the confirmed one; `unknown`
  * stays unknown. `rule`: a flagged send's "Always allow", written by the
- * core only now that its transaction showed and matched. Returns whether a
- * row was updated.
+ * core only now that its transaction showed and matched. Resolves with
+ * whether a row was updated.
  */
-function phoneChecked(data) {
+async function phoneChecked(data) {
   const { job, outcome } = data || {};
   if (typeof job !== 'string' || !Object.hasOwn(PHONE_CHECK_STATUS, outcome)) return false;
   if (data.rule && typeof data.rule === 'object') {
     if (data.rule.added === true) log.info('[TxRecorder] a phone send\'s contract rule was saved once its payment verified');
     else log.warn(`[TxRecorder] a phone send's contract rule was not saved: ${data.rule.reason || 'no reason'}`);
   }
-  const row = rowOfJob(job);
+  return serialized(() => endJobCheck(job, outcome, data));
+}
+
+async function endJobCheck(job, outcome, data) {
+  const row = await rowOfJob(job);
   if (!row) return false;
   if (outcome === 'mismatch') {
-    endPhoneCheck(row, 'mismatch', {
+    await endPhoneCheck(row, 'mismatch', {
       ...(typeof data.reason === 'string' ? { code: data.reason } : {}),
       ...(data.transaction && typeof data.transaction === 'object' ? { observed: data.transaction } : {}),
     });
     log.warn(`[TxRecorder] phone payment row ${row.id} is another transaction than the one confirmed`);
     return true;
   }
-  endPhoneCheck(row, outcome);
+  await endPhoneCheck(row, outcome);
   if (outcome === 'verified') pollReceipt(row.id, row.txHash, row.chainId);
   return true;
 }
 
 /**
  * The core's `phone.lost {}`: its file of records was unreadable, so no
- * row still unverified will be reported. Each ends `unknown`.
+ * row still unverified will be reported. Each ends `unknown`. Resolves with
+ * how many.
  */
 function phoneLost() {
-  let rows = [];
-  try {
-    rows = rowsWithStatus(STATUSES.UNVERIFIED);
-  } catch (err) {
-    log.warn(`[TxRecorder] could not read unverified phone payments: ${err.message}`);
-  }
-  for (const row of rows) endPhoneCheck(row, 'unknown', { lost: true });
-  return rows.length;
+  return serialized(async () => {
+    let rows = [];
+    try {
+      rows = await rowsWithStatus(STATUSES.UNVERIFIED);
+    } catch (err) {
+      log.warn(`[TxRecorder] could not read unverified phone payments: ${err.message}`);
+    }
+    for (const row of rows) await endPhoneCheck(row, 'unknown', { lost: true });
+    return rows.length;
+  });
 }
 
 // Ends the row `unknown` once the core's day and the margin have passed,
@@ -350,12 +376,12 @@ function phoneDeadline(rowId, answeredAt) {
   const wait = Math.max(0, answeredAt + PHONE_CHECK_WINDOW_MS + PHONE_DEADLINE_MARGIN_MS - Date.now());
   const timer = setTimeout(() => {
     phoneDeadlines.delete(rowId);
-    try {
-      const row = paymentHistory.getById(rowId);
-      if (row?.status === STATUSES.UNVERIFIED) endPhoneCheck(row, 'unknown');
-    } catch (err) {
+    serialized(async () => {
+      const row = await paymentHistory.getById(rowId);
+      if (row?.status === STATUSES.UNVERIFIED) await endPhoneCheck(row, 'unknown');
+    }).catch((err) => {
       log.warn(`[TxRecorder] phone deadline failed for row ${rowId}: ${err.message}`);
-    }
+    });
   }, Math.min(wait, 2 ** 31 - 1));
   timer.unref?.();
   phoneDeadlines.set(rowId, timer);
@@ -366,26 +392,28 @@ function phoneDeadline(rowId, answeredAt) {
  * the core's job waits for its `phone.checked` (the core rechecks its
  * records at each start), up to its deadline; one an earlier build checked
  * itself, with no job, can't be checked by the core, and ends `unknown`.
- * Best-effort, like every history read: returns how many it waits on.
+ * Best-effort, like every history read: resolves with how many it waits on.
  */
 function resumePhoneChecks() {
-  let rows;
-  try {
-    rows = rowsWithStatus(STATUSES.UNVERIFIED);
-  } catch (err) {
-    log.warn(`[TxRecorder] could not read unverified phone payments: ${err.message}`);
-    return 0;
-  }
-  let waiting = 0;
-  for (const row of rows) {
-    if (waitingJob(row)) {
-      phoneDeadline(row.id, row.metadata.phoneCheck.answeredAt);
-      waiting += 1;
-    } else {
-      endPhoneCheck(row, 'unknown');
+  return serialized(async () => {
+    let rows;
+    try {
+      rows = await rowsWithStatus(STATUSES.UNVERIFIED);
+    } catch (err) {
+      log.warn(`[TxRecorder] could not read unverified phone payments: ${err.message}`);
+      return 0;
     }
-  }
-  return waiting;
+    let waiting = 0;
+    for (const row of rows) {
+      if (waitingJob(row)) {
+        phoneDeadline(row.id, row.metadata.phoneCheck.answeredAt);
+        waiting += 1;
+      } else {
+        await endPhoneCheck(row, 'unknown');
+      }
+    }
+    return waiting;
+  });
 }
 
 /**
@@ -397,12 +425,13 @@ function attachPhoneEvents(client) {
   if (!client || typeof client.on !== 'function' || client === attachedCore) return;
   attachedCore = client;
   client.on('event', (name, data) => {
-    try {
-      if (name === 'phone.checked') phoneChecked(data);
-      else if (name === 'phone.lost') phoneLost();
-    } catch (err) {
+    let kept;
+    if (name === 'phone.checked') kept = phoneChecked(data);
+    else if (name === 'phone.lost') kept = phoneLost();
+    else return;
+    kept.catch((err) => {
       log.warn(`[TxRecorder] could not keep the core's ${name}: ${err.message}`);
-    }
+    });
   });
 }
 
@@ -475,14 +504,13 @@ const SETTLED_STATUS = Object.freeze({
 });
 
 // The history row of an intent, by its id: this run's, or an earlier one's.
-function rowOfIntent(intent) {
+async function rowOfIntent(intent) {
   if (rowsByIntent.has(intent.intentId)) {
-    const row = paymentHistory.getById(rowsByIntent.get(intent.intentId));
+    const row = await paymentHistory.getById(rowsByIntent.get(intent.intentId));
     if (row) return row;
   }
   return (
-    paymentHistory
-      .getRecent({ chainId: intent.chainId, limit: ROW_LOOKBACK })
+    (await paymentHistory.getRecent({ chainId: intent.chainId, limit: ROW_LOOKBACK }))
       .find((row) => row.metadata?.intentId === intent.intentId) ?? null
   );
 }
@@ -495,25 +523,29 @@ function rowOfIntent(intent) {
  * as `unconfirmed`. An intent with no row (its send failed before one was
  * written, though its bytes went out) gets one now, so a payment that
  * happened is never missing from the history. Best-effort, like every
- * history write: returns the row, or null.
+ * history write: resolves with the row, or null.
  *
  * @param {object} intent - the intent's view, read before it settled
  * @param {{label: 'paid'|'failed'|'taken'|'closed', hash: string|null, block: number}} settlement
  */
-function recordSettlement(intent, { label, hash, block }) {
+async function recordSettlement(intent, { label, hash, block }) {
   const status = SETTLED_STATUS[label];
   if (!status) return null;
+  return serialized(() => writeSettlement(intent, { label, hash, block }, status));
+}
+
+async function writeSettlement(intent, { label, hash, block }, status) {
   const finality = { label, block };
   try {
-    const row = rowOfIntent(intent);
+    const row = await rowOfIntent(intent);
     if (row) {
-      return paymentHistory.update(row.id, {
+      return await paymentHistory.update(row.id, {
         status,
         txHash: hash ?? undefined,
         metadata: { ...row.metadata, intentId: intent.intentId, finality },
       });
     }
-    const written = paymentHistory.append({
+    const written = await paymentHistory.append({
       kind: Object.values(KINDS).includes(intent.context?.kind)
         ? intent.context.kind
         : KINDS.WALLET_SEND,

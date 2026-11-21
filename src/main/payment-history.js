@@ -1,7 +1,19 @@
 /**
- * Payment history (SQLite-backed). Unified ledger of every outgoing
- * payment the browser signs or sends — x402 micropayments, wallet sends,
- * dapp-routed sends. Replaces the legacy x402-receipts.json store.
+ * Payment history: the unified ledger of every outgoing payment the browser
+ * signs or sends — x402 micropayments, wallet sends, dapp-routed sends.
+ *
+ * The ledger is `payment-history.sqlite`, which the identity core keeps
+ * (freedom-core design 0013, "Payment history"; PRF-6(c)): this build names
+ * `payments` in the hello's `store_moved`, so the core is the database's
+ * one writer and reader, and main opens none of its files. Each function
+ * here is one `payments.*` request (core/vault-backend.js), answered as the
+ * module answered it when it kept the database itself, but asynchronously:
+ * a record (camelCase, `metadata` parsed) or null, a list of them, a count.
+ * A refusal is thrown as the module threw it (the class and message the
+ * core names), and a core that can't serve the store fails the request
+ * (`requirement_unmet`, `storage`, `core_unavailable`). The core opens the
+ * database at its first request and imports the legacy `x402-receipts.json`
+ * then, once.
  *
  * Schema is intentionally a superset of what any current source produces;
  * source-specific extras go in the `metadata` JSON blob so future kinds
@@ -9,22 +21,14 @@
  *
  * Broadcast txs are born 'pending' and need a follow-up markConfirmed /
  * markFailed; if the app exits in between, repollPending picks them up
- * next boot. x402 receipts are born final.
+ * once the core is up again. x402 receipts are born final.
  */
 
 const log = require('./logger');
-const { app, ipcMain } = require('electron');
-const { getFreedomDataPath } = require('./freedom-root');
-const path = require('path');
-const fs = require('fs');
-const Database = require('better-sqlite3');
+const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
-
-const SCHEMA_VERSION = 1;
-const DB_FILE = 'payment-history.sqlite';
-const LEGACY_JSON_FILE = 'x402-receipts.json';
-const MIGRATED_SUFFIX = '.migrated';
+const { vaultBackend } = require('./core/vault-backend');
 
 const KINDS = Object.freeze({
   X402: 'x402',
@@ -62,266 +66,31 @@ const STATUSES = Object.freeze({
   // unknown.
   UNKNOWN: 'unknown',
 });
-const FINAL_STATUSES = new Set([
-  STATUSES.CONFIRMED,
-  STATUSES.FAILED,
-  STATUSES.SETTLED,
-  STATUSES.NO_RECEIPT,
-  STATUSES.TAKEN,
-  STATUSES.DROPPED,
-  STATUSES.UNCONFIRMED,
-  STATUSES.WRONG_TRANSACTION,
-  STATUSES.UNKNOWN,
-]);
-const isFinalStatus = (status) => FINAL_STATUSES.has(status);
 
-let db = null;
-let statements = null;
-
-function getDb() {
-  if (db) return db;
-
-  const dbPath = getFreedomDataPath(DB_FILE);
-  log.info('[PaymentHistory] Opening database:', dbPath);
-
-  db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-
-  migrateDatabase();
-  migrateFromJson();
-
-  return db;
+// "Table changed, re-query." Receivers ignore the payload and pull
+// fresh state via `payments:get-recent`; the id/kind/status/txHash
+// fields are forward-compat for receivers that may want to filter
+// (e.g. "ignore unless kind === 'x402'") without an extra IPC. Sent once
+// the core has answered a write that changed a row.
+function broadcastTxRecorded(entry) {
+  broadcastToAllWebContents(IPC.PAYMENTS_TX_RECORDED, entry ? {
+    id: entry.id,
+    kind: entry.kind,
+    status: entry.status,
+    txHash: entry.txHash ?? null,
+  } : { id: null });
 }
 
-function closeDb() {
-  cancelDroppedConfirm();
-  if (db) {
-    log.info('[PaymentHistory] Closing database');
-    db.close();
-    db = null;
-    statements = null;
-  }
-}
-
-function migrateDatabase() {
-  const version = db.pragma('user_version', { simple: true });
-
-  if (version < SCHEMA_VERSION) {
-    log.info(`[PaymentHistory] Migrating schema ${version} → ${SCHEMA_VERSION}`);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS payments (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        kind          TEXT    NOT NULL,
-        chain_id      INTEGER NOT NULL,
-        tx_hash       TEXT,
-        from_address  TEXT,
-        to_address    TEXT,
-        asset         TEXT,
-        amount        TEXT    NOT NULL,
-        origin        TEXT,
-        url           TEXT,
-        status        TEXT    NOT NULL,
-        created_at    INTEGER NOT NULL,
-        confirmed_at  INTEGER,
-        gas_used      TEXT,
-        gas_price     TEXT,
-        metadata      TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_payments_created ON payments(created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_payments_kind    ON payments(kind);
-      CREATE INDEX IF NOT EXISTS idx_payments_chain   ON payments(chain_id);
-      CREATE INDEX IF NOT EXISTS idx_payments_origin  ON payments(origin);
-      CREATE INDEX IF NOT EXISTS idx_payments_tx_hash ON payments(tx_hash);
-      CREATE INDEX IF NOT EXISTS idx_payments_status  ON payments(status);
-    `);
-    db.pragma(`user_version = ${SCHEMA_VERSION}`);
-  }
-}
-
-// One-shot import of the legacy x402-receipts.json store. Renamed to
-// `.migrated` on success because the table has no natural unique key —
-// re-importing would duplicate every row.
-function migrateFromJson() {
-  const jsonPath = path.join(app.getPath('userData'), LEGACY_JSON_FILE);
-  if (!fs.existsSync(jsonPath)) return;
-
-  const migratedPath = jsonPath + MIGRATED_SUFFIX;
-  if (fs.existsSync(migratedPath)) {
-    try {
-      fs.unlinkSync(jsonPath);
-      log.info('[PaymentHistory] Dropped stray x402-receipts.json (already migrated)');
-    } catch (err) {
-      log.error('[PaymentHistory] Failed to remove stray x402-receipts.json:', err.message);
-    }
-    return;
-  }
-
-  try {
-    const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-    const entries = Array.isArray(raw) ? raw : [];
-
-    if (entries.length > 0) {
-      let imported = 0;
-      const insertOne = (e) => {
-        // settledAt was stored in seconds; the new store uses ms.
-        const hasSettledAt = Number.isFinite(e.settledAt);
-        const settledMs = hasSettledAt ? e.settledAt * 1000 : Date.now();
-        const status = typeof e.status === 'string' ? e.status : STATUSES.NO_RECEIPT;
-        const metadata = legacyMetadataFor(e, status);
-        const row = legacyRowFor(e, settledMs, status, hasSettledAt);
-        if (legacyAlreadyImported(row, metadata)) return;
-        insertRow({
-          ...row,
-          kind: KINDS.X402,
-          metadata,
-        });
-        imported++;
-      };
-
-      db.transaction((items) => { for (const e of items) insertOne(e); })(entries);
-      log.info(`[PaymentHistory] Migrated ${imported} entries from x402-receipts.json`);
-    }
-
-    fs.renameSync(jsonPath, migratedPath);
-  } catch (err) {
-    log.error('[PaymentHistory] Failed to migrate from JSON:', err.message);
-  }
-}
-
-function legacyMetadataFor(entry, status) {
-  const legacyId = typeof entry.id === 'string' && entry.id
-    ? entry.id
-    : [
-      'legacy',
-      Number.isFinite(entry.settledAt) ? entry.settledAt : '',
-      status,
-      entry.chainId ?? '',
-      entry.txHash ?? '',
-      entry.url ?? '',
-      entry.amount ?? '',
-    ].join(':');
-  return JSON.stringify({ legacyId });
-}
-
-function legacyRowFor(entry, settledMs, status, hasSettledAt) {
-  return {
-    chainId: Number.isFinite(entry.chainId) ? entry.chainId : 0,
-    txHash: typeof entry.txHash === 'string' ? entry.txHash : null,
-    asset: typeof entry.asset === 'string' ? entry.asset : null,
-    amount: typeof entry.amount === 'string' ? entry.amount : '0',
-    origin: typeof entry.origin === 'string' ? entry.origin : null,
-    url: typeof entry.url === 'string' ? entry.url : null,
-    status,
-    createdAt: settledMs,
-    confirmedAt: isFinalStatus(status) ? settledMs : null,
-    hasSettledAt,
-  };
-}
-
-function legacyAlreadyImported(legacy, metadata) {
-  return getDb()
-    .prepare('SELECT * FROM payments WHERE kind = ? ORDER BY created_at DESC LIMIT ? OFFSET ?')
-    .all(KINDS.X402, 100_000, 0)
-    .some((row) => row.metadata === metadata || legacyRowMatches(row, legacy));
-}
-
-function legacyRowMatches(row, legacy) {
-  return (
-    row.chain_id === legacy.chainId &&
-    (row.tx_hash ?? null) === legacy.txHash &&
-    (row.asset ?? null) === legacy.asset &&
-    row.amount === legacy.amount &&
-    (row.origin ?? null) === legacy.origin &&
-    (row.url ?? null) === legacy.url &&
-    row.status === legacy.status &&
-    (!legacy.hasSettledAt || row.created_at === legacy.createdAt)
-  );
-}
-
-// Shared row builder so the migration path doesn't need a bespoke INSERT
-// SQL (and the test fake doesn't need a second recogniser for it).
-function insertRow(row) {
-  return getStatements().insert.run(
-    row.kind,
-    row.chainId,
-    row.txHash ?? null,
-    row.fromAddress ?? null,
-    row.toAddress ?? null,
-    row.asset ?? null,
-    row.amount,
-    row.origin ?? null,
-    row.url ?? null,
-    row.status,
-    row.createdAt,
-    row.confirmedAt ?? null,
-    row.gasUsed ?? null,
-    row.gasPrice ?? null,
-    row.metadata ?? null,
-  );
-}
-
-function getStatements() {
-  if (statements) return statements;
-
-  const database = getDb();
-  statements = {
-    insert: database.prepare(`
-      INSERT INTO payments (
-        kind, chain_id, tx_hash, from_address, to_address, asset, amount,
-        origin, url, status, created_at, confirmed_at, gas_used, gas_price, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `),
-    update: database.prepare(`
-      UPDATE payments SET
-        tx_hash      = COALESCE(?, tx_hash),
-        status       = COALESCE(?, status),
-        confirmed_at = COALESCE(?, confirmed_at),
-        gas_used     = COALESCE(?, gas_used),
-        gas_price    = COALESCE(?, gas_price),
-        metadata     = COALESCE(?, metadata)
-      WHERE id = ?
-    `),
-    getById: database.prepare(`SELECT * FROM payments WHERE id = ?`),
-    getPending: database.prepare(`
-      SELECT * FROM payments WHERE status = '${STATUSES.PENDING}' ORDER BY created_at ASC
-    `),
-    clear: database.prepare(`DELETE FROM payments`),
-    deleteById: database.prepare(`DELETE FROM payments WHERE id = ?`),
-  };
-  return statements;
-}
-
-// SQLite columns are snake_case; the renderer-facing API is camelCase.
-function rowToEntry(row) {
-  if (!row) return null;
-  let metadata = null;
-  if (row.metadata) {
-    try { metadata = JSON.parse(row.metadata); } catch { /* ignore */ }
-  }
-  return {
-    id: row.id,
-    kind: row.kind,
-    chainId: row.chain_id,
-    txHash: row.tx_hash,
-    fromAddress: row.from_address,
-    toAddress: row.to_address,
-    asset: row.asset,
-    amount: row.amount,
-    origin: row.origin,
-    url: row.url,
-    status: row.status,
-    createdAt: row.created_at,
-    confirmedAt: row.confirmed_at,
-    gasUsed: row.gas_used,
-    gasPrice: row.gas_price,
-    metadata,
-  };
+/** The core's record of a write, broadcast when it names a row. */
+function recorded(entry) {
+  if (entry) broadcastTxRecorded(entry);
+  return entry;
 }
 
 /**
  * Insert a payment record. Status defaults to 'pending' for broadcast
  * kinds (wallet-send / dapp-send) and is required for x402 (which is
- * born final). Returns the persisted record.
+ * born final). Resolves with the persisted record.
  *
  * @param {object} entry
  * @param {'x402'|'wallet-send'|'dapp-send'} entry.kind
@@ -337,139 +106,41 @@ function rowToEntry(row) {
  * @param {number} [entry.createdAt] — ms epoch; defaults to now
  * @param {object|null} [entry.metadata]
  */
-// "Table changed, re-query." Receivers ignore the payload and pull
-// fresh state via `payments:get-recent`; the id/kind/status/txHash
-// fields are forward-compat for receivers that may want to filter
-// (e.g. "ignore unless kind === 'x402'") without an extra IPC.
-function broadcastTxRecorded(entry) {
-  broadcastToAllWebContents(IPC.PAYMENTS_TX_RECORDED, entry ? {
-    id: entry.id,
-    kind: entry.kind,
-    status: entry.status,
-    txHash: entry.txHash ?? null,
-  } : { id: null });
-}
-
-function append(entry = {}) {
-  if (!Object.values(KINDS).includes(entry.kind)) {
-    throw new Error(`payment-history: unknown kind '${entry.kind}'`);
-  }
-  if (!Number.isFinite(entry.chainId)) {
-    throw new Error('payment-history: chainId must be a finite number');
-  }
-  if (typeof entry.amount !== 'string' || !/^\d+$/.test(entry.amount)) {
-    throw new Error('payment-history: amount must be a digit string');
-  }
-
-  const createdAt = Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now();
-  const status = entry.status || (entry.kind === KINDS.X402 ? STATUSES.SETTLED : STATUSES.PENDING);
-
-  const result = insertRow({
-    ...entry,
-    createdAt,
-    status,
-    confirmedAt: isFinalStatus(status) ? createdAt : null,
-    metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
-  });
-
-  const inserted = rowToEntry(getStatements().getById.get(result.lastInsertRowid));
-  broadcastTxRecorded(inserted);
-  return inserted;
+async function append(entry = {}) {
+  return recorded(await vaultBackend.payments.append(entry));
 }
 
 /**
- * Patch a row by id. Any field omitted is ignored (COALESCE keeps the
- * existing value). Status transitioning to a final value also stamps
- * `confirmed_at = now()` when the caller didn't supply one.
+ * Patch a row by id. Any field omitted is ignored (the row keeps its
+ * value). Status transitioning to a final value also stamps
+ * `confirmedAt = now()` when the caller didn't supply one. Resolves with
+ * the record, or null when no row has `id`.
  */
-function update(id, patch = {}) {
-  const transitioningToFinal = patch.status && isFinalStatus(patch.status);
-  const confirmedAt = patch.confirmedAt ?? (transitioningToFinal ? Date.now() : null);
-
-  const result = getStatements().update.run(
-    patch.txHash ?? null,
-    patch.status ?? null,
-    confirmedAt,
-    patch.gasUsed ?? null,
-    patch.gasPrice ?? null,
-    patch.metadata ? JSON.stringify(patch.metadata) : null,
-    id,
-  );
-  if (result.changes === 0) return null;
-  const updated = rowToEntry(getStatements().getById.get(id));
-  broadcastTxRecorded(updated);
-  return updated;
+async function update(id, patch = {}) {
+  return recorded(await vaultBackend.payments.update(id, patch));
 }
 
-function markConfirmed(id, receipt = {}) {
-  return update(id, {
-    status: STATUSES.CONFIRMED,
-    gasUsed: receipt.gasUsed,
-    gasPrice: receipt.gasPrice ?? receipt.effectiveGasPrice,
-    confirmedAt: receipt.confirmedAt,
-  });
+async function markConfirmed(id, receipt = {}) {
+  return recorded(await vaultBackend.payments.markConfirmed(id, receipt));
 }
 
-function markFailed(id, { reason, gasUsed, gasPrice } = {}) {
-  return update(id, {
-    status: STATUSES.FAILED,
-    gasUsed,
-    gasPrice,
-    metadata: reason ? { failureReason: reason } : undefined,
-  });
+async function markFailed(id, info = {}) {
+  return recorded(await vaultBackend.payments.markFailed(id, info));
 }
 
 // Merges into the row's metadata rather than replacing it: a Safe row's
 // own metadata must survive the status change. Only a row still pending
 // is marked: the sweep decides 'dropped' from a lookup it awaited, and a
 // concurrent finaliser (tx-recorder's markConfirmed/markFailed) may have
-// written the row's final status meanwhile; that status stands. The read
-// and the write run in one synchronous step, so nothing lands between.
-function markDropped(id) {
-  const existing = getById(id);
-  if (!existing || existing.status !== STATUSES.PENDING) return null;
-  return update(id, {
-    status: STATUSES.DROPPED,
-    metadata: { ...(existing.metadata || {}), failureReason: 'nonce used by another transaction' },
-  });
-}
-
-// Filter keys the store accepts; anything else is silently dropped so the
-// renderer can pass through UI state without breaking. Clamping `limit`
-// and `offset` guards against a runaway page-size request pulling the
-// entire table across IPC.
-const FILTER_KEYS = ['kind', 'chainId', 'origin', 'status'];
-const MAX_LIMIT = 500;
-
-function sanitizeFilters(raw = {}) {
-  const out = {};
-  for (const key of FILTER_KEYS) {
-    if (raw[key] !== undefined) out[key] = raw[key];
-  }
-  if (raw.limit !== undefined) {
-    out.limit = Math.min(Math.max(0, Number(raw.limit) | 0), MAX_LIMIT);
-  }
-  if (raw.offset !== undefined) {
-    out.offset = Math.max(0, Number(raw.offset) | 0);
-  }
-  return out;
-}
-
-// Build a WHERE fragment + parameter array from a sanitised filter object.
-// Used by both getRecent and getCount so the filter shape stays in lock-step.
-function buildWhere(filters) {
-  const where = [];
-  const params = [];
-  if (filters.kind)               { where.push('kind = ?');     params.push(filters.kind); }
-  if (filters.chainId !== undefined) { where.push('chain_id = ?'); params.push(filters.chainId); }
-  if (filters.origin)             { where.push('origin = ?');   params.push(filters.origin); }
-  if (filters.status)             { where.push('status = ?');   params.push(filters.status); }
-  const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
-  return { clause, params };
+// written the row's final status meanwhile; that status stands. The core
+// reads and writes the row in one transaction, so nothing lands between.
+async function markDropped(id) {
+  return recorded(await vaultBackend.payments.markDropped(id));
 }
 
 /**
- * Filtered, paginated read. Filters are AND-combined. All optional.
+ * Filtered, paginated read. Filters are AND-combined. All optional; any
+ * other key is dropped, and `limit` is clamped to 500.
  *
  * @param {object} filters
  * @param {string} [filters.kind]
@@ -478,35 +149,23 @@ function buildWhere(filters) {
  * @param {string} [filters.status]
  * @param {number} [filters.limit=50]
  * @param {number} [filters.offset=0]
+ * @param {'chrome'|null} [caller] — `'chrome'` for a read relayed from IPC
  */
-function getRecent(filters = {}) {
-  const safe = sanitizeFilters(filters);
-  const { clause, params } = buildWhere(safe);
-  const sql = `SELECT * FROM payments ${clause} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-  return getDb()
-    .prepare(sql)
-    .all(...params, safe.limit ?? 50, safe.offset ?? 0)
-    .map(rowToEntry);
+function getRecent(filters = {}, caller = null) {
+  return vaultBackend.payments.getRecent(filters, caller);
 }
 
-function getById(id) {
-  return rowToEntry(getStatements().getById.get(id));
+function getById(id, caller = null) {
+  return vaultBackend.payments.getById(id, caller);
 }
 
-function getCount(filters = {}) {
-  const { clause, params } = buildWhere(sanitizeFilters(filters));
-  return getDb().prepare(`SELECT COUNT(*) AS n FROM payments ${clause}`).get(...params).n;
+function getCount(filters = {}, caller = null) {
+  return vaultBackend.payments.getCount(filters, caller);
 }
 
-function clear() {
-  const changes = getStatements().clear.run().changes;
-  if (changes > 0) broadcastTxRecorded(null);
-  return changes;
-}
-
-function removeById(id) {
-  const removed = getStatements().deleteById.run(id).changes > 0;
-  if (removed) broadcastTxRecorded(null);
+async function clear(caller = null) {
+  const removed = await vaultBackend.payments.clear(caller);
+  if (removed > 0) broadcastTxRecorded(null);
   return removed;
 }
 
@@ -518,9 +177,10 @@ function removeById(id) {
  * time (tx-recorder), so a transaction whose nonce another transaction has
  * since taken resolves as 'dropped' instead of staying pending forever.
  *
- * Exposed as an explicit function (not auto-run on open) so callers can
- * trigger it once the provider stack is up: `index.js` at boot, and
- * tx-recorder whenever one of its transactions resolves.
+ * Exposed as an explicit function (not auto-run) so callers can trigger it
+ * once the provider stack is up: at each core start (repollOnCoreReady,
+ * from `index.js`), and tx-recorder whenever one of its transactions
+ * resolves.
  *
  * A call while a sweep is running cannot just join it: that sweep may have
  * read (or already checked) a row before the chain moved, e.g. before the
@@ -581,26 +241,18 @@ function scheduleDroppedConfirm(getStatusFn, delayMs) {
   confirmTimer.unref?.();
 }
 
-function cancelDroppedConfirm() {
-  if (confirmTimer) clearTimeout(confirmTimer);
-  confirmTimer = null;
-}
-
 function rowMetadata(row) {
   try { return row.metadata ? JSON.parse(row.metadata) : null; } catch { return null; }
 }
 
-// Re-reads the row rather than reusing the sweep's snapshot: the status
-// lookup awaited in between, and a concurrent finaliser (tx-recorder's
-// markFailed with its failureReason) may have written the row meanwhile.
-// A row no longer pending is left alone.
+// The core re-reads the row rather than taking the sweep's snapshot: the
+// status lookup awaited in between, and a concurrent finaliser
+// (tx-recorder's markFailed with its failureReason) may have written the
+// row meanwhile. A row no longer pending is left alone. Its answer doesn't
+// say whether it wrote, and the sighting is the sweep's own bookkeeping,
+// which no page shows: nothing is broadcast.
 function setDroppedSeenAt(row, seenAt) {
-  const current = getStatements().getById.get(row.id);
-  if (!current || current.status !== STATUSES.PENDING) return;
-  const metadata = { ...(rowMetadata(current) || {}) };
-  if (seenAt === null) delete metadata.txDroppedSeenAt;
-  else metadata.txDroppedSeenAt = seenAt;
-  update(row.id, { metadata });
+  return vaultBackend.payments.setDroppedSeen(row.id, seenAt);
 }
 
 function sentFields(row) {
@@ -612,8 +264,10 @@ function sentFields(row) {
   };
 }
 
+// The rows come as SQLite holds them (`payments.pending`): snake_case
+// columns, `metadata` its JSON text.
 async function repollPendingOnce(getStatusFn) {
-  const pending = getStatements().getPending.all();
+  const pending = await vaultBackend.payments.pending();
   let resolved = 0;
   let stillPending = 0;
   let errors = 0;
@@ -627,24 +281,24 @@ async function repollPendingOnce(getStatusFn) {
       if (r?.status === STATUSES.DROPPED) {
         const now = Date.now();
         if (Number.isFinite(seenAt) && now - seenAt >= DROPPED_CONFIRM_MS) {
-          if (markDropped(row.id)) resolved++;
+          if (await markDropped(row.id)) resolved++;
           continue;
         }
-        if (!Number.isFinite(seenAt) || seenAt > now) setDroppedSeenAt(row, now);
+        if (!Number.isFinite(seenAt) || seenAt > now) await setDroppedSeenAt(row, now);
         const waitMs = Number.isFinite(seenAt) && seenAt <= now
           ? DROPPED_CONFIRM_MS - (now - seenAt)
           : DROPPED_CONFIRM_MS;
         nextConfirmIn = nextConfirmIn === null ? waitMs : Math.min(nextConfirmIn, waitMs);
         stillPending++;
       } else if (r?.status === STATUSES.CONFIRMED) {
-        markConfirmed(row.id, { gasUsed: r.gasUsed, gasPrice: r.gasPrice ?? r.effectiveGasPrice });
+        await markConfirmed(row.id, { gasUsed: r.gasUsed, gasPrice: r.gasPrice ?? r.effectiveGasPrice });
         resolved++;
       } else if (r?.status === STATUSES.FAILED) {
-        markFailed(row.id, { gasUsed: r.gasUsed, gasPrice: r.gasPrice ?? r.effectiveGasPrice });
+        await markFailed(row.id, { gasUsed: r.gasUsed, gasPrice: r.gasPrice ?? r.effectiveGasPrice });
         resolved++;
       } else {
         // Not seen dropped this time: a later sighting starts over.
-        if (r?.status === STATUSES.PENDING && seenAt !== undefined) setDroppedSeenAt(row, null);
+        if (r?.status === STATUSES.PENDING && seenAt !== undefined) await setDroppedSeenAt(row, null);
         stillPending++;
       }
     } catch (err) {
@@ -658,42 +312,65 @@ async function repollPendingOnce(getStatusFn) {
   return { resolved, stillPending, errors };
 }
 
+/**
+ * index.js: the repoll, at each start of the core `client` (main's, by
+ * default): the history is the core's, so rows a previous run left pending
+ * resolve once it is up, and a write a core restart lost (a receipt's
+ * mark, say) is made good once the next one is (design 0013's coordinator
+ * call G9: never resent, re-read). At once too if it is up already.
+ */
+let repollClient = null;
+function repollOnCoreReady(getStatusFn, client) {
+  const core = client === undefined ? require('./core/core-process').getCoreClient() : client;
+  if (!core || typeof core.on !== 'function' || core === repollClient) return;
+  repollClient = core;
+  const sweep = () => {
+    repollPending(getStatusFn).catch((err) => {
+      log.warn(`[PaymentHistory] repoll failed: ${err.message}`);
+    });
+  };
+  core.on('ready', sweep);
+  if (core.state === 'ready') sweep();
+}
+
 // === IPC =================================================================
 
+// The chrome's and the internal pages' requests, relayed to the core as the
+// chrome's (design 0013's coordinator call G23).
 function registerPaymentHistoryIpc() {
-  ipcMain.handle(IPC.PAYMENTS_GET_RECENT, (_event, filters) => {
+  ipcMain.handle(IPC.PAYMENTS_GET_RECENT, async (_event, filters) => {
     try {
-      return { success: true, payments: getRecent(filters) };
+      return { success: true, payments: await getRecent(filters, 'chrome') };
     } catch (err) {
       log.error('[PaymentHistory] get-recent failed:', err.message);
       return { success: false, error: err.message };
     }
   });
 
-  ipcMain.handle(IPC.PAYMENTS_GET_BY_ID, (_event, id) => {
+  ipcMain.handle(IPC.PAYMENTS_GET_BY_ID, async (_event, id) => {
     if (!Number.isInteger(id)) {
       return { success: false, error: 'id must be an integer' };
     }
     try {
-      return { success: true, payment: getById(id) };
+      return { success: true, payment: await getById(id, 'chrome') };
     } catch (err) {
       log.error('[PaymentHistory] get-by-id failed:', err.message);
       return { success: false, error: err.message };
     }
   });
 
-  ipcMain.handle(IPC.PAYMENTS_GET_COUNT, (_event, filters) => {
+  ipcMain.handle(IPC.PAYMENTS_GET_COUNT, async (_event, filters) => {
     try {
-      return { success: true, count: getCount(filters) };
+      return { success: true, count: await getCount(filters, 'chrome') };
     } catch (err) {
       log.error('[PaymentHistory] get-count failed:', err.message);
       return { success: false, error: err.message };
     }
   });
 
-  ipcMain.handle(IPC.PAYMENTS_CLEAR, () => {
+  ipcMain.handle(IPC.PAYMENTS_CLEAR, async () => {
     try {
-      return { success: true, removed: clear() };
+      return { success: true, removed: await clear('chrome') };
     } catch (err) {
       log.error('[PaymentHistory] clear failed:', err.message);
       return { success: false, error: err.message };
@@ -706,8 +383,6 @@ function registerPaymentHistoryIpc() {
 module.exports = {
   KINDS,
   STATUSES,
-  getDb,
-  closeDb,
   append,
   update,
   markConfirmed,
@@ -717,9 +392,8 @@ module.exports = {
   getById,
   getCount,
   clear,
-  removeById,
   repollPending,
+  repollOnCoreReady,
   DROPPED_CONFIRM_MS,
   registerPaymentHistoryIpc,
-  _migrateFromJsonForTest: migrateFromJson,
 };

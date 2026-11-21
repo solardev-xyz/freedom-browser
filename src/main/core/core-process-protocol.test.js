@@ -67,8 +67,8 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   // the directory of the four permission files; grant_moved names the files
   // the core writes from then on: the dApp file (APB-2), Swarm's and
   // Radicle's (APB-3). Design 0013's store_moved names vault-meta.json's
-  // store (PRF-6(a)) and the intent journal (PRF-6(b2)), and the app's
-  // client takes an echo of no other.
+  // store (PRF-6(a)), the intent journal (PRF-6(b2)) and the payment
+  // history (PRF-6(c)), and the app's client takes an echo of no other.
   const root = path.join(os.tmpdir(), 'freedom-profile');
   expect(client.grantRoot).toBe(root);
   const params = client.service.helloParams(client);
@@ -79,11 +79,12 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   expect(client.userDataDir).toBe(userData);
   expect(params.user_data_dir).toBe(userData);
   expect([...params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
-  expect(params.store_moved).toEqual(['vault_meta', 'intents']);
-  expect(client.service.validHello({ ...HELLO, store_moved: ['payments'] })).toBeNull();
+  expect(params.store_moved).toEqual(['vault_meta', 'intents', 'payments']);
+  expect(client.service.validHello({ ...HELLO, store_moved: ['safe_pending'] })).toBeNull();
   expect(
-    client.service.validHello({ ...HELLO, store_moved: ['vault_meta', 'intents'] }).store_moved
-  ).toEqual(['vault_meta', 'intents']);
+    client.service.validHello({ ...HELLO, store_moved: ['vault_meta', 'intents', 'payments'] })
+      .store_moved
+  ).toEqual(['vault_meta', 'intents', 'payments']);
   expect(start).toHaveBeenCalledTimes(1);
   expect(handle).toHaveBeenCalledWith('shell.dweb_get', expect.any(Function), {
     streams: true,
