@@ -39,6 +39,7 @@ jest.mock('../chains', () => ({
       : null),
 }));
 jest.mock('../rpc-manager', () => ({
+  retiredApiKeys: () => [],
   // The localhost entry must never reach the phone, nor a keyed provider's
   // URL, which carries the user's API key (#1040).
   getEffectiveRpcUrls: jest.fn(() => [

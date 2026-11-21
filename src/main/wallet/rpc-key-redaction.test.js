@@ -36,6 +36,7 @@ const {
   removeTempUserDataDir,
   loadMainModule,
 } = require('../../../test/helpers/main-process-test-utils');
+const { simulatedRpcKeysCore } = require('../../../test/helpers/simulated-rpc-keys-core');
 
 const SHARED = path.join(__dirname, '..', '..', 'shared');
 const readShared = (name) => JSON.parse(fs.readFileSync(path.join(SHARED, name), 'utf-8'));
@@ -148,8 +149,14 @@ async function writePool(shape) {
   );
 }
 
-function loadWalletIpc(extraMocks = {}) {
+/**
+ * wallet-ipc, with main's copy of the RPC API keys read from the identity
+ * core (simulated over the reference key store, which reads the fixture's
+ * rpc-api-keys.json as the core does where it has no key store).
+ */
+async function loadWalletIpc(extraMocks = {}) {
   const ipcMain = createIpcMainMock();
+  const keysCore = simulatedRpcKeysCore();
   const { mod } = loadMainModule(require.resolve('./wallet-ipc'), {
     ipcMain,
     userDataDir,
@@ -167,12 +174,14 @@ function loadWalletIpc(extraMocks = {}) {
           // profile's safe-pending.json.
           safePending: require('../../../test/helpers/simulated-store-core').simulatedSafePending()
             .safePending,
+          secrets: keysCore.secrets,
         },
       }),
       ...extraMocks,
     },
   });
   mod.registerWalletIpc();
+  await require('./rpc-manager').refreshKeys();
   return ipcMain;
 }
 
@@ -279,7 +288,7 @@ const coreChainData = () => ({
 describe.each(POOLS)('wallet handlers on %s', (_pool, shape) => {
   test.each(HANDLERS)('%s answers without the key or the URL', async (_channel, call) => {
     await writePool(shape);
-    const ipc = loadWalletIpc({ [require.resolve('../networks/chain-data')]: coreChainData });
+    const ipc = await loadWalletIpc({ [require.resolve('../networks/chain-data')]: coreChainData });
 
     const answer = await call(ipc);
 
@@ -292,7 +301,7 @@ describe.each(POOLS)('wallet handlers on %s', (_pool, shape) => {
 
   test('wallet:create-safe asks no endpoint: the address is the pinned one (#1066)', async () => {
     await writePool(shape);
-    const ipc = loadWalletIpc();
+    const ipc = await loadWalletIpc();
 
     const answer = await ipc.invoke('wallet:create-safe', 'New', [0], 1);
 
@@ -302,7 +311,7 @@ describe.each(POOLS)('wallet handlers on %s', (_pool, shape) => {
 
   test('wallet:test-provider answers without the key or the URL', async () => {
     await writePool(shape.map((entry) => ({ ...entry, healthy: 1 })));
-    const ipc = loadWalletIpc();
+    const ipc = await loadWalletIpc();
 
     await expect(ipc.invoke('wallet:test-provider', 100)).resolves.toMatchObject({
       success: true,
@@ -318,6 +327,234 @@ describe.each(POOLS)('wallet handlers on %s', (_pool, shape) => {
       code: 'RPC_UNAVAILABLE',
     });
     expectNoKey(answer);
+  });
+});
+
+describe('a key taken out while a request built with it is in flight (PRF-6(e))', () => {
+  /**
+   * Chain 100's pool: the keyed provider alone, on an endpoint that holds
+   * each request until `release()` and then answers a JSON-RPC error
+   * quoting the bare key from the request's path.
+   */
+  async function heldKeyedEndpoint() {
+    const pending = [];
+    let released = false;
+    const answer = (req, res, id) => {
+      const key = decodeURIComponent(req.url.split('/').pop());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: `invalid key ${key}` } })
+      );
+    };
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        const { id } = JSON.parse(body);
+        if (released) answer(req, res, id);
+        else pending.push(() => answer(req, res, id));
+      });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    endpoints = [{ server, url: `${origin}/v2/${KEY}` }];
+    fs.writeFileSync(
+      path.join(userDataDir, 'network-config.json'),
+      JSON.stringify({
+        endpointSources: {
+          'test-keyed': {
+            role: 'rpc',
+            keyed: true,
+            name: 'test-keyed',
+            coverage: { 100: `${origin}/v2/{API_KEY}` },
+          },
+        },
+        removedSources: builtinGnosisRpcs,
+      })
+    );
+    fs.writeFileSync(
+      path.join(userDataDir, 'rpc-api-keys.json'),
+      JSON.stringify({ 'test-keyed': { apiKey: KEY, enabled: true, addedAt: 1 } })
+    );
+    return {
+      pending,
+      release() {
+        released = true;
+        for (const send of pending.splice(0)) send();
+      },
+    };
+  }
+
+  test.each([
+    ['removed', (rpc) => rpc.removeApiKey('test-keyed', { caller: 'chrome' })],
+    ['replaced', (rpc) => rpc.setApiKey('test-keyed', `${KEY}-next`, { caller: 'chrome' })],
+    [
+      // More keys retired after it than the old 64-entry bound: none is evicted.
+      'replaced, then 69 more keys retired',
+      async (rpc) => {
+        for (let i = 0; i < 70; i += 1) {
+          const answer = await rpc.setApiKey('test-keyed', `${KEY}-r${i}`, { caller: 'chrome' });
+          if (!answer.success) return answer;
+        }
+        expect(rpc.retiredApiKeys()).toHaveLength(70);
+        expect(rpc.retiredApiKeys()[0]).toBe(KEY);
+        return { success: true };
+      },
+    ],
+  ])('%s: its error quoting the old key reaches neither a renderer nor a log', async (_how, change) => {
+    const held = await heldKeyedEndpoint();
+    await loadWalletIpc();
+    const rpc = require('./rpc-manager');
+    const providers = require('./provider-manager');
+    const log = require('../logger');
+    for (const level of ['error', 'warn', 'info', 'log']) jest.spyOn(log, level).mockImplementation(() => {});
+
+    // What the Safe handlers send the renderer (getEip1193Provider).
+    const inFlight = providers
+      .getEip1193Provider(100)
+      .request({ method: 'eth_blockNumber' })
+      .then(() => null, (err) => err);
+    while (held.pending.length < 1) await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(change(rpc)).resolves.toEqual({ success: true });
+    expect(rpc.cachedApiKeys().get('test-keyed')).not.toBe(KEY);
+    held.release();
+    const err = await inFlight;
+
+    expect(err).toBeInstanceOf(Error);
+    // The node's text is kept, the key cut out of it.
+    expect(err.message).toBe('invalid key [key redacted]');
+    expect(err.code).toBe(-32000);
+    // Main's per-attempt log of an ethers error quoting the old key.
+    await expect(
+      providers.withRetry(
+        () => Promise.reject(new Error(`could not coalesce error (error={ "message": "invalid key ${KEY}" })`)),
+        0
+      )
+    ).rejects.toThrow();
+
+    const logged = JSON.stringify(
+      [console.error, console.warn, console.log, log.error, log.warn, log.info, log.log].flatMap(
+        (spy) => spy.mock.calls
+      )
+    );
+    expect(logged).toContain('[key redacted]');
+    expect(logged).not.toContain(KEY);
+    expect(JSON.stringify({ message: err.message, data: err.data })).not.toContain(KEY);
+  });
+});
+
+describe("a page's chain read whose error quotes a key (0013 (e), PRF-6(e))", () => {
+  const { EventEmitter } = require('events');
+  const CHROME_URL = 'file:///app/src/renderer/index.html';
+  const DAPP = `bzz://${'a'.repeat(64)}/`;
+
+  /** A tab guest on DAPP, as page-requests.test.js builds one. */
+  function guestOn(url) {
+    const guest = new EventEmitter();
+    let routingId = 1;
+    const frame = (frameUrl) => ({ url: frameUrl, frameTreeNodeId: 1001, processId: 1, routingId: routingId++, detached: false });
+    Object.assign(guest, {
+      id: 1,
+      window: 1,
+      hostWebContents: { isDestroyed: () => false, mainFrame: { url: CHROME_URL } },
+      mainFrame: frame('about:blank'),
+      isDestroyed: () => false,
+      getType: () => 'webview',
+      getURL: () => guest.mainFrame.url,
+    });
+    guest.commit = () => {
+      guest.mainFrame.detached = true;
+      guest.mainFrame = frame(url);
+      guest.emit('did-frame-navigate', {}, url, 200, 'OK', true, 1, guest.mainFrame.routingId);
+    };
+    return guest;
+  }
+
+  const NEXT = `${KEY}-next`;
+  // The core's answer to the read, as page-eip1193.js pageAnswer passes
+  // it on: the node's free text, quoting both keys, in its message and
+  // nested in its data (a property name included).
+  const quoted = `old ${KEY} new ${NEXT}`;
+  const quotingError = () => ({
+    error: {
+      code: -32000,
+      message: `invalid key: ${quoted}`,
+      data: { node: { message: quoted, list: [KEY, { deeper: NEXT }] }, [`k-${NEXT}`]: 1 },
+    },
+  });
+
+  /** A page on DAPP whose chain reads the core answers with quotingError; KEY retired, NEXT current. */
+  async function pageWithKeys() {
+    const keysCore = simulatedRpcKeysCore();
+    fs.writeFileSync(
+      path.join(userDataDir, 'rpc-api-keys.json'),
+      JSON.stringify({ alchemy: { apiKey: KEY, enabled: true, addedAt: 1 } })
+    );
+    loadMainModule(require.resolve('../page/page-requests'), {
+      userDataDir,
+      extraMocks: {
+        [require.resolve('../core/vault-backend')]: () => ({ vaultBackend: { secrets: keysCore.secrets } }),
+      },
+    });
+    const rpc = require('./rpc-manager');
+    await rpc.refreshKeys();
+    await expect(rpc.setApiKey('alchemy', NEXT, { caller: 'chrome' })).resolves.toEqual({ success: true });
+    expect(rpc.retiredApiKeys()).toContain(KEY);
+    expect(rpc.cachedApiKeys().get('alchemy')).toBe(NEXT);
+
+    const dispatch = jest.fn(async () => quotingError());
+    const { createPageRequests } = require('../page/page-requests');
+    const { createPageDocuments } = require('../page/page-documents');
+    const documents = createPageDocuments({
+      isPrivateWebContents: () => false,
+      isChromeIndexUrl: (url) => url === CHROME_URL,
+      isAgentPage: () => false,
+      windowIdOf: (contents) => contents.window,
+      resolveEnsContent: async () => ({ type: 'not_found' }),
+    });
+    const guest = guestOn(DAPP);
+    const requests = createPageRequests({
+      documents,
+      webContentsFromId: (id) => (id === guest.id ? guest : undefined),
+      hooks: { dispatch },
+      setTimer: () => 0,
+      clearTimer: () => {},
+    });
+    requests.track(guest);
+    guest.commit();
+    const nonce = '1'.padStart(32, '0');
+    const event = () => ({ sender: guest, senderFrame: guest.mainFrame });
+    expect(requests.hello(event(), { nonce })).toEqual(expect.objectContaining({ ok: true }));
+    const read = () => requests.request(event(), { nonce, provider: 'ethereum', method: 'eth_blockNumber', params: [] });
+    return { rpc, dispatch, read };
+  }
+
+  test('the page sees neither the current key nor a retired one, in the message or nested data', async () => {
+    const { dispatch, read } = await pageWithKeys();
+    const answer = await read();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(answer.error.code).toBe(-32000);
+    expect(answer.error.message).toBe('invalid key: old [key redacted] new [key redacted]');
+    expect(JSON.parse(JSON.stringify(answer.error.data))).toEqual({
+      node: { message: 'old [key redacted] new [key redacted]', list: ['[key redacted]', { deeper: '[key redacted]' }] },
+      'k-[key redacted]': 1,
+    });
+    expect(JSON.stringify(answer)).not.toContain(KEY);
+  });
+
+  test.each([
+    ['the retired set', (rpc) => jest.spyOn(rpc, 'retiredApiKeys')],
+    ['the registry', () => jest.spyOn(require('../networks/network-registry'), 'withoutApiKeys')],
+  ])("redaction fails closed when %s can't be listed: a fixed text and no data", async (_, spyOn) => {
+    const { rpc, read } = await pageWithKeys();
+    spyOn(rpc).mockImplementation(() => {
+      throw new Error('cannot list');
+    });
+    const answer = await read();
+    expect(answer.error).toEqual({ code: -32000, message: 'RPC error (details withheld)' });
+    expect(JSON.stringify(answer)).not.toContain(KEY);
+    jest.restoreAllMocks();
   });
 });
 
@@ -340,7 +577,7 @@ describe("the wallet handlers' own redaction", () => {
   });
 
   test('a reply that quotes an RPC error has neither the URL nor the key', async () => {
-    const ipc = loadWalletIpc({
+    const ipc = await loadWalletIpc({
       [require.resolve('./safe/safe-service')]: () => ({
         getSafeStatus: jest.fn(async () => {
           throw ethersError(KEYED);
@@ -366,7 +603,7 @@ describe("the wallet handlers' own redaction", () => {
   });
 
   test("a handler's thrown error reaches the renderer redacted", async () => {
-    const ipc = loadWalletIpc({
+    const ipc = await loadWalletIpc({
       [require.resolve('./balance-service')]: () => ({
         getAllBalances: jest.fn(),
         getBalancesWithCache: jest.fn(),
@@ -384,6 +621,7 @@ describe("the wallet handlers' own redaction", () => {
 
   test('every intent handler is registered redacted', async () => {
     const ipcMain = createIpcMainMock();
+    const keysCore = simulatedRpcKeysCore();
     const { mod } = loadMainModule(require.resolve('./intent-ipc'), {
       ipcMain,
       userDataDir,
@@ -400,9 +638,13 @@ describe("the wallet handlers' own redaction", () => {
         [require.resolve('./intent-tracker')]: () => ({
           getIntentTracker: () => ({ onChange: () => {} }),
         }),
+        [require.resolve('../core/vault-backend')]: () => ({
+          vaultBackend: { secrets: keysCore.secrets },
+        }),
       },
     });
     mod.registerIntentIpc({ windows: () => [] });
+    await require('./rpc-manager').refreshKeys();
 
     const answer = await ipcMain.invoke('wallet:intents-list');
     expect(answer).toMatchObject({ success: false });
@@ -419,7 +661,16 @@ describe('redactedHandler', () => {
   // before.
   beforeEach(async () => {
     await writePool([{ keyed: true, status: 403 }]);
-    ({ redactedHandler } = loadMainModule(require.resolve('./rpc-errors'), { userDataDir }).mod);
+    const keysCore = simulatedRpcKeysCore();
+    ({ redactedHandler } = loadMainModule(require.resolve('./rpc-errors'), {
+      userDataDir,
+      extraMocks: {
+        [require.resolve('../core/vault-backend')]: () => ({
+          vaultBackend: { secrets: keysCore.secrets },
+        }),
+      },
+    }).mod);
+    await require('./rpc-manager').refreshKeys();
   });
   const URL_WITH_KEY = `https://eth-mainnet.g.alchemy.com/v2/${KEY}`;
 
@@ -580,5 +831,106 @@ describe('redactedHandler', () => {
   test('a reply without an error is passed as it is', () => {
     const reply = { success: true, explorerUrl: 'https://gnosisscan.io/tx/0xabc' };
     expect(redactedHandler(() => reply)()).toBe(reply);
+  });
+});
+
+// freedom-core design 0013, "RPC API keys" (PRF-6(e)): the keys are the
+// identity core's, and only main's own requests use them. No renderer
+// channel answers with a stored key, or with a URL that carries one: the
+// settings page sees presence (`hasKey`), and sets, tests or removes a key
+// without reading one back.
+describe('no renderer channel returns an RPC API key (0013, PRF-6(e))', () => {
+  const keyedProviderIds = Object.entries(readShared('endpoint-sources.json'))
+    .filter(([, src]) => src.role === 'rpc' && src.keyed)
+    .map(([id]) => id);
+
+  // Arguments that reach each handler's work; any other channel gets none.
+  const ARGS = {
+    'networks:update-network': [1, { quorum: { k: 3 } }],
+    'networks:upsert-source': [
+      'user-extra',
+      { role: 'rpc', keyed: false, name: 'Extra', coverage: { 1: 'https://extra.example' } },
+    ],
+    'networks:remove-source': ['user-extra'],
+    'networks:restore-source': ['user-extra'],
+    'networks:reset-source-coverage': [keyedProviderIds[0], 1],
+    'networks:set-api-key': [keyedProviderIds[0], 'a-key-the-user-typed'],
+    'networks:remove-api-key': [keyedProviderIds[1] || keyedProviderIds[0]],
+    'networks:test-api-key': ['no-such-provider', 'a-key-the-user-typed'],
+    'networks:search-chains': ['ethereum'],
+    'networks:get-catalog-chain': [1],
+    'networks:get-chain': [1],
+    'networks:is-chain-available': [1],
+    'networks:add-chain': [
+      { chainId: 777, name: 'Odd', nativeCurrency: { name: 'Odd', symbol: 'ODD', decimals: 18 } },
+      ['https://rpc.odd.example'],
+    ],
+    'networks:remove-chain': [777],
+  };
+
+  test("every networks channel, and the broadcast after a change, answers without a stored key", async () => {
+    expect(keyedProviderIds.length).toBeGreaterThan(0);
+    fs.writeFileSync(
+      path.join(userDataDir, 'rpc-api-keys.json'),
+      JSON.stringify(
+        Object.fromEntries(
+          keyedProviderIds.map((id) => [id, { apiKey: `${KEY}-${id}`, enabled: true, addedAt: 1 }])
+        )
+      )
+    );
+    const keysCore = simulatedRpcKeysCore();
+    const ipcMain = createIpcMainMock();
+    const send = jest.fn();
+    const { mod } = loadMainModule(require.resolve('../networks/network-ipc'), {
+      ipcMain,
+      userDataDir,
+      webContents: { getAllWebContents: jest.fn(() => [{ send }]) },
+      extraMocks: {
+        [require.resolve('../networks/chain-catalog-host')]: () => ({
+          searchChains: jest.fn(async () => []),
+          getCatalogChain: jest.fn(async () => null),
+        }),
+        [require.resolve('../settings-store')]: () => ({ loadSettings: () => ({}) }),
+        [require.resolve('../core/vault-backend')]: () => ({
+          vaultBackend: { secrets: keysCore.secrets },
+        }),
+        [require.resolve('../ens-resolver')]: () => ({ invalidateCachedProvider: jest.fn() }),
+        [require.resolve('../core/chain')]: () => ({
+          chainSettingsChanged: jest.fn(),
+          checkEndpointChain: jest.fn(async (chainId) => chainId),
+        }),
+      },
+    });
+    mod.registerNetworkConfigIpc();
+    // Main's copy holds every key, and its registry resolves the keyed
+    // URLs: a channel that leaked them would show.
+    const rpcManager = require('./rpc-manager');
+    await rpcManager.refreshKeys();
+    expect(rpcManager.getEffectiveRpcUrls(1).some((url) => url.includes(KEY))).toBe(true);
+    expect(send).toHaveBeenCalled();
+
+    const channels = [...ipcMain.handlers.keys()].filter((name) => name.startsWith('networks:'));
+    expect(channels.length).toBeGreaterThanOrEqual(17);
+    for (const channel of channels) {
+      let answer;
+      try {
+        answer = await ipcMain.invoke(channel, ...(ARGS[channel] || []));
+      } catch (err) {
+        answer = { thrown: String(err?.message) };
+      }
+      expect([channel, JSON.stringify(answer ?? null).includes(KEY)]).toEqual([channel, false]);
+    }
+    const config = await ipcMain.invoke('networks:get-config');
+    expect(config.sources.filter((src) => src.keyed && src.hasKey).length).toBeGreaterThan(0);
+    for (const [, payload] of send.mock.calls) {
+      expect(JSON.stringify(payload)).not.toContain(KEY);
+    }
+  });
+
+  test('neither preload offers a read of the keys, or of the keyed pool', () => {
+    for (const file of ['preload.js', 'webview-preload.js']) {
+      const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+      expect(text).not.toMatch(/rpc_api_keys|get-effective-urls|getEffective/i);
+    }
   });
 });

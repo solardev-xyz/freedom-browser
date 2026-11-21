@@ -15,6 +15,7 @@ const chainCatalog = require('./chain-catalog-host');
 const tokenRegistry = require('../token-registry');
 const rpcManager = require('../wallet/rpc-manager');
 const { loadSettings } = require('../settings-store');
+const log = require('../logger');
 
 function broadcastNetworkConfigUpdated() {
   if (!webContents?.getAllWebContents) return;
@@ -38,11 +39,6 @@ function refreshDownstream() {
   require('../ens-resolver').invalidateCachedProvider();
   require('../core/chain').chainSettingsChanged();
   broadcastNetworkConfigUpdated();
-}
-
-function refreshAfterRpcManagerMutation(result) {
-  if (result?.success) refreshDownstream();
-  return result;
 }
 
 /**
@@ -102,10 +98,24 @@ function addedServesItsChain(chain, rpcUrls, options) {
 }
 
 // The full config view: every network plus every endpoint source, with
-// keyed providers tagged by whether an API key is configured.
-function getConfig() {
+// keyed providers tagged by whether an API key is configured, as the
+// identity core answers the chrome (`secrets.rpc_api_key_status`, design
+// 0013): presence only, never a key. When the core can't answer (it is
+// down, or refuses), each keyed provider's `hasKey` is null (unknown) and
+// the reason is logged here: the configuration itself lives in main, and
+// the Chains page and the ENS lens still need it.
+async function getConfig() {
+  let withKey = null;
+  try {
+    withKey = await rpcManager.providersWithKeys({ caller: 'chrome' });
+  } catch (err) {
+    log.warn(
+      `[network-ipc] RPC API key status unavailable (${err?.code || 'error'}): ` +
+        require('../wallet/rpc-errors').redactRpcText(String(err?.message || err))
+    );
+  }
   const sources = registry.getEndpointSourceList().map((src) =>
-    src.keyed ? { ...src, hasKey: rpcManager.hasApiKey(src.id) } : src
+    src.keyed ? { ...src, hasKey: withKey ? withKey.has(src.id) : null } : src
   );
   return { networks: registry.getAllNetworks(), sources };
 }
@@ -133,8 +143,12 @@ function nativeTokenForChain(chain, chainId) {
 }
 
 function registerNetworkConfigIpc() {
-  ipcMain.handle('networks:get-config', () => {
-    return { success: true, ...getConfig() };
+  ipcMain.handle('networks:get-config', async () => {
+    try {
+      return { success: true, ...(await getConfig()) };
+    } catch (err) {
+      return { success: false, error: err?.message || 'Network configuration unavailable' };
+    }
   });
 
   ipcMain.handle('networks:update-network', (_event, chainId, patch) => {
@@ -171,15 +185,21 @@ function registerNetworkConfigIpc() {
     return { success: true };
   });
 
-  // API keys for keyed providers. rpc-manager clears wallet providers;
-  // refreshDownstream also drops ENS caches so trust state follows the
-  // effective endpoint list immediately.
+  // API keys for keyed providers, which the identity core keeps
+  // (rpc-manager.js), set and removed as the chrome's. Once the core has
+  // the change, rpc-manager reads the keys again; a change to them clears
+  // wallet providers, and refreshDownstream (below) also drops ENS caches
+  // and reconfigures the core's chains, so trust state follows the
+  // effective endpoint list immediately. The same follows the keys' first
+  // read at each start of the core.
+  rpcManager.onKeysChanged(refreshDownstream);
+
   ipcMain.handle('networks:set-api-key', (_event, providerId, apiKey) => {
-    return refreshAfterRpcManagerMutation(rpcManager.setApiKey(providerId, apiKey));
+    return rpcManager.setApiKey(providerId, apiKey, { caller: 'chrome' });
   });
 
   ipcMain.handle('networks:remove-api-key', (_event, providerId) => {
-    return refreshAfterRpcManagerMutation(rpcManager.removeApiKey(providerId));
+    return rpcManager.removeApiKey(providerId, { caller: 'chrome' });
   });
 
   ipcMain.handle('networks:test-api-key', (_event, providerId, apiKey) => {

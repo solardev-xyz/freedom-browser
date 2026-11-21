@@ -23,7 +23,9 @@ jest.mock('../identity-manager', () => ({
   // Safe 7, whose address a safe-send token binds.
   getWalletRecord: (index) => (index === 7 ? { index, type: 'safe', address: '0x' + '77'.repeat(20) } : null),
 }));
-jest.mock('./rpc-manager', () => ({}));
+jest.mock('./rpc-manager', () => ({ retiredApiKeys: () => [] }));
+// No stored key; a redactor that can't list them fails closed (rpc-errors.js).
+jest.mock('../networks/network-registry', () => ({ withoutApiKeys: (text) => String(text) }));
 jest.mock('./signers', () => ({ getSigner: jest.fn() }));
 jest.mock('./dapp-permissions', () => ({
   getPermission: jest.fn(() => null),

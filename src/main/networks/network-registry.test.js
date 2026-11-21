@@ -27,10 +27,16 @@ jest.mock('../lib/atomic-file', () => ({
   },
 }));
 
-// The API keys come through the shared key store (K-5), over the same files.
-jest.mock('../wallet/rpc-api-key-store', () => ({
-  readRpcApiKeys: () =>
-    'rpc-api-keys.json' in mockFiles ? JSON.parse(mockFiles['rpc-api-keys.json']) : {},
+// The API keys are main's copy of the identity core's (rpc-manager.js,
+// PRF-6(e)): the keys the core answers for `apiKeys` in the reference's file
+// shape, those it counts (a non-empty `apiKey`, `enabled` truthy).
+// `retiredApiKeys`: the keys a set or a remove took out of the copy, kept
+// for redaction only.
+let mockApiKeys = new Map();
+let mockRetiredKeys = [];
+jest.mock('../wallet/rpc-manager', () => ({
+  cachedApiKeys: () => mockApiKeys,
+  retiredApiKeys: () => mockRetiredKeys,
 }));
 
 const registry = require('./network-registry');
@@ -69,7 +75,12 @@ function setFiles({ chains = CHAINS, sources = SOURCES, custom, userConfig, apiK
   mockFiles['endpoint-sources.json'] = JSON.stringify(sources);
   if (custom !== undefined) mockFiles['custom-chains.json'] = JSON.stringify(custom);
   if (userConfig !== undefined) mockFiles['network-config.json'] = JSON.stringify(userConfig);
-  if (apiKeys !== undefined) mockFiles['rpc-api-keys.json'] = JSON.stringify(apiKeys);
+  mockApiKeys = new Map(
+    Object.entries(apiKeys || {})
+      .filter(([, entry]) => typeof entry?.apiKey === 'string' && entry.apiKey && entry.enabled)
+      .map(([id, entry]) => [id, entry.apiKey])
+  );
+  mockRetiredKeys = [];
   if (settings !== undefined) mockFiles['settings.json'] = JSON.stringify(settings);
   mockWriteFileAtomicSync.mockClear();
   registry.invalidate();
@@ -169,11 +180,11 @@ describe('getEndpoints — resolution', () => {
   });
 
   test('keyed source: dropped when no key is configured', () => {
-    // no rpc-api-keys.json → alchemy produces no URL
+    // no key in main's copy → alchemy produces no URL
     expect(registry.getEndpoints(1, 'rpc').some((u) => u.includes('alchemy'))).toBe(false);
   });
 
-  test('keyed source: dropped when the key is explicitly disabled', () => {
+  test('keyed source: dropped when the key is explicitly disabled (the core answers none)', () => {
     setFiles({ apiKeys: { alchemy: { apiKey: 'SECRET', enabled: false } } });
     expect(registry.getEndpoints(1, 'rpc').some((u) => u.includes('alchemy'))).toBe(false);
   });
@@ -191,6 +202,19 @@ describe('getEndpointSources', () => {
     const sources = registry.getEndpointSources(1, 'rpc');
     const alchemy = sources.find((s) => s.id === 'alchemy');
     expect(alchemy.coverage['1']).toBe('https://eth.alchemy.example/v2/{API_KEY}');
+  });
+});
+
+describe('withoutApiKeys', () => {
+  test("cuts main's keys and the retired ones, longest first; a retired key is no endpoint", () => {
+    const current = 'current-key-0123456789';
+    const retiredKey = 'retired-key-0123';
+    setFiles({ apiKeys: { alchemy: { apiKey: current, enabled: true } } });
+    mockRetiredKeys = [retiredKey, `${retiredKey}-longer`];
+    expect(
+      registry.withoutApiKeys(`a ${current}, b ${retiredKey}, c ${retiredKey}-longer, d short`)
+    ).toBe('a [key redacted], b [key redacted], c [key redacted], d short');
+    expect(registry.getEndpoints(1, 'rpc').join(' ')).not.toContain(retiredKey);
   });
 });
 

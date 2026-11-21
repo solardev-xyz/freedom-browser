@@ -310,12 +310,19 @@ describe('CoreClient', () => {
   });
 
   // freedom-core design 0013, "One writer per store": the build names
-  // vault-meta.json's store (PRF-6(a)), the intent journal (PRF-6(b2)) and
-  // the payment history (PRF-6(c)) and safe-pending.json's (PRF-6(d)); the
-  // core echoes the names it took, and a core before 0.23.0 answers none.
+  // vault-meta.json's store (PRF-6(a)), the intent journal (PRF-6(b2)), the
+  // payment history (PRF-6(c)), safe-pending.json's (PRF-6(d)) and the RPC
+  // API keys (PRF-6(e)); the core echoes the names it took, and a core
+  // before 0.23.0 answers none.
   test("the hello names the build's stores in store_moved, and an absent echo is none", async () => {
     expect(STORES).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
-    expect(STORE_MOVED).toEqual(['vault_meta', 'intents', 'payments', 'safe_pending']);
+    expect(STORE_MOVED).toEqual([
+      'vault_meta',
+      'intents',
+      'payments',
+      'safe_pending',
+      'rpc_api_keys',
+    ]);
     expect(Object.isFrozen(STORE_MOVED)).toBe(true);
     const { client, children } = makeClient([helloHandler()]);
     const hello = await client.start();
@@ -324,6 +331,7 @@ describe('CoreClient', () => {
       'intents',
       'payments',
       'safe_pending',
+      'rpc_api_keys',
     ]);
     expect(hello.store_moved).toEqual([]);
     expect(client.hello.store_moved).toEqual([]);
@@ -332,8 +340,9 @@ describe('CoreClient', () => {
       ['vault_meta'],
       ['payments'],
       ['safe_pending'],
+      ['rpc_api_keys'],
       ['vault_meta', 'intents'],
-      ['vault_meta', 'intents', 'payments', 'safe_pending'],
+      ['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys'],
     ]) {
       const echoed = makeClient([
         (m, core) =>

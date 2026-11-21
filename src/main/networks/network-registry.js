@@ -6,12 +6,12 @@ const net = require('node:net');
 const log = require('../logger');
 const { writeFileAtomicSync } = require('../lib/atomic-file');
 const { migrateLegacyConfig } = require('./migration');
-const { readRpcApiKeys } = require('../wallet/rpc-api-key-store');
 
 // The unified source of chain + endpoint configuration. Three layers:
 //   - builtin    — ships in src/shared/ (chains.json, endpoint-sources.json)
 //   - user       — per-app customization (custom-chains.json, network-config.json)
-//   - secrets    — API keys (rpc-api-keys.json), used to resolve keyed sources
+//   - secrets    — API keys, the identity core's (main's copy in
+//                  wallet/rpc-manager.js), used to resolve keyed sources
 // A network owns policy (verification strategy, quorum params); endpoint
 // sources own capability (a role + a chainId->URL coverage map). Features
 // name a network + a role and let getEndpoints / getNetwork resolve.
@@ -342,14 +342,10 @@ function load() {
   const builtinSources = readJson(builtinPath('endpoint-sources.json'), {});
   const customChains = readJson(userDataPath('custom-chains.json'), {});
   const userConfig = resolveUserConfig(builtinSources);
-  // Through the shared key store: it repairs an older 0644 file and never
-  // reads through a link (K-5).
-  let apiKeys = {};
-  try {
-    apiKeys = readRpcApiKeys();
-  } catch (err) {
-    log.error(`[network-registry] failed to read the RPC API keys: ${err.message}`);
-  }
+  // Main's copy of the RPC API keys, which the identity core keeps (design
+  // 0013, PRF-6(e)): no file. Required here, as rpc-manager requires this
+  // module; a change to the copy drops this cache (invalidate()).
+  const apiKeys = require('../wallet/rpc-manager').cachedApiKeys();
 
   // Networks: builtin chains, then custom chains, then per-network user
   // overrides. verification/quorum are merged one level deep so a partial
@@ -493,8 +489,8 @@ function getEndpointSources(chainId, role) {
 }
 
 // Resolved, ready-to-use URLs for (chainId, role). Keyed sources have
-// {API_KEY} substituted from the secrets store; a keyed source with no
-// enabled key is dropped (it can't produce a usable URL).
+// {API_KEY} substituted from main's copy of the keys; a keyed source with
+// no key is dropped (it can't produce a usable URL).
 function getEndpoints(chainId, role) {
   const cid = String(chainId);
   const { apiKeys } = load();
@@ -505,9 +501,9 @@ function getEndpoints(chainId, role) {
       out.push(url);
       continue;
     }
-    const entry = apiKeys[src.id];
-    if (entry && entry.apiKey && entry.enabled !== false) {
-      out.push(url.replace('{API_KEY}', entry.apiKey));
+    const key = apiKeys.get(src.id);
+    if (typeof key === 'string' && key) {
+      out.push(url.replace('{API_KEY}', key));
     }
   }
   return out;
@@ -517,16 +513,20 @@ function getEndpoints(chainId, role) {
 // garble the text. URLs are redacted regardless (wallet/rpc-errors.js).
 const MIN_REDACTED_KEY_LENGTH = 8;
 
-// `text` with every stored API key cut out, enabled or not: the secrets
+// `text` with every API key in main's copy cut out: the secrets
 // getEndpoints substitutes into keyed URLs (#1040). For error text that
-// may leave main, whatever form the key is quoted in.
+// may leave main, whatever form the key is quoted in. The keys a set or a
+// remove took out of the copy are cut too: a request built with one may
+// still be answered (rpc-manager.js retiredApiKeys). Longest first, so no
+// key that contains another leaves a part behind.
 function withoutApiKeys(text) {
   let out = String(text);
-  for (const entry of Object.values(load().apiKeys || {})) {
-    const key = entry?.apiKey;
-    if (typeof key === 'string' && key.length >= MIN_REDACTED_KEY_LENGTH) {
-      out = out.split(key).join('[key redacted]');
-    }
+  const keys = [
+    ...load().apiKeys.values(),
+    ...require('../wallet/rpc-manager').retiredApiKeys(),
+  ].filter((key) => typeof key === 'string' && key.length >= MIN_REDACTED_KEY_LENGTH);
+  for (const key of keys.sort((a, b) => b.length - a.length)) {
+    out = out.split(key).join('[key redacted]');
   }
   return out;
 }

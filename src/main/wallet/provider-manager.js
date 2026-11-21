@@ -14,6 +14,7 @@ const {
   endpointFailure,
   providerRpcError,
   redactRpcText,
+  loggableError,
 } = require('./rpc-errors');
 
 // Cache providers by chain ID
@@ -201,7 +202,10 @@ function getProvider(chainId) {
       const provider = createFallbackProvider(chainId);
       providerCache.set(chainId, provider);
     } catch (err) {
-      console.error(`[ProviderManager] Failed to create provider for chain ${chainId}:`, err);
+      console.error(
+        `[ProviderManager] Failed to create provider for chain ${chainId}:`,
+        loggableError(err)
+      );
       return null;
     }
   }

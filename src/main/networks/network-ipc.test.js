@@ -4,10 +4,15 @@ const {
   loadMainModule,
 } = require('../../../test/helpers/main-process-test-utils');
 
+// Built at runtime, so no key-shaped literal sits in the source.
+const STORED_KEY = ['stored', 'key', process.pid.toString(36)].join('-');
+
 function loadNetworkIpc(options = {}) {
   const ipcMain = createIpcMainMock();
   const send = jest.fn();
+  // The stored keys main redacts from error text (current and retired).
   const registry = {
+    withoutApiKeys: jest.fn((text) => String(text).split(STORED_KEY).join('[key redacted]')),
     getEndpointSourceList: jest.fn(() => []),
     getAllNetworks: jest.fn(() => ({})),
     getNetwork: jest.fn(() => null),
@@ -42,11 +47,15 @@ function loadNetworkIpc(options = {}) {
   const settingsStore = {
     loadSettings: jest.fn(() => ({ theme: 'system' })),
   };
+  const keyListeners = [];
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   const rpcManager = {
-    hasApiKey: jest.fn(() => false),
-    setApiKey: jest.fn(() => ({ success: true })),
-    removeApiKey: jest.fn(() => ({ success: true })),
+    providersWithKeys: jest.fn(async () => new Set()),
+    setApiKey: jest.fn(async () => ({ success: true })),
+    removeApiKey: jest.fn(async () => ({ success: true })),
     testApiKey: jest.fn(() => ({ success: true })),
+    onKeysChanged: jest.fn((listener) => keyListeners.push(listener)),
+    ...(options.rpcManager || {}),
   };
 
   const loaded = loadMainModule(require.resolve('./network-ipc'), {
@@ -64,6 +73,7 @@ function loadNetworkIpc(options = {}) {
       [require.resolve('../ens-resolver')]: () => ensResolver,
       [require.resolve('../core/chain')]: () => chain,
       [require.resolve('../settings-store')]: () => settingsStore,
+      [require.resolve('../logger')]: () => log,
     },
   });
 
@@ -78,10 +88,112 @@ function loadNetworkIpc(options = {}) {
     chain,
     settingsStore,
     rpcManager,
+    keyListeners,
+    log,
   };
 }
 
 describe('network-ipc', () => {
+  // freedom-core design 0013, "RPC API keys" (PRF-6(e)): the keys are the
+  // identity core's; the settings page sees presence, as the chrome.
+  test("get-config tags keyed sources with the core's presence, asked as the chrome", async () => {
+    const ctx = loadNetworkIpc({
+      registry: {
+        getEndpointSourceList: jest.fn(() => [
+          { id: 'alchemy', role: 'rpc', keyed: true },
+          { id: 'infura', role: 'rpc', keyed: true },
+          { id: 'public', role: 'rpc', keyed: false },
+        ]),
+      },
+      rpcManager: { providersWithKeys: jest.fn(async () => new Set(['alchemy'])) },
+    });
+
+    const answer = await ctx.ipcMain.invoke('networks:get-config');
+
+    expect(ctx.rpcManager.providersWithKeys).toHaveBeenCalledWith({ caller: 'chrome' });
+    expect(answer).toEqual({
+      success: true,
+      networks: {},
+      sources: [
+        { id: 'alchemy', role: 'rpc', keyed: true, hasKey: true },
+        { id: 'infura', role: 'rpc', keyed: true, hasKey: false },
+        { id: 'public', role: 'rpc', keyed: false },
+      ],
+    });
+  });
+
+  // Coordinator decision G30: a core that can't answer the key status
+  // (down, `requirement_unmet`, `storage`) doesn't blank the Chains page
+  // or the ENS lens. The configuration is main's; only presence is unknown.
+  test.each([
+    ['requirement_unmet', "The core can't take this request"],
+    ['storage', `The secrets file could not be read near ${STORED_KEY}`],
+    ['storage', 'The secrets file could not be read'],
+    [undefined, 'The identity core is not running'],
+  ])("get-config answers the configuration with hasKey null when the core can't (%s)", async (code, message) => {
+    const refusal = Object.assign(new Error(message), code ? { code } : {});
+    const ctx = loadNetworkIpc({
+      registry: {
+        getAllNetworks: jest.fn(() => ({ 1: { name: 'Ethereum' } })),
+        getEndpointSourceList: jest.fn(() => [
+          { id: 'alchemy', role: 'rpc', keyed: true },
+          { id: 'public', role: 'rpc', keyed: false },
+        ]),
+      },
+      rpcManager: { providersWithKeys: jest.fn(async () => Promise.reject(refusal)) },
+    });
+
+    await expect(ctx.ipcMain.invoke('networks:get-config')).resolves.toEqual({
+      success: true,
+      networks: { 1: { name: 'Ethereum' } },
+      sources: [
+        { id: 'alchemy', role: 'rpc', keyed: true, hasKey: null },
+        { id: 'public', role: 'rpc', keyed: false },
+      ],
+    });
+    expect(ctx.log.warn).toHaveBeenCalledTimes(1);
+    // Logged without a stored key (rpc-errors.js redactRpcText).
+    expect(ctx.log.warn.mock.calls[0][0]).toContain(message.split(STORED_KEY).join('[key redacted]'));
+    expect(ctx.log.warn.mock.calls[0][0]).toContain(code || 'error');
+    expect(JSON.stringify(ctx.log.warn.mock.calls)).not.toContain(STORED_KEY);
+  });
+
+  test('set-api-key and remove-api-key go as the chrome, and answer rpc-manager', async () => {
+    const ctx = loadNetworkIpc({
+      rpcManager: {
+        setApiKey: jest.fn(async () => ({ success: false, error: 'Invalid API key' })),
+      },
+    });
+
+    await expect(ctx.ipcMain.invoke('networks:set-api-key', 'alchemy', 'k')).resolves.toEqual({
+      success: false,
+      error: 'Invalid API key',
+    });
+    expect(ctx.rpcManager.setApiKey).toHaveBeenCalledWith('alchemy', 'k', { caller: 'chrome' });
+    await expect(ctx.ipcMain.invoke('networks:remove-api-key', 'alchemy')).resolves.toEqual({
+      success: true,
+    });
+    expect(ctx.rpcManager.removeApiKey).toHaveBeenCalledWith('alchemy', { caller: 'chrome' });
+    // The downstream caches follow a change to main's copy of the keys,
+    // not the IPC answer.
+    expect(ctx.providerManager.clearProviderCache).not.toHaveBeenCalled();
+  });
+
+  test("a change to main's copy of the keys refreshes everything downstream", () => {
+    const ctx = loadNetworkIpc();
+    expect(ctx.keyListeners).toHaveLength(1);
+
+    ctx.keyListeners[0]();
+
+    expect(ctx.providerManager.clearProviderCache).toHaveBeenCalledTimes(1);
+    expect(ctx.ensResolver.invalidateCachedProvider).toHaveBeenCalledTimes(1);
+    expect(ctx.chain.chainSettingsChanged).toHaveBeenCalledTimes(1);
+    expect(ctx.send).toHaveBeenCalledWith(
+      IPC.SETTINGS_UPDATED,
+      expect.objectContaining({ networkConfigUpdated: true })
+    );
+  });
+
   test('add-chain registers the native token with catalog decimals', async () => {
     const ctx = loadNetworkIpc();
     const chain = {
