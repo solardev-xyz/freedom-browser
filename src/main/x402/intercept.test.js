@@ -17,8 +17,16 @@ jest.mock('../webrequest-dispatcher', () => ({
 }));
 
 const mockAppendReceipt = jest.fn();
+// The history slot each record took over, and each slot given back.
+const mockAppendSlots = [];
+const mockReleaseSlot = jest.fn();
 jest.mock('../payment-history', () => ({
-  append: (...args) => mockAppendReceipt(...args),
+  appendOnce: (entry, slot) => {
+    mockAppendSlots.push(slot);
+    return mockAppendReceipt(entry);
+  },
+  reserveHistorySlot: () => ({}),
+  releaseHistorySlot: (...args) => mockReleaseSlot(...args),
   KINDS: { X402: 'x402', WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' },
   STATUSES: {
     PENDING: 'pending', CONFIRMED: 'confirmed', FAILED: 'failed',
@@ -1409,6 +1417,125 @@ describe('injectPaymentSignatureHandler', () => {
   });
 });
 
+// === A cap's payment whose request ends while `sent` settles ============
+//
+// Codex round 5 on #1299: between taking a cap's payment for a request and
+// the core's answer to `sent`, the request or its tab can end. The answer
+// then attaches nothing (the header never went out, so the seller holds
+// nothing and no record is written), and the payment's history slot goes
+// back exactly once, whatever the answer.
+describe("a cap's payment whose request ends while the core settles it sent", () => {
+  const ARTICLE = `${ORIGIN}/article`;
+  let open;
+  let settle;
+
+  beforeEach(async () => {
+    mockAppendSlots.length = 0;
+    mockReleaseSlot.mockClear();
+    settle = mockCore.x402.settle;
+  });
+
+  afterEach(() => {
+    mockCore.x402.settle = settle;
+  });
+
+  /** `sent` held until `open(fail)`: answered as the core would, or refused with `fail`. */
+  function holdSent() {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    mockCore.x402.settle = async (params, ...rest) => {
+      if (params?.outcome !== 'sent') return settle.call(mockCore.x402, params, ...rest);
+      const fail = await gate;
+      if (fail) throw fail;
+      return settle.call(mockCore.x402, params, ...rest);
+    };
+    open = release;
+  }
+
+  async function signedAndHeld(slot) {
+    await coverWithCap({ capAmount: '20000' });
+    const reservation = await coreCharge();
+    setPendingPayment(7, ARTICLE, {
+      header: X402_HEADERS.SIGNATURE_V2,
+      value: 'sig',
+      origin: ORIGIN,
+      chainId: CHAIN,
+      asset: USDC,
+      amount: '10000',
+      authorizedBy: 'cap',
+      reservation,
+      charged: true,
+      historySlot: slot,
+    });
+    holdSent();
+    const injecting = injectPaymentSignatureHandler({
+      id: 2001,
+      webContentsId: 7,
+      url: ARTICLE,
+      requestHeaders: {},
+    });
+    await flushSettles();
+    return { reservation, injecting };
+  }
+
+  const later = () => {
+    paymentResponseLoggingHandler({
+      id: 2001,
+      webContentsId: 7,
+      url: ARTICLE,
+      statusLine: 'HTTP/1.1 200 OK',
+      responseHeaders: {},
+    });
+    clearRequestContextHandler({ id: 2001 });
+  };
+
+  test.each([
+    ['its request errored', () => clearRequestContextHandler({ id: 2001, error: 'net::ERR_ABORTED' })],
+    ['its tab closed', () => cleanupWebContents(7)],
+  ])('answered sent after %s: nothing attached or recorded, its slot released once', async (_name, end) => {
+    const slot = { slot: 'held' };
+    const { injecting } = await signedAndHeld(slot);
+    end();
+    open(null);
+    expect(await injecting).toBeNull();
+    later();
+    await flushSettles();
+    expect(mockAppendReceipt).not.toHaveBeenCalled();
+    expect(mockReleaseSlot.mock.calls.filter(([s]) => s === slot)).toHaveLength(1);
+    expect(mockAppendSlots).toEqual([]);
+  });
+
+  test.each([
+    ['its request errored', () => clearRequestContextHandler({ id: 2001, error: 'net::ERR_ABORTED' })],
+    ['its tab closed', () => cleanupWebContents(7)],
+  ])('refused after %s: nothing attached or recorded, its charge back, its slot released once', async (_name, end) => {
+    const slot = { slot: 'refused' };
+    const { reservation, injecting } = await signedAndHeld(slot);
+    end();
+    open(Object.assign(new Error('The identity core is not running'), { code: 'core_unavailable' }));
+    expect(await injecting).toBeNull();
+    later();
+    await flushSettles();
+    expect(mockAppendReceipt).not.toHaveBeenCalled();
+    expect(mockReleaseSlot.mock.calls.filter(([s]) => s === slot)).toHaveLength(1);
+    expect(coreSettles()).toContainEqual({ reservation, outcome: 'withheld' });
+    expect(spentOnCap()).toBe('0');
+  });
+
+  test('answered sent while its request is live: attached, and recorded once its response comes', async () => {
+    const slot = { slot: 'live' };
+    const { injecting } = await signedAndHeld(slot);
+    open(null);
+    expect((await injecting)?.requestHeaders?.[X402_HEADERS.SIGNATURE_V2]).toBe('sig');
+    later();
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+    expect(mockAppendSlots).toEqual([slot]);
+    expect(mockReleaseSlot).not.toHaveBeenCalledWith(slot);
+  });
+});
+
 // === Unsent signatures settle on their own (TTL timer, navigation) ======
 //
 // A signature the core charged a cap for and that never went out is
@@ -1925,7 +2052,11 @@ describe('clearRequestContextHandler', () => {
     });
   });
 
-  test('drops awaitingResponse for signed retries that error before response headers', async () => {
+  // Codex round 4 on #1299: a request whose header went out was paid for as
+  // far as main can tell, whatever became of its response: it is recorded
+  // `no-receipt` once, its history slot handed to the record, and a
+  // response arriving later adds nothing.
+  const attachTo = async (id, slot) => {
     setPendingPayment(7, 'https://x.example/m', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
@@ -1933,24 +2064,86 @@ describe('clearRequestContextHandler', () => {
       chainId: 8453,
       asset: '0xa',
       amount: '1',
+      historySlot: slot,
     });
     await injectPaymentSignatureHandler({
-      id: 1010,
+      id,
       webContentsId: 7,
       url: 'https://x.example/m',
       requestHeaders: {},
     });
-
-    clearRequestContextHandler({ id: 1010 });
-
-    const responseB64 = Buffer.from(JSON.stringify({ txHash: '0xtx' })).toString('base64');
+  };
+  const lateResponse = (id) =>
     paymentResponseLoggingHandler({
-      id: 1010,
+      id,
       webContentsId: 7,
       url: 'https://x.example/m',
       statusLine: 'HTTP/1.1 200 OK',
-      responseHeaders: { 'PAYMENT-RESPONSE': [responseB64] },
+      responseHeaders: {
+        'PAYMENT-RESPONSE': [Buffer.from(JSON.stringify({ txHash: '0xtx' })).toString('base64')],
+      },
     });
+
+  test.each([
+    [
+      'errors before response headers',
+      { error: 'net::ERR_CONNECTION_RESET' },
+      { cleanupReason: 'request failed', requestError: 'net::ERR_CONNECTION_RESET' },
+    ],
+    [
+      'completes without response headers seen',
+      {},
+      { cleanupReason: 'completed without response headers' },
+    ],
+  ])('a signed retry that %s is recorded no-receipt once, and a late response adds nothing', async (_name, ending, metadata) => {
+    mockAppendSlots.length = 0;
+    mockReleaseSlot.mockClear();
+    const slot = { slot: 1010 };
+    await attachTo(1010, slot);
+
+    clearRequestContextHandler({ id: 1010, ...ending });
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+    expect(mockAppendReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'x402',
+      url: 'https://x.example/m',
+      amount: '1',
+      status: 'no-receipt',
+      txHash: null,
+      metadata,
+    }));
+    // Its slot became the record: handed over, not given back.
+    expect(mockAppendSlots).toEqual([slot]);
+    expect(mockReleaseSlot).not.toHaveBeenCalledWith(slot);
+
+    lateResponse(1010);
+    clearRequestContextHandler({ id: 1010, ...ending });
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  test('a payment attached again to the same request records the earlier one no-receipt, not unsent', async () => {
+    mockAppendSlots.length = 0;
+    mockReleaseSlot.mockClear();
+    const first = { slot: 1020 };
+    const second = { slot: 1021 };
+    await attachTo(1020, first);
+    await attachTo(1020, second);
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+    expect(mockAppendReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'no-receipt',
+      metadata: { cleanupReason: 'request reissued' },
+    }));
+    expect(mockAppendSlots).toEqual([first]);
+    expect(mockReleaseSlot).not.toHaveBeenCalledWith(first);
+    // The second is answered as its own.
+    lateResponse(1020);
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(2);
+    expect(mockAppendReceipt).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'settled', txHash: '0xtx' }));
+    expect(mockAppendSlots).toEqual([first, second]);
+  });
+
+  test('a request that ends with no payment attached records nothing', () => {
+    clearRequestContextHandler({ id: 1030, error: 'net::ERR_ABORTED' });
+    clearRequestContextHandler({ id: 1031 });
     expect(mockAppendReceipt).not.toHaveBeenCalled();
   });
 
@@ -2340,6 +2533,49 @@ describe('paymentResponseLoggingHandler', () => {
       responseHeaders: { 'PAYMENT-RESPONSE': [responseB64] },
     });
     expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  // The history is the identity core's (design 0013, PRF-6(c)): the
+  // handler hands the record to payment-history's appendOnce, which keeps
+  // it until it lands, in its own turn, and doesn't wait for it; a record
+  // it can't hand over is logged.
+  test.each([
+    ['rejects', () => Promise.reject(new Error("The core can't take this request"))],
+    ['throws', () => { throw new Error('not serializable'); }],
+  ])('a record the history %s is logged, and the response passes', async (_name, failing) => {
+    armInjection();
+    mockAppendReceipt.mockImplementationOnce(failing);
+    expect(paymentResponseLoggingHandler({
+      webContentsId: 7,
+      url: 'https://api.example/article',
+      statusLine: 'HTTP/1.1 200 OK',
+      responseHeaders: { 'PAYMENT-RESPONSE': [responseB64] },
+    })).toBeNull();
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[x402:settled\] receipt append failed: /)
+    );
+  });
+
+  // The record names its payment by the authorization's nonce, from the
+  // signed header, so a record whose answer was lost is recognised when it
+  // is read back, and never written twice.
+  test.each([
+    ['EIP-3009', { authorization: { from: '0xf', nonce: `0x${'ab'.repeat(32)}` } }, `0x${'ab'.repeat(32)}`],
+    ['Permit2', { permit2Authorization: { from: '0xf', nonce: '12345' } }, '12345'],
+    ['no nonce', { authorization: { from: '0xf' } }, null],
+  ])("the record carries the %s authorization's nonce", (_name, inner, nonce) => {
+    const value = Buffer.from(JSON.stringify({ x402Version: 2, payload: inner })).toString('base64');
+    armInjection({ value });
+    paymentResponseLoggingHandler({
+      webContentsId: 7,
+      url: 'https://api.example/article',
+      statusLine: 'HTTP/1.1 200 OK',
+      responseHeaders: { 'PAYMENT-RESPONSE': [responseB64] },
+    });
+    const [record] = mockAppendReceipt.mock.calls[0];
+    expect(record.metadata).toEqual(nonce ? { authorizationNonce: nonce } : undefined);
   });
 
   test('no injection awaiting: no receipt is written and headers are not touched', () => {

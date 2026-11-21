@@ -369,6 +369,7 @@ async function loadDappX402(options = {}) {
     hideAllSubscreens,
     screenHiders,
     openSidebarPanel,
+    refreshBalances,
   };
 }
 
@@ -1038,5 +1039,34 @@ describe('disconnectX402', () => {
 
     await ctx.mod.disconnectX402('https://visible.example');
     expect(banner.classList.contains('hidden')).toBe(true);
+  });
+});
+
+// payments:tx-recorded, from main's payment history (design 0013, PRF-6(c)):
+// an x402 row, or `{ id: null }` (a clear, or writes whose answers a
+// restart of the identity core lost, which main re-reads first), refreshes
+// the x402 balance; another kind's row doesn't.
+describe('dapp-x402 balance refresh on payments:tx-recorded', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.HTMLInputElement = originalHtmlInputElement;
+    jest.restoreAllMocks();
+  });
+
+  test.each([
+    ['an x402 row', { id: 3, kind: 'x402', status: 'settled', txHash: '0x1' }, 1],
+    ['the whole history to read again', { id: null }, 1],
+    ['another kind of row', { id: 4, kind: 'wallet-send', status: 'pending', txHash: null }, 0],
+    ['no detail', undefined, 0],
+  ])('%s', async (_name, detail, refreshes) => {
+    const ctx = await loadDappX402();
+    const [, handler] = global.window.addEventListener.mock.calls.find(
+      ([event]) => event === 'payments:tx-recorded'
+    );
+    ctx.refreshBalances.mockClear();
+    handler({ detail });
+    await flushMicrotasks();
+    expect(ctx.refreshBalances).toHaveBeenCalledTimes(refreshes);
   });
 });

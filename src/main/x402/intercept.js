@@ -112,6 +112,12 @@ const pendingPayments = new Map();
 // security: PAYMENT-RESPONSE headers are only honoured for requests we
 // armed ourselves, never arbitrary server-side headers.
 const awaitingResponse = new Map();
+// A cap's payment taken out of `pendingPayments` for a request and waiting
+// for the core's answer to `sent` (sendIfCapStands), by request id: `{
+// webContentsId, ended }`. Its request's end, or its tab's, marks it
+// `ended` meanwhile, so the answer attaches nothing to a request already
+// over.
+const settlingPayments = new Map();
 
 // Captured outgoing request shape, keyed by `details.id`. The detector
 // on `onHeadersReceived` reads this to derive a retry key — the response
@@ -348,11 +354,22 @@ function settlePendingPaymentsOnNavigation(webContentsId, url) {
  * back (#1024), and the sidebar's spend counter is told.
  */
 function giveBackCharge(entry) {
+  // No record will be written for it: its history slot goes back too.
+  releaseSlotOf(entry);
   if (!entry?.reservation) return;
   const { webContentsId, origin } = entry;
   settlePayment(entry.reservation, 'withheld', origin).then((refunded) => {
     if (refunded) sendToHost(webContentsId, 'x402:cap-consumed', { origin });
   });
+}
+
+// The history slot sign-flow reserved for a payment's record
+// (payment-history's reserveHistorySlot), given back once the payment ends
+// without one, and given back once only.
+function releaseSlotOf(entry) {
+  if (!entry?.historySlot) return;
+  paymentHistory.releaseHistorySlot(entry.historySlot);
+  entry.historySlot = null;
 }
 
 // Backstop to each entry's timer, run whenever this Map is touched: a
@@ -380,7 +397,10 @@ function clearDetectedPayment(webContentsId) {
 
 function clearAllPendingPayments() {
   for (const bucket of pendingPayments.values()) {
-    for (const entry of bucket) clearTimeout(entry.timer);
+    for (const entry of bucket) {
+      clearTimeout(entry.timer);
+      releaseSlotOf(entry);
+    }
   }
   pendingPayments.clear();
 }
@@ -390,6 +410,7 @@ function clearAllDetectedPayments() {
 }
 
 function clearAllAwaitingResponse() {
+  for (const entry of awaitingResponse.values()) releaseSlotOf(entry);
   awaitingResponse.clear();
 }
 
@@ -430,9 +451,21 @@ function captureRequestContextHandler(details) {
   return null;
 }
 
+// onCompleted and onErrorOccurred. A request whose payment header went out
+// and that ended with no response headers seen (a network error, say) was
+// paid for all the same, as far as main can tell: its record is written
+// `no-receipt`, with why, as a tab's teardown writes one, and a response
+// arriving for it later adds nothing.
 function clearRequestContextHandler(details) {
   if (typeof details?.id === 'number') {
-    awaitingResponse.delete(details.id);
+    const settling = settlingPayments.get(details.id);
+    if (settling) settling.ended = true;
+    const failed = typeof details.error === 'string' && details.error;
+    finalizeAwaitingResponse(
+      details.id,
+      failed ? 'request failed' : 'completed without response headers',
+      failed ? { requestError: details.error } : {}
+    );
     requestContext.delete(details.id);
   }
   return null;
@@ -659,34 +692,78 @@ function deleteByWebContents(map, webContentsId) {
   }
 }
 
-function appendX402PaymentRecord(expected, status, { txHash = null, metadata = undefined } = {}) {
-  paymentHistory.append({
-    kind: PAYMENT_KINDS.X402,
-    url: expected.url,
-    origin: expected.origin,
-    chainId: expected.chainId,
-    asset: expected.asset,
-    amount: expected.amount,
-    fromAddress: expected.fromAddress,
-    toAddress: expected.payTo,
-    txHash,
-    status,
-    metadata,
-  });
+// The payment's record, sent to the identity core, which keeps the history
+// (design 0013, PRF-6(c)), in this turn: the caller (a webRequest handler,
+// a tab's teardown) doesn't wait for the answer. payment-history's
+// appendOnce keeps a record the core didn't answer until it has landed,
+// exactly once, recognised by the authorization's nonce kept in its
+// metadata. A failure to hand it over is logged as `failure`.
+function appendX402PaymentRecord(
+  expected,
+  status,
+  { txHash = null, metadata = undefined } = {},
+  failure = 'receipt append'
+) {
+  const nonce = expected.authorizationNonce ?? null;
+  // The payment's history slot becomes this record.
+  const slot = expected.historySlot ?? null;
+  expected.historySlot = null;
+  try {
+    const handed = paymentHistory.appendOnce({
+      kind: PAYMENT_KINDS.X402,
+      url: expected.url,
+      origin: expected.origin,
+      chainId: expected.chainId,
+      asset: expected.asset,
+      amount: expected.amount,
+      fromAddress: expected.fromAddress,
+      toAddress: expected.payTo,
+      txHash,
+      status,
+      metadata: nonce ? { ...(metadata || {}), authorizationNonce: nonce } : metadata,
+    }, slot);
+    Promise.resolve(handed).catch((err) => {
+      log.error(`[x402:settled] ${failure} failed: ${err.message}`);
+    });
+  } catch (err) {
+    paymentHistory.releaseHistorySlot(slot);
+    log.error(`[x402:settled] ${failure} failed: ${err.message}`);
+  }
+}
+
+// The nonce of the authorization a payment header carries (EIP-3009's
+// random 32 bytes, or Permit2's), which names the payment, or null.
+function authorizationNonceOf(headerValue) {
+  try {
+    const inner = JSON.parse(Buffer.from(String(headerValue), 'base64').toString('utf8'))?.payload;
+    const nonce = inner?.authorization?.nonce ?? inner?.permit2Authorization?.nonce;
+    if (typeof nonce === 'string' && nonce) return nonce;
+    return Number.isSafeInteger(nonce) ? String(nonce) : null;
+  } catch {
+    return null;
+  }
 }
 
 function finalizeAwaitingResponsesForWebContents(webContentsId, cleanupReason) {
   for (const [requestId, entry] of [...awaitingResponse]) {
     if (entry?.webContentsId !== webContentsId) continue;
-    awaitingResponse.delete(requestId);
-    try {
-      appendX402PaymentRecord(entry, PAYMENT_STATUSES.NO_RECEIPT, {
-        metadata: { cleanupReason },
-      });
-    } catch (err) {
-      log.error(`[x402:settled] cleanup receipt append failed: ${err.message}`);
-    }
+    finalizeAwaitingResponse(requestId, cleanupReason);
   }
+}
+
+// A request whose header went out ends with no response main saw: its
+// record is written `no-receipt`, with `cleanupReason` (and `extra`), and
+// its history slot becomes that record. Once only: the entry goes.
+function finalizeAwaitingResponse(requestId, cleanupReason, extra = {}) {
+  const entry = awaitingResponse.get(requestId);
+  if (!entry) return;
+  awaitingResponse.delete(requestId);
+  appendX402PaymentRecord(
+    entry,
+    PAYMENT_STATUSES.NO_RECEIPT,
+    { metadata: { cleanupReason, ...extra } },
+    'cleanup receipt append'
+  );
 }
 
 /**
@@ -729,6 +806,9 @@ function cleanupWebContents(webContentsId) {
   abortPendingApprovalsForTab(webContentsId, new Error('tab destroyed'));
   releaseApprovalClaimsForTab(webContentsId);
   abortPendingUnlockWait(webContentsId, new Error('tab destroyed'));
+  for (const settling of settlingPayments.values()) {
+    if (settling.webContentsId === webContentsId) settling.ended = true;
+  }
   // `pendingPayments` keys start with `${webContentsId}|` (the retry-key
   // format), so prefix match drops them in one pass.
   const prefix = `${webContentsId}|`;
@@ -1360,11 +1440,7 @@ function paymentResponseLoggingHandler(details) {
   else if (txHash) status = PAYMENT_STATUSES.SETTLED;
   else status = PAYMENT_STATUSES.NO_RECEIPT;
 
-  try {
-    appendX402PaymentRecord(expected, status, { txHash });
-  } catch (err) {
-    log.error(`[x402:settled] receipt append failed: ${err.message}`);
-  }
+  appendX402PaymentRecord(expected, status, { txHash });
 
   if (txHash) {
     log.info(`[x402:settled] ${sanitizeUrlForLog(details.url)} txHash=${txHash}`);
@@ -1462,9 +1538,28 @@ function injectPaymentSignatureHandler(details) {
  */
 async function sendIfCapStands(signed, details) {
   const url = sanitizeUrlForLog(details.url);
-  const settled = await settleSent(signed.reservation, signed.origin);
+  const key = typeof details.id === 'number' ? details.id : Symbol('request');
+  const settling = { webContentsId: details.webContentsId, ended: false };
+  settlingPayments.set(key, settling);
+  let settled;
+  try {
+    settled = await settleSent(signed.reservation, signed.origin);
+  } finally {
+    if (settlingPayments.get(key) === settling) settlingPayments.delete(key);
+  }
+  if (settled.sent && settling.ended) {
+    // Its request, or its tab, ended while the core answered: the header
+    // was never attached, so the seller holds nothing, and no record is
+    // written. The core spent the reservation as `sent`, so the cap's
+    // charge stays where it was taken (as for `cap_changed`); its history
+    // slot goes back.
+    releaseSlotOf(signed);
+    log.warn(`[x402:inject] the request for ${url} ended before its signature could be attached; nothing was sent`);
+    return null;
+  }
   if (settled.sent) return attachPayment(signed, details);
   if (settled.reason === 'cap_changed') {
+    releaseSlotOf(signed);
     log.warn(`[x402:inject] the cap ${url} was charged to has changed since (cap_changed); withholding signature`);
   } else {
     log.warn(`[x402:inject] the core didn't accept the payment for ${url} as sent (${settled.reason}); withholding signature`);
@@ -1476,7 +1571,11 @@ async function sendIfCapStands(signed, details) {
 // Attach a pending signature to this request, and arm the receipt logger.
 function attachPayment(signed, details) {
   // Arm the receipt logger by `details.id` — stable through to the
-  // matching response. `webContentsId` rides along for cleanup-by-tab.
+  // matching response. `webContentsId` rides along for cleanup-by-tab, and
+  // the payment's history slot until its record takes it. An earlier
+  // payment attached to the same request went out with no response seen
+  // for it: it is recorded `no-receipt`, not dropped as unsent.
+  finalizeAwaitingResponse(details.id, 'request reissued');
   awaitingResponse.set(details.id, {
     webContentsId: details.webContentsId,
     url: details.url,
@@ -1487,6 +1586,8 @@ function attachPayment(signed, details) {
     payTo: signed.payTo ?? null,
     fromAddress: signed.fromAddress ?? null,
     signedHeader: signed.header,
+    authorizationNonce: authorizationNonceOf(signed.value),
+    historySlot: signed.historySlot ?? null,
   });
 
   log.info(

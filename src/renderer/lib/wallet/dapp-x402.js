@@ -211,8 +211,11 @@ export function initDappX402() {
     applyFreshBalances(balances || {});
   });
 
+  // An x402 row, or `{ id: null }`: the whole history to read again (a
+  // clear, or writes whose answers a restart of the identity core lost,
+  // x402 payments' among them).
   window.addEventListener('payments:tx-recorded', (event) => {
-    if (event.detail?.kind !== 'x402') return;
+    if (event.detail?.kind !== 'x402' && event.detail?.id !== null) return;
     refreshAfterX402Payment().catch((err) => {
       console.error('[x402] balance refresh after payment failed:', err);
     });

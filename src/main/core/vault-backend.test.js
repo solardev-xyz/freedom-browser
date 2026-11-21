@@ -187,6 +187,137 @@ describe('vaultBackend', () => {
     expect(answers[9]).toEqual({ method: 'intents.get', params: id });
   });
 
+  // payment-history.sqlite's methods (design 0013, PRF-6(c)): each with
+  // `requires: requiresStore('payments')`, the reads and clear as the chrome
+  // or as main, the rest as main; a refusal thrown again as the class the
+  // core names (G13), and anything else keeping its code.
+  test('payments.*: wire shapes, callers, requires and the refusals’ classes', async () => {
+    const record = { id: 1, kind: 'x402', status: 'settled' };
+    const answers = {
+      'payments.append': { payment: record },
+      'payments.update': { payment: null },
+      'payments.mark_confirmed': { payment: record },
+      'payments.mark_failed': { payment: record },
+      'payments.mark_dropped': { payment: null },
+      'payments.set_dropped_seen': {},
+      'payments.pending': { payments: [{ id: 1, tx_hash: '0x1' }] },
+      'payments.get_recent': { payments: [record] },
+      'payments.get_by_id': { payment: record },
+      'payments.get_count': { count: 3 },
+      'payments.clear': { removed: 2 },
+    };
+    const core = new FakeCore((method) => answers[method]);
+    const { vaultBackend } = load(core);
+    const { requiresStore } = require('./core-client');
+    const p = vaultBackend.payments;
+    expect(Object.keys(p).sort()).toEqual(
+      [
+        'append',
+        'update',
+        'markConfirmed',
+        'markFailed',
+        'markDropped',
+        'setDroppedSeen',
+        'pending',
+        'getRecent',
+        'getById',
+        'getCount',
+        'clear',
+      ].sort()
+    );
+    expect(await p.append({ kind: 'x402' })).toEqual(record);
+    expect(await p.update(1, { status: 'confirmed' })).toBeNull();
+    expect(await p.markConfirmed(1, { gasUsed: '1' })).toEqual(record);
+    expect(await p.markFailed(1, { reason: 'r' })).toEqual(record);
+    expect(await p.markDropped(1)).toBeNull();
+    expect(await p.setDroppedSeen(1, null)).toBeUndefined();
+    expect(await p.pending()).toEqual([{ id: 1, tx_hash: '0x1' }]);
+    expect(await p.getRecent({ kind: 'x402' }, 'chrome')).toEqual([record]);
+    expect(await p.getById(1)).toEqual(record);
+    expect(await p.getCount({}, 'chrome')).toBe(3);
+    expect(await p.clear('chrome')).toBe(2);
+    expect(core.calls.map((c) => [c.method, c.params, c.context.caller])).toEqual([
+      ['payments.append', { entry: { kind: 'x402' } }, 'shell'],
+      ['payments.update', { id: 1, patch: { status: 'confirmed' } }, 'shell'],
+      ['payments.mark_confirmed', { id: 1, receipt: { gasUsed: '1' } }, 'shell'],
+      ['payments.mark_failed', { id: 1, info: { reason: 'r' } }, 'shell'],
+      ['payments.mark_dropped', { id: 1 }, 'shell'],
+      ['payments.set_dropped_seen', { id: 1, seen_at: null }, 'shell'],
+      ['payments.pending', {}, 'shell'],
+      ['payments.get_recent', { filters: { kind: 'x402' } }, 'chrome'],
+      ['payments.get_by_id', { id: 1 }, 'shell'],
+      ['payments.get_count', { filters: {} }, 'chrome'],
+      ['payments.clear', {}, 'chrome'],
+    ]);
+    // One requirement for all: the `payments` echo, under the immediate watchdog.
+    const [requires] = new Set(core.calls.map((c) => c.options.requires));
+    expect(new Set(core.calls.map((c) => c.options.requires)).size).toBe(1);
+    expect(requires({ store_moved: ['payments'] })).toBe(true);
+    expect(requires({ store_moved: ['vault_meta', 'intents'] })).toBe(false);
+    expect(requires({})).toBe(requiresStore('payments')({}));
+    expect(new Set(core.calls.map((c) => c.options.watchdogMs))).toEqual(new Set([15_000]));
+
+    const refusing = new FakeCore((method) => {
+      if (method === 'payments.append') {
+        throw Object.assign(coreError('invalid_argument', "payment-history: unknown kind 'x'"), {
+          data: { name: 'Error' },
+        });
+      }
+      if (method === 'payments.get_recent') {
+        throw Object.assign(
+          coreError('invalid_argument', "Cannot read properties of null (reading 'kind')"),
+          {
+            data: { name: 'TypeError' },
+          }
+        );
+      }
+      if (method === 'payments.get_count') {
+        throw Object.assign(coreError('invalid_argument', 'Invalid parameters'), {
+          data: { name: 'EvalError' },
+        });
+      }
+      if (method === 'payments.clear') {
+        throw Object.assign(
+          coreError('storage', 'The payment history could not be read or written'),
+          {
+            data: { store: 'payments', kind: 'busy' },
+          }
+        );
+      }
+      throw coreError('requirement_unmet', "The core can't take this request");
+    });
+    const backend = load(refusing).vaultBackend.payments;
+    const failure = (promise) =>
+      promise.then(
+        () => null,
+        (err) => err
+      );
+    const unknown = await failure(backend.append({ kind: 'x' }));
+    expect(unknown.constructor).toBe(Error);
+    expect(unknown).toMatchObject({
+      message: "payment-history: unknown kind 'x'",
+      code: 'invalid_argument',
+      data: { name: 'Error' },
+    });
+    const typeError = await failure(backend.getRecent(null));
+    expect(typeError).toBeInstanceOf(TypeError);
+    expect(typeError.data).toEqual({ name: 'TypeError' });
+    // A class the core doesn't name stays the core's answer.
+    expect(await failure(backend.getCount({}))).toMatchObject({
+      name: 'VaultBackendError',
+      code: 'invalid_argument',
+    });
+    expect(await failure(backend.clear())).toMatchObject({
+      name: 'VaultBackendError',
+      code: 'storage',
+      data: { store: 'payments', kind: 'busy' },
+    });
+    expect(await failure(backend.pending())).toMatchObject({
+      name: 'VaultBackendError',
+      code: 'requirement_unmet',
+    });
+  });
+
   // vault-meta.json's methods (design 0013, PRF-6(a)): each with
   // `requires: requiresStore('vault_meta')`, as the chrome or as main, the
   // reference's refusals with their codes.

@@ -48,14 +48,16 @@ jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'read
 // The identity core's approval tokens (design 0012, APB-1), simulated: main's
 // issuer mints through it, and each signer presents its confirmation to it.
 const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
-// The core's intent journal (PRF-6(b2)), simulated on the reference store
-// over this run's userData: a fresh one for each fresh run of main.
+// The core's intent journal (PRF-6(b2)) and payment history (PRF-6(c)),
+// simulated on the reference modules over this run's userData: a fresh one
+// for each fresh run of main.
 jest.mock('../core/vault-backend', () => ({
   vaultBackend: {
     get approval() {
       return mockApprovals.approval;
     },
     intents: require('../../../test/helpers/simulated-intents-core').simulatedIntents().intents,
+    payments: require('../../../test/helpers/simulated-payments-core').simulatedPayments().payments,
   },
 }));
 jest.mock('./signers', () => ({
@@ -217,7 +219,7 @@ async function mine(hash) {
   mined.add(hash);
   const history = require('../payment-history');
   for (let i = 0; i < 100; i += 1) {
-    if (history.getRecent({}).some((row) => row.txHash === hash && row.status === 'confirmed')) {
+    if ((await history.getRecent({})).some((row) => row.txHash === hash && row.status === 'confirmed')) {
       return;
     }
     jest.advanceTimersByTime(2000);

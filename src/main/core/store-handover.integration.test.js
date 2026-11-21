@@ -1,11 +1,12 @@
 /**
  * The set-A store handover against the real freedom-cored (freedom-core
  * design 0013, "One writer per store: `store_moved`"). This build's hello
- * names `vault_meta` (PRF-6(a)), `intents` (PRF-6(b2)) and `safe_pending`
- * (PRF-6(d)), and the pinned core echoes them. A hello naming none, as a
- * build before PRF-6 sends, has the pinned core (0.25.0) write none of the
- * stores, answer each of their writes `not_moved` and serves the reads it
- * can; a store's request sent with
+ * names `vault_meta` (PRF-6(a)), `intents` (PRF-6(b2)), `payments`
+ * (PRF-6(c)) and `safe_pending` (PRF-6(d)), in `STORES` order, and the
+ * pinned core echoes them all. A hello naming none, as a build before PRF-6
+ * sends, has the pinned core (0.25.0) write none of the stores, answer each
+ * of their writes `not_moved` and serves the reads it can; a store's
+ * request sent with
  * `requires: requiresStore(name)` fails `requirement_unmet` in main, unsent;
  * and the previous release (0.22.0), which ignores `store_moved`, takes a
  * hello naming all five and echoes none, so every store's request fails
@@ -114,19 +115,18 @@ describeIfCurrent('the set-A stores before any moves, on the pinned freedom-core
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test("the build's hello names vault_meta, intents and safe_pending, and the echo has them", async () => {
+  test("the build's hello names its stores, in STORES order, and the echo has them all", async () => {
     const { STORE_MOVED } = require('./core-client');
-    expect(STORE_MOVED).toEqual(['vault_meta', 'intents', 'safe_pending']);
+    expect(STORE_MOVED).toEqual(
+      expect.arrayContaining(['vault_meta', 'intents', 'payments', 'safe_pending'])
+    );
+    expect(STORE_MOVED).toEqual(STORES.filter((name) => STORE_MOVED.includes(name)));
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-build-'));
     let built;
     try {
       built = await startCore({ binary: current, root: other });
-      expect(built.service.helloParams(built).store_moved).toEqual([
-        'vault_meta',
-        'intents',
-        'safe_pending',
-      ]);
-      expect(built.hello.store_moved).toEqual(['vault_meta', 'intents', 'safe_pending']);
+      expect(built.service.helloParams(built).store_moved).toEqual([...STORE_MOVED]);
+      expect(built.hello.store_moved).toEqual([...STORE_MOVED]);
     } finally {
       await built?.stop();
       fs.rmSync(other, { recursive: true, force: true });

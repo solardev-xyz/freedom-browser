@@ -49,11 +49,16 @@ const { tupleFromAccept } = require('./payment-utils');
 const { isUserPageId, isAgentPageId } = require('../wallet/agent-tab-custody');
 const { withVaultAccount } = require('../wallet/vault-access');
 const { discardConfirmation } = require('../wallet/signing-confirmation');
+const { reserveHistorySlot, releaseHistorySlot } = require('../payment-history');
 
 // An auto-pay whose cap no longer covers it, at the moment it would be
 // signed: nothing is signed, and the charge goes to the approval card.
 // A tab that has gone into Agent custody is not covered either.
 const CAP_NOT_COVERED = 'X402_CAP_NOT_COVERED';
+// Too many x402 records wait to land in the payment history, which the
+// identity core keeps (design 0013, PRF-6(c)): nothing more is signed, so
+// no money leaves without a place in the history.
+const PAYMENT_HISTORY_FULL = 'X402_PAYMENT_HISTORY_FULL';
 
 function capNotCoveredError(message = "This payment is no longer within the site's auto-pay allowance") {
   const err = new Error(message);
@@ -232,8 +237,9 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
     throw new Error(`x402: invalid webContentsId: ${webContentsId}`);
   }
   // The reservation of a charge this call holds until the pending payment
-  // takes it over: settled `withheld` if nothing is stashed.
-  const held = { reservation: null, origin: null };
+  // takes it over: settled `withheld` if nothing is stashed. And the slot
+  // reserved for the payment's history record: released if nothing is.
+  const held = { reservation: null, origin: null, historySlot: null };
   // It runs for the window that hosts the tab (freedom-core design 0011,
   // APS-5): an auto-pay within a cap, which asks nothing, goes there too.
   return runInWindow(hostWindowIdOf(webContentsId), async () => {
@@ -241,6 +247,8 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
       return await signAndStash(webContentsId, opts, held);
     } catch (err) {
       if (held.reservation) settleAndTell(webContentsId, held.reservation, held.origin);
+      releaseHistorySlot(held.historySlot);
+      held.historySlot = null;
       throw err;
     }
   });
@@ -268,6 +276,14 @@ async function signAndStash(webContentsId, opts, held) {
 async function authorizeAndStash(webContentsId, opts, held, presenting) {
   const detected = opts.detection ?? getDetectedPayment(webContentsId);
   if (!detected) throw new Error('No pending x402 payment for this tab');
+  // A slot for its history record, reserved in this turn, before the core
+  // is asked: with none left, nothing is charged, signed or spent.
+  held.historySlot = reserveHistorySlot();
+  if (!held.historySlot) {
+    throw Object.assign(new Error('Payment history is unavailable; try again shortly'), {
+      code: PAYMENT_HISTORY_FULL,
+    });
+  }
 
   let origin;
   try {
@@ -389,6 +405,7 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
       fromAddress: payerOf(payload),
       authorizedBy,
       reservation: held.reservation,
+      historySlot: held.historySlot,
       charged: reply.charged === true,
     },
     detected.requestShape,
@@ -396,6 +413,7 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
   // Stashed: the pending payment holds the reservation now, and
   // intercept.js settles it.
   held.reservation = null;
+  held.historySlot = null;
   // Only clear the map when we sourced FROM it. With a snapshot we used
   // our own copy and clearing here would erase whatever detection has
   // since taken its place (e.g. a second 402 that fired during our async
@@ -480,5 +498,6 @@ module.exports = {
   signAndQueueRetry,
   isCapNotCoveredError,
   CAP_NOT_COVERED,
+  PAYMENT_HISTORY_FULL,
   X402_HEADERS,
 };

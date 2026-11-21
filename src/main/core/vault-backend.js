@@ -33,6 +33,11 @@ const CORE_UNAVAILABLE = 'core_unavailable';
 // The intent journal is the core's (design 0013, PRF-6(b)): its requests go
 // only to a core whose hello echoed `intents`.
 const INTENTS = Object.freeze({ requires: requiresStore('intents') });
+// payment-history.sqlite is the core's (design 0013, PRF-6(c)): its requests
+// go only to a core whose hello echoed `payments`.
+const PAYMENTS = Object.freeze({ requires: requiresStore('payments') });
+// The JavaScript classes a payment-history refusal names (`data.name`).
+const PAYMENT_ERROR_CLASSES = Object.freeze({ Error, TypeError, RangeError, SyntaxError });
 // `vault-meta.json` is the core's (design 0013, PRF-6(a)): its requests,
 // and `vault.create`'s and `vault.import`'s, which write it with the vault,
 // go only to a core whose hello echoed `vault_meta`.
@@ -173,6 +178,33 @@ async function intentsCall(method, params) {
     const code = err.data?.code;
     if (typeof code === 'string' && code.startsWith('INTENT_')) {
       throw new VaultBackendError(code, err.message, err.data);
+    }
+    throw err;
+  }
+}
+
+/**
+ * A payment-history request (`payments.*`, design 0013, "Payment history"),
+ * from main itself (`caller` null: `shell`) or relayed for the chrome
+ * (`'chrome'`, which the core takes only for `get_recent`, `get_by_id`,
+ * `get_count` and `clear`). It goes with `requires: PAYMENTS`, so a core
+ * that didn't take the store fails it `requirement_unmet` in main, unsent.
+ * A refusal is `invalid_argument` with payment-history.js's message and its
+ * class as `data.name`: it is thrown again as that class (coordinator call
+ * G13), with the core's code and data, so callers see what the module threw
+ * before. A database the core can't use is `storage` with `{ store:
+ * 'payments', kind }`, and that and anything else keep their own code:
+ * `core_unavailable` for a request whose reply was lost, whose outcome is
+ * then unknown (main never sends it again: G9).
+ */
+async function paymentsCall(method, params, caller = null) {
+  try {
+    return await call(method, params, caller, PAYMENTS);
+  } catch (err) {
+    const name = err.code === 'invalid_argument' ? err.data?.name : undefined;
+    if (typeof name === 'string' && Object.hasOwn(PAYMENT_ERROR_CLASSES, name)) {
+      const ErrorClass = PAYMENT_ERROR_CLASSES[name];
+      throw Object.assign(new ErrorClass(err.message), { code: err.code, data: err.data });
     }
     throw err;
   }
@@ -967,6 +999,61 @@ const vaultBackend = {
     /** `{ intent_id, run }` → `{ refusal }`, null when a void of that run would pass (lock aside) */
     voidRefusal(params) {
       return intentsCall('intents.void_refusal', params);
+    },
+  },
+
+  /**
+   * The payment history, `payment-history.sqlite` (design 0013, "Payment
+   * history"; cored 0.23.0), which the core keeps once the hello names
+   * `payments` (payment-history.js is its client). Each is one function of
+   * the module before PRF-6(c), answered as it answered: a record (camelCase,
+   * `metadata` parsed) or null, a list of them, a count. `caller` is
+   * `'chrome'` for a read or clear the chrome made over IPC and null
+   * (`shell`) for main's own; the writes and the repoll's methods are main's
+   * only.
+   */
+  payments: {
+    /** `append(entry)`: the record written. */
+    async append(entry) {
+      return (await paymentsCall('payments.append', { entry })).payment;
+    },
+    /** `update(id, patch)`: the record, or null when no row has `id`. */
+    async update(id, patch) {
+      return (await paymentsCall('payments.update', { id, patch })).payment;
+    },
+    async markConfirmed(id, receipt) {
+      return (await paymentsCall('payments.mark_confirmed', { id, receipt })).payment;
+    },
+    async markFailed(id, info) {
+      return (await paymentsCall('payments.mark_failed', { id, info })).payment;
+    },
+    /** Only a row still pending, read and written in one step: null otherwise. */
+    async markDropped(id) {
+      return (await paymentsCall('payments.mark_dropped', { id })).payment;
+    },
+    /**
+     * The repoll's sighting of a dropped transaction on a row still pending:
+     * `metadata.txDroppedSeenAt` set to `seenAt`, or removed for null.
+     */
+    async setDroppedSeen(id, seenAt) {
+      await paymentsCall('payments.set_dropped_seen', { id, seen_at: seenAt });
+    },
+    /** The repoll's rows: every pending one, oldest first, as SQLite holds it (snake_case, `metadata` its text). */
+    async pending() {
+      return (await paymentsCall('payments.pending', {})).payments;
+    },
+    async getRecent(filters, caller = null) {
+      return (await paymentsCall('payments.get_recent', { filters }, caller)).payments;
+    },
+    async getById(id, caller = null) {
+      return (await paymentsCall('payments.get_by_id', { id }, caller)).payment;
+    },
+    async getCount(filters, caller = null) {
+      return (await paymentsCall('payments.get_count', { filters }, caller)).count;
+    },
+    /** Every row deleted: how many. */
+    async clear(caller = null) {
+      return (await paymentsCall('payments.clear', {}, caller)).removed;
     },
   },
 

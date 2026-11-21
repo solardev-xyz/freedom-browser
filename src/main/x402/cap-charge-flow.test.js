@@ -48,7 +48,9 @@ jest.mock('../webrequest-dispatcher', () => ({ registerWebRequestHandler: jest.f
 jest.mock('../token-registry', () => ({ getToken: () => null, getTokenKey: (c, a) => `${c}:${a}` }));
 jest.mock('../payment-history', () => ({
   getRecent: () => [],
-  append: jest.fn(),
+  appendOnce: jest.fn(),
+  reserveHistorySlot: () => ({}),
+  releaseHistorySlot: jest.fn(),
   KINDS: { X402: 'x402' },
   STATUSES: { SETTLED: 'settled', NO_RECEIPT: 'no-receipt', FAILED: 'failed' },
 }));

@@ -63,14 +63,16 @@ jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'read
 // wallet's kinds are minted through it, and each signer presents its
 // confirmation to it as it signs.
 const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
-// The core's intent journal (PRF-6(b2)), simulated on the reference store
-// over this run's userData: a fresh one for each fresh run of main.
+// The core's intent journal (PRF-6(b2)) and payment history (PRF-6(c)),
+// simulated on the reference modules over this run's userData: a fresh one
+// for each fresh run of main.
 jest.mock('../core/vault-backend', () => ({
   vaultBackend: {
     get approval() {
       return mockApprovals.approval;
     },
     intents: require('../../../test/helpers/simulated-intents-core').simulatedIntents().intents,
+    payments: require('../../../test/helpers/simulated-payments-core').simulatedPayments().payments,
   },
 }));
 jest.mock('./signers', () => ({
@@ -296,7 +298,7 @@ test("a site's Safe execution not sent, then withdrawn: its held intent is the w
   const sent = await recorder.signAndRecord(params, mockSigners[0], { kind: 'safe-send' }, { intentKey });
   expect(sent).toMatchObject({ intentId: held.intentId, resent: true });
   expect(mockBroadcast).toHaveBeenCalledTimes(before + 1);
-  const row = require('../payment-history').getRecent({}).find((entry) => entry.txHash === sent.hash);
+  const row = (await require('../payment-history').getRecent({})).find((entry) => entry.txHash === sent.hash);
   expect(row.origin).toBeNull();
   // Nothing more to withdraw.
   await expect(running.safe.withdrawExecutionSite(100, safeTxHash)).resolves.toBe(false);
@@ -928,7 +930,7 @@ describe('replacement at the same nonce (9)', () => {
     );
     // Its history row now names the replacement.
     const history = require('../payment-history');
-    expect(history.getRecent({})).toEqual([
+    expect(await history.getRecent({})).toEqual([
       expect.objectContaining({
         txHash: reply.hash,
         metadata: expect.objectContaining({ intentId: intent.intentId }),
@@ -1103,7 +1105,7 @@ describe('the list knows which payments are mined (6)', () => {
     let rows = [];
     for (let i = 0; i < 50 && !rows.some((row) => row.status === 'confirmed'); i += 1) {
       await new Promise((resolve) => setImmediate(resolve));
-      rows = history.getRecent({});
+      rows = await history.getRecent({});
     }
     const { intents } = await handlers['wallet:intents-list']({});
     expect(intents.map((intent) => [intent.intentId, intent.receipt])).toEqual([
@@ -1532,7 +1534,7 @@ describe('the finality tracker settles held payments (7)', () => {
     });
     // Its bytes are forgotten once settled.
     expect((await running.store.get(sent.intentId)).hashes.every((entry) => entry.raw === null)).toBe(true);
-    expect(running.history.getRecent({})).toEqual([
+    expect(await running.history.getRecent({})).toEqual([
       expect.objectContaining({
         txHash: sent.hash,
         status: 'confirmed',
@@ -1554,7 +1556,7 @@ describe('the finality tracker settles held payments (7)', () => {
     finality({ mined: { [sent.hash]: 0 } });
     await running.tracker.pass();
     expect((await running.store.get(sent.intentId)).settlement).toMatchObject({ label: 'failed' });
-    expect(running.history.getRecent({})[0]).toMatchObject({ status: 'failed' });
+    expect((await running.history.getRecent({}))[0]).toMatchObject({ status: 'failed' });
   });
 
   test('a refused payment whose nonce another transaction used is taken; the history gets its row', async () => {
@@ -1564,7 +1566,7 @@ describe('the finality tracker settles held payments (7)', () => {
     });
     const refused = await running.send();
     expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
-    expect(running.history.getRecent({})).toEqual([]);
+    expect(await running.history.getRecent({})).toEqual([]);
     finality({ taken: true });
 
     await running.tracker.pass();
@@ -1573,7 +1575,7 @@ describe('the finality tracker settles held payments (7)', () => {
       state: 'settled',
       settlement: { label: 'taken', hash: null, block: 100 },
     });
-    expect(running.history.getRecent({})).toEqual([
+    expect(await running.history.getRecent({})).toEqual([
       expect.objectContaining({
         kind: 'wallet-send',
         chainId: 100,
@@ -1752,8 +1754,8 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
 
     // A receipt someone saw (its history row says confirmed): not waiting,
     // as long as it isn't shown as Couldn't confirm.
-    const [row] = running.history.getRecent({});
-    running.history.update(row.id, { status: 'confirmed' });
+    const [row] = await running.history.getRecent({});
+    await running.history.update(row.id, { status: 'confirmed' });
     const { waitingIntents } = require('./intent-ipc');
     await running.tracker.pass();
     expect(await running.list()).toEqual([
@@ -1796,7 +1798,7 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
       retirement: { block: 3000 },
       hashes: [expect.objectContaining({ hash: sent.hash, raw: null })],
     });
-    expect(running.history.getRecent({})).toEqual([
+    expect(await running.history.getRecent({})).toEqual([
       expect.objectContaining({
         txHash: sent.hash,
         status: 'unconfirmed',

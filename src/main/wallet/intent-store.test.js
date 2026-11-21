@@ -9,6 +9,7 @@ const {
 } = require('../../../test/helpers/main-process-test-utils');
 const { encodeLine, readJournal } = require('../../../test/helpers/reference-durable-journal');
 const { mockVaultBackend } = require('../../../test/helpers/simulated-intents-core');
+const { withSimulatedPayments } = require('../../../test/helpers/simulated-payments-core');
 
 // Deterministic test keys (not real wallets)
 const ALICE = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
@@ -46,7 +47,8 @@ function start({ limits, extraMocks = {} } = {}) {
     extraMocks: {
       [require.resolve('../logger')]: () => logger,
       'better-sqlite3': () => FakeBetterSqlite3PaymentsDatabase,
-      [require.resolve('../core/vault-backend')]: () => mockVaultBackend({ limits }),
+      [require.resolve('../core/vault-backend')]: () =>
+        withSimulatedPayments(mockVaultBackend({ limits })),
       ...extraMocks,
     },
   });
@@ -836,15 +838,14 @@ describe('separate from payment history', () => {
     const before = fs.readFileSync(filePath());
 
     const paymentHistory = require('../payment-history');
-    paymentHistory.append({
+    await paymentHistory.append({
       kind: 'wallet-send',
       chainId: CHAIN,
       txHash: intent.hash,
       amount: '1000',
     });
-    expect(paymentHistory.clear()).toBe(1);
-    expect(paymentHistory.getCount()).toBe(0);
-    paymentHistory.closeDb();
+    expect(await paymentHistory.clear()).toBe(1);
+    expect(await paymentHistory.getCount()).toBe(0);
 
     expect(fs.readFileSync(filePath())).toEqual(before);
     const next = await started();

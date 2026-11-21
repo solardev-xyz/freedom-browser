@@ -202,6 +202,132 @@ describe('tx-recorder', () => {
 });
 
 
+// The history is the identity core's (design 0013, PRF-6(c)), so a step
+// that reads a row and writes it back awaits the core in between: two such
+// steps on one row run one at a time, as they did in one synchronous turn
+// each while main kept the database.
+describe('read-then-write steps on one history row', () => {
+  test("a resend's write and the intent's settlement both keep what they add", async () => {
+    const { recordSettlement } = require('./tx-recorder');
+    const rows = new Map([
+      [5, { id: 5, kind: 'wallet-send', chainId: 1, txHash: '0x1', status: 'pending', metadata: { intentId: 'i1' } }],
+    ]);
+    // Each answer the row as the request found it, a turn of the clock
+    // later, as the core's are.
+    const answer = (value) => {
+      const copy = JSON.parse(JSON.stringify(value));
+      return new Promise((resolve) => setTimeout(() => resolve(copy), 5));
+    };
+    mockGetRecent.mockReset().mockImplementation(() => answer([...rows.values()]));
+    mockGetById.mockReset().mockImplementation((id) => answer(rows.get(id) ?? null));
+    mockUpdate.mockReset().mockImplementation((id, patch) => {
+      const row = rows.get(id);
+      Object.assign(row, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+      return answer(row);
+    });
+    mockSignAndSendTransaction.mockResolvedValue({
+      hash: '0x2',
+      from: '0xfrom',
+      intentId: 'i1',
+      outcome: 'sent',
+      resent: true,
+      chainId: 1,
+    });
+    mockWaitForTransaction.mockReturnValue(new Promise(() => {}));
+    const resent = signAndRecord({ to: '0xr', value: '1', chainId: 1 }, fakeSigner, { kind: 'wallet-send' });
+    const settled = recordSettlement(
+      { intentId: 'i1', chainId: 1, hashes: [{ hash: '0x2' }], context: { kind: 'wallet-send' } },
+      { label: 'paid', hash: '0x2', block: 9 }
+    );
+    await Promise.all([resent, settled]);
+    expect(rows.get(5)).toMatchObject({
+      status: 'confirmed',
+      txHash: '0x2',
+      metadata: { intentId: 'i1', outcome: 'sent', finality: { label: 'paid', block: 9 } },
+    });
+  });
+
+  /** A history whose every answer comes `delayMs` later, as the row was when asked. */
+  function slowHistory(rows, delayMs = 5) {
+    const answer = (value) => {
+      const copy = JSON.parse(JSON.stringify(value));
+      return new Promise((resolve) => setTimeout(() => resolve(copy), delayMs));
+    };
+    let nextId = Math.max(0, ...rows.keys()) + 1;
+    mockGetRecent.mockReset().mockImplementation(({ status, limit = 50, offset = 0 } = {}) =>
+      answer([...rows.values()].filter((row) => !status || row.status === status).slice(offset, offset + limit))
+    );
+    mockGetById.mockReset().mockImplementation((id) => answer(rows.get(id) ?? null));
+    mockUpdate.mockReset().mockImplementation((id, patch) => {
+      const row = rows.get(id);
+      Object.assign(row, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+      return answer(row);
+    });
+    mockAppend.mockReset().mockImplementation((entry) => {
+      const row = { id: nextId++, status: 'pending', ...entry };
+      rows.set(row.id, row);
+      return answer(row);
+    });
+  }
+
+  test("a phone check and the intent's settlement on one row both keep what they add", async () => {
+    const { recordSettlement } = require('./tx-recorder');
+    const job = 'core-job-shared';
+    const rows = new Map([
+      [
+        9,
+        {
+          id: 9,
+          kind: 'wallet-send',
+          chainId: 1,
+          txHash: '0x9',
+          status: 'unverified',
+          metadata: { intentId: 'i9', phoneCheck: { state: 'unverified', job, answeredAt: 1 } },
+        },
+      ],
+    ]);
+    slowHistory(rows);
+    mockWaitForTransaction.mockReturnValue(new Promise(() => {}));
+    const checked = phoneChecked({ job, outcome: 'verified' });
+    const settled = recordSettlement(
+      { intentId: 'i9', chainId: 1, hashes: [{ hash: '0x9' }], context: { kind: 'wallet-send' } },
+      { label: 'paid', hash: '0x9', block: 4 }
+    );
+    await Promise.all([checked, settled]);
+    expect(rows.get(9).metadata).toMatchObject({
+      intentId: 'i9',
+      phoneCheck: { state: 'verified', job },
+      finality: { label: 'paid', block: 4 },
+    });
+  });
+
+  test("a long scan of old phone rows doesn't hold a new send's first append", async () => {
+    const rows = new Map();
+    for (let id = 1; id <= 40; id += 1) {
+      rows.set(id, { id, kind: 'wallet-send', chainId: 1, status: 'unverified', metadata: {} });
+    }
+    slowHistory(rows, 10);
+    mockWaitForTransaction.mockReturnValue(new Promise(() => {}));
+    let scanDone = false;
+    const scan = phoneLost().then((ended) => {
+      scanDone = true;
+      return ended;
+    });
+    // The scan has read its rows and is ending them, one write at a time.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    mockSignAndSendTransaction.mockResolvedValue({ hash: '0xnew', from: '0xfrom' });
+    const sent = await signAndRecord({ to: '0xr', value: '1', chainId: 1 }, fakeSigner, { kind: 'wallet-send' });
+    expect(sent).toMatchObject({ recorded: true, hash: '0xnew' });
+    expect(scanDone).toBe(false);
+    // An intent's first send, too: its key is its own.
+    mockSignAndSendTransaction.mockResolvedValue({ hash: '0xint', from: '0xfrom', intentId: 'i-new', outcome: 'sent' });
+    const intent = await signAndRecord({ to: '0xr', value: '1', chainId: 1 }, fakeSigner, { kind: 'wallet-send' });
+    expect(intent).toMatchObject({ recorded: true });
+    expect(scanDone).toBe(false);
+    await expect(scan).resolves.toBe(40);
+  });
+});
+
 // Design 0012, PHN-2: a phone payment the identity core couldn't verify at
 // the answer waits for the core's `phone.checked` for its job, up to the
 // core's day and a margin; main reads nothing of the transaction itself.
@@ -300,7 +426,7 @@ describe("phone payments: the identity core's check", () => {
     test('verified: the row goes on as pending, and the receipt poll follows', async () => {
       const job = newJob();
       const { row } = await recordPhoneSend('unverified', { job, answeredAt: 1 });
-      expect(phoneChecked({ job, outcome: 'verified' })).toBe(true);
+      expect(await phoneChecked({ job, outcome: 'verified' })).toBe(true);
       expect(row.status).toBe('pending');
       expect(row.metadata.phoneCheck).toEqual({ state: 'verified', job, answeredAt: 1, checkedAt: expect.any(Number) });
       expect(mockWaitForTransaction).toHaveBeenCalledWith(HASH, 100);
@@ -312,7 +438,7 @@ describe("phone payments: the identity core's check", () => {
       const job = newJob();
       const transaction = { from: '0xphone', to: '0xother', value: '5', data: '0x', chain_id: 100 };
       const { row } = await recordPhoneSend('unverified', { job, answeredAt: 1 });
-      expect(phoneChecked({ job, outcome: 'mismatch', reason: 'wrong_transaction', transaction })).toBe(true);
+      expect(await phoneChecked({ job, outcome: 'mismatch', reason: 'wrong_transaction', transaction })).toBe(true);
       expect(row.status).toBe('wrong-transaction');
       expect(row.metadata.phoneCheck).toEqual({
         state: 'mismatch',
@@ -324,14 +450,14 @@ describe("phone payments: the identity core's check", () => {
       });
       expect(mockWaitForTransaction).not.toHaveBeenCalled();
       // Ended: a later check for the job finds no row waiting.
-      expect(phoneChecked({ job, outcome: 'verified' })).toBe(false);
+      expect(await phoneChecked({ job, outcome: 'verified' })).toBe(false);
       expect(row.status).toBe('wrong-transaction');
     });
 
     test("mismatch with fields of the wrong type keeps neither", async () => {
       const job = newJob();
       const { row } = await recordPhoneSend('unverified', { job, answeredAt: 1 });
-      phoneChecked({ job, outcome: 'mismatch', reason: 7, transaction: 'tx' });
+      await phoneChecked({ job, outcome: 'mismatch', reason: 7, transaction: 'tx' });
       expect(row.metadata.phoneCheck).not.toHaveProperty('code');
       expect(row.metadata.phoneCheck).not.toHaveProperty('observed');
     });
@@ -339,7 +465,7 @@ describe("phone payments: the identity core's check", () => {
     test('unknown: the row stays unknown, never polled', async () => {
       const job = newJob();
       const { row } = await recordPhoneSend('unverified', { job, answeredAt: 1 });
-      expect(phoneChecked({ job, outcome: 'unknown' })).toBe(true);
+      expect(await phoneChecked({ job, outcome: 'unknown' })).toBe(true);
       expect(row.status).toBe('unknown');
       expect(row.metadata.phoneCheck.state).toBe('unknown');
       expect(mockWaitForTransaction).not.toHaveBeenCalled();
@@ -348,15 +474,15 @@ describe("phone payments: the identity core's check", () => {
     test("an unsaved row (unknown, durable: false) still takes a later check", async () => {
       const job = newJob();
       const { row } = await recordPhoneSend('unknown', { job, answeredAt: 1, durable: false });
-      expect(phoneChecked({ job, outcome: 'verified' })).toBe(true);
+      expect(await phoneChecked({ job, outcome: 'verified' })).toBe(true);
       expect(row.status).toBe('pending');
       expect(mockWaitForTransaction).toHaveBeenCalledWith(HASH, 100);
     });
 
-    test('an unknown row that is not an unsaved one takes no check', () => {
+    test('an unknown row that is not an unsaved one takes no check', async () => {
       const job = newJob();
       put({ status: 'unknown', metadata: { phoneCheck: { state: 'unknown', job, answeredAt: 1 } } });
-      expect(phoneChecked({ job, outcome: 'verified' })).toBe(false);
+      expect(await phoneChecked({ job, outcome: 'verified' })).toBe(false);
       expect(mockUpdate).not.toHaveBeenCalled();
     });
 
@@ -365,18 +491,18 @@ describe("phone payments: the identity core's check", () => {
       ['no job', { outcome: 'verified' }],
       ['an outcome it does not know', { job: 'core-job-x', outcome: 'confirmed' }],
       ['nothing', undefined],
-    ])('%s: no row is written', (_name, data) => {
+    ])('%s: no row is written', async (_name, data) => {
       put({ status: 'unverified', metadata: { phoneCheck: { state: 'unverified', job: 'core-job-x', answeredAt: 1 } } });
-      expect(phoneChecked(data)).toBe(false);
+      expect(await phoneChecked(data)).toBe(false);
       expect(mockUpdate).not.toHaveBeenCalled();
     });
 
     test("a flagged send's rule, written by the core once its payment verified, is logged", async () => {
       const job = newJob();
       await recordPhoneSend('unverified', { job, answeredAt: 1 });
-      phoneChecked({ job, outcome: 'verified', rule: { added: true } });
+      await phoneChecked({ job, outcome: 'verified', rule: { added: true } });
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('contract rule was saved'));
-      phoneChecked({ job: 'no-such-job', outcome: 'mismatch', rule: { added: false, reason: 'mismatch' } });
+      await phoneChecked({ job: 'no-such-job', outcome: 'mismatch', rule: { added: false, reason: 'mismatch' } });
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('contract rule was not saved: mismatch'));
     });
   });
@@ -387,7 +513,7 @@ describe("phone payments: the identity core's check", () => {
       const second = (await recordPhoneSend('unverified', { job: newJob(), answeredAt: 2 })).row;
       const unsaved = (await recordPhoneSend('unknown', { job: newJob(), answeredAt: 3, durable: false })).row;
       const verified = (await recordPhoneSend('verified')).row;
-      expect(phoneLost()).toBe(2);
+      expect(await phoneLost()).toBe(2);
       for (const row of [first, second]) {
         expect(row.status).toBe('unknown');
         expect(row.metadata.phoneCheck).toMatchObject({ state: 'unknown', lost: true });
@@ -396,11 +522,11 @@ describe("phone payments: the identity core's check", () => {
       expect(verified.status).toBe('pending');
     });
 
-    test('a history read that fails ends nothing, and is logged', () => {
+    test('a history read that fails ends nothing, and is logged', async () => {
       mockGetRecent.mockImplementation(() => {
         throw new Error('db closed');
       });
-      expect(phoneLost()).toBe(0);
+      expect(await phoneLost()).toBe(0);
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('db closed'));
     });
   });
@@ -409,9 +535,9 @@ describe("phone payments: the identity core's check", () => {
     test('a row still unverified then ends unknown', async () => {
       jest.useFakeTimers({ now: 1_700_000_000_000, doNotFake: ['setImmediate'] });
       const { row } = await recordPhoneSend('unverified', { job: newJob(), answeredAt: Date.now() });
-      jest.advanceTimersByTime(DAY + MARGIN - 1);
+      await jest.advanceTimersByTimeAsync(DAY + MARGIN - 1);
       expect(row.status).toBe('unverified');
-      jest.advanceTimersByTime(1);
+      await jest.advanceTimersByTimeAsync(1);
       expect(row.status).toBe('unknown');
       expect(row.metadata.phoneCheck.state).toBe('unknown');
     });
@@ -420,9 +546,9 @@ describe("phone payments: the identity core's check", () => {
       jest.useFakeTimers({ now: 1_700_000_000_000, doNotFake: ['setImmediate'] });
       const job = newJob();
       const { row } = await recordPhoneSend('unverified', { job, answeredAt: Date.now() });
-      phoneChecked({ job, outcome: 'mismatch', reason: 'wrong_transaction' });
+      await phoneChecked({ job, outcome: 'mismatch', reason: 'wrong_transaction' });
       mockUpdate.mockClear();
-      jest.advanceTimersByTime(DAY + MARGIN);
+      await jest.advanceTimersByTimeAsync(DAY + MARGIN);
       expect(row.status).toBe('wrong-transaction');
       expect(mockUpdate).not.toHaveBeenCalled();
     });
@@ -431,56 +557,56 @@ describe("phone payments: the identity core's check", () => {
       jest.useFakeTimers({ now: 1_700_000_000_000, doNotFake: ['setImmediate'] });
       const { row } = await recordPhoneSend('unverified', { job: newJob(), answeredAt: Date.now() - 2 * DAY });
       expect(row.status).toBe('unverified');
-      jest.advanceTimersByTime(0);
+      await jest.advanceTimersByTimeAsync(0);
       expect(row.status).toBe('unknown');
     });
   });
 
   describe('at a start (resumePhoneChecks)', () => {
-    test('a row with the core\'s job waits for its check, up to its deadline; one with no job ends unknown', () => {
+    test('a row with the core\'s job waits for its check, up to its deadline; one with no job ends unknown', async () => {
       jest.useFakeTimers({ now: 1_700_000_000_000 });
       const job = newJob();
       const waiting = put({ status: 'unverified', metadata: { phoneCheck: { state: 'unverified', job, answeredAt: Date.now() - DAY } } });
       // An earlier build's row: the fields it was confirmed for, no job.
       const older = put({ status: 'unverified', metadata: { phoneCheck: { state: 'unverified', to: '0xr', answeredAt: Date.now() } } });
       const bare = put({ status: 'unverified' });
-      expect(resumePhoneChecks()).toBe(1);
+      expect(await resumePhoneChecks()).toBe(1);
       expect(waiting.status).toBe('unverified');
       expect(older.status).toBe('unknown');
       expect(older.metadata.phoneCheck).toMatchObject({ state: 'unknown', to: '0xr' });
       expect(bare.status).toBe('unknown');
       // The waiting row's check still counts, until its deadline.
-      expect(phoneChecked({ job, outcome: 'verified' })).toBe(true);
+      expect(await phoneChecked({ job, outcome: 'verified' })).toBe(true);
       expect(waiting.status).toBe('pending');
     });
 
-    test('a waiting row ends unknown at its deadline', () => {
+    test('a waiting row ends unknown at its deadline', async () => {
       jest.useFakeTimers({ now: 1_700_000_000_000 });
       const row = put({ status: 'unverified', metadata: { phoneCheck: { state: 'unverified', job: newJob(), answeredAt: Date.now() - DAY } } });
-      resumePhoneChecks();
-      jest.advanceTimersByTime(MARGIN - 1);
+      await resumePhoneChecks();
+      await jest.advanceTimersByTimeAsync(MARGIN - 1);
       expect(row.status).toBe('unverified');
-      jest.advanceTimersByTime(1);
+      await jest.advanceTimersByTimeAsync(1);
       expect(row.status).toBe('unknown');
     });
 
-    test('every page of unverified rows is read, not just the newest', () => {
+    test('every page of unverified rows is read, not just the newest', async () => {
       jest.useFakeTimers({ now: 1_700_000_000_000 });
       for (let i = 0; i < 500; i += 1) {
         put({ status: 'unverified', metadata: { phoneCheck: { state: 'unverified', job: newJob(), answeredAt: Date.now() } } });
       }
       const last = put({ status: 'unverified' });
-      expect(resumePhoneChecks()).toBe(500);
+      expect(await resumePhoneChecks()).toBe(500);
       expect(mockGetRecent).toHaveBeenCalledWith({ status: 'unverified', limit: 500, offset: 0 });
       expect(mockGetRecent).toHaveBeenCalledWith({ status: 'unverified', limit: 500, offset: 500 });
       expect(last.status).toBe('unknown');
     });
 
-    test('a history read that fails waits on nothing', () => {
+    test('a history read that fails waits on nothing', async () => {
       mockGetRecent.mockImplementation(() => {
         throw new Error('db closed');
       });
-      expect(resumePhoneChecks()).toBe(0);
+      expect(await resumePhoneChecks()).toBe(0);
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('db closed'));
     });
   });
@@ -497,8 +623,10 @@ describe("phone payments: the identity core's check", () => {
       core.emit('event', 'vault.locked', {});
       expect(mockUpdate).not.toHaveBeenCalled();
       core.emit('event', 'phone.checked', { job, outcome: 'verified' });
+      await settle();
       expect(checked.status).toBe('pending');
       core.emit('event', 'phone.lost', {});
+      await settle();
       expect(lost.status).toBe('unknown');
     });
 
@@ -512,13 +640,14 @@ describe("phone payments: the identity core's check", () => {
       expect(() => attachPhoneEvents({})).not.toThrow();
     });
 
-    test("a failure keeping an event is logged, never thrown at the core's client", () => {
+    test("a failure keeping an event is logged, never thrown at the core's client", async () => {
       const core = new EventEmitter();
       attachPhoneEvents(core);
       mockGetRecent.mockImplementation(() => {
         throw new Error('db closed');
       });
       expect(() => core.emit('event', 'phone.checked', { job: 'core-job-y', outcome: 'verified' })).not.toThrow();
+      await settle();
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("could not keep the core's phone.checked: db closed"));
     });
   });
