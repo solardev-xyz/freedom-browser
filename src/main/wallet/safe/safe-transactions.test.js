@@ -116,13 +116,15 @@ const deferred = () => {
 // record.
 const mockApprovalEnd = jest.fn(async () => ({}));
 const mockProcessEnded = jest.fn(() => false);
+// The core process serving now, as a mark: a restart is the next number.
+const mockProcess = { number: 1 };
 jest.mock('../../core/vault-backend', () => {
   const { simulatedSafePending } = require('../../../../test/helpers/simulated-store-core');
   const pendingSim = simulatedSafePending();
   return {
     vaultBackend: {
       approval: { end: (...args) => mockApprovalEnd(...args) },
-      coreProcess: () => ({ process: 'core' }),
+      coreProcess: () => ({ process: mockProcess.number }),
       coreProcessEnded: (...args) => mockProcessEnded(...args),
       safePending: pendingSim.safePending,
       pendingSim,
@@ -194,6 +196,7 @@ beforeEach(() => {
   mockRpcRequest.mockResolvedValue('0x3');
   mockApprovalEnd.mockReset().mockResolvedValue({});
   mockProcessEnded.mockReset().mockReturnValue(false);
+  mockProcess.number = 1;
   // A new safe-pending.json each test (its directory), and main's copy empty.
   Object.assign(pendingSim, { moved: true, fail: null, loseReply: null, calls: [] });
   pendingStore._reset();
@@ -966,8 +969,10 @@ describe("a SafeTx's Safe approval", () => {
       await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
       expect(getPending(5).superseded).toBeFalsy();
       expect(heard).toEqual([]);
-      // The process that gave it has ended (a restart): its approval with it.
-      mockProcessEnded.mockReturnValue(true);
+      // The process that gave it has ended (a restart): its approval with it,
+      // and main's copy of the pending SafeTxs is read from its successor.
+      mockProcess.number = 2;
+      mockProcessEnded.mockImplementation((mark) => mark.process < 2);
       await cancelSafeSend(5);
       expect(getPending(5)).toBeNull();
       expect(heard).toEqual([expect.objectContaining({ outcome: 'discarded' })]);

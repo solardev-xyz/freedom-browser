@@ -183,13 +183,22 @@ function freshReference() {
   return reference;
 }
 
-/** Records every request main sends `core`: `{ method, params, context, options }`. */
+/**
+ * Records every request main sends `core`: `{ method, params, context,
+ * options, gen }`, `gen` the process a request was sent to by name
+ * (`requestTo`), as the pending store sends each of its own.
+ */
 function recordCalls(core) {
   const calls = [];
   const request = core.request.bind(core);
   core.request = (method, params, context, options) => {
-    calls.push({ method, params, context, options });
+    calls.push({ method, params, context, options, gen: null });
     return request(method, params, context, options);
+  };
+  const requestTo = core.requestTo.bind(core);
+  core.requestTo = (gen, method, params, context, options) => {
+    calls.push({ method, params, context, options, gen });
+    return requestTo(gen, method, params, context, options);
   };
   return calls;
 }
@@ -300,7 +309,7 @@ describeIfCurrent('safe-pending.json through the pinned freedom-cored (T1, T2, r
     expect(p.read()).toEqual(older);
   });
 
-  test("each request is main's own and needs the core's echo of safe_pending", async () => {
+  test("each request is main's own, goes to the process main's copy is from, and needs the core's echo of safe_pending", async () => {
     await pendingStore.setPending(7, { safeTxHash: '0x07', threshold: 1, signatures: [] });
     await pendingStore.clearPending(7);
     await pendingStore.refreshPending(9);
@@ -310,7 +319,9 @@ describeIfCurrent('safe-pending.json through the pinned freedom-cored (T1, T2, r
       'safe_pending.clear',
       'safe_pending.get',
     ]);
-    for (const { context, options } of store) {
+    for (const { context, options, gen } of store) {
+      // To the process whose copy main holds, by name.
+      expect(gen).toBe(core.current);
       expect(context).toEqual(shell);
       expect(options.requires(core.hello)).toBe(true);
       expect(options.requires({ store_moved: ['vault_meta'] })).toBe(false);

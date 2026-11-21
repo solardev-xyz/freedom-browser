@@ -132,13 +132,22 @@ function loadMain(core, root, swarm) {
   return loaded;
 }
 
-/** Records every request main sends `core`: `{ method, params, context, options }`. */
+/**
+ * Records every request main sends `core`: `{ method, params, context,
+ * options }`, those sent to a named process (`requestTo`, as the pending
+ * Safe store sends its own) included.
+ */
 function recordCalls(core) {
   const calls = [];
   const request = core.request.bind(core);
   core.request = (method, params, context, options) => {
     calls.push({ method, params, context, options });
     return request(method, params, context, options);
+  };
+  const requestTo = core.requestTo.bind(core);
+  core.requestTo = (gen, method, params, context, options) => {
+    calls.push({ method, params, context, options });
+    return requestTo(gen, method, params, context, options);
   };
   return calls;
 }

@@ -268,6 +268,71 @@ describe('writes', () => {
     expect(pendingStore.getPending(5)).toBeNull();
   });
 
+  // Codex round 3 on #1298: a write goes only over the entry its caller read,
+  // checked right before it is sent. Two writes of one index don't race to
+  // the last word: the second, made over the entry the first replaced, is
+  // refused.
+  describe('a write queued behind another of the same index', () => {
+    beforeEach(async () => {
+      seed({ 5: entry('0x05') });
+      await pendingStore.ready;
+      pendingSim.calls = [];
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    const failFirstSet = () => {
+      let sets = 0;
+      pendingSim.fail = (method) => {
+        if (method === 'safe_pending.set' && ++sets === 1) throw storage();
+      };
+    };
+
+    test('a set, after one that failed and read the entry again: refused, unsent', async () => {
+      const held = pendingStore.getPending(5);
+      failFirstSet();
+      const first = pendingStore.setPending(5, entry('0x05', [{ signer: '0xA', data: '0x01' }]));
+      const second = pendingStore.setPending(5, entry('0x05', [{ signer: '0xB', data: '0x02' }]));
+      await expect(first).rejects.toMatchObject({ code: 'storage' });
+      await expect(second).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(methods()).toEqual(['safe_pending.set', 'safe_pending.get']);
+      expect(pendingStore.getPending(5)).not.toBe(held);
+      expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
+      expect(JSON.parse(pendingSim.text())).toEqual({ 5: entry('0x05') });
+    });
+
+    test('a clear, after a set that failed and read the entry again: refused, unsent', async () => {
+      failFirstSet();
+      const first = pendingStore.setPending(5, entry('0x55'));
+      const second = pendingStore.clearPending(5);
+      await expect(first).rejects.toMatchObject({ code: 'storage' });
+      await expect(second).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(methods()).toEqual(['safe_pending.set', 'safe_pending.get']);
+      expect(pendingStore.getPending(5)).toEqual(entry('0x05'));
+    });
+
+    test('a set or a clear, after a set that replaced the entry: refused, unsent', async () => {
+      const replacement = entry('0x56');
+      const first = pendingStore.setPending(5, replacement);
+      const second = pendingStore.setPending(5, entry('0x57'));
+      const third = pendingStore.clearPending(5);
+      await first;
+      await expect(second).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      await expect(third).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(methods()).toEqual(['safe_pending.set']);
+      expect(pendingStore.getPending(5)).toBe(replacement);
+    });
+
+    test('the same object written again, in turn, goes: each write is over the entry it read', async () => {
+      const held = pendingStore.getPending(5);
+      held.signatures = [{ signer: '0xA', data: '0x01' }];
+      const first = pendingStore.setPending(5, held);
+      held.superseded = true;
+      const second = pendingStore.setPending(5, held);
+      await Promise.all([first, second]);
+      expect(methods()).toEqual(['safe_pending.set', 'safe_pending.set']);
+      expect(pendingStore.getPending(5)).toBe(held);
+    });
+  });
+
   test('a write that may not survive a power loss is applied, and logged', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const set = pendingSim.safePending.set;

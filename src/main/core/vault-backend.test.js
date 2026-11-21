@@ -1105,7 +1105,7 @@ describe('vaultBackend', () => {
     // Every method vault-backend.js sends was sent above.
     const source = fs.readFileSync(path.join(__dirname, 'vault-backend.js'), 'utf8');
     const named = new Set(
-      [...source.matchAll(/(?:call|mutate|accountsCall)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
+      [...source.matchAll(/(?:call|mutate|accountsCall|safePendingCall)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
     );
     expect([...named].sort()).toEqual([...sent].sort());
     // vault-meta.json's requests, and the create and import that write it

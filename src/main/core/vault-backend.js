@@ -128,6 +128,31 @@ async function call(method, params = {}, page = null, { requires = null } = {}) 
 }
 
 /**
+ * A `safe_pending.*` request (design 0013, PRF-6(d)), main's own, with
+ * `requires: SAFE_PENDING`. With `mark` (`coreProcess()`), it goes to that
+ * very process or nowhere: one that has ended, or a client main has
+ * replaced, fails it `core_unavailable`, unsent, so a request meant for one
+ * process's copy of the store never reaches its successor. Without one, to
+ * whichever process serves.
+ */
+async function safePendingCall(method, params, mark) {
+  if (!mark) return call(method, params, null, { requires: SAFE_PENDING });
+  try {
+    if (getCoreClient() !== mark.core) {
+      throw new VaultBackendError(CORE_UNAVAILABLE, 'The identity core is not running');
+    }
+    return await mark.core.requestTo(mark.gen, method, params, { caller: 'shell' }, {
+      watchdogMs: watchdogMs(method),
+      requires: SAFE_PENDING,
+    });
+  } catch (err) {
+    if (err instanceof VaultBackendError) throw err;
+    const code = err.code || CORE_UNAVAILABLE;
+    throw new VaultBackendError(code, err.message, err.data);
+  }
+}
+
+/**
  * An intent-journal request (`intents.*`, design 0013, "The intent
  * journal"), always main's own (`shell`: the core refuses every one from
  * the chrome or a page). It goes with `requires: INTENTS`, so a core that
@@ -649,24 +674,26 @@ const vaultBackend = {
    * unsent. `index` is the Safe's wallet index; an entry is any JSON value,
    * kept as main sent it. A failed write is `storage` (and a set past the
    * file's 1 MiB bound `invalid_argument`), the store as it was; a write
-   * may answer `durable: false` (written, not yet flushed).
+   * may answer `durable: false` (written, not yet flushed). Each takes an
+   * optional `mark` (`coreProcess()`): the request then goes to that
+   * process only, and fails `core_unavailable` once it has ended.
    */
   safePending: {
     /** `getPending(index)`: the entry, or null for none. */
-    async get(index) {
-      return (await call('safe_pending.get', { index }, null, { requires: SAFE_PENDING })).entry;
+    async get(index, mark = null) {
+      return (await safePendingCall('safe_pending.get', { index }, mark)).entry;
     },
     /** `listPendingIndexes()`: the indices with an entry, in the file's key order. */
-    async list() {
-      return (await call('safe_pending.list', {}, null, { requires: SAFE_PENDING })).indices;
+    async list(mark = null) {
+      return (await safePendingCall('safe_pending.list', {}, mark)).indices;
     },
     /** `setPending(index, entry)` → `{ durable }`. */
-    set(index, entry) {
-      return call('safe_pending.set', { index, entry }, null, { requires: SAFE_PENDING });
+    set(index, entry, mark = null) {
+      return safePendingCall('safe_pending.set', { index, entry }, mark);
     },
     /** `clearPending(index)` → `{ cleared, durable }` (`cleared`: it had an entry). */
-    clear(index) {
-      return call('safe_pending.clear', { index }, null, { requires: SAFE_PENDING });
+    clear(index, mark = null) {
+      return safePendingCall('safe_pending.clear', { index }, mark);
     },
   },
 

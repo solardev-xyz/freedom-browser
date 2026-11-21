@@ -16,9 +16,11 @@
  * signature loops check (`signature-collection.js`):
  * - **One core process at a time:** the copy is the store as the running
  *   core process loaded it (`attachCore`): `safe_pending.list`, then
- *   `safe_pending.get` for each index, at each `ready`. From the core's
- *   exit (or a new `ready`) until that process's load has succeeded, the
- *   copy is unavailable: `getPending` answers null and
+ *   `safe_pending.get` for each index, at each `ready`, sent to that process
+ *   (vault-backend's `coreProcess()` mark). From the moment that process
+ *   has ended (marked at its exit, before the client's `exit` is told), or
+ *   a new `ready`, until the next process's load has succeeded, the copy is
+ *   unavailable: `getPending` answers null and
  *   `listPendingIndexes` none (design 0013's G29), and `ready`, which Safe
  *   flows and every write wait on, waits for that load. A load that fails
  *   rejects it, and nothing acts on the store until a load succeeds: each
@@ -27,9 +29,10 @@
  *   new object, so a loop that holds the old one stops.
  * - **Written through:** `setPending` and `clearPending` wait for the copy,
  *   send the change to the core and apply it to the copy only once the core
- *   has answered it. A write queued before the core process changed waits
- *   for its successor's load, and is refused (SAFE_DISCARDED) unless that
- *   reload kept the entry the caller read. A change the core refuses or reports failed
+ *   has answered it, through the process the copy was loaded from only. A
+ *   write queued before the core process changed waits for its successor's
+ *   load, and any write is refused (SAFE_DISCARDED) unless the copy still
+ *   holds the entry its caller read when its turn comes. A change the core refuses or reports failed
  *   (`storage`, the store as it was), or whose answer is lost (written or
  *   not), throws, and the index is read again from the core into a new
  *   object, so a loop that holds the old one stops; if the core can't
@@ -70,9 +73,37 @@ let available = false;
 let epoch = 0;
 let waiter = null;
 let attachedCore = null;
+// The core process the copy was loaded from (vault-backend's opaque
+// `coreProcess()` mark; undefined where the backend has none): the copy is
+// read only while that process lives, and written only through it.
+let loadedFrom;
 
 function vault() {
   return require('../../core/vault-backend').vaultBackend;
+}
+
+/** The core process serving now, as vault-backend marks it (null: none). */
+function processMark() {
+  const backend = vault();
+  return typeof backend.coreProcess === 'function' ? backend.coreProcess() : undefined;
+}
+
+/** Whether the process `mark` names has ended (it exited, even before its client says so). */
+function processEnded(mark) {
+  const backend = vault();
+  return mark !== undefined && typeof backend.coreProcessEnded === 'function'
+    ? backend.coreProcessEnded(mark)
+    : false;
+}
+
+/**
+ * Whether the copy can be read: loaded, from a process that still lives.
+ * The client marks a process exited at once and tells its `exit` only once
+ * its output has drained: the copy is unavailable from the first.
+ */
+function current() {
+  if (available && processEnded(loadedFrom)) invalidate();
+  return available;
 }
 
 function inTurn(task) {
@@ -121,16 +152,28 @@ const isIndex = (value) => Number.isSafeInteger(value) && value >= 0;
 async function loadAll() {
   const began = epoch;
   const since = drops;
-  const indices = await vault().safePending.list();
+  // Read from, and bound to, the one process serving now.
+  const mark = processMark();
+  if (mark === null) {
+    throw Object.assign(new Error('The identity core is not running'), {
+      code: 'core_unavailable',
+    });
+  }
+  const indices = await vault().safePending.list(mark);
   if (!Array.isArray(indices) || !indices.every(isIndex)) {
     throw new Error('The identity core answered no list of pending Safe transactions');
   }
   const entries = new Map();
   for (const index of indices) {
-    const entry = await vault().safePending.get(index);
+    const entry = await vault().safePending.get(index, mark);
     if (entry) entries.set(index, entry);
   }
   if (epoch !== began) return false;
+  if (processEnded(mark)) {
+    // Gone before its `exit` is told: its successor's load decides.
+    invalidate();
+    return false;
+  }
   const droppedSince = (index) => (droppedAt.get(index) ?? 0) > since;
   for (const index of [...cache.keys()]) {
     if (!entries.has(index) && !droppedSince(index)) drop(index);
@@ -145,6 +188,7 @@ async function loadAll() {
     confirmed.set(index, text);
   }
   available = true;
+  loadedFrom = mark;
   return true;
 }
 
@@ -159,8 +203,8 @@ function load() {
  */
 async function whenLoaded() {
   for (;;) {
-    if (available) return;
-    if (waiter && !waiter.done) {
+    if (current()) return;
+    if (attachedCore && waiter && !waiter.done) {
       await waiter.promise;
       continue;
     }
@@ -180,12 +224,12 @@ async function whenLoaded() {
  * new object at once, then as the core answers it now. A read that fails
  * keeps the first.
  */
-async function readAgain(index) {
+async function readAgain(index, mark) {
   const text = confirmed.get(index);
   if (text === undefined) cache.delete(index);
   else cache.set(index, JSON.parse(text));
   try {
-    const entry = await vault().safePending.get(index);
+    const entry = await vault().safePending.get(index, mark);
     if (entry) {
       cache.set(index, entry);
       confirmed.set(index, JSON.stringify(entry));
@@ -251,7 +295,7 @@ function attachCore(client) {
 
 /** @returns {Object|null} The pending entry for a safe wallet index */
 function getPending(safeIndex) {
-  return (available && cache.get(safeIndex)) || null;
+  return (current() && cache.get(safeIndex)) || null;
 }
 
 // A write's turn that came while no core process's copy was loaded: it
@@ -263,30 +307,31 @@ function replaced() {
 }
 
 /**
- * A write of `index`, sent in its turn (`send`, then `apply` once the core
- * has answered), on the copy the caller read: the entry it held then
- * (`basis`) in that process's copy. It is sent only once the running
- * process's copy is loaded, never ahead of that load, even when it was
- * queued before the process changed; and if the process changed since the
- * caller read it, only while the reload kept the caller's entry, so it
- * never writes over a different entry of a successor (SAFE_DISCARDED).
+ * A write of `index`, sent in its turn (`send(mark)`, then `apply` once the
+ * core has answered), on the copy the caller read: the entry it held then
+ * (`basis`). It is sent only to the process the copy was loaded from, and
+ * only while that process lives (the request fails, unsent, if it has
+ * ended meanwhile: it never reaches a successor). When its turn comes with
+ * no live process's copy loaded, it waits for the next load, never going
+ * ahead of it. And it is sent only while the copy still holds the caller's
+ * entry: one replaced since (a write before it, a read after a failure, a
+ * reload that found another) is refused (SAFE_DISCARDED), nothing sent, so
+ * no write lands over an entry its caller never read: the last writer
+ * doesn't win.
  */
 async function write(index, send, apply) {
   const basis = cache.get(index);
-  let seen = available ? epoch : null;
   for (;;) {
     await whenLoaded();
     const done = await inTurn(async () => {
-      if (!available) return AGAIN;
-      if (epoch !== seen) {
-        if (cache.get(index) !== basis) throw replaced();
-        seen = epoch;
-      }
+      if (!current()) return AGAIN;
+      if (cache.get(index) !== basis) throw replaced();
+      const mark = loadedFrom;
       let reply;
       try {
-        reply = await send();
+        reply = await send(mark);
       } catch (err) {
-        await readAgain(index);
+        await readAgain(index, mark);
         throw err;
       }
       apply(reply);
@@ -305,7 +350,7 @@ async function write(index, send, apply) {
 function setPending(safeIndex, entry) {
   return write(
     safeIndex,
-    () => vault().safePending.set(safeIndex, entry),
+    (mark) => vault().safePending.set(safeIndex, entry, mark),
     (reply) => {
       notDurable('A pending Safe transaction was saved', reply);
       cache.set(safeIndex, entry);
@@ -318,7 +363,7 @@ function setPending(safeIndex, entry) {
 function clearPending(safeIndex) {
   return write(
     safeIndex,
-    () => vault().safePending.clear(safeIndex),
+    (mark) => vault().safePending.clear(safeIndex, mark),
     (reply) => {
       notDurable('A pending Safe transaction was cleared', reply);
       drop(safeIndex);
@@ -328,7 +373,7 @@ function clearPending(safeIndex) {
 
 /** Safe wallet indexes that currently have a pending SafeTx, ascending. */
 function listPendingIndexes() {
-  return available ? [...cache.keys()].sort((a, b) => a - b) : [];
+  return current() ? [...cache.keys()].sort((a, b) => a - b) : [];
 }
 
 /**
@@ -346,7 +391,7 @@ function forgetPending(safeIndex) {
  * removal that failed after the core may have cleared it. Never rejects.
  */
 function refreshPending(safeIndex) {
-  return inTurn(() => readAgain(safeIndex));
+  return inTurn(() => readAgain(safeIndex, current() ? loadedFrom : processMark()));
 }
 
 /** Tests: an empty copy, attached to no core, with nothing in turn. */
@@ -360,6 +405,7 @@ function _reset() {
   epoch = 0;
   waiter = null;
   attachedCore = null;
+  loadedFrom = undefined;
 }
 
 module.exports = {
