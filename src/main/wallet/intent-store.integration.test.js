@@ -243,7 +243,9 @@ describeIfCurrent('the intent journal through freedom-cored (0013, PRF-6(b2))', 
     let second;
     await asMain(async () => {
       await core.start();
-      expect(core.hello.store_moved).toEqual(['intents']);
+      // The build's stores, the intent journal among them, all echoed.
+      expect(core.hello.store_moved).toContain('intents');
+      expect(core.hello.store_moved).toEqual(core.service.helloParams(core).store_moved);
       await main.store.ready;
       first = await main.tx.signAndSendTransaction(PARAMS, signer);
       // The account's pending count still says 7: the held intent floors it.
@@ -417,7 +419,9 @@ describeIfCurrent('the intent journal through freedom-cored (0013, PRF-6(b2))', 
 
       await core.stop();
       await core.start();
-      expect(core.hello.store_moved).toEqual(['intents']);
+      // The build's stores, the intent journal among them, all echoed.
+      expect(core.hello.store_moved).toContain('intents');
+      expect(core.hello.store_moved).toEqual(core.service.helloParams(core).store_moved);
       expect(await main.store.get(held.intentId)).toMatchObject({ state: 'held', recovered: true });
       expect(await main.store.voidRefusal(held.intentId)).toMatch(/recovered from disk/);
       expect(
