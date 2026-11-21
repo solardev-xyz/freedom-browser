@@ -4,6 +4,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
 const log = require('../logger');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 const { migrateLegacyConfig } = require('./migration');
 const { readRpcApiKeys } = require('../wallet/rpc-api-key-store');
 
@@ -23,6 +24,17 @@ function builtinPath(name) {
 
 function userDataPath(name) {
   return getFreedomDataPath(name);
+}
+
+// A user-layer file replaced whole (lib/atomic-file.js, design 0013's set B):
+// a crash mid-write leaves the old file or the new one, never a torn one.
+// Throws as an in-place write did; a write whose flush failed is in place,
+// and logged.
+function writeUserFile(name, value) {
+  const { durable } = writeFileAtomicSync(userDataPath(name), JSON.stringify(value, null, 2));
+  if (!durable) {
+    log.warn(`[network-registry] ${name} written, but not flushed to disk (durable: false)`);
+  }
 }
 
 // An absent file is an expected state — user-layer files don't exist until
@@ -314,7 +326,7 @@ function resolveUserConfig(builtinSources) {
 
   const migrated = migrateLegacyConfig({ settings: legacySettings, builtinSources });
   try {
-    fs.writeFileSync(configPath, JSON.stringify(migrated, null, 2), 'utf-8');
+    writeUserFile('network-config.json', migrated);
     log.info('[network-registry] migrated legacy config -> network-config.json');
   } catch (err) {
     log.error(`[network-registry] failed to persist migration: ${err.message}`);
@@ -565,11 +577,7 @@ function readUserConfig() {
 }
 
 function writeUserConfig(config) {
-  fs.writeFileSync(
-    userDataPath('network-config.json'),
-    JSON.stringify(config, null, 2),
-    'utf-8'
-  );
+  writeUserFile('network-config.json', config);
   invalidate();
 }
 
@@ -581,11 +589,7 @@ function readCustomChains() {
 }
 
 function writeCustomChains(customChains) {
-  fs.writeFileSync(
-    userDataPath('custom-chains.json'),
-    JSON.stringify(customChains, null, 2),
-    'utf-8'
-  );
+  writeUserFile('custom-chains.json', customChains);
   invalidate();
 }
 

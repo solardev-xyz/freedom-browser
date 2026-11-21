@@ -1,12 +1,15 @@
 // Unit tests for the network registry — layer merging and endpoint
 // resolution. `node:fs` is mocked: mockFiles maps a basename to its JSON
 // string; an absent entry simulates ENOENT (the file-not-present state).
+// Writes go through lib/atomic-file.js (set-b-files.test.js tests them on
+// disk): its mock lands them in mockFiles, and the fs mock has no
+// writeFileSync, so an in-place write would throw.
 // `electron` resolves to the shared __mocks__/electron.js (isPackaged
 // false, a stub getPath) — the fs mock dispatches by basename, so the
 // userData directory value is irrelevant here.
 
 const mockFiles = {};
-const mockWriteFileSync = jest.fn();
+const mockWriteFileAtomicSync = jest.fn();
 jest.mock('node:fs', () => ({
   readFileSync: (filePath) => {
     const name = require('node:path').basename(filePath);
@@ -15,9 +18,12 @@ jest.mock('node:fs', () => ({
     }
     return mockFiles[name];
   },
-  writeFileSync: (...args) => {
-    mockWriteFileSync(...args);
+}));
+jest.mock('../lib/atomic-file', () => ({
+  writeFileAtomicSync: (...args) => {
+    mockWriteFileAtomicSync(...args);
     mockFiles[require('node:path').basename(args[0])] = args[1];
+    return { durable: true };
   },
 }));
 
@@ -65,7 +71,7 @@ function setFiles({ chains = CHAINS, sources = SOURCES, custom, userConfig, apiK
   if (userConfig !== undefined) mockFiles['network-config.json'] = JSON.stringify(userConfig);
   if (apiKeys !== undefined) mockFiles['rpc-api-keys.json'] = JSON.stringify(apiKeys);
   if (settings !== undefined) mockFiles['settings.json'] = JSON.stringify(settings);
-  mockWriteFileSync.mockClear();
+  mockWriteFileAtomicSync.mockClear();
   registry.invalidate();
 }
 
@@ -295,7 +301,7 @@ describe('mutation layer', () => {
   test('updateNetwork persists a verification override', () => {
     registry.updateNetwork(1, { verification: { primary: 'quorum' } });
     expect(registry.getNetwork(1).verification.primary).toBe('quorum');
-    const written = mockWriteFileSync.mock.calls.find(([p]) => String(p).endsWith('network-config.json'));
+    const written = mockWriteFileAtomicSync.mock.calls.find(([p]) => String(p).endsWith('network-config.json'));
     expect(written).toBeDefined();
   });
 
@@ -525,7 +531,7 @@ describe('addCustomChain', () => {
     expect(registry.addCustomChain({ chainId: 8453, name: 'Base', nativeSymbol: 'ETH' }))
       .toEqual({ success: true, chainId: '8453' });
     expect(registry.getNetwork(8453)).toMatchObject({ name: 'Base', builtin: false });
-    const written = mockWriteFileSync.mock.calls.find(([p]) => String(p).endsWith('custom-chains.json'));
+    const written = mockWriteFileAtomicSync.mock.calls.find(([p]) => String(p).endsWith('custom-chains.json'));
     expect(written).toBeDefined();
   });
 
@@ -660,14 +666,14 @@ describe('legacy-config migration on load', () => {
     expect(registry.getNetwork(1).verification.primary).toBe('direct');
     expect(registry.getEndpoints(1, 'rpc')).toContain('http://localhost:8545');
     // network-config.json was written out.
-    const written = mockWriteFileSync.mock.calls.find(([p]) => String(p).endsWith('network-config.json'));
+    const written = mockWriteFileAtomicSync.mock.calls.find(([p]) => String(p).endsWith('network-config.json'));
     expect(written).toBeDefined();
   });
 
   test('no settings.json (fresh install) → no migration, no write', () => {
     setFiles();
     registry.getNetwork(1);
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockWriteFileAtomicSync).not.toHaveBeenCalled();
   });
 
   test('network-config.json already present → migration is skipped', () => {
@@ -676,7 +682,7 @@ describe('legacy-config migration on load', () => {
       userConfig: { networks: { '1': { verification: { primary: 'quorum' } } } },
     });
     expect(registry.getNetwork(1).verification.primary).toBe('quorum');
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockWriteFileAtomicSync).not.toHaveBeenCalled();
   });
 
   test('corrupt network-config.json → defaults, no re-migration, file left intact', () => {
@@ -686,12 +692,12 @@ describe('legacy-config migration on load', () => {
     // Builtin default — NOT the migrated 'direct', and the corrupt file is
     // not overwritten by a re-migration.
     expect(registry.getNetwork(1).verification.primary).toBe('colibri');
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockWriteFileAtomicSync).not.toHaveBeenCalled();
   });
 
   test('migration write failure → migrated config still used in-memory', () => {
     setFiles({ settings: { enableEnsCustomRpc: true, ensRpcUrl: 'http://localhost:8545' } });
-    mockWriteFileSync.mockImplementationOnce(() => {
+    mockWriteFileAtomicSync.mockImplementationOnce(() => {
       throw new Error('disk full');
     });
     expect(registry.getNetwork(1).verification.primary).toBe('direct');

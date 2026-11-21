@@ -2,6 +2,7 @@ const log = require('./logger');
 const { ipcMain, nativeTheme } = require('electron');
 const { getFreedomDataPath } = require('./freedom-root');
 const fs = require('fs');
+const { writeFileAtomicSync } = require('./lib/atomic-file');
 const IPC = require('../shared/ipc-channels');
 const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
 const { sanitizeOverrides } = require('../shared/shortcuts');
@@ -241,6 +242,16 @@ function getSettingsPath() {
   return getFreedomDataPath(SETTINGS_FILE);
 }
 
+// settings.json replaced whole (lib/atomic-file.js, design 0013's set B): a
+// crash mid-save leaves the old file or the new one, never a torn one. Throws
+// as an in-place write did; a save whose flush failed is in place, and logged.
+function writeSettingsFile(filePath, settings) {
+  const { durable } = writeFileAtomicSync(filePath, JSON.stringify(settings, null, 2));
+  if (!durable) {
+    log.warn(`[settings] ${SETTINGS_FILE} saved, but not flushed to disk (durable: false)`);
+  }
+}
+
 // Rewrites bee-era keys to their ant-named replacements in place. Returns true
 // when at least one key was migrated so the caller can persist the result.
 function migrateRenamedKeys(parsed) {
@@ -301,7 +312,7 @@ function loadSettings() {
     const { filePath, parsed, changed } = readStoredSettings();
     if (changed) {
       try {
-        fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2), 'utf-8');
+        writeSettingsFile(filePath, parsed);
       } catch (err) {
         log.error('Failed to persist migrated settings:', err);
       }
@@ -482,7 +493,7 @@ function saveSettings(newSettings) {
     if (!changed) return true;
 
     const filePath = getSettingsPath();
-    fs.writeFileSync(filePath, JSON.stringify(merged, null, 2), 'utf-8');
+    writeSettingsFile(filePath, merged);
     cachedSettings = merged;
 
     if (merged.theme !== previous.theme) {

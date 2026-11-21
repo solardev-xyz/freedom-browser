@@ -10,6 +10,7 @@ const { app, ipcMain } = require('electron');
 const { getFreedomDataPath } = require('./freedom-root');
 const path = require('path');
 const fs = require('fs');
+const { writeFileAtomicSync } = require('./lib/atomic-file');
 
 // Builtin + custom tokens, merged once on first use. This module is the
 // only writer of custom-tokens.json and addCustomToken/removeCustomToken
@@ -69,9 +70,17 @@ function initRegistry() {
   console.log(`[TokenRegistry] Initialized with ${Object.keys(tokens).length} tokens`);
 }
 
+// custom-tokens.json replaced whole (lib/atomic-file.js, design 0013's set
+// B): a crash mid-save leaves the old file or the new one, never a torn one.
 function saveCustomTokens(customTokens) {
   try {
-    fs.writeFileSync(getCustomTokensPath(), JSON.stringify(customTokens, null, 2), 'utf-8');
+    const { durable } = writeFileAtomicSync(
+      getCustomTokensPath(),
+      JSON.stringify(customTokens, null, 2)
+    );
+    if (!durable) {
+      console.warn('[TokenRegistry] Custom tokens saved, but not flushed to disk (durable: false)');
+    }
     return true;
   } catch (err) {
     console.error('[TokenRegistry] Failed to save custom tokens:', err);

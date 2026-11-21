@@ -2,16 +2,37 @@
  * A file replaced whole, never written in place (freedom-core design 0001,
  * "Writes and durability": the single-file write).
  *
- * For files another process reads while main writes them. From the APR-3 pin
- * on, freedom-cored reads the four permission files at each of its checks
- * (design 0012, "The files (Q10)"), and each has since moved to the core,
- * which is its only writer: `dapp-permissions.json` from APB-2,
- * `swarm-permissions.json` and `radicle-permissions.json` from APB-3, and
- * `x402-permissions.json` from X402-2. Main writes none of the four. The one
- * caller left is test/helpers/reference-dapp-permissions.js, an older
- * build's dApp store that the rollback tests write `dapp-permissions.json`
- * through. The core reads a file that doesn't parse as an empty store, so a
- * read must never see a half-written one.
+ * For main's files that a crash mid-write must not leave torn, or that
+ * another process reads while main writes them:
+ *
+ * - **Set B**, the settings and caches main keeps (design 0013, "Which
+ *   stores", as the user decided Q14 on 2026-11-21): `settings.json`
+ *   (settings-store.js), `network-config.json` and `custom-chains.json`
+ *   (networks/network-registry.js), `custom-tokens.json`
+ *   (token-registry.js), `permissions.json` (permissions/permissions-store.js),
+ *   `adblock-allowlist.json` (adblock/allowlist-store.js), a legacy
+ *   profile's `external-node-decisions.json`
+ *   (profile-external-candidates.js), and the caches `balance-cache.json`
+ *   (wallet/balance-cache.js), `chain-catalog.json` (networks/chain-catalog.js,
+ *   from chain-catalog-worker.js's thread) and `swarm-browsing-credit.json`
+ *   (swarm/browsing-credit-service.js). Each store keeps its own JSON text,
+ *   read path and error handling, and logs a write that answers
+ *   `durable: false`. A crash mid-save now leaves the old file or the new
+ *   one, never a torn one that each store's read would have taken as its
+ *   defaults. The files become owner-only (0600), which costs nothing:
+ *   only Freedom, as this user, opens them.
+ * - **The reference dApp store.** From the APR-3 pin on, freedom-cored reads
+ *   the four permission files at each of its checks (design 0012, "The files
+ *   (Q10)"), and each has since moved to the core, which is its only writer
+ *   (`dapp-permissions.json` from APB-2, `swarm-permissions.json` and
+ *   `radicle-permissions.json` from APB-3, `x402-permissions.json` from
+ *   X402-2). Main writes none of the four, but
+ *   test/helpers/reference-dapp-permissions.js, an older build's dApp store,
+ *   writes `dapp-permissions.json` through here for the rollback tests. The
+ *   core reads a file that doesn't parse as an empty store, so a read must
+ *   never see a half-written one.
+ *
+ * Each write:
  *
  * - **The temp file** is new, in the target's directory, made exclusively
  *   (`wx`, so a name already there, a link included, fails the write instead
@@ -29,7 +50,9 @@
  *   `{ durable: false }` (0001's committed-but-not-durable outcome), and the
  *   caller reports it.
  *
- * Synchronous, as the stores that use it are.
+ * Synchronous, as the stores that use it are. chain-catalog.js writes its
+ * ~2 MB cache from its worker thread, so that fsync waits on the worker, not
+ * on main's event loop.
  */
 
 const crypto = require('crypto');
