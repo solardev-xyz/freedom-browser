@@ -61,13 +61,22 @@ function writeAccountRecords(identityDir, wallets, { active = 0 } = {}) {
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
   }
-  const hardware = wallets.map((wallet) => wallet.index).filter((index) => index >= HARDWARE_INDEX_BASE);
+  const hardware = wallets
+    .map((wallet) => wallet.index)
+    .filter((index) => index >= HARDWARE_INDEX_BASE);
   const next = {
     ...meta,
     derivedWallets: wallets.map(storedRecord),
     activeWalletIndex: active,
   };
-  if (hardware.length) next.nextHardwareWalletIndex = Math.max(...hardware) + 1;
+  // The reference's allocator never moves back: the file's counter, or one
+  // past the highest hardware index written, whichever is higher.
+  if (hardware.length) {
+    const kept = Number.isSafeInteger(meta.nextHardwareWalletIndex)
+      ? meta.nextHardwareWalletIndex
+      : 0;
+    next.nextHardwareWalletIndex = Math.max(kept, Math.max(...hardware) + 1);
+  }
   fs.mkdirSync(identityDir, { recursive: true });
   fs.writeFileSync(file, JSON.stringify(next, null, 2), { mode: 0o600 });
   return next;
