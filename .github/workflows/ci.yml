@@ -954,8 +954,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       # freedom-core design 0013, "One writer per store: `store_moved`":
-      # the build's hello names vault_meta (PRF-6(a)) and intents (PRF-6(b2)),
-      # and the pinned core echoes them. With a hello naming none, the pinned
+      # the build's hello names vault_meta (PRF-6(a)), intents (PRF-6(b2))
+      # and payments (PRF-6(c)), and the pinned core echoes them. With a hello naming none, the pinned
       # core echoes none, answers every store write
       # `not_moved` with nothing in the profile changed, and opens neither
       # payment-history.sqlite nor rpc-api-keys.json; a hello naming all
@@ -983,6 +983,25 @@ jobs:
       - name: The intent journal through the core (real freedom-cored, pinned and previous)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/wallet/intent-store.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
+      # freedom-core design 0013, "Payment history" (PRF-6(c)): this build
+      # names `payments`, so the core is payment-history.sqlite's one writer
+      # and reader. Main's payment-history.js against the pinned core
+      # (append, update and the marks, each broadcast after the core's
+      # answer; the refusals' classes; the repoll sweep; filters and paging,
+      # also through the chrome's IPC; clear; x402-receipts.json imported
+      # from user_data_dir and renamed .migrated), with main writing,
+      # reading and opening none of the database's files (an fs spy, a spy
+      # on better-sqlite3's constructor, and on Linux /proc's descriptors);
+      # the reference with a hello naming none (every payments.* not_moved,
+      # no database made by the core); the previous release, where every
+      # payments.* fails requirement_unmet; and the reference reading the
+      # core's database as the core answers it.
+      - name: The payment history through the core (real freedom-cored, pinned and previous)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/payment-history.integration.test.js
         env:
           FREEDOM_CORED_STORES_TEST: '1'
 
