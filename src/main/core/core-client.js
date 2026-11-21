@@ -37,7 +37,9 @@
  *   it (Q10).
  * - **`store_moved`** (design 0013, "One writer per store") names the set-A
  *   stores (`STORES`) whose only writer is the core: `STORE_MOVED`, a
- *   property of the build: `vault_meta` from PRF-6(a). The core's answer echoes
+ *   property of the build: `vault_meta` from PRF-6(a), and `safe_pending`
+ *   (PRF-6(d)), whose every write main sends to the core's `safe_pending.*`
+ *   (wallet/safe/pending-store.js). The core's answer echoes
  *   the names it took, each once (cored 0.23.0); a core before 0.23.0
  *   (0.22.0) ignores the field, and its answer has none, which reads as
  *   none taken. A store's requests go with `requires: requiresStore(name)`,
@@ -106,10 +108,11 @@ const STORES = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending
  * The stores this build names in every hello's `store_moved`, whose only
  * writer is then the core. It is a property of the build, never a run-time
  * switch: each PRF-6 step adds its store's name in the change that deletes
- * main's writer for it. `vault_meta` from PRF-6(a): identity-manager.js
- * writes `vault-meta.json` nowhere.
+ * main's writer for it, in `STORES` order. `vault_meta` from PRF-6(a):
+ * identity-manager.js writes `vault-meta.json` nowhere. `safe_pending` from
+ * PRF-6(d): main keeps a copy of `safe-pending.json` and writes it nowhere.
  */
-const STORE_MOVED = Object.freeze(['vault_meta']);
+const STORE_MOVED = Object.freeze(['vault_meta', 'safe_pending']);
 
 /**
  * The hello answer's `store_moved`: the names of `sent` whose store the core
@@ -210,8 +213,8 @@ function coreService(storeMoved = STORE_MOVED) {
       ...(client.userDataDir === null ? {} : { user_data_dir: client.userDataDir }),
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
       // The set-A stores the core writes from then on (design 0013):
-      // vault-meta.json (PRF-6(a)). The core echoes those it took; 0.22.0
-      // ignores the field.
+      // vault-meta.json (PRF-6(a)) and safe-pending.json (PRF-6(d)). The
+      // core echoes those it took; 0.22.0 ignores the field.
       store_moved: [...storeMoved],
     }),
     validHello: (result) => validHello(result, storeMoved),

@@ -189,6 +189,58 @@ describe('vaultBackend', () => {
     await expect(vaultBackend.accounts.list()).rejects.toMatchObject({ code: 'requirement_unmet' });
   });
 
+  // safe-pending.json's methods (design 0013, PRF-6(d)): main's own, each
+  // with `requires: requiresStore('safe_pending')`; the core's errors as
+  // they come.
+  test('safePending.*: wire shapes, shell and requires', async () => {
+    const entry = { safeTxHash: '0x05', signatures: [] };
+    const core = new FakeCore((method, params) => {
+      switch (method) {
+        case 'safe_pending.get':
+          return { entry: params.index === 5 ? entry : null };
+        case 'safe_pending.list':
+          return { indices: [5] };
+        case 'safe_pending.set':
+          return { durable: false };
+        case 'safe_pending.clear':
+          if (params.index === 6) {
+            throw Object.assign(new Error('The pending Safe transactions could not be written'), {
+              code: 'storage',
+              data: { store: 'safe_pending' },
+            });
+          }
+          return { cleared: true, durable: true };
+        default:
+          throw coreError('unknown_method', 'Unknown method');
+      }
+    });
+    const { vaultBackend } = load(core);
+    const { safePending } = vaultBackend;
+    await expect(safePending.get(5)).resolves.toEqual(entry);
+    await expect(safePending.get(6)).resolves.toBeNull();
+    await expect(safePending.list()).resolves.toEqual([5]);
+    await expect(safePending.set(5, entry)).resolves.toEqual({ durable: false });
+    await expect(safePending.clear(5)).resolves.toEqual({ cleared: true, durable: true });
+    await expect(safePending.clear(6)).rejects.toMatchObject({
+      code: 'storage',
+      message: 'The pending Safe transactions could not be written',
+      data: { store: 'safe_pending' },
+    });
+    expect(core.calls.map(({ method, params, context }) => [method, params, context.caller])).toEqual([
+      ['safe_pending.get', { index: 5 }, 'shell'],
+      ['safe_pending.get', { index: 6 }, 'shell'],
+      ['safe_pending.list', {}, 'shell'],
+      ['safe_pending.set', { index: 5, entry }, 'shell'],
+      ['safe_pending.clear', { index: 5 }, 'shell'],
+      ['safe_pending.clear', { index: 6 }, 'shell'],
+    ]);
+    for (const { options } of core.calls) {
+      expect(options.watchdogMs).toBe(15_000);
+      expect(options.requires({ store_moved: ['safe_pending'] })).toBe(true);
+      expect(options.requires({ store_moved: ['vault_meta'] })).toBe(false);
+    }
+  });
+
   test('no core: a typed unavailable error', async () => {
     const { vaultBackend } = load(null);
     await expect(vaultBackend.status()).rejects.toMatchObject({ code: 'core_unavailable' });
@@ -889,6 +941,11 @@ describe('vaultBackend', () => {
     await accounts.setActive(0);
     await accounts.rename(0, 'm');
     await accounts.remove(1, []);
+    const { safePending } = vaultBackend;
+    await safePending.get(1);
+    await safePending.list();
+    await safePending.set(1, {});
+    await safePending.clear(1);
 
     const sent = new Set(core.calls.map((c) => c.method));
     // Every method vault-backend.js sends was sent above.
@@ -913,6 +970,10 @@ describe('vaultBackend', () => {
       if (metaWrites(method, params)) {
         expect([method, requires({ store_moved: ['vault_meta'] })]).toEqual([method, true]);
         expect([method, requires({ store_moved: [] })]).toEqual([method, false]);
+      } else if (method.startsWith('safe_pending.')) {
+        // safe-pending.json's (PRF-6(d)) require `safe_pending`.
+        expect([method, requires({ store_moved: ['safe_pending'] })]).toEqual([method, true]);
+        expect([method, requires({ store_moved: ['vault_meta'] })]).toEqual([method, false]);
       } else {
         expect([method, requires]).toEqual([method, null]);
       }

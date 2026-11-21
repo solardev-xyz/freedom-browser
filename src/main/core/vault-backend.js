@@ -34,6 +34,9 @@ const CORE_UNAVAILABLE = 'core_unavailable';
 // and `vault.create`'s and `vault.import`'s, which write it with the vault,
 // go only to a core whose hello echoed `vault_meta`.
 const VAULT_META = requiresStore('vault_meta');
+// `safe-pending.json` is the core's (design 0013, PRF-6(d)): its requests go
+// only to a core whose hello echoed `safe_pending`.
+const SAFE_PENDING = requiresStore('safe_pending');
 // The mutations that write vault-meta.json with the vault, and so their
 // reconcile too.
 const META_OPS = new Set(['create', 'import']);
@@ -602,6 +605,37 @@ const vaultBackend = {
         if (err.code === 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE') err.references = swarmReferences;
         throw err;
       }
+    },
+  },
+
+  /**
+   * The pending Safe transactions, `safe-pending.json` (design 0013,
+   * "Pending Safe transactions"; cored 0.23.0), which the core keeps once
+   * the hello names `safe_pending` (wallet/safe/pending-store.js is main's
+   * copy). Each is main's own (`shell`: the core refuses them from the
+   * chrome or a page), with `requires: requiresStore('safe_pending')`, so a
+   * core that didn't take the store fails it `requirement_unmet` in main,
+   * unsent. `index` is the Safe's wallet index; an entry is any JSON value,
+   * kept as main sent it. A failed write is `storage` (and a set past the
+   * file's 1 MiB bound `invalid_argument`), the store as it was; a write
+   * may answer `durable: false` (written, not yet flushed).
+   */
+  safePending: {
+    /** `getPending(index)`: the entry, or null for none. */
+    async get(index) {
+      return (await call('safe_pending.get', { index }, null, { requires: SAFE_PENDING })).entry;
+    },
+    /** `listPendingIndexes()`: the indices with an entry, in the file's key order. */
+    async list() {
+      return (await call('safe_pending.list', {}, null, { requires: SAFE_PENDING })).indices;
+    },
+    /** `setPending(index, entry)` → `{ durable }`. */
+    set(index, entry) {
+      return call('safe_pending.set', { index, entry }, null, { requires: SAFE_PENDING });
+    },
+    /** `clearPending(index)` → `{ cleared, durable }` (`cleared`: it had an entry). */
+    clear(index) {
+      return call('safe_pending.clear', { index }, null, { requires: SAFE_PENDING });
     },
   },
 

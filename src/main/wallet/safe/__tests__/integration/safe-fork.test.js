@@ -310,9 +310,9 @@ describeFork('Safe on forked Gnosis (pinned addresses, retroactive deploy)', () 
     // them unresolved into protocol-kit blew up with `Address "0" is
     // invalid`. This walks the REAL start → sign → execute path, un-mocked.
     const { startSafeSend, signSafePending, executeSafePending } = require('../../safe-transactions');
-    // The mocked electron userData dir is shared across runs — drop any
-    // pending entry a previous run left behind.
-    require('../../pending-store').clearPending(5);
+    // Main's copy of the pending SafeTxs (the identity core's store since
+    // PRF-6(d)) starts empty for this run.
+    require('../../pending-store')._reset();
 
     // Fund the (deployed, previous test) safe on the Gnosis fork.
     const gnosisProvider = new JsonRpcProvider(anvilUrl(FORKS.gnosis), 100, { staticNetwork: true });

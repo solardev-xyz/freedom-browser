@@ -1599,25 +1599,26 @@ function removalRefusedBeforeCleanup(err) {
  * Delete a derived wallet, through the core (`accounts.remove`, design 0013),
  * which refuses the main wallet, a missing index, a Safe's owner and an
  * account the Swarm feeds still name (main's feed store finds those, and
- * passes them), then ends a Safe's open approvals, forgets the account's
- * dApp grants (main's copy follows `approval.changed`) and removes the
- * record, in one request.
+ * passes them), then ends a Safe's open approvals, clears its pending
+ * SafeTx (safe-pending.json, the core's from PRF-6(d)), forgets the
+ * account's dApp grants (main's copy follows `approval.changed`) and
+ * removes the record, in one request.
  *
  * A Safe's exclusion is main's: taken before the request, refused
  * (SAFE_BUSY) while one of its steps runs or a send has reserved it, and
- * released after. Its half-signed state, keyed by wallet index (the
- * in-memory approval slots and SafeMessage session, and safe-pending.json
- * until that store moves), goes once the record has: a later account that
- * reuses the index must neither inherit nor be blocked by it. A failed
- * clear of the pending entry is logged.
+ * released after. Its half-signed state in main, keyed by wallet index (the
+ * in-memory approval slots and SafeMessage session, and main's copy of its
+ * pending entry), goes once the record has: a later account that reuses
+ * the index must neither inherit nor be blocked by it.
  *
  * A removal that fails after it may have reached the core's cleanup (a
  * `storage` or `not_moved` answer from a later step, or no answer at all)
- * has ended the Safe's approvals in the core while the account stays: main
- * drops its own approval slots too, so the Safe's next step asks for a new
- * approval instead of presenting a token the core ended. A refusal the core
- * answers before any cleanup (`invalid_argument`, carried as its `data.code`)
- * and a request never sent (`requirement_unmet`) leave them.
+ * may have ended the Safe's approvals and cleared its pending SafeTx in the
+ * core while the account stays: main drops its own approval slots too, so
+ * the Safe's next step asks for a new approval instead of presenting a
+ * token the core ended, and reads the pending entry again. A refusal the
+ * core answers before any cleanup (`invalid_argument`, carried as its
+ * `data.code`) and a request never sent (`requirement_unmet`) leave them.
  *
  * @param {number} index - Wallet index (cannot be 0)
  * @param {'chrome'|null} [caller] - the chrome's request, or main's own
@@ -1634,17 +1635,16 @@ async function deleteDerivedWallet(index, caller = null) {
     try {
       await vaultBackend.accounts.remove(index, references, caller);
     } catch (err) {
-      if (isSafe && !removalRefusedBeforeCleanup(err)) safeApprovals.forgetSafe(index);
+      if (isSafe && !removalRefusedBeforeCleanup(err)) {
+        safeApprovals.forgetSafe(index);
+        await require('./wallet/safe/pending-store').refreshPending(index);
+      }
       throw err;
     }
     if (isSafe) {
       safeApprovals.forgetSafe(index);
       require('./wallet/safe/message-sessions').discardSession(index);
-      try {
-        require('./wallet/safe/pending-store').clearPending(index);
-      } catch (err) {
-        console.warn('[IdentityManager] A deleted Safe\'s pending transaction was not cleared:', err.message);
-      }
+      require('./wallet/safe/pending-store').forgetPending(index);
     }
   } finally {
     deletion?.release();
