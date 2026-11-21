@@ -445,11 +445,19 @@ function captureRequestContextHandler(details) {
   return null;
 }
 
+// onCompleted and onErrorOccurred. A request whose payment header went out
+// and that ended with no response headers seen (a network error, say) was
+// paid for all the same, as far as main can tell: its record is written
+// `no-receipt`, with why, as a tab's teardown writes one, and a response
+// arriving for it later adds nothing.
 function clearRequestContextHandler(details) {
   if (typeof details?.id === 'number') {
-    // A request that ended with no response headers writes no record.
-    releaseSlotOf(awaitingResponse.get(details.id));
-    awaitingResponse.delete(details.id);
+    const failed = typeof details.error === 'string' && details.error;
+    finalizeAwaitingResponse(
+      details.id,
+      failed ? 'request failed' : 'completed without response headers',
+      failed ? { requestError: details.error } : {}
+    );
     requestContext.delete(details.id);
   }
   return null;
@@ -731,14 +739,23 @@ function authorizationNonceOf(headerValue) {
 function finalizeAwaitingResponsesForWebContents(webContentsId, cleanupReason) {
   for (const [requestId, entry] of [...awaitingResponse]) {
     if (entry?.webContentsId !== webContentsId) continue;
-    awaitingResponse.delete(requestId);
-    appendX402PaymentRecord(
-      entry,
-      PAYMENT_STATUSES.NO_RECEIPT,
-      { metadata: { cleanupReason } },
-      'cleanup receipt append'
-    );
+    finalizeAwaitingResponse(requestId, cleanupReason);
   }
+}
+
+// A request whose header went out ends with no response main saw: its
+// record is written `no-receipt`, with `cleanupReason` (and `extra`), and
+// its history slot becomes that record. Once only: the entry goes.
+function finalizeAwaitingResponse(requestId, cleanupReason, extra = {}) {
+  const entry = awaitingResponse.get(requestId);
+  if (!entry) return;
+  awaitingResponse.delete(requestId);
+  appendX402PaymentRecord(
+    entry,
+    PAYMENT_STATUSES.NO_RECEIPT,
+    { metadata: { cleanupReason, ...extra } },
+    'cleanup receipt append'
+  );
 }
 
 /**
@@ -1526,8 +1543,10 @@ async function sendIfCapStands(signed, details) {
 function attachPayment(signed, details) {
   // Arm the receipt logger by `details.id` — stable through to the
   // matching response. `webContentsId` rides along for cleanup-by-tab, and
-  // the payment's history slot until its record takes it.
-  releaseSlotOf(awaitingResponse.get(details.id));
+  // the payment's history slot until its record takes it. An earlier
+  // payment attached to the same request went out with no response seen
+  // for it: it is recorded `no-receipt`, not dropped as unsent.
+  finalizeAwaitingResponse(details.id, 'request reissued');
   awaitingResponse.set(details.id, {
     webContentsId: details.webContentsId,
     url: details.url,

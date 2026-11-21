@@ -422,23 +422,29 @@ describe('signAndQueueRetry — a slot in the payment history for each payment',
         expect(await consumePending(7, URL_)).toBeNull();
       },
     ],
-    [
-      'aborted: the request ended with no response',
-      async () => {
-        await autoPay();
-        const injected = await intercept.injectPaymentSignatureHandler({
-          id: 41,
-          webContentsId: 7,
-          url: URL_,
-          requestHeaders: {},
-        });
-        expect(injected?.requestHeaders?.['PAYMENT-SIGNATURE']).toBeDefined();
-        intercept.clearRequestContextHandler({ id: 41 });
-      },
-    ],
   ])('%s: its slot goes back', async (_name, run) => {
     await run();
     await flushSettles();
+    expect(history.historyBacklog()).toMatchObject({ unlanded: 0, reserved: 0 });
+  });
+
+  // Codex round 4 on #1299: its header went out, so it is recorded.
+  test('a request ended with no response after its header went out: its slot becomes a no-receipt record', async () => {
+    await autoPay();
+    const injected = await intercept.injectPaymentSignatureHandler({
+      id: 41,
+      webContentsId: 7,
+      url: URL_,
+      requestHeaders: {},
+    });
+    expect(injected?.requestHeaders?.['PAYMENT-SIGNATURE']).toBeDefined();
+    intercept.clearRequestContextHandler({ id: 41, error: 'net::ERR_CONNECTION_RESET' });
+    expect(history.historyBacklog()).toMatchObject({ unlanded: 1, reserved: 0 });
+    expect(mockPayments.append).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'x402', status: 'no-receipt', metadata: expect.objectContaining({ cleanupReason: 'request failed', authorizationNonce: expect.any(String) }) })
+    );
+    unanswered.shift()();
+    await flush();
     expect(history.historyBacklog()).toMatchObject({ unlanded: 0, reserved: 0 });
   });
 
@@ -502,7 +508,9 @@ describe('signAndQueueRetry — a slot in the payment history for each payment',
     intercept.cleanupWebContents(8);
     await flushSettles();
     expect(outcomes).toEqual(['busy']);
-    expect(history.historyBacklog()).toMatchObject({ unlanded: 1, reserved: 0 });
+    // Two records wait (the aborted request's, `no-receipt`, and the
+    // answered one's); no slot is left reserved.
+    expect(history.historyBacklog()).toMatchObject({ unlanded: 2, reserved: 0 });
   });
 });
 

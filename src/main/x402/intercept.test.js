@@ -17,10 +17,16 @@ jest.mock('../webrequest-dispatcher', () => ({
 }));
 
 const mockAppendReceipt = jest.fn();
+// The history slot each record took over, and each slot given back.
+const mockAppendSlots = [];
+const mockReleaseSlot = jest.fn();
 jest.mock('../payment-history', () => ({
-  appendOnce: (entry) => mockAppendReceipt(entry),
+  appendOnce: (entry, slot) => {
+    mockAppendSlots.push(slot);
+    return mockAppendReceipt(entry);
+  },
   reserveHistorySlot: () => ({}),
-  releaseHistorySlot: jest.fn(),
+  releaseHistorySlot: (...args) => mockReleaseSlot(...args),
   KINDS: { X402: 'x402', WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' },
   STATUSES: {
     PENDING: 'pending', CONFIRMED: 'confirmed', FAILED: 'failed',
@@ -1927,7 +1933,11 @@ describe('clearRequestContextHandler', () => {
     });
   });
 
-  test('drops awaitingResponse for signed retries that error before response headers', async () => {
+  // Codex round 4 on #1299: a request whose header went out was paid for as
+  // far as main can tell, whatever became of its response: it is recorded
+  // `no-receipt` once, its history slot handed to the record, and a
+  // response arriving later adds nothing.
+  const attachTo = async (id, slot) => {
     setPendingPayment(7, 'https://x.example/m', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
@@ -1935,24 +1945,86 @@ describe('clearRequestContextHandler', () => {
       chainId: 8453,
       asset: '0xa',
       amount: '1',
+      historySlot: slot,
     });
     await injectPaymentSignatureHandler({
-      id: 1010,
+      id,
       webContentsId: 7,
       url: 'https://x.example/m',
       requestHeaders: {},
     });
-
-    clearRequestContextHandler({ id: 1010 });
-
-    const responseB64 = Buffer.from(JSON.stringify({ txHash: '0xtx' })).toString('base64');
+  };
+  const lateResponse = (id) =>
     paymentResponseLoggingHandler({
-      id: 1010,
+      id,
       webContentsId: 7,
       url: 'https://x.example/m',
       statusLine: 'HTTP/1.1 200 OK',
-      responseHeaders: { 'PAYMENT-RESPONSE': [responseB64] },
+      responseHeaders: {
+        'PAYMENT-RESPONSE': [Buffer.from(JSON.stringify({ txHash: '0xtx' })).toString('base64')],
+      },
     });
+
+  test.each([
+    [
+      'errors before response headers',
+      { error: 'net::ERR_CONNECTION_RESET' },
+      { cleanupReason: 'request failed', requestError: 'net::ERR_CONNECTION_RESET' },
+    ],
+    [
+      'completes without response headers seen',
+      {},
+      { cleanupReason: 'completed without response headers' },
+    ],
+  ])('a signed retry that %s is recorded no-receipt once, and a late response adds nothing', async (_name, ending, metadata) => {
+    mockAppendSlots.length = 0;
+    mockReleaseSlot.mockClear();
+    const slot = { slot: 1010 };
+    await attachTo(1010, slot);
+
+    clearRequestContextHandler({ id: 1010, ...ending });
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+    expect(mockAppendReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'x402',
+      url: 'https://x.example/m',
+      amount: '1',
+      status: 'no-receipt',
+      txHash: null,
+      metadata,
+    }));
+    // Its slot became the record: handed over, not given back.
+    expect(mockAppendSlots).toEqual([slot]);
+    expect(mockReleaseSlot).not.toHaveBeenCalledWith(slot);
+
+    lateResponse(1010);
+    clearRequestContextHandler({ id: 1010, ...ending });
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  test('a payment attached again to the same request records the earlier one no-receipt, not unsent', async () => {
+    mockAppendSlots.length = 0;
+    mockReleaseSlot.mockClear();
+    const first = { slot: 1020 };
+    const second = { slot: 1021 };
+    await attachTo(1020, first);
+    await attachTo(1020, second);
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+    expect(mockAppendReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'no-receipt',
+      metadata: { cleanupReason: 'request reissued' },
+    }));
+    expect(mockAppendSlots).toEqual([first]);
+    expect(mockReleaseSlot).not.toHaveBeenCalledWith(first);
+    // The second is answered as its own.
+    lateResponse(1020);
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(2);
+    expect(mockAppendReceipt).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'settled', txHash: '0xtx' }));
+    expect(mockAppendSlots).toEqual([first, second]);
+  });
+
+  test('a request that ends with no payment attached records nothing', () => {
+    clearRequestContextHandler({ id: 1030, error: 'net::ERR_ABORTED' });
+    clearRequestContextHandler({ id: 1031 });
     expect(mockAppendReceipt).not.toHaveBeenCalled();
   });
 
