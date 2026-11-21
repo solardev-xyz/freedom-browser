@@ -26,6 +26,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { test, expect } = require('./fixtures');
 const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
@@ -51,7 +52,7 @@ test.describe('provider frame attribution (O-6)', () => {
   // A real vault on disk, so the app boots past onboarding and the dApp connect
   // prompt has an account to offer.
   test.beforeEach(async ({ userDataDir }) => {
-    const identityDir = path.join(userDataDir, 'identity');
+    const identityDir = freedomPath(userDataDir, 'identity');
     fs.mkdirSync(identityDir, { recursive: true });
     const mnemonic = await identity.createVault(identityDir, VAULT_PASSWORD);
     const keys = identity.deriveAllKeys(mnemonic);

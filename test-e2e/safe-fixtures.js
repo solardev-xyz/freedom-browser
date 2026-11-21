@@ -15,6 +15,7 @@ const { spawn, spawnSync } = require('child_process');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
+const { freedomPath } = require('../test/helpers/freedom-path');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -279,7 +280,7 @@ const test = base.extend({
     fs.mkdirSync(radicleDir, { recursive: true });
 
     fs.writeFileSync(
-      path.join(userDataDir, 'settings.json'),
+      freedomPath(userDataDir, 'settings.json'),
       JSON.stringify({
         enableIdentityWallet: true,
         startAntAtLaunch: false,
@@ -292,7 +293,7 @@ const test = base.extend({
 
     // Every Gnosis RPC the app resolves goes to the anvil fork.
     fs.writeFileSync(
-      path.join(userDataDir, 'network-config.json'),
+      freedomPath(userDataDir, 'network-config.json'),
       JSON.stringify({
         // Two endpoints for the one fork: anvil itself and a forwarder on a
         // second loopback port (rpc-forwarder.js says why not two anvils),

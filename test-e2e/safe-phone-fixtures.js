@@ -12,6 +12,7 @@ const { test: base, expect, _electron: electron, chromium } = require('@playwrig
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { freedomPath } = require('../test/helpers/freedom-path');
 const { Wallet } = require('ethers');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -119,7 +120,7 @@ const test = base.extend({
     fs.mkdirSync(radicleDir, { recursive: true });
 
     fs.writeFileSync(
-      path.join(userDataDir, 'settings.json'),
+      freedomPath(userDataDir, 'settings.json'),
       JSON.stringify({
         enableIdentityWallet: true,
         startAntAtLaunch: false,
@@ -131,7 +132,7 @@ const test = base.extend({
     );
 
     fs.writeFileSync(
-      path.join(userDataDir, 'network-config.json'),
+      freedomPath(userDataDir, 'network-config.json'),
       JSON.stringify({
         // Two endpoints for the one fork: anvil itself and a forwarder on a
         // second loopback port (rpc-forwarder.js says why not two anvils),

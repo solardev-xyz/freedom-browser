@@ -10,7 +10,7 @@
 // launch does not read) fails here instead of in a user's hands.
 
 const fs = require('fs');
-const path = require('path');
+const { freedomPath } = require('../../test/helpers/freedom-path');
 
 const { test, expect, browserWindow } = require('../fixtures');
 
@@ -36,7 +36,7 @@ test('a theme change survives a full quit and relaunch', async ({
   // relaunch would only be re-reading a race. saveSettings writes
   // <userData>/settings.json; poll for it so a future async write does not
   // turn this into a flake.
-  const settingsFile = path.join(userDataDir, 'settings.json');
+  const settingsFile = freedomPath(userDataDir, 'settings.json');
   await expect
     .poll(() => {
       try {
