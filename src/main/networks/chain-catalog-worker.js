@@ -13,7 +13,10 @@ const OPS = {
 if (!isMainThread && parentPort) {
   catalog.configure({
     cachePath: workerData.cachePath,
-    log: { error: (message) => parentPort.postMessage({ type: 'log', level: 'error', message }) },
+    log: {
+      error: (message) => parentPort.postMessage({ type: 'log', level: 'error', message }),
+      warn: (message) => parentPort.postMessage({ type: 'log', level: 'warn', message }),
+    },
   });
   parentPort.on('message', async (message) => {
     const op = OPS[message?.op];

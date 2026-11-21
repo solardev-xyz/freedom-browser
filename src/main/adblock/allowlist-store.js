@@ -13,6 +13,7 @@
 const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
 const log = require('../logger');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 const { normalizeHost } = require('./request-classifier');
 
 const ALLOWLIST_FILE = 'adblock-allowlist.json';
@@ -39,9 +40,15 @@ function loadHosts() {
   return cachedHosts;
 }
 
+// The file replaced whole (lib/atomic-file.js, design 0013's set B): a crash
+// mid-save leaves the old file or the new one, never a torn one.
 function saveHosts() {
   try {
-    fs.writeFileSync(getAllowlistPath(), JSON.stringify({ hosts: cachedHosts }, null, 2), 'utf-8');
+    const { durable } = writeFileAtomicSync(
+      getAllowlistPath(),
+      JSON.stringify({ hosts: cachedHosts }, null, 2)
+    );
+    if (!durable) log.warn('[adblock] allowlist saved, but not flushed to disk (durable: false)');
   } catch (err) {
     log.error(`[adblock] failed to save allowlist: ${err.message}`);
   }

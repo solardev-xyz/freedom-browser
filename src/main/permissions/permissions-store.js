@@ -18,6 +18,7 @@
 
 const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
 const PERMISSIONS_FILE = 'permissions.json';
@@ -56,10 +57,15 @@ function loadPermissions() {
   return permissionsCache;
 }
 
+// permissions.json replaced whole (lib/atomic-file.js, design 0013's set B):
+// a crash mid-save leaves the old file or the new one, never a torn one.
 function savePermissions() {
   try {
     const filePath = getPermissionsPath();
-    fs.writeFileSync(filePath, JSON.stringify(permissionsCache, null, 2), 'utf-8');
+    const { durable } = writeFileAtomicSync(filePath, JSON.stringify(permissionsCache, null, 2));
+    if (!durable) {
+      console.warn('[SitePermissions] Permissions saved, but not flushed to disk (durable: false)');
+    }
   } catch (err) {
     console.error('[SitePermissions] Failed to save permissions:', err);
   }

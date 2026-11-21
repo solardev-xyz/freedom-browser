@@ -15,6 +15,7 @@
  */
 
 const fs = require('node:fs');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 
 const CATALOG_URL = 'https://chainlist.org/rpcs.json';
 const CACHE_FILE = 'chain-catalog.json';
@@ -34,6 +35,10 @@ function cachePath() {
 
 function logError(message) {
   (configuredLog || require('../logger')).error(message);
+}
+
+function logWarn(message) {
+  (configuredLog || require('../logger')).warn(message);
 }
 
 function configure({ cachePath: file = null, log = null } = {}) {
@@ -91,8 +96,11 @@ async function loadCatalog() {
     try {
       const chains = await fetchCatalog();
       memo = { fetchedAt: Date.now(), chains };
+      // Replaced whole (lib/atomic-file.js, design 0013's set B): a crash
+      // mid-write leaves the old cache or the new one, never a torn one.
       try {
-        fs.writeFileSync(cachePath(), JSON.stringify(memo), 'utf-8');
+        const { durable } = writeFileAtomicSync(cachePath(), JSON.stringify(memo));
+        if (!durable) logWarn('[chain-catalog] cache written, but not flushed (durable: false)');
       } catch (err) {
         logError(`[chain-catalog] failed to write cache: ${err.message}`);
       }
