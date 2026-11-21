@@ -20,6 +20,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const { HDNodeWallet, Wallet, getBytes, verifyMessage, verifyTypedData } = require('ethers');
+const { seedAccountRecords } = require('../../../test/helpers/core-account-records');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary =
@@ -224,6 +225,8 @@ describeIfBinary("the Agent's sheet answers the real freedom-cored's prompts (00
     });
     await core.start();
     await vaultBackend.importVault('testpass1', ABANDON);
+    // The core's own records name the accounts main's world does (G20, G20b).
+    await seedAccountRecords(core, path.join(root, 'identity'), wallets);
     custodyOffersAlways = !(await aprSevenCore());
     // Every core from 0.22.0 has APR-7: there the probe must find it.
     const [major, minor] = String(core.hello?.core_version).split('.').map(Number);

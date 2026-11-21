@@ -22,6 +22,7 @@ const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { Wallet, TypedDataEncoder } = require('ethers');
+const { writeAccountRecords } = require('../../../../test/helpers/core-account-records');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary =
@@ -168,6 +169,9 @@ describeIfBinary('phone jobs with the real freedom-cored (PHN-2)', () => {
     jest.doMock('../transaction-service', () => ({ waitForTransaction: () => new Promise(() => {}) }));
     jest.doMock('../intent-store', () => ({ getIntentStore: () => ({}) }));
 
+    // The phone's account in the core's own records (G20: phone.job checks
+    // the account and its address against them).
+    writeAccountRecords(path.join(root, 'identity'), [{ index: INDEX, name: 'Phone', address: PHONE.address, type: 'remote' }]);
     await core.start();
     const { generations } = await core.request(
       'chain.configure',

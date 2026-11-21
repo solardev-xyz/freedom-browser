@@ -28,6 +28,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const { HDNodeWallet, Wallet, Transaction, getAddress } = require('ethers');
+const { seedAccountRecords } = require('../../../test/helpers/core-account-records');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 // A real core reads its chain on real timers.
@@ -434,6 +435,8 @@ describeIfBinary('page sends through the real freedom-cored\'s eip1193.request (
     );
     chain.generation = generations['100'];
     await vaultBackend.importVault('testpass1', ABANDON);
+    // The core's own records name the accounts main's world does (G20, G20b).
+    await seedAccountRecords(core, path.join(root, 'identity'), wallets);
   });
 
   afterAll(async () => {

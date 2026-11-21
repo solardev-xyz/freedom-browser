@@ -30,6 +30,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { Wallet, TypedDataEncoder, recoverAddress } = require('ethers');
+const { seedAccountRecords } = require('../../../test/helpers/core-account-records');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary =
@@ -41,8 +42,9 @@ const describeIfBinary = binary ? describe : describe.skip;
 const quietLog = { info() {}, warn() {}, error() {} };
 const ABANDON =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
-// The abandon mnemonic's accounts 0 and 1.
-const ACCOUNTS = ['0x9858EfFD232B4033E47d90003D41EC34EcaEda94', '0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0'];
+// The abandon mnemonic's accounts 0 and 1, as the vault derives them
+// (m/44'/60'/<index>'/0/0).
+const ACCOUNTS = ['0x9858EfFD232B4033E47d90003D41EC34EcaEda94', '0x78839F6054d7ed13918bAe0473BA31b1Ca9D7265'];
 
 const ORIGIN = 'https://api.example';
 // Base USDC as sellers write it, checksummed: the core keys it in lowercase.
@@ -71,6 +73,14 @@ const DEVICE_RECORDS = {
   [LEDGER_INDEX]: { index: LEDGER_INDEX, type: 'ledger', address: LEDGER_KEY.address, path: "44'/60'/0'/0/0" },
   [PHONE_INDEX]: { index: PHONE_INDEX, type: 'remote', address: PHONE_KEY.address },
 };
+// Main's accounts, which the core's own records hold too (G20: the kind and
+// address x402.authorize's `device` and phone.job are checked against).
+const WALLETS = [
+  { index: 0, name: 'Main Wallet', address: ACCOUNTS[0], type: 'mnemonic' },
+  { index: 1, name: 'Wallet 2', address: ACCOUNTS[1], type: 'mnemonic' },
+  { ...DEVICE_RECORDS[LEDGER_INDEX], name: 'Ledger' },
+  { ...DEVICE_RECORDS[PHONE_INDEX], name: 'Phone' },
+];
 
 describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
   jest.setTimeout(30000);
@@ -196,6 +206,7 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
     await core.start();
     expect(await require('../core/grants').grantStore('x402').whenLoaded()).toBe(true);
     await vaultBackend.importVault('testpass1', ABANDON);
+    await seedAccountRecords(request, path.join(root, 'identity'), WALLETS);
   });
 
   afterAll(async () => {
