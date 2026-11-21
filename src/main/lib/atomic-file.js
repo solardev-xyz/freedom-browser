@@ -19,8 +19,9 @@
  *   read path and error handling, and logs a write that answers
  *   `durable: false`. A crash mid-save now leaves the old file or the new
  *   one, never a torn one that each store's read would have taken as its
- *   defaults. The files become owner-only (0600), which costs nothing:
- *   only Freedom, as this user, opens them.
+ *   defaults. On POSIX the files become owner-only (0600), which costs
+ *   nothing: only Freedom, as this user, opens them. Windows ignores the
+ *   mode; there the profile directory's ACL protects them.
  * - **The reference dApp store.** From the APR-3 pin on, freedom-cored reads
  *   the four permission files at each of its checks (design 0012, "The files
  *   (Q10)"), and each has since moved to the core, which is its only writer
@@ -50,9 +51,10 @@
  *   `{ durable: false }` (0001's committed-but-not-durable outcome), and the
  *   caller reports it.
  *
- * Synchronous, as the stores that use it are. chain-catalog.js writes its
- * ~2 MB cache from its worker thread, so that fsync waits on the worker, not
- * on main's event loop.
+ * Synchronous, as the stores that use it are. chain-catalog.js normally
+ * writes its ~2 MB cache from its worker thread, so that fsync waits on the
+ * worker; only when the worker is unavailable does chain-catalog-host.js
+ * run the same refresh, and its fsync, on main.
  */
 
 const crypto = require('crypto');

@@ -1,2 +1,2 @@
 - Settings survive a crash during save ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
-  - A crash or power loss while Freedom saved your settings, network and chain choices, custom tokens, site permissions or ad-block exceptions could leave the file half-written, and Freedom then started with the defaults
+  - Settings, networks, custom tokens, site permissions and ad-block exceptions no longer reset to defaults after a crash mid-save
