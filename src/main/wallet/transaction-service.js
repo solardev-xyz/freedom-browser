@@ -601,7 +601,7 @@ function intentContext(context, key) {
 async function resendIntent(intentId, { hash, guardHandoff = null } = {}) {
   const store = getIntentStore();
   await store.ready;
-  const intent = store.get(intentId);
+  const intent = await store.get(intentId);
   if (!intent) {
     const error = new Error(
       "This payment is not in the wallet's records, so it can't be sent again."
@@ -689,8 +689,8 @@ function replacementFeesFor(fields, fees) {
   return { gasPrice: gasPrice.toString() };
 }
 
-function heldIntent(store, intentId) {
-  const intent = store.get(intentId);
+async function heldIntent(store, intentId) {
+  const intent = await store.get(intentId);
   if (!intent) {
     const error = new Error("This payment is not in the wallet's records.");
     error.code = 'INTENT_UNKNOWN';
@@ -714,7 +714,7 @@ function heldIntent(store, intentId) {
 async function replacementFees(intentId) {
   const store = getIntentStore();
   await store.ready;
-  const { fields, chainId } = heldIntent(store, intentId);
+  const { fields, chainId } = await heldIntent(store, intentId);
   let quote = null;
   try {
     quote = await getGasPrices(chainId);
@@ -771,7 +771,7 @@ async function replacementFees(intentId) {
 async function replaceIntent(intentId, fees, signer) {
   const store = getIntentStore();
   await store.ready;
-  const intent = heldIntent(store, intentId);
+  const intent = await heldIntent(store, intentId);
   replacementFeesFor(intent.fields, fees);
 
   let committed = null;
@@ -781,7 +781,7 @@ async function replaceIntent(intentId, fees, signer) {
       { chainId: intent.chainId, sender: intent.sender },
       async () => {
         // As it stands under the lock: another replacement may have landed.
-        const current = heldIntent(store, intentId);
+        const current = await heldIntent(store, intentId);
         const checked = replacementFeesFor(current.fields, fees);
         if (String(await signer.getAddress()).toLowerCase() !== current.sender) {
           const error = new Error("This payment's account is not the one asked to sign it.");

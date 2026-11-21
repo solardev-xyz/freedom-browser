@@ -51,13 +51,22 @@ function coredBinaries() {
 
 /**
  * A started CoreClient on `binary`, with its identity and lock directories
- * under `root`, which is also its grant root. With `storeMoved`, its hello
- * names those stores (and takes an echo of those only) rather than the
- * build's `STORE_MOVED`. `beforeStart(client)` runs (and is awaited) before
- * the client starts: a test loads main's modules on it there, so what
- * listens for the handshake hears it.
+ * under `root`, which is also its grant root unless `grantRoot` names
+ * another. With `storeMoved`, its hello names those stores (and takes an
+ * echo of those only) rather than the build's `STORE_MOVED`; with
+ * `userDataDir`, it names that as the profile's directory (PRF-8b-lite).
+ * `beforeStart(client)` runs (and is awaited) before the client starts: a
+ * test loads main's modules on it there, so what listens for the handshake
+ * hears it.
  */
-async function startCore({ binary, root, storeMoved, beforeStart = null }) {
+async function startCore({
+  binary,
+  root,
+  storeMoved,
+  grantRoot = root,
+  userDataDir,
+  beforeStart = null,
+}) {
   const { CoreClient, _internal } = require('../../src/main/core/core-client');
   const client = new CoreClient({
     spawn,
@@ -71,7 +80,8 @@ async function startCore({ binary, root, storeMoved, beforeStart = null }) {
     ],
     log: quietLog,
     shellVersion: 'jest',
-    grantRoot: root,
+    grantRoot,
+    userDataDir,
   });
   if (storeMoved) client.service = _internal.coreService(storeMoved);
   if (beforeStart) await beforeStart(client);

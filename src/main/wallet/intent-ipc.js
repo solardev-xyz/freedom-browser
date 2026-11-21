@@ -152,14 +152,14 @@ function resendBinding(view) {
 }
 
 /** The intent fields a failed send or resend reports, from its error. */
-function intentFailure(err) {
+async function intentFailure(err) {
   const fields = {};
   if (typeof err?.code === 'string') fields.code = err.code;
   if (err?.outcome) fields.outcome = err.outcome;
   if (err?.reasonClass) fields.reasonClass = err.reasonClass;
   if (err?.intentId) {
     fields.intentId = err.intentId;
-    const view = getIntentStore().get(err.intentId);
+    const view = await getIntentStore().get(err.intentId);
     if (view) fields.intent = intentSummary(view);
   }
   return fields;
@@ -190,10 +190,10 @@ function receiptsByIntent() {
  * (whose `state` says whether it is still held), or nothing for an intent
  * main doesn't know.
  */
-function currentIntent(intentId) {
+async function currentIntent(intentId) {
   if (typeof intentId !== 'string') return {};
   try {
-    const view = getIntentStore().get(intentId);
+    const view = await getIntentStore().get(intentId);
     return view ? { intentId: view.intentId, intent: intentSummary(view) } : {};
   } catch {
     // The records aren't loaded: no word either way.
@@ -232,7 +232,7 @@ async function listHeldIntents() {
   await store.ready;
   const receipts = receiptsByIntent();
   const tracker = getIntentTracker();
-  return store.held().map((view) => {
+  return (await store.held()).map((view) => {
     const observation = tracker.observation(view.intentId);
     const mined = observation?.observed === OBSERVED.INCLUDED ? 'mined' : null;
     const couldntConfirm = couldntConfirmOf(view, tracker);
@@ -259,8 +259,8 @@ async function waitingIntents() {
 }
 
 // A held intent, or the error that says why there is none.
-function heldView(store, intentId) {
-  const view = typeof intentId === 'string' ? store.get(intentId) : null;
+async function heldView(store, intentId) {
+  const view = typeof intentId === 'string' ? await store.get(intentId) : null;
   if (!view) {
     const error = new Error("This payment is not in the wallet's records.");
     error.code = 'INTENT_UNKNOWN';
@@ -304,7 +304,7 @@ function takeSafeStep(view) {
 async function resendHeldIntent(intentId, authorization) {
   const store = getIntentStore();
   await store.ready;
-  const view = heldView(store, intentId);
+  const view = await heldView(store, intentId);
   // A Safe's execution: its Safe's step, through the broadcast.
   const endSafeStep = takeSafeStep(view);
   try {
@@ -342,7 +342,7 @@ function replaceBinding(view, fees) {
 async function replaceHeldIntent(intentId, fees, authorization) {
   const store = getIntentStore();
   await store.ready;
-  const view = heldView(store, intentId);
+  const view = await heldView(store, intentId);
   const walletIndex = view.context?.walletIndex;
   if (!Number.isSafeInteger(walletIndex)) {
     const error = new Error("This payment's account isn't known, so it can't be replaced.");
@@ -400,10 +400,10 @@ function closeBinding(view) {
 async function closeHeldIntent(intentId, authorization) {
   const store = getIntentStore();
   await store.ready;
-  const view = heldView(store, intentId);
+  const view = await heldView(store, intentId);
   const binding = closeBinding(view);
   await spendConfirmation(confirmationFor(authorization?.confirmation, CONFIRM_KINDS.INTENT_CLOSE, null, binding));
-  const evidence = getIntentTracker().closeEvidence(view.intentId);
+  const evidence = await getIntentTracker().closeEvidence(view.intentId);
   if (!evidence) {
     const error = new Error(
       "This payment can't be closed: the network hasn't shown that its place in the queue " +
@@ -455,8 +455,8 @@ function registerIntentIpc({
       return {
         success: false,
         error: err.message,
-        ...intentFailure(err),
-        ...currentIntent(intentId),
+        ...(await intentFailure(err)),
+        ...(await currentIntent(intentId)),
       };
     }
   });
@@ -468,8 +468,8 @@ function registerIntentIpc({
       return {
         success: false,
         error: err.message,
-        ...intentFailure(err),
-        ...currentIntent(intentId),
+        ...(await intentFailure(err)),
+        ...(await currentIntent(intentId)),
       };
     }
   });
@@ -482,8 +482,8 @@ function registerIntentIpc({
       return {
         success: false,
         error: err.message,
-        ...intentFailure(err),
-        ...currentIntent(intentId),
+        ...(await intentFailure(err)),
+        ...(await currentIntent(intentId)),
       };
     }
   });
@@ -496,8 +496,8 @@ function registerIntentIpc({
       return {
         success: false,
         error: err.message,
-        ...intentFailure(err),
-        ...currentIntent(intentId),
+        ...(await intentFailure(err)),
+        ...(await currentIntent(intentId)),
       };
     }
   });

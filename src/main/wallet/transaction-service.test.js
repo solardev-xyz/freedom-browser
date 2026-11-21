@@ -119,7 +119,7 @@ describe('signAndSendTransaction (signer-based)', () => {
     expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
     expect(onCommitted).not.toHaveBeenCalled();
     await mockIntentStore.ready;
-    expect(mockIntentStore.held()).toEqual([]);
+    expect(await mockIntentStore.held()).toEqual([]);
     // Let through: the guard commits, and the send goes on at the same nonce.
     const passing = jest.fn(async (commit) => commit());
     const result = await signAndSendTransaction(params, signer, { guardCommit: passing, onCommitted });
@@ -149,7 +149,7 @@ describe('signAndSendTransaction (signer-based)', () => {
     await expect(signAndSendTransaction(params, ledger)).rejects.toBe(withdrawn);
     expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
     await mockIntentStore.ready;
-    expect(mockIntentStore.held()).toEqual([]);
+    expect(await mockIntentStore.held()).toEqual([]);
     const phone = {
       getAddress: async () => '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
       sendTransaction: jest.fn(async () => { throw withdrawn; }),
@@ -200,7 +200,7 @@ describe('signAndSendTransaction (signer-based)', () => {
     release();
     await expect(sending).rejects.toBe(refusal);
     await mockIntentStore.ready;
-    expect(mockIntentStore.byKey(intentKey)).toBeNull();
+    expect(await mockIntentStore.byKey(intentKey)).toBeNull();
     expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
     // Committed, then not sent: the intent is held under its key.
     holds = true;
@@ -208,15 +208,15 @@ describe('signAndSendTransaction (signer-based)', () => {
       throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
     });
     await expect(signAndSendTransaction(params, signer, { intentKey, context, guardCommit })).rejects.toThrow();
-    const intent = mockIntentStore.byKey(intentKey);
+    const intent = await mockIntentStore.byKey(intentKey);
     expect(intent).toMatchObject({ context: { origin: 'https://app.example' } });
-    const handoffs = mockIntentStore.get(intent.intentId).handoffs.length;
+    const handoffs = (await mockIntentStore.get(intent.intentId)).handoffs.length;
     // Sent again: the guard runs before the handoff, and refuses.
     holds = false;
     guardCommit.mockClear();
     await expect(signAndSendTransaction(params, signer, { intentKey, context, guardCommit })).rejects.toBe(refusal);
     expect(guardCommit).toHaveBeenCalledTimes(1);
-    expect(mockIntentStore.get(intent.intentId).handoffs).toHaveLength(handoffs);
+    expect((await mockIntentStore.get(intent.intentId)).handoffs).toHaveLength(handoffs);
     expect(mockBroadcastRawTransaction).toHaveBeenCalledTimes(1);
     // Let through: the guard takes the handoff, and the same bytes go out.
     holds = true;
@@ -248,8 +248,8 @@ describe('signAndSendTransaction (signer-based)', () => {
       throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
     });
     await expect(signAndSendTransaction(params, signer, { intentKey, context })).rejects.toThrow();
-    const intent = mockIntentStore.byKey(intentKey);
-    const handoffs = mockIntentStore.get(intent.intentId).handoffs.length;
+    const intent = await mockIntentStore.byKey(intentKey);
+    const handoffs = (await mockIntentStore.get(intent.intentId)).handoffs.length;
     const broadcasts = mockBroadcastRawTransaction.mock.calls.length;
     // Another send of the executor account holds its lock.
     let releaseLock;
@@ -280,7 +280,7 @@ describe('signAndSendTransaction (signer-based)', () => {
     await holding;
     await expect(resending).rejects.toBe(refusal);
     expect(guardCommit).toHaveBeenCalledTimes(1);
-    expect(mockIntentStore.get(intent.intentId).handoffs).toHaveLength(handoffs);
+    expect((await mockIntentStore.get(intent.intentId)).handoffs).toHaveLength(handoffs);
     expect(mockBroadcastRawTransaction).toHaveBeenCalledTimes(broadcasts);
     console.error.mockRestore();
     console.log.mockRestore();

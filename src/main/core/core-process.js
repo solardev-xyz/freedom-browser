@@ -56,13 +56,18 @@ async function startCore() {
     shellVersion: app.getVersion(),
     // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
     // `dweb.forget`. It's the client's only protocol, and the only one the
-    // pinned core (0.23.0) takes; a core that answers another is a
+    // pinned core (0.24.0) takes; a core that answers another is a
     // mismatch, not restarted.
     protocol: PROTOCOL_VERSION_STREAMS,
     // The hello's `grant_root` (design 0012, APR-3): where the four
     // permission files are, the profile's Freedom root (its userData until
     // 0013's move, freedom-root.js), which the stores write them under.
     grantRoot: getFreedomDataDir(),
+    // The hello's `user_data_dir` (design 0013, PRF-8b-lite): the profile's
+    // own directory, where the core imports the legacy `x402-receipts.json`
+    // from once. It stays at the profile's root after 0013's move, when the
+    // Freedom root no longer is.
+    userDataDir: app.getPath('userData'),
   });
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));
   // Every (re)start reports node identity writes recovery couldn't finish;
