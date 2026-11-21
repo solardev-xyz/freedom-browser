@@ -1417,6 +1417,125 @@ describe('injectPaymentSignatureHandler', () => {
   });
 });
 
+// === A cap's payment whose request ends while `sent` settles ============
+//
+// Codex round 5 on #1299: between taking a cap's payment for a request and
+// the core's answer to `sent`, the request or its tab can end. The answer
+// then attaches nothing (the header never went out, so the seller holds
+// nothing and no record is written), and the payment's history slot goes
+// back exactly once, whatever the answer.
+describe("a cap's payment whose request ends while the core settles it sent", () => {
+  const ARTICLE = `${ORIGIN}/article`;
+  let open;
+  let settle;
+
+  beforeEach(async () => {
+    mockAppendSlots.length = 0;
+    mockReleaseSlot.mockClear();
+    settle = mockCore.x402.settle;
+  });
+
+  afterEach(() => {
+    mockCore.x402.settle = settle;
+  });
+
+  /** `sent` held until `open(fail)`: answered as the core would, or refused with `fail`. */
+  function holdSent() {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    mockCore.x402.settle = async (params, ...rest) => {
+      if (params?.outcome !== 'sent') return settle.call(mockCore.x402, params, ...rest);
+      const fail = await gate;
+      if (fail) throw fail;
+      return settle.call(mockCore.x402, params, ...rest);
+    };
+    open = release;
+  }
+
+  async function signedAndHeld(slot) {
+    await coverWithCap({ capAmount: '20000' });
+    const reservation = await coreCharge();
+    setPendingPayment(7, ARTICLE, {
+      header: X402_HEADERS.SIGNATURE_V2,
+      value: 'sig',
+      origin: ORIGIN,
+      chainId: CHAIN,
+      asset: USDC,
+      amount: '10000',
+      authorizedBy: 'cap',
+      reservation,
+      charged: true,
+      historySlot: slot,
+    });
+    holdSent();
+    const injecting = injectPaymentSignatureHandler({
+      id: 2001,
+      webContentsId: 7,
+      url: ARTICLE,
+      requestHeaders: {},
+    });
+    await flushSettles();
+    return { reservation, injecting };
+  }
+
+  const later = () => {
+    paymentResponseLoggingHandler({
+      id: 2001,
+      webContentsId: 7,
+      url: ARTICLE,
+      statusLine: 'HTTP/1.1 200 OK',
+      responseHeaders: {},
+    });
+    clearRequestContextHandler({ id: 2001 });
+  };
+
+  test.each([
+    ['its request errored', () => clearRequestContextHandler({ id: 2001, error: 'net::ERR_ABORTED' })],
+    ['its tab closed', () => cleanupWebContents(7)],
+  ])('answered sent after %s: nothing attached or recorded, its slot released once', async (_name, end) => {
+    const slot = { slot: 'held' };
+    const { injecting } = await signedAndHeld(slot);
+    end();
+    open(null);
+    expect(await injecting).toBeNull();
+    later();
+    await flushSettles();
+    expect(mockAppendReceipt).not.toHaveBeenCalled();
+    expect(mockReleaseSlot.mock.calls.filter(([s]) => s === slot)).toHaveLength(1);
+    expect(mockAppendSlots).toEqual([]);
+  });
+
+  test.each([
+    ['its request errored', () => clearRequestContextHandler({ id: 2001, error: 'net::ERR_ABORTED' })],
+    ['its tab closed', () => cleanupWebContents(7)],
+  ])('refused after %s: nothing attached or recorded, its charge back, its slot released once', async (_name, end) => {
+    const slot = { slot: 'refused' };
+    const { reservation, injecting } = await signedAndHeld(slot);
+    end();
+    open(Object.assign(new Error('The identity core is not running'), { code: 'core_unavailable' }));
+    expect(await injecting).toBeNull();
+    later();
+    await flushSettles();
+    expect(mockAppendReceipt).not.toHaveBeenCalled();
+    expect(mockReleaseSlot.mock.calls.filter(([s]) => s === slot)).toHaveLength(1);
+    expect(coreSettles()).toContainEqual({ reservation, outcome: 'withheld' });
+    expect(spentOnCap()).toBe('0');
+  });
+
+  test('answered sent while its request is live: attached, and recorded once its response comes', async () => {
+    const slot = { slot: 'live' };
+    const { injecting } = await signedAndHeld(slot);
+    open(null);
+    expect((await injecting)?.requestHeaders?.[X402_HEADERS.SIGNATURE_V2]).toBe('sig');
+    later();
+    expect(mockAppendReceipt).toHaveBeenCalledTimes(1);
+    expect(mockAppendSlots).toEqual([slot]);
+    expect(mockReleaseSlot).not.toHaveBeenCalledWith(slot);
+  });
+});
+
 // === Unsent signatures settle on their own (TTL timer, navigation) ======
 //
 // A signature the core charged a cap for and that never went out is

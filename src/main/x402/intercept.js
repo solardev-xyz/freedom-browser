@@ -112,6 +112,12 @@ const pendingPayments = new Map();
 // security: PAYMENT-RESPONSE headers are only honoured for requests we
 // armed ourselves, never arbitrary server-side headers.
 const awaitingResponse = new Map();
+// A cap's payment taken out of `pendingPayments` for a request and waiting
+// for the core's answer to `sent` (sendIfCapStands), by request id: `{
+// webContentsId, ended }`. Its request's end, or its tab's, marks it
+// `ended` meanwhile, so the answer attaches nothing to a request already
+// over.
+const settlingPayments = new Map();
 
 // Captured outgoing request shape, keyed by `details.id`. The detector
 // on `onHeadersReceived` reads this to derive a retry key — the response
@@ -452,6 +458,8 @@ function captureRequestContextHandler(details) {
 // arriving for it later adds nothing.
 function clearRequestContextHandler(details) {
   if (typeof details?.id === 'number') {
+    const settling = settlingPayments.get(details.id);
+    if (settling) settling.ended = true;
     const failed = typeof details.error === 'string' && details.error;
     finalizeAwaitingResponse(
       details.id,
@@ -798,6 +806,9 @@ function cleanupWebContents(webContentsId) {
   abortPendingApprovalsForTab(webContentsId, new Error('tab destroyed'));
   releaseApprovalClaimsForTab(webContentsId);
   abortPendingUnlockWait(webContentsId, new Error('tab destroyed'));
+  for (const settling of settlingPayments.values()) {
+    if (settling.webContentsId === webContentsId) settling.ended = true;
+  }
   // `pendingPayments` keys start with `${webContentsId}|` (the retry-key
   // format), so prefix match drops them in one pass.
   const prefix = `${webContentsId}|`;
@@ -1527,7 +1538,25 @@ function injectPaymentSignatureHandler(details) {
  */
 async function sendIfCapStands(signed, details) {
   const url = sanitizeUrlForLog(details.url);
-  const settled = await settleSent(signed.reservation, signed.origin);
+  const key = typeof details.id === 'number' ? details.id : Symbol('request');
+  const settling = { webContentsId: details.webContentsId, ended: false };
+  settlingPayments.set(key, settling);
+  let settled;
+  try {
+    settled = await settleSent(signed.reservation, signed.origin);
+  } finally {
+    if (settlingPayments.get(key) === settling) settlingPayments.delete(key);
+  }
+  if (settled.sent && settling.ended) {
+    // Its request, or its tab, ended while the core answered: the header
+    // was never attached, so the seller holds nothing, and no record is
+    // written. The core spent the reservation as `sent`, so the cap's
+    // charge stays where it was taken (as for `cap_changed`); its history
+    // slot goes back.
+    releaseSlotOf(signed);
+    log.warn(`[x402:inject] the request for ${url} ended before its signature could be attached; nothing was sent`);
+    return null;
+  }
   if (settled.sent) return attachPayment(signed, details);
   if (settled.reason === 'cap_changed') {
     releaseSlotOf(signed);
