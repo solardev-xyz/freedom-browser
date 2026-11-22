@@ -32,8 +32,21 @@ const HAS_MYOTIS = [
   path.join(repoRoot, 'myotis-bin', `${osDir}-${process.arch}`, 'myotis-node.node'),
 ].some((candidate) => candidate && fs.existsSync(candidate));
 
-// Each node, the settings that start it, and the path under `freedom/` that
-// shows it has started on the profile's data.
+// Myotis's supervisor takes its lease in the generation it runs,
+// `myotis/verified-sync/<generation>/` (checkpoint-store.js), not in `myotis/`.
+function myotisLeaseUnder(freedom) {
+  const generations = path.join(freedom, 'myotis', 'verified-sync');
+  try {
+    return fs
+      .readdirSync(generations)
+      .some((name) => fs.existsSync(path.join(generations, name, '.freedom-myotis-lifetime')));
+  } catch {
+    return false;
+  }
+}
+
+// Each node, the settings that start it, and what under `freedom/` shows it
+// has started on the profile's data: a path, or a check of its own.
 const NODES = [
   {
     label: 'Ant',
@@ -59,7 +72,7 @@ const NODES = [
     label: 'Myotis',
     present: HAS_MYOTIS,
     settings: { startMyotisAtLaunch: true },
-    started: path.join('myotis', '.freedom-myotis-lifetime'),
+    started: myotisLeaseUnder,
   },
 ];
 const NODES_OFF = {
@@ -166,11 +179,17 @@ test('a moved profile with the real nodes keeps no socket, FIFO or device under 
 
     for (const node of running) {
       await expect
-        .poll(() => fs.existsSync(path.join(freedom, node.started)), {
-          message: `${node.label} to start on the profile's data in freedom/`,
-          timeout: START_TIMEOUT_MS,
-          intervals: [1_000, 2_000],
-        })
+        .poll(
+          () =>
+            typeof node.started === 'function'
+              ? node.started(freedom)
+              : fs.existsSync(path.join(freedom, node.started)),
+          {
+            message: `${node.label} to start on the profile's data in freedom/`,
+            timeout: START_TIMEOUT_MS,
+            intervals: [1_000, 2_000],
+          }
+        )
         .toBe(true);
       if (node.api) {
         await expect
