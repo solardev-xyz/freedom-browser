@@ -340,7 +340,8 @@ describeIfBinary('the starting move through the real freedom-cored (0013, PRF-9 
         freedomRoot.resetFreedomRoot();
         const { getIdentityDataDir } = require('./profile-paths');
         const { CoreClient } = require('./core/core-client');
-        // core-process.js's arguments, from main's getters.
+        // core-process.js's arguments, from main's getters; the client adds
+        // the grant's (freedom-core design 0017, C1).
         mockCore = new CoreClient({
           spawn,
           command: binary,

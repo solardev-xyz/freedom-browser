@@ -307,8 +307,15 @@ describeIfPrevious('the set-A stores on the previous freedom-cored release', () 
     ({ requiresStore, STORES } = require('./core-client'));
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-previous-'));
     // The hello also names the profile's directory (PRF-8b-lite), which a
-    // core before 0.24.0 ignores, as every member it doesn't know.
-    core = await startCore({ binary: previous, root, storeMoved: STORES, userDataDir: root });
+    // core before 0.24.0 ignores, as every member it doesn't know. It
+    // doesn't know serve's grant arguments either (design 0017, C1).
+    core = await startCore({
+      binary: previous,
+      root,
+      storeMoved: STORES,
+      userDataDir: root,
+      grantArgs: false,
+    });
   });
 
   afterAll(async () => {

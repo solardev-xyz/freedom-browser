@@ -576,6 +576,8 @@ describeIfPrevious('the intent journal on the previous core release (T4)', () =>
       log: quietLog,
       shellVersion: 'jest',
       grantRoot: root,
+      // 0.22.0 doesn't know serve's grant arguments (design 0017, C1).
+      grantArgs: false,
     });
     jest.resetModules();
     jest.doMock('electron', () => ({

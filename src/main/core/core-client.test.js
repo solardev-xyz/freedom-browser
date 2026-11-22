@@ -251,10 +251,15 @@ describe('CoreClient', () => {
       }),
     ]);
     const hello = await client.start();
-    expect(hello).toEqual({ ...helloResult(), node_recovery: null, store_moved: [] });
+    expect(hello).toEqual({
+      ...helloResult(),
+      node_recovery: null,
+      store_moved: [],
+      confinement: null,
+    });
     const [command, args, options] = spawn.mock.calls[0];
     expect(command).toBe('/bin/freedom-cored');
-    expect(args).toEqual(['serve']);
+    expect(args).toEqual(['serve', '--grant-root', path.resolve(os.tmpdir())]);
     expect(options.stdio).toEqual(['pipe', 'pipe', 'pipe']);
     expect(children[0].requests[0]).toMatchObject({
       type: 'request',
@@ -307,6 +312,115 @@ describe('CoreClient', () => {
     expect(without.client.userDataDir).toBeNull();
     await without.client.start();
     expect(without.children[0].requests[0].params).not.toHaveProperty('user_data_dir');
+  });
+
+  // freedom-core design 0017, C1: a `serve` command gets the grant's
+  // arguments from the client itself, the hello's own values, so the two
+  // can't disagree; a confining core refuses a hello that differs from them.
+  test("a serve command gets --grant-root and --user-data-dir, the hello's values", async () => {
+    const profile = path.join(os.tmpdir(), 'freedom-user-data');
+    const root = path.join(profile, 'freedom');
+    const given = (dir) => `${dir}${path.sep}.${path.sep}x${path.sep}..${path.sep}`;
+    const { client, children, spawn } = makeClient([helloHandler()], {
+      grantRoot: given(root),
+      userDataDir: given(profile),
+    });
+    await client.start();
+    const { params } = children[0].requests[0];
+    expect(spawn.mock.calls[0][1]).toEqual([
+      'serve',
+      '--grant-root',
+      params.grant_root,
+      '--user-data-dir',
+      params.user_data_dir,
+    ]);
+    expect(params.grant_root).toBe(path.resolve(root));
+    expect(params.user_data_dir).toBe(path.resolve(profile));
+    expect(client.args).toEqual(spawn.mock.calls[0][1]);
+  });
+
+  test('without userDataDir, a serve command gets --grant-root alone, after its own arguments', () => {
+    const client = new CoreClient({
+      spawn: jest.fn(),
+      command: '/bin/freedom-cored',
+      args: ['serve', '--data-dir', '/p/identity', '--lock-dir', '/locks'],
+      grantRoot: `${path.sep}p${path.sep}.${path.sep}`,
+    });
+    expect(client.args).toEqual([
+      'serve',
+      '--data-dir',
+      '/p/identity',
+      '--lock-dir',
+      '/locks',
+      '--grant-root',
+      path.resolve(`${path.sep}p`),
+    ]);
+  });
+
+  test('grantArgs: false leaves the arguments as given, for a core that knows none (0.22.0)', () => {
+    const args = ['serve', '--data-dir', '/p/identity', '--lock-dir', '/locks'];
+    const client = new CoreClient({
+      spawn: jest.fn(),
+      command: '/bin/freedom-cored',
+      args,
+      grantRoot: os.tmpdir(),
+      userDataDir: os.tmpdir(),
+      grantArgs: false,
+    });
+    expect(client.args).toEqual(args);
+    // The hello still names both.
+    const params = client.service.helloParams(client);
+    expect(params.grant_root).toBe(path.resolve(os.tmpdir()));
+    expect(params.user_data_dir).toBe(path.resolve(os.tmpdir()));
+  });
+
+  test("only serve gets the grant's arguments, and a caller can't pass them itself", () => {
+    const options = { spawn: jest.fn(), command: '/bin/freedom-cored', grantRoot: os.tmpdir() };
+    expect(new CoreClient({ ...options, args: ['hold-lock'] }).args).toEqual(['hold-lock']);
+    expect(new CoreClient({ ...options, args: null }).args).toBeNull();
+    for (const flag of ['--grant-root', '--user-data-dir']) {
+      expect(() => new CoreClient({ ...options, args: ['serve', flag, os.tmpdir()] })).toThrow(
+        'the core client passes --grant-root and --user-data-dir itself'
+      );
+    }
+  });
+
+  // freedom-core design 0017: the hello's answer carries the confinement the
+  // core got, as design 0010 reports it for the services; a core before
+  // 0.28.0 sends none.
+  test('the hello keeps the confinement report, null when the core sends none', () => {
+    const report = {
+      mechanism: 'landlock-6+seccomp',
+      files: 'enforced',
+      exec: 'enforced',
+      ipc: 'partial',
+      network: 'enforced',
+      gaps: ['signals'],
+      reasons: {},
+    };
+    expect(coreInternal.validHello(helloResult({ confinement: report })).confinement).toEqual({
+      ...report,
+      resolution: null,
+    });
+    expect(coreInternal.validHello(helloResult()).confinement).toBeNull();
+    expect(coreInternal.validHello(helloResult({ confinement: null })).confinement).toBeNull();
+  });
+
+  test.each([
+    ['a string', 'enforced'],
+    ['no mechanism', { files: 'enforced', exec: 'enforced', ipc: 'enforced', network: 'enforced' }],
+    [
+      'an unknown status',
+      {
+        mechanism: 'seatbelt',
+        files: 'maybe',
+        exec: 'enforced',
+        ipc: 'enforced',
+        network: 'enforced',
+      },
+    ],
+  ])('a confinement report that is %s fails the hello', (_name, confinement) => {
+    expect(coreInternal.validHello(helloResult({ confinement }))).toBeNull();
   });
 
   // freedom-core design 0013, "One writer per store": the build names

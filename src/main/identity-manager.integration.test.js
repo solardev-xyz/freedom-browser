@@ -712,6 +712,8 @@ describeIfPrevious(
       core = await startCore({
         binary: previous,
         root: p.root,
+        // 0.22.0 doesn't know serve's grant arguments (design 0017, C1).
+        grantArgs: false,
         beforeStart: (client) => {
           request = client.request.bind(client);
           ({ mod, ipcMain } = loadMain(client, p.root, swarm));

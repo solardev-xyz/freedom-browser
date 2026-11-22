@@ -45,6 +45,60 @@ function client(dataDir, lockDir, spawnFn = spawn) {
   });
 }
 
+/** A raw `serve`'s arguments under `root`, with its grant root (design
+ * 0017, C1), as CoreClient passes them. */
+function rawServeArgs(root) {
+  return [
+    'serve',
+    '--data-dir',
+    path.join(root, 'identity'),
+    '--lock-dir',
+    path.join(root, 'locks'),
+    '--grant-root',
+    root,
+  ];
+}
+
+/**
+ * A raw core on `args`, sent one protocol 2 hello with `grant`'s members:
+ * `{ child, exited, messages, reply }`, `exited` resolving to the exit
+ * code, `messages` the frames it answered, and `reply` resolving to the
+ * first.
+ */
+function rawHello(args, grant) {
+  const child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'ignore'] });
+  const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+  const decoder = new FrameDecoder();
+  const messages = [];
+  let replied;
+  const reply = new Promise((resolve) => {
+    replied = resolve;
+  });
+  child.stdout.on('data', (chunk) => {
+    for (const { message } of decoder.push(chunk)) {
+      messages.push(message);
+      replied(message);
+    }
+  });
+  child.stdin.on('error', () => {});
+  child.stdin.write(
+    encodeFrame({
+      type: 'request',
+      id: 1,
+      method: 'core.hello',
+      params: {
+        protocol: 2,
+        shell_version: 'jest',
+        auto_lock_ms: 60000,
+        frames: ['fragment', 'stream'],
+        ...grant,
+      },
+      context: { caller: 'shell' },
+    })
+  );
+  return { child, exited, messages, reply };
+}
+
 describeIfBinary('CoreClient with the real freedom-cored', () => {
   let root;
   // Stopped after each test, even one that times out.
@@ -64,6 +118,17 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     expect(hello.protocol).toBe(2);
     expect(hello.capabilities).toContain('vault.status');
     expect(hello.capabilities).toContain('streams');
+    // Design 0017: a confining core reports what it got (the pinned 0.27.0,
+    // none).
+    if (hello.confinement !== null) {
+      expect(hello.confinement).toMatchObject({
+        mechanism: expect.any(String),
+        files: expect.any(String),
+        exec: expect.any(String),
+        ipc: expect.any(String),
+        network: expect.any(String),
+      });
+    }
     expect(core.streamStats()).toMatchObject({ outstanding: 0, pieces: 0, sending: 0 });
     await expect(core.request('vault.status')).resolves.toEqual({
       exists: false,
@@ -79,11 +144,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   test('protocol 1 is refused: protocol_mismatch naming 2, then exit 76', async () => {
     // From 0.11.0 (freedom-core #265), so the pinned 0.27.0 too: only protocol 2.
     // CoreClient can't ask for 1, so this is a raw hello, as main's was.
-    const child = spawn(
-      binary,
-      ['serve', '--data-dir', path.join(root, 'identity'), '--lock-dir', path.join(root, 'locks')],
-      { stdio: ['pipe', 'pipe', 'ignore'] }
-    );
+    const child = spawn(binary, rawServeArgs(root), { stdio: ['pipe', 'pipe', 'ignore'] });
     const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
     const decoder = new FrameDecoder();
     const messages = [];
@@ -118,33 +179,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     ['with a relative grant_root', { grant_root: 'profile' }],
     ['with a grant_root that has ..', { grant_root: `${path.resolve('profile')}${path.sep}..` }],
   ])('a hello %s is refused: invalid_argument, then exit 76', async (_, grant) => {
-    const child = spawn(
-      binary,
-      ['serve', '--data-dir', path.join(root, 'identity'), '--lock-dir', path.join(root, 'locks')],
-      { stdio: ['pipe', 'pipe', 'ignore'] }
-    );
-    const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
-    const decoder = new FrameDecoder();
-    const messages = [];
-    child.stdout.on('data', (chunk) => {
-      for (const { message } of decoder.push(chunk)) messages.push(message);
-    });
-    child.stdin.on('error', () => {});
-    child.stdin.write(
-      encodeFrame({
-        type: 'request',
-        id: 1,
-        method: 'core.hello',
-        params: {
-          protocol: 2,
-          shell_version: 'jest',
-          auto_lock_ms: 60000,
-          frames: ['fragment', 'stream'],
-          ...grant,
-        },
-        context: { caller: 'shell' },
-      })
-    );
+    const { exited, messages } = rawHello(rawServeArgs(root), grant);
     expect(await exited).toBe(76);
     expect(messages).toEqual([
       {
@@ -156,6 +191,57 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
         },
       },
     ]);
+  });
+
+  // Design 0017, C1: the hello must name serve's --grant-root and
+  // --user-data-dir, which CoreClient passes from the hello's own values; a
+  // raw hello shows what a main whose two disagree would get. The pinned
+  // 0.27.0 checks a given argument already; the confining core (0.28.0)
+  // also refuses a user_data_dir its arguments don't name.
+  test.each([
+    ['another grant_root', [], (dir) => ({ grant_root: path.join(dir, 'other') })],
+    [
+      'no user_data_dir beside --user-data-dir',
+      (dir) => ['--user-data-dir', dir],
+      (dir) => ({ grant_root: dir }),
+    ],
+    [
+      'another user_data_dir',
+      (dir) => ['--user-data-dir', dir],
+      (dir) => ({ grant_root: dir, user_data_dir: path.join(dir, 'other') }),
+    ],
+  ])(
+    "a hello with %s than serve's arguments is refused: invalid_argument, then exit 76",
+    async (_, extra, grant) => {
+      const args = [...rawServeArgs(root), ...(typeof extra === 'function' ? extra(root) : extra)];
+      const { exited, messages } = rawHello(args, grant(root));
+      expect(await exited).toBe(76);
+      expect(messages).toEqual([
+        {
+          type: 'response',
+          id: 1,
+          error: { code: 'invalid_argument', message: expect.stringMatching(/isn't serve's --/) },
+        },
+      ]);
+    }
+  );
+
+  test("a hello naming a user_data_dir serve's arguments don't is refused by a confining core", async () => {
+    const raw = rawHello(rawServeArgs(root), { grant_root: root, user_data_dir: root });
+    const reply = await raw.reply;
+    if (reply.result) {
+      // The pinned 0.27.0: an argument not given admits any. It reports no
+      // confinement, which every confining core does.
+      expect(reply.result.confinement).toBeUndefined();
+      raw.child.kill();
+      await raw.exited;
+      return;
+    }
+    expect(await raw.exited).toBe(76);
+    expect(reply.error).toEqual({
+      code: 'invalid_argument',
+      message: "core.hello's user_data_dir isn't serve's --user-data-dir",
+    });
   });
 
   test('stop() racing the handshake settles without a restart', async () => {

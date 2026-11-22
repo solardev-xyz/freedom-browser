@@ -27,9 +27,13 @@ function serves(binary, method, params, refusedBy = ['unknown_method']) {
     const { spawn } = require('child_process');
     const { encodeFrame, FrameDecoder } = require(process.argv[1]);
     const [binary, root, method, params, refusedBy] = process.argv.slice(2);
-    const core = spawn(binary, ['serve', '--data-dir', root + '/identity', '--lock-dir', root + '/locks'], {
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
+    // The grant root is the hello's grant_root (design 0017, C1): a
+    // confining core needs it, and refuses a hello naming another.
+    const core = spawn(
+      binary,
+      ['serve', '--data-dir', root + '/identity', '--lock-dir', root + '/locks', '--grant-root', root],
+      { stdio: ['pipe', 'pipe', 'ignore'] }
+    );
     const request = (id, method, params) =>
       core.stdin.write(encodeFrame({ type: 'request', id, method, params, context: { caller: 'shell' } }));
     const decoder = new FrameDecoder();
