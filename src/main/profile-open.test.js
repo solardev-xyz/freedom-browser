@@ -1,7 +1,8 @@
-// Main's side of `freedom-cored profile open` and `profile migrate
+// Main's side of `freedom-cored profile open`, `profile migrate
 // --finish-only` (freedom-core design 0013, 5.1 and the reader release,
-// PRF-4), with the binary's answers given. profile-open.integration.test.js
-// runs the real binary.
+// PRF-4) and the starting move (PRF-9 B3), with the binary's answers given.
+// profile-open.integration.test.js and profile-move.integration.test.js run
+// the real binary.
 
 const fs = require('fs');
 const os = require('os');
@@ -13,14 +14,18 @@ const {
 const { hashPath } = require('./profile-catalog');
 const {
   PROFILE_SWITCH_REJECTED,
+  START_MOVE_TIMEOUT_MS,
   buildProfileOpenArgs,
   finishProfileMove,
   getActiveProfile,
   getProfileLaunchReport,
+  isProfileIdle,
   openActiveProfile,
   openProfile,
   profileCatalogBackend,
   profileOpenBackend,
+  runProfileMove,
+  startProfileMove,
 } = require('./profile-resolver');
 
 function makeTempDir(prefix) {
@@ -346,5 +351,482 @@ describe("finishProfileMove: a move's journal settled before the lock", () => {
         ...answering('{"error":"overlap"}', { status: 74 }),
       })
     ).toThrow(expect.objectContaining({ code: 'storage', kind: 'overlap' }));
+  });
+});
+
+// A spawnSync that gives `answers` in turn, one per run: `{ stdout, status,
+// stderr, signal, error }`.
+function answeringInTurn(answers) {
+  const calls = [];
+  const spawnSync = (command, args, options) => {
+    calls.push({ command, args, options });
+    const answer = answers[calls.length - 1];
+    if (!answer) throw new Error(`unexpected run ${calls.length}: ${args.join(' ')}`);
+    return {
+      status: 'status' in answer ? answer.status : 0,
+      signal: answer.signal ?? null,
+      stdout: answer.stdout === undefined ? '' : `${answer.stdout}\n`,
+      stderr: answer.stderr ?? '',
+      error: answer.error,
+    };
+  };
+  return { calls, spawnSync };
+}
+
+const TIMED_OUT = {
+  status: null,
+  signal: 'SIGKILL',
+  error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+};
+
+describe('runProfileMove: the starting move (PRF-9 B3)', () => {
+  const profile = { userDataDir: '/p/work', isDev: false };
+  const run = (answers, options = {}) => {
+    const spawn = answeringInTurn(answers);
+    const outcome = runProfileMove(profile, {
+      command: '/c',
+      lockDir: '/l',
+      spawnSync: spawn.spawnSync,
+      ...options,
+    });
+    return { outcome, calls: spawn.calls };
+  };
+
+  test('runs migrate without --finish-only, under the ten-minute bound', () => {
+    const { outcome, calls } = run([{ stdout: 'migrated' }]);
+    expect(outcome).toEqual({ outcome: 'migrated' });
+    expect(calls[0].args).toEqual(['profile', 'migrate', '--profile-dir', '/p/work', '--lock-dir', '/l']);
+    expect(calls[0].options.timeout).toBe(START_MOVE_TIMEOUT_MS);
+    expect(START_MOVE_TIMEOUT_MS).toBe(600_000);
+    // A dev profile's lock timings.
+    const dev = answeringInTurn([{ stdout: 'nothing' }]);
+    runProfileMove({ userDataDir: '/p/dev', isDev: true }, { command: '/c', lockDir: '/l', spawnSync: dev.spawnSync });
+    expect(dev.calls[0].args).toEqual(['profile', 'migrate', '--profile-dir', '/p/dev', '--lock-dir', '/l', '--dev']);
+  });
+
+  test('migrated, nothing and rolled_back go on', () => {
+    for (const word of ['migrated', 'nothing', 'rolled_back']) {
+      expect(run([{ stdout: word }]).outcome).toEqual({ outcome: word });
+    }
+  });
+
+  test("deferred goes on, with the reason from the core's log line", () => {
+    const stderr = [
+      '{"level":"info","msg":"profile subcommand confined"}',
+      '{"why":"copy_too_large","detail":"ant-data","level":"warn","msg":"the move is deferred to the next start; nothing was changed"}',
+      '',
+    ].join('\n');
+    expect(run([{ stdout: 'deferred', stderr }]).outcome).toEqual({
+      outcome: 'deferred',
+      reason: 'copy_too_large: ant-data',
+    });
+    // No detail; and no line of the core's at all.
+    expect(
+      run([{ stdout: 'deferred', stderr: '{"why":"node_identity_journal","detail":"","msg":"x"}\n' }]).outcome
+    ).toEqual({ outcome: 'deferred', reason: 'node_identity_journal' });
+    expect(run([{ stdout: 'deferred', stderr: 'not json\n' }]).outcome).toEqual({
+      outcome: 'deferred',
+      reason: null,
+    });
+    // A `why` that isn't one of the core's words isn't logged as one.
+    expect(
+      run([{ stdout: 'deferred', stderr: '{"why":"Some Text\\nwith a newline"}\n' }]).outcome.reason
+    ).toBeNull();
+  });
+
+  test('busy hands over, as a fresh lock does', () => {
+    expect(run([{ stdout: 'busy', status: 75 }]).outcome).toEqual({ outcome: 'busy' });
+  });
+
+  test("lock_lost and corrupt keep the profile closed, with a starting move's wording", () => {
+    expect(() => run([{ stdout: 'lock_lost', status: 74 }])).toThrow(
+      expect.objectContaining({
+        code: 'lock_lost',
+        message: expect.stringContaining('moved into its freedom folder'),
+      })
+    );
+    expect(() => run([{ stdout: 'corrupt', status: 74 }])).toThrow(
+      expect.objectContaining({ code: 'corrupt', message: expect.stringContaining('half moved') })
+    );
+  });
+
+  test('a timeout, a kill or an unknown answer in the root or moved layout goes on as it is', () => {
+    for (const [answer, reason] of [
+      [TIMED_OUT, 'timeout'],
+      [{ status: null, signal: 'SIGKILL' }, 'failed'],
+      [{ stdout: 'moved_sideways' }, 'unknown'],
+      [{ stdout: '{"error":"overlap"}', status: 74 }, 'overlap'],
+    ]) {
+      for (const layout of ['root', 'freedom']) {
+        const { outcome, calls } = run([answer], { profileLayout: () => layout });
+        expect(outcome).toEqual({ outcome: 'failed', reason, layout });
+        // Nothing else run: no --finish-only without a journal.
+        expect(calls).toHaveLength(1);
+      }
+    }
+  });
+
+  test('a journal left by a failed run is settled with --finish-only before anything reads the profile', () => {
+    const { outcome, calls } = run([{ stdout: 'moved_sideways' }, { stdout: 'rolled_back' }], {
+      profileLayout: () => 'pending',
+    });
+    expect(outcome).toEqual({ outcome: 'rolled_back', reason: 'unknown', layout: 'pending' });
+    expect(calls[1].args).toEqual([
+      'profile',
+      'migrate',
+      '--profile-dir',
+      '/p/work',
+      '--lock-dir',
+      '/l',
+      '--finish-only',
+    ]);
+    expect(calls[1].options.timeout).toBe(120_000);
+    // Its busy hands over; its lock_lost keeps the profile closed.
+    expect(
+      run([{ stdout: '{"error":"io"}', status: 74 }, { stdout: 'busy', status: 75 }], {
+        profileLayout: () => 'pending',
+      }).outcome
+    ).toEqual({ outcome: 'busy', reason: 'io', layout: 'pending' });
+    expect(() =>
+      run([{ stdout: 'moved_sideways' }, { stdout: 'lock_lost', status: 74 }], {
+        profileLayout: () => 'pending',
+      })
+    ).toThrow(expect.objectContaining({ code: 'lock_lost' }));
+  });
+
+  test("after main kills a run, --finish-only waits for the killed run's lock to lapse", () => {
+    let clock = 0;
+    const locked = [true, true, false];
+    const isLocked = jest.fn(() => locked.shift());
+    const sleep = jest.fn((ms) => {
+      clock += ms;
+    });
+    const { outcome, calls } = run(
+      [TIMED_OUT, { stdout: 'busy', status: 75 }, { stdout: 'migrated' }],
+      { profileLayout: () => 'pending', isLocked, sleep, now: () => clock }
+    );
+    expect(outcome).toEqual({ outcome: 'migrated', reason: 'timeout', layout: 'pending' });
+    expect(calls).toHaveLength(3);
+    expect(isLocked).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+
+    // Never past the lock's stale time and one refresh: then it hands over.
+    clock = 0;
+    const always = run(
+      [TIMED_OUT, { stdout: 'busy', status: 75 }, { stdout: 'busy', status: 75 }],
+      { profileLayout: () => 'pending', isLocked: () => true, sleep, now: () => clock }
+    );
+    expect(always.outcome.outcome).toBe('busy');
+    expect(clock).toBeGreaterThanOrEqual(40_000);
+    expect(clock).toBeLessThan(41_000);
+
+    // A run that exited on its own let its lock go: a busy then is another's.
+    const exited = run([{ stdout: 'moved_sideways' }, { stdout: 'busy', status: 75 }], {
+      profileLayout: () => 'pending',
+      isLocked: () => {
+        throw new Error('not asked');
+      },
+    });
+    expect(exited.outcome.outcome).toBe('busy');
+    expect(exited.calls).toHaveLength(2);
+  });
+});
+
+describe('isProfileIdle (0013, MD1)', () => {
+  const profile = { userDataDir: '/p/work' };
+
+  test("profile open's report: no fresh lock and no held gate", () => {
+    const never = () => {
+      throw new Error('not asked: profile open answered');
+    };
+    expect(isProfileIdle({ lockFresh: false, gateHeld: false }, profile, { isLocked: never })).toBe(true);
+    expect(isProfileIdle({ lockFresh: true, gateHeld: false }, profile, { isLocked: never })).toBe(false);
+    expect(isProfileIdle({ lockFresh: false, gateHeld: true }, profile, { isLocked: never })).toBe(false);
+  });
+
+  test('the JS path (Windows, --profile-dir, test launches): the lock not fresh', () => {
+    const report = { lockFresh: null, gateHeld: null };
+    expect(isProfileIdle(report, profile, { isLocked: () => false })).toBe(true);
+    expect(isProfileIdle(report, profile, { isLocked: () => true })).toBe(false);
+    expect(
+      isProfileIdle(report, profile, {
+        isLocked: () => {
+          throw new Error('EACCES');
+        },
+      })
+    ).toBe(false);
+  });
+});
+
+describe('startProfileMove: whether this start moves the profile (index.js)', () => {
+  let tmp;
+  beforeEach(() => {
+    tmp = makeTempDir('freedom-start-move-');
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const packaged = { isPackaged: true };
+  const idle = { backend: 'core', layout: 'root', lockFresh: false, gateHeld: false };
+  const noAntd = () => ({ state: 'none' });
+  const start = (profile, report, options = {}) => {
+    const spawn = answeringInTurn(options.answers || [{ stdout: 'migrated' }]);
+    const outcome = startProfileMove(options.app || packaged, profile, report, {
+      command: '/c',
+      lockDir: '/l',
+      spawnSync: spawn.spawnSync,
+      readAntProcessMarkerState: noAntd,
+      movedComponentOverrides: () => [],
+      ...options,
+    });
+    return { outcome, calls: spawn.calls };
+  };
+
+  test('a root-layout profile that is idle is moved', () => {
+    const profile = { userDataDir: path.join(tmp, 'work') };
+    fs.mkdirSync(profile.userDataDir);
+    const { outcome, calls } = start(profile, idle);
+    expect(outcome).toEqual({ outcome: 'migrated' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.slice(0, 2)).toEqual(['profile', 'migrate']);
+    expect(calls[0].args).not.toContain('--finish-only');
+  });
+
+  test("a --profile-dir or test launch's missing directory is made first, for the empty move", () => {
+    const profile = { userDataDir: path.join(tmp, 'nested', 'fresh') };
+    const report = { backend: 'js', layout: 'root', lockFresh: null, gateHeld: null };
+    const { outcome } = start(profile, report, { isLocked: () => false });
+    expect(outcome.outcome).toBe('migrated');
+    expect(fs.statSync(profile.userDataDir).isDirectory()).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(profile.userDataDir).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  test('skipped, with nothing run, for each reason the move waits', () => {
+    const profile = { userDataDir: path.join(tmp, 'work') };
+    const cases = [
+      [{ ...idle, layout: 'freedom' }, {}, 'layout'],
+      [{ ...idle, layout: 'pending' }, {}, 'layout'],
+      [idle, { profile: { ...profile, switchOnly: true } }, 'switch'],
+      // A development build without freedom-cored (MD1).
+      [idle, { app: { isPackaged: false }, coredPresent: false }, 'no_core'],
+      // Open elsewhere: the lock hands over below (MD2).
+      [{ ...idle, lockFresh: true }, {}, 'open'],
+      [{ ...idle, gateHeld: true }, {}, 'open'],
+      [{ backend: 'js', layout: 'root', lockFresh: null, gateHeld: null }, { isLocked: () => true }, 'open'],
+      // An antd that outlived a crashed main (MD7), or a marker that can't
+      // tell: it fails closed.
+      [
+        idle,
+        { readAntProcessMarkerState: () => ({ state: 'live', pid: 4242 }) },
+        'node_running: antd pid 4242',
+      ],
+      [
+        idle,
+        { readAntProcessMarkerState: () => ({ state: 'unreadable', reason: 'malformed' }) },
+        'ant_marker_unreadable: malformed',
+      ],
+    ];
+    for (const [report, options, reason] of cases) {
+      const { outcome, calls } = start(options.profile || profile, report, { ...options, answers: [] });
+      expect(outcome).toEqual({ outcome: 'skipped', reason });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  // A component's data-directory override at or inside an entry the move
+  // takes: the move would leave it behind, so it waits (#453's review).
+  describe('data-directory overrides', () => {
+    const withEnv = (env) => {
+      const profile = { userDataDir: fs.mkdtempSync(path.join(tmp, 'overrides-')) };
+      const resolved = typeof env === 'function' ? env(profile.userDataDir) : env;
+      return start(profile, idle, { env: resolved, movedComponentOverrides: undefined });
+    };
+
+    test('an Ant override inside ant-data/ skips the move', () => {
+      const { outcome, calls } = withEnv((dir) => ({ FREEDOM_ANT_DATA: path.join(dir, 'ant-data', 'live') }));
+      expect(outcome).toEqual({
+        outcome: 'skipped',
+        reason: 'override_inside_moved_entry: FREEDOM_ANT_DATA (ant-data)',
+      });
+      expect(calls).toHaveLength(0);
+    });
+
+    test('an override equal to <userData>/ipfs-data skips the move', () => {
+      const { outcome, calls } = withEnv((dir) => ({ FREEDOM_IPFS_DATA: path.join(dir, 'ipfs-data') }));
+      expect(outcome).toEqual({
+        outcome: 'skipped',
+        reason: 'override_inside_moved_entry: FREEDOM_IPFS_DATA (ipfs-data)',
+      });
+      expect(calls).toHaveLength(0);
+    });
+
+    test('each moved component\'s override is checked; Radicle\'s, which stays at the root, is not', () => {
+      for (const [envName, entry] of [
+        ['FREEDOM_IDENTITY_DATA', 'identity'],
+        ['FREEDOM_BEE_DATA', 'bee-data'],
+        ['MYOTIS_DATA_DIR', 'myotis'],
+        ['FREEDOM_TOR_DATA', 'tor-data'],
+      ]) {
+        expect(withEnv((dir) => ({ [envName]: path.join(dir, entry) })).outcome.reason).toBe(
+          `override_inside_moved_entry: ${envName} (${entry})`
+        );
+      }
+      expect(
+        withEnv((dir) => ({ FREEDOM_RADICLE_DATA: path.join(dir, 'radicle-data') })).outcome
+      ).toEqual({ outcome: 'migrated' });
+    });
+
+    test('an override at, or inside, an entry linked to outside storage skips the move', () => {
+      const external = fs.mkdtempSync(path.join(tmp, 'external-ipfs-'));
+      const linked = (dir) =>
+        fs.symlinkSync(external, path.join(dir, 'ipfs-data'), process.platform === 'win32' ? 'junction' : 'dir');
+      for (const tail of [[], ['freedom-ipfs']]) {
+        const { outcome, calls } = withEnv((dir) => {
+          linked(dir);
+          return { FREEDOM_IPFS_DATA: path.join(dir, 'ipfs-data', ...tail) };
+        });
+        expect(outcome).toEqual({
+          outcome: 'skipped',
+          reason: 'override_inside_moved_entry: FREEDOM_IPFS_DATA (ipfs-data)',
+        });
+        expect(calls).toHaveLength(0);
+      }
+      // The outside storage named directly isn't inside the profile.
+      expect(
+        withEnv((dir) => {
+          linked(dir);
+          return { FREEDOM_IPFS_DATA: external };
+        }).outcome
+      ).toEqual({ outcome: 'migrated' });
+    });
+
+    test('an override outside the profile moves', () => {
+      const { outcome, calls } = withEnv({
+        FREEDOM_ANT_DATA: path.join(tmp, 'elsewhere', 'ant-data'),
+        FREEDOM_IDENTITY_DATA: path.join(tmp, 'elsewhere', 'identity'),
+      });
+      expect(outcome).toEqual({ outcome: 'migrated' });
+      expect(calls).toHaveLength(1);
+    });
+
+    test('an override already under freedom/ moves', () => {
+      const { outcome, calls } = withEnv((dir) => ({
+        FREEDOM_ANT_DATA: path.join(dir, 'freedom', 'ant-data'),
+      }));
+      expect(outcome).toEqual({ outcome: 'migrated' });
+      expect(calls).toHaveLength(1);
+    });
+  });
+
+  test('a development build with freedom-cored moves, and asks ant-process.json about the profile', () => {
+    const profile = { userDataDir: path.join(tmp, 'dev'), isDev: true };
+    fs.mkdirSync(profile.userDataDir);
+    const readAntProcessMarkerState = jest.fn(() => ({ state: 'gone', pid: 4242 }));
+    const { outcome, calls } = start(profile, idle, {
+      app: { isPackaged: false },
+      coredPresent: true,
+      readAntProcessMarkerState,
+    });
+    expect(outcome.outcome).toBe('migrated');
+    expect(readAntProcessMarkerState).toHaveBeenCalledWith(profile.userDataDir);
+    expect(calls[0].args).toContain('--dev');
+  });
+
+  // MD7's marker, read for real from the profile's directory: only a missing
+  // one counts as none. One that is there but malformed or truncated skips
+  // the move where the core can't try antd's own lock (no real ant-data/
+  // directory holding a regular antd.lock), as a live pid does; where it can,
+  // the bad marker is logged and the core's probe decides.
+  describe("ant-process.json, failing closed", () => {
+    const TORN = JSON.stringify({ pid: 4242, apiPort: 1633, dataDir: '/data' }).slice(0, 12);
+    const withMarker = (text, { setup, log } = {}) => {
+      const profile = { userDataDir: fs.mkdtempSync(path.join(tmp, 'marker-')) };
+      if (text !== null) fs.writeFileSync(path.join(profile.userDataDir, 'ant-process.json'), text);
+      if (setup) setup(profile.userDataDir);
+      return start(profile, idle, {
+        readAntProcessMarkerState: undefined,
+        ...(log ? { log } : {}),
+      });
+    };
+    // ant-data/ with the lock file an antd from v0.5.7 on makes.
+    const lockingAntd = (dir) => {
+      fs.mkdirSync(path.join(dir, 'ant-data'));
+      fs.writeFileSync(path.join(dir, 'ant-data', 'antd.lock'), '');
+    };
+
+    test('a missing marker lets the move go on', () => {
+      const { outcome, calls } = withMarker(null);
+      expect(outcome).toEqual({ outcome: 'migrated' });
+      expect(calls).toHaveLength(1);
+    });
+
+    test('a malformed marker skips the move', () => {
+      const { outcome, calls } = withMarker('{not json');
+      expect(outcome).toEqual({ outcome: 'skipped', reason: 'ant_marker_unreadable: malformed' });
+      expect(calls).toHaveLength(0);
+    });
+
+    test('a truncated marker skips the move', () => {
+      const whole = JSON.stringify({ pid: 4242, apiPort: 1633, dataDir: '/data' }, null, 2);
+      const { outcome, calls } = withMarker(whole.slice(0, whole.length - 3));
+      expect(outcome).toEqual({ outcome: 'skipped', reason: 'ant_marker_unreadable: malformed' });
+      expect(calls).toHaveLength(0);
+      expect(withMarker('').outcome.reason).toBe('ant_marker_unreadable: malformed');
+    });
+
+    test('a marker without an integer pid skips the move', () => {
+      expect(withMarker('{"pid":"4242"}').outcome).toEqual({
+        outcome: 'skipped',
+        reason: 'ant_marker_unreadable: no_pid',
+      });
+    });
+
+    test("a torn marker beside a real ant-data/ holding antd.lock: logged, and the core's probe decides", () => {
+      const log = { warn: jest.fn() };
+      const { outcome, calls } = withMarker(TORN, { setup: lockingAntd, log });
+      expect(outcome).toEqual({ outcome: 'migrated' });
+      expect(calls).toHaveLength(1);
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("ant-process.json can't be read"));
+    });
+
+    test('a torn marker with ant-data/ a link skips the move: the core follows no link', () => {
+      const outside = fs.mkdtempSync(path.join(tmp, 'outside-ant-data-'));
+      fs.writeFileSync(path.join(outside, 'antd.lock'), '');
+      const { outcome, calls } = withMarker(TORN, {
+        setup: (dir) =>
+          fs.symlinkSync(outside, path.join(dir, 'ant-data'), process.platform === 'win32' ? 'junction' : 'dir'),
+      });
+      expect(outcome).toEqual({ outcome: 'skipped', reason: 'ant_marker_unreadable: malformed' });
+      expect(calls).toHaveLength(0);
+    });
+
+    test('a torn marker without a regular antd.lock skips the move: an older antd may be the orphan', () => {
+      for (const setup of [
+        (dir) => fs.mkdirSync(path.join(dir, 'ant-data')),
+        (dir) => fs.mkdirSync(path.join(dir, 'ant-data', 'antd.lock'), { recursive: true }),
+        (dir) => fs.writeFileSync(path.join(dir, 'ant-data'), ''),
+      ]) {
+        const { outcome, calls } = withMarker(TORN, { setup });
+        expect(outcome).toEqual({ outcome: 'skipped', reason: 'ant_marker_unreadable: malformed' });
+        expect(calls).toHaveLength(0);
+      }
+    });
+
+    test('a live pid in a readable marker skips the move even where the core can try antd.lock', () => {
+      const { outcome, calls } = withMarker(JSON.stringify({ pid: process.ppid }), { setup: lockingAntd });
+      expect(outcome).toEqual({ outcome: 'skipped', reason: `node_running: antd pid ${process.ppid}` });
+      expect(calls).toHaveLength(0);
+    });
+
+    test("a marker whose antd is gone lets the move go on; this test's parent, alive, skips it", () => {
+      expect(withMarker(JSON.stringify({ pid: process.pid })).outcome).toEqual({ outcome: 'migrated' });
+      expect(withMarker(JSON.stringify({ pid: process.ppid })).outcome).toEqual({
+        outcome: 'skipped',
+        reason: `node_running: antd pid ${process.ppid}`,
+      });
+    });
   });
 });

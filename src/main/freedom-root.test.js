@@ -19,7 +19,10 @@ const {
   MOVED_ENTRIES,
   getFreedomDataDir,
   getFreedomDataPath,
+  holdFreedomRoot,
+  movedEntryContaining,
   profileLayout,
+  resetFreedomRoot,
   resolveFreedomRoot,
 } = require('./freedom-root');
 
@@ -87,6 +90,106 @@ describe("a profile's Freedom root (0013, the reader release)", () => {
     mockUserData = moved;
     expect(getFreedomDataDir()).toBe(path.join(moved, 'freedom'));
     expect(getFreedomDataPath('settings.json')).toBe(path.join(moved, 'freedom', 'settings.json'));
+  });
+
+  // MG5: main holds the root from its start until the move has settled
+  // (index.js), so nothing pins the layout the move is about to change.
+  test('held until the move settles: a read throws, and the reset resolves the new layout', () => {
+    const dir = profileDir(tmp);
+    mockUserData = dir;
+    expect(getFreedomDataDir()).toBe(dir);
+    holdFreedomRoot();
+    try {
+      expect(() => getFreedomDataDir()).toThrow(
+        expect.objectContaining({ code: 'FREEDOM_ROOT_UNSETTLED' })
+      );
+      expect(() => getFreedomDataPath('settings.json')).toThrow(
+        expect.objectContaining({ code: 'FREEDOM_ROOT_UNSETTLED' })
+      );
+      // The move, meanwhile.
+      markMoved(dir);
+    } finally {
+      resetFreedomRoot();
+    }
+    // The cached root layout is forgotten: the moved one resolves.
+    expect(getFreedomDataDir()).toBe(path.join(dir, 'freedom'));
+  });
+
+  test('the reset alone forgets a root resolved before a move', () => {
+    const dir = profileDir(tmp);
+    mockUserData = dir;
+    expect(getFreedomDataDir()).toBe(dir);
+    markMoved(dir);
+    expect(getFreedomDataDir()).toBe(dir);
+    resetFreedomRoot();
+    expect(getFreedomDataDir()).toBe(path.join(dir, 'freedom'));
+  });
+
+  // A component's data-directory override inside an entry the move takes
+  // would be left behind by it (startProfileMove skips the move then).
+  test('movedEntryContaining: an override at or inside a moved entry, links resolved', () => {
+    const dir = profileDir(tmp);
+    expect(movedEntryContaining(dir, path.join(dir, 'ant-data', 'live'))).toBe('ant-data');
+    expect(movedEntryContaining(dir, path.join(dir, 'ipfs-data'))).toBe('ipfs-data');
+    expect(movedEntryContaining(dir, path.join(dir, 'identity', 'a', 'b'))).toBe('identity');
+    // Outside the profile, the profile itself, under freedom/, or a name the
+    // move leaves at the root: nothing.
+    expect(movedEntryContaining(dir, path.join(tmp, 'elsewhere', 'ant-data'))).toBeNull();
+    expect(movedEntryContaining(dir, dir)).toBeNull();
+    expect(movedEntryContaining(dir, path.join(dir, 'freedom', 'ant-data'))).toBeNull();
+    expect(movedEntryContaining(dir, path.join(dir, 'radicle-data'))).toBeNull();
+    expect(movedEntryContaining(dir, path.join(dir, 'ant-data-old'))).toBeNull();
+    // A relative override resolves against the working directory, as main's
+    // getters resolve it.
+    expect(movedEntryContaining(dir, path.relative(process.cwd(), path.join(dir, 'tor-data')))).toBe(
+      'tor-data'
+    );
+    // Through a link: an outside path that names the profile's own entry.
+    fs.mkdirSync(path.join(dir, 'myotis'));
+    const link = path.join(tmp, 'link-to-myotis');
+    fs.symlinkSync(path.join(dir, 'myotis'), link, process.platform === 'win32' ? 'junction' : 'dir');
+    expect(movedEntryContaining(dir, path.join(link, 'gnosis'))).toBe('myotis');
+    // And the profile reached through a link.
+    const profileLink = path.join(tmp, 'link-to-profile');
+    fs.symlinkSync(dir, profileLink, process.platform === 'win32' ? 'junction' : 'dir');
+    expect(movedEntryContaining(profileLink, path.join(dir, 'bee-data'))).toBe('bee-data');
+  });
+
+  // Round 4: an entry that is itself a link (a junction on Windows) to
+  // outside storage. The move takes the link, so an override naming the
+  // entry, or a path inside it, would name the root path it left behind.
+  test('movedEntryContaining: an entry linked to outside storage, an override at it or inside it', () => {
+    const dir = profileDir(tmp);
+    const external = fs.mkdtempSync(path.join(tmp, 'external-ipfs-'));
+    fs.mkdirSync(path.join(external, 'freedom-ipfs'));
+    const type = process.platform === 'win32' ? 'junction' : 'dir';
+    fs.symlinkSync(external, path.join(dir, 'ipfs-data'), type);
+    expect(movedEntryContaining(dir, path.join(dir, 'ipfs-data'))).toBe('ipfs-data');
+    expect(movedEntryContaining(dir, path.join(dir, 'ipfs-data', 'freedom-ipfs'))).toBe('ipfs-data');
+    expect(movedEntryContaining(dir, path.join(dir, 'ipfs-data', 'not-yet', 'made'))).toBe('ipfs-data');
+    // The same through an alias of the profile, and for Tor and Myotis.
+    const alias = path.join(tmp, 'alias-of-profile');
+    fs.symlinkSync(dir, alias, type);
+    expect(movedEntryContaining(alias, path.join(dir, 'ipfs-data', 'freedom-ipfs'))).toBe('ipfs-data');
+    expect(movedEntryContaining(dir, path.join(alias, 'ipfs-data'))).toBe('ipfs-data');
+    for (const name of ['tor-data', 'myotis']) {
+      const outside = fs.mkdtempSync(path.join(tmp, `external-${name}-`));
+      fs.symlinkSync(outside, path.join(dir, name), type);
+      expect(movedEntryContaining(dir, path.join(dir, name, 'state'))).toBe(name);
+    }
+    // The outside storage itself, named directly, isn't the profile's.
+    expect(movedEntryContaining(dir, external)).toBeNull();
+  });
+
+  test('movedEntryContaining: names exact on Linux, folded on macOS and Windows', () => {
+    const dir = profileDir(tmp);
+    const upper = path.join(dir, 'ANT-DATA', 'live');
+    expect(movedEntryContaining(dir, upper, { platform: 'linux' })).toBeNull();
+    expect(movedEntryContaining(dir, upper, { platform: 'darwin' })).toBe('ant-data');
+    expect(movedEntryContaining(dir, upper, { platform: 'win32' })).toBe('ant-data');
+    expect(
+      movedEntryContaining(dir, path.join(dir, 'Freedom', 'ant-data'), { platform: 'darwin' })
+    ).toBeNull();
   });
 
   test("main's path getters resolve the Freedom root; the shell's entries stay at the root", () => {

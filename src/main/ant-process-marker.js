@@ -26,10 +26,29 @@
 // overlay fetch (with backoff) while its antd runs, so that only affects a
 // Freedom that died before any fetch succeeded, which then falls back to the
 // prompt and saved choice (#218 review R3-M1).
+//
+// It is also the second layer of the profile move's orphan check
+// (freedom-core design 0013, MD7; profile-resolver.js's startProfileMove).
+// The first layer is the core's: from freedom-cored 0.26.0 its move tries
+// antd's own `ant-data/antd.lock`, which antd (v0.5.7 on) locks (flock,
+// LockFileEx) before it opens its data and holds for its life, and defers
+// while it is held. It tries it again at its new place after the renames and
+// before the marker (freedom-core #453), so an antd that took its lock
+// during the move rolls the move back. That covers what no marker can: the
+// moment between the spawn and the marker's write, and a marker lost or
+// damaged otherwise. The
+// core tries it only where `ant-data/` is a real directory holding a regular
+// `antd.lock` (it follows no link), so the marker decides where it can't:
+// - a marker naming a live process waits, always;
+// - a marker that is there but can't be read waits only where the core can't
+//   try antd's lock (antdLockTryable below); where it can, the core decides.
+// The marker is replaced whole and durably (lib/atomic-file.js), never
+// written in place: a crash mid-write leaves the old marker or the new one.
 
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const { writeFileAtomicSync } = require('./lib/atomic-file');
 
 const ANT_PROCESS_MARKER_FILE = 'ant-process.json';
 
@@ -89,28 +108,37 @@ function fetchNodeOverlay(port, { timeoutMs = 2000 } = {}) {
   });
 }
 
+// Replaces the marker whole and durably (temp file, fsync, rename, directory
+// flush). Returns whether it was written durably: false for a write that
+// failed, which leaves the old marker, and for one whose rename landed but
+// whose flush failed (`durable: false`), which a power loss could undo. The
+// caller logs either.
 function writeMarkerFile(userDataDir, marker) {
   try {
     fs.mkdirSync(userDataDir, { recursive: true });
-    fs.writeFileSync(getMarkerPath(userDataDir), JSON.stringify(marker, null, 2), 'utf-8');
+    const { durable } = writeFileAtomicSync(getMarkerPath(userDataDir), JSON.stringify(marker, null, 2));
+    return durable === true;
   } catch {
-    // Best effort: without the marker an orphan is just offered in the prompt.
+    // Best effort for the launch prompt: without the marker an orphan is just
+    // offered there. The move doesn't rely on it alone (see the top).
+    return false;
   }
 }
 
 function writeAntProcessMarker(userDataDir, { pid, apiPort, dataDir }) {
-  if (!userDataDir || !Number.isInteger(pid)) return;
-  writeMarkerFile(userDataDir, { pid, apiPort, dataDir });
+  if (!userDataDir || !Number.isInteger(pid)) return false;
+  return writeMarkerFile(userDataDir, { pid, apiPort, dataDir });
 }
 
 // Adds the overlay the spawned antd reported to its marker, once it answers.
-// Only touches a marker that still names `pid`.
+// Only touches a marker that still names `pid`. Returns null when there is
+// nothing to write, or whether the rewrite was durable (writeMarkerFile).
 function recordAntProcessOverlay(userDataDir, pid, overlay) {
-  if (!userDataDir) return;
+  if (!userDataDir) return null;
   const normalized = normalizeOverlay(overlay);
   const marker = readMarker(userDataDir);
-  if (!normalized || !marker || marker.pid !== pid) return;
-  writeMarkerFile(userDataDir, { ...marker, overlay: normalized });
+  if (!normalized || !marker || marker.pid !== pid) return null;
+  return writeMarkerFile(userDataDir, { ...marker, overlay: normalized });
 }
 
 function readMarker(userDataDir) {
@@ -152,11 +180,61 @@ async function findOwnLiveAntd(userDataDir, options = {}) {
   return actual === expected ? marker : null;
 }
 
+// Whether the core's move can try antd's own lock on this profile's data
+// (freedom-core 0.26.0): `ant-data/` at the profile's root is a real
+// directory, not a link, a junction or anything else, and holds a regular
+// `antd.lock`, which only an antd that takes the lock (v0.5.7 on) makes.
+// Looked at without following anything. Without one, an older antd may be
+// the orphan, and nothing but the marker can say so.
+function antdLockTryable(userDataDir) {
+  const antData = path.join(userDataDir, 'ant-data');
+  try {
+    const dir = fs.lstatSync(antData);
+    if (!dir.isDirectory() || dir.isSymbolicLink()) return false;
+    return fs.lstatSync(path.join(antData, 'antd.lock')).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// What the marker says for the profile move's orphan check (freedom-core
+// design 0013, MD7), failing closed and asking the node nothing:
+// - `{ state: 'none' }`: no marker;
+// - `{ state: 'live', pid }`: it names a live process other than this one;
+// - `{ state: 'gone', pid }`: the process it names is gone (or is this one);
+// - `{ state: 'unreadable', reason }`: a marker is there but can't be read,
+//   doesn't parse (a torn write by an older build, say), or names no pid.
+// The move waits on `live`, and on `unreadable` where the core can't try
+// antd's lock (antdLockTryable). A recycled pid only defers it: the next
+// antd Freedom starts replaces the marker, and its exit removes it.
+function readAntProcessMarkerState(userDataDir, options = {}) {
+  let text;
+  try {
+    text = fs.readFileSync(getMarkerPath(userDataDir), 'utf-8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return { state: 'none' };
+    return { state: 'unreadable', reason: err.code || 'read_failed' };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { state: 'unreadable', reason: 'malformed' };
+  }
+  const pid = parsed && typeof parsed === 'object' ? parsed.pid : undefined;
+  if (!Number.isInteger(pid) || pid <= 0) return { state: 'unreadable', reason: 'no_pid' };
+  if (pid === process.pid) return { state: 'gone', pid };
+  const alive = options.isProcessAlive || isProcessAlive;
+  return alive(pid) ? { state: 'live', pid } : { state: 'gone', pid };
+}
+
 module.exports = {
   ANT_PROCESS_MARKER_FILE,
+  antdLockTryable,
   clearAntProcessMarker,
   fetchNodeOverlay,
   findOwnLiveAntd,
+  readAntProcessMarkerState,
   recordAntProcessOverlay,
   writeAntProcessMarker,
 };

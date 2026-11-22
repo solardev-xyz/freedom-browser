@@ -15,6 +15,10 @@
  * - **A launch held before `serve`:** a main stopped for 45 s after its lock
  *   and gate; past 30 s, a delete from another profile is refused.
  * - A closed profile is deleted, its directory with it.
+ * - **The packaged default profile, moved** (PRF-9 B3): main's starting move
+ *   takes its entries into `<appRoot>/freedom/` and leaves the entries every
+ *   profile shares at the app root; its delete from another profile removes
+ *   `freedom/` and the placeholder with its other entries, and keeps those.
  */
 
 const fs = require('fs');
@@ -36,7 +40,7 @@ const {
 } = require('./profile-catalog');
 const { startProfileGate } = require('./profile-gate');
 const manager = require('./profile-manager');
-const { openActiveProfile, openProfile } = require('./profile-resolver');
+const { openActiveProfile, openProfile, startProfileMove } = require('./profile-resolver');
 
 const sourceBinary = (() => {
   if (process.env.FREEDOM_CORED_PATH) return process.env.FREEDOM_CORED_PATH;
@@ -229,4 +233,48 @@ describeIfBinary('the profile manager through the real freedom-cored (0013, PRF-
     },
     120_000
   );
+
+  test('the packaged default profile moves into <appRoot>/freedom/, and its delete removes it (PRF-9 B3)', async () => {
+    const { profile, report } = openProfile(app, {
+      backend: 'core',
+      argv: ['freedom', '--profile', 'default'],
+      env: {},
+      command: mockBinary,
+      lockDir: mockLockDir,
+    });
+    expect(profile.userDataDir).toBe(appRoot);
+    expect(report.layout).toBe('root');
+    // Its data at the app root, beside what every profile shares there.
+    fs.mkdirSync(path.join(appRoot, 'identity'), { mode: 0o700 });
+    fs.writeFileSync(path.join(appRoot, 'identity', 'vault-meta.json'), '{}');
+    fs.writeFileSync(path.join(appRoot, 'settings.json'), '{"theme":"dark"}');
+    fs.mkdirSync(path.join(appRoot, 'ant-data', 'keys'), { recursive: true });
+    fs.writeFileSync(path.join(appRoot, 'Cookies'), 'cookies');
+    fs.mkdirSync(path.join(appRoot, 'R', '0'), { recursive: true });
+
+    expect(startProfileMove(app, profile, report, { command: mockBinary, lockDir: mockLockDir })).toEqual({
+      outcome: 'migrated',
+    });
+    const freedom = path.join(appRoot, 'freedom');
+    expect(fs.readFileSync(path.join(freedom, 'settings.json'), 'utf8')).toBe('{"theme":"dark"}');
+    expect(fs.existsSync(path.join(freedom, 'identity', 'vault-meta.json'))).toBe(true);
+    expect(fs.existsSync(path.join(freedom, 'ant-data', 'keys'))).toBe(true);
+    expect(fs.lstatSync(path.join(appRoot, 'identity')).isFile()).toBe(true);
+    // The shell's entries and the shared ones stay: the catalog, the other
+    // profiles, the Radicle homes.
+    expect(fs.readFileSync(path.join(appRoot, 'Cookies'), 'utf8')).toBe('cookies');
+    expect(fs.existsSync(path.join(appRoot, 'profile-registry.json'))).toBe(true);
+    expect(fs.existsSync(path.join(appRoot, 'Profiles', 'home', 'profile.json'))).toBe(true);
+    expect(fs.existsSync(path.join(appRoot, 'R', '0'))).toBe(true);
+    expect(fs.existsSync(path.join(freedom, 'Profiles'))).toBe(false);
+
+    const result = await manager.deleteProfile('default', profile.displayName);
+    expect(result.record.id).toBe('default');
+    expect(fs.existsSync(freedom)).toBe(false);
+    expect(fs.existsSync(path.join(appRoot, 'identity'))).toBe(false);
+    expect(fs.existsSync(path.join(appRoot, 'Cookies'))).toBe(false);
+    expect(fs.existsSync(path.join(appRoot, 'profile-registry.json'))).toBe(true);
+    expect(fs.existsSync(path.join(appRoot, 'Profiles', 'home', 'profile.json'))).toBe(true);
+    expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['home']);
+  });
 });

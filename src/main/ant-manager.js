@@ -1087,7 +1087,12 @@ async function startAnt() {
     antSpawnedAt = Date.now();
     const child = antProcess;
     const markerDir = getActiveProfile()?.userDataDir;
-    writeAntProcessMarker(markerDir, { pid: child.pid, apiPort, dataDir });
+    if (markerDir && writeAntProcessMarker(markerDir, { pid: child.pid, apiPort, dataDir }) === false) {
+      // Not written, or not durably (its flush failed). The profile move's
+      // first orphan check is the core's try of antd's own lock
+      // (ant-process-marker.js), so this only costs the launch prompt.
+      log.warn('[Ant] Could not write ant-process.json durably for the spawned antd');
+    }
 
     bridge.pipeLog(child.stdout, (line) => {
       log.info(`[Ant stdout]: ${line}`);
@@ -1219,7 +1224,9 @@ function recordOverlayUntilKnown(child, generation, markerDir, apiPort, delayMs 
   void fetchNodeOverlay(apiPort).then((overlay) => {
     if (!isCurrent()) return;
     if (overlay) {
-      recordAntProcessOverlay(markerDir, child.pid, overlay);
+      if (recordAntProcessOverlay(markerDir, child.pid, overlay) === false) {
+        log.warn("[Ant] Could not write antd's overlay to ant-process.json durably");
+      }
       return;
     }
     overlayRetryTimer = setTimeout(() => {

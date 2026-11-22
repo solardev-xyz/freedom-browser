@@ -198,18 +198,20 @@ jobs:
       # (`protocol/schema.json`, with amendment 3's protocol-2 rows), which
       # `core-deadlines.test.js` checks main's deadline table against, and
       # its Radicle vectors (design 0008), which `radicle-vectors.test.js`
-      # replays through today's main, and its key-store helper's answers
+      # replays through today's main, its key-store helper's answers
       # (design 0013), which `keystore-drain.test.js` reads as the core
-      # does, at one reviewed commit: moved on purpose when the protocol's
-      # vectors, method table, Radicle vectors or key-store vectors change,
-      # never with freedom-core's main. It is the commit
-      # `cored-v0.25.0` was built from. Each suite fails if a file it is
-      # pointed at is missing.
+      # does, and its profile layout (design 0013, PRF-9a), which
+      # `freedom-root.vectors.test.js` checks MOVED_ENTRIES against, at one
+      # reviewed commit: moved on purpose when the protocol's vectors,
+      # method table, Radicle vectors, key-store vectors or layout vectors
+      # change, never with freedom-core's main. It is the commit
+      # `cored-v0.26.0` was built from (c54cafdb). Each suite fails if a
+      # file it is pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: a6e0d43d836f43a3ce03a686054b27fc40f0a809
+          ref: c54cafdbe82eaa92a0cb2120c1b9eb3c7f05012c
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
@@ -220,6 +222,7 @@ jobs:
             vectors/radicle-stats.json
             vectors/radicle-import.json
             vectors/keystore.json
+            vectors/layout.json
             protocol/schema.json
           sparse-checkout-cone-mode: false
 
@@ -228,6 +231,7 @@ jobs:
           FREEDOM_CORE_STREAM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/streams.json
           FREEDOM_CORE_RADICLE_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
           FREEDOM_CORE_KEYSTORE_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/keystore.json
+          FREEDOM_CORE_LAYOUT_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/layout.json
           FREEDOM_CORE_SCHEMA: ${{ github.workspace }}/.freedom-core/protocol/schema.json
         run: npm run test:coverage
 
@@ -1026,10 +1030,15 @@ jobs:
       # manager on its subcommands: the reference reads what they wrote, and
       # a profile launched under each data-directory override, or held
       # before its core, reads open to another profile's manager past its
-      # lock's 30 s, which can't delete it.
+      # lock's 30 s, which can't delete it. PRF-9's starting move through
+      # main's startProfileMove: a seeded root-layout profile moves and opens
+      # with the same stores, a new profile takes the empty move, a deferral
+      # changes nothing, two launches at once move once and hand over once,
+      # the receipts are imported from user_data_dir after the move, and the
+      # packaged default profile moves and is deleted with its freedom/.
       - name: freedom-cored profiles (real binary)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        run: npx jest src/main/profile-open.integration.test.js src/main/profile-manager.integration.test.js
+        run: npx jest src/main/profile-open.integration.test.js src/main/profile-manager.integration.test.js src/main/profile-move.integration.test.js
         env:
           FREEDOM_CORED_PROFILE_TEST: '1'
 
@@ -1327,14 +1336,17 @@ jobs:
       # startup order around the profile gate (freedom-core design 0013): no
       # settings write and no hand-off taken before `hold-profile` says
       # `locked` (Linux and macOS: its stand-in holder is a shell script).
+      # And PRF-9's move at startup: a new profile, a profile in the root
+      # layout and a catalog profile each start in `freedom/`, and after a
+      # full start no moved name is left at the profile's root.
       - name: Run profile lifecycle E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js test-e2e/profile-gate-startup.spec.js
+            xvfb-run -a npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js test-e2e/profile-gate-startup.spec.js test-e2e/profile-move.spec.js
           else
-            npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js test-e2e/profile-gate-startup.spec.js
+            npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js test-e2e/profile-gate-startup.spec.js test-e2e/profile-move.spec.js
           fi
 
       # ── was the `e2e-onboarding-identity` job ──
@@ -1407,6 +1419,20 @@ jobs:
             npm run test:e2e:onboarding -- --output=test-results/e2e-onboarding-identity
           fi
 
+      # PRF-9's moved profile with the real nodes (freedom-core design 0013,
+      # MD3): the Ant and freedom-ipfsd binaries downloaded above run on the
+      # profile's own data in `freedom/`, and a walk of it finds no socket,
+      # FIFO or device file, while they run and after the quit.
+      - name: Run the moved profile with the real nodes E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e:live -- --output=test-results/e2e-freedom-layout test-e2e/live/freedom-layout.spec.js
+          else
+            npm run test:e2e:live -- --output=test-results/e2e-freedom-layout test-e2e/live/freedom-layout.spec.js
+          fi
+
       # ── was the `e2e-preview-network` job ──
       # Independent of the long native sandbox build: prove both a positive
       # network control and the isolated preview boundary on every desktop OS.
@@ -1433,6 +1459,72 @@ jobs:
             test-results/
           if-no-files-found: ignore
           retention-days: 14
+
+  # PRF-9 B3's move held 45 s with real timings (freedom-core design 0013,
+  # MD10: one held phase in the browser), against a freedom-cored built here
+  # with its `testhooks` feature, whose pause hook holds the move mid-way. The
+  # release binary the other jobs download can't pause, so this case runs
+  # nowhere else: past the lock's 30 s, the move's refresher keeps
+  # `profile-open.lock` fresh, a proper-lockfile client finds it open and
+  # can't take it, a second launch through index.js's steps hands over, and
+  # once the move is let go the launch takes main's own lock. The core is
+  # checked out at the commit the vectors checkout in `test` names, so the
+  # pin moves both together; build.rs takes `testhooks` only in an
+  # unoptimized debug build, which is what `cargo build` makes. The
+  # toolchain is the checkout's own (rust-toolchain.toml), as freedom-core's
+  # CI installs it. The shipped binary's checks stay in e2e-desktop.
+  profile-move-held:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # rusqlite's build would otherwise look for the system's SQLite before
+      # its `bundled` feature (freedom-core's CI sets it too).
+      LIBSQLITE3_SYS_USE_PKG_CONFIG: '0'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out freedom-core at the vectors' commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: c54cafdbe82eaa92a0cb2120c1b9eb3c7f05012c
+          path: .freedom-core
+          persist-credentials: false
+
+      - name: Build freedom-cored with its test hooks (debug)
+        working-directory: .freedom-core
+        env:
+          # Outside the workspace, so jest never crawls the build. Set here,
+          # not on the job: a job's env can't read the runner context.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/freedom-cored-target
+        run: |
+          rustup toolchain install
+          cargo build --locked -p freedom-cored --features testhooks
+          # Only the binary is needed from here on, in CARGO_TARGET_DIR.
+          cd .. && rm -rf .freedom-core
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      - name: The move held 45 s (testhooks freedom-cored)
+        run: npx jest src/main/profile-move.integration.test.js -t 'a move held 45 s'
+        env:
+          FREEDOM_CORED_TESTHOOKS: '1'
+          FREEDOM_CORED_PATH: ${{ runner.temp }}/freedom-cored-target/debug/freedom-cored
 
   # Package an unpacked `--dir` build for every shipped platform and fail if
   # app.asar holds anything outside the `build.files` allowlist (#576). The
@@ -1614,6 +1706,24 @@ jobs:
             xvfb-run -a npm run test:e2e:live -- test-e2e/live/myotis-ens.spec.js
           else
             npm run test:e2e:live -- test-e2e/live/myotis-ens.spec.js
+          fi
+
+      # PRF-9's moved profile with Myotis running on the profile's own data
+      # (freedom-core design 0013, MD3's Myotis check): no socket, FIFO or
+      # device file under `freedom/`. Its own temp profile, with no
+      # MYOTIS_DATA_DIR, so the snapshot above is untouched; it waits for the
+      # supervisor's lease file, not for a sync.
+      - name: Run the moved profile with Myotis E2E
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          MYOTIS_NODE_PATH: ${{ github.workspace }}/${{ matrix.addon }}
+          FREEDOM_TEST_HIDE_WINDOW: '1'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e:live -- --output=test-results/e2e-freedom-layout test-e2e/live/freedom-layout.spec.js
+          else
+            npm run test:e2e:live -- --output=test-results/e2e-freedom-layout test-e2e/live/freedom-layout.spec.js
           fi
 
       # Nothing runs the native client when the spec skips, so the data dir may
@@ -2882,6 +2992,7 @@ jobs:
         myotis-native-e2e,
         native-addons,
         packed-asar-contents,
+        profile-move-held,
         radicle-changed,
         radicle-cost,
         renderer-changed,

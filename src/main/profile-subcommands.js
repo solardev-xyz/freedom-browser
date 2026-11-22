@@ -5,8 +5,9 @@
  * nothing a page or the network sent:
  *
  * - `profile open`, with `spawnSync` (5 s at most) before `app.setPath`, and
- *   `profile migrate --finish-only`, with `spawnSync` before the profile
- *   lock: main holds no lease while either blocks;
+ *   `profile migrate` (`--finish-only`, or a starting move), with
+ *   `spawnSync` before the profile lock: main holds no lease while either
+ *   blocks;
  * - the catalog's other operations (`list`, `create`, `rename`, `import`,
  *   `delete`, `update-nodes`, `reserved-ports`, `status`), with an
  *   asynchronous `spawn`, so main's own lock keeps refreshing while one runs.
@@ -155,9 +156,10 @@ function settle({ status, signal, stdout, stderr, error, timedOut }) {
 
 /**
  * Runs `command args…` and waits for it, blocking main: `profile open` and
- * `profile migrate`, before main holds a lease. Returns `{ result, raw, ms }`
- * (`ms`, the wall time 0013's latency gate measures) or throws a
- * ProfileSubcommandError.
+ * `profile migrate`, before main holds a lease. Returns `{ result, raw,
+ * stderr, ms }` (`stderr`, the last of the core's JSON log lines, where a
+ * deferred move gives its reason; `ms`, the wall time 0013's latency gate
+ * measures) or throws a ProfileSubcommandError.
  */
 function runSync(command, args, { timeoutMs = SYNC_TIMEOUT_MS, spawnSync = spawnSyncProcess } = {}) {
   const started = process.hrtime.bigint();
@@ -179,7 +181,7 @@ function runSync(command, args, { timeoutMs = SYNC_TIMEOUT_MS, spawnSync = spawn
     error: run.error,
     timedOut: run.error?.code === 'ETIMEDOUT',
   });
-  return { ...outcome, ms };
+  return { ...outcome, stderr: String(run.stderr || '').slice(-MAX_STDERR), ms };
 }
 
 /**

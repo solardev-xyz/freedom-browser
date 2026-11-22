@@ -55,3 +55,37 @@ describe('startup order around the profile gate', () => {
     expect(calls[0].index).toBeGreaterThan(locked);
   });
 });
+
+// PRF-9's move (freedom-core design 0013, "The move"; MG5): it runs before
+// the gate's holder, main's own lock and any read of the profile, and no read
+// of the Freedom root can come before it (holdFreedomRoot until
+// resetFreedomRoot). The behaviour is test-e2e/profile-move.spec.js's.
+describe('startup order around the profile move', () => {
+  const code = indexCode();
+  const at = (text) => {
+    expect(count(code, text)).toBe(1);
+    return code.indexOf(text);
+  };
+
+  test('the Freedom root is held from before anything resolves the profile', () => {
+    const hold = at('holdFreedomRoot();');
+    expect(hold).toBeLessThan(code.indexOf('migrateUserData('));
+    expect(hold).toBeLessThan(at('openActiveProfile(app)'));
+  });
+
+  test("a journal is settled, then the held-elsewhere check, then the move, then the root's reset", () => {
+    const finish = at('finishProfileMove(activeProfile)');
+    const heldElsewhere = at('isProfileHeldElsewhere(profileLaunch');
+    const move = at('startProfileMove(app, activeProfile, profileLaunch)');
+    const reset = at('resetFreedomRoot();');
+    expect(finish).toBeLessThan(heldElsewhere);
+    expect(heldElsewhere).toBeLessThan(move);
+    expect(move).toBeLessThan(reset);
+  });
+
+  test("the move and the reset come before the gate's holder and main's lock", () => {
+    const reset = at('resetFreedomRoot();');
+    expect(reset).toBeLessThan(code.indexOf('startProfileGate(activeProfile'));
+    expect(reset).toBeLessThan(at('acquireProfileLock(activeProfile'));
+  });
+});

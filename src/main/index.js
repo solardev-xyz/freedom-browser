@@ -18,6 +18,12 @@ require('./ipc-sender-policy').installIpcSenderPolicy(ipcMain, {
 // Must run before Chromium starts its DevTools handler; logged further down,
 // once the logger may initialise.
 const removedDebugSwitches = require('./remote-debugging-gate').applyRemoteDebuggingGate({ app });
+// No read of the profile's Freedom root until its move has settled (below):
+// one now would resolve the root layout the move is about to change, and the
+// packaged default profile's userData is set before any app.setPath
+// (freedom-core design 0013, MG5). Such a read throws until resetFreedomRoot.
+const { holdFreedomRoot, profileLayout, resetFreedomRoot } = require('./freedom-root');
+holdFreedomRoot();
 const RUNTIME_MODE = process.argv.includes('--runtime');
 const { RUNTIME_PROCESS_EXIT_CODES } = require('../shared/automation-runtime-contract');
 const { createRuntimeServer, inspectRuntimeDiscovery } = require('./automation/runtime-server');
@@ -86,6 +92,7 @@ const {
   getProfileLaunchReport,
   openActiveProfile,
   PROFILE_SWITCH_REJECTED,
+  startProfileMove,
   warnAboutLegacyDevData,
 } = require('./profile-resolver');
 function exitProfileOpenFailed(error) {
@@ -215,6 +222,31 @@ if (
 ) {
   exitProfileLocked();
 }
+// PRF-9's move (0013, "The move"): a profile in the root layout that is idle
+// has its Freedom-owned entries moved into `<userData>/freedom/` (a new
+// profile takes the empty move), under the move's own exclusion and its
+// ten-minute bound, still before the gate's holder starts, main takes its
+// lock and anything reads the profile. A deferred or rolled-back move, or one
+// skipped (a profile open elsewhere, a node that outlived a crashed main, a
+// development build without freedom-cored), leaves the old layout working
+// and is tried again at the next start, as is a profile whose journal was
+// settled above.
+if (profileLaunch.layout === 'root') {
+  let moved;
+  try {
+    moved = startProfileMove(app, activeProfile, profileLaunch);
+  } catch (error) {
+    exitProfileOpenFailed(error);
+  }
+  console.info(
+    `[profile] The move into freedom/: ${moved.outcome}${moved.reason ? ` (${moved.reason})` : ''}`
+  );
+  if (moved.outcome === 'busy') exitProfileLocked();
+}
+// The layout has settled: every path getter resolves the profile's Freedom
+// root from here on, once (freedom-root.js).
+resetFreedomRoot();
+console.info(`[profile] Layout: ${profileLayout(activeProfile.userDataDir)}`);
 // The profile gate, from before the lock to after its release
 // (profile-gate.js): bootstrap() waits for it before the core, any node, any
 // store write and the first window. Until then startup writes none of the

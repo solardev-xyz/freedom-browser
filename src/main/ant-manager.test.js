@@ -354,13 +354,13 @@ function loadAntManagerModule(options = {}) {
   const randomBytes = options.randomBytes || jest.fn(() => Buffer.from('ab'.repeat(32), 'hex'));
 
   const processMarker = {
-    writeAntProcessMarker: jest.fn(),
+    writeAntProcessMarker: jest.fn(() => options.markerWritten),
     clearAntProcessMarker: jest.fn(),
     findOwnLiveAntd: jest.fn(async () => options.ownLiveAntd || null),
     fetchNodeOverlay: jest.fn(async () => (typeof options.nodeOverlay === 'function'
       ? options.nodeOverlay()
       : options.nodeOverlay || null)),
-    recordAntProcessOverlay: jest.fn(),
+    recordAntProcessOverlay: jest.fn(() => options.markerWritten),
   };
 
   const { mod } = loadMainModule(require.resolve('./ant-manager'), {
@@ -1055,6 +1055,38 @@ describe('ant-manager', () => {
       await jest.advanceTimersByTimeAsync(0);
       await stopPromise;
       expect(ctx.processMarker.clearAntProcessMarker).toHaveBeenCalledWith('/profile', 4242);
+    });
+
+    // A marker not written durably (its write failed, or its flush did:
+    // `durable: false`) is logged, the overlay rewrite's too (0013 PRF-9 B3).
+    test('logs a marker write that was not durable', async () => {
+      jest.useFakeTimers();
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', userDataDir: '/profile', metadata: null },
+        legacyExternalChoice: 'managed',
+        portResolver: nodeOnDefaultPorts,
+        httpResponse: healthyOnDefaultPort,
+        nodeOverlay: 'ab'.repeat(32),
+        markerWritten: false,
+        createProcess: (binary, processOptions) =>
+          Object.assign(createProcessMock(binary, processOptions), { pid: 4242 }),
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      expect(ctx.log.warn).toHaveBeenCalledWith(
+        '[Ant] Could not write ant-process.json durably for the spawned antd'
+      );
+      await jest.advanceTimersByTimeAsync(1000);
+      await flushMicrotasks();
+      expect(ctx.processMarker.recordAntProcessOverlay).toHaveBeenCalled();
+      expect(ctx.log.warn).toHaveBeenCalledWith(
+        "[Ant] Could not write antd's overlay to ant-process.json durably"
+      );
+
+      const stopPromise = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await stopPromise;
     });
 
     // R3-M1: one failed /addresses fetch must not leave the marker without an

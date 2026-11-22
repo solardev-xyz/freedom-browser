@@ -4,9 +4,11 @@ const os = require('os');
 const path = require('path');
 const {
   ANT_PROCESS_MARKER_FILE,
+  antdLockTryable,
   clearAntProcessMarker,
   fetchNodeOverlay,
   findOwnLiveAntd,
+  readAntProcessMarkerState,
   recordAntProcessOverlay,
   writeAntProcessMarker,
 } = require('./ant-process-marker');
@@ -107,6 +109,183 @@ describe('ant-process-marker', () => {
     // Nothing listening any more.
     expect(await fetchNodeOverlay(port)).toBeNull();
     expect(await findOwnLiveAntd(dir)).toBeNull();
+  });
+
+  // The profile move's orphan check (freedom-core design 0013, MD7): any
+  // live pid defers the move, overlay or not, with nothing asked of the node,
+  // and a marker that is there but can't be read fails closed.
+  describe('readAntProcessMarkerState', () => {
+    const markerFile = () => path.join(dir, ANT_PROCESS_MARKER_FILE);
+
+    test('a missing marker is none, the only state that lets the move go on', () => {
+      expect(readAntProcessMarkerState(dir)).toEqual({ state: 'none' });
+    });
+
+    test('a live pid other than this process', () => {
+      writeAntProcessMarker(dir, { pid: 4242, apiPort: 1633, dataDir: '/data' });
+      expect(readAntProcessMarkerState(dir, { isProcessAlive: () => true })).toEqual({
+        state: 'live',
+        pid: 4242,
+      });
+      expect(readAntProcessMarkerState(dir, { isProcessAlive: () => false })).toEqual({
+        state: 'gone',
+        pid: 4242,
+      });
+      writeAntProcessMarker(dir, { pid: process.pid, apiPort: 1633, dataDir: '/data' });
+      expect(readAntProcessMarkerState(dir, { isProcessAlive: () => true })).toEqual({
+        state: 'gone',
+        pid: process.pid,
+      });
+      // For real: the parent is alive.
+      writeAntProcessMarker(dir, { pid: process.ppid, apiPort: 1633, dataDir: '/data' });
+      expect(readAntProcessMarkerState(dir)).toEqual({ state: 'live', pid: process.ppid });
+    });
+
+    test('a malformed marker is unreadable', () => {
+      fs.writeFileSync(markerFile(), '{not json');
+      expect(readAntProcessMarkerState(dir, { isProcessAlive: () => false })).toEqual({
+        state: 'unreadable',
+        reason: 'malformed',
+      });
+    });
+
+    test('a truncated marker (a torn in-place write) is unreadable', () => {
+      const whole = JSON.stringify({ pid: 4242, apiPort: 1633, dataDir: '/data' }, null, 2);
+      for (const length of [0, 1, 10, whole.length - 1]) {
+        fs.writeFileSync(markerFile(), whole.slice(0, length));
+        expect([length, readAntProcessMarkerState(dir, { isProcessAlive: () => false })]).toEqual([
+          length,
+          { state: 'unreadable', reason: 'malformed' },
+        ]);
+      }
+    });
+
+    test('a marker naming no integer pid, or not a file, is unreadable', () => {
+      for (const text of ['{"pid":"4242"}', '{"pid":0}', '{"pid":-1}', '{"pid":1.5}', '{}', 'null', '[]']) {
+        fs.writeFileSync(markerFile(), text);
+        expect([text, readAntProcessMarkerState(dir)]).toEqual([
+          text,
+          { state: 'unreadable', reason: 'no_pid' },
+        ]);
+      }
+      fs.rmSync(markerFile());
+      fs.mkdirSync(markerFile());
+      expect(readAntProcessMarkerState(dir)).toEqual({
+        state: 'unreadable',
+        reason: expect.any(String),
+      });
+    });
+  });
+
+  // Where the core's move (0.26.0) tries antd's own lock: a real ant-data/
+  // directory holding a regular antd.lock, looked at without following.
+  test('antdLockTryable: a real ant-data/ holding a regular antd.lock', () => {
+    const antData = path.join(dir, 'ant-data');
+    expect(antdLockTryable(dir)).toBe(false);
+    fs.mkdirSync(antData);
+    expect(antdLockTryable(dir)).toBe(false);
+    fs.writeFileSync(path.join(antData, 'antd.lock'), '');
+    expect(antdLockTryable(dir)).toBe(true);
+    // A link at antd.lock, or a directory there, isn't the lock antd takes.
+    fs.rmSync(path.join(antData, 'antd.lock'));
+    fs.mkdirSync(path.join(antData, 'antd.lock'));
+    expect(antdLockTryable(dir)).toBe(false);
+    fs.rmSync(path.join(antData, 'antd.lock'), { recursive: true });
+    if (process.platform !== 'win32') {
+      fs.writeFileSync(path.join(dir, 'real-lock'), '');
+      fs.symlinkSync(path.join(dir, 'real-lock'), path.join(antData, 'antd.lock'));
+      expect(antdLockTryable(dir)).toBe(false);
+    }
+    // ant-data/ itself a link to a directory that holds one: not followed.
+    fs.rmSync(antData, { recursive: true });
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-ant-outside-'));
+    try {
+      fs.writeFileSync(path.join(outside, 'antd.lock'), '');
+      fs.symlinkSync(outside, antData, process.platform === 'win32' ? 'junction' : 'dir');
+      expect(antdLockTryable(dir)).toBe(false);
+    } finally {
+      fs.rmSync(antData, { force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('the marker is replaced whole through lib/atomic-file.js, the overlay rewrite too', () => {
+    jest.isolateModules(() => {
+      const writes = [];
+      jest.doMock('./lib/atomic-file', () => {
+        const actual = jest.requireActual('./lib/atomic-file');
+        return {
+          writeFileAtomicSync: jest.fn((file, data) => {
+            writes.push(file);
+            return actual.writeFileAtomicSync(file, data);
+          }),
+        };
+      });
+      const marker = require('./ant-process-marker');
+      const file = path.join(dir, marker.ANT_PROCESS_MARKER_FILE);
+      const writeSync = jest.spyOn(fs, 'writeFileSync');
+      try {
+        expect(marker.writeAntProcessMarker(dir, { pid: 4242, apiPort: 1635, dataDir: '/data' })).toBe(
+          true
+        );
+        marker.recordAntProcessOverlay(dir, 4242, OVERLAY);
+        // Never written in place.
+        expect(writeSync.mock.calls.map(([target]) => target)).not.toContain(file);
+      } finally {
+        writeSync.mockRestore();
+      }
+      expect(writes).toEqual([file, file]);
+      expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toMatchObject({ pid: 4242, overlay: OVERLAY });
+      // No temp file left beside it.
+      expect(fs.readdirSync(dir)).toEqual([marker.ANT_PROCESS_MARKER_FILE]);
+    });
+  });
+
+  test("a write whose flush fails (durable: false) counts as failed, the overlay rewrite's too", () => {
+    writeAntProcessMarker(dir, { pid: 4242, apiPort: 1635, dataDir: '/data' });
+    // The real atomic write, with its post-rename flush failing: the temp
+    // file's fsync comes first, the flush's second.
+    const realSync = fs.fsyncSync;
+    let calls = 0;
+    const fsync = jest.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      calls += 1;
+      if (calls % 2 === 0) throw Object.assign(new Error('EIO'), { code: 'EIO' });
+      return realSync(fd);
+    });
+    try {
+      expect(recordAntProcessOverlay(dir, 4242, OVERLAY)).toBe(false);
+      expect(writeAntProcessMarker(dir, { pid: 5151, apiPort: 1635, dataDir: '/data' })).toBe(false);
+    } finally {
+      fsync.mockRestore();
+    }
+    expect(calls).toBe(4);
+    // The renames landed; only their flushes failed.
+    expect(readAntProcessMarkerState(dir, { isProcessAlive: () => true })).toEqual({
+      state: 'live',
+      pid: 5151,
+    });
+    // And durable again once the flush works.
+    expect(recordAntProcessOverlay(dir, 5151, OVERLAY)).toBe(true);
+    expect(recordAntProcessOverlay(dir, 4242, OVERLAY)).toBeNull();
+  });
+
+  test('a write that fails leaves the old marker and says so', () => {
+    writeAntProcessMarker(dir, { pid: 4242, apiPort: 1633, dataDir: '/data' });
+    jest.isolateModules(() => {
+      jest.doMock('./lib/atomic-file', () => ({
+        writeFileAtomicSync: () => {
+          throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+        },
+      }));
+      const marker = require('./ant-process-marker');
+      expect(marker.writeAntProcessMarker(dir, { pid: 5151, apiPort: 1633, dataDir: '/data' })).toBe(
+        false
+      );
+    });
+    expect(readAntProcessMarkerState(dir, { isProcessAlive: () => true })).toEqual({
+      state: 'live',
+      pid: 4242,
+    });
   });
 
   test('clears only the marker of the process that exited', () => {
