@@ -20,7 +20,7 @@ const {
 const { getProfileLockTiming, isProfileLocked } = require('./profile-lock');
 const { parseProfileSwitchArgv } = require('./profile-switch-scheme');
 const { profileLayout } = require('./freedom-root');
-const { findLiveAntProcess } = require('./ant-process-marker');
+const { readAntProcessMarkerState } = require('./ant-process-marker');
 const subcommands = require('./profile-subcommands');
 
 // A launch carrying an `x-freedom-profile:` switch (profile-switch-scheme.js)
@@ -665,7 +665,18 @@ function isProfileIdle(report, profile, { isLocked = isProfileLocked } = {}) {
  * - `open`: a fresh lock or a held gate: the lock hands over below (MD2);
  * - `node_running: antd pid <pid>`: `ant-process.json` names a live process
  *   (MD7): an antd that outlived a crashed main may still be writing
- *   `ant-data/`. arti's and Myotis's are OS locks the core tries itself.
+ *   `ant-data/`;
+ * - `ant_marker_unreadable: <why>`: `ant-process.json` is there but can't be
+ *   read, doesn't parse or names no pid. It fails closed: only a missing
+ *   marker counts as none (ant-process-marker.js).
+ *
+ * The marker is the second layer of MD7. The first is the core's: from
+ * freedom-cored 0.26.0 the move tries antd's own `ant-data/antd.lock`, which
+ * antd locks before it opens its data and holds for its life, and defers
+ * with `node_running` while it is held. That covers the moment between
+ * antd's spawn and its marker's write, and a marker lost or damaged in a
+ * crash, so no missing or bad marker can let a move run under a live antd.
+ * arti's and Myotis's locks the core tries the same way.
  *
  * A skipped or deferred profile opens in the old layout, and the move is
  * tried again at its next start.
@@ -678,8 +689,11 @@ function startProfileMove(app, profile, report, options = {}) {
     return skipped('no_core');
   }
   if (!isProfileIdle(report, profile, options)) return skipped('open');
-  const antd = (options.findLiveAntProcess || findLiveAntProcess)(profile.userDataDir);
-  if (antd) return skipped(`node_running: antd pid ${antd.pid}`);
+  const antd = (options.readAntProcessMarkerState || readAntProcessMarkerState)(
+    profile.userDataDir
+  );
+  if (antd.state === 'live') return skipped(`node_running: antd pid ${antd.pid}`);
+  if (antd.state === 'unreadable') return skipped(`ant_marker_unreadable: ${antd.reason}`);
   // A `--profile-dir` or test launch may name a directory nothing has made
   // yet: made here, as Chromium would make it, so a new profile takes the
   // empty move (MD5) instead of the core's `nothing` for a missing one.

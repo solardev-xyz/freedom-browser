@@ -569,14 +569,14 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
 
   const packaged = { isPackaged: true };
   const idle = { backend: 'core', layout: 'root', lockFresh: false, gateHeld: false };
-  const noAntd = () => null;
+  const noAntd = () => ({ state: 'none' });
   const start = (profile, report, options = {}) => {
     const spawn = answeringInTurn(options.answers || [{ stdout: 'migrated' }]);
     const outcome = startProfileMove(options.app || packaged, profile, report, {
       command: '/c',
       lockDir: '/l',
       spawnSync: spawn.spawnSync,
-      findLiveAntProcess: noAntd,
+      readAntProcessMarkerState: noAntd,
       ...options,
     });
     return { outcome, calls: spawn.calls };
@@ -615,8 +615,18 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
       [{ ...idle, lockFresh: true }, {}, 'open'],
       [{ ...idle, gateHeld: true }, {}, 'open'],
       [{ backend: 'js', layout: 'root', lockFresh: null, gateHeld: null }, { isLocked: () => true }, 'open'],
-      // An antd that outlived a crashed main (MD7).
-      [idle, { findLiveAntProcess: () => ({ pid: 4242 }) }, 'node_running: antd pid 4242'],
+      // An antd that outlived a crashed main (MD7), or a marker that can't
+      // tell: it fails closed.
+      [
+        idle,
+        { readAntProcessMarkerState: () => ({ state: 'live', pid: 4242 }) },
+        'node_running: antd pid 4242',
+      ],
+      [
+        idle,
+        { readAntProcessMarkerState: () => ({ state: 'unreadable', reason: 'malformed' }) },
+        'ant_marker_unreadable: malformed',
+      ],
     ];
     for (const [report, options, reason] of cases) {
       const { outcome, calls } = start(options.profile || profile, report, { ...options, answers: [] });
@@ -628,14 +638,60 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
   test('a development build with freedom-cored moves, and asks ant-process.json about the profile', () => {
     const profile = { userDataDir: path.join(tmp, 'dev'), isDev: true };
     fs.mkdirSync(profile.userDataDir);
-    const findLiveAntProcess = jest.fn(() => null);
+    const readAntProcessMarkerState = jest.fn(() => ({ state: 'gone', pid: 4242 }));
     const { outcome, calls } = start(profile, idle, {
       app: { isPackaged: false },
       coredPresent: true,
-      findLiveAntProcess,
+      readAntProcessMarkerState,
     });
     expect(outcome.outcome).toBe('migrated');
-    expect(findLiveAntProcess).toHaveBeenCalledWith(profile.userDataDir);
+    expect(readAntProcessMarkerState).toHaveBeenCalledWith(profile.userDataDir);
     expect(calls[0].args).toContain('--dev');
+  });
+
+  // MD7's marker, read for real from the profile's directory: only a missing
+  // one lets the move go on; one that is there but malformed or truncated
+  // skips it, as a live pid does.
+  describe("ant-process.json, failing closed", () => {
+    const withMarker = (text) => {
+      const profile = { userDataDir: fs.mkdtempSync(path.join(tmp, 'marker-')) };
+      if (text !== null) fs.writeFileSync(path.join(profile.userDataDir, 'ant-process.json'), text);
+      return start(profile, idle, { readAntProcessMarkerState: undefined });
+    };
+
+    test('a missing marker lets the move go on', () => {
+      const { outcome, calls } = withMarker(null);
+      expect(outcome).toEqual({ outcome: 'migrated' });
+      expect(calls).toHaveLength(1);
+    });
+
+    test('a malformed marker skips the move', () => {
+      const { outcome, calls } = withMarker('{not json');
+      expect(outcome).toEqual({ outcome: 'skipped', reason: 'ant_marker_unreadable: malformed' });
+      expect(calls).toHaveLength(0);
+    });
+
+    test('a truncated marker skips the move', () => {
+      const whole = JSON.stringify({ pid: 4242, apiPort: 1633, dataDir: '/data' }, null, 2);
+      const { outcome, calls } = withMarker(whole.slice(0, whole.length - 3));
+      expect(outcome).toEqual({ outcome: 'skipped', reason: 'ant_marker_unreadable: malformed' });
+      expect(calls).toHaveLength(0);
+      expect(withMarker('').outcome.reason).toBe('ant_marker_unreadable: malformed');
+    });
+
+    test('a marker without an integer pid skips the move', () => {
+      expect(withMarker('{"pid":"4242"}').outcome).toEqual({
+        outcome: 'skipped',
+        reason: 'ant_marker_unreadable: no_pid',
+      });
+    });
+
+    test("a marker whose antd is gone lets the move go on; this test's parent, alive, skips it", () => {
+      expect(withMarker(JSON.stringify({ pid: process.pid })).outcome).toEqual({ outcome: 'migrated' });
+      expect(withMarker(JSON.stringify({ pid: process.ppid })).outcome).toEqual({
+        outcome: 'skipped',
+        reason: `node_running: antd pid ${process.ppid}`,
+      });
+    });
   });
 });

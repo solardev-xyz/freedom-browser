@@ -1087,7 +1087,11 @@ async function startAnt() {
     antSpawnedAt = Date.now();
     const child = antProcess;
     const markerDir = getActiveProfile()?.userDataDir;
-    writeAntProcessMarker(markerDir, { pid: child.pid, apiPort, dataDir });
+    if (markerDir && writeAntProcessMarker(markerDir, { pid: child.pid, apiPort, dataDir }) === false) {
+      // The profile move's first orphan check is the core's try of antd's own
+      // lock (ant-process-marker.js), so this only costs the launch prompt.
+      log.warn('[Ant] Could not write ant-process.json for the spawned antd');
+    }
 
     bridge.pipeLog(child.stdout, (line) => {
       log.info(`[Ant stdout]: ${line}`);
