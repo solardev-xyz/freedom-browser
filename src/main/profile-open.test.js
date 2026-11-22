@@ -1,7 +1,8 @@
-// Main's side of `freedom-cored profile open` and `profile migrate
+// Main's side of `freedom-cored profile open`, `profile migrate
 // --finish-only` (freedom-core design 0013, 5.1 and the reader release,
-// PRF-4), with the binary's answers given. profile-open.integration.test.js
-// runs the real binary.
+// PRF-4) and the starting move (PRF-9 B3), with the binary's answers given.
+// profile-open.integration.test.js and profile-move.integration.test.js run
+// the real binary.
 
 const fs = require('fs');
 const os = require('os');
@@ -13,14 +14,18 @@ const {
 const { hashPath } = require('./profile-catalog');
 const {
   PROFILE_SWITCH_REJECTED,
+  START_MOVE_TIMEOUT_MS,
   buildProfileOpenArgs,
   finishProfileMove,
   getActiveProfile,
   getProfileLaunchReport,
+  isProfileIdle,
   openActiveProfile,
   openProfile,
   profileCatalogBackend,
   profileOpenBackend,
+  runProfileMove,
+  startProfileMove,
 } = require('./profile-resolver');
 
 function makeTempDir(prefix) {
@@ -346,5 +351,291 @@ describe("finishProfileMove: a move's journal settled before the lock", () => {
         ...answering('{"error":"overlap"}', { status: 74 }),
       })
     ).toThrow(expect.objectContaining({ code: 'storage', kind: 'overlap' }));
+  });
+});
+
+// A spawnSync that gives `answers` in turn, one per run: `{ stdout, status,
+// stderr, signal, error }`.
+function answeringInTurn(answers) {
+  const calls = [];
+  const spawnSync = (command, args, options) => {
+    calls.push({ command, args, options });
+    const answer = answers[calls.length - 1];
+    if (!answer) throw new Error(`unexpected run ${calls.length}: ${args.join(' ')}`);
+    return {
+      status: 'status' in answer ? answer.status : 0,
+      signal: answer.signal ?? null,
+      stdout: answer.stdout === undefined ? '' : `${answer.stdout}\n`,
+      stderr: answer.stderr ?? '',
+      error: answer.error,
+    };
+  };
+  return { calls, spawnSync };
+}
+
+const TIMED_OUT = {
+  status: null,
+  signal: 'SIGKILL',
+  error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+};
+
+describe('runProfileMove: the starting move (PRF-9 B3)', () => {
+  const profile = { userDataDir: '/p/work', isDev: false };
+  const run = (answers, options = {}) => {
+    const spawn = answeringInTurn(answers);
+    const outcome = runProfileMove(profile, {
+      command: '/c',
+      lockDir: '/l',
+      spawnSync: spawn.spawnSync,
+      ...options,
+    });
+    return { outcome, calls: spawn.calls };
+  };
+
+  test('runs migrate without --finish-only, under the ten-minute bound', () => {
+    const { outcome, calls } = run([{ stdout: 'migrated' }]);
+    expect(outcome).toEqual({ outcome: 'migrated' });
+    expect(calls[0].args).toEqual(['profile', 'migrate', '--profile-dir', '/p/work', '--lock-dir', '/l']);
+    expect(calls[0].options.timeout).toBe(START_MOVE_TIMEOUT_MS);
+    expect(START_MOVE_TIMEOUT_MS).toBe(600_000);
+    // A dev profile's lock timings.
+    const dev = answeringInTurn([{ stdout: 'nothing' }]);
+    runProfileMove({ userDataDir: '/p/dev', isDev: true }, { command: '/c', lockDir: '/l', spawnSync: dev.spawnSync });
+    expect(dev.calls[0].args).toEqual(['profile', 'migrate', '--profile-dir', '/p/dev', '--lock-dir', '/l', '--dev']);
+  });
+
+  test('migrated, nothing and rolled_back go on', () => {
+    for (const word of ['migrated', 'nothing', 'rolled_back']) {
+      expect(run([{ stdout: word }]).outcome).toEqual({ outcome: word });
+    }
+  });
+
+  test("deferred goes on, with the reason from the core's log line", () => {
+    const stderr = [
+      '{"level":"info","msg":"profile subcommand confined"}',
+      '{"why":"copy_too_large","detail":"ant-data","level":"warn","msg":"the move is deferred to the next start; nothing was changed"}',
+      '',
+    ].join('\n');
+    expect(run([{ stdout: 'deferred', stderr }]).outcome).toEqual({
+      outcome: 'deferred',
+      reason: 'copy_too_large: ant-data',
+    });
+    // No detail; and no line of the core's at all.
+    expect(
+      run([{ stdout: 'deferred', stderr: '{"why":"node_identity_journal","detail":"","msg":"x"}\n' }]).outcome
+    ).toEqual({ outcome: 'deferred', reason: 'node_identity_journal' });
+    expect(run([{ stdout: 'deferred', stderr: 'not json\n' }]).outcome).toEqual({
+      outcome: 'deferred',
+      reason: null,
+    });
+    // A `why` that isn't one of the core's words isn't logged as one.
+    expect(
+      run([{ stdout: 'deferred', stderr: '{"why":"Some Text\\nwith a newline"}\n' }]).outcome.reason
+    ).toBeNull();
+  });
+
+  test('busy hands over, as a fresh lock does', () => {
+    expect(run([{ stdout: 'busy', status: 75 }]).outcome).toEqual({ outcome: 'busy' });
+  });
+
+  test("lock_lost and corrupt keep the profile closed, with a starting move's wording", () => {
+    expect(() => run([{ stdout: 'lock_lost', status: 74 }])).toThrow(
+      expect.objectContaining({
+        code: 'lock_lost',
+        message: expect.stringContaining('moved into its freedom folder'),
+      })
+    );
+    expect(() => run([{ stdout: 'corrupt', status: 74 }])).toThrow(
+      expect.objectContaining({ code: 'corrupt', message: expect.stringContaining('half moved') })
+    );
+  });
+
+  test('a timeout, a kill or an unknown answer in the root or moved layout goes on as it is', () => {
+    for (const [answer, reason] of [
+      [TIMED_OUT, 'timeout'],
+      [{ status: null, signal: 'SIGKILL' }, 'failed'],
+      [{ stdout: 'moved_sideways' }, 'unknown'],
+      [{ stdout: '{"error":"overlap"}', status: 74 }, 'overlap'],
+    ]) {
+      for (const layout of ['root', 'freedom']) {
+        const { outcome, calls } = run([answer], { profileLayout: () => layout });
+        expect(outcome).toEqual({ outcome: 'failed', reason, layout });
+        // Nothing else run: no --finish-only without a journal.
+        expect(calls).toHaveLength(1);
+      }
+    }
+  });
+
+  test('a journal left by a failed run is settled with --finish-only before anything reads the profile', () => {
+    const { outcome, calls } = run([{ stdout: 'moved_sideways' }, { stdout: 'rolled_back' }], {
+      profileLayout: () => 'pending',
+    });
+    expect(outcome).toEqual({ outcome: 'rolled_back', reason: 'unknown', layout: 'pending' });
+    expect(calls[1].args).toEqual([
+      'profile',
+      'migrate',
+      '--profile-dir',
+      '/p/work',
+      '--lock-dir',
+      '/l',
+      '--finish-only',
+    ]);
+    expect(calls[1].options.timeout).toBe(120_000);
+    // Its busy hands over; its lock_lost keeps the profile closed.
+    expect(
+      run([{ stdout: '{"error":"io"}', status: 74 }, { stdout: 'busy', status: 75 }], {
+        profileLayout: () => 'pending',
+      }).outcome
+    ).toEqual({ outcome: 'busy', reason: 'io', layout: 'pending' });
+    expect(() =>
+      run([{ stdout: 'moved_sideways' }, { stdout: 'lock_lost', status: 74 }], {
+        profileLayout: () => 'pending',
+      })
+    ).toThrow(expect.objectContaining({ code: 'lock_lost' }));
+  });
+
+  test("after main kills a run, --finish-only waits for the killed run's lock to lapse", () => {
+    let clock = 0;
+    const locked = [true, true, false];
+    const isLocked = jest.fn(() => locked.shift());
+    const sleep = jest.fn((ms) => {
+      clock += ms;
+    });
+    const { outcome, calls } = run(
+      [TIMED_OUT, { stdout: 'busy', status: 75 }, { stdout: 'migrated' }],
+      { profileLayout: () => 'pending', isLocked, sleep, now: () => clock }
+    );
+    expect(outcome).toEqual({ outcome: 'migrated', reason: 'timeout', layout: 'pending' });
+    expect(calls).toHaveLength(3);
+    expect(isLocked).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+
+    // Never past the lock's stale time and one refresh: then it hands over.
+    clock = 0;
+    const always = run(
+      [TIMED_OUT, { stdout: 'busy', status: 75 }, { stdout: 'busy', status: 75 }],
+      { profileLayout: () => 'pending', isLocked: () => true, sleep, now: () => clock }
+    );
+    expect(always.outcome.outcome).toBe('busy');
+    expect(clock).toBeGreaterThanOrEqual(40_000);
+    expect(clock).toBeLessThan(41_000);
+
+    // A run that exited on its own let its lock go: a busy then is another's.
+    const exited = run([{ stdout: 'moved_sideways' }, { stdout: 'busy', status: 75 }], {
+      profileLayout: () => 'pending',
+      isLocked: () => {
+        throw new Error('not asked');
+      },
+    });
+    expect(exited.outcome.outcome).toBe('busy');
+    expect(exited.calls).toHaveLength(2);
+  });
+});
+
+describe('isProfileIdle (0013, MD1)', () => {
+  const profile = { userDataDir: '/p/work' };
+
+  test("profile open's report: no fresh lock and no held gate", () => {
+    const never = () => {
+      throw new Error('not asked: profile open answered');
+    };
+    expect(isProfileIdle({ lockFresh: false, gateHeld: false }, profile, { isLocked: never })).toBe(true);
+    expect(isProfileIdle({ lockFresh: true, gateHeld: false }, profile, { isLocked: never })).toBe(false);
+    expect(isProfileIdle({ lockFresh: false, gateHeld: true }, profile, { isLocked: never })).toBe(false);
+  });
+
+  test('the JS path (Windows, --profile-dir, test launches): the lock not fresh', () => {
+    const report = { lockFresh: null, gateHeld: null };
+    expect(isProfileIdle(report, profile, { isLocked: () => false })).toBe(true);
+    expect(isProfileIdle(report, profile, { isLocked: () => true })).toBe(false);
+    expect(
+      isProfileIdle(report, profile, {
+        isLocked: () => {
+          throw new Error('EACCES');
+        },
+      })
+    ).toBe(false);
+  });
+});
+
+describe('startProfileMove: whether this start moves the profile (index.js)', () => {
+  let tmp;
+  beforeEach(() => {
+    tmp = makeTempDir('freedom-start-move-');
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const packaged = { isPackaged: true };
+  const idle = { backend: 'core', layout: 'root', lockFresh: false, gateHeld: false };
+  const noAntd = () => null;
+  const start = (profile, report, options = {}) => {
+    const spawn = answeringInTurn(options.answers || [{ stdout: 'migrated' }]);
+    const outcome = startProfileMove(options.app || packaged, profile, report, {
+      command: '/c',
+      lockDir: '/l',
+      spawnSync: spawn.spawnSync,
+      findLiveAntProcess: noAntd,
+      ...options,
+    });
+    return { outcome, calls: spawn.calls };
+  };
+
+  test('a root-layout profile that is idle is moved', () => {
+    const profile = { userDataDir: path.join(tmp, 'work') };
+    fs.mkdirSync(profile.userDataDir);
+    const { outcome, calls } = start(profile, idle);
+    expect(outcome).toEqual({ outcome: 'migrated' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.slice(0, 2)).toEqual(['profile', 'migrate']);
+    expect(calls[0].args).not.toContain('--finish-only');
+  });
+
+  test("a --profile-dir or test launch's missing directory is made first, for the empty move", () => {
+    const profile = { userDataDir: path.join(tmp, 'nested', 'fresh') };
+    const report = { backend: 'js', layout: 'root', lockFresh: null, gateHeld: null };
+    const { outcome } = start(profile, report, { isLocked: () => false });
+    expect(outcome.outcome).toBe('migrated');
+    expect(fs.statSync(profile.userDataDir).isDirectory()).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(profile.userDataDir).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  test('skipped, with nothing run, for each reason the move waits', () => {
+    const profile = { userDataDir: path.join(tmp, 'work') };
+    const cases = [
+      [{ ...idle, layout: 'freedom' }, {}, 'layout'],
+      [{ ...idle, layout: 'pending' }, {}, 'layout'],
+      [idle, { profile: { ...profile, switchOnly: true } }, 'switch'],
+      // A development build without freedom-cored (MD1).
+      [idle, { app: { isPackaged: false }, coredPresent: false }, 'no_core'],
+      // Open elsewhere: the lock hands over below (MD2).
+      [{ ...idle, lockFresh: true }, {}, 'open'],
+      [{ ...idle, gateHeld: true }, {}, 'open'],
+      [{ backend: 'js', layout: 'root', lockFresh: null, gateHeld: null }, { isLocked: () => true }, 'open'],
+      // An antd that outlived a crashed main (MD7).
+      [idle, { findLiveAntProcess: () => ({ pid: 4242 }) }, 'node_running: antd pid 4242'],
+    ];
+    for (const [report, options, reason] of cases) {
+      const { outcome, calls } = start(options.profile || profile, report, { ...options, answers: [] });
+      expect(outcome).toEqual({ outcome: 'skipped', reason });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  test('a development build with freedom-cored moves, and asks ant-process.json about the profile', () => {
+    const profile = { userDataDir: path.join(tmp, 'dev'), isDev: true };
+    fs.mkdirSync(profile.userDataDir);
+    const findLiveAntProcess = jest.fn(() => null);
+    const { outcome, calls } = start(profile, idle, {
+      app: { isPackaged: false },
+      coredPresent: true,
+      findLiveAntProcess,
+    });
+    expect(outcome.outcome).toBe('migrated');
+    expect(findLiveAntProcess).toHaveBeenCalledWith(profile.userDataDir);
+    expect(calls[0].args).toContain('--dev');
   });
 });

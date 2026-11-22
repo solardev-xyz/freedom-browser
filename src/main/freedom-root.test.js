@@ -19,7 +19,9 @@ const {
   MOVED_ENTRIES,
   getFreedomDataDir,
   getFreedomDataPath,
+  holdFreedomRoot,
   profileLayout,
+  resetFreedomRoot,
   resolveFreedomRoot,
 } = require('./freedom-root');
 
@@ -87,6 +89,39 @@ describe("a profile's Freedom root (0013, the reader release)", () => {
     mockUserData = moved;
     expect(getFreedomDataDir()).toBe(path.join(moved, 'freedom'));
     expect(getFreedomDataPath('settings.json')).toBe(path.join(moved, 'freedom', 'settings.json'));
+  });
+
+  // MG5: main holds the root from its start until the move has settled
+  // (index.js), so nothing pins the layout the move is about to change.
+  test('held until the move settles: a read throws, and the reset resolves the new layout', () => {
+    const dir = profileDir(tmp);
+    mockUserData = dir;
+    expect(getFreedomDataDir()).toBe(dir);
+    holdFreedomRoot();
+    try {
+      expect(() => getFreedomDataDir()).toThrow(
+        expect.objectContaining({ code: 'FREEDOM_ROOT_UNSETTLED' })
+      );
+      expect(() => getFreedomDataPath('settings.json')).toThrow(
+        expect.objectContaining({ code: 'FREEDOM_ROOT_UNSETTLED' })
+      );
+      // The move, meanwhile.
+      markMoved(dir);
+    } finally {
+      resetFreedomRoot();
+    }
+    // The cached root layout is forgotten: the moved one resolves.
+    expect(getFreedomDataDir()).toBe(path.join(dir, 'freedom'));
+  });
+
+  test('the reset alone forgets a root resolved before a move', () => {
+    const dir = profileDir(tmp);
+    mockUserData = dir;
+    expect(getFreedomDataDir()).toBe(dir);
+    markMoved(dir);
+    expect(getFreedomDataDir()).toBe(dir);
+    resetFreedomRoot();
+    expect(getFreedomDataDir()).toBe(path.join(dir, 'freedom'));
   });
 
   test("main's path getters resolve the Freedom root; the shell's entries stay at the root", () => {

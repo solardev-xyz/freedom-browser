@@ -6,6 +6,7 @@ const {
   ANT_PROCESS_MARKER_FILE,
   clearAntProcessMarker,
   fetchNodeOverlay,
+  findLiveAntProcess,
   findOwnLiveAntd,
   recordAntProcessOverlay,
   writeAntProcessMarker,
@@ -107,6 +108,25 @@ describe('ant-process-marker', () => {
     // Nothing listening any more.
     expect(await fetchNodeOverlay(port)).toBeNull();
     expect(await findOwnLiveAntd(dir)).toBeNull();
+  });
+
+  // The profile move's orphan check (freedom-core design 0013, MD7): any
+  // live pid defers the move, overlay or not, with nothing asked of the node.
+  test('findLiveAntProcess: a marker naming a live process other than this one', () => {
+    expect(findLiveAntProcess(dir)).toBeNull();
+    writeAntProcessMarker(dir, { pid: 4242, apiPort: 1633, dataDir: '/data' });
+    expect(findLiveAntProcess(dir, { isProcessAlive: () => true })).toMatchObject({ pid: 4242 });
+    expect(findLiveAntProcess(dir, { isProcessAlive: () => false })).toBeNull();
+    writeAntProcessMarker(dir, { pid: process.pid, apiPort: 1633, dataDir: '/data' });
+    expect(findLiveAntProcess(dir, { isProcessAlive: () => true })).toBeNull();
+    // For real: the parent is alive; a pid no process has, almost surely not.
+    writeAntProcessMarker(dir, { pid: process.ppid, apiPort: 1633, dataDir: '/data' });
+    expect(findLiveAntProcess(dir)).toMatchObject({ pid: process.ppid });
+    fs.writeFileSync(path.join(dir, ANT_PROCESS_MARKER_FILE), '{"pid":"4242"}');
+    expect(findLiveAntProcess(dir, { isProcessAlive: () => true })).toBeNull();
+    fs.writeFileSync(path.join(dir, ANT_PROCESS_MARKER_FILE), '{not json');
+    expect(findLiveAntProcess(dir, { isProcessAlive: () => true })).toBeNull();
+    expect(findLiveAntProcess(null)).toBeNull();
   });
 
   test('clears only the marker of the process that exited', () => {

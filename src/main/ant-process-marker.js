@@ -152,11 +152,26 @@ async function findOwnLiveAntd(userDataDir, options = {}) {
   return actual === expected ? marker : null;
 }
 
+// Whether the marker names a process that is still alive (not this one),
+// without asking the node anything: the profile move's orphan check
+// (freedom-core design 0013, MD7). The core tries no lock of antd's (PRF-9b),
+// and a Unix rename under a live process succeeds silently, so the move
+// waits while one might still run on the profile's data. A recycled pid
+// only defers the move: the next antd Freedom starts writes its own marker.
+function findLiveAntProcess(userDataDir, options = {}) {
+  if (!userDataDir) return null;
+  const marker = readMarker(userDataDir);
+  if (!marker || !Number.isInteger(marker.pid) || marker.pid === process.pid) return null;
+  const alive = options.isProcessAlive || isProcessAlive;
+  return alive(marker.pid) ? marker : null;
+}
+
 module.exports = {
   ANT_PROCESS_MARKER_FILE,
   clearAntProcessMarker,
   fetchNodeOverlay,
   findOwnLiveAntd,
+  findLiveAntProcess,
   recordAntProcessOverlay,
   writeAntProcessMarker,
 };

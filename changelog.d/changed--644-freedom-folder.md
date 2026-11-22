@@ -1,0 +1,2 @@
+- A profile's Freedom data (wallet, settings, node data) now lives in a `freedom` folder inside the profile, moved there once at its first start ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - A profile whose data can't move yet keeps working where it is, and the move is tried again at the next start

@@ -17,9 +17,10 @@ const {
   validateProfileDeletion,
   waitForCatalogWriteLockIdle,
 } = require('./profile-catalog');
-const { isProfileLocked } = require('./profile-lock');
+const { getProfileLockTiming, isProfileLocked } = require('./profile-lock');
 const { parseProfileSwitchArgv } = require('./profile-switch-scheme');
 const { profileLayout } = require('./freedom-root');
+const { findLiveAntProcess } = require('./ant-process-marker');
 const subcommands = require('./profile-subcommands');
 
 // A launch carrying an `x-freedom-profile:` switch (profile-switch-scheme.js)
@@ -446,12 +447,39 @@ function openProfile(app, options = {}) {
  * gate. */
 const FINISH_MOVE_TIMEOUT_MS = 120_000;
 
+/** A starting move's bound (0013, MD4): renames, or a copy the core caps at
+ * 2 GiB (`copy_too_large`) when `freedom/` is on another volume. A run past
+ * it is killed, and its journal settled with `--finish-only`. */
+const START_MOVE_TIMEOUT_MS = 10 * 60_000;
+
 const MOVE_FAILURES = {
   lock_lost:
     "Another Freedom took this profile over while its data was being moved back into place. Open it again to finish.",
   corrupt:
     "This profile's data was left half moved, and Freedom can't tell which entries moved. Nothing was changed.",
 };
+
+/** A starting move's failures that keep the profile closed: its journal
+ * stays for the next start to settle. */
+const START_MOVE_FAILURES = {
+  lock_lost:
+    "Another Freedom took this profile over while its data was being moved into its freedom folder. Open it again to finish.",
+  corrupt: MOVE_FAILURES.corrupt,
+};
+
+function migrateArgs(profile, options, { finishOnly }) {
+  const args = [
+    'profile',
+    'migrate',
+    '--profile-dir',
+    profile.userDataDir,
+    '--lock-dir',
+    options.lockDir || getLockDir(),
+  ];
+  if (profile.isDev) args.push('--dev');
+  if (finishOnly) args.push('--finish-only');
+  return args;
+}
 
 /**
  * Settles a move's journal before anything reads the profile (0013,
@@ -467,16 +495,7 @@ const MOVE_FAILURES = {
  * the profile doesn't open, and nothing is guessed.
  */
 function finishProfileMove(profile, options = {}) {
-  const args = [
-    'profile',
-    'migrate',
-    '--profile-dir',
-    profile.userDataDir,
-    '--lock-dir',
-    options.lockDir || getLockDir(),
-  ];
-  if (profile.isDev) args.push('--dev');
-  args.push('--finish-only');
+  const args = migrateArgs(profile, options, { finishOnly: true });
   try {
     const { raw } = subcommands.runSync(options.command || getCoredBinaryPath(), args, {
       timeoutMs: options.timeoutMs ?? FINISH_MOVE_TIMEOUT_MS,
@@ -493,6 +512,183 @@ function finishProfileMove(profile, options = {}) {
     }
     throw error;
   }
+}
+
+/**
+ * Why a starting move deferred, from the core's log line (stderr's JSON,
+ * `{ why, detail, msg }`): `why`, with `detail` (the entry or path inside
+ * the profile it concerns) when the core gave one, or null.
+ */
+function moveDeferralReason(stderr) {
+  const lines = String(stderr || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    let entry;
+    try {
+      entry = JSON.parse(lines[index]);
+    } catch {
+      continue;
+    }
+    if (typeof entry?.why !== 'string' || !/^[a-z0-9_]{1,64}$/.test(entry.why)) continue;
+    const detail =
+      typeof entry.detail === 'string' ? entry.detail.replace(/\p{Cc}/gu, '?').slice(0, 200) : '';
+    return detail ? `${entry.why}: ${detail}` : entry.why;
+  }
+  return null;
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * After main killed a starting move, its profile lock reads fresh until the
+ * lock's stale time has passed since its last refresh, and `--finish-only`
+ * would answer `busy` until then. Waits, blocking main (which holds no lease
+ * yet), until the lock no longer reads fresh, for at most the stale time and
+ * one refresh period.
+ */
+function waitForMoveLockToLapse(
+  profile,
+  { isLocked = isProfileLocked, sleep = sleepSync, now = Date.now } = {}
+) {
+  const { staleMs, updateMs } = getProfileLockTiming(profile);
+  const deadline = now() + staleMs + updateMs;
+  while (now() < deadline) {
+    let locked;
+    try {
+      locked = isLocked(profile);
+    } catch {
+      return;
+    }
+    if (!locked) return;
+    sleep(250);
+  }
+}
+
+/**
+ * A starting move that gave no outcome main knows (killed at its bound or
+ * by a signal, an unknown word, or another failure): the run may have
+ * stopped anywhere, so the layout is read again. A journal (`pending`) is
+ * settled with `--finish-only` before anything reads the profile; `root`
+ * or `freedom` carry on as they are.
+ */
+function settleAfterStartingMove(profile, reason, options, { killed }) {
+  const layout = (options.profileLayout || profileLayout)(profile.userDataDir);
+  if (layout !== 'pending') return { outcome: 'failed', reason, layout };
+  const finish = { ...options, timeoutMs: options.finishTimeoutMs ?? FINISH_MOVE_TIMEOUT_MS };
+  let settled = finishProfileMove(profile, finish);
+  if (settled === 'busy' && killed) {
+    waitForMoveLockToLapse(profile, options);
+    settled = finishProfileMove(profile, finish);
+  }
+  return { outcome: settled, reason, layout };
+}
+
+/**
+ * The starting move (0013, "The move"; PRF-9): `freedom-cored profile
+ * migrate --profile-dir <dir> --lock-dir <dir> [--dev]`, with spawnSync,
+ * after app.setPath and before hold-profile and the profile lock, under the
+ * move's own exclusion, bounded at ten minutes (MD4). It moves the
+ * profile's Freedom-owned entries into `<profile>/freedom/` (a new profile
+ * takes the empty move, MD5), settles a journal it finds as `--finish-only`
+ * would, and does nothing once the marker is there.
+ *
+ * Returns `{ outcome, reason, layout }`:
+ * - `migrated`, `nothing`, `rolled_back`, `deferred` (`reason`: why, from
+ *   the core's log): go on, in whichever layout the profile is now in;
+ * - `busy`: another process holds the profile: hand over or report it
+ *   busy, as for a fresh lock;
+ * - after a kill, a timeout, an unknown answer or any other failure
+ *   (`reason`: its code), the layout read again: `pending` settled with
+ *   `--finish-only` (its outcome, `busy` included), `root` or `freedom`
+ *   as `failed`, which goes on.
+ *
+ * Throws for `lock_lost` and `corrupt` (and for what `--finish-only` throws
+ * after a failure): the profile doesn't open.
+ */
+function runProfileMove(profile, options = {}) {
+  const args = migrateArgs(profile, options, { finishOnly: false });
+  let run;
+  try {
+    run = subcommands.runSync(options.command || getCoredBinaryPath(), args, {
+      timeoutMs: options.timeoutMs ?? START_MOVE_TIMEOUT_MS,
+      spawnSync: options.spawnSync,
+    });
+  } catch (error) {
+    if (error.code === 'busy' || error.raw === 'busy') return { outcome: 'busy' };
+    if (START_MOVE_FAILURES[error.raw]) {
+      const failure = new Error(START_MOVE_FAILURES[error.raw]);
+      failure.code = error.raw;
+      throw failure;
+    }
+    const killed = error.code === 'timeout' || typeof error.exit === 'string';
+    return settleAfterStartingMove(profile, error.kind || error.code || 'failed', options, {
+      killed,
+    });
+  }
+  if (['migrated', 'nothing', 'rolled_back'].includes(run.raw)) return { outcome: run.raw };
+  if (run.raw === 'deferred') {
+    return { outcome: 'deferred', reason: moveDeferralReason(run.stderr) };
+  }
+  return settleAfterStartingMove(profile, 'unknown', options, { killed: false });
+}
+
+/**
+ * Whether the profile is idle (0013, MD1): `profile open`'s report says no
+ * fresh lock and no held gate; where it didn't run (Windows's JS path,
+ * `--profile-dir` and test launches), the lock doesn't read fresh. A held
+ * gate behind a stale lock has already been handed over (index.js).
+ */
+function isProfileIdle(report, profile, { isLocked = isProfileLocked } = {}) {
+  if (typeof report?.lockFresh === 'boolean' && typeof report?.gateHeld === 'boolean') {
+    return !report.lockFresh && !report.gateHeld;
+  }
+  try {
+    return !isLocked(profile);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * This start's move (0013, "The move"; MD1, MD7), from index.js once a
+ * journal is settled and the held-elsewhere check has passed, before
+ * hold-profile, the profile lock and any path getter: runProfileMove for a
+ * profile in the root layout that is idle. Skipped (`outcome: 'skipped'`,
+ * with `reason`):
+ * - `layout`: `profile open` didn't report `root`;
+ * - `switch`: an `x-freedom-profile:` switch only raises an open profile;
+ * - `no_core`: a development build without freedom-cored (MD1);
+ * - `open`: a fresh lock or a held gate: the lock hands over below (MD2);
+ * - `node_running: antd pid <pid>`: `ant-process.json` names a live process
+ *   (MD7): an antd that outlived a crashed main may still be writing
+ *   `ant-data/`. arti's and Myotis's are OS locks the core tries itself.
+ *
+ * A skipped or deferred profile opens in the old layout, and the move is
+ * tried again at its next start.
+ */
+function startProfileMove(app, profile, report, options = {}) {
+  const skipped = (reason) => ({ outcome: 'skipped', reason });
+  if (report?.layout !== 'root') return skipped('layout');
+  if (profile.switchOnly) return skipped('switch');
+  if (profileCatalogBackend(app, { coredPresent: options.coredPresent }) !== 'core') {
+    return skipped('no_core');
+  }
+  if (!isProfileIdle(report, profile, options)) return skipped('open');
+  const antd = (options.findLiveAntProcess || findLiveAntProcess)(profile.userDataDir);
+  if (antd) return skipped(`node_running: antd pid ${antd.pid}`);
+  // A `--profile-dir` or test launch may name a directory nothing has made
+  // yet: made here, as Chromium would make it, so a new profile takes the
+  // empty move (MD5) instead of the core's `nothing` for a missing one.
+  try {
+    fs.mkdirSync(profile.userDataDir, { recursive: true, mode: 0o700 });
+  } catch {
+    // The core reports what it finds.
+  }
+  return runProfileMove(profile, options);
 }
 
 function applyProfile(app, profile) {
@@ -775,6 +971,7 @@ module.exports = {
   LEGACY_DEV_DATA_DIRS,
   PROFILE_SWITCH_REJECTED,
   LEGACY_DEV_DATA_WARNING_FILE,
+  START_MOVE_TIMEOUT_MS,
   applyProfile,
   createProfileForActiveApp,
   deleteProfileForActiveApp,
@@ -790,6 +987,7 @@ module.exports = {
   getReservedProfilePorts,
   importProfileForActiveApp,
   initializeProfile,
+  isProfileIdle,
   listProfilesForActiveApp,
   openActiveProfile,
   openProfile,
@@ -799,6 +997,8 @@ module.exports = {
   resolveFallbackProfileId,
   resolveLastOpenedProfileId,
   resolveProfile,
+  runProfileMove,
+  startProfileMove,
   updateActiveProfileMetadata,
   updateActiveProfileNodeConfig,
   updateActiveProfileNodeConfigWhenIdle,

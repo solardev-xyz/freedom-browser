@@ -104,6 +104,7 @@ describe('runSync', () => {
       const { calls, spawnSync } = syncRun({ stdout: '[1,2]\n' });
       const outcome = runSync('/bin/cored', ['profile', 'reserved-ports'], { spawnSync });
       expect(outcome.result).toEqual([1, 2]);
+      expect(outcome.stderr).toBe('');
       expect(typeof outcome.ms).toBe('number');
       expect(calls[0].command).toBe('/bin/cored');
       expect(calls[0].args).toEqual(['profile', 'reserved-ports']);
@@ -114,6 +115,15 @@ describe('runSync', () => {
       if (previous === undefined) delete process.env.FREEDOM_PROFILE_SECRET_PROBE;
       else process.env.FREEDOM_PROFILE_SECRET_PROBE = previous;
     }
+  });
+
+  test("keeps the tail of the core's log lines: a deferred move's reason", () => {
+    const line = '{"why":"node_running","detail":"tor-data/state/state/state.lock","msg":"deferred"}\n';
+    const { spawnSync } = syncRun({ stdout: 'deferred\n', stderr: `${'x'.repeat(20_000)}\n${line}` });
+    const outcome = runSync('/bin/cored', ['profile', 'migrate'], { spawnSync });
+    expect(outcome.raw).toBe('deferred');
+    expect(outcome.stderr.length).toBe(16 * 1024);
+    expect(outcome.stderr.endsWith(line)).toBe(true);
   });
 
   test('a timed-out run is a timeout', () => {
