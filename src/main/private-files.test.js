@@ -4,6 +4,7 @@ const path = require('path');
 const { spawnSync, execFileSync } = require('child_process');
 const {
   ensurePrivateDir,
+  ensurePrivateDirAsync,
   openPrivateDir,
   withPrivateDir,
   repairPrivateDir,
@@ -857,5 +858,140 @@ posix('a mode that cannot be narrowed (K-3)', () => {
       });
       expect(fchmod).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ensurePrivateDirAsync (core/core-process.js's bounded wait for the Radicle
+// home) shares ensurePrivateDir's checks: for each case the tests above give
+// ensurePrivateDir, both reach the same verdict and leave the same mode.
+posix('ensurePrivateDirAsync judges as ensurePrivateDir does', () => {
+  let root;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'private-async-'));
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** The FileHandle class's prototype, whose chmod is the async fchmod. */
+  async function fileHandleProto() {
+    const handle = await fs.promises.open(root, 'r');
+    const proto = Object.getPrototypeOf(handle);
+    await handle.close();
+    return proto;
+  }
+  const eperm = () => {
+    throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), { code: 'EPERM' });
+  };
+
+  // Each case: makes the fixture under `base`, names the directory to ensure
+  // and what to read the mode of afterwards, and may break the fchmod.
+  const CASES = {
+    'a missing directory, parents included': (base) => ({
+      dir: path.join(base, 'a', 'b'),
+      modes: [path.join(base, 'a'), path.join(base, 'a', 'b')],
+    }),
+    'an existing 0755 directory': (base) => {
+      const dir = path.join(base, 'ant-data');
+      fs.mkdirSync(dir);
+      fs.chmodSync(dir, 0o755);
+      return { dir, modes: [dir] };
+    },
+    'an owner-only directory': (base) => {
+      const dir = path.join(base, 'ant-data');
+      fs.mkdirSync(dir, { mode: 0o700 });
+      return { dir, modes: [dir] };
+    },
+    'a link to a directory': (base) => {
+      const target = path.join(base, 'elsewhere');
+      fs.mkdirSync(target);
+      fs.chmodSync(target, 0o755);
+      const link = path.join(base, 'keys');
+      fs.symlinkSync(target, link);
+      return { dir: link, modes: [target] };
+    },
+    'a dangling link': (base) => {
+      const link = path.join(base, 'keys');
+      fs.symlinkSync(path.join(base, 'nowhere'), link);
+      return { dir: link, modes: [] };
+    },
+    'a regular file': (base) => {
+      const file = path.join(base, 'radicle-data');
+      fs.writeFileSync(file, 'x');
+      return { dir: file, modes: [file] };
+    },
+    'a 0755 directory whose fchmod fails': (base, proto) => {
+      const dir = path.join(base, 'ant-data');
+      fs.mkdirSync(dir);
+      fs.chmodSync(dir, 0o755);
+      jest.spyOn(fs, 'fchmodSync').mockImplementation(eperm);
+      jest.spyOn(proto, 'chmod').mockImplementation(async () => eperm());
+      return { dir, modes: [dir] };
+    },
+    'a 0755 directory whose fchmod does nothing': (base, proto) => {
+      const dir = path.join(base, 'ant-data');
+      fs.mkdirSync(dir);
+      fs.chmodSync(dir, 0o755);
+      jest.spyOn(fs, 'fchmodSync').mockImplementation(() => {});
+      jest.spyOn(proto, 'chmod').mockImplementation(async () => {});
+      return { dir, modes: [dir] };
+    },
+    "another account's directory": (base) => {
+      const dir = path.join(base, 'ant-data');
+      fs.mkdirSync(dir, { mode: 0o700 });
+      jest.spyOn(process, 'getuid').mockReturnValue(process.getuid() + 1);
+      return { dir, modes: [dir] };
+    },
+  };
+
+  /** What ensuring did, with `base` replaced so two fixtures compare. */
+  function outcome(base, { dir, modes }, result) {
+    const strip = (text) => text.split(base).join('<base>');
+    return {
+      result:
+        result.error === undefined
+          ? strip(result.value)
+          : `${result.error.name}: ${strip(result.error.message)}`,
+      modes: modes.map((target) => (fs.existsSync(target) ? modeOf(target) : null)),
+      dir: strip(dir),
+    };
+  }
+
+  test.each(Object.keys(CASES))('%s', async (name) => {
+    const proto = await fileHandleProto();
+    const syncBase = fs.mkdtempSync(path.join(root, 'sync-'));
+    const asyncBase = fs.mkdtempSync(path.join(root, 'async-'));
+    const syncCase = CASES[name](syncBase, proto);
+    let syncResult;
+    try {
+      syncResult = { value: ensurePrivateDir(syncCase.dir) };
+    } catch (error) {
+      syncResult = { error };
+    }
+    const asyncCase = CASES[name](asyncBase, proto);
+    let asyncResult;
+    try {
+      asyncResult = { value: await ensurePrivateDirAsync(asyncCase.dir) };
+    } catch (error) {
+      asyncResult = { error };
+    }
+    expect(outcome(asyncBase, asyncCase, asyncResult)).toEqual(
+      outcome(syncBase, syncCase, syncResult)
+    );
+  });
+
+  test('the verdicts above are the ones ensurePrivateDir gives', async () => {
+    // Spot checks that the comparison isn't between two equal failures.
+    const made = path.join(root, 'made');
+    expect(await ensurePrivateDirAsync(made)).toBe(made);
+    expect(modeOf(made)).toBe(0o700);
+    const link = path.join(root, 'link');
+    fs.symlinkSync(made, link);
+    await expect(ensurePrivateDirAsync(link)).rejects.toThrow(UnsafePrivatePathError);
+    const file = path.join(root, 'file');
+    fs.writeFileSync(file, 'x');
+    await expect(ensurePrivateDirAsync(file)).rejects.toThrow('not a directory');
   });
 });

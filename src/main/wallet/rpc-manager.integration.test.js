@@ -164,9 +164,11 @@ describe('RPC API keys through freedom-cored (0013, PRF-6(e))', () => {
 
   /**
    * A CoreClient on `binary` for this profile (Freedom root `root`, its
-   * grant root; identity in `root/identity`), its hello naming `storeMoved`
-   * (default: the build's `STORE_MOVED`), with main's key-store executor
-   * when `keychain`. Not started.
+   * grant root, passed as serve's argument too except to the previous
+   * release, which doesn't know it: design 0017, C1; identity in
+   * `root/identity`), its hello naming `storeMoved` (default: the build's
+   * `STORE_MOVED`), with main's key-store executor when `keychain`. Not
+   * started.
    */
   function makeCore({ binary = current, storeMoved, keychain = false } = {}) {
     const { CoreClient, _internal } = require('../core/core-client');
@@ -183,6 +185,7 @@ describe('RPC API keys through freedom-cored (0013, PRF-6(e))', () => {
       log: quietLog,
       shellVersion: 'jest',
       grantRoot: root,
+      grantArgs: binary !== previous,
     });
     if (storeMoved) client.service = _internal.coreService(storeMoved);
     if (keychain) {

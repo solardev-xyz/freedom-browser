@@ -456,6 +456,8 @@ describeIfPrevious("this step's pending store on the previous freedom-cored rele
     core = await startCore({
       binary: previous,
       root: p.root,
+      // 0.22.0 doesn't know serve's grant arguments (design 0017, C1).
+      grantArgs: false,
       beforeStart: (client) => {
         mockClient = client;
       },

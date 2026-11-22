@@ -312,6 +312,8 @@ describe('the hello at protocol 2', () => {
       capabilities: ['vault.status', 'fragments', 'streams'],
       node_recovery: null,
       store_moved: [],
+      // A core that reports no confinement (before 0.28.0, design 0017).
+      confinement: null,
     });
     expect(core().messages[0].params).toEqual({
       protocol: 2,

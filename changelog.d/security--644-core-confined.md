@@ -1,0 +1,3 @@
+- Freedom's identity core, which holds the wallet and node keys, now runs confined on Linux and macOS: it reaches only its profile's own Freedom data and node folders, opens no network connections and starts no programs ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Until a profile's data has moved into its `freedom` folder, the limit is the profile's whole folder
+  - On Windows it can't start programs of its own; file and network limits there come later

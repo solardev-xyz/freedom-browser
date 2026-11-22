@@ -25,7 +25,16 @@ jest.mock(
   { virtual: true }
 );
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
-jest.mock('../profile-paths', () => ({ getIdentityDataDir: () => '/nonexistent/identity' }));
+// The node roots `nodes.write_identity` names (freedom-core design 0017, C1):
+// Ant's data directory, unmade, and the Radicle home, once prepared
+// (core-process-radicle.test.js has the preparation's bounds).
+jest.mock('../profile-paths', () => ({
+  getIdentityDataDir: () => '/nonexistent/identity',
+  getAntDataPath: () => require('path').join(require('os').tmpdir(), 'freedom-profile', 'ant-data'),
+  prepareRadicleDataDir: jest.fn(async () =>
+    require('path').join(require('os').tmpdir(), 'R', '1')
+  ),
+}));
 jest.mock('../service-locks', () => ({ getLockDir: () => '/nonexistent/locks' }));
 // The profile's Freedom root, where the permission files are (freedom-root.js).
 jest.mock('../freedom-root', () => ({
@@ -43,6 +52,8 @@ const { CoreClient, PROTOCOL_VERSION_STREAMS } = require('./core-client');
 const { DwebShell } = require('./dweb-shell');
 const { DwebVerifier, dwebVerifier } = require('./dweb-verify');
 const core = require('./core-process');
+const log = require('../logger');
+const { prepareRadicleDataDir } = require('../profile-paths');
 
 const HELLO = {
   protocol: PROTOCOL_VERSION_STREAMS,
@@ -81,6 +92,26 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   expect(client.userDataDir).toBe(userData);
   expect(params.user_data_dir).toBe(userData);
   expect([...params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
+  // Design 0017, C1: the grant's arguments, the hello's own paths, and the
+  // node roots, the directories nodes.write_identity names: the Radicle
+  // home's once the spawn's wait found it prepared.
+  const args = (radicle) => [
+    'serve',
+    '--data-dir',
+    '/nonexistent/identity',
+    '--lock-dir',
+    '/nonexistent/locks',
+    '--parent-pid',
+    String(process.pid),
+    '--node-root',
+    `bee=${path.join(root, 'ant-data')}`,
+    ...(radicle ? ['--node-root', `radicle=${path.join(os.tmpdir(), 'R', '1')}`] : []),
+    '--grant-root',
+    params.grant_root,
+    '--user-data-dir',
+    params.user_data_dir,
+  ];
+  expect(client.args).toEqual(args(false));
   expect(params.store_moved).toEqual([
     'vault_meta',
     'intents',
@@ -117,6 +148,57 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   // (core-client.test.js), which the core reads as no key store.
   expect(handle.mock.calls.map(([method]) => method)).not.toContain('shell.keystore');
   expect(client.handlerFor('shell.keystore', {})).toBeUndefined();
+
+  // Design 0017: each start's confinement is logged from its hello, with a
+  // warning naming what isn't enforced.
+  const report = {
+    mechanism: 'seatbelt',
+    files: 'partial',
+    exec: 'enforced',
+    ipc: 'partial',
+    network: 'enforced',
+    gaps: ['modes', 'process_args'],
+    reasons: { files: 'not logged' },
+    resolution: null,
+  };
+  log.info.mockClear();
+  log.warn.mockClear();
+  client.emit('ready', { ...HELLO, store_moved: [], confinement: report });
+  expect(log.info).toHaveBeenCalledWith('[Core] confinement', {
+    core_version: '0.27.0',
+    mechanism: 'seatbelt',
+    files: 'partial',
+    exec: 'enforced',
+    ipc: 'partial',
+    network: 'enforced',
+    gaps: ['modes', 'process_args'],
+    resolution: null,
+  });
+  expect(log.warn).toHaveBeenCalledTimes(1);
+  expect(log.warn).toHaveBeenCalledWith('[Core] confinement not enforced', {
+    mechanism: 'seatbelt',
+    files: 'partial',
+    ipc: 'partial',
+    gaps: ['modes', 'process_args'],
+  });
+  log.warn.mockClear();
+  const enforced = { ...report, files: 'enforced', ipc: 'enforced', gaps: [], reasons: {} };
+  client.emit('ready', { ...HELLO, store_moved: [], confinement: enforced });
+  expect(log.warn).not.toHaveBeenCalled();
+  // A core before 0.28.0 reports none.
+  client.emit('ready', { ...HELLO, store_moved: [], confinement: null });
+  expect(log.warn).toHaveBeenCalledWith('[Core] the core reported no confinement', {
+    core_version: '0.27.0',
+  });
+
+  // Each spawn waits for the Radicle home's preparation, then spawns with
+  // its node root.
+  expect(prepareRadicleDataDir).not.toHaveBeenCalled();
+  const wait = client.deferSpawn();
+  expect(prepareRadicleDataDir).toHaveBeenCalledTimes(1);
+  await wait;
+  expect(client.deferSpawn()).toBeNull();
+  expect(client.args).toEqual(args(true));
 
   await core.stopCore();
   expect(stop).toHaveBeenCalledTimes(1);

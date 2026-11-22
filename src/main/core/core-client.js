@@ -27,6 +27,22 @@
  *   `.migrated` shows the import committed. Cores from 0.24.0 (PRF-8-lite)
  *   take it; an older core ignores it, as it ignores every hello member it
  *   doesn't know, and reads the receipts under `grant_root`.
+ * - **The grant's arguments** (design 0017, C1): for a `serve` command the
+ *   client appends `--grant-root <grant_root>` and, with `user_data_dir`,
+ *   `--user-data-dir <user_data_dir>` to the spawn's arguments itself,
+ *   from the same normalized values the hello sends, so the two can't
+ *   disagree. A confining core (0.28.0) requires `--grant-root`, confines
+ *   itself to it before it reads the hello, and answers a hello whose
+ *   `grant_root` or `user_data_dir` differs from them (one given on only
+ *   one side included) with `invalid_argument`, then exits 76. The pinned
+ *   core (0.27.0) takes them as optional; a core before that (0.22.0, the
+ *   previous release some compatibility tests run) doesn't know them, and
+ *   its callers turn them off (`grantArgs: false`). The node roots
+ *   (`--node-root`) are the caller's to pass (core-process.js).
+ * - **`confinement`** (design 0017): the confinement the core got, as
+ *   freedom-core design 0010 reports it for the services
+ *   (service-client.js's `validConfinement`), or null from a core that sends
+ *   none (before 0.28.0). A report that isn't one fails the hello.
  * - **`grant_moved`** names the files that have moved to the core, which is
  *   their only writer from then on (design 0012, "One writer per file"):
  *   `dapp` (APB-2), whose every write main sends to the core's write methods
@@ -87,6 +103,7 @@ const {
   MAX_INCOMING,
   scrubbedEnv,
   isObject,
+  validConfinement,
   NO_RESTART_EXIT_CODES,
   RESTART_DELAYS_MS,
   MAX_PENDING,
@@ -151,8 +168,9 @@ function validStoreEcho(value, sent) {
 }
 
 /** The public part of a valid hello result, or null: protocol 2, the
- * core's capabilities say `streams`, and its `store_moved` echo names only
- * stores in `sent` (the hello's own `store_moved`), each once. */
+ * core's capabilities say `streams`, its `store_moved` echo names only
+ * stores in `sent` (the hello's own `store_moved`), each once, and its
+ * `confinement`, when it sends one, is a report. */
 function validHello(result, sent = STORE_MOVED) {
   if (!isObject(result) || result.protocol !== PROTOCOL_VERSION) return null;
   if (typeof result.core_version !== 'string' || !CORE_VERSION.test(result.core_version)) {
@@ -171,13 +189,46 @@ function validHello(result, sent = STORE_MOVED) {
   if (nodeRecovery === undefined) return null;
   const storeMoved = validStoreEcho(result.store_moved, sent);
   if (storeMoved === undefined) return null;
+  const confinement = validCoreConfinement(result.confinement);
+  if (confinement === undefined) return null;
   return {
     protocol: PROTOCOL_VERSION,
     core_version: result.core_version,
     capabilities,
     node_recovery: nodeRecovery,
     store_moved: Object.freeze([...storeMoved]),
+    confinement,
   };
+}
+
+/**
+ * hello's `confinement` (design 0017): its public part
+ * (`validConfinement`), or null from a core that sends none (before
+ * 0.28.0); undefined for one that isn't a report.
+ */
+function validCoreConfinement(value) {
+  if (value === undefined || value === null) return null;
+  return validConfinement(value) ?? undefined;
+}
+
+/**
+ * `args` with the grant's arguments (design 0017, C1) for a `serve`
+ * command: `--grant-root grantRoot` and, when `userDataDir` isn't null,
+ * `--user-data-dir userDataDir`, each the hello's own value. Any other
+ * command's are returned as given. Throws a TypeError for `serve`
+ * arguments that name either already: the client passes them itself.
+ */
+function withGrantArgs(args, grantRoot, userDataDir) {
+  if (!Array.isArray(args) || args[0] !== 'serve') return args;
+  if (args.includes('--grant-root') || args.includes('--user-data-dir')) {
+    throw new TypeError('the core client passes --grant-root and --user-data-dir itself');
+  }
+  return [
+    ...args,
+    '--grant-root',
+    grantRoot,
+    ...(userDataDir === null ? [] : ['--user-data-dir', userDataDir]),
+  ];
 }
 
 const NODE_RECOVERY_STATUS = new Set(['pending_recovery', 'corrupt']);
@@ -271,6 +322,10 @@ class CoreClient extends ServiceClient {
    * @param {string} [options.userDataDir] - the profile's directory, sent
    *   as the hello's `user_data_dir`: when given, an absolute path, sent
    *   normalized as `grantRoot` is; when not, the hello names none
+   * @param {boolean} [options.grantArgs] - false to leave a `serve`
+   *   command's arguments as given, for a core that doesn't know the
+   *   grant's (0.22.0); by default `--grant-root` and `--user-data-dir`
+   *   are appended, with the hello's values (`withGrantArgs`)
    * @param {number} [options.protocol] - the protocol main asks for: only
    *   2 (the default), so a caller still asking for 1 fails here rather
    *   than at the core's `protocol_mismatch`
@@ -288,10 +343,25 @@ class CoreClient extends ServiceClient {
     ) {
       throw new TypeError('the core client takes userDataDir only as an absolute path');
     }
-    super({ ...options, service: CORE_SERVICE });
+    const root = path.resolve(grantRoot);
+    const userData = userDataDir === undefined ? null : path.resolve(userDataDir);
+    const grantArgs = options.grantArgs !== false;
+    const args = grantArgs ? withGrantArgs(options.args, root, userData) : options.args;
+    super({ ...options, args, service: CORE_SERVICE });
     this.autoLockMs = options.autoLockMs ?? 15 * 60 * 1000;
-    this.grantRoot = path.resolve(grantRoot);
-    this.userDataDir = userDataDir === undefined ? null : path.resolve(userDataDir);
+    this.grantRoot = root;
+    this.userDataDir = userData;
+    this.grantArgs = grantArgs;
+  }
+
+  /**
+   * Sets the arguments of the next spawn, a restart's too, with the grant's
+   * appended as the constructor appends them (unless `grantArgs` is
+   * false). Only while no process runs: from a `deferSpawn` wait, say.
+   */
+  setArgs(args) {
+    if (this.current) throw new Error('a freedom-cored process is running');
+    this.args = this.grantArgs ? withGrantArgs(args, this.grantRoot, this.userDataDir) : args;
   }
 
   /** The protocol main asks for, and every ready hello settled. */
@@ -322,5 +392,5 @@ module.exports = {
   STORE_MOVED,
   requiresStore,
   // For tests.
-  _internal: { coreService, validHello },
+  _internal: { coreService, validHello, withGrantArgs },
 };

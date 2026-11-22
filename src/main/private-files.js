@@ -111,15 +111,65 @@ class UnsafePrivatePathError extends Error {
 
 const sameObject = (a, b) => a.dev === b.dev && a.ino === b.ino;
 
-// An object opened through a descriptor: the right kind, and ours.
-function checkOpened(fd, target, { directory = false, owned = true } = {}) {
-  const stat = fs.fstatSync(fd);
+// The checks, over what a stat or an open reported, shared by the
+// synchronous opens and ensurePrivateDirAsync so both judge alike.
+
+// Why `stat`'s object can't be used as a private directory (`directory`) or
+// file, or null: a link (a Windows lstat's; a descriptor's fstat never is
+// one), the wrong kind, or, when `owned`, another account's (POSIX).
+function statRefusal(stat, target, { directory = false, owned = true } = {}) {
+  if (stat.isSymbolicLink()) return new UnsafePrivatePathError(target, 'it is a symbolic link');
   if (directory ? !stat.isDirectory() : !stat.isFile()) {
-    throw new UnsafePrivatePathError(target, directory ? 'not a directory' : 'not a regular file');
+    return new UnsafePrivatePathError(target, directory ? 'not a directory' : 'not a regular file');
   }
-  if (owned && POSIX && typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
-    throw new UnsafePrivatePathError(target, 'owned by another account');
+  if (
+    owned &&
+    POSIX &&
+    typeof process.getuid === 'function' &&
+    Number(stat.uid) !== process.getuid()
+  ) {
+    return new UnsafePrivatePathError(target, 'owned by another account');
   }
+  return null;
+}
+
+// Whether group or other have any access (POSIX): what narrowing changes.
+function openToOthers(stat) {
+  return POSIX && (Number(stat.mode) & 0o077) !== 0;
+}
+
+// Why a narrowing failed, or null: the fchmod threw `error`, or `stat`,
+// read after it, is still open to other accounts.
+function narrowRefusal(target, { error = null, stat = null }) {
+  if (error) {
+    return new UnsafePrivatePathError(target, `could not make it owner-only (${error.message})`);
+  }
+  if (openToOthers(stat)) {
+    return new UnsafePrivatePathError(
+      target,
+      'its mode is still open to other accounts after narrowing'
+    );
+  }
+  return null;
+}
+
+// What a failed no-follow directory open throws: a link's refusal for
+// ELOOP; for ENOTDIR, a link's or a non-directory's (`link`: whether lstat
+// finds a link at the name, as Linux reports a link opened with
+// O_DIRECTORY | O_NOFOLLOW this way); any other error as it is.
+function openDirRefusal(err, dirPath, link) {
+  if (err.code === 'ELOOP') return linkRefusal(dirPath);
+  if (err.code === 'ENOTDIR') {
+    return new UnsafePrivatePathError(dirPath, link ? 'it is a symbolic link' : 'not a directory');
+  }
+  return err;
+}
+
+// An object opened through a descriptor: the right kind, and ours.
+function checkOpened(fd, target, options) {
+  const stat = fs.fstatSync(fd);
+  const refusal = statRefusal(stat, target, options);
+  if (refusal) throw refusal;
   return stat;
 }
 
@@ -128,18 +178,14 @@ function checkOpened(fd, target, { directory = false, owned = true } = {}) {
 // use, so the caller stops rather than going on with it: the fchmod failed,
 // or it succeeded without effect, as on a file system that ignores modes.
 function narrow(fd, stat, mode, target) {
-  if (!POSIX || (stat.mode & 0o077) === 0) return;
+  if (!openToOthers(stat)) return;
   try {
     fs.fchmodSync(fd, mode);
   } catch (err) {
-    throw new UnsafePrivatePathError(target, `could not make it owner-only (${err.message})`);
+    throw narrowRefusal(target, { error: err });
   }
-  if ((fs.fstatSync(fd).mode & 0o077) !== 0) {
-    throw new UnsafePrivatePathError(
-      target,
-      'its mode is still open to other accounts after narrowing'
-    );
-  }
+  const refusal = narrowRefusal(target, { stat: fs.fstatSync(fd) });
+  if (refusal) throw refusal;
 }
 
 function checkName(name) {
@@ -488,8 +534,8 @@ function openDirectory(
       if (err.code === 'ENOENT' && missingOk) return null;
       throw err;
     }
-    if (stat.isSymbolicLink()) throw new UnsafePrivatePathError(dirPath, 'it is a symbolic link');
-    if (!stat.isDirectory()) throw new UnsafePrivatePathError(dirPath, 'not a directory');
+    const refusal = statRefusal(stat, dirPath, { directory: true, owned: !trusted });
+    if (refusal) throw refusal;
     const dir = new PrivateDir({ dirPath, ioPath, stat, parent, trusted });
     parent?.verify();
     return dir;
@@ -504,13 +550,10 @@ function openDirectory(
     );
   } catch (err) {
     if (err.code === 'ENOENT' && missingOk) return null;
-    if (err.code === 'ELOOP') throw linkRefusal(dirPath);
-    if (err.code === 'ENOTDIR') {
-      // Linux reports a link opened with O_DIRECTORY | O_NOFOLLOW this way.
-      const link = fs.lstatSync(entryPath, { throwIfNoEntry: false })?.isSymbolicLink();
-      throw new UnsafePrivatePathError(dirPath, link ? 'it is a symbolic link' : 'not a directory');
-    }
-    throw err;
+    const link =
+      err.code === 'ENOTDIR' &&
+      fs.lstatSync(entryPath, { throwIfNoEntry: false })?.isSymbolicLink();
+    throw openDirRefusal(err, dirPath, link);
   }
   try {
     const stat = checkOpened(fd, dirPath, { directory: true, owned: !trusted });
@@ -652,6 +695,64 @@ function ensurePrivateDir(dir) {
 }
 
 /**
+ * `ensurePrivateDir`, for a caller that must not block main's event loop on
+ * a stalled file system (core/core-process.js's bounded wait for the
+ * Radicle home): each probe is an `fs.promises` call, run on libuv's thread
+ * pool, so a stalled one holds a pool thread, not the event loop. The same
+ * opens (no-follow, O_DIRECTORY), the same checks (`statRefusal`,
+ * `narrowRefusal`, `openDirRefusal`) and the same narrowing, through the
+ * descriptor.
+ * @returns {Promise<string>} dir
+ * @throws {UnsafePrivatePathError} as `ensurePrivateDir`
+ */
+async function ensurePrivateDirAsync(dir) {
+  const lstatOrNull = (target) =>
+    fs.promises.lstat(target).catch((err) => {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    });
+  if (!(await lstatOrNull(dir))) {
+    await fs.promises.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  }
+  // On macOS, the managed directory's parent resolved, as openPrivateDir
+  // resolves it.
+  const ioPath = DARWIN
+    ? path.join(await fs.promises.realpath(path.dirname(dir)), path.basename(dir))
+    : dir;
+  if (!POSIX) {
+    const refusal = statRefusal(await fs.promises.lstat(ioPath, { bigint: true }), dir, {
+      directory: true,
+    });
+    if (refusal) throw refusal;
+    return dir;
+  }
+  let handle;
+  try {
+    handle = await fs.promises.open(ioPath, O_RDONLY | DIRECTORY | NO_WAIT | NO_LINKS);
+  } catch (err) {
+    const link = err.code === 'ENOTDIR' && (await lstatOrNull(ioPath))?.isSymbolicLink();
+    throw openDirRefusal(err, dir, link);
+  }
+  try {
+    const stat = await handle.stat();
+    const refusal = statRefusal(stat, dir, { directory: true });
+    if (refusal) throw refusal;
+    if (openToOthers(stat)) {
+      try {
+        await handle.chmod(PRIVATE_DIR_MODE);
+      } catch (err) {
+        throw narrowRefusal(dir, { error: err });
+      }
+      const narrowed = narrowRefusal(dir, { stat: await handle.stat() });
+      if (narrowed) throw narrowed;
+    }
+  } finally {
+    await handle.close();
+  }
+  return dir;
+}
+
+/**
  * Narrow an existing private directory (startup repair); missing is fine,
  * a link, a directory that is not ours or one that could not be narrowed
  * is reported and left alone.
@@ -686,6 +787,7 @@ module.exports = {
   openPrivateDir,
   withPrivateDir,
   ensurePrivateDir,
+  ensurePrivateDirAsync,
   repairPrivateDir,
   readPrivateFile,
   repairPrivateFile,

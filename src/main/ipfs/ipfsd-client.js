@@ -44,7 +44,14 @@
 
 const path = require('path');
 const { app } = require('electron');
-const { ServiceClient, isObject } = require('../core/service-client');
+// `confinement`'s check and log line (freedom-core design 0010,
+// "Reporting") are the shared client's, re-exported for the services.
+const {
+  ServiceClient,
+  isObject,
+  validConfinement,
+  confinementLog,
+} = require('../core/service-client');
 const { JSON_KINDS } = require('../core/frame');
 const { networkArg, reportsPolicy } = require('./ipfs-network');
 const { PINNED_IPFSD_VERSION } = require('./ipfsd-pin');
@@ -53,20 +60,6 @@ const PROTOCOL_VERSION = 1;
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 const GIT_COMMIT = /^[0-9a-f]{7,64}$/;
 const KINDS = new Set(['persistent', 'ephemeral']);
-// `confinement`'s statuses, mechanism and gaps (freedom-core design 0010,
-// "Reporting").
-const STATUSES = new Set(['enforced', 'partial', 'unavailable', 'blocked', 'none']);
-const PROPERTIES = ['files', 'exec', 'ipc', 'network'];
-// What resolves names while confined: glibc's resolver (`system`, or
-// `files_only` when it can't reach DNS) or, for freedom-ipfsd from 0.3.0, its
-// own one DNS configuration: /etc/resolv.conf as parsed (`resolv_conf`), or
-// its built-in servers where that can't be read or parsed (`fallback`, with
-// the reason).
-const RESOLUTIONS = new Set(['system', 'files_only', 'resolv_conf', 'fallback']);
-const MECHANISM = /^[a-z0-9+-]{1,64}$/;
-const GAP = /^[a-z_]{1,32}$/;
-const MAX_GAPS = 16;
-const MAX_REASON = 512;
 // A service's requests are main's own: no caller context reaches it.
 const CONTEXT = Object.freeze({ caller: 'shell' });
 
@@ -153,39 +146,6 @@ function ephemeralArgs({ network, parentPid = process.pid } = {}) {
 }
 
 /**
- * The public part of `confinement` (freedom-core design 0010, "Reporting"):
- * its mechanism, each property's status, the gaps a `partial` leaves, the
- * reasons and, on Linux in `direct` mode, `resolution`. Null if it isn't one.
- */
-function validConfinement(confinement) {
-  if (!isObject(confinement)) return null;
-  const { mechanism, gaps = [], reasons = {}, resolution = null } = confinement;
-  if (typeof mechanism !== 'string' || !MECHANISM.test(mechanism)) return null;
-  const statuses = {};
-  for (const property of PROPERTIES) {
-    if (!STATUSES.has(confinement[property])) return null;
-    statuses[property] = confinement[property];
-  }
-  if (
-    !Array.isArray(gaps) ||
-    gaps.length > MAX_GAPS ||
-    !gaps.every((gap) => typeof gap === 'string' && GAP.test(gap))
-  ) {
-    return null;
-  }
-  if (!isObject(reasons)) return null;
-  const kept = {};
-  for (const name of [...PROPERTIES, 'resolution']) {
-    const reason = reasons[name];
-    if (reason === undefined) continue;
-    if (typeof reason !== 'string') return null;
-    kept[name] = reason.slice(0, MAX_REASON);
-  }
-  if (resolution !== null && !RESOLUTIONS.has(resolution)) return null;
-  return { mechanism, ...statuses, gaps: [...gaps], reasons: kept, resolution };
-}
-
-/**
  * The public part of a valid hello result from a `kind` process spawned
  * under `network`, or null: one that names another process, another policy
  * or, with `version`, another release than main expects
@@ -213,13 +173,6 @@ function validHello(result, kind, network, version = null) {
     network: { ...network },
     confinement,
   };
-}
-
-/** `confinement` as a log line carries it: the statuses and gaps, without
- * the reasons' text. */
-function confinementLog(confinement) {
-  const { mechanism, files, exec, ipc, network, gaps, resolution } = confinement;
-  return { mechanism, files, exec, ipc, network, gaps, resolution };
 }
 
 /** freedom-ipfsd's `kind` process, as the shared client supervises it,

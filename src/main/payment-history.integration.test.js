@@ -105,7 +105,9 @@ function makeRoot(prefix) {
 /**
  * A CoreClient on `binary` for the profile at `root`: its Freedom root,
  * grant root and userData (main's hello sends `app.getPath('userData')` as
- * `user_data_dir`). With `storeMoved`, its hello names those stores.
+ * `user_data_dir`), passed as serve's arguments too (design 0017, C1)
+ * except to the previous release (0.22.0), which doesn't know them. With
+ * `storeMoved`, its hello names those stores.
  */
 function makeCore(root, { binary = current, storeMoved } = {}) {
   const { CoreClient, _internal } = require('./core/core-client');
@@ -123,6 +125,7 @@ function makeCore(root, { binary = current, storeMoved } = {}) {
     shellVersion: 'jest',
     grantRoot: root,
     userDataDir: root,
+    grantArgs: binary !== previous,
   });
   if (storeMoved) client.service = _internal.coreService(storeMoved);
   return client;

@@ -32,12 +32,20 @@ describeIfBinary('vault-backend with the real freedom-cored', () => {
     core = new CoreClient({
       spawn,
       command: binary,
+      // The node roots, as main passes them (core-process.js; freedom-core
+      // design 0017, C1): a confining core writes only those, and takes a
+      // Radicle home's gate through the file it opens before it confines
+      // itself.
       args: [
         'serve',
         '--data-dir',
         path.join(root, 'identity'),
         '--lock-dir',
         path.join(root, 'locks'),
+        '--node-root',
+        `bee=${path.join(root, 'bee')}`,
+        '--node-root',
+        `radicle=${path.join(root, 'radicle')}`,
       ],
       log: quietLog,
       shellVersion: 'jest',
