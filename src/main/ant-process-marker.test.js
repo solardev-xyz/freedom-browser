@@ -241,6 +241,34 @@ describe('ant-process-marker', () => {
     });
   });
 
+  test("a write whose flush fails (durable: false) counts as failed, the overlay rewrite's too", () => {
+    writeAntProcessMarker(dir, { pid: 4242, apiPort: 1635, dataDir: '/data' });
+    // The real atomic write, with its post-rename flush failing: the temp
+    // file's fsync comes first, the flush's second.
+    const realSync = fs.fsyncSync;
+    let calls = 0;
+    const fsync = jest.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      calls += 1;
+      if (calls % 2 === 0) throw Object.assign(new Error('EIO'), { code: 'EIO' });
+      return realSync(fd);
+    });
+    try {
+      expect(recordAntProcessOverlay(dir, 4242, OVERLAY)).toBe(false);
+      expect(writeAntProcessMarker(dir, { pid: 5151, apiPort: 1635, dataDir: '/data' })).toBe(false);
+    } finally {
+      fsync.mockRestore();
+    }
+    expect(calls).toBe(4);
+    // The renames landed; only their flushes failed.
+    expect(readAntProcessMarkerState(dir, { isProcessAlive: () => true })).toEqual({
+      state: 'live',
+      pid: 5151,
+    });
+    // And durable again once the flush works.
+    expect(recordAntProcessOverlay(dir, 5151, OVERLAY)).toBe(true);
+    expect(recordAntProcessOverlay(dir, 4242, OVERLAY)).toBeNull();
+  });
+
   test('a write that fails leaves the old marker and says so', () => {
     writeAntProcessMarker(dir, { pid: 4242, apiPort: 1633, dataDir: '/data' });
     jest.isolateModules(() => {

@@ -30,10 +30,13 @@
 // It is also the second layer of the profile move's orphan check
 // (freedom-core design 0013, MD7; profile-resolver.js's startProfileMove).
 // The first layer is the core's: from freedom-cored 0.26.0 its move tries
-// antd's own `ant-data/antd.lock`, which antd (v0.5.77 on) locks (flock,
+// antd's own `ant-data/antd.lock`, which antd (v0.5.7 on) locks (flock,
 // LockFileEx) before it opens its data and holds for its life, and defers
-// while it is held. That covers what no marker can: the moment between the
-// spawn and the marker's write, and a marker lost or damaged otherwise. The
+// while it is held. It tries it again at its new place after the renames and
+// before the marker (freedom-core #453), so an antd that took its lock
+// during the move rolls the move back. That covers what no marker can: the
+// moment between the spawn and the marker's write, and a marker lost or
+// damaged otherwise. The
 // core tries it only where `ant-data/` is a real directory holding a regular
 // `antd.lock` (it follows no link), so the marker decides where it can't:
 // - a marker naming a live process waits, always;
@@ -106,12 +109,15 @@ function fetchNodeOverlay(port, { timeoutMs = 2000 } = {}) {
 }
 
 // Replaces the marker whole and durably (temp file, fsync, rename, directory
-// flush). Returns whether it was written; a failure leaves the old marker.
+// flush). Returns whether it was written durably: false for a write that
+// failed, which leaves the old marker, and for one whose rename landed but
+// whose flush failed (`durable: false`), which a power loss could undo. The
+// caller logs either.
 function writeMarkerFile(userDataDir, marker) {
   try {
     fs.mkdirSync(userDataDir, { recursive: true });
-    writeFileAtomicSync(getMarkerPath(userDataDir), JSON.stringify(marker, null, 2));
-    return true;
+    const { durable } = writeFileAtomicSync(getMarkerPath(userDataDir), JSON.stringify(marker, null, 2));
+    return durable === true;
   } catch {
     // Best effort for the launch prompt: without the marker an orphan is just
     // offered there. The move doesn't rely on it alone (see the top).
@@ -125,13 +131,14 @@ function writeAntProcessMarker(userDataDir, { pid, apiPort, dataDir }) {
 }
 
 // Adds the overlay the spawned antd reported to its marker, once it answers.
-// Only touches a marker that still names `pid`.
+// Only touches a marker that still names `pid`. Returns null when there is
+// nothing to write, or whether the rewrite was durable (writeMarkerFile).
 function recordAntProcessOverlay(userDataDir, pid, overlay) {
-  if (!userDataDir) return;
+  if (!userDataDir) return null;
   const normalized = normalizeOverlay(overlay);
   const marker = readMarker(userDataDir);
-  if (!normalized || !marker || marker.pid !== pid) return;
-  writeMarkerFile(userDataDir, { ...marker, overlay: normalized });
+  if (!normalized || !marker || marker.pid !== pid) return null;
+  return writeMarkerFile(userDataDir, { ...marker, overlay: normalized });
 }
 
 function readMarker(userDataDir) {
@@ -176,7 +183,7 @@ async function findOwnLiveAntd(userDataDir, options = {}) {
 // Whether the core's move can try antd's own lock on this profile's data
 // (freedom-core 0.26.0): `ant-data/` at the profile's root is a real
 // directory, not a link, a junction or anything else, and holds a regular
-// `antd.lock`, which only an antd that takes the lock (v0.5.77 on) makes.
+// `antd.lock`, which only an antd that takes the lock (v0.5.7 on) makes.
 // Looked at without following anything. Without one, an older antd may be
 // the orphan, and nothing but the marker can say so.
 function antdLockTryable(userDataDir) {

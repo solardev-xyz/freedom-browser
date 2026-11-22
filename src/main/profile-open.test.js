@@ -665,7 +665,7 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
         ...(log ? { log } : {}),
       });
     };
-    // ant-data/ with the lock file an antd from v0.5.77 on makes.
+    // ant-data/ with the lock file an antd from v0.5.7 on makes.
     const lockingAntd = (dir) => {
       fs.mkdirSync(path.join(dir, 'ant-data'));
       fs.writeFileSync(path.join(dir, 'ant-data', 'antd.lock'), '');
