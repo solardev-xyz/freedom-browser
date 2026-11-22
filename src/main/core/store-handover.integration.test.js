@@ -4,7 +4,7 @@
  * names `vault_meta` (PRF-6(a)), `intents` (PRF-6(b2)), `payments`
  * (PRF-6(c)), `safe_pending` (PRF-6(d)) and `rpc_api_keys` (PRF-6(e)), in
  * `STORES` order, and the pinned core echoes them all. A hello naming
- * none, as a build before PRF-6 sends, has the pinned core (0.26.0) write
+ * none, as a build before PRF-6 sends, has the pinned core (0.27.0) write
  * none of the stores, answer each of their writes `not_moved` and serves
  * the reads it can; a store's request sent with
  * `requires: requiresStore(name)` fails `requirement_unmet` in main, unsent;
@@ -182,47 +182,88 @@ describeIfCurrent('the set-A stores before any moves, on the pinned freedom-core
   // imported from the hello's user_data_dir, the profile's directory, and
   // renamed there, while the database stays under grant_root, the Freedom
   // root, as after 0013's move. A file at the Freedom root is left unread.
-  test('with payments named, the receipts are imported from user_data_dir', async () => {
+  // The pinned core (0.27.0, design 0017 C5) copies a moved profile's legacy
+  // receipts from user_data_dir into the Freedom root and imports the copy;
+  // a Freedom-root file that isn't that copy is a conflict, which skips the
+  // legacy import and leaves both files.
+  const receipts = (id) =>
+    JSON.stringify([
+      {
+        id,
+        settledAt: 1699000000,
+        status: 'settled',
+        chainId: 8453,
+        amount: '500',
+        origin: 'https://x.example',
+        url: 'https://x.example/a',
+      },
+    ]);
+
+  async function startMoved(userData, freedom) {
+    const moved = await startCore({
+      binary: current,
+      root: userData,
+      grantRoot: freedom,
+      userDataDir: userData,
+      storeMoved: ['payments'],
+    });
+    expect(moved.service.helloParams(moved)).toMatchObject({
+      grant_root: freedom,
+      user_data_dir: userData,
+    });
+    expect(moved.hello.store_moved).toEqual(['payments']);
+    return moved;
+  }
+
+  test('with payments named, the receipts in user_data_dir are imported from their copy', async () => {
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-user-data-'));
     const freedom = path.join(userData, 'freedom');
     fs.mkdirSync(freedom);
-    const receipts = (id) =>
-      JSON.stringify([
-        {
-          id,
-          settledAt: 1699000000,
-          status: 'settled',
-          chainId: 8453,
-          amount: '500',
-          origin: 'https://x.example',
-          url: 'https://x.example/a',
-        },
-      ]);
-    fs.writeFileSync(path.join(userData, 'x402-receipts.json'), receipts('profile'));
-    fs.writeFileSync(path.join(freedom, 'x402-receipts.json'), receipts('freedom'));
+    const legacy = path.join(userData, 'x402-receipts.json');
+    fs.writeFileSync(legacy, receipts('profile'));
     let moved;
     try {
-      moved = await startCore({
-        binary: current,
-        root: userData,
-        grantRoot: freedom,
-        userDataDir: userData,
-        storeMoved: ['payments'],
-      });
-      expect(moved.service.helloParams(moved)).toMatchObject({
-        grant_root: freedom,
-        user_data_dir: userData,
-      });
-      expect(moved.hello.store_moved).toEqual(['payments']);
+      moved = await startMoved(userData, freedom);
       const { payments } = await moved.request('payments.get_recent', {}, { caller: 'chrome' });
       expect(payments.map((p) => [p.kind, p.metadata?.legacyId])).toEqual([['x402', 'profile']]);
       expect(fs.existsSync(path.join(freedom, 'payment-history.sqlite'))).toBe(true);
       expect(fs.existsSync(path.join(userData, 'payment-history.sqlite'))).toBe(false);
-      expect(fs.existsSync(path.join(userData, 'x402-receipts.json'))).toBe(false);
-      expect(fs.existsSync(path.join(userData, 'x402-receipts.json.migrated'))).toBe(true);
+      // The copy was imported and renamed; the original stays until a later start.
+      expect(fs.readFileSync(path.join(freedom, 'x402-receipts.json.migrated'), 'utf8')).toBe(
+        receipts('profile')
+      );
+      expect(fs.existsSync(path.join(freedom, 'x402-receipts.json'))).toBe(false);
+      expect(fs.existsSync(legacy)).toBe(true);
+      await moved.stop();
+      moved = await startMoved(userData, freedom);
+      const again = await moved.request('payments.get_recent', {}, { caller: 'chrome' });
+      expect(again.payments).toHaveLength(1);
+      expect(fs.existsSync(legacy)).toBe(false);
+      expect(fs.existsSync(`${legacy}.migrated`)).toBe(false);
+    } finally {
+      await moved?.stop();
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
+  test('a Freedom-root receipts file that is not the copy is a conflict: nothing imported', async () => {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-user-data-'));
+    const freedom = path.join(userData, 'freedom');
+    fs.mkdirSync(freedom);
+    fs.writeFileSync(path.join(userData, 'x402-receipts.json'), receipts('profile'));
+    fs.writeFileSync(path.join(freedom, 'x402-receipts.json'), receipts('freedom'));
+    let moved;
+    try {
+      moved = await startMoved(userData, freedom);
+      const { payments } = await moved.request('payments.get_recent', {}, { caller: 'chrome' });
+      expect(payments).toEqual([]);
+      expect(fs.readFileSync(path.join(userData, 'x402-receipts.json'), 'utf8')).toBe(
+        receipts('profile')
+      );
       expect(fs.readFileSync(path.join(freedom, 'x402-receipts.json'), 'utf8')).toBe(
         receipts('freedom')
       );
+      expect(fs.existsSync(path.join(userData, 'x402-receipts.json.migrated'))).toBe(false);
       expect(fs.existsSync(path.join(freedom, 'x402-receipts.json.migrated'))).toBe(false);
     } finally {
       await moved?.stop();

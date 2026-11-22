@@ -316,7 +316,7 @@ describeIfBinary('the starting move through the real freedom-cored (0013, PRF-9 
     expect(movedNamesAtRoot(profile.userDataDir)).toEqual([]);
   });
 
-  test("the receipts are imported from user_data_dir after the move, by a core main's getters point into freedom/", async () => {
+  test("the receipts at the profile's root are imported after the move, from their copy in freedom/, by a core main's getters point into freedom/", async () => {
     const { profile, report } = open('receipts');
     seed(profile.userDataDir);
     // A database the core makes, not the seeded stand-in.
@@ -355,10 +355,20 @@ describeIfBinary('the starting move through the real freedom-cored (0013, PRF-9 
       expect(mockCore.service.helloParams(mockCore).grant_root).toBe(freedom);
       expect(mockCore.service.helloParams(mockCore).user_data_dir).toBe(dir);
       expect(await history.getCount({ kind: 'x402' })).toBe(2);
-      expect(fs.existsSync(legacy)).toBe(false);
-      expect(fs.existsSync(`${legacy}.migrated`)).toBe(true);
+      // The core (design 0017 C5) imported a copy in freedom/ and renamed the
+      // copy; the original stays at the root until a later start.
+      expect(fs.existsSync(path.join(freedom, 'x402-receipts.json.migrated'))).toBe(true);
+      expect(fs.existsSync(path.join(freedom, 'x402-receipts.json'))).toBe(false);
+      expect(fs.existsSync(legacy)).toBe(true);
+      expect(fs.existsSync(`${legacy}.migrated`)).toBe(false);
       expect(fs.existsSync(path.join(freedom, 'payment-history.sqlite'))).toBe(true);
       expect(fs.existsSync(path.join(dir, 'payment-history.sqlite'))).toBe(false);
+      // The next start drops the original, and imports nothing twice.
+      await mockCore.stop();
+      await mockCore.start();
+      expect(await history.getCount({ kind: 'x402' })).toBe(2);
+      expect(fs.existsSync(legacy)).toBe(false);
+      expect(fs.existsSync(`${legacy}.migrated`)).toBe(false);
     } finally {
       if (mockCore) await mockCore.stop();
       mockCore = null;
