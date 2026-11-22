@@ -20,6 +20,7 @@ const {
   getFreedomDataDir,
   getFreedomDataPath,
   holdFreedomRoot,
+  movedEntryContaining,
   profileLayout,
   resetFreedomRoot,
   resolveFreedomRoot,
@@ -122,6 +123,47 @@ describe("a profile's Freedom root (0013, the reader release)", () => {
     expect(getFreedomDataDir()).toBe(dir);
     resetFreedomRoot();
     expect(getFreedomDataDir()).toBe(path.join(dir, 'freedom'));
+  });
+
+  // A component's data-directory override inside an entry the move takes
+  // would be left behind by it (startProfileMove skips the move then).
+  test('movedEntryContaining: an override at or inside a moved entry, links resolved', () => {
+    const dir = profileDir(tmp);
+    expect(movedEntryContaining(dir, path.join(dir, 'ant-data', 'live'))).toBe('ant-data');
+    expect(movedEntryContaining(dir, path.join(dir, 'ipfs-data'))).toBe('ipfs-data');
+    expect(movedEntryContaining(dir, path.join(dir, 'identity', 'a', 'b'))).toBe('identity');
+    // Outside the profile, the profile itself, under freedom/, or a name the
+    // move leaves at the root: nothing.
+    expect(movedEntryContaining(dir, path.join(tmp, 'elsewhere', 'ant-data'))).toBeNull();
+    expect(movedEntryContaining(dir, dir)).toBeNull();
+    expect(movedEntryContaining(dir, path.join(dir, 'freedom', 'ant-data'))).toBeNull();
+    expect(movedEntryContaining(dir, path.join(dir, 'radicle-data'))).toBeNull();
+    expect(movedEntryContaining(dir, path.join(dir, 'ant-data-old'))).toBeNull();
+    // A relative override resolves against the working directory, as main's
+    // getters resolve it.
+    expect(movedEntryContaining(dir, path.relative(process.cwd(), path.join(dir, 'tor-data')))).toBe(
+      'tor-data'
+    );
+    // Through a link: an outside path that names the profile's own entry.
+    fs.mkdirSync(path.join(dir, 'myotis'));
+    const link = path.join(tmp, 'link-to-myotis');
+    fs.symlinkSync(path.join(dir, 'myotis'), link, process.platform === 'win32' ? 'junction' : 'dir');
+    expect(movedEntryContaining(dir, path.join(link, 'gnosis'))).toBe('myotis');
+    // And the profile reached through a link.
+    const profileLink = path.join(tmp, 'link-to-profile');
+    fs.symlinkSync(dir, profileLink, process.platform === 'win32' ? 'junction' : 'dir');
+    expect(movedEntryContaining(profileLink, path.join(dir, 'bee-data'))).toBe('bee-data');
+  });
+
+  test('movedEntryContaining: names exact on Linux, folded on macOS and Windows', () => {
+    const dir = profileDir(tmp);
+    const upper = path.join(dir, 'ANT-DATA', 'live');
+    expect(movedEntryContaining(dir, upper, { platform: 'linux' })).toBeNull();
+    expect(movedEntryContaining(dir, upper, { platform: 'darwin' })).toBe('ant-data');
+    expect(movedEntryContaining(dir, upper, { platform: 'win32' })).toBe('ant-data');
+    expect(
+      movedEntryContaining(dir, path.join(dir, 'Freedom', 'ant-data'), { platform: 'darwin' })
+    ).toBeNull();
   });
 
   test("main's path getters resolve the Freedom root; the shell's entries stay at the root", () => {

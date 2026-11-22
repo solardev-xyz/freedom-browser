@@ -19,7 +19,7 @@ const {
 } = require('./profile-catalog');
 const { getProfileLockTiming, isProfileLocked } = require('./profile-lock');
 const { parseProfileSwitchArgv } = require('./profile-switch-scheme');
-const { profileLayout } = require('./freedom-root');
+const { movedEntryContaining, profileLayout } = require('./freedom-root');
 const { antdLockTryable, readAntProcessMarkerState } = require('./ant-process-marker');
 const subcommands = require('./profile-subcommands');
 
@@ -663,6 +663,12 @@ function isProfileIdle(report, profile, { isLocked = isProfileLocked } = {}) {
  * - `switch`: an `x-freedom-profile:` switch only raises an open profile;
  * - `no_core`: a development build without freedom-cored (MD1);
  * - `open`: a fresh lock or a held gate: the lock hands over below (MD2);
+ * - `override_inside_moved_entry: <VAR> (<entry>)`: a component's
+ *   data-directory override (`FREEDOM_ANT_DATA`, …) points at or into an
+ *   entry the move takes. The move would leave it behind: main would go on
+ *   reading the old path, make an empty directory there and split the
+ *   node's state, and the core would try the wrong `antd.lock`. An override
+ *   outside the profile, or already under `freedom/`, moves nothing;
  * - `node_running: antd pid <pid>`: `ant-process.json` names a live process
  *   (MD7): an antd that outlived a crashed main may still be writing
  *   `ant-data/`;
@@ -694,6 +700,14 @@ function startProfileMove(app, profile, report, options = {}) {
     return skipped('no_core');
   }
   if (!isProfileIdle(report, profile, options)) return skipped('open');
+  // Lazily: profile-paths.js requires this module.
+  const overrides = (
+    options.movedComponentOverrides || require('./profile-paths').getMovedComponentOverrides
+  )(options.env);
+  for (const { envName, dir } of overrides) {
+    const entry = movedEntryContaining(profile.userDataDir, dir, { platform: options.platform });
+    if (entry) return skipped(`override_inside_moved_entry: ${envName} (${entry})`);
+  }
   const antd = (options.readAntProcessMarkerState || readAntProcessMarkerState)(
     profile.userDataDir
   );

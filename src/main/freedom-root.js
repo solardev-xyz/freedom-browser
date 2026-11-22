@@ -102,6 +102,42 @@ function profileLayout(userDataDir) {
   return 'root';
 }
 
+/** `target` with every link on its way resolved, as far as it exists: the
+ * realpath of its deepest existing ancestor, and the rest as written. */
+function resolveExisting(target) {
+  const rest = [];
+  let current = path.resolve(target);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(current), ...rest.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(target);
+      rest.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * The entry of MOVED_ENTRIES at the root of the profile at `userDataDir`
+ * that `target` is, or is inside, or null: a component's data-directory
+ * override there would be left behind by the move, its node's state split
+ * between the old path and `freedom/`. Links are resolved on both sides as
+ * far as the paths exist. Names compare as the core compares them: exactly
+ * on Linux, folded on macOS and Windows (folding where unsure only finds
+ * more). Anything under `<userDataDir>/freedom/`, or outside the profile,
+ * is null.
+ */
+function movedEntryContaining(userDataDir, target, { platform = process.platform } = {}) {
+  const folds = platform === 'darwin' || platform === 'win32';
+  const fold = (text) => (folds ? text.normalize('NFC').toLowerCase() : text);
+  const relative = path.relative(fold(resolveExisting(userDataDir)), fold(resolveExisting(target)));
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  const first = relative.split(path.sep)[0];
+  return MOVED_ENTRIES.find((name) => fold(name) === first) || null;
+}
+
 // The Freedom root of the profile this process runs, resolved once.
 let active = null;
 // Set from main's start until its profile's layout has settled (index.js).
@@ -161,6 +197,7 @@ module.exports = {
   getFreedomDataDir,
   getFreedomDataPath,
   holdFreedomRoot,
+  movedEntryContaining,
   profileLayout,
   resetFreedomRoot,
   resolveFreedomRoot,

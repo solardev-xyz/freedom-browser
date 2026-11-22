@@ -577,6 +577,7 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
       lockDir: '/l',
       spawnSync: spawn.spawnSync,
       readAntProcessMarkerState: noAntd,
+      movedComponentOverrides: () => [],
       ...options,
     });
     return { outcome, calls: spawn.calls };
@@ -633,6 +634,67 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
       expect(outcome).toEqual({ outcome: 'skipped', reason });
       expect(calls).toHaveLength(0);
     }
+  });
+
+  // A component's data-directory override at or inside an entry the move
+  // takes: the move would leave it behind, so it waits (#453's review).
+  describe('data-directory overrides', () => {
+    const withEnv = (env) => {
+      const profile = { userDataDir: fs.mkdtempSync(path.join(tmp, 'overrides-')) };
+      const resolved = typeof env === 'function' ? env(profile.userDataDir) : env;
+      return start(profile, idle, { env: resolved, movedComponentOverrides: undefined });
+    };
+
+    test('an Ant override inside ant-data/ skips the move', () => {
+      const { outcome, calls } = withEnv((dir) => ({ FREEDOM_ANT_DATA: path.join(dir, 'ant-data', 'live') }));
+      expect(outcome).toEqual({
+        outcome: 'skipped',
+        reason: 'override_inside_moved_entry: FREEDOM_ANT_DATA (ant-data)',
+      });
+      expect(calls).toHaveLength(0);
+    });
+
+    test('an override equal to <userData>/ipfs-data skips the move', () => {
+      const { outcome, calls } = withEnv((dir) => ({ FREEDOM_IPFS_DATA: path.join(dir, 'ipfs-data') }));
+      expect(outcome).toEqual({
+        outcome: 'skipped',
+        reason: 'override_inside_moved_entry: FREEDOM_IPFS_DATA (ipfs-data)',
+      });
+      expect(calls).toHaveLength(0);
+    });
+
+    test('each moved component\'s override is checked; Radicle\'s, which stays at the root, is not', () => {
+      for (const [envName, entry] of [
+        ['FREEDOM_IDENTITY_DATA', 'identity'],
+        ['FREEDOM_BEE_DATA', 'bee-data'],
+        ['MYOTIS_DATA_DIR', 'myotis'],
+        ['FREEDOM_TOR_DATA', 'tor-data'],
+      ]) {
+        expect(withEnv((dir) => ({ [envName]: path.join(dir, entry) })).outcome.reason).toBe(
+          `override_inside_moved_entry: ${envName} (${entry})`
+        );
+      }
+      expect(
+        withEnv((dir) => ({ FREEDOM_RADICLE_DATA: path.join(dir, 'radicle-data') })).outcome
+      ).toEqual({ outcome: 'migrated' });
+    });
+
+    test('an override outside the profile moves', () => {
+      const { outcome, calls } = withEnv({
+        FREEDOM_ANT_DATA: path.join(tmp, 'elsewhere', 'ant-data'),
+        FREEDOM_IDENTITY_DATA: path.join(tmp, 'elsewhere', 'identity'),
+      });
+      expect(outcome).toEqual({ outcome: 'migrated' });
+      expect(calls).toHaveLength(1);
+    });
+
+    test('an override already under freedom/ moves', () => {
+      const { outcome, calls } = withEnv((dir) => ({
+        FREEDOM_ANT_DATA: path.join(dir, 'freedom', 'ant-data'),
+      }));
+      expect(outcome).toEqual({ outcome: 'migrated' });
+      expect(calls).toHaveLength(1);
+    });
   });
 
   test('a development build with freedom-cored moves, and asks ant-process.json about the profile', () => {

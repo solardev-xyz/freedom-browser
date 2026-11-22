@@ -383,6 +383,22 @@ function getDataDirOverrides() {
   return overrides;
 }
 
+/**
+ * The data-directory overrides set for components whose default directory
+ * moves into `freedom/` (all but Radicle's), as `{ component, envName,
+ * dir }` with `dir` resolved as `overrideDir` resolves it. The profile move
+ * waits while one points into an entry it would move (profile-resolver.js's
+ * startProfileMove).
+ */
+function getMovedComponentOverrides(env = process.env) {
+  const overrides = [];
+  for (const [component, [, envName]] of Object.entries(COMPONENT_DATA_DIRS)) {
+    if (STAYS_AT_ROOT.has(component) || !env[envName]) continue;
+    overrides.push({ component, envName, dir: path.resolve(env[envName]) });
+  }
+  return overrides;
+}
+
 function getQuickUnlockCredentialPath() {
   return path.join(getIdentityDataDir(), 'quick-unlock.dat');
 }
@@ -415,6 +431,7 @@ module.exports = {
   getBeeDataDir,
   getComponentDataDirs,
   getDataDirOverrides,
+  getMovedComponentOverrides,
   getFreedomDataDir,
   getFreedomDataPath,
   getIdentityDataDir,
