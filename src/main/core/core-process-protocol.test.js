@@ -1,6 +1,6 @@
 /**
  * The app's core client speaks protocol 2 (freedom-core design 0009, step
- * 6), the only one the pinned core (0.26.0) takes, so `shell.dweb_get` is
+ * 6), the only one the pinned core (0.27.0) takes, so `shell.dweb_get` is
  * registered and the `dweb.verify` verifier attaches.
  * Every 0009 feature in main waits for that verifier: the captured
  * backends' `verify`, `unsupported` and `strict`, the error page, and
@@ -46,7 +46,7 @@ const core = require('./core-process');
 
 const HELLO = {
   protocol: PROTOCOL_VERSION_STREAMS,
-  core_version: '0.26.0',
+  core_version: '0.27.0',
   capabilities: ['streams', 'fragments'],
   node_recovery: null,
 };
@@ -74,8 +74,9 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   expect(client.grantRoot).toBe(root);
   const params = client.service.helloParams(client);
   expect(params.grant_root).toBe(root);
-  // Design 0013, PRF-8b-lite: the profile's directory, where the core
-  // imports the legacy x402 receipts from.
+  // Design 0013, PRF-8b-lite: the profile's directory, where the legacy x402
+  // receipts are; after the move the core imports a copy of them in the
+  // Freedom root (design 0017 C5).
   const userData = path.join(os.tmpdir(), 'freedom-user-data');
   expect(client.userDataDir).toBe(userData);
   expect(params.user_data_dir).toBe(userData);
