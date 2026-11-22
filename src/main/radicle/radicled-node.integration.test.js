@@ -214,7 +214,18 @@ describeIfBinaries('the Radicle node on the real freedom-radicled and freedom-co
     mockCore = new CoreClient({
       spawn: recordingSpawn,
       command: cored,
-      args: ['serve', '--data-dir', path.join(userData, 'identity'), '--lock-dir', getLockDir()],
+      // The Radicle home as main's node root (core-process.js; freedom-core
+      // design 0017, C1): a confining core writes only that home, through
+      // the gate file it opens before it confines itself.
+      args: [
+        'serve',
+        '--data-dir',
+        path.join(userData, 'identity'),
+        '--lock-dir',
+        getLockDir(),
+        '--node-root',
+        `radicle=${home()}`,
+      ],
       log,
       shellVersion: 'jest',
       protocol: PROTOCOL_VERSION_STREAMS,

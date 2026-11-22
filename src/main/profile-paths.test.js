@@ -73,6 +73,23 @@ describe('profile paths', () => {
     expect(fs.existsSync(path.join(userDataDir, 'tmp'))).toBe(true);
   });
 
+  // freedom-core design 0017, C1: the core's `--node-root bee=` is the path
+  // getAntDataDir returns, read without making it.
+  test("getAntDataPath is getAntDataDir's path, unmade, overridden alike", () => {
+    const userDataDir = track(createTempUserDataDir());
+    const paths = loadPaths(userDataDir);
+    expect(paths.getAntDataPath()).toBe(path.join(userDataDir, 'ant-data'));
+    expect(fs.existsSync(path.join(userDataDir, 'ant-data'))).toBe(false);
+    expect(paths.getAntDataDir()).toBe(paths.getAntDataPath());
+
+    const antDir = path.join(track(createTempUserDataDir()), 'ant');
+    process.env.FREEDOM_ANT_DATA = antDir;
+    const overridden = loadPaths(userDataDir);
+    expect(overridden.getAntDataPath()).toBe(antDir);
+    expect(fs.existsSync(antDir)).toBe(false);
+    expect(overridden.getAntDataDir()).toBe(antDir);
+  });
+
   test('creates sanitized profile temp directories', () => {
     const userDataDir = track(createTempUserDataDir());
     const paths = loadPaths(userDataDir);

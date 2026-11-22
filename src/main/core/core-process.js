@@ -3,12 +3,41 @@
  * 0001). It owns the vault and the keys (migration step 2): main reaches it
  * through core/vault-backend.js. Once wind-down has called `stopCore()`,
  * `startCore()` never starts it again.
+ *
+ * **The grant** (freedom-core design 0017, C1): `serve` confines itself to
+ * the directories its arguments name before it reads the hello. The client
+ * appends `--grant-root` and `--user-data-dir`, the hello's own values
+ * (core-client.js); main adds the node roots `nodes.write_identity` writes:
+ * - `--node-root bee=`: Ant's data directory, `getAntDataPath()`, the path
+ *   identity-manager.js's `getAntDataDir()` sends as Bee's `data_dir`. It
+ *   is fixed for the run (`FREEDOM_ANT_DATA` from main's environment, or
+ *   `ant-data` under a Freedom root that doesn't change while main holds
+ *   the profile), and no setting picks another: `bee-data` is only the
+ *   Bee-era directory index.js carries over into `ant-data` before the
+ *   core starts. The core makes it if it is missing.
+ * - `--node-root radicle=`: the Radicle home, `getRadicleDataDir()`, the
+ *   path `prepareRadicleDataDir()` returns to identity-manager.js and
+ *   radicle-manager.js (RadicledNode's `home`). Each spawn, restarts
+ *   included, waits for `prepareRadicleDataDir()` first: a legacy home's
+ *   carry-over into the short home renames a directory into its place,
+ *   which a confined core couldn't reach (Landlock binds the grant to the
+ *   directory confinement saw), so it lands before the core confines
+ *   itself. A home that can't be resolved (a control socket path too long)
+ *   is left out: Radicle can't run there, and the core then writes no
+ *   Radicle home.
+ * The core refuses a `nodes.write_identity` for another directory.
  */
 
 const { spawn } = require('child_process');
+const path = require('path');
 const { app } = require('electron');
 const log = require('../logger');
-const { getIdentityDataDir } = require('../profile-paths');
+const {
+  getAntDataPath,
+  getIdentityDataDir,
+  getRadicleDataDir,
+  prepareRadicleDataDir,
+} = require('../profile-paths');
 const { getFreedomDataDir } = require('../freedom-root');
 const { getLockDir } = require('../service-locks');
 const { getCoredBinaryPath } = require('./cored-binary');
@@ -20,6 +49,7 @@ const { registerDwebShell } = require('./dweb-shell');
 const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 const { attachGrants, detachGrants } = require('./grants');
 const { registerKeystoreShell } = require('./keystore-shell');
+const { confinementLog, CONFINEMENT_PROPERTIES } = require('./service-client');
 
 let client = null;
 // `shell.dweb_get`'s executor (design 0009) on the client; null before
@@ -37,9 +67,71 @@ function isCoreEnabled() {
   return true;
 }
 
+/**
+ * The Radicle home `nodes.write_identity` names (`getRadicleDataDir()`), or
+ * null when it can't be resolved.
+ */
+function radicleHome() {
+  try {
+    return getRadicleDataDir();
+  } catch (err) {
+    log.warn('[Core] no Radicle home for the core', { code: err?.code || 'error' });
+    return null;
+  }
+}
+
+/**
+ * `deferSpawn` for the core (service-client.js): before each spawn, a wait
+ * for `prepareRadicleDataDir()`, then the spawn. A preparation that fails
+ * is logged and the core spawns anyway: the vault doesn't wait on Radicle.
+ */
+function radicleHomeWait() {
+  let prepared = false;
+  return () => {
+    if (prepared) {
+      prepared = false;
+      return null;
+    }
+    return prepareRadicleDataDir()
+      .catch((err) => {
+        log.warn("[Core] the Radicle home isn't prepared", { code: err?.code || 'error' });
+      })
+      .finally(() => {
+        prepared = true;
+      });
+  };
+}
+
+/**
+ * The confinement the core got (design 0017), from its hello: an info line
+ * with the mechanism and each property's status, and a warning naming the
+ * properties that aren't `enforced`. A core that reports none (before
+ * 0.28.0) is logged as such.
+ */
+function logConfinement(hello) {
+  const { confinement } = hello;
+  if (!confinement) {
+    log.warn('[Core] the core reported no confinement', { core_version: hello.core_version });
+    return;
+  }
+  log.info('[Core] confinement', {
+    core_version: hello.core_version,
+    ...confinementLog(confinement),
+  });
+  const weaker = CONFINEMENT_PROPERTIES.filter((name) => confinement[name] !== 'enforced');
+  if (weaker.length > 0) {
+    log.warn('[Core] confinement not enforced', {
+      mechanism: confinement.mechanism,
+      ...Object.fromEntries(weaker.map((name) => [name, confinement[name]])),
+      gaps: confinement.gaps,
+    });
+  }
+}
+
 async function startCore() {
   if (!isCoreEnabled() || shutDown || client) return client;
   guard.setIdentityDir(getIdentityDataDir());
+  const radicle = radicleHome();
   client = new CoreClient({
     spawn,
     command: getCoredBinaryPath(),
@@ -51,7 +143,12 @@ async function startCore() {
       getLockDir(),
       '--parent-pid',
       String(process.pid),
+      // The node roots (design 0017, C1): see the top of this file.
+      '--node-root',
+      `bee=${path.resolve(getAntDataPath())}`,
+      ...(radicle === null ? [] : ['--node-root', `radicle=${path.resolve(radicle)}`]),
     ],
+    ...(radicle === null ? {} : { deferSpawn: radicleHomeWait() }),
     log,
     shellVersion: app.getVersion(),
     // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
@@ -74,6 +171,7 @@ async function startCore() {
   // those nodes stay stopped. Between an exit and the next report, nothing
   // is known (node-identity-guard.js).
   client.on('ready', (hello) => {
+    logConfinement(hello);
     if (hello.node_recovery) {
       log.error('[Core] node identity recovery pending', hello.node_recovery);
     }

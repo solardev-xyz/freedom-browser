@@ -32,13 +32,15 @@ function overrideDir(envName) {
   return override ? path.resolve(override) : null;
 }
 
+/** The directory `envName` overrides, or `fallbackName` under the Freedom
+ * root, as resolveDir resolves it, without making it. */
+function dataDirPath(envName, fallbackName) {
+  return overrideDir(envName) ?? getFreedomDataPath(fallbackName);
+}
+
 function resolveDir(envName, fallbackName, { owned = false } = {}) {
   const ensure = owned ? ensurePrivateDir : ensureDir;
-  const override = overrideDir(envName);
-  if (override) {
-    return ensure(override);
-  }
-  return ensure(getFreedomDataPath(fallbackName));
+  return ensure(dataDirPath(envName, fallbackName));
 }
 
 async function hasEntriesAsync(dirPath) {
@@ -212,7 +214,18 @@ function getBeeDataDir() {
 }
 
 function getAntDataDir() {
-  return resolveDir('FREEDOM_ANT_DATA', 'ant-data', { owned: true });
+  return ensurePrivateDir(getAntDataPath());
+}
+
+/**
+ * Ant's data directory, the path getAntDataDir makes and returns, unmade:
+ * the core's `--node-root bee=` (core/core-process.js, freedom-core design
+ * 0017 C1), which `nodes.write_identity`'s Bee `data_dir` must equal. It is
+ * fixed for the run: the override is read from main's environment, and the
+ * Freedom root doesn't change while main holds the profile (freedom-root.js).
+ */
+function getAntDataPath() {
+  return dataDirPath('FREEDOM_ANT_DATA', 'ant-data');
 }
 
 function getIpfsDataDir() {
@@ -428,6 +441,7 @@ module.exports = {
   createProfileTempDir,
   getAgentDataDir,
   getAntDataDir,
+  getAntDataPath,
   getBeeDataDir,
   getComponentDataDirs,
   getDataDirOverrides,
