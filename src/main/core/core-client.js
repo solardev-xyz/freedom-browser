@@ -345,12 +345,23 @@ class CoreClient extends ServiceClient {
     }
     const root = path.resolve(grantRoot);
     const userData = userDataDir === undefined ? null : path.resolve(userDataDir);
-    const args =
-      options.grantArgs === false ? options.args : withGrantArgs(options.args, root, userData);
+    const grantArgs = options.grantArgs !== false;
+    const args = grantArgs ? withGrantArgs(options.args, root, userData) : options.args;
     super({ ...options, args, service: CORE_SERVICE });
     this.autoLockMs = options.autoLockMs ?? 15 * 60 * 1000;
     this.grantRoot = root;
     this.userDataDir = userData;
+    this.grantArgs = grantArgs;
+  }
+
+  /**
+   * Sets the arguments of the next spawn, a restart's too, with the grant's
+   * appended as the constructor appends them (unless `grantArgs` is
+   * false). Only while no process runs: from a `deferSpawn` wait, say.
+   */
+  setArgs(args) {
+    if (this.current) throw new Error('a freedom-cored process is running');
+    this.args = this.grantArgs ? withGrantArgs(args, this.grantRoot, this.userDataDir) : args;
   }
 
   /** The protocol main asks for, and every ready hello settled. */

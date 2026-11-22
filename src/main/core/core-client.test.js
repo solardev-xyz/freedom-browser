@@ -374,6 +374,30 @@ describe('CoreClient', () => {
     expect(params.user_data_dir).toBe(path.resolve(os.tmpdir()));
   });
 
+  test("setArgs sets the next spawn's arguments, the grant's appended, and only between processes", async () => {
+    const { client, spawn } = makeClient([helloHandler()]);
+    client.setArgs(['serve', '--node-root', 'radicle=/r']);
+    await client.start();
+    expect(spawn.mock.calls[0][1]).toEqual([
+      'serve',
+      '--node-root',
+      'radicle=/r',
+      '--grant-root',
+      path.resolve(os.tmpdir()),
+    ]);
+    expect(() => client.setArgs(['serve'])).toThrow('a freedom-cored process is running');
+
+    const old = new CoreClient({
+      spawn: jest.fn(),
+      command: '/bin/freedom-cored',
+      args: ['serve'],
+      grantRoot: os.tmpdir(),
+      grantArgs: false,
+    });
+    old.setArgs(['serve', '--data-dir', '/p']);
+    expect(old.args).toEqual(['serve', '--data-dir', '/p']);
+  });
+
   test("only serve gets the grant's arguments, and a caller can't pass them itself", () => {
     const options = { spawn: jest.fn(), command: '/bin/freedom-cored', grantRoot: os.tmpdir() };
     expect(new CoreClient({ ...options, args: ['hold-lock'] }).args).toEqual(['hold-lock']);

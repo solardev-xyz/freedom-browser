@@ -26,12 +26,11 @@ jest.mock(
 );
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 // The node roots `nodes.write_identity` names (freedom-core design 0017, C1):
-// Ant's data directory, unmade, and the Radicle home, prepared before each
-// spawn.
+// Ant's data directory, unmade, and the Radicle home, once prepared
+// (core-process-radicle.test.js has the preparation's bounds).
 jest.mock('../profile-paths', () => ({
   getIdentityDataDir: () => '/nonexistent/identity',
   getAntDataPath: () => require('path').join(require('os').tmpdir(), 'freedom-profile', 'ant-data'),
-  getRadicleDataDir: () => require('path').join(require('os').tmpdir(), 'R', '1'),
   prepareRadicleDataDir: jest.fn(async () =>
     require('path').join(require('os').tmpdir(), 'R', '1')
   ),
@@ -94,8 +93,9 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   expect(params.user_data_dir).toBe(userData);
   expect([...params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
   // Design 0017, C1: the grant's arguments, the hello's own paths, and the
-  // node roots, the directories nodes.write_identity names.
-  expect(client.args).toEqual([
+  // node roots, the directories nodes.write_identity names: the Radicle
+  // home's once the spawn's wait found it prepared.
+  const args = (radicle) => [
     'serve',
     '--data-dir',
     '/nonexistent/identity',
@@ -105,13 +105,13 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
     String(process.pid),
     '--node-root',
     `bee=${path.join(root, 'ant-data')}`,
-    '--node-root',
-    `radicle=${path.join(os.tmpdir(), 'R', '1')}`,
+    ...(radicle ? ['--node-root', `radicle=${path.join(os.tmpdir(), 'R', '1')}`] : []),
     '--grant-root',
     params.grant_root,
     '--user-data-dir',
     params.user_data_dir,
-  ]);
+  ];
+  expect(client.args).toEqual(args(false));
   expect(params.store_moved).toEqual([
     'vault_meta',
     'intents',
@@ -191,20 +191,14 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
     core_version: '0.27.0',
   });
 
-  // Each spawn waits for the Radicle home's preparation, then spawns.
+  // Each spawn waits for the Radicle home's preparation, then spawns with
+  // its node root.
   expect(prepareRadicleDataDir).not.toHaveBeenCalled();
   const wait = client.deferSpawn();
   expect(prepareRadicleDataDir).toHaveBeenCalledTimes(1);
   await wait;
   expect(client.deferSpawn()).toBeNull();
-  // The next spawn (a restart) waits again; a failed preparation doesn't
-  // keep the core from spawning.
-  prepareRadicleDataDir.mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'EACCES' }));
-  await client.deferSpawn();
-  expect(log.warn).toHaveBeenCalledWith("[Core] the Radicle home isn't prepared", {
-    code: 'EACCES',
-  });
-  expect(client.deferSpawn()).toBeNull();
+  expect(client.args).toEqual(args(true));
 
   await core.stopCore();
   expect(stop).toHaveBeenCalledTimes(1);

@@ -15,16 +15,19 @@
  *   the profile), and no setting picks another: `bee-data` is only the
  *   Bee-era directory index.js carries over into `ant-data` before the
  *   core starts. The core makes it if it is missing.
- * - `--node-root radicle=`: the Radicle home, `getRadicleDataDir()`, the
- *   path `prepareRadicleDataDir()` returns to identity-manager.js and
- *   radicle-manager.js (RadicledNode's `home`). Each spawn, restarts
- *   included, waits for `prepareRadicleDataDir()` first: a legacy home's
- *   carry-over into the short home renames a directory into its place,
- *   which a confined core couldn't reach (Landlock binds the grant to the
- *   directory confinement saw), so it lands before the core confines
- *   itself. A home that can't be resolved (a control socket path too long)
- *   is left out: Radicle can't run there, and the core then writes no
- *   Radicle home.
+ * - `--node-root radicle=`: the Radicle home, as `prepareRadicleDataDir()`
+ *   returns it to identity-manager.js and radicle-manager.js (RadicledNode's
+ *   `home`), and only once it has: a legacy home's carry-over into the
+ *   short home renames a directory into the home's place, which a confined
+ *   core couldn't reach (Landlock binds the grant to the directory
+ *   confinement saw). Each spawn, restarts included, waits for the
+ *   preparation at most `RADICLE_PREPARE_WAIT_MS`, so a long carry-over
+ *   (a copy of a large legacy tree) never holds up the vault. One still
+ *   running then, or one that failed (a home that can't be resolved
+ *   included), leaves the argument out: that core writes no Radicle home
+ *   (its `nodes.write_identity` for one fails as storage, with nothing
+ *   written), until a later spawn finds the home prepared, a restart's or
+ *   the next launch's.
  * The core refuses a `nodes.write_identity` for another directory.
  */
 
@@ -32,12 +35,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const { app } = require('electron');
 const log = require('../logger');
-const {
-  getAntDataPath,
-  getIdentityDataDir,
-  getRadicleDataDir,
-  prepareRadicleDataDir,
-} = require('../profile-paths');
+const { getAntDataPath, getIdentityDataDir, prepareRadicleDataDir } = require('../profile-paths');
 const { getFreedomDataDir } = require('../freedom-root');
 const { getLockDir } = require('../service-locks');
 const { getCoredBinaryPath } = require('./cored-binary');
@@ -50,6 +48,10 @@ const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 const { attachGrants, detachGrants } = require('./grants');
 const { registerKeystoreShell } = require('./keystore-shell');
 const { confinementLog, CONFINEMENT_PROPERTIES } = require('./service-client');
+
+// How long each spawn waits for the Radicle home's preparation before the
+// core starts without its node root.
+const RADICLE_PREPARE_WAIT_MS = 2_000;
 
 let client = null;
 // `shell.dweb_get`'s executor (design 0009) on the client; null before
@@ -68,36 +70,54 @@ function isCoreEnabled() {
 }
 
 /**
- * The Radicle home `nodes.write_identity` names (`getRadicleDataDir()`), or
- * null when it can't be resolved.
+ * The Radicle home once `prepareRadicleDataDir()` has settled with it, or
+ * null while it hasn't after `RADICLE_PREPARE_WAIT_MS`, or if it failed.
  */
-function radicleHome() {
+function preparedRadicleHome() {
+  let timer;
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), RADICLE_PREPARE_WAIT_MS);
+  });
+  let prepared;
   try {
-    return getRadicleDataDir();
+    prepared = Promise.resolve(prepareRadicleDataDir());
   } catch (err) {
-    log.warn('[Core] no Radicle home for the core', { code: err?.code || 'error' });
-    return null;
+    prepared = Promise.reject(err);
   }
+  const home = prepared.then(
+    (dir) => path.resolve(dir),
+    (err) => {
+      log.warn("[Core] the Radicle home isn't prepared", { code: err?.code || 'error' });
+      return null;
+    }
+  );
+  return Promise.race([home, bound]).finally(() => clearTimeout(timer));
 }
 
 /**
- * `deferSpawn` for the core (service-client.js): before each spawn, a wait
- * for `prepareRadicleDataDir()`, then the spawn. A preparation that fails
- * is logged and the core spawns anyway: the vault doesn't wait on Radicle.
+ * `deferSpawn` for the core (service-client.js): before each spawn, the
+ * bounded wait for the Radicle home (`preparedRadicleHome()`), whose
+ * outcome `choose(home)` turns into that spawn's arguments; then the spawn.
+ * A spawn without the home says so once.
  */
-function radicleHomeWait() {
-  let prepared = false;
+function radicleHomeWait(choose) {
+  let chosen = false;
+  let announced = false;
   return () => {
-    if (prepared) {
-      prepared = false;
+    if (chosen) {
+      chosen = false;
       return null;
     }
-    return prepareRadicleDataDir()
-      .catch((err) => {
-        log.warn("[Core] the Radicle home isn't prepared", { code: err?.code || 'error' });
+    return preparedRadicleHome()
+      .then((home) => {
+        choose(home);
+        if (home === null && !announced) {
+          announced = true;
+          log.info('[Core] starting without the Radicle home until it is prepared');
+        }
       })
       .finally(() => {
-        prepared = true;
+        chosen = true;
       });
   };
 }
@@ -131,24 +151,25 @@ function logConfinement(hello) {
 async function startCore() {
   if (!isCoreEnabled() || shutDown || client) return client;
   guard.setIdentityDir(getIdentityDataDir());
-  const radicle = radicleHome();
-  client = new CoreClient({
+  // The node roots (design 0017, C1): see the top of this file. The Radicle
+  // home's is each spawn's own.
+  const argsWith = (radicleHome) => [
+    'serve',
+    '--data-dir',
+    getIdentityDataDir(),
+    '--lock-dir',
+    getLockDir(),
+    '--parent-pid',
+    String(process.pid),
+    '--node-root',
+    `bee=${path.resolve(getAntDataPath())}`,
+    ...(radicleHome === null ? [] : ['--node-root', `radicle=${radicleHome}`]),
+  ];
+  const made = new CoreClient({
     spawn,
     command: getCoredBinaryPath(),
-    args: [
-      'serve',
-      '--data-dir',
-      getIdentityDataDir(),
-      '--lock-dir',
-      getLockDir(),
-      '--parent-pid',
-      String(process.pid),
-      // The node roots (design 0017, C1): see the top of this file.
-      '--node-root',
-      `bee=${path.resolve(getAntDataPath())}`,
-      ...(radicle === null ? [] : ['--node-root', `radicle=${path.resolve(radicle)}`]),
-    ],
-    ...(radicle === null ? {} : { deferSpawn: radicleHomeWait() }),
+    args: argsWith(null),
+    deferSpawn: radicleHomeWait((home) => made.setArgs(argsWith(home))),
     log,
     shellVersion: app.getVersion(),
     // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
@@ -166,6 +187,7 @@ async function startCore() {
     // (design 0017 C5).
     userDataDir: app.getPath('userData'),
   });
+  client = made;
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));
   // Every (re)start reports node identity writes recovery couldn't finish;
   // those nodes stay stopped. Between an exit and the next report, nothing
@@ -251,6 +273,7 @@ function getDwebShell() {
 }
 
 module.exports = {
+  RADICLE_PREPARE_WAIT_MS,
   isCoreEnabled,
   getCoredBinaryPath,
   getLockDir,
