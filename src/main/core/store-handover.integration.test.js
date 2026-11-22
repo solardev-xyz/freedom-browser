@@ -12,8 +12,9 @@
  * hello naming all five and echoes none, so every store's request fails
  * the same way there, and a hello naming the profile's directory too.
  * With `payments` named and the profile's directory apart from the Freedom
- * root, as after 0013's move, the pinned core imports the legacy x402
- * receipts from the profile's directory (PRF-8b-lite).
+ * root, as after 0013's move, the pinned core copies the legacy x402
+ * receipts from the profile's directory into the Freedom root and imports
+ * the copy (design 0017 C5).
  *
  * Skipped without the binaries; FREEDOM_CORED_STORES_TEST=1 requires both
  * (npm run core:download, npm run core:download:previous).

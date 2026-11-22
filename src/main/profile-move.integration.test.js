@@ -16,8 +16,9 @@
  * - **Two launches at once,** each through index.js's steps
  *   (test/helpers/profile-move-launch.js): one moves, the other hands over,
  *   and exactly one holds the profile.
- * - **The receipts** are imported from the hello's `user_data_dir` after the
- *   move, by a core main's getters point into `freedom/` (PRF-8b-lite).
+ * - **The receipts** at the hello's `user_data_dir` are copied into
+ *   `freedom/` and imported from the copy after the move (design 0017 C5),
+ *   by a core main's getters point into `freedom/` (PRF-8b-lite).
  * - **A move held 45 s,** with real timings (FREEDOM_CORED_TESTHOOKS=1, a
  *   build with the `testhooks` feature, whose pause hook holds the move
  *   mid-way): past the lock's 30 s a second launch hands over and a
