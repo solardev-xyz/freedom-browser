@@ -1462,6 +1462,70 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # PRF-9 B3's move held 45 s with real timings (freedom-core design 0013,
+  # MD10: one held phase in the browser), against a freedom-cored built here
+  # with its `testhooks` feature, whose pause hook holds the move mid-way. The
+  # release binary the other jobs download can't pause, so this case runs
+  # nowhere else: past the lock's 30 s, the move's refresher keeps
+  # `profile-open.lock` fresh, a proper-lockfile client finds it open and
+  # can't take it, a second launch through index.js's steps hands over, and
+  # once the move is let go the launch takes main's own lock. The core is
+  # checked out at the commit the vectors checkout in `test` names, so the
+  # pin moves both together; build.rs takes `testhooks` only in an
+  # unoptimized debug build, which is what `cargo build` makes. The
+  # toolchain is the checkout's own (rust-toolchain.toml), as freedom-core's
+  # CI installs it. The shipped binary's checks stay in e2e-desktop.
+  profile-move-held:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # rusqlite's build would otherwise look for the system's SQLite before
+      # its `bundled` feature (freedom-core's CI sets it too).
+      LIBSQLITE3_SYS_USE_PKG_CONFIG: '0'
+      # Outside the workspace, so jest never crawls the build.
+      CARGO_TARGET_DIR: ${{ runner.temp }}/freedom-cored-target
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out freedom-core at the vectors' commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: d0f3d92d467952e9c58460e2f5576ab6c0359d42
+          path: .freedom-core
+          persist-credentials: false
+
+      - name: Build freedom-cored with its test hooks (debug)
+        working-directory: .freedom-core
+        run: |
+          rustup toolchain install
+          cargo build --locked -p freedom-cored --features testhooks
+          # Only the binary is needed from here on, in CARGO_TARGET_DIR.
+          cd .. && rm -rf .freedom-core
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      - name: The move held 45 s (testhooks freedom-cored)
+        run: npx jest src/main/profile-move.integration.test.js -t 'a move held 45 s'
+        env:
+          FREEDOM_CORED_TESTHOOKS: '1'
+          FREEDOM_CORED_PATH: ${{ runner.temp }}/freedom-cored-target/debug/freedom-cored
+
   # Package an unpacked `--dir` build for every shipped platform and fail if
   # app.asar holds anything outside the `build.files` allowlist (#576). The
   # same check runs from scripts/after-pack.js in release.yml, but only at tag
@@ -2928,6 +2992,7 @@ jobs:
         myotis-native-e2e,
         native-addons,
         packed-asar-contents,
+        profile-move-held,
         radicle-changed,
         radicle-cost,
         renderer-changed,
