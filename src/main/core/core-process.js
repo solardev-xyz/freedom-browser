@@ -90,14 +90,41 @@ function radicleHomePreparation() {
   );
 }
 
-/** What `preparation` settles with within `RADICLE_PREPARE_WAIT_MS`, or
- * null once that has passed. */
-function withinBound(preparation) {
-  let timer;
-  const bound = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(null), RADICLE_PREPARE_WAIT_MS);
+/**
+ * A preparation as the spawns wait on it: one completion handler, which
+ * hands the outcome to every spawn still waiting, and the spawns' own
+ * waiters, each removed when its bound passes. A preparation that never
+ * settles then holds no waiter of a spawn that gave up on it, however many
+ * spawns time out on it (a `Promise.race` per spawn would keep each one's
+ * reaction on the pending promise).
+ */
+function trackPreparation(preparation) {
+  const state = { settled: false, home: null, waiters: new Set() };
+  preparation.then((home) => {
+    state.settled = true;
+    state.home = home;
+    for (const waiter of state.waiters) waiter(home);
+    state.waiters.clear();
   });
-  return Promise.race([preparation, bound]).finally(() => clearTimeout(timer));
+  return state;
+}
+
+/** What the tracked preparation settles with within
+ * `RADICLE_PREPARE_WAIT_MS`, or null once that has passed. */
+function withinBound(state) {
+  if (state.settled) return Promise.resolve(state.home);
+  return new Promise((resolve) => {
+    let timer = null;
+    const waiter = (home) => {
+      clearTimeout(timer);
+      resolve(home);
+    };
+    timer = setTimeout(() => {
+      state.waiters.delete(waiter);
+      resolve(null);
+    }, RADICLE_PREPARE_WAIT_MS);
+    state.waiters.add(waiter);
+  });
 }
 
 /**
@@ -120,9 +147,10 @@ function radicleHomeWait(choose) {
     }
     if (!preparing) {
       const preparation = radicleHomePreparation();
-      preparing = preparation;
+      const state = trackPreparation(preparation);
+      preparing = state;
       preparation.finally(() => {
-        if (preparing === preparation) preparing = null;
+        if (preparing === state) preparing = null;
       });
     }
     return withinBound(preparing)
@@ -291,6 +319,9 @@ function getDwebShell() {
 
 module.exports = {
   RADICLE_PREPARE_WAIT_MS,
+  // For tests: the bounded wait's parts.
+  trackPreparation,
+  withinBound,
   isCoreEnabled,
   getCoredBinaryPath,
   getLockDir,

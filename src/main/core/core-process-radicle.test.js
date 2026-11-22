@@ -203,3 +203,27 @@ test('a preparation that fails: the core spawns at once without the home, and sa
   await jest.advanceTimersByTimeAsync(RESTART_MS);
   expect(radicleRoots()).toEqual([null, HOME]);
 });
+
+describe('the bounded wait on one preparation', () => {
+  const { trackPreparation, withinBound, RADICLE_PREPARE_WAIT_MS } = require('./core-process');
+
+  afterEach(() => jest.useRealTimers());
+
+  test('spawns that time out on a pending preparation leave no waiter, and a later completion is seen', async () => {
+    jest.useFakeTimers();
+    let settle;
+    const state = trackPreparation(new Promise((resolve) => (settle = resolve)));
+    for (let i = 0; i < 5; i += 1) {
+      const waited = withinBound(state);
+      expect(state.waiters.size).toBe(1);
+      jest.advanceTimersByTime(RADICLE_PREPARE_WAIT_MS);
+      await expect(waited).resolves.toBeNull();
+      expect(state.waiters.size).toBe(0);
+    }
+    const waiting = withinBound(state);
+    settle('/home/radicle');
+    await expect(waiting).resolves.toBe('/home/radicle');
+    expect(state.waiters.size).toBe(0);
+    await expect(withinBound(state)).resolves.toBe('/home/radicle');
+  });
+});
