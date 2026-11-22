@@ -16,7 +16,21 @@
 // hand over.
 
 const fs = require('fs');
+const Module = require('module');
 const { spawnSync } = require('child_process');
+
+// Main's profile-paths.js requires 'electron' when it loads. In plain Node
+// that package only resolves the Electron binary's path, downloading the
+// binary first if it is missing and saying so on stdout, which is this
+// helper's protocol. Nothing here runs Electron, so a stub stands in, as
+// jest.mock does in the test.
+const electron = require.resolve('electron');
+const stub = new Module(electron);
+stub.filename = electron;
+stub.loaded = true;
+stub.exports = {};
+require.cache[electron] = stub;
+
 const { profileLayout } = require('../../src/main/freedom-root');
 const {
   isProfileGateHeldSync,
