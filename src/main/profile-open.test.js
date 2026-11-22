@@ -650,13 +650,25 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
   });
 
   // MD7's marker, read for real from the profile's directory: only a missing
-  // one lets the move go on; one that is there but malformed or truncated
-  // skips it, as a live pid does.
+  // one counts as none. One that is there but malformed or truncated skips
+  // the move where the core can't try antd's own lock (no real ant-data/
+  // directory holding a regular antd.lock), as a live pid does; where it can,
+  // the bad marker is logged and the core's probe decides.
   describe("ant-process.json, failing closed", () => {
-    const withMarker = (text) => {
+    const TORN = JSON.stringify({ pid: 4242, apiPort: 1633, dataDir: '/data' }).slice(0, 12);
+    const withMarker = (text, { setup, log } = {}) => {
       const profile = { userDataDir: fs.mkdtempSync(path.join(tmp, 'marker-')) };
       if (text !== null) fs.writeFileSync(path.join(profile.userDataDir, 'ant-process.json'), text);
-      return start(profile, idle, { readAntProcessMarkerState: undefined });
+      if (setup) setup(profile.userDataDir);
+      return start(profile, idle, {
+        readAntProcessMarkerState: undefined,
+        ...(log ? { log } : {}),
+      });
+    };
+    // ant-data/ with the lock file an antd from v0.5.77 on makes.
+    const lockingAntd = (dir) => {
+      fs.mkdirSync(path.join(dir, 'ant-data'));
+      fs.writeFileSync(path.join(dir, 'ant-data', 'antd.lock'), '');
     };
 
     test('a missing marker lets the move go on', () => {
@@ -684,6 +696,43 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
         outcome: 'skipped',
         reason: 'ant_marker_unreadable: no_pid',
       });
+    });
+
+    test("a torn marker beside a real ant-data/ holding antd.lock: logged, and the core's probe decides", () => {
+      const log = { warn: jest.fn() };
+      const { outcome, calls } = withMarker(TORN, { setup: lockingAntd, log });
+      expect(outcome).toEqual({ outcome: 'migrated' });
+      expect(calls).toHaveLength(1);
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("ant-process.json can't be read"));
+    });
+
+    test('a torn marker with ant-data/ a link skips the move: the core follows no link', () => {
+      const outside = fs.mkdtempSync(path.join(tmp, 'outside-ant-data-'));
+      fs.writeFileSync(path.join(outside, 'antd.lock'), '');
+      const { outcome, calls } = withMarker(TORN, {
+        setup: (dir) =>
+          fs.symlinkSync(outside, path.join(dir, 'ant-data'), process.platform === 'win32' ? 'junction' : 'dir'),
+      });
+      expect(outcome).toEqual({ outcome: 'skipped', reason: 'ant_marker_unreadable: malformed' });
+      expect(calls).toHaveLength(0);
+    });
+
+    test('a torn marker without a regular antd.lock skips the move: an older antd may be the orphan', () => {
+      for (const setup of [
+        (dir) => fs.mkdirSync(path.join(dir, 'ant-data')),
+        (dir) => fs.mkdirSync(path.join(dir, 'ant-data', 'antd.lock'), { recursive: true }),
+        (dir) => fs.writeFileSync(path.join(dir, 'ant-data'), ''),
+      ]) {
+        const { outcome, calls } = withMarker(TORN, { setup });
+        expect(outcome).toEqual({ outcome: 'skipped', reason: 'ant_marker_unreadable: malformed' });
+        expect(calls).toHaveLength(0);
+      }
+    });
+
+    test('a live pid in a readable marker skips the move even where the core can try antd.lock', () => {
+      const { outcome, calls } = withMarker(JSON.stringify({ pid: process.ppid }), { setup: lockingAntd });
+      expect(outcome).toEqual({ outcome: 'skipped', reason: `node_running: antd pid ${process.ppid}` });
+      expect(calls).toHaveLength(0);
     });
 
     test("a marker whose antd is gone lets the move go on; this test's parent, alive, skips it", () => {

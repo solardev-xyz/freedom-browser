@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 const {
   ANT_PROCESS_MARKER_FILE,
+  antdLockTryable,
   clearAntProcessMarker,
   fetchNodeOverlay,
   findOwnLiveAntd,
@@ -174,6 +175,38 @@ describe('ant-process-marker', () => {
         reason: expect.any(String),
       });
     });
+  });
+
+  // Where the core's move (0.26.0) tries antd's own lock: a real ant-data/
+  // directory holding a regular antd.lock, looked at without following.
+  test('antdLockTryable: a real ant-data/ holding a regular antd.lock', () => {
+    const antData = path.join(dir, 'ant-data');
+    expect(antdLockTryable(dir)).toBe(false);
+    fs.mkdirSync(antData);
+    expect(antdLockTryable(dir)).toBe(false);
+    fs.writeFileSync(path.join(antData, 'antd.lock'), '');
+    expect(antdLockTryable(dir)).toBe(true);
+    // A link at antd.lock, or a directory there, isn't the lock antd takes.
+    fs.rmSync(path.join(antData, 'antd.lock'));
+    fs.mkdirSync(path.join(antData, 'antd.lock'));
+    expect(antdLockTryable(dir)).toBe(false);
+    fs.rmSync(path.join(antData, 'antd.lock'), { recursive: true });
+    if (process.platform !== 'win32') {
+      fs.writeFileSync(path.join(dir, 'real-lock'), '');
+      fs.symlinkSync(path.join(dir, 'real-lock'), path.join(antData, 'antd.lock'));
+      expect(antdLockTryable(dir)).toBe(false);
+    }
+    // ant-data/ itself a link to a directory that holds one: not followed.
+    fs.rmSync(antData, { recursive: true });
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-ant-outside-'));
+    try {
+      fs.writeFileSync(path.join(outside, 'antd.lock'), '');
+      fs.symlinkSync(outside, antData, process.platform === 'win32' ? 'junction' : 'dir');
+      expect(antdLockTryable(dir)).toBe(false);
+    } finally {
+      fs.rmSync(antData, { force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   test('the marker is replaced whole through lib/atomic-file.js, the overlay rewrite too', () => {

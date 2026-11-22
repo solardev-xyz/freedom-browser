@@ -28,16 +28,19 @@
 // prompt and saved choice (#218 review R3-M1).
 //
 // It is also the second layer of the profile move's orphan check
-// (freedom-core design 0013, MD7; profile-resolver.js's startProfileMove):
-// the move waits while the marker names a live process, or is there but
-// can't be read. So the marker is replaced whole and durably
-// (lib/atomic-file.js), never written in place: a crash mid-write leaves the
-// old marker or the new one, never a torn one. The first layer is the
-// core's: from freedom-cored 0.26.0 its move tries antd's own
-// `ant-data/antd.lock`, which antd locks (flock, LockFileEx) before it opens
-// its data and holds for its life. That covers what no marker can: the
-// moment between the spawn and the marker's write, and a marker lost or
-// damaged otherwise.
+// (freedom-core design 0013, MD7; profile-resolver.js's startProfileMove).
+// The first layer is the core's: from freedom-cored 0.26.0 its move tries
+// antd's own `ant-data/antd.lock`, which antd (v0.5.77 on) locks (flock,
+// LockFileEx) before it opens its data and holds for its life, and defers
+// while it is held. That covers what no marker can: the moment between the
+// spawn and the marker's write, and a marker lost or damaged otherwise. The
+// core tries it only where `ant-data/` is a real directory holding a regular
+// `antd.lock` (it follows no link), so the marker decides where it can't:
+// - a marker naming a live process waits, always;
+// - a marker that is there but can't be read waits only where the core can't
+//   try antd's lock (antdLockTryable below); where it can, the core decides.
+// The marker is replaced whole and durably (lib/atomic-file.js), never
+// written in place: a crash mid-write leaves the old marker or the new one.
 
 const fs = require('fs');
 const http = require('http');
@@ -170,6 +173,23 @@ async function findOwnLiveAntd(userDataDir, options = {}) {
   return actual === expected ? marker : null;
 }
 
+// Whether the core's move can try antd's own lock on this profile's data
+// (freedom-core 0.26.0): `ant-data/` at the profile's root is a real
+// directory, not a link, a junction or anything else, and holds a regular
+// `antd.lock`, which only an antd that takes the lock (v0.5.77 on) makes.
+// Looked at without following anything. Without one, an older antd may be
+// the orphan, and nothing but the marker can say so.
+function antdLockTryable(userDataDir) {
+  const antData = path.join(userDataDir, 'ant-data');
+  try {
+    const dir = fs.lstatSync(antData);
+    if (!dir.isDirectory() || dir.isSymbolicLink()) return false;
+    return fs.lstatSync(path.join(antData, 'antd.lock')).isFile();
+  } catch {
+    return false;
+  }
+}
+
 // What the marker says for the profile move's orphan check (freedom-core
 // design 0013, MD7), failing closed and asking the node nothing:
 // - `{ state: 'none' }`: no marker;
@@ -177,8 +197,9 @@ async function findOwnLiveAntd(userDataDir, options = {}) {
 // - `{ state: 'gone', pid }`: the process it names is gone (or is this one);
 // - `{ state: 'unreadable', reason }`: a marker is there but can't be read,
 //   doesn't parse (a torn write by an older build, say), or names no pid.
-// The move waits on `live` and `unreadable`. A recycled pid only defers it:
-// the next antd Freedom starts replaces the marker, and its exit removes it.
+// The move waits on `live`, and on `unreadable` where the core can't try
+// antd's lock (antdLockTryable). A recycled pid only defers it: the next
+// antd Freedom starts replaces the marker, and its exit removes it.
 function readAntProcessMarkerState(userDataDir, options = {}) {
   let text;
   try {
@@ -202,6 +223,7 @@ function readAntProcessMarkerState(userDataDir, options = {}) {
 
 module.exports = {
   ANT_PROCESS_MARKER_FILE,
+  antdLockTryable,
   clearAntProcessMarker,
   fetchNodeOverlay,
   findOwnLiveAntd,
