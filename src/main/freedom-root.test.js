@@ -155,6 +155,32 @@ describe("a profile's Freedom root (0013, the reader release)", () => {
     expect(movedEntryContaining(profileLink, path.join(dir, 'bee-data'))).toBe('bee-data');
   });
 
+  // Round 4: an entry that is itself a link (a junction on Windows) to
+  // outside storage. The move takes the link, so an override naming the
+  // entry, or a path inside it, would name the root path it left behind.
+  test('movedEntryContaining: an entry linked to outside storage, an override at it or inside it', () => {
+    const dir = profileDir(tmp);
+    const external = fs.mkdtempSync(path.join(tmp, 'external-ipfs-'));
+    fs.mkdirSync(path.join(external, 'freedom-ipfs'));
+    const type = process.platform === 'win32' ? 'junction' : 'dir';
+    fs.symlinkSync(external, path.join(dir, 'ipfs-data'), type);
+    expect(movedEntryContaining(dir, path.join(dir, 'ipfs-data'))).toBe('ipfs-data');
+    expect(movedEntryContaining(dir, path.join(dir, 'ipfs-data', 'freedom-ipfs'))).toBe('ipfs-data');
+    expect(movedEntryContaining(dir, path.join(dir, 'ipfs-data', 'not-yet', 'made'))).toBe('ipfs-data');
+    // The same through an alias of the profile, and for Tor and Myotis.
+    const alias = path.join(tmp, 'alias-of-profile');
+    fs.symlinkSync(dir, alias, type);
+    expect(movedEntryContaining(alias, path.join(dir, 'ipfs-data', 'freedom-ipfs'))).toBe('ipfs-data');
+    expect(movedEntryContaining(dir, path.join(alias, 'ipfs-data'))).toBe('ipfs-data');
+    for (const name of ['tor-data', 'myotis']) {
+      const outside = fs.mkdtempSync(path.join(tmp, `external-${name}-`));
+      fs.symlinkSync(outside, path.join(dir, name), type);
+      expect(movedEntryContaining(dir, path.join(dir, name, 'state'))).toBe(name);
+    }
+    // The outside storage itself, named directly, isn't the profile's.
+    expect(movedEntryContaining(dir, external)).toBeNull();
+  });
+
   test('movedEntryContaining: names exact on Linux, folded on macOS and Windows', () => {
     const dir = profileDir(tmp);
     const upper = path.join(dir, 'ANT-DATA', 'live');

@@ -679,6 +679,30 @@ describe('startProfileMove: whether this start moves the profile (index.js)', ()
       ).toEqual({ outcome: 'migrated' });
     });
 
+    test('an override at, or inside, an entry linked to outside storage skips the move', () => {
+      const external = fs.mkdtempSync(path.join(tmp, 'external-ipfs-'));
+      const linked = (dir) =>
+        fs.symlinkSync(external, path.join(dir, 'ipfs-data'), process.platform === 'win32' ? 'junction' : 'dir');
+      for (const tail of [[], ['freedom-ipfs']]) {
+        const { outcome, calls } = withEnv((dir) => {
+          linked(dir);
+          return { FREEDOM_IPFS_DATA: path.join(dir, 'ipfs-data', ...tail) };
+        });
+        expect(outcome).toEqual({
+          outcome: 'skipped',
+          reason: 'override_inside_moved_entry: FREEDOM_IPFS_DATA (ipfs-data)',
+        });
+        expect(calls).toHaveLength(0);
+      }
+      // The outside storage named directly isn't inside the profile.
+      expect(
+        withEnv((dir) => {
+          linked(dir);
+          return { FREEDOM_IPFS_DATA: external };
+        }).outcome
+      ).toEqual({ outcome: 'migrated' });
+    });
+
     test('an override outside the profile moves', () => {
       const { outcome, calls } = withEnv({
         FREEDOM_ANT_DATA: path.join(tmp, 'elsewhere', 'ant-data'),

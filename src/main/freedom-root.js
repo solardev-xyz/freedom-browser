@@ -119,23 +119,54 @@ function resolveExisting(target) {
   }
 }
 
+/** Every form of `target` with links followed up to one of its components
+ * and none past it: the lexical path (path.resolve only), each partial
+ * resolution, and the full one (resolveExisting). */
+function partlyResolved(target) {
+  const lexical = path.resolve(target);
+  const { root } = path.parse(lexical);
+  const parts = lexical.slice(root.length).split(path.sep).filter(Boolean);
+  const forms = new Set([lexical]);
+  for (let index = 1; index <= parts.length; index += 1) {
+    const prefix = path.join(root, ...parts.slice(0, index));
+    forms.add(path.join(resolveExisting(prefix), ...parts.slice(index)));
+  }
+  return [...forms];
+}
+
 /**
  * The entry of MOVED_ENTRIES at the root of the profile at `userDataDir`
  * that `target` is, or is inside, or null: a component's data-directory
  * override there would be left behind by the move, its node's state split
- * between the old path and `freedom/`. Links are resolved on both sides as
- * far as the paths exist. Names compare as the core compares them: exactly
- * on Linux, folded on macOS and Windows (folding where unsure only finds
- * more). Anything under `<userDataDir>/freedom/`, or outside the profile,
- * is null.
+ * between the old path and `freedom/`. It fails closed: `target` counts as
+ * inside when any of its forms is (partlyResolved: lexical, resolved, and
+ * resolved only up to each of its components), against the profile's
+ * directory as written or resolved. The lexical form catches an entry that
+ * is itself a link to outside storage (the move takes the link, and the
+ * override would name the root path it left); the resolved one a link from
+ * outside into an entry; the partial ones the two together, an alias of the
+ * profile leading to a linked entry.
+ * Names compare as the core compares them: exactly on Linux, folded on
+ * macOS and Windows (folding where unsure only finds more). Anything under
+ * `<userDataDir>/freedom/`, or outside the profile, is null.
  */
 function movedEntryContaining(userDataDir, target, { platform = process.platform } = {}) {
   const folds = platform === 'darwin' || platform === 'win32';
   const fold = (text) => (folds ? text.normalize('NFC').toLowerCase() : text);
-  const relative = path.relative(fold(resolveExisting(userDataDir)), fold(resolveExisting(target)));
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  const first = relative.split(path.sep)[0];
-  return MOVED_ENTRIES.find((name) => fold(name) === first) || null;
+  const entryAt = (root, place) => {
+    const relative = path.relative(fold(root), fold(place));
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+    const first = relative.split(path.sep)[0];
+    return MOVED_ENTRIES.find((name) => fold(name) === first) || null;
+  };
+  const roots = [path.resolve(userDataDir), resolveExisting(userDataDir)];
+  for (const place of partlyResolved(target)) {
+    for (const root of roots) {
+      const entry = entryAt(root, place);
+      if (entry) return entry;
+    }
+  }
+  return null;
 }
 
 // The Freedom root of the profile this process runs, resolved once.
