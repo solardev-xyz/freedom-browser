@@ -4,7 +4,7 @@ const path = require('path');
 const { getActiveProfile } = require('./profile-resolver');
 const { getFreedomDataDir, getFreedomDataPath, resolveFreedomRoot } = require('./freedom-root');
 const fsOffload = require('./fs-offload');
-const { ensurePrivateDir } = require('./private-files');
+const { ensurePrivateDir, ensurePrivateDirAsync } = require('./private-files');
 
 const RADICLE_SOCKET_PATH_LIMIT = 100;
 const RADICLE_SHORT_HOME_DIR = 'R';
@@ -246,10 +246,16 @@ function getTorDataDir() {
   return resolveDir('FREEDOM_TOR_DATA', 'tor-data');
 }
 
-function getRadicleDataDir() {
+/**
+ * Where the Radicle home is, as getRadicleDataDir resolves it, without
+ * touching the file system: `{ dir, legacy }`, `legacy` being the profile's
+ * own `radicle-data/` to carry over into a catalog profile's short home, or
+ * null. Throws when the home's control socket path would be too long.
+ */
+function radicleHome() {
   const override = overrideDir('FREEDOM_RADICLE_DATA');
   if (override) {
-    return ensurePrivateDir(override);
+    return { dir: override, legacy: null };
   }
 
   const profileRadicleDir = path.join(app.getPath('userData'), 'radicle-data');
@@ -283,18 +289,7 @@ function getRadicleDataDir() {
    * this Radicle exception.
    */
   if (catalogRadicleDir) {
-    // Never copy synchronously here: kick off (or join) the async migration and
-    // return the path. Everything that writes to or starts Radicle awaits
-    // prepareRadicleDataDir() first, so only read-only callers can observe the
-    // short home before the migration lands — and they see it empty, not torn.
-    startRadicleMigration(profileRadicleDir, catalogRadicleDir).catch((err) => {
-      console.warn('[ProfilePaths] Radicle data migration failed:', err.message);
-    });
-    // While the migration is in flight the home may not exist yet; read-only
-    // callers cope with that (missing file), and prepareRadicleDataDir creates
-    // it once the migration has settled.
-    if (radicleMigrationsInFlight.has(catalogRadicleDir)) return catalogRadicleDir;
-    return ensurePrivateDir(catalogRadicleDir);
+    return { dir: catalogRadicleDir, legacy: profileRadicleDir };
   }
 
   const socketPath = path.join(profileRadicleDir, 'node', 'control.sock');
@@ -304,20 +299,43 @@ function getRadicleDataDir() {
     );
   }
 
-  return ensurePrivateDir(profileRadicleDir);
+  return { dir: profileRadicleDir, legacy: null };
+}
+
+function getRadicleDataDir() {
+  const { dir, legacy } = radicleHome();
+  if (legacy) {
+    // Never copy synchronously here: kick off (or join) the async migration and
+    // return the path. Everything that writes to or starts Radicle awaits
+    // prepareRadicleDataDir() first, so only read-only callers can observe the
+    // short home before the migration lands — and they see it empty, not torn.
+    startRadicleMigration(legacy, dir).catch((err) => {
+      console.warn('[ProfilePaths] Radicle data migration failed:', err.message);
+    });
+    // While the migration is in flight the home may not exist yet; read-only
+    // callers cope with that (missing file), and prepareRadicleDataDir creates
+    // it once the migration has settled.
+    if (radicleMigrationsInFlight.has(dir)) return dir;
+  }
+  return ensurePrivateDir(dir);
 }
 
 /**
  * Resolve the Radicle data dir, first finishing the one-time async migration of
  * a profile-local `radicle-data/` into the catalog's short home if one is due.
  * Await this before starting Radicle or writing its home.
+ *
+ * Its directory probes, before and after the carry-over, are asynchronous
+ * (`ensurePrivateDirAsync`), as is the carry-over's own file work: a
+ * stalled file system (an override on an unresponsive mount, say) holds a
+ * thread-pool thread, never main's event loop, so a caller can bound the
+ * wait (core/core-process.js).
  * @returns {Promise<string>}
  */
 async function prepareRadicleDataDir() {
-  const radicleDir = getRadicleDataDir();
-  const pending = radicleMigrations.get(radicleDir);
-  if (pending) await pending;
-  return ensurePrivateDir(radicleDir);
+  const { dir, legacy } = radicleHome();
+  if (legacy) await startRadicleMigration(legacy, dir);
+  return ensurePrivateDirAsync(dir);
 }
 
 /**

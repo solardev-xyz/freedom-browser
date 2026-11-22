@@ -70,45 +70,62 @@ function isCoreEnabled() {
 }
 
 /**
- * The Radicle home once `prepareRadicleDataDir()` has settled with it, or
- * null while it hasn't after `RADICLE_PREPARE_WAIT_MS`, or if it failed.
+ * The Radicle home's preparation (`prepareRadicleDataDir()`, whose file
+ * system work is all asynchronous): a promise of the home, or of null if it
+ * failed (logged, with its code alone).
  */
-function preparedRadicleHome() {
-  let timer;
-  const bound = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(null), RADICLE_PREPARE_WAIT_MS);
-  });
+function radicleHomePreparation() {
   let prepared;
   try {
     prepared = Promise.resolve(prepareRadicleDataDir());
   } catch (err) {
     prepared = Promise.reject(err);
   }
-  const home = prepared.then(
+  return prepared.then(
     (dir) => path.resolve(dir),
     (err) => {
       log.warn("[Core] the Radicle home isn't prepared", { code: err?.code || 'error' });
       return null;
     }
   );
-  return Promise.race([home, bound]).finally(() => clearTimeout(timer));
+}
+
+/** What `preparation` settles with within `RADICLE_PREPARE_WAIT_MS`, or
+ * null once that has passed. */
+function withinBound(preparation) {
+  let timer;
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), RADICLE_PREPARE_WAIT_MS);
+  });
+  return Promise.race([preparation, bound]).finally(() => clearTimeout(timer));
 }
 
 /**
  * `deferSpawn` for the core (service-client.js): before each spawn, the
- * bounded wait for the Radicle home (`preparedRadicleHome()`), whose
- * outcome `choose(home)` turns into that spawn's arguments; then the spawn.
- * A spawn without the home says so once.
+ * bounded wait for the Radicle home's preparation, whose outcome
+ * `choose(home)` turns into that spawn's arguments; then the spawn. A
+ * preparation still running when the bound passes goes on in the
+ * background, and the next spawn waits on it again rather than start
+ * another, so a stalled probe holds one thread-pool thread, not one per
+ * spawn. A spawn without the home says so once.
  */
 function radicleHomeWait(choose) {
   let chosen = false;
   let announced = false;
+  let preparing = null;
   return () => {
     if (chosen) {
       chosen = false;
       return null;
     }
-    return preparedRadicleHome()
+    if (!preparing) {
+      const preparation = radicleHomePreparation();
+      preparing = preparation;
+      preparation.finally(() => {
+        if (preparing === preparation) preparing = null;
+      });
+    }
+    return withinBound(preparing)
       .then((home) => {
         choose(home);
         if (home === null && !announced) {

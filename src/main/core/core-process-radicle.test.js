@@ -7,7 +7,14 @@
  * with the home's grant while a carry-over may still rename a directory into
  * its place. The client is the real CoreClient; its spawn fails, as if the
  * binary were missing, so the shared client's restart is the next spawn.
+ *
+ * Most tests stub the whole preparation; `mockRealPaths` runs the real
+ * profile-paths.js instead, with private-files.js's directory probes
+ * stubbed, so a probe that never returns (a stalled mount) can be shown not
+ * to hold the spawn.
  */
+
+let mockRealPaths = false;
 
 jest.mock(
   'electron',
@@ -30,15 +37,39 @@ jest.mock('child_process', () => ({
   }),
 }));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
-jest.mock('../profile-paths', () => ({
-  getIdentityDataDir: () => '/nonexistent/identity',
-  getAntDataPath: () => '/nonexistent/freedom/ant-data',
-  prepareRadicleDataDir: jest.fn(),
-}));
+jest.mock('../profile-paths', () =>
+  mockRealPaths
+    ? jest.requireActual('../profile-paths')
+    : {
+        getIdentityDataDir: () => '/nonexistent/identity',
+        getAntDataPath: () => '/nonexistent/freedom/ant-data',
+        prepareRadicleDataDir: jest.fn(),
+      }
+);
+// The directory probes, with mockRealPaths: the synchronous one makes
+// nothing, and the asynchronous one, the Radicle home's, never returns.
+jest.mock('../private-files', () =>
+  mockRealPaths
+    ? {
+        ...jest.requireActual('../private-files'),
+        ensurePrivateDir: jest.fn((dir) => dir),
+        ensurePrivateDirAsync: jest.fn(() => new Promise(() => {})),
+      }
+    : jest.requireActual('../private-files')
+);
+jest.mock('../profile-resolver', () =>
+  mockRealPaths ? { getActiveProfile: () => null } : jest.requireActual('../profile-resolver')
+);
 jest.mock('../service-locks', () => ({ getLockDir: () => '/nonexistent/locks' }));
-jest.mock('../freedom-root', () => ({
-  getFreedomDataDir: () => require('path').join(require('os').tmpdir(), 'freedom-profile'),
-}));
+jest.mock('../freedom-root', () => {
+  const path = require('path');
+  const root = path.join(require('os').tmpdir(), 'freedom-profile');
+  return {
+    getFreedomDataDir: () => root,
+    getFreedomDataPath: (name) => path.join(root, name),
+    resolveFreedomRoot: () => root,
+  };
+});
 jest.mock('./naming', () => ({
   attachNaming: jest.fn(() => ({ running: () => false })),
   detachNaming: jest.fn(),
@@ -68,6 +99,8 @@ afterEach(async () => {
   await core.stopCore();
   await started;
   jest.useRealTimers();
+  mockRealPaths = false;
+  delete process.env.FREEDOM_RADICLE_DATA;
 });
 
 /** Starts the core; its readiness never comes (every spawn fails). */
@@ -94,12 +127,45 @@ test('a preparation that never settles: the core spawns within the bound, withou
   expect(args).toContain('bee=/nonexistent/freedom/ant-data');
   expect(radicleRoots()).toEqual([null]);
   expect(log.info).toHaveBeenCalledWith(WITHOUT);
-  // The restart waits again, and still spawns without it: no core runs with
-  // the home's grant over the carry-over. The line is said once.
+  // The restart waits again, on the same preparation, and still spawns
+  // without it: no core runs with the home's grant over the carry-over. The
+  // line is said once.
   await jest.advanceTimersByTimeAsync(RESTART_MS + core.RADICLE_PREPARE_WAIT_MS);
   expect(radicleRoots()).toEqual([null, null]);
+  expect(prepare).toHaveBeenCalledTimes(1);
   expect(log.info.mock.calls.filter(([line]) => line === WITHOUT)).toHaveLength(1);
 });
+
+// Review round 2 of #1307: the preparation's directory probes are
+// asynchronous, so one that never returns (an override on a stalled mount)
+// holds a thread-pool thread, not main's event loop, and the bound fires.
+test.each([
+  ['an override', '/nonexistent/stalled-mount/radicle'],
+  ["a profile's own radicle-data", null],
+])(
+  'a directory probe that never returns (%s): the spawn goes at the bound, without the home',
+  async (_name, override) => {
+    if (override) process.env.FREEDOM_RADICLE_DATA = override;
+    mockRealPaths = true;
+    jest.resetModules();
+    ({ spawn } = require('child_process'));
+    log = require('../logger');
+    const files = require('../private-files');
+    core = require('./core-process');
+    const home =
+      override ?? require('path').join(require('os').tmpdir(), 'freedom-user-data', 'radicle-data');
+    start();
+    await jest.advanceTimersByTimeAsync(core.RADICLE_PREPARE_WAIT_MS - 1);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(files.ensurePrivateDirAsync).toHaveBeenCalledWith(home);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(radicleRoots()).toEqual([null]);
+    expect(log.info).toHaveBeenCalledWith(WITHOUT);
+    // The probe is still pending, and nothing probed the home synchronously.
+    expect(files.ensurePrivateDirAsync).toHaveBeenCalledTimes(1);
+    expect(files.ensurePrivateDir).not.toHaveBeenCalledWith(home);
+  }
+);
 
 test('a preparation that settles after the first spawn: the next spawn passes the home', async () => {
   let settle;

@@ -2289,7 +2289,9 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     });
 
     const injecting = mgr.injectRadicleIdentity('Alias');
-    for (let i = 0; i < 50 && !finishStop; i += 1) await new Promise((r) => setImmediate(r));
+    // The home's preparation runs on the thread pool (prepareRadicleDataDir's
+    // asynchronous probes): turns until the stop begins, not a fixed few.
+    for (let i = 0; i < 5000 && !finishStop; i += 1) await new Promise((r) => setImmediate(r));
     expect(finishStop).toEqual(expect.any(Function));
     // Anything that ran outside the section has had its turn by now.
     for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
@@ -2762,6 +2764,11 @@ describe('Radicle identity changes on the service (0008, Identity changes)', () 
 
     const changing = mgr.injectRadicleIdentity('Alias');
     const settled = changing.catch((err) => err);
+    // The home's preparation runs on the thread pool (prepareRadicleDataDir's
+    // asynchronous probes): turns until the first write, not a fixed few.
+    for (let i = 0; i < 5000 && writes(backend).length === 0; i += 1) {
+      await new Promise((r) => setImmediate(r));
+    }
     await settle();
     expect(writes(backend)).toHaveLength(1);
     for (const [wait, count] of [
@@ -3352,9 +3359,16 @@ describe('node identities are written into owner-only roots (K-3)', () => {
         [require.resolve('./fs-offload')]: () => jest.requireActual('./fs-offload'),
       },
     });
-    jest.spyOn(fs, 'fchmodSync').mockImplementation(() => {
+    const eperm = () => {
       throw Object.assign(new Error('EPERM: operation not permitted, fchmod'), { code: 'EPERM' });
-    });
+    };
+    jest.spyOn(fs, 'fchmodSync').mockImplementation(eperm);
+    // The Radicle home's narrowing is prepareRadicleDataDir's asynchronous
+    // one (ensurePrivateDirAsync), through a FileHandle.
+    const probe = await fs.promises.open(root, 'r');
+    const fileHandle = Object.getPrototypeOf(probe);
+    await probe.close();
+    jest.spyOn(fileHandle, 'chmod').mockImplementation(async () => eperm());
 
     await expect(mod.injectBeeIdentity()).rejects.toThrow('could not make it owner-only');
     await expect(mod.injectRadicleIdentity('Alias')).rejects.toThrow(
