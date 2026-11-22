@@ -433,6 +433,61 @@ function isObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+// `confinement`'s statuses, mechanism and gaps (freedom-core design 0010,
+// "Reporting").
+const STATUSES = new Set(['enforced', 'partial', 'unavailable', 'blocked', 'none']);
+const PROPERTIES = ['files', 'exec', 'ipc', 'network'];
+// What resolves names while confined: glibc's resolver (`system`, or
+// `files_only` when it can't reach DNS) or, for freedom-ipfsd from 0.3.0, its
+// own one DNS configuration: /etc/resolv.conf as parsed (`resolv_conf`), or
+// its built-in servers where that can't be read or parsed (`fallback`, with
+// the reason).
+const RESOLUTIONS = new Set(['system', 'files_only', 'resolv_conf', 'fallback']);
+const MECHANISM = /^[a-z0-9+-]{1,64}$/;
+const GAP = /^[a-z_]{1,32}$/;
+const MAX_GAPS = 16;
+const MAX_REASON = 512;
+
+/**
+ * The public part of `confinement` (freedom-core design 0010, "Reporting"):
+ * its mechanism, each property's status, the gaps a `partial` leaves, the
+ * reasons and, on Linux in `direct` mode, `resolution`. Null if it isn't one.
+ */
+function validConfinement(confinement) {
+  if (!isObject(confinement)) return null;
+  const { mechanism, gaps = [], reasons = {}, resolution = null } = confinement;
+  if (typeof mechanism !== 'string' || !MECHANISM.test(mechanism)) return null;
+  const statuses = {};
+  for (const property of PROPERTIES) {
+    if (!STATUSES.has(confinement[property])) return null;
+    statuses[property] = confinement[property];
+  }
+  if (
+    !Array.isArray(gaps) ||
+    gaps.length > MAX_GAPS ||
+    !gaps.every((gap) => typeof gap === 'string' && GAP.test(gap))
+  ) {
+    return null;
+  }
+  if (!isObject(reasons)) return null;
+  const kept = {};
+  for (const name of [...PROPERTIES, 'resolution']) {
+    const reason = reasons[name];
+    if (reason === undefined) continue;
+    if (typeof reason !== 'string') return null;
+    kept[name] = reason.slice(0, MAX_REASON);
+  }
+  if (resolution !== null && !RESOLUTIONS.has(resolution)) return null;
+  return { mechanism, ...statuses, gaps: [...gaps], reasons: kept, resolution };
+}
+
+/** `confinement` as a log line carries it: the statuses and gaps, without
+ * the reasons' text. */
+function confinementLog(confinement) {
+  const { mechanism, files, exec, ipc, network, gaps, resolution } = confinement;
+  return { mechanism, files, exec, ipc, network, gaps, resolution };
+}
+
 function scrubbedEnv(env = process.env) {
   const out = {};
   for (const key of ENV_ALLOWLIST) {
@@ -2701,6 +2756,9 @@ module.exports = {
   MAX_INCOMING,
   scrubbedEnv,
   isObject,
+  validConfinement,
+  confinementLog,
+  CONFINEMENT_PROPERTIES: PROPERTIES,
   NO_RESTART_EXIT_CODES,
   RESTART_DELAYS_MS,
   CRASH_WINDOW_MS,
