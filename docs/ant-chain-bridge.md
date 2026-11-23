@@ -123,8 +123,14 @@ Public RPCs cap the block span of one `eth_getLogs` differently (measured for
 dRPC's free plan serve 10,000 blocks). The router learns each endpoint's cap
 from the number its refusal names (`logScanRangeCap` in the bridge; a range
 limit without one bounds the span it was asked), in memory only, for 30
-minutes, after which the endpoint is asked again. Two refusals are not read as
-block-range caps:
+minutes, after which the endpoint is asked again. Wordings change: on
+2026-11-09 publicnode's Nethermind backend refused with "Logs request reads
+50001 blocks without the log index, over the maximum of 10000 per request",
+which the bridge did not read as a cap until #596, so every window Ant doubled
+past it was refused by publicnode again rather than by the router at once.
+dRPC's free plan then refused anything over about 100 blocks with HTTP 400,
+which counts as an endpoint failure (a 30 s cooldown, below), not a cap. Two
+refusals are not read as block-range caps:
 
 - an upstream `query timeout` reply bounds the endpoint below the span it timed
   out on for 30 s only: a busy server is no range limit to hold every later
@@ -143,6 +149,13 @@ away. When none can, Ant is told the widest span a quorum can still verify, as
 halves its window towards it. Only when no quorum can serve any span does Ant
 get an error it does not halve on, and it resumes the scan later from its
 saved progress.
+
+Ant doubles its window after every answer, so a scan read window by window
+meets one such refusal per window. The bridge logs a refusal that names the
+query's size (the router's own, or an endpoint's) at verbose, like the reads
+themselves, as `eth_getLogs window too wide`. Every other `eth_getLogs`
+failure stays at warn, and a scan that fails anyway is logged by Ant itself
+(`rediscovery scan failed`).
 
 **A quorum is required.** Since no single endpoint's answer is accepted for a
 log scan, a node configured with fewer Gnosis RPC endpoints than the quorum

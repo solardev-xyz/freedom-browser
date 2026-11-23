@@ -334,6 +334,27 @@ test.each([
     'Block range 50000 exceeds the maximum of 10000 blocks per logs request. Use a narrower fromBlock/toBlock range or increase Receipt.MaxBlockDepth.',
     10000,
   ],
+  [
+    'Nethermind without the log index (publicnode, 2026-11-09)',
+    -32602,
+    'Logs request reads 50001 blocks without the log index, over the maximum of 10000 per request. Use a narrower fromBlock/toBlock range or increase Receipt.MaxBlockDepth.',
+    10000,
+  ],
+  // Only Nethermind's own sentence is read: a "maximum of N per request"
+  // elsewhere may cap results, not blocks.
+  ['a bare per-request maximum', -32005, 'over the maximum of 10000 per request', null],
+  [
+    'a result cap after a block count',
+    -32005,
+    'Scanned 20000 blocks; results are capped at the maximum of 10000 per request',
+    null,
+  ],
+  [
+    'a log cap in a block-read sentence',
+    -32005,
+    'Logs request scanned 50001 blocks and returned more logs than the maximum of 10000 per request',
+    null,
+  ],
   ['dRPC free plan', 35, 'ranges over 10000 blocks are not supported on free plan', 10000],
   [
     'Colibri gnosis1 (Alchemy-style)',
@@ -381,6 +402,44 @@ test.each([
   ['span of one block', -32602, 'block range is too wide', 1, null],
 ])('a %s reply over a known span', (_name, code, message, span, cap) => {
   expect(logScanRangeCap(Object.assign(new Error(message), { code }), span)).toBe(cap);
+});
+
+test('a window too wide is logged quietly; other log scan failures still warn (#596)', async () => {
+  const filter = [{ fromBlock: '0x1', toBlock: '0x2' }];
+  const fails = (message, code) =>
+    router.request.mockRejectedValueOnce(Object.assign(new Error(message), { code }));
+  // The router's own refusal once it knows the caps, and an endpoint's
+  // range limit that names the query's size: Ant narrows its window.
+  fails('query exceeds max block range 10000', -32005);
+  fails('exceed maximum block range: 50000', -32701);
+  for (let i = 0; i < 2; i += 1) {
+    const response = await post(bridge.url, rpc('eth_getLogs', filter));
+    expect(antShrinksLogScanOn(response.body.error.message)).toBe(true);
+  }
+  expect(log.verbose.mock.calls).toEqual([
+    ['[Ant chain] eth_getLogs window too wide (-32005), Ant narrows it'],
+    ['[Ant chain] eth_getLogs window too wide (-32701), Ant narrows it'],
+  ]);
+  expect(log.warn).not.toHaveBeenCalled();
+
+  // A reply that may be a range cap or a throttle, a timeout, an endpoint
+  // failure, and a range limit on another method all still warn.
+  fails(
+    'Logs request reads 50001 blocks without the log index, over the maximum of 10000 per request.',
+    -32602
+  );
+  fails('query timeout exceeded', -32000);
+  fails('the method eth_getLogs does not exist/is not available', -32601);
+  for (let i = 0; i < 3; i += 1) await post(bridge.url, rpc('eth_getLogs', filter));
+  fails('query exceeds max block range 10000', -32005);
+  await post(bridge.url, rpc('eth_call', [{}, 'latest']));
+  expect(log.warn.mock.calls).toEqual([
+    ['[Ant chain] eth_getLogs failed (-32602)'],
+    ['[Ant chain] eth_getLogs failed (-32000)'],
+    ['[Ant chain] eth_getLogs failed (-32601)'],
+    ['[Ant chain] eth_call failed (-32005)'],
+  ]);
+  expect(log.verbose).toHaveBeenCalledTimes(2);
 });
 
 test('says once why log scans fail when no RPC quorum is configured (R1-M3)', async () => {
