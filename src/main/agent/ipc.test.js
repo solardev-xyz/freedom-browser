@@ -1809,7 +1809,8 @@ test('AI-off never forwards a held tab to the human wallet flow or an active Age
   const ctx = register({ isEnabled: () => false, isAgentHeldTab: tabId => tabId === 'tab_bound' });
   const handle = ctx.ipcMain.handlers.get(IPC.AGENT_WALLET_REQUEST);
   expect(handle({ sender: ctx.sender }, { rendererTabId: 7, request: { method: 'personal_sign' } }))
-    .toMatchObject({ handled: true, error: { code: 4001, message: expect.stringContaining('take control') } });
+    .toMatchObject({ handled: true, error: { code: 4001, message: expect.stringContaining('Take control') } });
+  expect(handle({ sender: ctx.sender }, { rendererTabId: 7, request: { method: 'personal_sign' } }).error.message).not.toMatch(/continue/i);
   expect(handle({ sender: ctx.otherSender }, { rendererTabId: 7, request: { method: 'personal_sign' } })).toEqual({ handled: false });
   expect(handle({ sender: ctx.sender }, { rendererTabId: 99, request: { method: 'personal_sign' } })).toEqual({ handled: false });
   expect(ctx.service.handleWalletRequest).not.toHaveBeenCalled();

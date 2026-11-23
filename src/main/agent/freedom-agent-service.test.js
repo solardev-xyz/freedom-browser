@@ -1842,9 +1842,13 @@ describe('FreedomAgentService', () => {
     // Finishing the turn and deleting the conversation keep custody...
     fake.prompt.resolve();
     await service.waitForIdle();
-    await expect(service.handleWalletRequest('tab_assigned', { method: 'personal_sign' })).resolves.toMatchObject({ handled: true, error: { code: 4001 } });
+    await expect(service.handleWalletRequest('tab_assigned', { method: 'personal_sign' })).resolves.toMatchObject({ handled: true,
+      error: { code: 4001, message: expect.stringContaining('Continue the task') } });
     await expect(service.deleteConversation('conversation_test')).resolves.toBe(true);
-    await expect(service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })).resolves.toMatchObject({ handled: true, error: { code: 4001 } });
+    // No conversation is left to continue: only taking control is offered.
+    const orphaned = await service.handleWalletRequest('tab_assigned', { method: 'personal_sign' });
+    expect(orphaned).toMatchObject({ handled: true, error: { code: 4001, message: expect.stringContaining('Take control') } });
+    expect(orphaned.error.message).not.toMatch(/continue/i);
     expect(service.listAgentTabs()).toEqual([
       expect.objectContaining({ tabId: 'tab_assigned', custody: 'agent', conversationId: null }),
     ]);

@@ -1083,9 +1083,14 @@ function normalizeDomainPresentation(value) {
   });
 }
 
-function agentHeldWalletRefusal() {
+// Only offer "continue the task" when a conversation still owns the tab; a
+// tab whose conversation was deleted (or seen with AI off / storage
+// unavailable / no service record) can only be taken back by the user.
+function agentHeldWalletRefusal({ canContinue = false } = {}) {
   return { handled: true, error: { code: 4001,
-    message: 'Agent still controls this tab. Continue the task or take control of the tab before using its wallet.' } };
+    message: canContinue
+      ? 'Agent still controls this tab. Continue the task or take control of the tab before using its wallet.'
+      : 'Agent still controls this tab. Take control of the tab before using its wallet.' } };
 }
 
 class FreedomAgentService {
@@ -1705,8 +1710,11 @@ class FreedomAgentService {
 
   async handleWalletRequest(tabId, payload) {
     const run = this.activeRun;
-    const held = this.agentTabs.get(tabId)?.custody === 'agent' || this.controller.isPageAgentCustody?.(tabId) === true;
-    const unavailable = () => held ? agentHeldWalletRefusal() : { handled: false };
+    const record = this.agentTabs.get(tabId);
+    const held = record?.custody === 'agent' || this.controller.isPageAgentCustody?.(tabId) === true;
+    const canContinue = record?.custody === 'agent' && typeof record.conversationId === 'string' &&
+      record.conversationId !== '';
+    const unavailable = () => held ? agentHeldWalletRefusal({ canContinue }) : { handled: false };
     if (
       !this.walletController ||
       !run ||
