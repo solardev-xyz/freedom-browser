@@ -838,14 +838,14 @@ function initUpdateNotifications() {
     electronAPI.restartAndInstallUpdate?.();
   });
 
-  // Listen for update notifications from main process
+  // Listen for update notifications from main process. updater.js only sends
+  // `ready` (a downloaded update to install); checking, progress and
+  // up-to-date results show in Settings → About Freedom → Updates, not as a
+  // toast (#918), so any other type is ignored here.
   electronAPI.onUpdateNotification?.((data) => {
     pushDebug(`[update] Received notification: ${data.type}`);
     if (data.type === 'ready') {
       showToast(data.message, true, data.actionLabel || 'Install now');
-    } else {
-      // checking, downloading, up-to-date
-      showToast(data.message, false);
     }
   });
 }

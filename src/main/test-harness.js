@@ -1111,10 +1111,10 @@ function installLinuxMockCredentialStore(storage = safeStorage, {
   return true;
 }
 
-// Neutralize the updater's user actions in test mode: "Check now" would hit
-// the network (or a native "Updates Managed Elsewhere" dialog, since index.js
-// never starts the updater in test mode) and "Restart to update" would quit
-// the app under test. updater.js checks this global and records instead.
+// Neutralize the updater's user actions in test mode: "Check now" (and the
+// menus' "Check for Updates…") would hit the network and "Restart to update"
+// would quit the app under test. updater.js checks this global and records
+// instead.
 function installUpdaterRecorder() {
   globalThis.__FREEDOM_TEST_UPDATER__ = {
     record: (action) => {
