@@ -12,7 +12,7 @@
  *   recovery couldn't finish.
  * - **`grant_root`** (design 0012, "The files (Q10)") is the directory of
  *   the profile's four permission files, as an absolute, normalized path:
- *   the core reads them there at its checks. The pinned core (0.27.0)
+ *   the core reads them there at its checks. The pinned core (0.28.0)
  *   requires it, as every core from 0.14.0 (APR-3) does, and answers a hello
  *   without it, or with a relative path, with `invalid_argument` and exits
  *   76, so a client can't be made without one.
@@ -21,8 +21,8 @@
  *   when the client is given one: where the legacy `x402-receipts.json`
  *   is. In the old layout it is also the Freedom root (`grant_root`), and
  *   the core imports the file there once and renames it there. After 0013's
- *   move the receipts stay at the profile's root, and the pinned core
- *   (0.27.0, design 0017 C5) copies them into the Freedom root, imports the
+ *   move the receipts stay at the profile's root, and the core (from
+ *   0.27.0, design 0017 C5) copies them into the Freedom root, imports the
  *   copy, and drops the original at a later start once the copy's
  *   `.migrated` shows the import committed. Cores from 0.24.0 (PRF-8-lite)
  *   take it; an older core ignores it, as it ignores every hello member it
@@ -31,13 +31,13 @@
  *   client appends `--grant-root <grant_root>` and, with `user_data_dir`,
  *   `--user-data-dir <user_data_dir>` to the spawn's arguments itself,
  *   from the same normalized values the hello sends, so the two can't
- *   disagree. A confining core (0.28.0) requires `--grant-root`, confines
+ *   disagree. The pinned core (0.28.0) requires `--grant-root`, confines
  *   itself to it before it reads the hello, and answers a hello whose
  *   `grant_root` or `user_data_dir` differs from them (one given on only
- *   one side included) with `invalid_argument`, then exits 76. The pinned
- *   core (0.27.0) takes them as optional; a core before that (0.22.0, the
- *   previous release some compatibility tests run) doesn't know them, and
- *   its callers turn them off (`grantArgs: false`). The node roots
+ *   one side included) with `invalid_argument`, then exits 76. 0.27.0 took
+ *   them as optional; a core before that (0.22.0, the previous release
+ *   some compatibility tests run) doesn't know them, and its callers turn
+ *   them off (`grantArgs: false`). The node roots
  *   (`--node-root`) are the caller's to pass (core-process.js).
  * - **`confinement`** (design 0017): the confinement the core got, as
  *   freedom-core design 0010 reports it for the services
@@ -71,7 +71,7 @@
  *   didn't send, or one twice, fails the hello.
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
- *   (0.27.0) speaks only 2: it answers a hello at any other protocol,
+ *   (0.28.0) speaks only 2: it answers a hello at any other protocol,
  *   1 included, with `protocol_mismatch` and exits 76. A core that answers
  *   another protocol is a mismatch too: main fails, and doesn't restart it.
  *   Protocol 1 is gone (design 0009, Streams in the core), and a client
