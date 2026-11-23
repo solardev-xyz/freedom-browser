@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { useWideAgentViewport } = require('./agent-viewport');
 
 const MODEL_ID = 'freedom-product-qualification-fixture';
 const WALLET_PASSWORD = 'Freedom-Agent-Wallet-E2E-2026!';
@@ -1578,6 +1579,9 @@ test('baseline: multi-tab comparison passes inside a task-owned visible workspac
     </main>`
   );
 
+  // The preview strip this test drives is only shown by the wide full-view
+  // layout; CI's 1024px macOS screen would otherwise open it compact.
+  await useWideAgentViewport(electronApp, window);
   await window.locator('#agent-first-toggle').click();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await window.evaluate(() => {
@@ -1647,8 +1651,12 @@ test('baseline: multi-tab comparison passes inside a task-owned visible workspac
     });
     // Chromium input gives the popup blocker one real gesture, as a browser
     // tool click would. Scripted element.click() does not mint that grant.
-    await electronApp.evaluate(({ webContents }, { guestId, x, y }) => {
+    await electronApp.evaluate(({ webContents }, { guestId, x: cssX, y: cssY }) => {
       const guest = webContents.fromId(guestId);
+      // The guest inherits the chrome's zoom-out; input takes DIP coordinates.
+      const zoom = guest.getZoomFactor();
+      const x = Math.round(cssX * zoom);
+      const y = Math.round(cssY * zoom);
       guest.sendInputEvent({ type: 'mouseMove', x, y });
       guest.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
       guest.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });

@@ -1679,14 +1679,24 @@ export const setTabStripProjection = ({ container = null, tabIds = null } = {}) 
     projectedTabObserver = null;
     projectedTabContainer?.classList.remove('overflow-start', 'overflow-end');
     projectedTabContainer = null;
+    // Agent asked for this page before its projection arrived. Outside full
+    // view nothing needs to wait for one, so honour that request now.
+    const pendingTab = tabState.tabs.find((tab) => tab.id === pendingProjectedTabId);
     pendingProjectedTabId = null;
     pendingProjectedTabIds.clear();
     tabBarHome?.prepend(tabBar);
     projectedTabIds = null;
+    if (pendingTab) switchTab(pendingTab.id, { focus: false });
     // Closing a task's last page leaves an empty preview, not an unrelated
-    // browser tab. Restore a browser page when the user leaves full view.
+    // browser tab. Restore a browser page when the user leaves full view:
+    // the page they left for full view, else one of their own pages (not a
+    // read-only viewer or a page Agent holds), else a new tab.
     if (wasProjected && !getActiveTab()) {
-      const fallback = tabState.tabs.find(tab => tab.id === browserTabBeforeProjection) || tabState.tabs[0];
+      const fallback =
+        tabState.tabs.find((tab) => tab.id === browserTabBeforeProjection) ||
+        tabState.tabs.find(
+          (tab) => tab.kind !== 'workspace-viewer' && !agentCustodyByTabId.has(tab.id)
+        );
       if (fallback) switchTab(fallback.id, { focus: false });
       else createTab(defaultNewTabUrl());
     }
@@ -1702,6 +1712,23 @@ export const setTabStripProjection = ({ container = null, tabIds = null } = {}) 
   }
   renderTabs();
   pushTabMenuState();
+};
+
+// Agent UI reports pages whose ownership projection has arrived but which
+// this full view will never show: another conversation's tab, or a custody
+// popup with no conversation. They must not wait for a projection forever.
+// A pending focus on one activates it as before #920's deferral (the Agent
+// UI then leaves full view for it); the others simply stop waiting.
+export const releasePendingProjectedTabs = (tabIds = []) => {
+  if (!Array.isArray(tabIds)) return;
+  for (const tabId of tabIds) {
+    if (!pendingProjectedTabIds.has(tabId) || projectedTabIds?.has(tabId)) continue;
+    pendingProjectedTabIds.delete(tabId);
+    if (pendingProjectedTabId === tabId) {
+      pendingProjectedTabId = null;
+      switchTab(tabId, { focus: false });
+    }
+  }
 };
 
 // URLs `createTab` is allowed to load directly as the initial webview

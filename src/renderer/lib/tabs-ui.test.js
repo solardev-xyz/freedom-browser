@@ -458,6 +458,103 @@ describe('tabs ui behavior', () => {
     expect(mod.getActiveTab().id).toBe(pending.id);
   });
 
+  test('a pending page another conversation owns is released instead of waiting forever', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+    const first = mod.getActiveTab();
+    const host = createElement('div');
+    mod.setTabStripProjection({ container: host, tabIds: [first.id] });
+    const foreign = mod.createTab('https://other.example/focused', {
+      background: true, deferUntilProjected: true,
+    });
+    const quiet = mod.createTab('https://other.example/quiet', {
+      background: true, deferUntilProjected: true,
+    });
+    mod.switchTab(foreign.id, { focus: false });
+    expect(mod.getActiveTab().id).toBe(first.id);
+    // An unchanged projection must not swallow the release.
+    mod.setTabStripProjection({ container: host, tabIds: [first.id] });
+    mod.releasePendingProjectedTabs([foreign.id, quiet.id]);
+    expect(mod.getActiveTab().id).toBe(foreign.id);
+    // The other released page only stops waiting: a later automation focus
+    // activates it directly rather than deferring again.
+    mod.switchTab(first.id);
+    mod.switchTab(quiet.id, { focus: false });
+    expect(mod.getActiveTab().id).toBe(quiet.id);
+  });
+
+  test('releasing a page already in the strip, or one never pending, changes nothing', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+    const first = mod.getActiveTab();
+    const plain = mod.createTab('https://plain.example', { background: true });
+    const host = createElement('div');
+    mod.setTabStripProjection({ container: host, tabIds: [first.id, plain.id] });
+    const pending = mod.createTab('https://task.example/new', { background: true, deferUntilProjected: true });
+    mod.releasePendingProjectedTabs([plain.id, 'nope', null]);
+    expect(mod.getActiveTab().id).toBe(first.id);
+    mod.setTabStripProjection({ container: host, tabIds: [first.id, plain.id, pending.id] });
+    mod.releasePendingProjectedTabs([pending.id]);
+    expect(mod.getActiveTab().id).toBe(pending.id);
+  });
+
+  test('leaving full view honours a focus still waiting for its projection', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+    const first = mod.getActiveTab();
+    mod.setTabStripProjection({ container: createElement('div'), tabIds: [first.id] });
+    const pending = mod.createTab('https://task.example/new', { background: true, deferUntilProjected: true });
+    expect(mod.getActiveTab().id).toBe(first.id);
+    mod.setTabStripProjection();
+    expect(mod.getActiveTab().id).toBe(pending.id);
+  });
+
+  test('leaving an empty task restores a user page, never a viewer or an Agent-held tab', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+    const initial = mod.getActiveTab();
+    // tabs[0] is a read-only viewer, the next an Agent-held page.
+    const viewer = mod.createWorkspaceViewerTab({
+      key: 'changes', conversationId: 'one', title: 'Changes', content: createElement('section'),
+    });
+    const held = mod.createTab('https://held.example', { background: true });
+    const user = mod.createTab('https://user.example', { background: true });
+    const task = mod.createTab('https://task.example', { background: true });
+    const order = [viewer, held, user, task, initial].map((tab) => mod.getTabs().find((t) => t.id === tab.id));
+    mod.getTabs().splice(0, mod.getTabs().length, ...order);
+    mod.setAgentTabCustody([{ rendererTabId: held.id, provenance: 'agent', custody: 'agent' }]);
+    mod.switchTab(task.id);
+    mod.setTabStripProjection({ container: createElement('div'), tabIds: [task.id] });
+    // The page the user left for full view is gone too.
+    mod.closeTab(initial.id);
+    mod.closeTab(task.id);
+    expect(mod.getActiveTab()).toBeNull();
+    mod.setTabStripProjection();
+    expect(mod.getActiveTab().id).toBe(user.id);
+  });
+
+  test('leaving an empty task opens a new page when only viewers and Agent-held tabs remain', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+    const initial = mod.getActiveTab();
+    mod.createWorkspaceViewerTab({
+      key: 'changes', conversationId: 'one', title: 'Changes', content: createElement('section'),
+    });
+    const held = mod.createTab('https://held.example', { background: true });
+    const task = mod.createTab('https://task.example', { background: true });
+    mod.setAgentTabCustody([{ rendererTabId: held.id, provenance: 'agent', custody: 'agent' }]);
+    mod.switchTab(task.id);
+    mod.setTabStripProjection({ container: createElement('div'), tabIds: [task.id] });
+    mod.closeTab(initial.id);
+    mod.closeTab(task.id);
+    const before = mod.getTabs().length;
+    mod.setTabStripProjection();
+    expect(mod.getTabs()).toHaveLength(before + 1);
+    const active = mod.getActiveTab();
+    expect(active.kind).not.toBe('workspace-viewer');
+    expect(active.id).not.toBe(held.id);
+  });
+
   test('a later selection wins over a pending creation, including reselecting the active tab', async () => {
     const { mod } = await loadTabsModule();
     await mod.initTabs();

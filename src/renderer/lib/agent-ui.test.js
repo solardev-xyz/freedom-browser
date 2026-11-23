@@ -473,6 +473,7 @@ async function loadAgentUi(options = {}) {
   const openLinkInNewTab = jest.fn();
   const openStartPage = jest.fn();
   const setTabStripProjection = jest.fn();
+  const releasePendingProjectedTabs = jest.fn();
   const setWorkspaceNavigationProjection = jest.fn();
   const setWorkspaceNavigationEditable = jest.fn();
   const getOpenTabs =
@@ -500,6 +501,7 @@ async function loadAgentUi(options = {}) {
     setAgentTabCustody,
     setAgentTabClaimHandler,
     setTabStripProjection,
+    releasePendingProjectedTabs,
     setWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable,
     subscribeTabPresentation: (listener) => {
@@ -526,6 +528,7 @@ async function loadAgentUi(options = {}) {
     setAgentTabClaimHandler,
     switchTab,
     setTabStripProjection,
+    releasePendingProjectedTabs,
     setWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable,
     emitTabs: (tabs) => tabPresentationListener(tabs),
@@ -3734,6 +3737,66 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
     expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
     expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith();
+  });
+
+  test('releases pending full-view pages that belong to another conversation or none', async () => {
+    let agentTabs = [];
+    const getAgentState = jest.fn(async () => ({
+      ok: true,
+      state: {
+        status: 'ready',
+        conversationId: 'conversation_restored',
+        rendererTabId: 7,
+        approvalMode: 'every_interaction',
+        transcript: [],
+        taskTabs: [{ rendererTabId: 8, agentActive: true }],
+        agentTabs,
+      },
+    }));
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => [
+        { id: 7, url: 'https://example.com/start', title: 'Start', isActive: false },
+        { id: 8, url: 'https://task.example/', title: 'Task', isActive: true },
+        { id: 11, url: 'https://example.com/same', title: 'Same chat popup', isActive: false },
+        { id: 12, url: 'https://example.com/other', title: 'Other chat page', isActive: false },
+        { id: 13, url: 'https://example.com/orphan', title: 'Unowned popup', isActive: false },
+      ],
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [{ conversationId: 'conversation_restored', title: 'Task', status: 'ready', turnCount: 1 }],
+        }),
+        getAgentState,
+      },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    agentTabs = [
+      { rendererTabId: 11, custody: 'agent', conversationId: 'conversation_restored' },
+      { rendererTabId: 12, custody: 'agent', conversationId: 'conversation_other' },
+      { rendererTabId: 13, custody: 'agent', conversationId: null },
+    ];
+    // Another conversation's run registering its page must still reach this
+    // view: its event is otherwise filtered as foreign.
+    const calls = getAgentState.mock.calls.length;
+    ctx.emit({ type: 'workspace_changed', runId: 'run_other', conversationId: 'conversation_other' });
+    await flush();
+    expect(getAgentState.mock.calls.length).toBe(calls + 1);
+    expect(ctx.releasePendingProjectedTabs).toHaveBeenLastCalledWith([12, 13]);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [8, 11],
+    });
+    // The released page, once activated, leaves full view as it did before.
+    ctx.emitTabs([
+      { id: 7, url: 'https://example.com/start', title: 'Start', isActive: false },
+      { id: 8, url: 'https://task.example/', title: 'Task', isActive: false },
+      { id: 12, url: 'https://example.com/other', title: 'Other chat page', isActive: true },
+    ]);
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
   });
 
   test('collapses an empty conversation pane and remembers manual hiding per conversation', async () => {

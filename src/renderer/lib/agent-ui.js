@@ -103,6 +103,7 @@ let setAgentControlledTab = () => {};
 let setAgentTabCustody = () => {};
 let setAgentTabClaimHandler = () => {};
 let setTabStripProjection = () => {};
+let releasePendingProjectedTabs = () => {};
 let setWorkspaceNavigationProjection = () => {};
 let setWorkspaceNavigationEditable = () => {};
 let providerCatalog = [];
@@ -1139,6 +1140,15 @@ function applyWorkspaceProjection(state) {
   renderWorkspaceProcesses(state?.workspace?.processes, state?.workspace?.servers);
   renderTaskPages();
   ensureWorkspacePageVisible();
+  // A page Agent created or focused in full view waits for this projection.
+  // Pages registered to another conversation (or to none) never join this
+  // strip, so release them rather than leave them waiting.
+  releasePendingProjectedTabs(
+    (Array.isArray(state?.agentTabs) ? state.agentTabs : [])
+      .filter((entry) => !currentConversationId || entry?.conversationId !== currentConversationId)
+      .map((entry) => entry?.rendererTabId)
+      .filter((tabId) => Number.isSafeInteger(tabId) && tabId > 0)
+  );
   renderPageInterlock();
 }
 
@@ -4318,6 +4328,10 @@ function applyAgentEvent(event) {
     typeof event.conversationId === 'string' &&
     event.conversationId !== currentConversationId
   ) {
+    // Another conversation's run registered a page. This view's projection
+    // carries every Agent tab, so refresh it: a page that run created or
+    // focused here is then released instead of waiting for this strip.
+    if (event.type === 'workspace_changed') void refreshWorkspaceProjection();
     return;
   }
   if (currentRunId && currentRunId !== event.runId) return;
@@ -5145,6 +5159,10 @@ export function initAgentUi(options = {}) {
       : () => {};
   setTabStripProjection =
     typeof options.setTabStripProjection === 'function' ? options.setTabStripProjection : () => {};
+  releasePendingProjectedTabs =
+    typeof options.releasePendingProjectedTabs === 'function'
+      ? options.releasePendingProjectedTabs
+      : () => {};
   setWorkspaceNavigationProjection =
     typeof options.setWorkspaceNavigationProjection === 'function'
       ? options.setWorkspaceNavigationProjection
