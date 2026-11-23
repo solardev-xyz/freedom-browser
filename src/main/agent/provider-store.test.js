@@ -51,6 +51,19 @@ describe('AgentProviderStore', () => {
       modelId: 'old', favoriteModelIds: ['old'], models: [{ id: 'old', tools: false }, { id: 'unknown', tools: true }],
     });
   });
+
+  test('an Ollama capability that is already stored does not rewrite the provider store', () => {
+    const { store } = createStore();
+    const baseUrl = 'http://127.0.0.1:11434/v1';
+    store.saveOllama({ baseUrl, modelId: 'local', modelIds: ['local', 'other'], models: [{ id: 'local', tools: true }, { id: 'other' }] });
+    const save = jest.spyOn(store, 'saveOllama');
+    store.updateOllamaModel(baseUrl, 'local', true);
+    expect(save).not.toHaveBeenCalled();
+    store.updateOllamaModel(baseUrl, 'other', false);
+    store.updateOllamaModel(baseUrl, 'local', false);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(store.getSelection('ollama').models).toEqual([{ id: 'local', tools: false }, { id: 'other', tools: false }]);
+  });
   test('keyless custom connections work without secure storage; keyed connections still require it', () => {
     const { store } = createStore({ safeStorage: createSafeStorage(false) });
     const config = { providerId: 'custom-11111111-1111-4111-8111-111111111111', name: 'Local',

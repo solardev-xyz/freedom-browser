@@ -31,6 +31,16 @@ describe('Ollama installed model capabilities', () => {
     expect(await describeOllamaModel(async () => response(), baseUrl, 'local')).toEqual({ id: 'local' });
   });
 
+  test.each([
+    ['a refused metadata request', () => new Response('not found', { status: 404 })],
+    ['an advertised oversized body', () => new Response('{}', { headers: { 'content-length': String(1024 * 1024 + 1) } })],
+  ])('cancels the unread body of %s', async (_label, make) => {
+    const response = make();
+    const cancel = jest.spyOn(response.body, 'cancel');
+    expect(await describeOllamaModel(async () => response, baseUrl, 'local')).toEqual({ id: 'local' });
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   test('does not start a metadata request after cancellation', async () => {
     const fetch = jest.fn();
     await expect(describeOllamaModel(fetch, baseUrl, 'local', AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' });

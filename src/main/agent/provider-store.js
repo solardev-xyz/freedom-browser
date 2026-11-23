@@ -347,6 +347,9 @@ class AgentProviderStore {
     const payload = this.#read();
     const connection = payload.connections.ollama;
     if (connection?.baseUrl !== baseUrl || !connection.modelIds.includes(modelId)) return;
+    // Metadata is re-read on every select and run start; skip the atomic
+    // rewrite when it only confirms what is already stored.
+    if (connection.models?.find(model => model.id === modelId)?.tools === tools) return;
     const models = connection.modelIds.map(id => ({
       id,
       ...connection.models?.find(model => model.id === id),

@@ -7,8 +7,15 @@ const toolsUnsupported = () => Object.assign(
   { code: 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' }
 );
 
+const discardBody = response => response?.body?.cancel?.()?.catch?.(() => {});
+
 async function readJson(response) {
-  if (Number(response.headers.get('content-length')) > 1024 * 1024) throw new Error('Response too large');
+  if (Number(response.headers.get('content-length')) > 1024 * 1024) {
+    discardBody(response);
+    throw new Error('Response too large');
+  }
+  // An oversized chunk throws out of the for-await loop, whose implicit
+  // return() cancels the stream, so no explicit cancel is needed there.
   const chunks = [];
   let size = 0;
   for await (const chunk of response.body) {
@@ -29,7 +36,10 @@ async function describeOllamaModel(fetch, baseUrl, modelId, signal) {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ model: modelId }),
     });
-    if (!response.ok) return { id: modelId };
+    if (!response.ok) {
+      discardBody(response);
+      return { id: modelId };
+    }
     const body = await readJson(response);
     const capabilities = body.capabilities;
     return {
