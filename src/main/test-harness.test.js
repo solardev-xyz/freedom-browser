@@ -97,3 +97,52 @@ describe('Linux mock credential store (#815)', () => {
     expect(storage.isEncryptionAvailable()).toBe(false);
   });
 });
+
+describe('agent node lifecycle test options', () => {
+  function loadInTestMode() {
+    let mod;
+    const previous = process.env.FREEDOM_TEST_MODE;
+    process.env.FREEDOM_TEST_MODE = '1';
+    try {
+      jest.isolateModules(() => {
+        // The real managers must never be reached in test mode.
+        jest.doMock('./ant-manager', () => {
+          const real = () => {
+            throw new Error('real ant-manager reached');
+          };
+          return { startAnt: real, stopAnt: real, restartAnt: real };
+        });
+        mod = {
+          harness: require('./test-harness'),
+          controller: require('./node-lifecycle-controller'),
+        };
+      });
+    } finally {
+      if (previous === undefined) delete process.env.FREEDOM_TEST_MODE;
+      else process.env.FREEDOM_TEST_MODE = previous;
+    }
+    return mod;
+  }
+
+  test('fakes every lifecycle dependency the controller would otherwise default', () => {
+    const { harness, controller } = loadInTestMode();
+    const options = harness.createAgentNodeLifecycleTestOptions();
+    expect(Object.keys(options.dependencies).sort()).toEqual(
+      Object.keys(controller.defaultDependencies()).sort()
+    );
+  });
+
+  test('an Ant restart drives the fake lifecycle, not the real ant-manager (#988)', async () => {
+    const { harness, controller } = loadInTestMode();
+    const options = harness.createAgentNodeLifecycleTestOptions();
+    const lifecycle = new controller.NodeLifecycleController(options);
+    const antState = async () =>
+      (await options.nodeStatusController.status()).nodes.find((node) => node.id === 'ant').state;
+    options.dependencies.stopAnt();
+    expect(await antState()).toBe('stopped');
+    // The merged dependency the controller's restart calls; the mocked real
+    // ant-manager throws if it is reached instead.
+    await lifecycle.dependencies.restartAnt();
+    expect(await antState()).toBe('running');
+  });
+});

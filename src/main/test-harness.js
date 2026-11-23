@@ -595,6 +595,12 @@ function createAgentNodeLifecycleTestOptions() {
     dependencies: {
       startAnt: () => start('ant'),
       stopAnt: () => stop('ant'),
+      // Ant has its own restart (#988); fake it too, or a restart in test
+      // mode reaches the real ant-manager.
+      restartAnt: () => {
+        stop('ant');
+        start('ant');
+      },
       startIpfs: () => start('ipfs'),
       stopIpfs: () => stop('ipfs'),
       startRadicle: () => start('radicle'),
