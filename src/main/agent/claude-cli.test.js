@@ -274,19 +274,25 @@ test('discovery reports unsupported bridge status as a CLI compatibility issue',
   }) })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_VERSION' });
 });
 
-test('discovery cannot save an alias-only connection when its bridge never becomes ready', async () => {
+test.each([
+  // The CLI keeps answering "pending": slow bridge, not an organization policy.
+  ['a bridge that stays pending', true, 'AGENT_CLAUDE_BRIDGE_TIMEOUT'],
+  // The CLI silently drops the unknown mcp_status request: a version problem.
+  ['a CLI that never answers mcp_status', false, 'AGENT_CLAUDE_VERSION'],
+])('discovery cannot save an alias-only connection with %s', async (_label, answersStatus, code) => {
   jest.useFakeTimers();
   try {
     const { discoverClaudeModels } = require('./claude-cli');
     const close = jest.fn();
     const pending = discoverClaudeModels({ findExecutable: async () => '/native/claude', startProcess: async options => ({ close,
       write(message) {
+        if (message.request.subtype !== 'initialize' && !answersStatus) return;
         options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
           response: message.request.subtype === 'initialize' ? { models: [{ value: 'sonnet', displayName: 'Sonnet' }] }
             : { mcpServers: [{ name: 'freedom', status: 'pending' }] } } });
       },
     }) });
-    const assertion = expect(pending).rejects.toMatchObject({ code: 'AGENT_CLAUDE_CONFIGURATION' });
+    const assertion = expect(pending).rejects.toMatchObject({ code });
     await jest.advanceTimersByTimeAsync(15000);
     await assertion;
     expect(close).toHaveBeenCalledTimes(1);

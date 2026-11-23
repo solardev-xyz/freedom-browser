@@ -152,15 +152,17 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
   const ownedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   const requestId = randomUUID();
   const statusRequestId = randomUUID();
-  let child, resolve, reject, models, statusTimer;
+  let child, resolve, reject, models, statusTimer, statusAnswered = false;
   const result = new Promise((yes, no) => { resolve = yes; reject = no; });
   // Attach immediately: abort/startup may reject before the process is ready.
   result.catch(() => {});
   const abort = () => reject(cliError('Claude model discovery was interrupted.'));
   ownedSignal.addEventListener('abort', abort, { once: true });
   const timer = setTimeout(() => {
-    // A bridge that never connects must not turn into a successful alias-only connection.
-    if (models) reject(configurationError());
+    // A bridge that never connects must not turn into a successful alias-only
+    // connection. Only an explicit status answer can blame configuration: a CLI
+    // that ignores mcp_status is a version problem, a pending bridge is slow.
+    if (models) reject(statusAnswered ? bridgeTimeoutError() : versionError());
     controller.abort();
   }, 15000);
   try {
@@ -172,11 +174,12 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
         try {
           if (event.response.subtype !== 'success') {
             if (event.response.request_id === requestId) throw cliError('Claude model discovery failed.');
-            throw Object.assign(new Error('Update Claude Code to a current native version with MCP status support.'), { code: 'AGENT_CLAUDE_VERSION' });
+            throw versionError();
           }
           if (event.response.request_id === requestId) {
             models = normalizeClaudeModels(event.response.response?.models);
           } else {
+            statusAnswered = true;
             const servers = event.response.response?.mcpServers;
             if (!Array.isArray(servers) || servers.length !== 1 || servers[0].name !== 'freedom') throw configurationError();
             if (servers[0].status === 'connected') { resolve(models); return; }
@@ -201,6 +204,12 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
     controller.abort();
     await child?.close();
   }
+}
+function versionError() {
+  return Object.assign(new Error('Update Claude Code to a current native version with MCP status support.'), { code: 'AGENT_CLAUDE_VERSION' });
+}
+function bridgeTimeoutError() {
+  return Object.assign(new Error('Claude Code did not finish connecting to Freedom’s tool bridge in time.'), { code: 'AGENT_CLAUDE_BRIDGE_TIMEOUT' });
 }
 function configurationError() {
   return Object.assign(new Error('Claude’s authentication or tool configuration is incompatible with Freedom. Check organization policies for additional tools, a blocked Freedom bridge or API authentication.'), { code: 'AGENT_CLAUDE_CONFIGURATION' });

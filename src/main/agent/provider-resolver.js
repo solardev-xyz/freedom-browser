@@ -136,7 +136,7 @@ class AgentProviderResolver {
         return models;
       }).catch(error => {
         if (enabledSignal?.aborted) throw error;
-        if (['AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_VERSION'].includes(error.code)) {
+        if (['AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_BRIDGE_TIMEOUT', 'AGENT_CLAUDE_VERSION'].includes(error.code)) {
           this.claudeCatalog = { error, expiresAt: Date.now() + 30_000 };
           throw error;
         }

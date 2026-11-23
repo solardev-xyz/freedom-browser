@@ -17,6 +17,7 @@ const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
   AGENT_CLAUDE_VERSION: 'Update Claude Code to its latest native version (minimum 2.1.290), then connect again.',
   AGENT_CLAUDE_RECONNECT_REQUIRED: 'Reconnect Claude in Settings → AI → Models & providers to review how organization policies apply.',
   AGENT_CLAUDE_SUBSCRIPTION_REQUIRED: 'Sign in to Claude Code with a Pro, Max, Team or Enterprise subscription, then connect again.',
+  AGENT_CLAUDE_BRIDGE_TIMEOUT: 'Claude Code did not finish connecting to Freedom’s tool bridge in time. Try again; if it keeps happening, update Claude Code to its latest native version.',
   AGENT_CLAUDE_CONFIGURATION: 'Claude Code’s configuration blocks Freedom’s tool bridge, exposes additional tools or uses API authentication. Check your organization’s Claude policies or use the separate Anthropic API connection.',
   AGENT_CLAUDE_UNAVAILABLE: 'Could not connect to Claude Code. Install or update its native CLI, run claude auth login with your subscription in a terminal, then try again.',
   AGENT_SECURE_STORAGE_UNAVAILABLE: 'Secure credential storage is unavailable',
@@ -437,7 +438,7 @@ function registerFreedomAgentIpc(options = {}) {
         } catch (error) {
           const errorCode = typeof error?.code === 'string' ? error.code : 'UNKNOWN';
           console.error('[agent] Model resolution failed:', errorCode);
-          if (['AGENT_MODEL_POLICY', 'AGENT_CATALOG_EXPIRED', 'AGENT_CLAUDE_RECONNECT_REQUIRED', 'AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_SUBSCRIPTION_REQUIRED', 'AGENT_CLAUDE_VERSION'].includes(errorCode)) {
+          if (['AGENT_MODEL_POLICY', 'AGENT_CATALOG_EXPIRED', 'AGENT_CLAUDE_RECONNECT_REQUIRED', 'AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_BRIDGE_TIMEOUT', 'AGENT_CLAUDE_SUBSCRIPTION_REQUIRED', 'AGENT_CLAUDE_VERSION'].includes(errorCode)) {
             return safeProviderError(error);
           }
           return errorEnvelope(

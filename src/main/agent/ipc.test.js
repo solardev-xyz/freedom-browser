@@ -1558,7 +1558,7 @@ describe('Freedom agent IPC', () => {
     expect(service.clearConversation).toHaveBeenCalledTimes(1);
   });
 
-  test.each(['AGENT_CLAUDE_RECONNECT_REQUIRED', 'AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_SUBSCRIPTION_REQUIRED', 'AGENT_CLAUDE_VERSION'])(
+  test.each(['AGENT_CLAUDE_RECONNECT_REQUIRED', 'AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_BRIDGE_TIMEOUT', 'AGENT_CLAUDE_SUBSCRIPTION_REQUIRED', 'AGENT_CLAUDE_VERSION'])(
     'explains Claude connection failures when starting a chat (%s)', async code => {
       const ctx = register({ resolveModel: jest.fn(async () => { throw Object.assign(new Error('private CLI diagnostic'), { code }); }) });
       const response = await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });

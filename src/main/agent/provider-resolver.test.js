@@ -656,8 +656,9 @@ test('listing providers never starts an unconnected Claude installation', async 
   expect(discoverClaudeModels).not.toHaveBeenCalled();
 });
 
-test('Claude discovery configuration conflicts prevent connecting without breaking unrelated provider lists', async () => {
-  const conflict = Object.assign(new Error('Fixture tool conflict'), { code: 'AGENT_CLAUDE_CONFIGURATION' });
+test.each(['AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_BRIDGE_TIMEOUT', 'AGENT_CLAUDE_VERSION'])(
+  'Claude discovery failures (%s) prevent connecting without breaking unrelated provider lists', async code => {
+  const conflict = Object.assign(new Error('Fixture tool conflict'), { code });
   const { resolver, store } = createResolver(null, {
     checkClaudeLogin: jest.fn(async () => '/native/claude'),
     discoverClaudeModels: jest.fn(async () => { throw conflict; }),
@@ -665,7 +666,7 @@ test('Claude discovery configuration conflicts prevent connecting without breaki
   await expect(resolver.loginSubscription({ providerId: 'anthropic-claude', modelId: 'sonnet' })).rejects.toBe(conflict);
   expect(store.saveSubscription).not.toHaveBeenCalled();
   await expect(resolver.getCatalog()).resolves.toEqual(expect.any(Array));
-});
+  });
 
 test('existing Claude connections require reviewing the disclosure before any CLI discovery or run', async () => {
   const discoverClaudeModels = jest.fn();

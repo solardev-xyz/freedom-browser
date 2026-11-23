@@ -64,7 +64,9 @@ Before that reconnect, catalogue listing, refresh, model selection and chat do n
 Freedom still requires first-party subscription authentication, disables built-in model
 tools, and checks that the initialized tool inventory matches the session’s Freedom
 bridge. Model discovery also checks the CLI’s MCP connection status without inference,
-so a blocked Freedom bridge is detected when connecting. Additional tools, missing
+so a blocked Freedom bridge is detected when connecting. A bridge that is still pending
+after 15 seconds is reported as a slow connection, and a CLI that never answers the
+status request is reported as needing an update, rather than as an organization policy. Additional tools, missing
 required tools, or API authentication produce a
 configuration-conflict error. Managed files or policy refreshes alone no longer revoke
 connections. No organization policies are edited, hidden or bypassed.
