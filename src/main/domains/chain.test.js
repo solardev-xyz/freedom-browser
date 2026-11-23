@@ -111,6 +111,23 @@ describe('ENSv2 ownership and resolver inspection', () => {
     });
     await expect(chain.inspect(parsed)).rejects.toThrow('RPC offline');
   });
+  test.each([[true, 'ENSv2'], [false, 'the legacy registrar']])('a lapsed reservation with isAvailable=%s routes to %s', async (available) => {
+    const { chain, parsed } = fixture(ZeroAddress);
+    const call = chain.call.getMockImplementation();
+    chain.call.mockImplementation(async (role, method, ...rest) => {
+      if (method === 'getState') return [{ status: 0n, expiry: 900n, latestOwner: ZeroAddress, tokenId: BigInt(parsed.tokenId), resource: 0n }];
+      if (method === 'isAvailable') return [available];
+      return call(role, method, ...rest);
+    });
+    // Past its grace the name is registrable through ENSv2; inside it, the
+    // legacy renewer still owns it and ENSv2 must not claim it.
+    if (available) {
+      expect(await chain.inspect(parsed)).toMatchObject({ ensVersion: 2, available: true, active: false, owner: ZeroAddress });
+      expect(chain.call.mock.calls.some(([role]) => role === 'base' || role === 'registry')).toBe(false);
+    } else {
+      await expect(chain.inspect(parsed)).rejects.toThrow('Unexpected legacy read: registry.owner');
+    }
+  });
   test('permissioned records support ENS labels longer than DNS’s 63-byte default', async () => {
     const { chain, parsed } = fixture(ADDRESSES.usdc, `${'a'.repeat(64)}.eth`);
     chain.callAt = jest.fn(async (_role, _to, _method, [name, data]) => {

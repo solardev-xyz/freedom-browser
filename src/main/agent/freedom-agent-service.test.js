@@ -6,6 +6,7 @@ const {
   AGENT_ERROR_CODES,
   AGENT_EVENT_VERSION,
   MAX_AGENT_PROMPT_LENGTH,
+  DOMAIN_PRESENTATION_ACTIONS,
   FreedomAgentError,
   FreedomAgentService,
   normalizePiEvent,
@@ -337,6 +338,20 @@ describe('independent command access review', () => {
     expect(ctx.events.at(-1).wallet.summary).toBe('Name: freedom-audit.eth');
     await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
     await second; await stop(ctx);
+  });
+
+  test.each(['approve_payment', 'setup_resolver'])('an ENSv2 %s approval keeps its typed card description through the approval path', async (action) => {
+    const ctx = await setup('every_interaction');
+    const domain = { format: 'freedom-domain-approval/1', action, name: 'freedom-audit.eth', durationSeconds: 31536000,
+      contract: { address: '0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63', name: 'ENS contract' },
+      items: [{ label: 'Name', value: 'freedom-audit.eth' }] };
+    const scope = ctx.dependencies.createControllerScope.mock.calls[0][0];
+    const pending = scope.requestApproval({ action: 'wallet_transaction', operation: 'domain_execute', label: 'ENS setup',
+      wallet: { kind: 'transaction', chainId: 1, chainName: 'Ethereum', to: domain.contract.address, value: '0.0 ETH',
+        maxFee: '0.0001 ETH', data: '0x095ea7b3', summary: 'Name: freedom-audit.eth', domain } });
+    expect(ctx.events.at(-1)).toMatchObject({ type: 'approval_requested', wallet: { domain } });
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await pending; await stop(ctx);
   });
 
   test('Ask when needed allows a private workspace without a sheet or model review', async () => {
@@ -4605,4 +4620,17 @@ test('per-conversation retention changes persist and a failed save does not weak
       privacy: expect.objectContaining({ settings: { requireZeroRetention: false } }),
     }));
   } finally { await service.dispose(); }
+});
+
+test('main-process domain card actions match the renderer card actions', () => {
+  // The renderer re-validates the same description; an action only one side
+  // knows is silently dropped to the generic wallet card.
+  const fs = require('fs');
+  const path = require('path');
+  const source = fs.readFileSync(path.join(__dirname, '../../renderer/lib/domain-approval.js'), 'utf8');
+  const block = source.match(/const ACTIONS = new Set\(\[([^\]]*)\]\)/);
+  expect(block).not.toBeNull();
+  const renderer = [...block[1].matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+  expect(renderer.length).toBeGreaterThan(0);
+  expect([...DOMAIN_PRESENTATION_ACTIONS].sort()).toEqual(renderer.sort());
 });

@@ -833,6 +833,23 @@ test('ENSv2 journals token approval and resolver setup without claiming a purcha
   expect(f.wallet.send).toHaveBeenCalledTimes(4);
 });
 
+test('every ENSv2 registration step keeps its typed card through the Agent approval normalizer', async () => {
+  const { normalizeDomainPresentation } = require('../agent/freedom-agent-service');
+  const f = fixture('eth', true);
+  f.v2.allowance = 0n; f.v2.deployed = false; f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context);
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId });
+  for (let i = 0; i < 3; i += 1) await f.service.execute(operationId, f.context);
+  const sent = f.wallet.send.mock.calls.map(([plan]) => plan.presentation);
+  expect(sent.map(presentation => presentation.action)).toEqual(['register_commit', 'approve_payment', 'setup_resolver', 'register']);
+  for (const presentation of sent) {
+    expect(normalizeDomainPresentation(presentation)).toMatchObject({ action: presentation.action, name: f.state.name,
+      contract: presentation.contract, items: presentation.items });
+  }
+});
+
 test('ENSv2 replaces an unrelated unlimited allowance with an exact bounded approval', async () => {
   const f = fixture('eth'); f.v2.allowance = (1n << 256n) - 1n;
   const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
@@ -1054,4 +1071,84 @@ test.each(['owner', 'spender', 'value', 'token', 'removed'])('a token approval c
   expect(f.wallet.send).toHaveBeenCalledTimes(1);
   f.chain.receipt.mockImplementation(receipt);
   expect(await f.service.status({ operationId })).toMatchObject({ state: 'ready', step: 'renew' });
+});
+
+describe('ENSv2 load-bearing guards', () => {
+  async function renewAfterApproval() {
+    const f = fixture('eth'); f.v2.allowance = 0n; f.v2.uniqueHashes = true;
+    const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'ready', step: 'renew' });
+    const approvalHash = f.store.get(operationId).transactions.find(tx => tx.step === 'approve_payment').hash;
+    return { f, operationId, approvalHash };
+  }
+  // Only the named check differs from the canonical approval: from is outside
+  // verifySetup's view, and a lower nonce keeps the same digest.
+  test.each([
+    ['a different sender (digest)', tx => ({ ...tx, from: ADDRESSES.resolver })],
+    ['an older nonce below the recorded floor', tx => ({ ...tx, nonce: '0x0' })],
+  ])('an earlier setup approval with %s blocks the next payment step', async (_name, change) => {
+    const { f, operationId, approvalHash } = await renewAfterApproval();
+    expect(f.store.get(operationId).transactions.find(tx => tx.step === 'approve_payment').nonceFloor).toBeDefined();
+    const request = f.chain.request.getMockImplementation();
+    f.chain.request.mockImplementation(async (method, params) => {
+      const result = await request(method, params);
+      return method === 'eth_getTransactionByHash' && params[0] === approvalHash ? change(result) : result;
+    });
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'verification_needed',
+      message: expect.stringContaining('earlier ENS setup transaction') });
+    expect(f.wallet.send).toHaveBeenCalledTimes(1);
+    expect(f.state.expiry).toBe('99999999');
+    f.chain.request.mockImplementation(request);
+    expect(await f.service.status({ operationId })).toMatchObject({ state: 'ready', step: 'renew' });
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'completed' });
+  });
+
+  test('a resolver deployment cannot confirm from a ProxyDeployed event for another proxy', async () => {
+    const f = fixture('eth', true); f.v2.deployed = false; f.v2.uniqueHashes = true;
+    const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+    await f.service.execute(operationId, f.context); f.clock.timestamp += 61; await f.service.status({ operationId });
+    const receipt = f.chain.receipt.getMockImplementation();
+    f.chain.receipt.mockImplementation(async candidate => {
+      const result = await receipt(candidate);
+      const tx = f.getWire();
+      if (!result || ABI.ensFactory.parseTransaction({ data: tx.input })?.name !== 'deployProxy') return result;
+      const call = ABI.ensFactory.parseTransaction({ data: tx.input });
+      return { ...result, logs: [{ address: tx.to, ...ABI.ensFactory.encodeEventLog(ABI.ensFactory.getEvent('ProxyDeployed'),
+        [address, ADDRESSES.resolver, call.args[1], call.args[0]]) }] };
+    });
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'verification_needed', step: 'deploy_resolver' });
+    expect(f.wallet.send).toHaveBeenCalledTimes(2);
+    expect(f.state.available).toBe(true);
+    f.chain.receipt.mockImplementation(receipt);
+    expect(await f.service.status({ operationId })).toMatchObject({ state: 'ready', step: 'reveal' });
+  });
+
+  test('an ENSv2 registration is not completed when the name points at another resolver', async () => {
+    const f = fixture('eth', true);
+    const send = f.wallet.send.getMockImplementation();
+    f.wallet.send.mockImplementation(async (...args) => {
+      const result = await send(...args);
+      if (!f.state.available) f.state.resolver = ADDRESSES.resolver;
+      return result;
+    });
+    const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+    await f.service.execute(operationId, f.context); f.clock.timestamp += 61; await f.service.status({ operationId });
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'verification_needed', step: 'reveal' });
+    expect(f.state.owner).toBe(address);
+  });
+
+  test('a price that drops then rises under the retained allowance ceiling still needs a fresh quote', async () => {
+    const f = fixture('eth', true);
+    const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+    await f.service.execute(operationId, f.context); f.clock.timestamp += 61; await f.service.status({ operationId });
+    f.v2.price = 80n;
+    // The reveal is quoted at 80 (the card's Price row), while the payment
+    // ceiling stays at the 100 approved earlier; 90 fits that ceiling.
+    f.context.requestApproval.mockImplementationOnce(async () => { f.v2.price = 90n; return 'approved'; });
+    expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'ready', step: 'reveal',
+      message: expect.stringContaining('No transaction was sent'), payment: { quotedAmount: '80', maxAmount: '100' } });
+    expect(f.wallet.send).toHaveBeenCalledTimes(2);
+    expect(f.getWire().input.startsWith(ABI.ensRegistrar.getFunction('commit').selector)).toBe(true);
+    expect(f.state.available).toBe(true);
+  });
 });
