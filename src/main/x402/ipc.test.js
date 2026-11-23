@@ -1286,3 +1286,20 @@ test('a subresource custody change during unlocked signing falls back to exact a
   intercept.settlePendingApproval(approval.detectionId, { approved: false });
   await expect(pending).resolves.toBeNull();
 });
+
+test('an unlock custody fallback still shows the card when the paywalled page carries a #fragment', async () => {
+  const send = jest.fn();
+  const guest = { getURL: () => `${v2Detected().url}#intro`, hostWebContents: { send }, loadURL: jest.fn() };
+  webContents.fromId.mockReturnValue(guest);
+  mockGetPermission.mockReturnValueOnce({ capAmount: '20000', spentAmount: '0', createdAt: 1, expiresAt: 9999999999 });
+  mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+  await detectPagePayment({ webContentsId: 42, url: v2Detected().url, statusLine: 'HTTP/1.1 402 Payment Required', resourceType: 'mainFrame',
+    responseHeaders: { 'PAYMENT-REQUIRED': [Buffer.from(JSON.stringify(v2Detected().requirements)).toString('base64')] } });
+  await new Promise(resolve => setImmediate(() => setImmediate(resolve)));
+  setAgentPageCustody(guest, true);
+  send.mockClear();
+  await ipcHandlers['x402:resume-unlock'](senderEvent(42));
+  expect(mockTryConsume).not.toHaveBeenCalled();
+  expect(send).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({ url: v2Detected().url }));
+  expect(intercept.getDetectedPayment(42).authorizedBy).toBe('manual');
+});

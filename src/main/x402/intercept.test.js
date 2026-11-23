@@ -2129,3 +2129,53 @@ test.each([false, true])('a missing request capture or a request started under A
   expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
   expect(mockHostSend).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({ url: details.url }));
 });
+
+describe('request-start custody survives redirect hops', () => {
+  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+  const capCovers = () => mockGetPermission.mockReturnValue({ capAmount: '20000', spentAmount: '0', createdAt: 1, expiresAt: 9999999999 });
+  const hop = (url, extra = {}) => ({ id: 7101, webContentsId: 7, method: 'GET', url, resourceType: 'mainFrame', requestHeaders: {}, ...extra });
+  const final402 = { ...hop('https://seller.example/paid'),
+    statusLine: 'HTTP/1.1 402 Payment Required', responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] } };
+
+  test('a navigation begun under Agent custody cannot pay from a cap after the user takes control mid-redirect', async () => {
+    const guest = webContents.fromId(7);
+    setAgentPageCustody(guest, true);
+    captureRequestContextHandler(hop('https://seller.example/start'));
+    setAgentPageCustody(guest, false); // User takes control while the 302 is pending.
+    captureRequestContextHandler(hop('https://seller.example/paid')); // Redirect hop, same id.
+    capCovers();
+    await detectPaymentRequiredHandler(final402);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(mockHostSend).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({ url: final402.url }));
+  });
+
+  test('a redirect hop under unbroken user custody keeps the cap and refreshes method/range', async () => {
+    captureRequestContextHandler(hop('https://seller.example/start', { method: 'POST' }));
+    captureRequestContextHandler(hop('https://seller.example/paid', { requestHeaders: { Range: 'bytes=0-9' } }));
+    capCovers();
+    await detectPaymentRequiredHandler(final402);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(mockSignAndQueueRetry).toHaveBeenCalled();
+    expect(getDetectedPayment(7)?.requestShape).toEqual({ method: 'GET', range: 'bytes=0-9' });
+  });
+
+  test('a hop arriving after its start capture was swept re-captures with no custody (fails closed)', async () => {
+    const guest = webContents.fromId(7);
+    setAgentPageCustody(guest, true);
+    captureRequestContextHandler(hop('https://seller.example/start'));
+    setAgentPageCustody(guest, false);
+    const realNow = Date.now;
+    Date.now = () => realNow() + 61_000;
+    try {
+      captureRequestContextHandler(hop('https://seller.example/paid'));
+      capCovers();
+      await detectPaymentRequiredHandler(final402);
+      await new Promise(resolve => setImmediate(resolve));
+    } finally {
+      Date.now = realNow;
+    }
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(mockHostSend).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({ url: final402.url }));
+  });
+});

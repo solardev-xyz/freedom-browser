@@ -4,10 +4,16 @@
  * Dispatcher handlers + state stores. No UI; the interstitial + signing
  * wiring lives in WP4.
  *
- *   `x402-capture` (onBeforeSendHeaders): records `{method, range}` per
- *     `details.id` so the detector (which only sees response headers)
- *     can derive a retry key for shape-keyed bucketing. Skipped for
- *     non-x402 resource types (images/stylesheets/fonts/scripts).
+ *   `x402-capture` (onBeforeSendHeaders): records `{method, range,
+ *     custodyVersion}` per `details.id` for every resource type (any
+ *     resource can be paywalled), so the detector (which only sees
+ *     response headers) can derive a retry key for shape-keyed bucketing
+ *     and check that the request started under unbroken user custody.
+ *     `custodyVersion` is stamped once, on the request's first hop; a
+ *     redirect hop (same `details.id`) refreshes method/range but keeps
+ *     the start stamp. Bounded at `MAX_REQUEST_CONTEXT` entries (oldest
+ *     evicted) plus a `REQUEST_CONTEXT_TTL_MS` sweep; a request whose
+ *     capture is gone fails closed to the approval card.
  *
  *   `x402-cleanup` (onCompleted, onErrorOccurred): drops the captured
  *     entry; a TTL backstop on `requestContext.set` covers lifecycle
@@ -114,12 +120,27 @@ const awaitingResponse = new Map();
 // on `onHeadersReceived` reads this to derive a retry key — the response
 // event doesn't carry request headers. Cleared on lifecycle end; TTL on
 // `set()` backstops lifecycle events Electron drops (SW shims, proxy
-// chains). Capture is skipped for non-x402 resource types to keep the
-// map's working set small. Value: { webContentsId, method, range,
-// capturedAt }.
+// chains). Every resource type is captured; MAX_REQUEST_CONTEXT bounds
+// the working set. Value: { webContentsId, method, range, capturedAt,
+// custodyVersion }.
+//
+// The capture is also the cap's consent record: `custodyVersion` is the
+// user-custody version at request start, and the detector only pays from
+// a cap when that still matches. So the TTL is a consent bound too. A 402
+// arriving more than REQUEST_CONTEXT_TTL_MS after the request started (a
+// slow seller, or a redirect chain that long), or a capture evicted by
+// the size bound, finds no capture: the charge goes to the approval card
+// (with a synthetic `range: null` shape) instead of auto-paying. That is
+// deliberate fail-closed behaviour, not a bug to paper over by raising
+// the TTL.
 const requestContext = new Map();
 const REQUEST_CONTEXT_TTL_MS = 60_000;
 const MAX_REQUEST_CONTEXT = 10000;
+// Ids whose capture the TTL sweep or size bound dropped while the request may still be
+// alive. A later redirect hop of such a request must not mint a fresh
+// (post-hop) custody stamp, so it is re-captured with custodyVersion
+// null. Same bound as requestContext; cleared on lifecycle end.
+const sweptRequestIds = new Set();
 // Amortize the lazy TTL sweep so a busy session doesn't pay an O(n)
 // scan on every captured request. One sweep per second is plenty given
 // the TTL is 60s.
@@ -266,6 +287,7 @@ function clearAllAwaitingResponse() {
 
 function clearAllRequestContext() {
   requestContext.clear();
+  sweptRequestIds.clear();
   requestContextLastSweepAt = 0;
 }
 
@@ -274,6 +296,16 @@ function clearAllRequestContext() {
 // compute on the followed retry. Runs on every request — must stay
 // cheap. Range is the only discriminator we track today; add others
 // (Accept, Origin, custom headers) when a real endpoint demands it.
+// Drop a capture whose request may still be alive (TTL sweep, size
+// bound), remembering the id so a later hop re-captures fail-closed.
+function forgetRequestContext(id) {
+  requestContext.delete(id);
+  if (sweptRequestIds.size >= MAX_REQUEST_CONTEXT) {
+    sweptRequestIds.delete(sweptRequestIds.values().next().value);
+  }
+  sweptRequestIds.add(id);
+}
+
 function captureRequestContextHandler(details) {
   if (typeof details?.id !== 'number') return null;
   const now = Date.now();
@@ -284,19 +316,37 @@ function captureRequestContextHandler(details) {
     requestContextLastSweepAt = now;
     for (const [id, entry] of requestContext) {
       if (now - entry.capturedAt > REQUEST_CONTEXT_TTL_MS) {
-        requestContext.delete(id);
+        forgetRequestContext(id);
       }
     }
   }
+  // A redirect hop reuses `details.id`. Its method/range describe the
+  // request now in flight, but custody is fixed at the first hop: a
+  // navigation begun under Agent custody must not become cap-payable
+  // because the user took control mid-chain. `capturedAt` likewise keeps
+  // measuring from request start, so the TTL bounds the whole chain.
+  const previous = requestContext.get(details.id);
+  let custodyVersion;
+  let capturedAt = now;
+  if (previous) {
+    custodyVersion = previous.custodyVersion;
+    capturedAt = previous.capturedAt;
+    // Re-insert so the size bound evicts by last activity, not first.
+    requestContext.delete(details.id);
+  } else if (sweptRequestIds.has(details.id)) {
+    custodyVersion = null; // Start stamp lost to the sweep: fail closed.
+  } else {
+    custodyVersion = userPageCustodyVersion(details.webContentsId);
+  }
   // Any resource can be paywalled. Bound the cache rather than guessing
   // from MIME/resource type; evicted requests fail closed to approval.
-  if (!requestContext.has(details.id) && requestContext.size >= MAX_REQUEST_CONTEXT) requestContext.delete(requestContext.keys().next().value);
+  if (requestContext.size >= MAX_REQUEST_CONTEXT) forgetRequestContext(requestContext.keys().next().value);
   requestContext.set(details.id, {
     webContentsId: details.webContentsId,
     method: details.method ?? 'GET',
     range: getHeaderValue(details.requestHeaders, 'Range'),
-    capturedAt: now,
-    custodyVersion: userPageCustodyVersion(details.webContentsId),
+    capturedAt,
+    custodyVersion,
   });
   return null;
 }
@@ -305,6 +355,7 @@ function clearRequestContextHandler(details) {
   if (typeof details?.id === 'number') {
     awaitingResponse.delete(details.id);
     requestContext.delete(details.id);
+    sweptRequestIds.delete(details.id);
   }
   return null;
 }
@@ -746,13 +797,21 @@ function requestVaultUnlockForAutoPay(webContentsId, detection, url) {
   notifyVaultUnlockNeeded(webContentsId, url);
 }
 
+function withoutFragment(url) {
+  if (typeof url !== 'string') return null;
+  const hash = url.indexOf('#');
+  return hash === -1 ? url : url.slice(0, hash);
+}
+
 // A held main-frame auto-payment whose custody changed becomes an ordinary
 // exact approval. Never overwrite a newer charge's card on the same tab.
 function requestManualApprovalForAutoPay(webContentsId, detection) {
   const current = getDetectedPayment(webContentsId);
   if (!current || current.detectionId !== detection.detectionId) return false;
   const guest = webContents.fromId(webContentsId);
-  if (!guest || guest.isDestroyed?.() || guest.getURL?.() !== detection.url) {
+  // webRequest URLs never carry a #fragment; the guest's committed URL
+  // does. Compare without it so /article#intro is still "this page".
+  if (!guest || guest.isDestroyed?.() || withoutFragment(guest.getURL?.()) !== withoutFragment(detection.url)) {
     clearDetectedPayment(webContentsId);
     return false;
   }
