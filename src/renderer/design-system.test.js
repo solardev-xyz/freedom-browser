@@ -106,7 +106,20 @@ describe('design tokens (#1198)', () => {
     expect(lightPrivate).toBeDefined();
     expect([...lightPrivate.body.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1])).toEqual([
       '--danger',
+      '--danger-soft',
     ]);
+    // The fill moves with the red: ui.css's danger blocks paint text/border
+    // from --danger on a --danger-soft fill, and a light red on the dark
+    // tint is a pair no theme scope produces.
+    const light = rulesOf(tokensCss).find(
+      (rule) =>
+        /(^|,)\s*\[data-theme='light'\]\s*(,|$)/.test(rule.selector) &&
+        /--danger-soft\s*:/.test(rule.body)
+    );
+    expect(light).toBeDefined();
+    for (const name of ['--danger', '--danger-soft']) {
+      expect(declaration(lightPrivate.body, name)).toBe(declaration(light.body, name));
+    }
     const variables = rulesOf(read('styles/variables.css')).find(
       (rule) => rule.selector === "[data-theme='light']"
     );

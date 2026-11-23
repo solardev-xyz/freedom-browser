@@ -137,8 +137,8 @@
 /* A private window keeps its dark plum chrome in both profile themes
    (styles/private.css sets the older names on this same selector, and says
    why). It redefines every colour token, so nothing of the light theme leaks
-   into it when the profile is light; the one exception, `--danger`, follows
-   below. */
+   into it when the profile is light; the one exception, `--danger` (with its
+   `--danger-soft` fill), follows below. */
 body.private-window {
   color-scheme: dark;
 
@@ -177,9 +177,12 @@ body.private-window {
    painted the profile theme's red: #f28b82 in a dark profile, #d93025 in a
    light one. Keep that until a migration decides otherwise in its own
    screenshots; the block above would otherwise change it in a light profile.
-   (0,2,1) beats the block above (0,1,1). */
+   `--danger-soft` moves with it, so a danger block (ui.css's callout, badge,
+   button, field error) pairs the light red with the light theme's own fill
+   instead of the dark tint. (0,2,1) beats the block above (0,1,1). */
 [data-theme='light'] body.private-window {
   --danger: #d93025;
+  --danger-soft: rgba(217, 48, 37, 0.08);
 }
 
 /* Names `styles/sidebar.css` paints from but nothing ever defined (#1198), so
