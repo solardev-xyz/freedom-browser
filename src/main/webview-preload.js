@@ -1209,6 +1209,14 @@ function pageKeepsSwipe(event, direction) {
     if (!node || node.nodeType !== 1 || node === root || node === html) continue;
     if (node === body && bodyIsViewport) continue;
     const style = getComputedStyle(node);
+    // A single-line <input> reports `overflow: clip` (Chromium's UA sheet),
+    // yet its inner editor scrolls a value too long for the field sideways,
+    // and scrollLeft/scrollWidth on the input read that editor. So it takes
+    // the scroll while its text can still move that way.
+    if (node.localName === 'input') {
+      if (canScrollToward(node, direction, style)) return true;
+      continue;
+    }
     // `hidden` still makes a scroll container, which stops the chain when it
     // says so, though the user cannot scroll it.
     if (style.overflowX === 'hidden' && keepsScrollChain(style)) return true;

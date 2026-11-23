@@ -228,6 +228,24 @@ test.describe('two-finger swipe between pages (#980)', () => {
     await expectPageKeepsSwipe(electronApp, window, 'document.body.scrollLeft');
   });
 
+  test('a text field scrolled to the end of a long value keeps the swipe', async ({
+    electronApp,
+    window,
+    harness,
+  }) => {
+    // An <input> reports overflow-x `clip`, yet its text scrolls sideways.
+    await open(window, harness, FIRST_HASH, page('first page'), 'first page');
+    const field =
+      '<input id="field" style="position:absolute;left:100px;top:180px;width:300px" ' +
+      `value="${'typed text '.repeat(60)}">` +
+      '<script>addEventListener("load", () => { field.scrollLeft = 1e6; })</script>';
+    await open(window, harness, SECOND_HASH, page('second page', field), 'second page');
+    await expect
+      .poll(() => guestEval(window, 'document.getElementById("field").scrollLeft'))
+      .toBeGreaterThan(1000);
+    await expectPageKeepsSwipe(electronApp, window, 'document.getElementById("field").scrollLeft');
+  });
+
   test('a carousel inside a closed shadow root keeps the swipe', async ({
     electronApp,
     window,

@@ -3032,6 +3032,46 @@ describe('webview-preload two-finger swipe between pages (#980)', () => {
     expect(sent().map(([channel]) => channel)).toEqual(['swipe-nav:update', 'swipe-nav:end']);
   });
 
+  test('leaves it to a text field whose value can still scroll that way', () => {
+    // Chromium computes `overflow: clip` for every <input>, whatever the page
+    // sets, yet its inner editor scrolls a long value sideways.
+    const field = {
+      ...element({
+        scrollWidth: 2670,
+        clientWidth: 196,
+        scrollLeft: 2474,
+        style: { overflowX: 'clip' },
+      }),
+      localName: 'input',
+    };
+    const { wheel, sent } = setup({ path: [field] });
+    wheel(-10);
+    wheel(-40);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+
+    // Right to left: the value's end is at -max.
+    field.scrollLeft = -2474;
+    field.style.direction = 'rtl';
+    wheel(10, 0, { gap: 200 });
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+
+    // At the start of its text, the scroll chains on to the page: back.
+    field.scrollLeft = 0;
+    field.style.direction = 'ltr';
+    wheel(-10, 0, { gap: 200 });
+    jest.advanceTimersByTime(200);
+    expect(sent().map(([channel]) => channel)).toEqual(['swipe-nav:update', 'swipe-nav:end']);
+
+    // A field whose value fits, or a checkbox, is not in the way either.
+    const box = { ...element({ scrollWidth: 13, clientWidth: 13 }), localName: 'input' };
+    const other = setup({ path: [box] });
+    other.wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(other.sent().map(([channel]) => channel)).toEqual(['swipe-nav:update', 'swipe-nav:end']);
+  });
+
   test('ignores overflowing content that is not a scroll container', () => {
     const wide = element({ scrollWidth: 800, clientWidth: 400, scrollLeft: 100 });
     const { wheel, sent } = setup({ path: [wide] });
