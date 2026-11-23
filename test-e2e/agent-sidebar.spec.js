@@ -1002,6 +1002,9 @@ test('domain approval card names the action, lists the summary and labels the co
 test('ENSv2 approval cards distinguish token permission, resolver setup and purchase', async ({ electronApp, window, ollamaServer }, testInfo) => {
   const ens = require('../src/main/domains/ens-v2');
   const { ADDRESSES } = require('../src/main/domains/contracts');
+  // Main forwards a domain card only after normalizeDomainPresentation;
+  // pass the builder's output through it so a dropped action fails here.
+  const { normalizeDomainPresentation } = require('../src/main/agent/freedom-agent-service');
   await configureOllamaAgent(window, ollamaServer);
   const account = { index: 0, address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' };
   const operation = { name: 'freedom-fixture.eth', label: 'freedom-fixture', intent: 'register', step: 'reveal', duration: 31536000,
@@ -1028,7 +1031,7 @@ test('ENSv2 approval cards distinguish token permission, resolver setup and purc
     await send({ type: 'approval_requested', runId: 'run_ensv2_approval', approvalId: `approval_ensv2_${action}`,
       action: 'wallet_transaction', operation: 'domain_execute', inputPreview: 'Owned ENSv2 fixture',
       wallet: { kind: 'transaction', chainId: 1, chainName: 'Ethereum', account, to: plan.to, value: '0.0 ETH',
-        maxFee: '0.000412 ETH', data: plan.data, domain: plan.presentation, requiresUnlock: false } });
+        maxFee: '0.000412 ETH', data: plan.data, domain: normalizeDomainPresentation(plan.presentation), requiresUnlock: false } });
     const heading = action === 'approve_payment' ? 'Approve token payment for freedom-fixture.eth?'
       : action === 'setup_resolver' ? 'Set up ENS records for freedom-fixture.eth?' : 'Register freedom-fixture.eth for 1 year?';
     await expect(window.locator('#agent-approval-action')).toHaveText(heading);
