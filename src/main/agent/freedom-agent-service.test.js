@@ -3488,6 +3488,9 @@ describe('FreedomAgentService', () => {
     ['startup-busy refusal', { code: 'WORKSPACE_STARTUP_BUSY', message: 'busy' }, 'WORKSPACE_STARTUP_BUSY'],
     ['policy denial', undefined, 'WORKSPACE_SANDBOX_DENIED'],
     ['unrelated receipt error', { code: 'WORKSPACE_EXECUTION_FAILED', message: 'x' }, 'WORKSPACE_SANDBOX_DENIED'],
+    // Startup timeout is thrown by the controller, never carried in a receipt;
+    // it must not inherit the busy code's "nothing ran" mapping.
+    ['startup-timeout code in a receipt', { code: 'WORKSPACE_STARTUP_TIMEOUT', message: 't' }, 'WORKSPACE_SANDBOX_DENIED'],
   ])('records a sandbox_denied yielded process terminal as its own code (%s)', async (_name, error, expected) => {
     const fake = createFakeSession();
     let workspaceOptions;

@@ -3043,11 +3043,11 @@ class FreedomAgentService {
     }
     // Windows reports a startup-busy refusal as sandbox_denied; keep its own
     // code so the receipt says "nothing ran, retry" instead of a policy block.
-    const startupCode = ['WORKSPACE_STARTUP_BUSY', 'WORKSPACE_STARTUP_TIMEOUT'].includes(outcome.workspace?.error?.code)
-      ? outcome.workspace.error.code
-      : undefined;
-    const errorCode = startupCode && ['sandbox_denied', 'timed_out', 'failed'].includes(workspace.state)
-      ? startupCode
+    // WORKSPACE_STARTUP_TIMEOUT never arrives here: the controller throws it
+    // as an exception, and no backend puts it in a receipt's error.code.
+    const startupBusy = outcome.workspace?.error?.code === 'WORKSPACE_STARTUP_BUSY';
+    const errorCode = startupBusy && ['sandbox_denied', 'timed_out', 'failed'].includes(workspace.state)
+      ? 'WORKSPACE_STARTUP_BUSY'
       : workspace.state === 'timed_out'
         ? 'WORKSPACE_COMMAND_TIMED_OUT'
         : workspace.state === 'cancelled'
