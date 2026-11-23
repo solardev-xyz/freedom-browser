@@ -493,8 +493,9 @@ function isDevModeWithoutUpdater() {
 // panel shows the result and, when this process can't check, the reason (the
 // update state's `unsupported` copy), so nothing here opens a dialog.
 function checkForUpdatesManually() {
-  // E2E: record the request instead of reaching for the network (installed
-  // by test-harness.js in test mode only).
+  // E2E: record the request so specs can see it (installed by
+  // test-harness.js in test mode only, where initUpdater never runs and the
+  // ownership guard below would otherwise drop it silently).
   if (typeof globalThis.__FREEDOM_TEST_UPDATER__?.record === 'function') {
     globalThis.__FREEDOM_TEST_UPDATER__.record('check');
     return;

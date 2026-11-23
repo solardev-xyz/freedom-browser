@@ -1111,10 +1111,15 @@ function installLinuxMockCredentialStore(storage = safeStorage, {
   return true;
 }
 
-// Neutralize the updater's user actions in test mode: "Check now" (and the
-// menus' "Check for Updates…") would hit the network and "Restart to update"
-// would quit the app under test. updater.js checks this global and records
-// instead.
+// Make the updater's user actions observable in test mode. index.js never
+// runs initUpdater under TEST_MODE, so without this recorder "Check now" (and
+// the menus' "Check for Updates…") would silently return at updater.js's
+// `!hasUpdaterOwnership()` guard, and "Restart to update" would no-op because
+// `dispatchUpdate` never sets the module's private `updateDownloaded` flag;
+// neither ever reaches autoUpdater or the network. Recording them lets
+// updates.spec.js assert the request was made, and keeps an install request
+// from quitting the app under test should a future change make it live.
+// updater.js checks this global and records instead.
 function installUpdaterRecorder() {
   globalThis.__FREEDOM_TEST_UPDATER__ = {
     record: (action) => {
