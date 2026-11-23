@@ -185,10 +185,10 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   const enforced = { ...report, files: 'enforced', ipc: 'enforced', gaps: [], reasons: {} };
   client.emit('ready', { ...HELLO, store_moved: [], confinement: enforced });
   expect(log.warn).not.toHaveBeenCalled();
-  // A core before 0.28.0 reports none.
-  client.emit('ready', { ...HELLO, store_moved: [], confinement: null });
+  // A core before 0.28.0 (0.27.0, say) reports none.
+  client.emit('ready', { ...HELLO, core_version: '0.27.0', store_moved: [], confinement: null });
   expect(log.warn).toHaveBeenCalledWith('[Core] the core reported no confinement', {
-    core_version: '0.28.0',
+    core_version: '0.27.0',
   });
 
   // Each spawn waits for the Radicle home's preparation, then spawns with
