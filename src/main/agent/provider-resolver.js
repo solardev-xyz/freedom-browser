@@ -136,7 +136,13 @@ class AgentProviderResolver {
         return models;
       }).catch(error => {
         if (enabledSignal?.aborted) throw error;
-        if (['AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_BRIDGE_TIMEOUT', 'AGENT_CLAUDE_VERSION'].includes(error.code)) {
+        // A slow bridge is transient and its message says "Try again", so the
+        // next call must run discovery afresh; callers already waiting on this
+        // attempt still share its error.
+        if (error.code === 'AGENT_CLAUDE_BRIDGE_TIMEOUT') throw error;
+        // Configuration conflicts and an outdated CLI need a user change first,
+        // so a short cache keeps repeated pickers from relaunching Claude.
+        if (['AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_VERSION'].includes(error.code)) {
           this.claudeCatalog = { error, expiresAt: Date.now() + 30_000 };
           throw error;
         }

@@ -693,6 +693,22 @@ test('Claude configuration failures are cached briefly and retried on explicit r
   expect(discoverClaudeModels).toHaveBeenCalledTimes(2);
 });
 
+test('a Claude bridge timeout is not cached, so retrying runs discovery again', async () => {
+  const timeout = Object.assign(new Error('Fixture slow bridge'), { code: 'AGENT_CLAUDE_BRIDGE_TIMEOUT' });
+  const discoverClaudeModels = jest.fn(async () => { throw timeout; });
+  const { resolver } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus', organizationPolicyAcknowledged: true },
+    { discoverClaudeModels, checkClaudeLogin: jest.fn(async () => '/native/claude') });
+  const [first, second] = await Promise.allSettled([resolver.getClaudeModels(), resolver.getClaudeModels()]);
+  expect(first.reason).toBe(timeout);
+  expect(second.reason).toBe(timeout);
+  expect(discoverClaudeModels).toHaveBeenCalledTimes(1);
+  await expect(resolver.resolveModel()).rejects.toBe(timeout);
+  expect(discoverClaudeModels).toHaveBeenCalledTimes(2);
+  discoverClaudeModels.mockImplementationOnce(async () => require('./claude-cli').normalizeClaudeModels([{ value: 'opus', displayName: 'Opus 5.5' }]));
+  await expect(resolver.getClaudeModels()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'opus' })]));
+  expect(discoverClaudeModels).toHaveBeenCalledTimes(3);
+});
+
 test('Claude runtime never falls back to a Pi API transport', async () => {
   const checkClaudeLogin = jest.fn(async () => '/native/claude');
   const { resolver, runtime } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus', organizationPolicyAcknowledged: true }, { checkClaudeLogin });
