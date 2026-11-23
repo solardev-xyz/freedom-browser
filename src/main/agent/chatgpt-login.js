@@ -71,14 +71,14 @@ function sendPage(response, status, outcome, error) {
   response.end(loginPage(outcome, error));
 }
 
-function callbackResult(url, state) {
+function callbackResult(url, state, mismatch = 'callback_mismatch') {
   const expected = new URL(REDIRECT_URI);
   const invalidFields = [
     ...(url.origin !== expected.origin ? ['origin'] : []),
     ...(url.pathname !== expected.pathname ? ['path'] : []),
     ...(url.searchParams.get('state') !== state ? ['state'] : []),
   ];
-  if (invalidFields.length) throw loginFailure('callback_mismatch', { invalidFields });
+  if (invalidFields.length) throw loginFailure(mismatch, { invalidFields });
   const error = url.searchParams.get('error');
   if (error) return { error };
   const code = url.searchParams.get('code');
@@ -87,6 +87,18 @@ function callbackResult(url, state) {
     ...(!code ? ['code'] : []), ...(!clientId ? ['client_id'] : []),
   ] });
   return { code, clientId };
+}
+
+// A pasted callback ends the attempt whatever it holds, so its failures name
+// the paste and point at a new attempt rather than at a pending sign-in.
+function pastedCallbackResult(input, state) {
+  let url;
+  try {
+    url = new URL(String(input).trim());
+  } catch {
+    throw loginFailure('callback_paste');
+  }
+  return callbackResult(url, state, 'callback_paste');
 }
 
 async function exchangeCode(result, verifier, signal) {
@@ -174,7 +186,7 @@ async function loginChatGPT(interaction, options) {
     interaction.notify({ type: 'auth_url', url: authorization.toString(), instructions: 'Complete sign-in in your browser, then return to Freedom Browser.' });
     Promise.resolve().then(() => interaction.prompt({ type: 'manual_code', signal,
       message: 'If sign-in does not complete, paste the full callback URL:', placeholder: REDIRECT_URI }))
-      .then(input => accept(callbackResult(new URL(input.trim()), state)), error => { if (!accepted) reject(error); })
+      .then(input => accept(pastedCallbackResult(input, state)), error => { if (!accepted) reject(error); })
       .catch(error => { if (!accepted) reject(error); });
     const authorizationResult = await result;
     if (authorizationResult.failure) throw authorizationResult.failure;

@@ -356,7 +356,9 @@
 #agent-provider-login-report {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 12px/1.6 ui-monospace, monospace;
+  font:
+    12px/1.6 ui-monospace,
+    monospace;
 }
 :is(#providers, #voice) .error {
   color: var(--danger);

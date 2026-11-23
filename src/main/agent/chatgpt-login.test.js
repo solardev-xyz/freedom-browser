@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 jest.mock('node:http', () => ({ createServer: jest.fn() }));
 const { createServer } = require('node:http');
 const { loginChatGPT, loginPage } = require('./chatgpt-login');
+const { loginFailureDetails } = require('./chatgpt-login-errors');
 
 const options = { getDeviceId: () => 'bcb1cbdb-7eae-4566-bc6c-d843484b676b' };
 let server;
@@ -230,7 +231,18 @@ test('manual fallback validates the callback before exchanging it', async () => 
     notify: event => { if (event.type === 'auth_url') authorization = new URL(event.url); },
     prompt: async () => input(authorization),
   }, options);
-  await expect(run(() => 'http://127.0.0.1:1455/auth/callback?state=stale&code=x&client_id=y')).rejects.toThrow('does not match');
+  for (const [input, fields] of [
+    ['http://127.0.0.1:1455/auth/callback?state=stale&code=x&client_id=y', 'Missing or invalid fields: state'],
+    ['abc', null],
+    ['   ', null],
+  ]) {
+    const failure = await run(() => input).catch(error => error);
+    expect(loginFailureDetails(failure)).toMatchObject({ reason: 'callback_paste', reference: 'CHATGPT_CALLBACK_PASTE' });
+    expect(failure.message).toContain('Start a new connection attempt');
+    expect(failure.message).not.toContain('complete the current sign-in');
+    if (fields) expect(failure.message).toContain(fields);
+    else expect(failure.message).not.toContain('Missing or invalid fields');
+  }
   expect(global.fetch).not.toHaveBeenCalled();
   await expect(run(url => 'http://127.0.0.1:1455/auth/callback?' + new URLSearchParams({ state: url.searchParams.get('state'), code: 'x', client_id: 'y' })))
     .resolves.toHaveProperty('clientId', 'y');
