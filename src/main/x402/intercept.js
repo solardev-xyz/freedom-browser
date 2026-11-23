@@ -132,7 +132,8 @@ const awaitingResponse = new Map();
 // the size bound, finds no capture: the charge goes to the approval card
 // (with a synthetic `range: null` shape) instead of auto-paying. That is
 // deliberate fail-closed behaviour, not a bug to paper over by raising
-// the TTL.
+// the TTL. The capture-time sweep is lazy, so the detector also checks
+// `capturedAt` itself rather than trusting that a stale entry is gone.
 const requestContext = new Map();
 const REQUEST_CONTEXT_TTL_MS = 60_000;
 const MAX_REQUEST_CONTEXT = 10000;
@@ -874,7 +875,15 @@ async function detectPaymentRequiredHandler(details, { requireApproval = false }
   // Retry-key shape used by sign-flow → setPendingPayment. Missing
   // capture falls back to a synthetic shape — covers SW-originated
   // requests, proxy chains, and tests driving the detector directly.
-  const captured = requestContext.get(details.id);
+  // The sweep above is lazy (it runs only when a request is captured,
+  // at most once per second), so on an idle session an expired capture
+  // can still be here. Enforce the TTL at the read too: past it, the
+  // capture is treated as gone and the charge fails closed to approval.
+  let captured = requestContext.get(details.id);
+  if (captured && Date.now() - captured.capturedAt > REQUEST_CONTEXT_TTL_MS) {
+    forgetRequestContext(details.id);
+    captured = undefined;
+  }
   const requestShape = {
     method: captured?.method ?? details.method ?? 'GET',
     range: captured?.range ?? null,

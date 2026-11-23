@@ -2160,6 +2160,22 @@ describe('request-start custody survives redirect hops', () => {
     expect(getDetectedPayment(7)?.requestShape).toEqual({ method: 'GET', range: 'bytes=0-9' });
   });
 
+  test('a 402 arriving past the TTL on an idle session finds no capture, even though no sweep ran', async () => {
+    captureRequestContextHandler(hop('https://seller.example/paid', { requestHeaders: { Range: 'bytes=0-9' } }));
+    capCovers();
+    const realNow = Date.now;
+    Date.now = () => realNow() + 61_000; // No other capture runs, so the lazy sweep never fires.
+    try {
+      await detectPaymentRequiredHandler(final402);
+      await new Promise(resolve => setImmediate(resolve));
+    } finally {
+      Date.now = realNow;
+    }
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(mockHostSend).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({ url: final402.url }));
+    expect(getDetectedPayment(7)?.requestShape).toEqual({ method: 'GET', range: null });
+  });
+
   test('a hop arriving after its start capture was swept re-captures with no custody (fails closed)', async () => {
     const guest = webContents.fromId(7);
     setAgentPageCustody(guest, true);
