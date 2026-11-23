@@ -1,0 +1,1 @@
+- Prevent Windows Agent permission metadata from growing with every completed command.

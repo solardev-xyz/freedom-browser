@@ -170,6 +170,7 @@ fn validate_execution_network(operation: &str, network: bool) -> Result<()> {
 }
 
 mod startup_lock;
+mod capability_cache;
 
 // Codex refreshes cap_sid and then loads it again while building the token.
 // Serialise that entire startup transaction across adapters sharing this home.
@@ -269,6 +270,10 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
     if !codex_windows_sandbox::sandbox_setup_is_complete(&request.home) {
         bail!("WINDOWS_SANDBOX_SETUP_REQUIRED");
     }
+    let pruned_capabilities = match request.environment.get("TEMP") {
+        Some(directory) => capability_cache::prune(&request.home, std::path::Path::new(directory), &startup_lock)?,
+        None => 0,
+    };
     let workspace = AbsolutePathBuf::try_from(request.workspace)?;
     let roots = vec![workspace];
     let writable: Vec<AbsolutePathBuf> = request.writable_roots.iter().cloned()
@@ -307,7 +312,7 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
         stdin_open: true,
     }).await?;
     drop(startup_lock);
-    emit(json!({"type":"ready", "startupWaitMs":startup_wait_ms}))?;
+    emit(json!({"type":"ready", "startupWaitMs":startup_wait_ms, "prunedCapabilities":pruned_capabilities}))?;
     let deadline = tokio::time::sleep(Duration::from_millis(request.timeout_ms));
     tokio::pin!(deadline);
     let mut stdout_open = true;

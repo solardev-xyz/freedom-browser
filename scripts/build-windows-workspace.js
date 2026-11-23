@@ -115,7 +115,7 @@ function textDigest(file) {
 // the same way at run time to refuse a stale packaged adapter.
 function adapterSourceSha256() {
   const hash = crypto.createHash('sha256');
-  for (const name of ['src/main.rs', 'src/startup_lock.rs']) {
+  for (const name of ['src/main.rs', 'src/startup_lock.rs', 'src/capability_cache.rs']) {
     hash.update(name + '\0').update(fs.readFileSync(path.join(ADAPTER, name), 'utf8').replace(/\r\n/g, '\n'));
   }
   return hash.digest('hex');
