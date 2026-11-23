@@ -50,7 +50,8 @@ function tokensOf(selector) {
 
 describe('design tokens (#1198)', () => {
   const dark = tokensOf(":root, [data-theme='dark']");
-  const light = tokensOf("[data-theme='light']");
+  const LIGHT = ":root[data-theme='light'], [data-theme='light']";
+  const light = tokensOf(LIGHT);
 
   test('the light theme defines exactly the tokens the dark one does', () => {
     expect([...light].sort()).toEqual([...dark].sort());
@@ -93,6 +94,55 @@ describe('design tokens (#1198)', () => {
     expect([...tokensOf('body.private-window')].sort()).toEqual([...dark].sort());
     const block = rulesOf(tokensCss).find((rule) => rule.selector === 'body.private-window');
     expect(declaration(block.body, 'color-scheme')).toBe('dark');
+  });
+
+  test('a light-profile private window keeps the light red, as before tokens.css', () => {
+    // private.css never set --danger, so the private window painted the
+    // profile theme's value; the private block's dark red must not replace
+    // it in a light profile.
+    const lightPrivate = rulesOf(tokensCss).find(
+      (rule) => rule.selector === "[data-theme='light'] body.private-window"
+    );
+    expect(lightPrivate).toBeDefined();
+    expect([...lightPrivate.body.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1])).toEqual([
+      '--danger',
+    ]);
+    const variables = rulesOf(read('styles/variables.css')).find(
+      (rule) => rule.selector === "[data-theme='light']"
+    );
+    expect(declaration(lightPrivate.body, '--danger')).toBe(
+      declaration(variables.body, '--danger')
+    );
+    const privateCss = read('styles/private.css');
+    expect(privateCss).not.toMatch(/--danger\s*:/);
+  });
+
+  test('on an internal page tokens.css out-specifies theme.css in both themes', () => {
+    // docs/design-system.md: a page linking both gets the chrome's value for
+    // every name both files define. theme.css's light block is
+    // `html[data-theme='light']` (0,1,1), which a bare attribute selector
+    // (0,1,0) would lose to, in light only.
+    const specificity = (selector) => {
+      const bare = selector.replace(/\[[^\]]*\]/g, '[]');
+      const ids = (bare.match(/#[\w-]+/g) || []).length;
+      const classes = (bare.match(/\.[\w-]+|\[\]|:(?!:)[\w-]+/g) || []).length;
+      const types = (bare.replace(/[.#:][\w-]+|\[\]/g, ' ').match(/[a-z][\w-]*/gi) || []).length;
+      return ids * 10000 + classes * 100 + types;
+    };
+    const best = (selectorList) => Math.max(...selectorList.split(/\s*,\s*/).map(specificity));
+    const themeRules = rulesOf(read('pages/styles/theme.css'));
+    for (const [ours, theirs] of [
+      [":root, [data-theme='dark']", 'html'],
+      [LIGHT, "html[data-theme='light']"],
+    ]) {
+      const theirRule = themeRules.find((rule) => rule.selector === theirs);
+      expect(theirRule).toBeDefined();
+      const shared = tokensOf(ours).filter((name) =>
+        new RegExp(`(^|[;{\\s])${name}\\s*:`).test(theirRule.body)
+      );
+      expect(shared).toEqual(expect.arrayContaining(['--text', '--accent', '--border']));
+      expect(best(ours)).toBeGreaterThan(best(theirs));
+    }
   });
 
   test('a token that refers to another is declared on every theme scope', () => {

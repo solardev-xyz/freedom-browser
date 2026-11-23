@@ -37,7 +37,7 @@ Scales: `--space-1` to `--space-6` (4 to 24px), `--radius-sm|md|lg|xl|pill` (4, 
 Three things to know:
 
 - **A token that refers to another resolves where it is declared.** `--a: var(--b)` on `:root` keeps the root's `--b` even inside a nested `data-theme` or the private window, so such tokens are declared on every theme scope (the alias block at the end of `tokens.css`).
-- **On an internal page, `tokens.css` wins over `theme.css`.** Its `:root` selector is more specific than `theme.css`'s `html`, so where both define a name (`--text`, `--accent`, `--border`…) the chrome's value applies. That is why a page links `tokens.css` only when it migrates, and why the six pages on GitHub's palette change colour then.
+- **On an internal page, `tokens.css` wins over `theme.css`.** In both themes its selectors are more specific than `theme.css`'s (`:root` over `html`, `:root[data-theme='light']` over `html[data-theme='light']`), so where both define a name (`--text`, `--accent`, `--border`…) the chrome's value applies. That is why a page links `tokens.css` only when it migrates, and why the six pages on GitHub's palette change colour then.
 - **Old names stay valid until their screens move.** `variables.css` keeps the chrome's names (`--toolbar`, `--muted`, `--menu-bg`…), `theme.css` keeps the pages' (`--shell-*`, `--bg-card`…), and seven names `sidebar.css` used without any definition (`--foreground`, `--hover`…) are aliases in `tokens.css`. A migrated screen uses none of them.
 
 ## Blocks
