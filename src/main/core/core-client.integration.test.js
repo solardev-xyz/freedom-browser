@@ -118,17 +118,16 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     expect(hello.protocol).toBe(2);
     expect(hello.capabilities).toContain('vault.status');
     expect(hello.capabilities).toContain('streams');
-    // Design 0017: a confining core reports what it got (the pinned 0.27.0,
-    // none).
-    if (hello.confinement !== null) {
-      expect(hello.confinement).toMatchObject({
-        mechanism: expect.any(String),
-        files: expect.any(String),
-        exec: expect.any(String),
-        ipc: expect.any(String),
-        network: expect.any(String),
-      });
-    }
+    // Design 0017: the pinned core (0.28.0) confines itself and reports what
+    // it got.
+    expect(hello.confinement).not.toBeNull();
+    expect(hello.confinement).toMatchObject({
+      mechanism: expect.any(String),
+      files: expect.any(String),
+      exec: expect.any(String),
+      ipc: expect.any(String),
+      network: expect.any(String),
+    });
     expect(core.streamStats()).toMatchObject({ outstanding: 0, pieces: 0, sending: 0 });
     await expect(core.request('vault.status')).resolves.toEqual({
       exists: false,
@@ -142,7 +141,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   });
 
   test('protocol 1 is refused: protocol_mismatch naming 2, then exit 76', async () => {
-    // From 0.11.0 (freedom-core #265), so the pinned 0.27.0 too: only protocol 2.
+    // From 0.11.0 (freedom-core #265), so the pinned 0.28.0 too: only protocol 2.
     // CoreClient can't ask for 1, so this is a raw hello, as main's was.
     const child = spawn(binary, rawServeArgs(root), { stdio: ['pipe', 'pipe', 'ignore'] });
     const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
@@ -196,8 +195,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   // Design 0017, C1: the hello must name serve's --grant-root and
   // --user-data-dir, which CoreClient passes from the hello's own values; a
   // raw hello shows what a main whose two disagree would get. The pinned
-  // 0.27.0 checks a given argument already; the confining core (0.28.0)
-  // also refuses a user_data_dir its arguments don't name.
+  // core (0.28.0) refuses either one given on one side only, too.
   test.each([
     ['another grant_root', [], (dir) => ({ grant_root: path.join(dir, 'other') })],
     [
@@ -226,17 +224,9 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     }
   );
 
-  test("a hello naming a user_data_dir serve's arguments don't is refused by a confining core", async () => {
+  test("a hello naming a user_data_dir serve's arguments don't is refused", async () => {
     const raw = rawHello(rawServeArgs(root), { grant_root: root, user_data_dir: root });
     const reply = await raw.reply;
-    if (reply.result) {
-      // The pinned 0.27.0: an argument not given admits any. It reports no
-      // confinement, which every confining core does.
-      expect(reply.result.confinement).toBeUndefined();
-      raw.child.kill();
-      await raw.exited;
-      return;
-    }
     expect(await raw.exited).toBe(76);
     expect(reply.error).toEqual({
       code: 'invalid_argument',
