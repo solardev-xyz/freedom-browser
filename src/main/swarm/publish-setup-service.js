@@ -134,6 +134,106 @@ const UNCERTAIN_MESSAGE =
 const REJECTED_BATCH_MESSAGE =
   'Your storage was bought, but the Swarm network did not accept it, so it cannot be used to publish. Restarting the node can help; otherwise pick a plan again.';
 
+// A write whose connection to Gnosis Chain dropped before anything that
+// moves value was sent is tried again on its own (#992), up to this often,
+// this long apart.
+const TRANSIENT_RETRY_MS = 15_000;
+const MAX_TRANSIENT_RETRIES = 2;
+
+// antd names the funding step that failed, then why: `<step>: <cause>`
+// (freedom-hq/ant crates/ant-chain/src/funding.rs, and ant-gateway's
+// chainreader.rs for `read batch`). These are the steps each operation runs
+// before anything that moves value is sent, as of Ant v0.5.77: reads, and
+// the approval, which only sets an allowance, so sending it again is
+// harmless. A read can also come after the payment: a deposit reads its
+// chequebook and the swap price again once it has transferred, so neither
+// is listed for it.
+const STEPS_BEFORE_PAYMENT = Object.freeze({
+  buy: ['read xBZZ balance', 'read xDAI balance', 'read swap price', 'authorise payment'],
+  extend: [
+    'read batch',
+    'read xBZZ balance',
+    'read xDAI balance',
+    'read swap price',
+    'authorise payment',
+  ],
+  deposit: [
+    'read xBZZ balance',
+    'read xDAI balance',
+    'verify the chequebook before depositing into it',
+  ],
+});
+// A step antd wraps around steps of its own, `<step>: <inner step>: <cause>`:
+// a deposit's top-up (FundingError::Deposit around chequebook_store.rs's
+// top_up_chequebook) re-reads the chequebook and the wallet, then sends the
+// transfer (`deposit into chequebook: deposit transfer: rpc: http: …`). Its
+// inner steps are classed like the outer ones; these are the inner reads that
+// come before the transfer.
+const WRAPPED_STEPS_BEFORE_PAYMENT = Object.freeze({
+  'deposit into chequebook': ['read chequebook deposit', 'read wallet xBZZ'],
+});
+// The swap and the one-time deployment of its helper. A failed one may
+// still be pending, and antd reads only the mined balance, so trying again
+// at once could swap twice. Its xBZZ stays in the node wallet.
+const SWAP_STEPS = Object.freeze(['prepare swap', 'swap xDAI for xBZZ']);
+
+/**
+ * What a write's `502` (a chain step failed) says about the money (#992):
+ *
+ *   - `retry`: the connection to Gnosis Chain dropped (`http:` for a read,
+ *     `rpc: http:` for a transaction) in a step before anything that moves
+ *     value; trying again is safe.
+ *   - `swap`: the swap, or its setup, lost its connection or was never seen
+ *     mined. It may still go through, so the user waits before trying again.
+ *   - `uncertain`: the connection dropped in the payment, a step after it, or
+ *     a step that cannot be placed. antd had usually sent the transaction
+ *     already (it gives up while waiting for the receipt), so it may still go
+ *     through, and the node does not register a batch it lost track of until
+ *     it restarts.
+ *   - `unmined`: the same steps, but antd sent the transaction and gave up
+ *     waiting for it to be mined; it too may still go through.
+ *   - `failed`: anything else, such as a revert, a refused send (`rpc: rpc:
+ *     insufficient funds`, `nonce too low`) or a receipt without a batch.
+ *     Its reason is shown, as before #992.
+ */
+function classifyChainFailure(res, kind) {
+  if (res?.status !== 502 || typeof res.message !== 'string') return 'failed';
+  const { message } = res;
+  if (/transaction reverted/i.test(message)) return 'failed';
+  const split = message.indexOf(': ');
+  let step = split === -1 ? message : message.slice(0, split);
+  let cause = split === -1 ? '' : message.slice(split + 2);
+  let beforePayment = STEPS_BEFORE_PAYMENT[kind];
+  if (Object.hasOwn(WRAPPED_STEPS_BEFORE_PAYMENT, step)) {
+    beforePayment = WRAPPED_STEPS_BEFORE_PAYMENT[step];
+    const inner = cause.indexOf(': ');
+    step = inner === -1 ? cause : cause.slice(0, inner);
+    cause = inner === -1 ? '' : cause.slice(inner + 2);
+  }
+  const dropped = /^(?:rpc: )?http: /.test(cause);
+  if (beforePayment?.includes(step)) return dropped ? 'retry' : 'failed';
+  const unmined = /^(?:rpc: )?transaction never mined\b/.test(cause);
+  if (!dropped && !unmined) return 'failed';
+  if (SWAP_STEPS.includes(step)) return 'swap';
+  return dropped ? 'uncertain' : 'unmined';
+}
+
+function droppedBeforePaymentMessage(label) {
+  return `${label} failed: the connection to Gnosis Chain dropped. Your funds are still in your node wallet, and trying again only pays for what is still missing.`;
+}
+
+function swapMayLandMessage(label) {
+  return `${label} failed while your Swarm node was swapping xDAI for xBZZ, and the swap may still go through. Its xBZZ stays in your node wallet: wait a minute before you try again, and the node only swaps what is still missing.`;
+}
+
+function droppedAfterPaymentMessage(kind) {
+  const check =
+    kind === 'deposit'
+      ? 'check the chequebook deposit before you top it up again'
+      : 'check your storage before you try again';
+  return `The connection to Gnosis Chain dropped after your Swarm node sent the payment, so it may still go through. Restart the node so it sees the result, then ${check}.`;
+}
+
 const WEI_PER_CENT = 10n ** 16n;
 const PLUR_PER_BZZ = 10n ** 16n;
 // What a "Top Up Credit" amount may be (freedom-hq/ant#126's
@@ -1216,6 +1316,8 @@ function createPublishSetupService({
     emit();
 
     const before = current.kind === 'buy' ? await stampIds() : null;
+    // Shutting down while the stamps were read: send nothing.
+    if (disposed || operation !== current) return;
     log.info(`[PublishSetup] ${actionLabel(current.kind)} (${JSON.stringify(current.request)})`);
     const res = await writeOperation(current);
     if (operation !== current) return;
@@ -1261,8 +1363,27 @@ function createPublishSetupService({
       return;
     }
 
-    if (antStorageApi.isUncertainWrite(res)) {
-      log.warn(`[PublishSetup] ${label}: outcome unknown (status ${res.status})`);
+    const chainFailure = classifyChainFailure(res, current.kind);
+    if (chainFailure === 'retry') {
+      log.warn(`[PublishSetup] ${label}: lost Gnosis Chain before paying: ${res.message}`);
+      scheduleTransientRetry(current, label);
+      return;
+    }
+
+    if (chainFailure === 'swap') {
+      log.warn(`[PublishSetup] ${label}: the swap may still be pending: ${res.message}`);
+      failOperation(current, swapMayLandMessage(label));
+      return;
+    }
+
+    if (
+      chainFailure === 'uncertain' ||
+      chainFailure === 'unmined' ||
+      antStorageApi.isUncertainWrite(res)
+    ) {
+      log.warn(
+        `[PublishSetup] ${label}: outcome unknown (status ${res.status}${res.message ? `: ${res.message}` : ''})`
+      );
       if (before) {
         const after = await stampIds();
         if (operation !== current) return;
@@ -1272,12 +1393,65 @@ function createPublishSetupService({
           return;
         }
       }
-      failOperation(current, UNCERTAIN_MESSAGE, { uncertain: true });
+      failOperation(
+        current,
+        chainFailure === 'uncertain' ? droppedAfterPaymentMessage(current.kind) : UNCERTAIN_MESSAGE,
+        { uncertain: true }
+      );
       return;
     }
 
     log.warn(`[PublishSetup] ${label} failed: ${res.status} ${res.message || ''}`);
     failOperation(current, antStorageApi.describeAntError(res, label));
+  }
+
+  function scheduleTransientRetry(current, label) {
+    if (disposed) return;
+    if (current.transientRetries >= MAX_TRANSIENT_RETRIES) {
+      failOperation(current, droppedBeforePaymentMessage(label));
+      return;
+    }
+    // Still `executing`, so the screen keeps saying the purchase is on its
+    // way and nothing can arm or cancel meanwhile. The quote timer carries
+    // the wait: whatever stops quoting (a result, a new arm, dispose) stops
+    // it too.
+    current.transientRetries += 1;
+    current.executed = false;
+    clearQuoteTimer();
+    quoteTimer = setTimeout(() => {
+      quoteTimer = null;
+      if (!disposed && operation === current && current.phase === 'executing') {
+        void retryWrite(current, label);
+      }
+    }, TRANSIENT_RETRY_MS);
+  }
+
+  /**
+   * The write again, after a dropped connection stopped it before paying. A
+   * chosen-amount deposit with no xDAI figure yet is still on its first write,
+   * the one that may spend only the xDAI the deposit screen showed
+   * (requoteAmountDeposit): read the wallet again and hold it to that cap, so
+   * xDAI that arrived during the wait is not swapped unseen.
+   */
+  async function retryWrite(current, label) {
+    if (current.params.amountPlur && current.xdaiNeededWei == null) {
+      const res = await fetchQuote(current);
+      if (disposed || operation !== current || current.phase !== 'executing') return;
+      const wallet = res.ok ? toBigInt(res.data?.walletXdaiWei) : null;
+      if (wallet === null || wallet < 0n) {
+        log.warn(
+          `[PublishSetup] ${label}: could not read the node wallet before trying again: ${res.status ?? ''} ${res.message || ''}`
+        );
+        scheduleTransientRetry(current, label);
+        return;
+      }
+      if (wallet > current.params.walletSpendCapWei) {
+        failOperation(current, WALLET_GREW_MESSAGE);
+        return;
+      }
+      current.walletXdaiWei = wallet;
+    }
+    await execute(current);
   }
 
   async function requote(current) {
@@ -1434,6 +1608,8 @@ function createPublishSetupService({
       result: null,
       fundingTx: null,
       executed: false,
+      // Writes tried again after a dropped connection (classifyChainFailure).
+      transientRetries: 0,
       // An amount deposit's pricing (requoteAmountDeposit).
       amountChecked: false,
       walletAddress: null,
@@ -1773,6 +1949,7 @@ module.exports = {
   normalizeSwarmMode,
   parseXdaiShortfall,
   parseDepositAmount,
+  classifyChainFailure,
   getPublishSetupService,
   getPublishReadiness,
   registerPublishSetupIpc,
@@ -1784,6 +1961,8 @@ module.exports = {
   FUNDING_TX_POLL_MS,
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
+  TRANSIENT_RETRY_MS,
+  MAX_TRANSIENT_RETRIES,
   CHAIN_INIT_SLOW_MS,
   REDISCOVERY_MAX_WAIT_MS,
   REDISCOVERY_SLOW_MS,
