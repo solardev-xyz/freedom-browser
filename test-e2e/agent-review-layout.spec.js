@@ -74,13 +74,18 @@ async function expectOverlayPaint(electronApp, points, differentOutside) {
   }).toPass({ timeout: 7500 });
 }
 
-// Only the sampled surfaces and their pseudo-elements matter. Descendants
+// Only the sampled surfaces and their pseudo-elements matter. A bare
+// getAnimations() omits ::before/::after animations (their CSSAnimation/
+// CSSTransition is only returned with {subtree:true}), so ask for the
+// subtree and keep effects targeting the surface itself: a pseudo-element's
+// effect has the surface as target plus effect.pseudoElement. Descendants
 // include perpetual tab-loading spinners unrelated to their paint/geometry.
 async function waitForPaintAnimations(window, selectors) {
-  await expect.poll(() => window.evaluate(selectors => selectors.flatMap(selector =>
-    document.querySelector(selector)?.getAnimations() || []
-  ).filter(animation => animation.playState === 'running' || animation.pending)
-    .map(animation => `${animation.constructor.name}:${animation.effect?.target?.className}`), selectors)).toEqual([]);
+  await expect.poll(() => window.evaluate(selectors => selectors.flatMap(selector => {
+    const element = document.querySelector(selector);
+    return element?.getAnimations({ subtree: true }).filter(animation => animation.effect?.target === element) || [];
+  }).filter(animation => animation.playState === 'running' || animation.pending)
+    .map(animation => `${animation.constructor.name}:${animation.effect?.target?.className}${animation.effect?.pseudoElement || ''}`), selectors)).toEqual([]);
 }
 
 async function hit(window, selector) {
@@ -195,7 +200,8 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect(window.locator('body')).not.toHaveClass(/agent-workspace-sidebar-closed/);
     // The overlay opens with margin/opacity, not a transform. Measure its
     // edge only after that actual transition has finished.
-    await waitForPaintAnimations(window, ['#agent-page-surface', '#agent-first-titlebar']);
+    await waitForPaintAnimations(window, ['#agent-page-surface', '#agent-first-titlebar',
+      '.agent-first-titlebar-left']);
     const workspaceEdge = await window.locator('#agent-page-surface').evaluate(el => el.getBoundingClientRect().left);
     // Dark paints the conversation and the Workspace with the same --bg.
     await expectOverlayPaint(electronApp, [
