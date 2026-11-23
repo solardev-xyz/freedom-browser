@@ -3041,8 +3041,14 @@ class FreedomAgentService {
     ) {
       return;
     }
-    const errorCode =
-      workspace.state === 'timed_out'
+    // Windows reports a startup-busy refusal as sandbox_denied; keep its own
+    // code so the receipt says "nothing ran, retry" instead of a policy block.
+    const startupCode = ['WORKSPACE_STARTUP_BUSY', 'WORKSPACE_STARTUP_TIMEOUT'].includes(outcome.workspace?.error?.code)
+      ? outcome.workspace.error.code
+      : undefined;
+    const errorCode = startupCode && ['sandbox_denied', 'timed_out', 'failed'].includes(workspace.state)
+      ? startupCode
+      : workspace.state === 'timed_out'
         ? 'WORKSPACE_COMMAND_TIMED_OUT'
         : workspace.state === 'cancelled'
           ? 'WORKSPACE_COMMAND_CANCELLED'
