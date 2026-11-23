@@ -107,15 +107,18 @@ function digest(file) { return crypto.createHash('sha256').update(fs.readFileSyn
 // Recipe files are hashed with CRLF folded to LF, like prebuilt-natives.js's
 // component key, so a build made on a core.autocrlf checkout (the Windows
 // runner that publishes the prebuilt) stays current on an LF checkout.
+function textDigest(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n')).digest('hex');
+}
+// The adapter fingerprint covers every Rust source the helper is built from,
+// by path and CRLF-folded content. windows-sandbox-runtime.js recomputes it
+// the same way at run time to refuse a stale packaged adapter.
 function adapterSourceSha256() {
   const hash = crypto.createHash('sha256');
   for (const name of ['src/main.rs', 'src/startup_lock.rs']) {
     hash.update(name + '\0').update(fs.readFileSync(path.join(ADAPTER, name), 'utf8').replace(/\r\n/g, '\n'));
   }
   return hash.digest('hex');
-}
-function textDigest(file) {
-  return crypto.createHash('sha256').update(fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n')).digest('hex');
 }
 // Everything besides the pinned source that decides the helpers' bytes: this
 // script, the notices writer, the repository LICENSE it embeds and every
