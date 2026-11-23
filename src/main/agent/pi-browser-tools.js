@@ -846,8 +846,11 @@ async function createFreedomBrowserTools(options = {}) {
             result.details.envelope?.tabId ||
             activeTabId ||
             targetTabId;
-          const observedUrl = result.details.envelope?.result?.tab?.url || result.details.envelope?.result?.url ||
-            ([OPERATIONS.CREATE_TAB, OPERATIONS.NAVIGATE].includes(spec.operation) ? params.url : undefined);
+          // A Markdown read's `url` is its source file, not the page; use its pageUrl.
+          const observedUrl = spec.operation === OPERATIONS.READ_MARKDOWN
+            ? result.details.envelope?.result?.pageUrl
+            : result.details.envelope?.result?.tab?.url || result.details.envelope?.result?.url ||
+              ([OPERATIONS.CREATE_TAB, OPERATIONS.NAVIGATE].includes(spec.operation) ? params.url : undefined);
           const previousPage = pageDetails.get(resultTabId);
           const receipt = createToolReceipt(spec.operation, {
             envelope: result.details.envelope,

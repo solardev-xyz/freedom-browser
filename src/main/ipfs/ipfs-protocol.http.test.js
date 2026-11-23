@@ -558,3 +558,29 @@ describe('ipfs: URL forms through the registered handlers', () => {
     expect(Buffer.from(await res.arrayBuffer())).toEqual(CONTENT);
   });
 });
+
+// browser_read_markdown (page-markdown.js) reaches ipfs: through the main
+// process's session.fetch, not a page. The e2e spec swaps this handler for a
+// harness fixture, so pin here that the real handler serves that exact
+// request shape (credential-free, no referrer, no redirects, Markdown Accept).
+describe('ipfs: site-provided Markdown read through the real handler', () => {
+  const { readPageMarkdown } = require('../automation/adapters/page-markdown');
+
+  test('serves an advertised alternate, even under a generic type, and forwards the Markdown Accept', async () => {
+    gateway.handle((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      res.end('# IPFS guide');
+    });
+    const result = await readPageMarkdown({
+      pageUrl: `ipfs://${CID}/docs/`,
+      links: { alternate: ['guide.md'] },
+      fetch: (url, init) => stack.ipfs(new Request(url, init)),
+    });
+
+    expect(result).toMatchObject({ available: true, url: `ipfs://${CID}/docs/guide.md`, text: '# IPFS guide' });
+    expect(gateway.requests.map((r) => r.url)).toEqual([`/ipfs/${CID}/docs/guide.md`]);
+    expect(gateway.requests[0].headers.accept).toBe('text/markdown, text/plain;q=0.5');
+    expect(gateway.requests[0].headers.cookie).toBeUndefined();
+    expect(gateway.requests[0].headers.referer).toBeUndefined();
+  });
+});

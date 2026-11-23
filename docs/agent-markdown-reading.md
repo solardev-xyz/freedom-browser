@@ -8,7 +8,12 @@ user does not have to name the tool.
 The read is visible in Agent activity. It first tries a same-site
 `<link rel="alternate" type="text/markdown">`, otherwise requests the page with
 `Accept: text/markdown`. An HTML response can advertise one same-site Markdown
-alternate in its HTTP `Link` header. If Markdown is unavailable or the page
+alternate in its HTTP `Link` header. An advertised alternate (from the page or
+the `Link` header) is accepted as `text/markdown`, `text/x-markdown` or
+`text/plain`, or as `application/octet-stream` when its path ends in `.md` or
+`.markdown`, because IPFS/Bee nodes and stock web servers often label `.md`
+files that way; binary content is still refused. A negotiated response for the
+page URL itself must be `text/markdown`. If Markdown is unavailable or the page
 changes, the result directs Agent back to `browser_snapshot`. Query URLs are not
 replayed for negotiation, since they can contain action or confirmation tokens;
 a same-site advertised alternate can still be used.

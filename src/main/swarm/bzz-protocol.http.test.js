@@ -743,3 +743,29 @@ describe('bzz: node not ready', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 });
+
+// browser_read_markdown (page-markdown.js) reaches bzz: through the main
+// process's session.fetch, not a page. The e2e spec swaps this handler for a
+// harness fixture, so pin here that the real handler serves that exact
+// request shape (credential-free, no referrer, no redirects, Markdown Accept).
+describe('bzz: site-provided Markdown read through the real handler', () => {
+  const { readPageMarkdown } = require('../automation/adapters/page-markdown');
+
+  test('serves an advertised alternate, even under a generic type, and forwards the Markdown Accept', async () => {
+    ant.handle((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('# Swarm guide');
+    });
+    const result = await readPageMarkdown({
+      pageUrl: `bzz://${HASH}/docs/`,
+      links: { alternate: ['guide.md'] },
+      fetch: (url, init) => handle(new Request(url, init)),
+    });
+
+    expect(result).toMatchObject({ available: true, url: `bzz://${HASH}/docs/guide.md`, text: '# Swarm guide' });
+    expect(ant.requests.map((r) => r.url)).toEqual([`/bzz/${HASH}/docs/guide.md`]);
+    expect(ant.requests[0].headers.accept).toBe('text/markdown, text/plain;q=0.5');
+    expect(ant.requests[0].headers.cookie).toBeUndefined();
+    expect(ant.requests[0].headers.referer).toBeUndefined();
+  });
+});

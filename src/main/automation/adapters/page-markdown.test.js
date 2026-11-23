@@ -95,3 +95,40 @@ test('does not replay a page query URL for negotiation but still permits its adv
   expect((await readPageMarkdown({ pageUrl: queryUrl, links: { alternate: ['/guide.md'] }, fetch })).available).toBe(true);
   expect(fetch.mock.calls[0][0]).toBe('https://docs.example.test/guide.md');
 });
+
+test('accepts a parameterised text/markdown type in a Link header alternate', () => {
+  expect(headerLinks('</g.md>; rel="alternate"; type="text/markdown; charset=utf-8"', pageUrl, 'page'))
+    .toEqual(['https://docs.example.test/g.md']);
+  expect(headerLinks('</g.md>; rel="alternate"; type="Text/Markdown ;charset=utf-8"', pageUrl, 'page'))
+    .toEqual(['https://docs.example.test/g.md']);
+  expect(headerLinks('</g.html>; rel="alternate"; type="text/html; charset=utf-8"', pageUrl, 'page')).toEqual([]);
+});
+
+test.each([
+  ['text/plain; charset=utf-8', '/guide.md'],
+  ['text/x-markdown', '/guide.md'],
+  ['application/octet-stream', '/guide.md'],
+  ['application/octet-stream', '/guide.markdown'],
+])('accepts an explicitly advertised alternate served as %s (%s)', async (type, path) => {
+  const fetch = jest.fn(async () => new Response('# Advertised', { headers: { 'content-type': type } }));
+  expect(await readPageMarkdown({ pageUrl, links: { alternate: [path] }, fetch }))
+    .toMatchObject({ available: true, text: '# Advertised' });
+});
+
+test('accepts a generic type on a Link-header alternate, but not on the negotiated page itself', async () => {
+  const fetch = jest.fn().mockResolvedValueOnce(new Response('<html>', { headers: {
+    'content-type': 'text/html', link: '</guide.md>; rel="alternate"; type="text/markdown"',
+  } })).mockResolvedValueOnce(new Response('# Guide', { headers: { 'content-type': 'text/plain' } }));
+  expect(await readPageMarkdown({ pageUrl, fetch })).toMatchObject({ available: true, text: '# Guide' });
+});
+
+test.each([
+  ['application/octet-stream', '/guide.txt', '# not md path'],
+  ['application/octet-stream', '/guide.md', 'bin\u0000ary'],
+  ['text/html', '/guide.md', '<html>'],
+  ['application/json', '/guide.md', '{}'],
+])('still refuses an advertised alternate served as %s at %s', async (type, path, body) => {
+  const fetch = jest.fn(async () => new Response(body, { headers: { 'content-type': type } }));
+  expect(await readPageMarkdown({ pageUrl, links: { alternate: [path] }, fetch }))
+    .toMatchObject({ available: false, reason: 'markdown_not_offered' });
+});

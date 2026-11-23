@@ -5,6 +5,12 @@
 const MAX_BYTES = 128 * 1024;
 const MAX_TEXT = 64_000;
 const SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
+const mediaType = value => (value || '').split(';')[0].trim().toLowerCase();
+// An explicitly advertised Markdown file is often served under a generic type:
+// IPFS/Bee nodes and stock nginx/Apache label `.md` as text/plain or
+// application/octet-stream. Negotiation on the page URL itself stays strict.
+const ADVERTISED_TYPES = new Set(['text/markdown', 'text/x-markdown', 'text/plain']);
+const MARKDOWN_PATH = /\.(?:md|markdown)$/i;
 
 function sameSiteUrl(value, pageUrl) {
   try {
@@ -41,7 +47,7 @@ function headerLinks(value, pageUrl, kind) {
     const rel = /;\s*rel\s*=\s*(?:"([^"]{1,200})"|([^;\s,]+))/i.exec(params);
     const relations = (rel?.[1] || rel?.[2] || '').toLowerCase().split(/\s+/);
     const type = /;\s*type\s*=\s*(?:"([^"]{1,200})"|([^;\s,]+))/i.exec(params);
-    if (kind === 'page' ? !relations.includes('alternate') || (type?.[1] || type?.[2] || '').toLowerCase() !== 'text/markdown'
+    if (kind === 'page' ? !relations.includes('alternate') || mediaType(type?.[1] || type?.[2]) !== 'text/markdown'
       : !relations.includes('describedby') || !/\/llms\.txt(?:[?#]|$)/i.test(match[1])) continue;
     const url = sameSiteUrl(match[1], pageUrl);
     if (url) found.push(url);
@@ -88,20 +94,28 @@ async function readPageMarkdown({ pageUrl, links = {}, kind = 'page', fetch, sig
     if (kind === 'page' && !advertised && new URL(pageUrl).search) return fallback('query_requires_rendered_page');
     let sourceUrl = advertised || (kind === 'site-index' ? sameSiteUrl('/llms.txt', pageUrl) : sameSiteUrl(pageUrl, pageUrl));
     let response = await request(sourceUrl);
-    let media = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    let media = mediaType(response.headers.get('content-type'));
+    let fromAdvertisement = Boolean(advertised);
     if (kind === 'page' && !advertised && media !== 'text/markdown') {
       const alternate = headerLinks(response.headers.get('link'), pageUrl, kind)[0];
       await response.body?.cancel();
       if (!alternate) return fallback('markdown_not_offered');
       sourceUrl = alternate;
+      fromAdvertisement = true;
       response = await request(sourceUrl);
-      media = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      media = mediaType(response.headers.get('content-type'));
     }
-    if (!response.ok || !['text/markdown', ...(kind === 'site-index' ? ['text/plain'] : [])].includes(media)) {
+    const accepted = kind === 'site-index' || fromAdvertisement
+      ? ADVERTISED_TYPES.has(media) ||
+        (media === 'application/octet-stream' && MARKDOWN_PATH.test(new URL(sourceUrl).pathname))
+      : media === 'text/markdown';
+    if (!response.ok || !accepted) {
       await response.body?.cancel();
       return fallback('markdown_not_offered');
     }
     const content = await readText(response);
+    // A generic type gives no text guarantee; refuse binary rather than decode it.
+    if (media === 'application/octet-stream' && content.text.includes('\u0000')) return fallback('markdown_not_offered');
     if (!isCurrent()) return fallback('page_changed');
     return { available: true, format: 'markdown', source: kind === 'site-index' ? 'site-index' : 'site-provided-markdown',
       url: sourceUrl, pageUrl, ...content,

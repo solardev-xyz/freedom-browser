@@ -56,7 +56,12 @@ test('native Markdown retrieval preserves the visible DOM and omits browser cred
   }
 });
 
-test('native Swarm and IPFS Markdown alternates use the existing protocol handlers', async ({ electronApp, window, harness }) => {
+// The harness replaces the bzz:/ipfs: handlers with content fixtures, so this
+// pins the adapter's routing through the tab session's registered scheme
+// handlers, not the production handlers themselves. Those are driven with the
+// same Markdown request shape in bzz-protocol.http.test.js and
+// ipfs-protocol.http.test.js; a real Bee/IPFS node is not exercised here.
+test('native Swarm and IPFS Markdown alternates route through the session protocol handlers', async ({ electronApp, window, harness }) => {
   await expect(window.locator('[data-test="address-input"]')).toBeVisible();
   for (const pageUrl of ['bzz://fixture.gwei/docs/', 'ipfs://bafyfixture/docs/']) {
     const target = pageUrl + 'guide.md';
