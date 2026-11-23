@@ -2703,6 +2703,52 @@ describe('navigation', () => {
       expect(loadedUrl).toContain('protocol=ipfs');
     });
 
+    test('IPFS: a stopped node that still serves saved content loads the page (#30)', async () => {
+      const ctx = await loadNavigationModule({
+        currentIpfsStatus: 'stopped',
+        registry: { ipfs: { mode: 'none', cacheOnly: true } },
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('ipfs://QmSaved');
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toBe('ipfs://QmSaved');
+    });
+
+    test('IPFS: saved content does not cover a switch still in flight', async () => {
+      // Mid-stop main has no node to answer with; mid-start the store is
+      // about to change hands. Both keep the friendly page.
+      for (const desired of [false, true]) {
+        const ctx = await loadNavigationModule({
+          currentIpfsStatus: 'stopped',
+          registry: { ipfs: { mode: 'none', cacheOnly: true } },
+        });
+        await ctx.mod.initNavigation();
+        ctx.state.ipfsDesiredRunning = desired;
+
+        ctx.mod.loadTarget('ipfs://QmSaved');
+        await flushMicrotasks();
+
+        const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+        expect(loadedUrl).toContain('pages/error.html');
+      }
+    });
+
+    test('IPFS: saved content does not cover a node in error', async () => {
+      const ctx = await loadNavigationModule({
+        currentIpfsStatus: 'error',
+        registry: { ipfs: { mode: 'none', cacheOnly: true } },
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('ipfs://QmSaved');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain('pages/error.html');
+    });
+
     test('IPFS: a running node navigates normally (no error page)', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();

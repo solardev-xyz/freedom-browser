@@ -1,0 +1,3 @@
+- Saved IPFS pages with IPFS switched off: pages you've opened before still load from this device ([#30](https://github.com/solardev-xyz/freedom-browser/issues/30))
+  - IPFS makes no network connections while it is off
+  - A page that isn't saved says so, and the Nodes menu notes that saved pages still load
