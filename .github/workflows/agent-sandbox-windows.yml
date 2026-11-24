@@ -40,6 +40,15 @@ jobs:
           node-version: 24
           cache: npm
       - uses: ./.github/actions/install-node-deps
+      # freedom-colibrid (freedom-core design 0014): the app the startup
+      # qualification below launches runs Colibri on it. The same verified
+      # fetch as ci.yml's (the pinned digest, and build provenance in Actions).
+      - name: Download freedom-colibrid binaries
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Build the pinned native sandbox with installed MSVC
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
