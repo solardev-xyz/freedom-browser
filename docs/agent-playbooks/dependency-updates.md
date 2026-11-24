@@ -25,9 +25,12 @@ lifecycle scripts). The gate covers the other two kinds of update in
   actually ships). Steps 2-3 are replaced by re-deriving the trust root from
   the upstream release yourself before any fetch script runs: the
   `SHA256SUMS` digest for Ant and libradicle, the `myotis-node.SHA256SUMS`
-  digest for Myotis, each asset's sha256 for freedom-ipfs, the crates.io version (plus the patched Windows
-  crates' sha256) for Arti, per
+  digest for Myotis, each asset's sha256 for freedom-ipfs, the crates.io
+  version (plus the patched Windows crates' sha256) for Arti, per
   [`bundled-binaries.md`](bundled-binaries.md#bumping-the-other-binaries).
+  Myotis is out of that playbook's scope: its `SHA256SUMS` digest and
+  per-target addon digests live in `scripts/myotis-release.json`, per
+  [`release-process.md` § Bundled binaries](release-process.md#bundled-binaries-ant-freedom-ipfs-radicle-arti-myotis).
   Never copy a digest from the release page or the PR under review.
 - **Pinned upstream data** (the uBlock scriptlets in
   `scripts/fetch-adblock-lists.js`, which are code injected into pages): check
