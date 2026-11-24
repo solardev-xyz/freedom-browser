@@ -240,6 +240,12 @@ describe('isPublicAddress', () => {
     '::',
     '::ffff:127.0.0.1',
     '::ffff:7f00:1',
+    '::127.0.0.1',
+    '::7f00:1',
+    '::10.0.0.1',
+    '::ffff:0:127.0.0.1',
+    '::ffff:0:7f00:1',
+    '::ffff:0:192.168.0.1',
     'fe80::1',
     'fd00::1',
     '64:ff9b::a00:1',
@@ -250,10 +256,13 @@ describe('isPublicAddress', () => {
     expect(pubky.isPublicAddress(address)).toBe(false);
   });
 
-  test.each(['1.1.1.1', '93.184.215.14', '2606:4700:4700::1111', '64:ff9b::101:101'])(
-    'allows %s',
-    (address) => {
-      expect(pubky.isPublicAddress(address)).toBe(true);
-    }
-  );
+  test.each([
+    '1.1.1.1',
+    '93.184.215.14',
+    '2606:4700:4700::1111',
+    '64:ff9b::101:101',
+    '::ffff:1.1.1.1',
+  ])('allows %s', (address) => {
+    expect(pubky.isPublicAddress(address)).toBe(true);
+  });
 });

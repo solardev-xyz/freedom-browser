@@ -78,8 +78,12 @@ for (const [prefix, bits] of [
   NON_PUBLIC.addSubnet(prefix, bits, 'ipv4');
 }
 for (const [prefix, bits] of [
-  ['::', 128],
-  ['::1', 128],
+  // IPv4-compatible (`::127.0.0.1`, deprecated by RFC 4291) and SIIT
+  // IPv4-translated (`::ffff:0:127.0.0.1`, RFC 2765) addresses embed an IPv4
+  // address, possibly a private one; neither is a real homeserver address.
+  // `::/96` also covers the unspecified `::` and loopback `::1`.
+  ['::', 96],
+  ['::ffff:0:0:0', 96],
   ['100::', 64],
   ['2001:db8::', 32],
   ['2002::', 16], // 6to4 embeds an IPv4 address, possibly a private one
