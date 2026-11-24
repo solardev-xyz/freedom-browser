@@ -4,7 +4,7 @@ const root = path.resolve(process.argv[2] || process.cwd());
 (async () => {
   const dir = await fs.mkdtemp('/private/tmp/myotis-asar-');
   const stage = path.join(dir, 'stage');
-  for (const file of ['src/main/myotis/checkpoint-verifier.js', 'src/main/myotis/checkpoint-verifier-worker.js', 'src/main/ens/colibri-runtime.js']) {
+  for (const file of ['src/main/myotis/checkpoint-verifier.js', 'src/main/myotis/checkpoint-verifier-worker.js', 'src/main/myotis/checkpoint-evidence.js', 'src/main/ens/colibri-runtime.js']) {
     await fs.mkdir(path.dirname(path.join(stage, file)), { recursive: true });
     await fs.copyFile(path.join(root, file), path.join(stage, file));
   }
