@@ -382,28 +382,38 @@ function createAutomationRuntime(options = {}) {
       }
       custody.attachedGuests.delete(guest);
       releaseHeldGuest(guest);
-      if (custody.failed && custody.attachedGuests.size === 0) decideCreationCustody(custody, null);
+      releaseSpentFailedCreation(custody);
+    };
+    // A failed creation that has stopped collecting and holds no guest any
+    // more has nothing left to decide.
+    const releaseSpentFailedCreation = (custody) => {
+      if (custody.failed && !custody.collecting && custody.attachedGuests.size === 0) {
+        decideCreationCustody(custody, null);
+      }
     };
     const learnCreatedRendererTab = (custody, rendererTabId) => {
       custody.rendererTabId = rendererTabId;
-      clearTimeout(custody.graceTimer);
       for (const guest of [...custody.attachedGuests]) settleHeldGuest(custody, guest);
     };
     // A creation that failed before naming its guest may still have opened a
-    // tab. It stops collecting guests; the ones it holds are decided at their
-    // own bind once the chrome's answer names the tab. If the chrome never
-    // answered, a short grace waits for a late answer, then releases them.
+    // tab, and that tab's guest may not have attached yet (the chrome can
+    // answer, or the creation time out, before did-attach-webview). For a
+    // short grace it keeps collecting guests like a pending creation; each
+    // one is decided at its own bind once the chrome's answer names the tab
+    // (the named one stays held, any other is released). When the grace ends
+    // it stops collecting: with no answer from the chrome every held guest is
+    // released, otherwise the guests still held wait for their own bind.
+    // The created tab itself stays undecided for its whole life: the Agent
+    // never got a tab id to claim it with, so it never pays from a cap or
+    // auto-approves a Swarm/Radicle action until it is closed.
     const holdFailedCreation = (custody) => {
       custody.failed = true;
-      if (custody.attachedGuests.size === 0) {
-        decideCreationCustody(custody, null);
-        return;
-      }
-      if (custody.rendererTabId) return;
-      custody.graceTimer = setTimeout(
-        () => decideCreationCustody(custody, null),
-        desktopTabControlTimeoutMs
-      );
+      custody.collecting = true;
+      custody.graceTimer = setTimeout(() => {
+        custody.collecting = false;
+        if (!custody.rendererTabId) decideCreationCustody(custody, null);
+        else releaseSpentFailedCreation(custody);
+      }, desktopTabControlTimeoutMs);
     };
     const settleTabControlRequest = (request, result, error = null) => {
       if (!pendingTabControlRequests.delete(request.requestId)) return;
@@ -512,18 +522,16 @@ function createAutomationRuntime(options = {}) {
       // x402 cap payment, no Swarm/Radicle auto-approve rule). A guest that
       // is not the created one is released when it binds to its own renderer
       // tab (its first dom-ready), not when the Agent page's navigation
-      // commits. See settleHeldGuest.
+      // commits. See settleHeldGuest. A failed creation keeps collecting
+      // for its grace (see holdFailedCreation).
       for (const custody of creationCustodies) {
-        if (custody.failed || !guestWebContents) continue;
+        if ((custody.failed && !custody.collecting) || !guestWebContents) continue;
         custody.attachedGuests.add(guestWebContents);
         setPageCustodyUndecided(guestWebContents, true);
       }
       guestWebContents?.once?.('destroyed', () => {
         for (const custody of [...creationCustodies]) {
-          if (!custody.attachedGuests.delete(guestWebContents)) continue;
-          if (custody.failed && custody.attachedGuests.size === 0) {
-            decideCreationCustody(custody, null);
-          }
+          if (custody.attachedGuests.delete(guestWebContents)) releaseSpentFailedCreation(custody);
         }
       });
       const tabId = registerWebContents(guestWebContents, { kind: 'desktop' });

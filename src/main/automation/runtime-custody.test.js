@@ -191,7 +191,10 @@ const settledYet = async (promise) => {
 // tab is provably not the created one and is released then, not when the
 // Agent page commits.
 test('a user tab is released at its own bind while the created tab is still loading', async () => {
-  const { host, ipcMain, startCreation } = setup({ desktopNavigationTimeoutMs: 500 });
+  const { host, ipcMain, startCreation } = setup({
+    desktopNavigationTimeoutMs: 500,
+    desktopTabControlTimeoutMs: 30, // The failed creation's grace.
+  });
   const { creation, requestId } = await startCreation('https://slow.example/');
   const created = new FakeWebContents('', 51, host); // Not committed, not bound.
   host.emit('did-attach-webview', {}, created);
@@ -213,7 +216,10 @@ test('a user tab is released at its own bind while the created tab is still load
 });
 
 test('a user tab that bound before the chrome named the created tab is released by that answer', async () => {
-  const { host, ipcMain, startCreation } = setup({ desktopNavigationTimeoutMs: 500 });
+  const { host, ipcMain, startCreation } = setup({
+    desktopNavigationTimeoutMs: 500,
+    desktopTabControlTimeoutMs: 30, // The failed creation's grace.
+  });
   const { creation, requestId } = await startCreation('https://slow.example/');
   const userTab = new FakeWebContents('https://user.example/', 54, host);
   host.emit('did-attach-webview', {}, userTab);
@@ -280,17 +286,73 @@ test('a creation that times out before the chrome answers still keeps its tab on
   // Still unknown which one the Agent opened: both stay held.
   expect(userPageCustodyVersion(71)).toBeNull();
   expect(userPageCustodyVersion(72)).toBeNull();
-  // A tab opened after the failure is not held for it.
+  // A tab opened within the grace after the failure may still be the
+  // Agent's: it is held too, until its own bind says otherwise.
   const later = new FakeWebContents('https://user.example/later', 73, host);
   host.emit('did-attach-webview', {}, later);
-  expect(userPageCustodyVersion(73)).toEqual(expect.any(Number));
+  expect(userPageCustodyVersion(73)).toBeNull();
 
   // The chrome's answer and the binds arrive late.
   createResult(ipcMain, host, requestId, 31);
   bind(ipcMain, host, 32, 72);
   expect(userPageCustodyVersion(72)).toEqual(expect.any(Number));
+  bind(ipcMain, host, 33, 73);
+  expect(userPageCustodyVersion(73)).toEqual(expect.any(Number));
   bind(ipcMain, host, 31, 71);
   expect(userPageCustodyVersion(71)).toBeNull();
+});
+
+test('a creation that fails after the chrome named its tab still holds a guest that attaches later', async () => {
+  const { host, ipcMain, startCreation } = setup({
+    desktopNavigationTimeoutMs: 20,
+    desktopTabControlTimeoutMs: 60_000,
+  });
+  const { creation, requestId } = await startCreation('https://seller.example/paid');
+  // The chrome names the tab, then the creation times out before any guest
+  // attached.
+  createResult(ipcMain, host, requestId, 91);
+  await expect(creation).rejects.toThrow(/Timed out/);
+
+  const userTab = new FakeWebContents('https://user.example/', 92, host);
+  host.emit('did-attach-webview', {}, userTab);
+  const created = new FakeWebContents('', 93, host);
+  host.emit('did-attach-webview', {}, created);
+  expect(userPageCustodyVersion(92)).toBeNull();
+  expect(userPageCustodyVersion(93)).toBeNull();
+
+  // The user's tab is released at its own bind; that does not end the hold
+  // while the named tab has not bound yet.
+  bind(ipcMain, host, 94, 92);
+  expect(userPageCustodyVersion(92)).toEqual(expect.any(Number));
+  bind(ipcMain, host, 91, 93);
+  expect(userPageCustodyVersion(93)).toBeNull();
+  expect(autoApproveRefused({ id: 1 }, 93)).toBe(true);
+
+  // The created tab is decided: later tabs are ordinary user pages.
+  const after = new FakeWebContents('https://user.example/after', 95, host);
+  host.emit('did-attach-webview', {}, after);
+  expect(userPageCustodyVersion(95)).toEqual(expect.any(Number));
+});
+
+test('a failed creation stops collecting guests once its grace ends', async () => {
+  const { host, ipcMain, startCreation } = setup({
+    desktopNavigationTimeoutMs: 20,
+    desktopTabControlTimeoutMs: 40,
+  });
+  const { creation, requestId } = await startCreation('https://seller.example/paid');
+  createResult(ipcMain, host, requestId, 101);
+  await expect(creation).rejects.toThrow(/Timed out/);
+  const held = new FakeWebContents('https://user.example/', 102, host);
+  host.emit('did-attach-webview', {}, held);
+  expect(userPageCustodyVersion(102)).toBeNull();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  // The chrome named the tab, so a guest still held waits for its own bind.
+  expect(userPageCustodyVersion(102)).toBeNull();
+  const late = new FakeWebContents('https://user.example/late', 103, host);
+  host.emit('did-attach-webview', {}, late);
+  expect(userPageCustodyVersion(103)).toEqual(expect.any(Number));
+  bind(ipcMain, host, 104, 102);
+  expect(userPageCustodyVersion(102)).toEqual(expect.any(Number));
 });
 
 test('a timed-out creation whose tab never binds releases its guests after a short grace', async () => {
