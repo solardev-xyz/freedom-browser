@@ -34,6 +34,17 @@ const MAX_REFERENCES = 512;
 const ATTEMPT_WINDOW = 20;
 const IDLE_RESET_MS = 120_000;
 
+// Site-provided Markdown is a separate view of the page, so it keeps its own
+// repeat/cycle state and failed-read counts: interleaving it with snapshots
+// must neither reset their repetition nor clear failed interaction attempts.
+function laneFor(operation) {
+  return operation === OPERATIONS.READ_MARKDOWN ? 'markdown' : 'page';
+}
+
+function freshLane() {
+  return { observation: null, repeats: 0, recent: [] };
+}
+
 function canonical(value, frameIndexes) {
   if (Array.isArray(value)) return value.map((entry) => canonical(entry, frameIndexes));
   if (!value || typeof value !== 'object') return value;
@@ -111,10 +122,8 @@ class BrowserRecoveryTracker {
     const pageKey = this.#digest(input.tabId);
     if (!this.#pages.has(pageKey)) {
       this.#pages.set(pageKey, {
-        observation: null,
-        repeats: 0,
+        lanes: { page: freshLane(), markdown: freshLane() },
         attempts: [],
-        recent: [],
         references: new Map(),
       });
       if (this.#pages.size > MAX_PAGES) this.#pages.delete(this.#pages.keys().next().value);
@@ -135,10 +144,8 @@ class BrowserRecoveryTracker {
       PROGRESS_RECEIPTS.has(operation) ||
       (operation === OPERATIONS.SCROLL && result?.moved === true)
     ) {
-      page.observation = null;
-      page.repeats = 0;
+      page.lanes = { page: freshLane(), markdown: freshLane() };
       page.attempts = [];
-      page.recent = [];
       if (operation === OPERATIONS.NAVIGATE) page.references.clear();
       return null;
     }
@@ -164,11 +171,13 @@ class BrowserRecoveryTracker {
       navigationId: envelope.navigationId,
       result: canonical(observed, frames),
     });
-    if (page.observation === observation) page.repeats += 1;
+    const laneName = laneFor(operation);
+    const lane = page.lanes[laneName];
+    if (lane.observation === observation) lane.repeats += 1;
     else {
-      page.observation = observation;
-      page.repeats = 1;
-      page.attempts = [];
+      lane.observation = observation;
+      lane.repeats = 1;
+      page.attempts = page.attempts.filter((entry) => entry.lane !== laneName);
     }
     for (const [index, element] of (result.elements || []).entries()) {
       if (typeof element.ref !== 'string') continue;
@@ -178,18 +187,18 @@ class BrowserRecoveryTracker {
       if (typeof frame.viewport?.ref !== 'string') continue;
       this.#remember(page, frame.viewport.ref, { scope, index, viewport: true, url: frame.url });
     }
-    page.recent.push({ scope, observation });
-    if (page.recent.length > 6) page.recent.shift();
-    const repeated = hint('observation', page.repeats);
+    lane.recent.push({ scope, observation });
+    if (lane.recent.length > 6) lane.recent.shift();
+    const repeated = hint('observation', lane.repeats);
     if (repeated) return repeated;
-    const recent = page.recent;
+    const recent = lane.recent;
     if (
       recent.length === 6 &&
       recent.every((entry) => entry.scope === scope) &&
       recent[0].observation !== recent[1].observation &&
       recent.every((entry, index) => entry.observation === recent[index % 2].observation)
     ) {
-      page.recent = [];
+      lane.recent = [];
       return 'Freedom browser recovery: The same two observed states have alternated three times. Check earlier evidence with browser_recall_evidence and confirm whether the requested outcome changed before repeating this cycle. This is advisory; previous interactions may have had side effects.';
     }
     return null;
@@ -215,9 +224,9 @@ class BrowserRecoveryTracker {
       elementOffset: input.elementOffset || 0,
       textOffset: input.textOffset || 0,
     });
-    page.attempts.push(signature);
+    page.attempts.push({ lane: laneFor(operation), signature });
     if (page.attempts.length > ATTEMPT_WINDOW) page.attempts.shift();
-    return hint(kind, page.attempts.filter((entry) => entry === signature).length);
+    return hint(kind, page.attempts.filter((entry) => entry.signature === signature).length);
   }
 
   #remember(page, ref, descriptor) {

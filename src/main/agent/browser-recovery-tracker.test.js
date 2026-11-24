@@ -276,3 +276,69 @@ test('repeated identical Markdown reads nudge like other observations, scoped by
   for (let index = 1; index <= 3; index += 1) expect(readMarkdown('page')).toBeNull();
   expect(readMarkdown('page')).toContain('4 times');
 });
+
+function markdownEnvelope(text = '# Same') {
+  return {
+    ok: true,
+    navigationId: 1,
+    result: { available: true, format: 'markdown', pageUrl: 'https://example.test/', text },
+  };
+}
+
+test('interleaved Markdown reads keep their own repetition and do not mask repeated snapshots', () => {
+  const tracker = new BrowserRecoveryTracker();
+  const hints = [];
+  for (let index = 1; index <= 8; index += 1) {
+    hints.push(['snapshot', index, read(tracker, index)]);
+    hints.push([
+      'markdown',
+      index,
+      tracker.record(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_one' }, markdownEnvelope()),
+    ]);
+  }
+  for (const [, index, result] of hints) {
+    if ([4, 8].includes(index)) expect(result).toContain(`${index} times`);
+    else expect(result).toBeNull();
+  }
+});
+
+test('a Markdown read between failing clicks does not restart their retryable-error count', () => {
+  const tracker = new BrowserRecoveryTracker();
+  read(tracker, 1);
+  for (let index = 1; index <= 4; index += 1) {
+    tracker.record(
+      OPERATIONS.READ_MARKDOWN,
+      { tabId: 'tab_one' },
+      markdownEnvelope(`# Changed ${index}`)
+    );
+    const result = tracker.record(
+      OPERATIONS.CLICK,
+      { tabId: 'tab_one', ref: 'ref_1' },
+      null,
+      failure
+    );
+    if (index === 4) expect(result).toContain('same retryable error 4 times');
+    else expect(result).toBeNull();
+  }
+});
+
+test('a changed Markdown read clears only failed Markdown reads, a changed snapshot only page attempts', () => {
+  const tracker = new BrowserRecoveryTracker();
+  const capability = { code: ERROR_CODES.CAPABILITY_UNAVAILABLE, retryable: true };
+  const failMarkdown = () =>
+    tracker.record(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_one' }, null, capability);
+  const failClick = () =>
+    tracker.record(OPERATIONS.CLICK, { tabId: 'tab_one', ref: 'same' }, null, failure);
+  for (let index = 1; index <= 3; index += 1) {
+    expect(failMarkdown()).toBeNull();
+    expect(failClick()).toBeNull();
+  }
+  tracker.record(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_one' }, markdownEnvelope('# New'));
+  expect(failMarkdown()).toBeNull();
+  expect(failClick()).toContain('4 times');
+  read(tracker, 1, { text: 'New page state' });
+  expect(failClick()).toBeNull();
+  expect(failMarkdown()).toBeNull();
+  expect(failMarkdown()).toBeNull();
+  expect(failMarkdown()).toContain('4 times');
+});
