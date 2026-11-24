@@ -379,5 +379,19 @@ describe('tabs page-favicon-updated handling (#75)', () => {
       await lookup;
       expect(ctx.tabs.getActiveTab().favicon).toBeFalsy();
     });
+
+    // ...and paints it while the tab is still on that same error page. The
+    // error page has no favicon site, so only the `tab.url === startedOn`
+    // half of the check can keep this answer; without it the tab stays on
+    // the globe every time it is switched to.
+    test('a cached icon that answers while the error page is still showing is painted', async () => {
+      const ctx = await loadTabs();
+      commit(ctx, 'file:///app/pages/error.html?url=https%3A%2F%2Fshop.example%2F');
+      global.window.electronAPI.getCachedFavicon.mockResolvedValueOnce(ICON);
+
+      await ctx.tabs.updateTabFavicon(ctx.tabs.getActiveTab().id, 'https://shop.example/');
+
+      expect(ctx.tabs.getActiveTab().favicon).toBe(ICON);
+    });
   });
 });
