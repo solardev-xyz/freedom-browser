@@ -13,6 +13,7 @@ const {
   asksForSource,
   isSafeLinkUrl,
   isSafeImageUrl,
+  decodeCharacterReferences,
 } = require('./webview-preload-markdown');
 
 const { renderBody } = createMarkdownView({ marked, DOMPurify: null });
@@ -225,6 +226,46 @@ describe('renderBody', () => {
     expect(html).toContain('<img src="a.png" alt="pic">');
     expect(html).toContain('bad &lt;b&gt;alt&lt;/b&gt;');
     expect(html).toContain('<img src="data:image/svg+xml,x" alt="svg">');
+  });
+
+  // marked writes an href into the HTML as it was typed, and the parser then
+  // decodes its character references; the check has to see the decoded URL.
+  // DOMPurify (null here) would strip these too, but must not be the only
+  // layer that does.
+  test.each([
+    '[a](javascript&#58;alert(1))',
+    '[a](javascript&#x3a;alert(1))',
+    '[a](javascript&#0000058alert(1))',
+    '[a](&#x6A;avascript:alert(1))',
+    '[a](&#106;avascript:alert(1))',
+    '[a](javascript&colon;alert(1))',
+    '[a](java&Tab;script:alert(1))',
+    '[a](<java&#x0A;script:alert(1)>)',
+    '[a](&#32;javascript:alert(1))',
+    '[a](javascript&unknownref;alert(1))',
+    '[a]: javascript&#58;alert(1)\n\n[a]',
+    '![a](javascript&#58;alert(1))',
+    '![a](data&#58;text/html,x)',
+  ])('an encoded scheme in %p is unlinked', (md) => {
+    expect(renderBody(md)).not.toMatch(/(?:href|src)=/);
+  });
+
+  test('character references that leave the URL safe keep the link', () => {
+    const html = renderBody('[q](page.md?a=1&amp;b=2) [h](https&#58;//example.org/) [r](a&b.md)');
+    expect(html).toContain('<a href="page.md?a=1&amp;b=2">q</a>');
+    expect(html).toContain('<a href="https&#58;//example.org/">h</a>');
+    expect(html).toContain('<a href="a&b.md">r</a>');
+  });
+
+  test('decodeCharacterReferences decodes as the HTML parser does', () => {
+    expect(decodeCharacterReferences('javascript&#58;x')).toBe('javascript:x');
+    expect(decodeCharacterReferences('&#x6a;&#X61;va')).toBe('java');
+    expect(decodeCharacterReferences('a&#58b')).toBe('a:b');
+    expect(decodeCharacterReferences('a&colon;b&amp;c')).toBe('a:b&c');
+    expect(decodeCharacterReferences('&#0;&#xD800;&#x110000;&#99999999999;&#x80;')).toBe(
+      '\uFFFD'.repeat(5)
+    );
+    expect(decodeCharacterReferences('&constructor;&__proto__;')).toBe('&constructor;&__proto__;');
   });
 
   test('a link title cannot break out of its attribute', () => {

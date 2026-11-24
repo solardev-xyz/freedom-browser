@@ -311,6 +311,57 @@ function urlScheme(url) {
   return { scheme: match ? match[1].toLowerCase() : '', cleaned };
 }
 
+// marked hands a link's or image's href to the renderer as written and puts
+// it into the HTML unchanged, so the parser decodes its character references
+// afterwards: `javascript&#58;` and `&#x6A;avascript:` are javascript: by the
+// time the browser reads them. The renderer checks the href the browser will
+// see: numeric references are decoded as the HTML parser decodes them
+// (`;` optional), and the named ones that can spell part of a scheme or end
+// one too. Every named reference outside that list fails closed in
+// hrefForCheck below. Front-matter URLs never need this: they go through
+// setAttribute, which takes `&` literally.
+const NAMED_REFERENCES = {
+  amp: '&',
+  colon: ':',
+  Tab: '\t',
+  NewLine: '\n',
+  plus: '+',
+  period: '.',
+  sol: '/',
+  quest: '?',
+  num: '#',
+};
+
+function decodeCharacterReferences(value) {
+  return String(value || '').replace(
+    /&(?:#[xX]([0-9a-fA-F]+);?|#([0-9]+);?|([A-Za-z][A-Za-z0-9]*);)/g,
+    (whole, hex, dec, name) => {
+      if (name) return Object.hasOwn(NAMED_REFERENCES, name) ? NAMED_REFERENCES[name] : whole;
+      const code = hex ? parseInt(hex.slice(-8), 16) : parseInt(dec.slice(-8), 10);
+      const big = (hex || dec).replace(/^0+/, '').length > 7;
+      // What the parser puts in place of a null, surrogate or out-of-range
+      // code point. (0x80–0x9F map to Windows-1252 symbols, none of which is
+      // a letter, digit, `+`, `.`, `-` or `:`, so the replacement stands in.)
+      if (big || code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
+        return '�';
+      }
+      if (code >= 0x80 && code <= 0x9f) return '�';
+      return String.fromCodePoint(code);
+    }
+  );
+}
+
+// The href from the Markdown as the browser will read it, or null when a
+// named reference this view does not decode sits where it could still be
+// part of the scheme (before the first `/`, `?` or `#`): fail closed. A bare
+// `&` (`a&b.md`) is no reference; the legacy names the parser also decodes
+// without a `;` (`&amp`, `&lt`, `&copy`, ...) spell no scheme character.
+function hrefForCheck(href) {
+  const decoded = decodeCharacterReferences(href);
+  const head = decoded.split(/[/?#]/, 1)[0];
+  return /&[A-Za-z][A-Za-z0-9]*;/.test(head) ? null : decoded;
+}
+
 function isSafeLinkUrl(url) {
   const { scheme } = urlScheme(url);
   return scheme === '' || LINK_SCHEMES.has(scheme);
@@ -479,11 +530,14 @@ function createMarkdownView({ marked, DOMPurify }) {
         return '';
       },
       // `false` hands a safe link or image to marked's own renderer.
+      // The check runs on the href as the browser will decode it.
       link({ href, tokens }) {
-        return isSafeLinkUrl(href) ? false : this.parser.parseInline(tokens);
+        const url = hrefForCheck(href);
+        return url !== null && isSafeLinkUrl(url) ? false : this.parser.parseInline(tokens);
       },
       image({ href, text }) {
-        return isSafeImageUrl(href) ? false : escapeHtml(text || '');
+        const url = hrefForCheck(href);
+        return url !== null && isSafeImageUrl(url) ? false : escapeHtml(text || '');
       },
     },
   });
@@ -779,6 +833,7 @@ module.exports = {
   asksForSource,
   isSafeLinkUrl,
   isSafeImageUrl,
+  decodeCharacterReferences,
   VIEW_CSS,
   CONTENT_SECURITY_POLICY,
 };
