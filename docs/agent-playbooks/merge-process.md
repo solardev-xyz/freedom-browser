@@ -94,7 +94,7 @@ gh api repos/<owner>/<repo>/pulls/<n> --jq .stack
 Layers merge bottom up. Merging a layer also merges every unmerged layer below
 it, in one all-or-nothing operation, and `main` gets the same history as
 merging each in turn: one `Merge pull request #N` per layer. The procedure above
-changes in four places:
+changes in five places:
 
 - **`main` merges through a merge queue.** Since 2026-11-19 the ruleset
   "main merge queue" requires one for `main`, with merge commits and `ci-ok`
@@ -106,7 +106,6 @@ changes in four places:
   or with `gh stack merge` has not been tried here since the queue was turned
   on, so whether that queues every layer, or merges them past the queue, is
   unknown: watch the first one and record what happens here.
-
 - **Merge from the top layer you want to land.** Use its merge box, or
   `gh stack merge <stack-number> --merge --yes` for the whole stack (a pull
   request number in place of the stack number merges up to that layer). Don't
@@ -118,9 +117,8 @@ changes in four places:
   last picked.
 - **Each layer meets the stack base's rules.** Every layer is held to the
   protection of the stack's base (`main` here), not its own base's, so each
-  needs its own green `ci-ok`. CI runs
-  on every layer, because `ci.yml`'s `pull_request` trigger has no branch
-  filter.
+  needs its own green `ci-ok`. CI runs on every layer, because `ci.yml`'s
+  `pull_request` trigger has no branch filter.
 - **Rebase the stack instead of updating a branch.** A stack must be linear:
   the bottom layer contains `main`, and each layer contains the tip of the one
   below. `gh pr update-branch` on the bottom layer adds a merge commit the
@@ -142,7 +140,9 @@ so bring the next layer up to date yourself straight after a partial merge.
 Check with `gh api repos/<owner>/<repo>/pulls/<n> --jq .mergeable_state` and
 `gh api repos/<owner>/<repo>/compare/main...<head-sha>`. If **Rebase stack**
 is offered and there is no conflict, use it; otherwise rebase the layer's own
-commits onto `main` locally, dropping the merged layer's:
+commits onto `main` locally, dropping the merged layer's. Note every open
+layer's current tip (`git rev-parse origin/<branch>`) before you start, since
+each rebase moves the base of the layer above it:
 
 ```
 git fetch origin && git checkout -B upd origin/<branch>
@@ -151,7 +151,21 @@ git push --force-with-lease=<branch>:origin/<branch> \
   git@github.com:<owner>/<repo>.git HEAD:<branch>
 ```
 
-Pushing over SSH, as in step 3, is needed when the layer touches
+In a stack of three or more layers, the layers above the one you just rebased
+are still built on its old tip, so the stack is not linear yet. Run `git fetch
+origin` (the push above goes to a URL, so it does not move `origin/<branch>`),
+then repeat the three commands for each layer above, bottom up: that layer's
+own branch, `origin/<branch-below>` (the layer you just rebased) in place of
+`origin/main`, and the noted old tip of that layer below in place of
+`<old-tip-of-merged-layer>`. Check each with the `compare` call above before
+moving on.
+
+If a rebase stops on a conflict, resolve it as in step 4 (deliberately, never
+by taking one side wholesale), `git add` the files and `git rebase --continue`.
+Run the layer's tests before pushing. `git rebase --abort` puts the branch back
+where it was, and nothing reaches GitHub until the push.
+
+Pushing over SSH, as in step 3, is needed when a layer touches
 `.github/workflows/` (#1148 does).
 
 The rest of this section comes from GitHub's docs on stacked pull requests,
