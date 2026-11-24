@@ -154,7 +154,11 @@ test('provider IPC refuses an auto-approved seed or unseed from a tab in Agent c
     for (const method of ['radicle_seed', 'radicle_unseed']) {
       for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }]) {
         const refused = await call(method, meta);
-        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+        expect(refused.error).toMatchObject({
+          code: 4100,
+          message: 'A page in Agent custody needs approval for this action',
+          data: { reason: 'agent_custody' },
+        });
       }
     }
     expect(manager.seedRepository).not.toHaveBeenCalled();
@@ -173,7 +177,26 @@ test('provider IPC refuses an auto-approved seed or unseed from a tab in Agent c
     [{ webContentsId: 9, approval: 'auto' }, { id: 2 }],
   ]) {
     const refused = await call('radicle_seed', meta, sender);
-    expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+    // Not a page in Agent custody: the message does not say it is.
+    expect(refused.error).toMatchObject({
+      code: 4100,
+      message: 'This page needs approval for this action',
+      data: { reason: 'agent_custody' },
+    });
+  }
+  // A page the Agent may be opening (custody not decided yet) is refused the
+  // same way, without being called an Agent page.
+  const { setPageCustodyUndecided } = require('../wallet/agent-tab-custody');
+  setPageCustodyUndecided(guest, true);
+  try {
+    const refused = await call('radicle_seed', { webContentsId: 9, approval: 'auto' });
+    expect(refused.error).toMatchObject({
+      code: 4100,
+      message: 'This page needs approval for this action',
+      data: { reason: 'agent_custody' },
+    });
+  } finally {
+    setPageCustodyUndecided(guest, false);
   }
   expect(manager.seedRepository).toHaveBeenCalledTimes(1);
   expect(manager.unseedRepository).toHaveBeenCalledTimes(1);

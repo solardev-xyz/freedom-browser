@@ -384,13 +384,15 @@ function agentCustodyRefusal(sender, method, meta) {
   if (meta?.approval === 'user') return null;
   const webContentsId = meta?.webContentsId;
   const automatic = signedWrite || meta?.approval === 'auto';
-  if (
-    isAgentPageId(webContentsId) ||
-    (automatic && autoApproveRefused(sender, webContentsId))
-  ) {
+  const agentPage = isAgentPageId(webContentsId);
+  if (agentPage || (automatic && autoApproveRefused(sender, webContentsId))) {
+    // The grant also declines a page that is not provably the user's: one
+    // the Agent may be opening, or one this window does not host.
     return providerError(
       ERRORS.UNAUTHORIZED,
-      'A page in Agent custody needs approval for this action',
+      agentPage
+        ? 'A page in Agent custody needs approval for this action'
+        : 'This page needs approval for this action',
       { reason: 'agent_custody' }
     );
   }

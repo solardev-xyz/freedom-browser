@@ -26,15 +26,25 @@ class FakeWebContents extends EventEmitter {
     this.hostWebContents = host;
     mockGuests.set(id, this);
   }
-  loadURL = jest.fn(async (url) => { this.url = url; });
+  loadURL = jest.fn(async (url) => {
+    this.url = url;
+  });
   executeJavaScriptInIsolatedWorld = jest.fn();
   insertText = jest.fn();
   capturePage = jest.fn();
   stop = jest.fn();
-  getURL() { return this.url; }
-  getTitle() { return 'Fixture'; }
-  isLoading() { return false; }
-  isDestroyed() { return false; }
+  getURL() {
+    return this.url;
+  }
+  getTitle() {
+    return 'Fixture';
+  }
+  isLoading() {
+    return false;
+  }
+  isDestroyed() {
+    return false;
+  }
 }
 
 function setup(options = {}) {
@@ -57,7 +67,9 @@ function setup(options = {}) {
   const startCreation = async (url) => {
     const creation = runtime.createDesktopPageForHost(host, url);
     await new Promise((resolve) => setImmediate(resolve));
-    const request = host.send.mock.calls.filter(([channel]) => channel === IPC.AUTOMATION_CREATE_TAB).at(-1)[1];
+    const request = host.send.mock.calls
+      .filter(([channel]) => channel === IPC.AUTOMATION_CREATE_TAB)
+      .at(-1)[1];
     return { creation, requestId: request.requestId };
   };
   return { runtime, host, ipcMain, startCreation };
@@ -74,8 +86,16 @@ test('a created tab is out of user custody from attach until the Agent claims it
   expect(userPageCustodyVersion(41)).toBeNull();
   expect(autoApproveRefused({ id: 1 }, 41)).toBe(true);
 
-  ipcMain.emit(IPC.AUTOMATION_CREATE_TAB_RESULT, { sender: host }, { requestId, ok: true, rendererTabId: 5 });
-  ipcMain.emit(IPC.AUTOMATION_BIND_TAB, { sender: host }, { rendererTabId: 5, guestWebContentsId: 41 });
+  ipcMain.emit(
+    IPC.AUTOMATION_CREATE_TAB_RESULT,
+    { sender: host },
+    { requestId, ok: true, rendererTabId: 5 }
+  );
+  ipcMain.emit(
+    IPC.AUTOMATION_BIND_TAB,
+    { sender: host },
+    { rendererTabId: 5, guestWebContentsId: 41 }
+  );
   await expect(creation).resolves.toBe('tab_1');
   // Creation resolved; the Agent has not claimed it yet.
   expect(userPageCustodyVersion(41)).toBeNull();
@@ -95,8 +115,16 @@ test('a user tab that attached during the creation is released once creation nam
   host.emit('did-attach-webview', {}, created);
   expect(userPageCustodyVersion(42)).toBeNull(); // Unknown yet: fail closed.
 
-  ipcMain.emit(IPC.AUTOMATION_CREATE_TAB_RESULT, { sender: host }, { requestId, ok: true, rendererTabId: 6 });
-  ipcMain.emit(IPC.AUTOMATION_BIND_TAB, { sender: host }, { rendererTabId: 6, guestWebContentsId: 43 });
+  ipcMain.emit(
+    IPC.AUTOMATION_CREATE_TAB_RESULT,
+    { sender: host },
+    { requestId, ok: true, rendererTabId: 6 }
+  );
+  ipcMain.emit(
+    IPC.AUTOMATION_BIND_TAB,
+    { sender: host },
+    { rendererTabId: 6, guestWebContentsId: 43 }
+  );
   await creation;
   expect(userPageCustodyVersion(42)).toEqual(expect.any(Number));
   expect(userPageCustodyVersion(43)).toBeNull();
@@ -118,8 +146,16 @@ test('a creation that times out after its tab appeared keeps that tab undecided'
   const { creation, requestId } = await startCreation('https://seller.example/paid');
   const created = new FakeWebContents('about:blank', 46, host); // Never commits.
   host.emit('did-attach-webview', {}, created);
-  ipcMain.emit(IPC.AUTOMATION_CREATE_TAB_RESULT, { sender: host }, { requestId, ok: true, rendererTabId: 9 });
-  ipcMain.emit(IPC.AUTOMATION_BIND_TAB, { sender: host }, { rendererTabId: 9, guestWebContentsId: 46 });
+  ipcMain.emit(
+    IPC.AUTOMATION_CREATE_TAB_RESULT,
+    { sender: host },
+    { requestId, ok: true, rendererTabId: 9 }
+  );
+  ipcMain.emit(
+    IPC.AUTOMATION_BIND_TAB,
+    { sender: host },
+    { rendererTabId: 9, guestWebContentsId: 46 }
+  );
   await expect(creation).rejects.toThrow(/Timed out/);
   expect(userPageCustodyVersion(46)).toBeNull();
 });
@@ -130,4 +166,143 @@ test('tabs that attach with no creation pending are ordinary user pages', () => 
   host.emit('did-attach-webview', {}, guest);
   expect(userPageCustodyVersion(45)).toEqual(expect.any(Number));
   expect(autoApproveRefused({ id: 1 }, 45)).toBe(false);
+});
+
+const bind = (ipcMain, host, rendererTabId, guestWebContentsId) =>
+  ipcMain.emit(IPC.AUTOMATION_BIND_TAB, { sender: host }, { rendererTabId, guestWebContentsId });
+const createResult = (ipcMain, host, requestId, rendererTabId) =>
+  ipcMain.emit(
+    IPC.AUTOMATION_CREATE_TAB_RESULT,
+    { sender: host },
+    { requestId, ok: true, rendererTabId }
+  );
+const settledYet = async (promise) => {
+  let settled = false;
+  promise.then(
+    () => (settled = true),
+    () => (settled = true)
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  return settled;
+};
+
+// The chrome binds a tab at its first dom-ready, which for the Agent's tab on
+// a slow URL is its first commit. A user tab that binds to its own renderer
+// tab is provably not the created one and is released then, not when the
+// Agent page commits.
+test('a user tab is released at its own bind while the created tab is still loading', async () => {
+  const { host, ipcMain, startCreation } = setup({ desktopNavigationTimeoutMs: 500 });
+  const { creation, requestId } = await startCreation('https://slow.example/');
+  const created = new FakeWebContents('', 51, host); // Not committed, not bound.
+  host.emit('did-attach-webview', {}, created);
+  const userTab = new FakeWebContents('https://user.example/', 52, host);
+  host.emit('did-attach-webview', {}, userTab);
+  createResult(ipcMain, host, requestId, 11);
+  expect(userPageCustodyVersion(52)).toBeNull();
+
+  bind(ipcMain, host, 12, 52);
+  expect(await settledYet(creation)).toBe(false);
+  expect(userPageCustodyVersion(52)).toEqual(expect.any(Number));
+  expect(autoApproveRefused({ id: 1 }, 52)).toBe(false);
+  expect(userPageCustodyVersion(51)).toBeNull();
+
+  created.url = 'https://slow.example/';
+  bind(ipcMain, host, 11, 51);
+  await expect(creation).resolves.toBe('tab_1');
+  expect(userPageCustodyVersion(51)).toBeNull();
+});
+
+test('a user tab that bound before the chrome named the created tab is released by that answer', async () => {
+  const { host, ipcMain, startCreation } = setup({ desktopNavigationTimeoutMs: 500 });
+  const { creation, requestId } = await startCreation('https://slow.example/');
+  const userTab = new FakeWebContents('https://user.example/', 54, host);
+  host.emit('did-attach-webview', {}, userTab);
+  bind(ipcMain, host, 14, 54);
+  expect(userPageCustodyVersion(54)).toBeNull(); // Which tab is the Agent's is unknown yet.
+  createResult(ipcMain, host, requestId, 13);
+  expect(userPageCustodyVersion(54)).toEqual(expect.any(Number));
+  await expect(creation).rejects.toThrow(/Timed out/);
+});
+
+test('overlapping creations do not release each other’s tab', async () => {
+  const { host, ipcMain, startCreation } = setup({ desktopNavigationTimeoutMs: 200 });
+  const first = await startCreation('https://one.example/');
+  const second = await startCreation('https://two.example/');
+  const tabOne = new FakeWebContents('about:blank', 61, host);
+  host.emit('did-attach-webview', {}, tabOne);
+  const tabTwo = new FakeWebContents('about:blank', 62, host);
+  host.emit('did-attach-webview', {}, tabTwo);
+
+  // The second creation names its tab first: tabOne may still be the first's.
+  ipcMain.emit(
+    IPC.AUTOMATION_CREATE_TAB_RESULT,
+    { sender: host },
+    { requestId: second.requestId, ok: true, rendererTabId: 22 }
+  );
+  ipcMain.emit(
+    IPC.AUTOMATION_BIND_TAB,
+    { sender: host },
+    { rendererTabId: 22, guestWebContentsId: 62 }
+  );
+  expect(userPageCustodyVersion(61)).toBeNull();
+  expect(userPageCustodyVersion(62)).toBeNull();
+
+  // The first names its tab: it must not release the second's.
+  ipcMain.emit(
+    IPC.AUTOMATION_CREATE_TAB_RESULT,
+    { sender: host },
+    { requestId: first.requestId, ok: true, rendererTabId: 21 }
+  );
+  ipcMain.emit(
+    IPC.AUTOMATION_BIND_TAB,
+    { sender: host },
+    { rendererTabId: 21, guestWebContentsId: 61 }
+  );
+  expect(userPageCustodyVersion(61)).toBeNull();
+  expect(userPageCustodyVersion(62)).toBeNull();
+  // Neither tab commits: both creations time out and both tabs stay held.
+  await Promise.allSettled([first.creation, second.creation]);
+  expect(userPageCustodyVersion(61)).toBeNull();
+  expect(userPageCustodyVersion(62)).toBeNull();
+});
+
+test('a creation that times out before the chrome answers still keeps its tab once it binds', async () => {
+  const { host, ipcMain, startCreation } = setup({
+    desktopNavigationTimeoutMs: 20,
+    desktopTabControlTimeoutMs: 60_000,
+  });
+  const { creation, requestId } = await startCreation('https://seller.example/paid');
+  const created = new FakeWebContents('', 71, host);
+  host.emit('did-attach-webview', {}, created);
+  const userTab = new FakeWebContents('https://user.example/', 72, host);
+  host.emit('did-attach-webview', {}, userTab);
+  await expect(creation).rejects.toThrow(/Timed out/);
+  // Still unknown which one the Agent opened: both stay held.
+  expect(userPageCustodyVersion(71)).toBeNull();
+  expect(userPageCustodyVersion(72)).toBeNull();
+  // A tab opened after the failure is not held for it.
+  const later = new FakeWebContents('https://user.example/later', 73, host);
+  host.emit('did-attach-webview', {}, later);
+  expect(userPageCustodyVersion(73)).toEqual(expect.any(Number));
+
+  // The chrome's answer and the binds arrive late.
+  createResult(ipcMain, host, requestId, 31);
+  bind(ipcMain, host, 32, 72);
+  expect(userPageCustodyVersion(72)).toEqual(expect.any(Number));
+  bind(ipcMain, host, 31, 71);
+  expect(userPageCustodyVersion(71)).toBeNull();
+});
+
+test('a timed-out creation whose tab never binds releases its guests after a short grace', async () => {
+  const { host, startCreation } = setup({
+    desktopNavigationTimeoutMs: 20,
+    desktopTabControlTimeoutMs: 30,
+  });
+  const { creation } = await startCreation('https://seller.example/paid');
+  const guest = new FakeWebContents('https://user.example/', 81, host);
+  host.emit('did-attach-webview', {}, guest);
+  await expect(creation).rejects.toThrow(/Timed out/);
+  expect(userPageCustodyVersion(81)).toBeNull();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  expect(userPageCustodyVersion(81)).toEqual(expect.any(Number));
 });
