@@ -10,7 +10,7 @@ The flow at a glance:
 
 1. Branch `release/<version>` off `main` (§0), set the version to `<version>-rc.1` (§1), refresh dependencies (§2), draft the changelog (§3), check licenses and UI consistency (§4).
 2. Once CI is green on the branch head, tag `v<version>-rc.1` and push (§5). CI publishes a pre-release. Smoke-test it on every platform (§6). Fix on the release branch, bump to `rc.2`, tag again — until a candidate is clean.
-3. Set the bare `<version>`, finalize the changelog, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
+3. Set the bare `<version>`, finalize the changelog, and once CI is green on that commit, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
 4. Upload the draft's assets to `freedom.baby`, update the website, publish the draft (§7). Merge the branch into `main` (§8) and open the next dev cycle (§9).
 
 Myotis packaging also builds the checked-in native supervisor before binary
@@ -211,7 +211,6 @@ NODE_PATH=$PWD/node_modules xvfb-run -a -s "-screen 0 1440x900x24" \
 
 It writes `<d|l>-<nn>-<surface>.png` for every chrome surface, settings section and internal page into `/tmp/freedom-shots` (override with `SHOTS_DIR`), takes about four minutes per theme, and exits non-zero listing any step that failed — a failed step contaminates the shots after it, so re-run rather than reading past it. Then walk the shots against `ui-consistency.md`: each surface next to its nearest sibling, in both themes, plus that playbook's checklist (heading sizes, button style and verb, input fonts, focus rings, empty states, counters, shortcut label format). File what you find as issues on the milestone; fix on the release branch what is worth holding the release for and let the rest ride to the next cycle. Skipping this step is how a cycle ships with no light-theme coverage at all.
 
-
 ## 5. Build with CI: candidates and the final
 
 Every build is triggered by pushing an annotated tag from the release branch. The tag must equal `v` + the `package.json` version, or the workflow fails in its first minute.
@@ -251,7 +250,7 @@ What `.github/workflows/release.yml` then does:
 
 Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no Myotis addon), so no Windows ARM64 artifact bundles Tor either — it would need the same Arti build step on an ARM64 Windows runner. No Windows code-signing certificate exists, so the installer is unsigned and SmartScreen prompts on first run. The installer is named `Freedom-Setup-<v>.exe` (`build.nsis.artifactName`), not electron-builder's default with spaces, because GitHub rewrites spaces in release-asset names to dots, which would break the `url:` in `latest-win-x64.yml`.
 
-**The candidate loop.** Cut `rc.1` as soon as the branch is set up (§1–§4). Fix issues with PRs against `release/<version>` (or land them on `main` and cherry-pick), bump to `rc.2`, tag, push. Repeat until a candidate passes §6 with nothing left to fix. Only then set the bare version (§1), finalize the changelog commit (§3), and tag `v<version>` from that commit. The final build is then the same tree as the last candidate plus the version and changelog commits, which is the point: a final that fails §6 becomes the next patch version, not a retag.
+**The candidate loop.** Cut `rc.1` as soon as the branch is set up (§1–§4). Fix issues with PRs against `release/<version>` (or land them on `main` and cherry-pick), bump to `rc.2`, wait for CI to go green on the bump, tag, push. Repeat until a candidate passes §6 with nothing left to fix. Only then set the bare version (§1), finalize the changelog commit (§3), wait for CI to go green on it, and tag `v<version>` from that commit. The final build is then the same tree as the last candidate plus the version and changelog commits, which is the point: a final that fails §6 becomes the next patch version, not a retag.
 
 **Manual runs** (Actions → "Release" → Run workflow) build every platform from any branch and upload one workflow artifact per platform, without creating a release. Untick `signed` for a macOS pipeline test that needs no secrets; untick `bundle_tor` to skip the Arti build. A **signed** run only starts from `main` or `release/*`: from any other branch the `mac-arm64` job is rejected by the `release-signing` environment before it runs a step (Appendix B), so use `signed: false` there. Workflow artifacts are zipped, need a GitHub login, and expire — they are for your own checks, not for handing out.
 
@@ -327,7 +326,7 @@ FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" \
 
 If any platform fails: fix on the release branch (PR), bump to the next `rc.N`, tag, push, and re-test that candidate. Do not proceed to §7 until every platform you intend to ship passes on the **same** candidate — one green build, not a patchwork of legs from different runs.
 
-This step is intentionally separate from §4 — §4 verifies the source tree; §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
+This step is intentionally separate from the source-tree checks — CI (gated before every tag in §5) and §4's license and UI checks verify the source tree; §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
 
 ## 7. Publish
 
