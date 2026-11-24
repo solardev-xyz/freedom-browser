@@ -8,6 +8,10 @@
  * freedom-core checkout FREEDOM_CORED_PATH was built in. `colibriVectors` is
  * `null` when they aren't found; suites skip then, unless
  * FREEDOM_CORE_COLIBRI_VECTORS names the file (`colibriVectorsRequired`).
+ *
+ * Their worlds, `fixtures/colibri/` (`sessions.json`, and `bodies/` named by
+ * each answer's SHA-256), are beside the file: `colibriFixturesDir`, `null`
+ * when the checkout has no such directory.
  */
 
 const fs = require('fs');
@@ -33,6 +37,12 @@ const colibriVectors =
     ? JSON.parse(fs.readFileSync(colibriVectorsFile, 'utf8'))
     : null;
 const colibriVectorsRequired = Boolean(process.env.FREEDOM_CORE_COLIBRI_VECTORS);
+const colibriFixturesCandidate =
+  colibriVectorsFile && path.join(path.dirname(colibriVectorsFile), 'fixtures', 'colibri');
+const colibriFixturesDir =
+  colibriFixturesCandidate && fs.existsSync(path.join(colibriFixturesCandidate, 'sessions.json'))
+    ? colibriFixturesCandidate
+    : null;
 
 /**
  * A recorded data request as the service sends it (`request.rs`,
@@ -133,6 +143,7 @@ function recordedOperations(vectors) {
 }
 
 module.exports = {
+  colibriFixturesDir,
   colibriVectors,
   colibriVectorsFile,
   colibriVectorsRequired,
