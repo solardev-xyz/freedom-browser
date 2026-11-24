@@ -2130,6 +2130,29 @@ test.each([false, true])('a missing request capture or a request started under A
   expect(mockHostSend).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({ url: details.url }));
 });
 
+test.each(['undecided', 'released'])('a request begun while its tab awaited a custody decision cannot pay from a cap (402 arrives %s)', async when => {
+  // An Agent-created tab's guest attaches (the runtime marks it undecided)
+  // and its first request starts, then 402s, before creation resolves and
+  // the Agent claims the tab. 'released': the guest turned out not to be the
+  // created one, but its start stamp still fails closed.
+  const { setPageCustodyUndecided } = require('../wallet/agent-tab-custody');
+  const guest = webContents.fromId(7);
+  const details = { id: 7002, webContentsId: 7, url: 'https://seller.example/paid', resourceType: 'mainFrame', method: 'GET', requestHeaders: {} };
+  setPageCustodyUndecided(guest, true);
+  try {
+    captureRequestContextHandler(details);
+    if (when === 'released') setPageCustodyUndecided(guest, false);
+    mockGetPermission.mockReturnValue({ capAmount: '20000', spentAmount: '0', createdAt: 1, expiresAt: 9999999999 });
+    await detectPaymentRequiredHandler({ ...details, statusLine: 'HTTP/1.1 402 Payment Required',
+      responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] } });
+    await new Promise(resolve => setImmediate(resolve));
+  } finally {
+    setPageCustodyUndecided(guest, false);
+  }
+  expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+  expect(mockHostSend).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({ url: details.url }));
+});
+
 describe('request-start custody survives redirect hops', () => {
   const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
   const capCovers = () => mockGetPermission.mockReturnValue({ capAmount: '20000', spentAmount: '0', createdAt: 1, expiresAt: 9999999999 });

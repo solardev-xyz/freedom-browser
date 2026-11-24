@@ -835,7 +835,7 @@ function requestManualApprovalForAutoPay(webContentsId, detection) {
  * happening synchronously before the first `await`. Preserve that
  * ordering when modifying this function.
  */
-async function detectPaymentRequiredHandler(details, { requireApproval = false } = {}) {
+async function detectPaymentRequiredHandler(details, { requireApproval = false, requestShape: heldShape = null } = {}) {
   if (!isStatus402(details.statusLine)) return null;
 
   // The app's own gateway / CCIP-Read dials (`ipfs/gateway-transport.js`) are
@@ -884,7 +884,10 @@ async function detectPaymentRequiredHandler(details, { requireApproval = false }
     forgetRequestContext(details.id);
     captured = undefined;
   }
-  const requestShape = {
+  // A custody-changed re-entry passes the shape it derived at first
+  // detection: a vault-unlock hold can outlast the TTL, and the manual
+  // signature must still match the followed request (its Range included).
+  const requestShape = heldShape ?? {
     method: captured?.method ?? details.method ?? 'GET',
     range: captured?.range ?? null,
   };
@@ -1002,7 +1005,7 @@ async function detectPaymentRequiredHandler(details, { requireApproval = false }
         } catch (err) {
           if (err.code === 'X402_CUSTODY_CHANGED') {
             if (getDetectedPayment(id)?.detectionId !== detectionId) return null;
-            return detectPaymentRequiredHandler(details, { requireApproval: true });
+            return detectPaymentRequiredHandler(details, { requireApproval: true, requestShape });
           }
           if (!isVaultLockedError(err)) {
             log.error(`[x402:auto-pay] sign failed: ${err.message}\n  stack: ${err.stack}`);

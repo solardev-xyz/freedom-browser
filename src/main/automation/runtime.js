@@ -6,6 +6,7 @@ const { createInitialAutomationPolicy } = require('./policy-controller');
 const { WebContentsPageAdapter } = require('./adapters/web-contents-page-adapter');
 const { AutomationError, ERROR_CODES } = require('./contract/errors');
 const IPC = require('../../shared/ipc-channels');
+const { setPageCustodyUndecided } = require('../wallet/agent-tab-custody');
 
 const DEFAULT_DESKTOP_NAVIGATION_TIMEOUT_MS = 330_000;
 const DEFAULT_DESKTOP_TAB_CONTROL_TIMEOUT_MS = 10_000;
@@ -345,6 +346,22 @@ function createAutomationRuntime(options = {}) {
       if (!pendingTabControlRequests.delete(request.requestId)) return;
       clearTimeout(request.timeout);
       request.cleanup();
+      if (request.attachedGuests) {
+        // The created guest stays undecided until the Agent claims it
+        // (setAgentPageCustody). That includes a creation that failed after
+        // its tab appeared (a timeout before the first commit): the page is
+        // still one the Agent opened, so it stays fail-closed. Every other
+        // guest that attached meanwhile was not this creation's and is
+        // released, unless another pending creation may still own it.
+        const createdTabId = error ? bindingsByRendererTab.get(request.rendererTabId) : result;
+        const created = desktopBindingsByAutomationTab.get(createdTabId)?.guestWebContents;
+        for (const guest of request.attachedGuests) {
+          if (guest === created) continue;
+          const stillClaimed = [...pendingTabControlRequests.values()]
+            .some((other) => other.attachedGuests?.has(guest));
+          if (!stillClaimed) setPageCustodyUndecided(guest, false);
+        }
+      }
       if (error) request.reject(error);
       else request.resolve(result);
     };
@@ -359,6 +376,9 @@ function createAutomationRuntime(options = {}) {
           requestId,
           type,
           rendererTabId: null,
+          // A created tab's first navigation starts when its guest attaches,
+          // before main can tell which guest it is. See onAttached.
+          attachedGuests: type === 'creation' ? new Set() : null,
           resolve,
           reject,
           cleanup: () => {},
@@ -430,6 +450,15 @@ function createAutomationRuntime(options = {}) {
       if (isCommittedTarget(committedUrl())) settleTabControlRequest(request, createdTabId);
     };
     const onAttached = (_event, guestWebContents) => {
+      // Any guest attaching while an automation creation is pending may be
+      // the Agent's new tab: hold it out of user custody (no x402 cap
+      // payment, no Swarm/Radicle auto-approve rule) until creation names
+      // its guest and the Agent claims it.
+      for (const request of pendingTabControlRequests.values()) {
+        if (!request.attachedGuests || !guestWebContents) continue;
+        request.attachedGuests.add(guestWebContents);
+        setPageCustodyUndecided(guestWebContents, true);
+      }
       const tabId = registerWebContents(guestWebContents, { kind: 'desktop' });
       if (!tabId) return;
       if (Number.isInteger(guestWebContents.id)) {
