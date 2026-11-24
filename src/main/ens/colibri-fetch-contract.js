@@ -17,11 +17,17 @@
  * - transaction lookups, `P` = `[h]`: `tx_cache`, `tx_cache_incremental`
  *   (prover GET, `max_age` 2 on Gnosis chains and 6 elsewhere),
  *   `tx_fallback` (prover POST `{ method: M, params: [h] }`), and the cached
- *   GET of the block (`tx_block`) or its receipts (`tx_receipts`);
+ *   GET of the block (`tx_block`) or its receipts (`tx_receipts`). The
+ *   binding is strict: `P` must be an array of exactly one 32-byte hash, as
+ *   main always sends it. A bare-string `h`, which the client would wrap,
+ *   admits nothing;
  * - `colibri.checkpoint`: `checkpoint_proof` once, which main makes itself
  *   from the chain's prover with nothing taken from the service, and
  *   `checkpoint_root` (`eth/v1/beacon/blocks/<n>/root`) at most 8 times,
- *   which main answers from its quorum.
+ *   which main answers from its quorum. Nothing else, the sync variants
+ *   included: today's checkpoint worker intercepts only that root path
+ *   (`checkpoint-verifier-worker.js`), and that interception is the
+ *   reference.
  *
  * Every prover POST ends with the props enrichment adds, and nothing else:
  * `version` 196611, an optional `c4` (the client state, at most 41 bytes), an
