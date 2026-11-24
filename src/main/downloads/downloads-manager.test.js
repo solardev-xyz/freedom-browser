@@ -341,6 +341,9 @@ describe('downloads-manager', () => {
     expect(item.cancel).toHaveBeenCalledTimes(1);
   });
 
+  // The Agent can't navigate to or act on pubky:// pages yet (see the Limits
+  // section of docs/protocols/pubky.md), so no Agent run reaches this path
+  // today; these pin the origin it will record once the scheme is added.
   test('records a pubky:// download source origin as its public key', async () => {
     const mod = loadManager();
     const key = 'o4dksfbqk85ogzdb5osziw6befigbuxmuxkuxq8434q89uj56uyy';
