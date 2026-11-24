@@ -269,19 +269,62 @@ describe('requests', () => {
     });
   });
 
-  test('a reply that is none of the service’s ends the process, naming nobody', async () => {
+  test('a reply that is none of the service’s ends the process, naming nobody; its request is resent once', async () => {
     await world({
       request: (message, child) =>
         setImmediate(() => child.serve(message, { reply: { status: 'maybe' } })),
     });
     const outcome = ask(client(1));
+    await until(() => fake.children[0].exited, 'the kill');
+    expect(fake.children[0].killedWith).toBe('SIGKILL');
+    // A bystander of the death: it waits out the back-off for the next
+    // process, whose reply is no better, and is not sent a third time.
+    await flush();
+    expect(outcome.settled).toBe(false);
+    clock.advance(500);
     await outcome.done;
     expect(outcome.error).toBeInstanceOf(ColibriWorkerError);
     expect(outcome.error.message).toBe(SERVICE_TEXTS.protocol);
     expect(outcome.error.colibriBystander).toBe(true);
     expect(isColibriFault(outcome.error)).toBe(false);
-    await until(() => fake.children[0].exited, 'the kill');
-    expect(fake.children[0].killedWith).toBe('SIGKILL');
+    expect(fake.children).toHaveLength(2);
+    expect(fake.children[1].killedWith).toBe('SIGKILL');
+    expect(fake.children.map((child) => child.sent('colibri.request').length)).toEqual([1, 1]);
+  });
+
+  test('a protocol error’s request and the other open one go once to the next process, never to the dying one', async () => {
+    const held = [];
+    await world({
+      request: (message, child) => {
+        if (child === fake.children[0]) held.push({ message, child });
+        else serveLater('0x20')(message, child);
+      },
+    });
+    const c = client(1);
+    const garbled = ask(c, 'eth_blockNumber');
+    const other = ask(c, 'eth_chainId');
+    await until(() => held.length === 2, 'both open');
+    const [first] = fake.children;
+    first.serve(held[0].message, { reply: { status: 'maybe' } });
+    await until(() => first.exited, 'the kill');
+    expect(first.killedWith).toBe('SIGKILL');
+    // Both wait out the back-off the death started, then go to its
+    // successor.
+    await flush();
+    expect(garbled.settled).toBe(false);
+    expect(other.settled).toBe(false);
+    clock.advance(500);
+    await Promise.all([garbled.done, other.done]);
+    expect(garbled.result).toBe('0x20');
+    expect(other.result).toBe('0x20');
+    expect(fake.children).toHaveLength(2);
+    expect(first.sent('colibri.request')).toHaveLength(2);
+    expect(
+      fake.children[1]
+        .sent('colibri.request')
+        .map((m) => m.params.method)
+        .sort()
+    ).toEqual(['eth_blockNumber', 'eth_chainId']);
   });
 
   test('destroy sends colibri.forget to each process the client used, once', async () => {
@@ -536,6 +579,33 @@ describe('private sessions', () => {
     expect(chainDirs()).toEqual(['1']);
   });
 
+  test('a reply after the session’s end, before the exit, is never the outcome: a bystander once exited', async () => {
+    const { held, request } = holding();
+    await world({ request });
+    const priv = client(1, { private: true });
+    const privateRead = ask(priv);
+    await until(() => held.length === 1, 'the open read');
+    const [privateChild] = fake.children;
+    // The process takes its time to exit after main's shutdown, and
+    // answers meanwhile.
+    privateChild.holdExit();
+    service.endPrivateSession();
+    expect(privateChild.sent('colibri.shutdown')).toHaveLength(1);
+    answer(held.pop(), '0x1a7e');
+    await flush();
+    expect(privateChild.exited).toBe(false);
+    expect(privateRead.settled).toBe(false);
+    privateChild.exit(0);
+    await privateRead.done;
+    expect(privateRead.error).toBeInstanceOf(ColibriWorkerError);
+    expect(privateRead.error.message).toBe(SERVICE_TEXTS.sessionStopped);
+    expect(privateRead.error.colibriBystander).toBe(true);
+    expect(isColibriFault(privateRead.error)).toBe(false);
+    // Never sent again.
+    expect(fake.children).toHaveLength(1);
+    expect(privateChild.sent('colibri.request')).toHaveLength(1);
+  });
+
   test('a private bystander waiting out the back-off when the session ends spawns nothing', async () => {
     const { held, request } = holding();
     await world({ request });
@@ -742,6 +812,40 @@ describe('restarts (design 0014, Crashes)', () => {
     clock.advance(10_000);
     await expect(c.request({ method: 'eth_blockNumber' })).resolves.toBe('0x10');
     expect(fs.readdirSync(store)).toEqual([]);
+  });
+
+  test('a due clear that fails spawns nothing and stops the lane, logging no path', async () => {
+    await world({ request: crashing(['step', 'step', 'step']) });
+    const store = path.join(root, '1');
+    const rmSync = fs.rmSync;
+    const removal = jest.spyOn(fs, 'rmSync').mockImplementation((target, opts) => {
+      if (target !== store) return rmSync(target, opts);
+      throw Object.assign(new Error(`EACCES: permission denied, rmdir '${store}'`), {
+        code: 'EACCES',
+      });
+    });
+    const c = client(1);
+    for (const wait of [0, 500, 2_000]) {
+      clock.advance(wait);
+      await ask(c).done;
+      await flush();
+    }
+    // The clear after the third exit failed; the next spawn tries it again,
+    // and refuses.
+    expect(warned('chain 1 store could not be cleared')).toBe(true);
+    clock.advance(10_000);
+    await expect(c.request({ method: 'eth_blockNumber' })).rejects.toThrow(UNAVAILABLE);
+    expect(fake.children).toHaveLength(3);
+    expect(grants).toHaveLength(4);
+    expect(warned('chain 1 stopped')).toBe(true);
+    expect(fs.existsSync(store)).toBe(true);
+    // Once the removal would work, the lane is still stopped.
+    removal.mockRestore();
+    clock.advance(60_000);
+    await expect(c.request({ method: 'eth_blockNumber' })).rejects.toThrow(UNAVAILABLE);
+    expect(fake.children).toHaveLength(3);
+    const logged = JSON.stringify([...mockLogWarn.mock.calls, ...mockLogError.mock.calls]);
+    expect(logged).not.toContain(tmp);
   });
 
   test.each([64, 74, 75, 77])('exit %i stops the lane', async (code) => {
