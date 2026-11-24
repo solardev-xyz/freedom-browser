@@ -136,7 +136,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Arti (Tor Client) — _new in 0.8.5_
 
 - **Source:** https://gitlab.torproject.org/tpo/core/arti (crates.io crate `arti`)
-- **Version:** `2.7.0` (pin: `scripts/fetch-arti.js` `PINNED_ARTI_VERSION`)
+- **Version:** `2.8.0` (pin: `scripts/fetch-arti.js` `PINNED_ARTI_VERSION`)
 - **License:** MIT OR Apache-2.0 (crate `license` field; `LICENSE-MIT` reads _Copyright 2019-2025, The Tor Project, Inc._)
 - **Risk:** Green
 - **Platforms:** macOS, Linux and Windows x64 (no Windows ARM64 package is built)

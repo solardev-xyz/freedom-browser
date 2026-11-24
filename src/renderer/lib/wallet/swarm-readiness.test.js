@@ -1,8 +1,16 @@
 const PLANS = [
-  { id: 'starter', title: 'Starter', depth: 20, days: 30, safeLimitBytes: 100_000_000 },
-  { id: 'advanced', title: 'Advanced', depth: 21, days: 180, safeLimitBytes: 1_000_000_000 },
-  { id: 'plus', title: 'Plus', depth: 22, days: 365, safeLimitBytes: 5_000_000_000 },
+  { id: 'starter', title: 'Starter', depth: 20, days: 30, usableBytes: 687_620_000 },
+  { id: 'advanced', title: 'Advanced', depth: 21, days: 180, usableBytes: 2_600_000_000 },
+  { id: 'plus', title: 'Plus', depth: 22, days: 365, usableBytes: 7_730_000_000 },
 ];
+// The setup state's custom sizes (a slice of them).
+const SIZES = [
+  { depth: 19, usableBytes: 112_060_000 },
+  { depth: 20, usableBytes: 687_620_000 },
+  { depth: 23, usableBytes: 19_940_000_000 },
+  { depth: 28, usableBytes: 993_650_000_000 },
+];
+const STATE = { plans: PLANS, sizes: SIZES };
 
 const ADDRESS = '0x1234567890abcdef1234567890abcdef12345678';
 
@@ -35,6 +43,10 @@ describe('swarm-readiness view helpers', () => {
     expect(mod.formatStorageSize(1_000_000_000)).toBe('1 GB');
     expect(mod.formatStorageSize(5_000_000_000)).toBe('5 GB');
     expect(mod.formatStorageSize(2_600_000_000)).toBe('2.6 GB');
+    expect(mod.formatStorageSize(687_620_000)).toBe('688 MB');
+    expect(mod.formatStorageSize(105_510_000_000)).toBe('106 GB');
+    expect(mod.formatStorageSize(993_650_000_000)).toBe('994 GB');
+    expect(mod.formatStorageSize(2_040_000_000_000)).toBe('2 TB');
     expect(mod.formatStorageSize(0)).toBe('--');
   });
 
@@ -49,28 +61,48 @@ describe('swarm-readiness view helpers', () => {
   });
 
   test('describes plans and the armed operation', () => {
-    expect(mod.describePlan(PLANS[0])).toBe('Up to 100 MB for 1 month');
+    expect(mod.describePlan(PLANS[0])).toBe('Up to 688 MB for 1 month');
     expect(
-      mod.describeOperationTarget({ request: { kind: 'buy', planId: 'advanced' } }, PLANS)
-    ).toBe('Advanced: up to 1 GB for 6 months');
+      mod.describeOperationTarget({ request: { kind: 'buy', planId: 'advanced' } }, STATE)
+    ).toBe('Advanced: up to 2.6 GB for 6 months');
     expect(
-      mod.describeOperationTarget({ request: { kind: 'extend', batchId: 'ab', days: 90 } }, PLANS)
+      mod.describeOperationTarget({ request: { kind: 'extend', batchId: 'ab', days: 90 } }, STATE)
     ).toBe('Keep your storage 3 months longer');
     expect(
       mod.describeOperationTarget(
         { request: { kind: 'extend', batchId: 'ab', days: 0, depth: 22 } },
-        PLANS
+        STATE
       )
-    ).toBe('Grow your storage to 5 GB');
+    ).toBe('Grow your storage to 7.7 GB');
     expect(
       mod.describeOperationTarget(
         { request: { kind: 'deposit', amountPlur: '5000000000000000' } },
-        PLANS
+        STATE
       )
     ).toBe('Add 0.5 xBZZ to the chequebook deposit');
-    expect(mod.describeOperationTarget({ request: { kind: 'deposit' } }, PLANS)).toBe(
+    expect(mod.describeOperationTarget({ request: { kind: 'deposit' } }, STATE)).toBe(
       'Top up the chequebook deposit'
     );
+  });
+
+  test('describes a custom size and duration, and growing past the plans (#1257)', () => {
+    expect(mod.describeSize(SIZES[0])).toBe('Depth 19 · up to 112 MB');
+    expect(mod.describeSize(SIZES[3])).toBe('Depth 28 · up to 994 GB');
+    expect(
+      mod.describeOperationTarget({ request: { kind: 'buy', depth: 23, days: 45 } }, STATE)
+    ).toBe('Custom: up to 19.9 GB for 45 days');
+    expect(
+      mod.describeOperationTarget({ request: { kind: 'buy', depth: 31, days: 45 } }, STATE)
+    ).toBe('Custom storage');
+    expect(
+      mod.describeOperationTarget(
+        { request: { kind: 'extend', batchId: 'ab', days: 0, depth: 28 } },
+        STATE
+      )
+    ).toBe('Grow your storage to 994 GB');
+    expect(
+      mod.describeOperationTarget({ request: { kind: 'extend', batchId: 'ab', days: 400 } }, STATE)
+    ).toBe('Keep your storage 400 days longer');
   });
 
   test('titles and copy follow the operation kind', () => {

@@ -1364,6 +1364,61 @@ describe('ipc-handlers', () => {
     }
   });
 
+  test('refuses a Swarm API on a .onion host but keeps an onion IPFS gateway (#360)', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      isDev: false,
+      metadata: { slot: 1, nodes: {} },
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile });
+    ctx.mod.registerBaseIpcHandlers();
+
+    // Node's HTTP stack dials the Swarm API outside the session's Tor
+    // routing, so an onion host would leak to the system resolver and fail.
+    for (const externalApi of [
+      'http://abcdefghijklmnop.onion:1633',
+      'ABCDEFGHIJKLMNOP.ONION:1633',
+      'https://abcdefghijklmnop.onion./',
+    ]) {
+      await expect(
+        ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+          protocol: 'bee',
+          config: { mode: 'external', externalApi },
+        })
+      ).resolves.toEqual(
+        failure(
+          'UNSUPPORTED_PROFILE_NODE_ENDPOINT',
+          "Freedom can't reach a Swarm node at a .onion address yet",
+          { field: 'externalApi' }
+        )
+      );
+    }
+    expect(ctx.updateActiveProfileNodeConfig).not.toHaveBeenCalled();
+
+    // A host that only contains "onion" is an ordinary name.
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'bee',
+        config: { mode: 'external', externalApi: 'http://onion.example.com:1633' },
+      })
+    ).resolves.toEqual(expect.objectContaining({ success: true }));
+
+    // The IPFS gateway goes through the session's transport, which routes
+    // onion hosts over Tor (#355).
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'ipfs',
+        config: { mode: 'external', externalGateway: 'http://abcdefghijklmnop.onion:8080' },
+      })
+    ).resolves.toEqual(expect.objectContaining({ success: true }));
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledWith('ipfs', {
+      mode: 'external',
+      externalGateway: 'http://abcdefghijklmnop.onion:8080',
+    });
+  });
+
   test('rejects invalid active profile node updates', async () => {
     const ctx = loadIpcHandlersModule({
       activeProfile: {

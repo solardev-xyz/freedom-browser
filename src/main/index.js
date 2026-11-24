@@ -378,7 +378,8 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-const { registerSettingsIpc, loadSettings } = require('./settings-store');
+const { registerSettingsIpc, loadSettings, onSettingsChanged } = require('./settings-store');
+const { initSecureDns } = require('./secure-dns');
 const { registerShortcutsIpc } = require('./shortcuts-ipc');
 const { registerBookmarksIpc } = require('./bookmarks-store');
 const { registerHistoryIpc, closeDb: closeHistoryDb } = require('./history');
@@ -597,6 +598,9 @@ async function bootstrap() {
   // 0644 RPC API key file becomes owner-only (K-5). Both readers repair it
   // too, through the same key store.
   repairRpcApiKeys();
+  // Secure DNS (#472) before anything goes out over Chromium's network stack,
+  // so not even the first window's lookups leave as plaintext DNS.
+  initSecureDns({ loadSettings, onSettingsChanged });
 
   const defaultSession = session.defaultSession;
   await defaultSession.clearCache();
@@ -1128,7 +1132,7 @@ async function windDown() {
   const LEGS = [
     ['Myotis', () => myotisStopped],
     ['Ant', stopAnt],
-    ['IPFS', stopIpfs],
+    ['IPFS', () => stopIpfs({ final: true })],
     ['Radicle', stopRadicle],
     ['Tor', stopTor],
   ];

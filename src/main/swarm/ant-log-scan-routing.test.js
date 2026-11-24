@@ -96,6 +96,17 @@ const NETHERMIND_CAP = {
     'Block range 50000 exceeds the maximum of 10000 blocks per logs request. Use a narrower fromBlock/toBlock range or increase Receipt.MaxBlockDepth.',
 };
 const PUBLICNODE_CAP = { code: -32701, message: 'exceed maximum block range: 50000' };
+// Measured for #596 (2026-11-09): publicnode's backend below 50k blocks, and
+// dRPC's free plan, which answers HTTP 400 over about 100 blocks.
+const NETHERMIND_NO_INDEX = {
+  code: -32602,
+  message:
+    'Logs request reads 50001 blocks without the log index, over the maximum of 10000 per request. Use a narrower fromBlock/toBlock range or increase Receipt.MaxBlockDepth.',
+};
+const DRPC_FREE_PLAN = {
+  code: 35,
+  message: 'ranges over 10000 blocks are not supported on free plan',
+};
 
 const originalFetch = global.fetch;
 
@@ -131,6 +142,14 @@ function behave(step, signal) {
         return rpcReply({ error: NETHERMIND_CAP });
       case 'publicnodeCap':
         return rpcReply({ error: PUBLICNODE_CAP });
+      case 'nethermindNoIndex':
+        return rpcReply({ error: NETHERMIND_NO_INDEX });
+      case 'drpcFreePlan':
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          json: async () => ({ error: DRPC_FREE_PLAN }),
+        });
       case '429':
         return Promise.resolve({ ok: false, status: 429, json: async () => ({}) });
       case 'down':
@@ -702,6 +721,64 @@ describe('range caps (#484)', () => {
     expect(again).toMatchObject({ shrinks: false, at: 0 });
     expect(again.fetches).toEqual([]);
     expect(again.message).toContain('No RPC quorum available');
+  });
+});
+
+// The same endpoints as measured on 2026-11-09 (#596): publicnode's Nethermind
+// backend words its 10k cap differently, and dRPC's free plan refuses
+// anything over about 100 blocks with HTTP 400 (its body still says "ranges
+// over 10000 blocks").
+describe('range caps as measured on 2026-11-09 (#596)', () => {
+  const PUBLICNODE_NOW = (span) =>
+    span > 50_000 ? 'publicnodeCap' : span > 10_000 ? 'nethermindNoIndex' : 'success';
+  const DRPC_NOW = (span) => (span > 100 ? 'drpcFreePlan' : 'success');
+
+  // Ant's scan_logs_with from the token's deploy block: halve on a range
+  // limit, double the next window after an answer.
+  async function antScanWindows(rpcs, answers) {
+    useEndpoints(rpcs);
+    const steps = [];
+    let start = HEAD - FULL_HISTORY + 1;
+    let chunk = FULL_HISTORY;
+    while (steps.filter((step) => step.result).length < answers) {
+      const end = Math.min(start + chunk - 1, HEAD);
+      const got = await scanOnce([
+        { fromBlock: `0x${start.toString(16)}`, toBlock: `0x${end.toString(16)}` },
+      ]);
+      steps.push({ span: end - start + 1, ...got });
+      if (got.result) {
+        start = end + 1;
+        chunk = Math.min(chunk * 2, 50_000_000);
+      } else if (got.shrinks) {
+        chunk = Math.floor(chunk / 2);
+      } else {
+        throw new Error(`scan stopped: ${got.message}`);
+      }
+    }
+    return steps;
+  }
+
+  test("publicnode's new refusal teaches its cap: Ant's wider windows cost no request", async () => {
+    const steps = await antScanWindows({ a: FULL, b: PUBLICNODE_NOW, c: DRPC_NOW }, 6);
+    const first = steps.findIndex((step) => step.result);
+    expect(steps[first].span).toBeLessThanOrEqual(10_000);
+    for (const step of steps.slice(first + 1)) {
+      if (step.result) {
+        // dRPC cools down after its HTTP 400, so the two that can verify answer.
+        expect(step).toMatchObject({ ...gotLogs, at: 0 });
+        expect(step.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b']);
+      } else {
+        // Each doubled window is refused by the router itself, at once.
+        expect(step).toMatchObject({
+          code: -32005,
+          message: 'Chain request failed: query exceeds max block range 10000',
+          shrinks: true,
+          at: 0,
+        });
+        expect(step.fetches).toEqual([]);
+      }
+    }
+    expect(steps.slice(first + 1).filter((step) => !step.result)).toHaveLength(5);
   });
 });
 
