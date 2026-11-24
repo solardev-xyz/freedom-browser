@@ -479,6 +479,8 @@ function cacheSettingsView({
   profileMode,
   registryMode,
   nodeActive = false,
+  // Why the node's data directory was refused (a symbolic link, K-3), or ''.
+  dataDirError = '',
 }) {
   let reason = '';
   let clearReason = '';
@@ -488,6 +490,9 @@ function cacheSettingsView({
   } else if (profileMode === 'disabled') {
     reason = 'The Swarm node is off for this profile under Settings → Nodes.';
     clearReason = reason;
+  } else if (dataDirError) {
+    reason = dataDirError;
+    clearReason = dataDirError;
   }
   // Before the first start there is no stored size yet; show the one that
   // start will write (chooseCacheBytes), so an upgrader with an old cache sees

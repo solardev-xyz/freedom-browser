@@ -521,6 +521,7 @@ describe('preload', () => {
       [exposures.publishSetup, 'watch', ['node-card', true], IPC.SWARM_SETUP_WATCH, ['node-card', true]],
       [exposures.publishSetup, 'getPlans', [], IPC.SWARM_SETUP_GET_PLANS, []],
       [exposures.publishSetup, 'getExtendOptions', ['ab'.repeat(32), 20], IPC.SWARM_SETUP_GET_EXTEND_OPTIONS, ['ab'.repeat(32), 20]],
+      [exposures.publishSetup, 'quote', [{ kind: 'buy', depth: 23, days: 45 }], IPC.SWARM_SETUP_QUOTE, [{ kind: 'buy', depth: 23, days: 45 }]],
       [exposures.publishSetup, 'arm', [{ kind: 'buy', planId: 'starter' }], IPC.SWARM_SETUP_ARM, [{ kind: 'buy', planId: 'starter' }]],
       [exposures.publishSetup, 'cancel', [7], IPC.SWARM_SETUP_CANCEL, [7]],
       [exposures.publishSetup, 'dismiss', [7], IPC.SWARM_SETUP_CANCEL, [7, { dismiss: true }]],
@@ -528,6 +529,8 @@ describe('preload', () => {
       [exposures.publishSetup, 'restartNode', [], IPC.SWARM_SETUP_RESTART_NODE, []],
       [exposures.browsingCredit, 'getState', [], IPC.SWARM_CREDIT_GET_STATE, []],
       [exposures.browsingCredit, 'setSwapEnable', [false], IPC.SWARM_CREDIT_SET_SWAP_ENABLE, [false]],
+      [exposures.remoteSigner, 'addAccount', ['My Phone', '0xabc'], 'wallet:add-remote-wallet', ['My Phone', '0xabc']],
+      [exposures.remoteSigner, 'checkAccount', [1000001], 'wallet:check-remote-wallet', [1000001]],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of invokeCases) {

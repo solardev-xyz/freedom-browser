@@ -5,7 +5,9 @@
  * page-facing window.swarm messaging extension. Runs in the main process
  * only; provider-ipc owns permission checks.
  *
- * Sends and identity go through bee-js. The subscribe WebSockets are
+ * GSOC sends and identity go through bee-js. The PSS send is built here
+ * (`postPssSend`), because bee-js sends the recipient in a form the node
+ * refuses (#1062). The subscribe WebSockets are
  * hand-rolled on the Node-native WebSocket (Electron main, Node >= 22)
  * instead of bee-js's pssSubscribe/gsocSubscribe because bee-js discards
  * the close code and reason — and the Ant node signals "lurker slots
@@ -29,7 +31,15 @@
  * id, as the messaging SWIP requires.
  */
 
-const { Topic, Identifier, Bytes, PrivateKey } = require('@ethersphere/bee-js');
+const {
+  Topic,
+  Identifier,
+  Bytes,
+  PrivateKey,
+  PublicKey,
+  BatchId,
+  BeeResponseError,
+} = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError } = require('./batch-errors');
 const { mineSigner, joinJob } = require('./gsoc-miner');
@@ -243,13 +253,93 @@ async function selectMessageBatch() {
 }
 
 /**
+ * The error bee-js 13.2.0's `http` (utils/http.js) throws for a node answer
+ * that is not 2xx. The page sees its message, so it keeps bee-js's wording:
+ * the status text, then the body (as JSON when it parses).
+ */
+async function pssSendHttpError(method, url, response) {
+  const raw = await response.text().catch(() => '');
+  let data;
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = raw;
+    }
+  }
+  const bodyMsg = typeof data === 'string' ? data : JSON.stringify(data);
+  const message = bodyMsg ? `${response.statusText}: ${bodyMsg}` : response.statusText;
+  return new BeeResponseError(method, url, message, data, response.status, response.statusText);
+}
+
+/**
+ * `POST /pss/send/<topic>/<targets>?recipient=<key>`, built here rather than
+ * through bee-js's `pssSend` (#1062). bee-js turns the recipient into a
+ * `PublicKey` (64 bytes, x ‖ y), and its request options are deep-merged
+ * into plain objects, so the query carried `recipient=[object Object]`. The
+ * bundled Ant reads the recipient as SEC1 (33 or 65 bytes) and refused that
+ * with 400 `invalid recipient public key`. This sends the compressed key the
+ * page gave, as 66 hex.
+ *
+ * Everything else is what bee-js sent: Node's `fetch` to the same node URL
+ * (so, as before, no Electron session, proxy or Tor: #360), the same headers
+ * and body, no timeout of our own, and errors in bee-js's wording.
+ */
+async function postPssSend(baseUrl, { batchId, topicHex, targets, recipient, data }) {
+  const method = 'POST';
+  const query = new URLSearchParams({ recipient }).toString();
+  const url = `${baseUrl.replace(/\/+$/, '')}/pss/send/${topicHex}/${targets}?${query}`;
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        accept: 'application/json, text/plain, */*',
+        'content-type': 'application/octet-stream',
+        'swarm-postage-batch-id': batchId,
+      },
+      body: data,
+    });
+  } catch (err) {
+    // bee-js's wording for a request that got no answer (toBeeError).
+    const message = err?.cause?.message ? `${err.message}: ${err.cause.message}` : err?.message;
+    throw new BeeResponseError(method, url, message);
+  }
+  if (response.ok) {
+    // Ant answers 201 with no body; read it so the connection is reused. The
+    // node has accepted the message by now, so a failure reading that empty
+    // body is not a failed send: reporting it as one could make the page
+    // send the message twice.
+    try {
+      await response.arrayBuffer();
+    } catch (err) {
+      log.warn(`[MessagingService] PSS send accepted (${response.status}), body read failed: ${err?.message}`);
+    }
+    return;
+  }
+  throw await pssSendHttpError(method, url, response);
+}
+
+/**
  * Send an encrypted point-to-point PSS message.
  * @param {{ topic: string, targets: string, recipient: string, data: string|Buffer }} params
+ *   `targets` is lowercase hex; `recipient` is the 66-hex compressed key.
  */
 async function sendPss({ topic, targets, recipient, data }) {
   const bee = getBee();
   const batchId = await selectMessageBatch();
-  await bee.messaging.pssSend(batchId, Topic.fromString(topic), targets, data, recipient);
+  // The checks bee-js's pssSend made, kept so their errors stay the same: the
+  // batch id, and the recipient as a point on the curve ("bad point: …").
+  // Only the key the page gave is sent.
+  const batchIdHex = new BatchId(batchId).toHex();
+  new PublicKey(recipient);
+  await postPssSend(bee.url, {
+    batchId: batchIdHex,
+    topicHex: resolvePssTopicHex(topic),
+    targets,
+    recipient,
+    data,
+  });
   log.info(`[MessagingService] PSS message sent: topic=${topic}, target=${targets}`);
 }
 

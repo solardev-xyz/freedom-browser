@@ -262,12 +262,14 @@ function registerGatewayOfferIpc() {
   // helpers above (and their unit tests) do not need.
   const { ipcMain } = require('electron');
   const { resolveEnsContent } = require('./ens-resolver');
-  const { isPrivateWebContents } = require('./private/private-windows');
+  // Fail closed (#1058): the lookup's Colibri reads stay off the disk store
+  // unless the sender is a known public window's.
+  const { isPrivateSender } = require('./private/private-sender');
   ipcMain.handle(
     IPC.GATEWAY_OFFER,
     makeGatewayOfferHandler({
       resolveContent: resolveEnsContent,
-      isPrivateSender: isPrivateWebContents,
+      isPrivateSender: (sender) => isPrivateSender({ sender }),
     })
   );
 }

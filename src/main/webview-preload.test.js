@@ -299,6 +299,31 @@ describe('webview-preload', () => {
     );
   });
 
+  test('the internal Radicle viewer cannot seed or sync from a private window (R-9)', async () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+      isPrivateWindow: true,
+      location: {
+        href: 'file:///app/pages/rad-browser.html',
+        protocol: 'file:',
+        pathname: '/app/pages/rad-browser.html',
+      },
+    });
+
+    ipcRenderer.invoke.mockClear();
+    await expect(exposures.freedomAPI.seedRadicle('z3abc')).rejects.toThrow(
+      'Seeding is not available in private windows'
+    );
+    await expect(exposures.freedomAPI.syncRadicleRepo('z3abc')).rejects.toThrow(
+      'Seeding is not available in private windows'
+    );
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.RADICLE_SEED, 'z3abc');
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.RADICLE_SYNC_REPO, 'z3abc');
+
+    // Reading status stays available.
+    await exposures.freedomAPI.getRadicleStatus();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.RADICLE_GET_STATUS);
+  });
+
   test('exposes profile mutation methods only on the settings page', async () => {
     const { exposures, ipcRenderer } = loadWebviewPreloadModule({
       location: {
@@ -1659,6 +1684,9 @@ describe('injected provider request timeouts', () => {
   // Parity with the sibling provider the radicle one was modelled on.
   test('swarm prompt/long-running methods use the same 300s budget', () => {
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getSigningIdentity')).toBe(300000);
+    // They prompt like signing (#991).
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getEncryptionKey')).toBe(300000);
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_deriveSharedSecrets')).toBe(300000);
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readChunk')).toBe(60000);
   });
 

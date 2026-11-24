@@ -6,6 +6,7 @@ const IPC = require('../shared/ipc-channels');
 const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
 const { sanitizeOverrides } = require('../shared/shortcuts');
 const { normalizeCacheBytes } = require('./swarm/ant-cache');
+const { SECURE_DNS_DEFAULTS, SECURE_DNS_KEYS, secureDnsSaveValue } = require('./secure-dns');
 const { refusedSettingsKeys, describeSender } = require('./ipc-sender-policy');
 
 // Apply theme to nativeTheme so webviews get correct prefers-color-scheme
@@ -123,6 +124,13 @@ const DEFAULT_SETTINGS = {
   // Pull refreshed filter lists from Swarm on a schedule (WP5). On by
   // default; dormant anyway until a feed trust anchor is compiled in.
   adblockAutoUpdate: true,
+  // Secure DNS (#472, secure-dns.js): DNS over HTTPS for what Chromium
+  // resolves. 'automatic' (fall back to the system's DNS), 'secure'
+  // (Strict, no fallback) or 'off'; the provider is quad9, cloudflare,
+  // mullvad or custom (with secureDnsCustomTemplate, an https:// address).
+  // saveSettings stores only valid values, and only Settings may write them
+  // (ipc-sender-policy.js).
+  ...SECURE_DNS_DEFAULTS,
   // Keyboard-shortcut remaps: shortcut id → accelerator string. Only ids
   // from the shared registry (src/shared/shortcuts.js) with valid, non-
   // reserved accelerators survive sanitization. The one non-primitive
@@ -379,6 +387,21 @@ function saveSettings(newSettings) {
           newSettings[key] !== null &&
           normalizeCacheBytes(newSettings[key]) === null
         ) {
+          continue;
+        }
+
+        // Secure DNS: an invalid value, or `custom` with no usable address
+        // to go with it, leaves the stored setting as it was.
+        if (SECURE_DNS_KEYS.includes(key)) {
+          const value = secureDnsSaveValue(key, newSettings[key], {
+            previous,
+            incoming: newSettings,
+          });
+          if (value === undefined) continue;
+          if (previous[key] !== value) {
+            merged[key] = value;
+            changed = true;
+          }
           continue;
         }
 

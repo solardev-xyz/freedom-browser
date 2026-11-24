@@ -155,6 +155,27 @@ describe('service-registry', () => {
     });
   });
 
+  test('clearService keeps facts about the machine, not the run (#350)', () => {
+    const { mod } = loadServiceRegistry();
+
+    mod.updateService('ipfs', { unavailableReason: 'glibc', hostGlibc: '2.35' });
+    mod.setStatusMessage('ipfs', 'Needs a newer Linux');
+    mod.clearService('ipfs');
+
+    expect(mod.getService('ipfs')).toMatchObject({
+      mode: mod.MODE.NONE,
+      statusMessage: null,
+      unavailableReason: 'glibc',
+      hostGlibc: '2.35',
+    });
+
+    // The manager clears them itself; the next reset drops the nulls.
+    mod.updateService('ipfs', { unavailableReason: null, hostGlibc: null });
+    mod.clearService('ipfs');
+    expect(mod.getService('ipfs')).not.toHaveProperty('unavailableReason');
+    expect(mod.getService('ipfs')).not.toHaveProperty('hostGlibc');
+  });
+
   test('errorState tracks the error overlay, not the published URL (#445 R2-M2)', () => {
     const { mod } = loadServiceRegistry();
     mod.updateService('ant', { api: 'http://127.0.0.1:1633', mode: mod.MODE.BUNDLED });

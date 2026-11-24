@@ -23,6 +23,7 @@ const loadIpfsModule = async (options = {}) => {
       ipfs: {
         api: 'http://ipfs.test',
         mode: options.mode || 'none',
+        cacheOnly: options.cacheOnly ?? false,
         statusMessage: options.statusMessage ?? null,
         tempMessage: options.tempMessage ?? null,
       },
@@ -48,6 +49,8 @@ const loadIpfsModule = async (options = {}) => {
   const ipfsStatusRow = createElement('div');
   const ipfsStatusLabel = createElement('span');
   const ipfsStatusValue = createElement('span');
+  const ipfsCacheNote = createElement('p');
+  ipfsCacheNote.hidden = true;
   const body = createElement('body');
   body.appendChild(ipfsInfoPanel);
   const document = createDocument({
@@ -63,6 +66,7 @@ const loadIpfsModule = async (options = {}) => {
       'ipfs-status-row': ipfsStatusRow,
       'ipfs-status-label': ipfsStatusLabel,
       'ipfs-status-value': ipfsStatusValue,
+      'ipfs-cache-note': ipfsCacheNote,
     },
   });
   let statusHandler = null;
@@ -70,7 +74,11 @@ const loadIpfsModule = async (options = {}) => {
     options.windowIpfs === false
       ? undefined
       : {
-          checkBinary: jest.fn().mockResolvedValue({ available: options.binaryAvailable ?? true }),
+          checkBinary: jest
+            .fn()
+            .mockResolvedValue(
+              options.binaryResult || { available: options.binaryAvailable ?? true }
+            ),
           start: jest
             .fn()
             .mockResolvedValue(options.startResult || { status: 'running', error: null }),
@@ -148,6 +156,7 @@ const loadIpfsModule = async (options = {}) => {
       ipfsStatusRow,
       ipfsStatusLabel,
       ipfsStatusValue,
+      ipfsCacheNote,
     },
   };
 };
@@ -255,6 +264,23 @@ describe('ipfs-ui', () => {
     expect(ctx.elements.ipfsStatusRow.classList.contains('visible')).toBe(false);
   });
 
+  test('a Linux system too old for the add-on says so on the disabled switch (#350)', async () => {
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'error',
+      binaryResult: { available: false, reason: 'glibc', hostGlibc: '2.35' },
+      statusResult: { status: 'error', error: 'freedom-ipfs native addon needs a newer glibc' },
+    });
+
+    ctx.mod.initIpfsUi();
+    await flushMicrotasks();
+
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('disabled')).toBe('true');
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('title')).toBe(
+      'Needs a newer Linux. Use an external node from Settings > Nodes.'
+    );
+  });
+
   test('initializes IPFS controls, handles binary availability, and toggles start and stop', async () => {
     const ctx = await loadIpfsModule({
       antMenuOpen: true,
@@ -304,6 +330,29 @@ describe('ipfs-ui', () => {
 
     expect(ctx.ipfsApi.stop).toHaveBeenCalled();
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('User toggled IPFS Off');
+  });
+
+  test('says saved pages still load while IPFS is off and main serves them (#30)', async () => {
+    const ctx = await loadIpfsModule({ currentIpfsStatus: 'stopped', cacheOnly: true });
+    ctx.mod.initIpfsUi();
+    await flushMicrotasks();
+
+    ctx.mod.updateIpfsToggleState();
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(false);
+
+    // Switching on hides it at once, before the node reports back.
+    ctx.elements.ipfsToggleBtn.dispatch('click');
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(true);
+    await flushMicrotasks();
+    ctx.mod.updateIpfsUi('running');
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(true);
+
+    // Main stops publishing it (disabled profile, external gateway, no add-on).
+    ctx.mod.updateIpfsUi('stopped');
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(false);
+    ctx.state.registry.ipfs.cacheOnly = false;
+    ctx.mod.updateIpfsToggleState();
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(true);
   });
 
   // #350: on a host where the native addon can't load, an external gateway is
@@ -773,5 +822,24 @@ describe('ipfs-ui', () => {
     );
     expect(ctx.state.ipfsDesiredRunning).toBeNull();
     expect(ctx.elements.ipfsToggleSwitch.classList.contains('running')).toBe(false);
+  });
+});
+
+describe('services.css disabled-toggle hover (#350)', () => {
+  // Only the IPFS switch takes hover while greyed, so its tooltip can explain
+  // why. The Myotis toggles share `.ipfs-toggle` and must stay pointer-inert.
+  const css = require('fs').readFileSync(
+    require('path').join(__dirname, '../styles/services.css'),
+    'utf8'
+  );
+  const rulesSettingAuto = [
+    ...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g),
+  ]
+    .filter(([, , body]) => /pointer-events:\s*auto/.test(body))
+    .map(([, selector]) => selector.trim());
+
+  test('only #ipfs-toggle-btn re-enables pointer events when disabled', () => {
+    const disabledRules = rulesSettingAuto.filter((sel) => /\.disabled\b/.test(sel));
+    expect(disabledRules).toEqual(['#ipfs-toggle-btn.disabled']);
   });
 });

@@ -18,6 +18,12 @@ const CODES = {
   SAFE_DISCARDED: 'SAFE_DISCARDED',
   /** Nothing local can pay gas — render the fund-the-executor state. */
   SAFE_NEEDS_FUNDS: 'SAFE_NEEDS_FUNDS',
+  /** No pinned Safe deployment (proxy code) for this chain or version. */
+  SAFE_UNSUPPORTED: 'SAFE_UNSUPPORTED',
+  /** The Safe's code was read, but no verified source confirmed it. */
+  SAFE_UNVERIFIED: 'SAFE_UNVERIFIED',
+  /** The deployment would create another address than the record's. */
+  SAFE_ADDRESS_MISMATCH: 'SAFE_ADDRESS_MISMATCH',
 };
 
 function codedError(message, code) {

@@ -1,0 +1,6 @@
+- An RPC answer is no longer shown as verified because one provider was listed under two URLs, in chain reads and ENS lookups ([#1094](https://github.com/solardev-xyz/freedom-browser/issues/1094))
+  - One host counts once, whatever its path, port, API key or scheme
+  - Endpoints on this computer count as one, whatever their port or loopback address
+  - Alchemy, Infura and DRPC each count once, whatever the key or hostname
+  - Two different hostnames still count as two, even for one node or operator ([#1100](https://github.com/solardev-xyz/freedom-browser/issues/1100))
+- A Blockscout log scan is no longer shown as verified when its RPC quorum is a single endpoint ([#1094](https://github.com/solardev-xyz/freedom-browser/issues/1094))

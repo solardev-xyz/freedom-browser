@@ -298,7 +298,14 @@ function isSenderAllowed(channel, event) {
 // consent step for Freedom Agent: it is turned on in Settings, so a script
 // running in any other internal page (an XSS in history, say) must not be able
 // to opt the user in. The start page writes `aiInvitationDismissed` only.
-const SETTINGS_KEY_WRITERS = new Map([['enableAi', new Set([SETTINGS_FILE])]]);
+// Secure DNS (#472) likewise: another page must not be able to switch it off
+// or send every lookup to a resolver of its choosing.
+const SETTINGS_KEY_WRITERS = new Map([
+  ['enableAi', new Set([SETTINGS_FILE])],
+  ['secureDnsMode', new Set([SETTINGS_FILE])],
+  ['secureDnsProvider', new Set([SETTINGS_FILE])],
+  ['secureDnsCustomTemplate', new Set([SETTINGS_FILE])],
+]);
 
 /**
  * @returns {string[]} the keys of `settings` that `event`'s sender may not

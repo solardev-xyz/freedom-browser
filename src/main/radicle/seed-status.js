@@ -8,6 +8,11 @@
  */
 
 const log = require('../logger');
+// PRIVATE MODE GUARD (#1073): a window.radicle request starts and watches
+// fetches inside the provider's private log context, and these lines run in
+// it. A fetch's error text can name the Radicle storage path, and a RID
+// names the repository, so each goes through redactForLog.
+const { redactForLog } = require('../private/private-log-context');
 
 const records = new Map();
 
@@ -17,7 +22,10 @@ function publish(record) {
     try {
       listener(status);
     } catch (err) {
-      log.warn(`[seed-status] listener failed for ${record.rid}: ${err.message}`);
+      log.warn(
+        `[seed-status] listener failed for ${redactForLog(record.rid)}: ` +
+          redactForLog(err.message)
+      );
     }
   }
 }
@@ -113,7 +121,9 @@ function startFetch(rid, { fetchRepo, getSeeders, onStatus }) {
         try {
           record.seedersKnown = await getSeeders(rid);
         } catch (err) {
-          log.warn(`[seed-status] seed count failed for ${rid}: ${err.message}`);
+          log.warn(
+            `[seed-status] seed count failed for ${redactForLog(rid)}: ${redactForLog(err.message)}`
+          );
         }
       }
       publish(record);
@@ -128,7 +138,7 @@ function startFetch(rid, { fetchRepo, getSeeders, onStatus }) {
       record.finishedAt = Date.now();
       publish(record);
       record.listeners.clear();
-      log.warn(`[seed-status] ${rid} fetch failed: ${err.message}`);
+      log.warn(`[seed-status] ${redactForLog(rid)} fetch failed: ${redactForLog(err.message)}`);
     });
 
   return publicStatus(record);
@@ -159,7 +169,10 @@ function subscribe(rid, listener) {
       listener(publicStatus(record));
     } catch (err) {
       record.listeners.delete(listener);
-      log.warn(`[seed-status] listener failed for ${record.rid}: ${err.message}`);
+      log.warn(
+        `[seed-status] listener failed for ${redactForLog(record.rid)}: ` +
+          redactForLog(err.message)
+      );
       return false;
     }
   }
