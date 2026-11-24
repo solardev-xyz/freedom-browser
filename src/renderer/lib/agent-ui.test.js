@@ -325,6 +325,7 @@ function createAgentElements() {
 async function loadAgentUi(options = {}) {
   jest.resetModules();
   const elements = createAgentElements();
+  options.prepareElements?.(elements);
   elements['agent-workspace-view'].style.setProperty = jest.fn((name, value) => {
     elements['agent-workspace-view'].style[name] = value;
   });
@@ -1030,6 +1031,48 @@ describe('Agent UI', () => {
     ctx.elements['agent-first-toggle'].dispatch('click');
     expect(strip.parentNode).toBe(view);
     expect(view.children.filter(child => child === strip)).toHaveLength(1);
+  });
+
+  test("sizes the floating sheet from layout heights, not the open animation's scaled box", async () => {
+    const observers = [];
+    global.ResizeObserver = class {
+      constructor(callback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      observe() {}
+      disconnect() {}
+    };
+    try {
+      const ctx = await loadAgentUi({
+        prepareElements: (elements) => {
+          const inner = createElement('div', { classes: ['agent-sidebar-inner'] });
+          elements['agent-sidebar'].appendChild(inner);
+          // Mid open-animation: the transform scales the visual box, so
+          // getBoundingClientRect() under-reports while layout is settled.
+          const wrap = elements['agent-composer-wrap'];
+          wrap.offsetHeight = 120;
+          wrap.setRect({ height: 117 });
+          inner.offsetHeight = 400;
+          inner.setRect({ height: 390 });
+        },
+      });
+      const body = ctx.document.body;
+      expect(ctx.elements['agent-workspace-view'].style['--agent-composer-height']).toBe('120px');
+      expect(body.style['--agent-floating-composer-height']).toBe('120px');
+      expect(body.style['--agent-floating-panel-height']).toBe('400px');
+      // A later ResizeObserver tick keeps reading layout, never the scaled box.
+      const inner = ctx.elements['agent-sidebar'].querySelector('.agent-sidebar-inner');
+      ctx.elements['agent-composer-wrap'].offsetHeight = 140;
+      inner.offsetHeight = 420;
+      expect(observers.length).toBeGreaterThan(0);
+      observers[observers.length - 1].callback([]);
+      expect(ctx.elements['agent-workspace-view'].style['--agent-composer-height']).toBe('140px');
+      expect(body.style['--agent-floating-composer-height']).toBe('140px');
+      expect(body.style['--agent-floating-panel-height']).toBe('420px');
+    } finally {
+      delete global.ResizeObserver;
+    }
   });
 
   test('restores the sessions column the compact layout closed once the window widens again', async () => {
