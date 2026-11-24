@@ -1100,6 +1100,9 @@ window.addEventListener('blur', () => sendLinkStatusZone(false));
 // began before that swipe's scroll was over, such as the arriving page's
 // share of it, which a page busy loading hears only late.
 // Listening is passive, so scrolling never waits on it.
+// Only the main frame listens (sub-frames return early above), and a wheel
+// event over an <iframe> is dispatched in that frame's document, same-site or
+// not, so a swipe that starts over any embedded frame never navigates.
 const SWIPE_GESTURE_GAP_MS = 150;
 const SWIPE_AXIS_LOCK_PX = 8;
 // A gesture counts as sideways when its horizontal travel is at least this
