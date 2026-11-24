@@ -68,6 +68,28 @@ and `scripts/sign-native-supervisors.js` composes workspace manifest sealing
 with the Myotis helper's restricted entitlements.
 See [Myotis isolation and qualification](myotis-process-isolation.md).
 
+### Colibri's native verifier (development switch)
+
+Colibri verifies chain reads in a WASM worker thread per chain by default. `FREEDOM_COLIBRI_BACKEND=service` runs it in freedom-colibrid instead (freedom-core design 0014, COL-5): a confined process per chain with no network of its own, whose every fetch main makes through the session (its proxy and Tor included) and only in the shapes the design's fetch contract allows. Myotis's checkpoint check then runs in a one-shot freedom-colibrid process too. The switch works only in a development build: packaged builds ship the binary but ignore the switch and run WASM, until COL-6 makes the service the default and removes the WASM path. `npm run colibrid:download` fetches the pinned release into `freedom-colibrid-bin/<os>-<arch>/`, with its digest and build provenance checked; `FREEDOM_COLIBRID_PATH` points a development build at another build of the binary, whatever release it reports. Any other value of the switch is warned of and runs WASM.
+
+What changes with it (design 0014, Deviations):
+
+- Reads Colibri can't prove are refused before any fetch: `eth_gasPrice`, `eth_feeHistory`, `eth_call`, `eth_estimateGas` and every other method outside its list (`Method <m> is not supported`), and reads at a block other than `latest`, a number or a hash (`pending`, `safe`, `finalized`, …) or account reads at any but `latest` (`Colibri cannot prove <method> …`). The chain router sends none of them; their next source answers.
+- A read still waiting on the network at its deadline ends then (`Colibri request cancelled at its deadline`), as no fault and without ending any other read.
+- At most three processes run at once, private windows' included: a read for a fourth chain while the other three are busy fails at once with `Colibri service busy`, and a process idle for 10 minutes exits.
+- A crash names only the read whose step was running; the process's other reads are sent once more to its successor.
+- Each chain has its own store, `<userData>/colibri/<chain>/` (at most six), so each chain's first read after the switch starts cold; the WASM verifier's flat files beside them are left alone. A private window's process keeps its store in memory and ends with the last private window.
+- Fetch errors name their URL as `<url>`.
+
+The Colibri suites run each backend-agnostic test on both backends, the service's on the real binary (skipped without it, failed without it under `FREEDOM_COLIBRID_REQUIRED=1`, as CI sets): `colibri-worker-host`, `chain-verified`, `colibri-private-store`, `colibri-outage-parity` and `colibri-replay-parity`, which replays freedom-core's recorded successful reads (`vectors/colibri.json` and `vectors/fixtures/colibri/` from one checkout) on both and needs `FREEDOM_CORE_COLIBRI_VECTORS`. The replay's transaction-cache cases need the C core's clock fixed, which only a debug build with the `testhooks` feature can do; they run when `FREEDOM_COLIBRID_TESTHOOKS_PATH` names one, built in a freedom-core checkout with `cargo build --features testhooks` in `services/freedom-colibrid`. The gated live run reads blocks, a transaction, its receipt and a balance from the default provers on mainnet and Gnosis through chain-verified on both backends, and compares them; no CI job runs it:
+
+```bash
+npm run colibrid:download
+FREEDOM_CORE_COLIBRI_VECTORS=../freedom-core/vectors/colibri.json \
+  npx jest src/main/ens/colibri-replay-parity.test.js src/main/ens/colibri-outage-parity.test.js
+COLIBRI_SERVICE_E2E=1 npx jest src/main/__tests__/integration/colibri-service-e2e.test.js
+```
+
 ### Experimental Windows Agent workspace backend
 
 On the Agent Windows branch, build the native workspace helpers on Windows with
@@ -175,6 +197,8 @@ FREEDOM_RADICLE_CONTRACT_BACKEND=addon npx jest src/main/radicle-backend.contrac
 ```
 
 Its `[pending: …]` tests cover what the Radicle service adds. They run against a backend that honours them, or with `FREEDOM_RADICLE_CONTRACT_PENDING=all` (or a comma-separated list of features). `FREEDOM_RADICLE_CONTRACT_RECORD=1` remakes the fixture through the add-on and records the vectors again.
+
+The Colibri suites run on both of its backends, WASM and freedom-colibrid; see [Colibri's native verifier](#colibris-native-verifier-development-switch) for what they need and for the gated live run.
 
 ### End-to-end tests
 
