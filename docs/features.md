@@ -93,6 +93,7 @@ explicitly allows multiple bundle instances so profile launching can use
 - **Live Statistics**: View connected peers, seeded repos, addon version, and Node ID.
 - **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
 - **Windows**: The embedded node ships in the Windows x64 and ARM64 builds.
+- **No confidentiality between nodes yet**: Radicle 1.x sends node-to-node traffic unencrypted, and its handshake lets a node pass itself off as another Node ID, so anyone on the path can read a repository's traffic and fetch a private repository. Signed refs still stop anyone forging its contents. Tor or a VPN doesn't prevent this. The fix is Radicle 2.0's new transport, which isn't compatible with 1.x ([#694](https://github.com/solardev-xyz/freedom-browser/issues/694)).
 
 ## Universal Address Bar
 
