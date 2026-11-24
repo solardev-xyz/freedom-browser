@@ -17,8 +17,11 @@
  *   data isn't one, and a reply that arrives while its own step is open
  *   (the service queues `stepped` before any frame its step caused) are
  *   protocol errors: the process is abandoned (`marker`), and its death
- *   names nobody. From then on its markers are ignored: a killed process
- *   still writes until its pipe closes, and nothing it writes is trusted.
+ *   names nobody. Such a reply is refused (`closed` says so): it is never
+ *   its request's outcome, and the request is one more bystander of the
+ *   death (`afterDeath`). From then on its markers are ignored: a killed
+ *   process still writes until its pipe closes, and nothing it writes is
+ *   trusted.
  * - **Overruns:** 2 s past a request's deadline, a step of that request
  *   still open kills the process (`overrun`), and names that request. A
  *   step opened later than that (a context freed after main's cancel) has
@@ -29,7 +32,7 @@
  *   step's request, for a process that died on its own or whose pipe broke
  *   (`transport`); nobody for any other end (main's stop, a protocol error
  *   ServiceClient found, a hang). The record is frozen: a second call
- *   returns it.
+ *   returns it, and those waiting for it (`afterDeath`) get it then.
  *
  * Nothing here sends anything: the owner gives `abandon(cause)`, which ends
  * the process (ServiceClient's `abandon`), and builds the outcomes.
@@ -131,6 +134,8 @@ class ColibriMarkers {
     // { cause, culprit }. Its markers are ignored from then on.
     this.abandoned = null;
     this.death = null;
+    // Called with the death's record once it is made (`afterDeath`).
+    this.deathWaiters = [];
   }
 
   /** The request whose step is open, or null. */
@@ -154,15 +159,28 @@ class ColibriMarkers {
     this.open.set(id, { op, timer });
   }
 
-  /** Request `id`'s reply arrived: it is no longer open. A reply while its
-   * own step is open is out of order. */
+  /**
+   * Request `id`'s reply arrived: it is no longer open. A reply while its
+   * own step is open is out of order: the process is abandoned, and the
+   * reply refused.
+   * @returns {boolean} whether the reply stands as its request's outcome
+   */
   closed(id) {
     const entry = this.open.get(id);
-    if (!entry) return;
+    if (!entry) return true;
     this.open.delete(id);
     this.clearTimer(entry.timer);
     entry.op.ended = true;
-    if (this.step?.id === id && !this.abandoned && !this.death) this.refuse('reply_in_step');
+    if (this.step?.id !== id || this.abandoned || this.death) return true;
+    this.refuse('reply_in_step');
+    return false;
+  }
+
+  /** Calls `fn` with the death's record once the process has died (at
+   * once if it has). */
+  afterDeath(fn) {
+    if (this.death) fn(this.death);
+    else this.deathWaiters.push(fn);
   }
 
   /** The operation of open request `id`, or undefined. */
@@ -268,6 +286,7 @@ class ColibriMarkers {
     this.open.clear();
     if (this.step?.timer) this.clearTimer(this.step.timer);
     this.death = deathRecord({ generation: this.generation, code, signal, cause, culprit });
+    for (const fn of this.deathWaiters.splice(0)) fn(this.death);
     return this.death;
   }
 }

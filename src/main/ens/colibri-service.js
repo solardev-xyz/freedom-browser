@@ -29,7 +29,8 @@
  *   outcome (`replyOutcome`, colibri-outcome.js, which cuts it to 2,000
  *   units); main's own errors (ColibridClient's texts and this module's)
  *   are never cut. A reply that is none of the service's is a protocol
- *   error: the process is ended, and its death names nobody.
+ *   error: the process is ended, and its death names nobody; the request
+ *   is one more bystander of it, once the process has exited.
  * - **Bystanders** of a death (ColibridClient's `colibriBystander`) are sent
  *   once more to the lane's next process, with what is left of their
  *   deadline, waiting out the restart's back-off when their deadline
@@ -55,8 +56,8 @@
  *   directories named by a chain ID count, so the WASM path's flat files
  *   there are left alone. Before each persistent spawn main checks the
  *   grant (service-grant.js, `colibriGrantRefusal`; design 0010, step 7):
- *   a refusal, or a directory that can't be made, spawns nothing and stops
- *   the lane.
+ *   a refusal, a directory that can't be made, or one due to be cleared
+ *   (below) that can't be, spawns nothing and stops the lane.
  * - **Restarts,** per lane and lazy (design 0014, Crashes): after an
  *   abnormal exit the next spawn waits 0.5 s, then 2 s, then 10 s, reset
  *   after 60 s without one, and requests meanwhile get `Colibri service
@@ -73,8 +74,9 @@
  * - **The private session's end** (`endPrivateSession`): every private
  *   process is sent `colibri.shutdown`; what is still open on one fails as
  *   a bystander (`Colibri worker replaced: private session ended`) once it
- *   has exited, and is never sent again; a private process still waiting
- *   for its slot is never spawned.
+ *   has exited, whatever it got meanwhile (a reply included), and is never
+ *   sent again; a private process still waiting for its slot is never
+ *   spawned.
  * - **Logs:** every crash, kill, recycle, retirement and stop at warn, with
  *   the chain and the reason, never a request's params.
  * - **The quit** (`stopAll`): every process is stopped (killed 5 s after
@@ -671,7 +673,8 @@ function prepareDirectory(proc, dataDir) {
     log.error(`[colibri] ${laneName(lane)} store directory refused`, { reason: refused });
     return refused;
   }
-  clearIfDue(lane, proc);
+  // A store due to be cleared that couldn't be is not spawned on.
+  if (!clearIfDue(lane, proc)) return 'its store could not be cleared';
   pruneDirectories(lane.chainId);
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const at = new Date(now());
@@ -680,11 +683,12 @@ function prepareDirectory(proc, dataDir) {
 }
 
 /** Clears the lane's directory when three abnormal exits in a row made it
- * due, once no process of the lane but `except` lives. */
+ * due, once no process of the lane but `except` lives. False if the clear
+ * failed: it stays due. */
 function clearIfDue(lane, except = null) {
-  if (!lane.clearPending || lane.privateLane) return;
+  if (!lane.clearPending || lane.privateLane) return true;
   for (const proc of procs) {
-    if (proc !== except && proc.lane === lane && holdsSlot(proc)) return;
+    if (proc !== except && proc.lane === lane && holdsSlot(proc)) return true;
   }
   lane.clearPending = false;
   try {
@@ -692,11 +696,13 @@ function clearIfDue(lane, except = null) {
     log.warn(
       `[colibri] ${laneName(lane)} store cleared after ${CLEAR_AFTER} abnormal exits in a row`
     );
+    return true;
   } catch (err) {
     lane.clearPending = true;
     log.warn(`[colibri] ${laneName(lane)} store could not be cleared`, {
       code: err?.code || 'error',
     });
+    return false;
   }
 }
 
@@ -871,11 +877,21 @@ async function run(proc, request, remaining) {
     return afterFailure(proc, request, err);
   }
   closed(proc);
+  // A reply that came after the private session ended, before the process
+  // exited, is never the outcome.
+  if (sessionStoppedOn(proc, client)) return sessionStopped(proc);
   const outcome = replyOutcome(reply, request);
   if (!outcome) {
-    // No reply of the service's: a protocol error, which names nobody.
+    // No reply of the service's: a protocol error, which names nobody. The
+    // request is one more bystander of the death, settled once the process
+    // has exited, so that its resend goes to the successor.
     proc.client.abandon('protocol');
-    throw colibriError(SERVICE_TEXTS.protocol, { colibriBystander: true });
+    await proc.exited;
+    return afterFailure(
+      proc,
+      request,
+      colibriError(SERVICE_TEXTS.protocol, { colibriBystander: true })
+    );
   }
   proc.lane.streak = 0;
   if (outcome.ok) return outcome.result;
@@ -888,11 +904,23 @@ function closed(proc) {
   if (proc.open === 0) armIdle(proc);
 }
 
+/** Whether the private session `proc` (and `client`) belonged to has
+ * ended. */
+function sessionStoppedOn(proc, client) {
+  return proc.sessionEnded || !sessionLive(client);
+}
+
+/** A request open on `proc` when its private session ended fails as a
+ * bystander once the process has exited, whatever it got meanwhile (its
+ * reply, or an error), and is never sent again. */
+async function sessionStopped(proc) {
+  if (proc.sessionEnded) await proc.exited;
+  throw colibriError(SERVICE_TEXTS.sessionStopped, { colibriBystander: true });
+}
+
 function afterFailure(proc, request, err) {
   if (!(err instanceof ColibriWorkerError)) throw err;
-  if (proc.sessionEnded) {
-    throw colibriError(SERVICE_TEXTS.sessionStopped, { colibriBystander: true });
-  }
+  if (sessionStoppedOn(proc, request.client)) return sessionStopped(proc);
   if (err.colibriRecycling) {
     recycled(proc);
     if (!canResend(request)) throw busy();

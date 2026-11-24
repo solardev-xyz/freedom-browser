@@ -10,12 +10,16 @@
  * - refusals: the recycling one apart from every other;
  * - deadlines: main's cancel at the deadline settles only on the reply, a
  *   step 2 s past it is killed and named, no reply 15 s past it is a hang;
+ *   any reply but a result read at or after the deadline is the deadline's
+ *   outcome, one before it keeps its own;
  * - deaths: a death inside a step names that request, one outside any
  *   names nobody, a marker read after the exit still counts, and every
  *   other open request is a bystander;
- * - forged markers kill the process and name nobody;
+ * - forged markers kill the process and name nobody, and a reply inside
+ *   its own step is never the outcome;
  * - `shell.colibri_fetch` reaches the executor with the open request's
- *   operation, and is refused for any other.
+ *   operation, and is refused for any other, and from main's cancel on,
+ *   whatever the clock says.
  *
  * The markers' rules one by one are in colibri-markers.test.js.
  */
@@ -707,6 +711,124 @@ describe('deadlines', () => {
     expect(request.result).toEqual({ status: 'success', result: '0x1' });
   });
 
+  /** The C core's failure when the service's own fetch bound passes first. */
+  const BOUND_FAILED = {
+    status: 'error',
+    error: 'remote proof failed (no local proving): Colibri fetch deadline passed',
+  };
+  const NON_RESULTS = [
+    [
+      "the C core's failure (the service's fetch bound first)",
+      (c, id) => c.result(id, BOUND_FAILED),
+    ],
+    ['a revert', (c, id) => c.result(id, { status: 'revert', data: '0x' })],
+    ['cancelled', (c, id) => c.error(id, 'cancelled', 'cancelled')],
+    ['another refusal', (c, id) => c.error(id, 'internal', 'internal')],
+    ['the recycling refusal', (c, id) => c.error(id, 'busy', 'recycling', { recycling: true })],
+  ];
+
+  /** A request with a 1 s deadline, its step taken and cleared; main's
+   * cancel is left unanswered. */
+  async function waiting() {
+    const made = await serving({
+      handle: (message, c) => {
+        c.step(message.id);
+        c.stepped(message.id);
+      },
+      script: { cancel: () => {} },
+    });
+    const request = outcomeOf(ask(made.client, {}, { deadlineMs: 1_000 }));
+    await until(() => made.child.events.length === 2, 'its step');
+    return { ...made, request, id: made.requests[0].id };
+  }
+
+  function expectDeadline(outcome) {
+    expect(outcome.error).toBeInstanceOf(ColibriWorkerError);
+    expect(outcome.error.message).toBe('Colibri request cancelled at its deadline');
+    expect(outcome.error.colibriBystander).toBeUndefined();
+    expect(outcome.error.colibriRecycling).toBeUndefined();
+    expect(isColibriFault(outcome.error)).toBe(false);
+  }
+
+  test.each(NON_RESULTS)(
+    "after main's deadline cancel, %s is the deadline's outcome, and nothing else ends",
+    async (_name, reply) => {
+      const { client, child, clock, request, id } = await waiting();
+      clock.advance(1_000);
+      await until(() => child.cancels.length === 1, 'the cancel');
+      reply(child, id);
+      await request.done;
+      expectDeadline(request);
+      expect(child.exited).toBe(false);
+      await expect(client.stats()).resolves.toEqual(statsResult());
+    }
+  );
+
+  test.each(NON_RESULTS)(
+    "read at the deadline before main's cancel fires, %s is the deadline's outcome too",
+    async (_name, reply) => {
+      const { child, clock, request, id } = await waiting();
+      // The clock there, its timer not yet run.
+      clock.now = START + 1_000;
+      reply(child, id);
+      await request.done;
+      expectDeadline(request);
+      expect(child.cancels).toEqual([]);
+    }
+  );
+
+  test('before the deadline a failure or a refusal keeps its own outcome, an unasked cancelled too', async () => {
+    const replies = [
+      (c, id) => c.result(id, BOUND_FAILED),
+      (c, id) => c.error(id, 'invalid_argument', 'invalid_argument'),
+      (c, id) => c.error(id, 'cancelled', 'cancelled'),
+      (c, id) => c.error(id, 'busy', 'recycling', { recycling: true }),
+    ];
+    const outcomes = [];
+    for (const reply of replies) {
+      const { child, clock, request, id } = await waiting();
+      clock.advance(999);
+      reply(child, id);
+      await request.done;
+      expect(child.cancels).toEqual([]);
+      outcomes.push(request.result ?? [request.error.message, request.error.colibriRecycling]);
+    }
+    expect(outcomes).toEqual([
+      BOUND_FAILED,
+      ['Colibri service refused the request', undefined],
+      ['Colibri service refused the request', undefined],
+      ['Colibri service busy', true],
+    ]);
+  });
+
+  test("a checkpoint's failure read at its deadline is the deadline's; its result is kept", async () => {
+    const replies = [
+      { status: 'error', stage: 'fetch', error: 'Colibri fetch deadline passed' },
+      { decoded: { slot: 1 }, result: true },
+    ];
+    const { client, children, clock } = colibrid({
+      kind: 'checkpoint',
+      chain: 1,
+      script: {
+        checkpoint: (message, child) =>
+          setImmediate(() => {
+            // Its deadline reached as it answers.
+            clock.now += 1_000;
+            child.serve(message, { reply: replies.shift() });
+          }),
+      },
+    });
+    await client.start();
+    const failed = outcomeOf(client.checkpoint({}, { deadlineMs: 1_000 }));
+    await failed.done;
+    expectDeadline(failed);
+    await expect(client.checkpoint({}, { deadlineMs: 1_000 })).resolves.toEqual({
+      decoded: { slot: 1 },
+      result: true,
+    });
+    expect(children[0].exited).toBe(false);
+  });
+
   test("a step still open 2 s past its request's deadline: the process is killed, that request named, the others bystanders", async () => {
     const { client, child, clock, requests, log } = await serving({
       handle: (message, c) => {
@@ -935,6 +1057,42 @@ describe('forged markers', () => {
       log.warn.mock.calls.filter(([message]) => message === '[colibrid] step marker refused')
     ).toHaveLength(1);
   });
+
+  test('a reply inside its own step is never the outcome: the process is killed, nobody named, the request a bystander of the death', async () => {
+    const { client, child, requests, log } = await serving({
+      handle: (message, c) => {
+        if (message.id !== requests[0].id) return;
+        // No colibri.stepped: the reply comes inside the step.
+        c.step(message.id);
+        c.result(message.id, { status: 'success', result: '0xforged' });
+      },
+    });
+    const exited = exitOf(client);
+    const forged = outcomeOf(ask(client));
+    const other = outcomeOf(ask(client));
+    // Read as the death is announced: nothing settled it on the reply.
+    let settledAtExit = null;
+    client.once('exit', () => {
+      settledAtExit = forged.settled;
+    });
+    await exited;
+    await Promise.all([forged.done, other.done]);
+
+    expect(child.killedWith).toBe('SIGKILL');
+    expect(client.lastDeath).toMatchObject({ cause: 'marker', culprit: null });
+    // Settled with the death, as the other open request was, not on the reply.
+    expect(settledAtExit).toBe(false);
+    expect(forged.result).toBeUndefined();
+    for (const outcome of [forged, other]) {
+      expect(outcome.error).toBeInstanceOf(ColibriWorkerError);
+      expect(outcome.error.message).toBe('Colibri worker replaced: step marker out of order');
+      expect(outcome.error.colibriBystander).toBe(true);
+      expect(isColibriFault(outcome.error)).toBe(false);
+    }
+    expect(log.warn).toHaveBeenCalledWith('[colibrid] step marker refused', {
+      rule: 'reply_in_step',
+    });
+  });
 });
 
 describe('fetches', () => {
@@ -1011,5 +1169,58 @@ describe('fetches', () => {
       rule: 'request',
     });
     expect(child.exited).toBe(false);
+  });
+
+  test("from main's deadline cancel on, the request's fetches are refused unsent, whatever the clock says; its steps still count", async () => {
+    const hop = jest.fn(
+      makeHop({ fetch: async () => new Response(Buffer.from('proof'), { status: 200 }) })
+    );
+    const { client, child, clock, requests, log } = await serving({
+      chain: LONE,
+      hop,
+      handle: (message, c) => {
+        c.step(message.id);
+        c.stepped(message.id);
+      },
+      script: { cancel: () => {} },
+    });
+    const request = outcomeOf(ask(client, {}, { deadlineMs: 1_000 }));
+    await until(() => child.events.length === 2, 'its step');
+    const [{ id }] = requests;
+    const generation = client.current.number;
+    clock.advance(1_000);
+    await until(() => child.cancels.length === 1, 'the cancel');
+    // Still open to the markers, its fetches ended.
+    expect(client.operations.get(id, { generation })).toMatchObject({ id, ended: true });
+
+    // The clock set back below the deadline: an otherwise valid fetch.
+    clock.now = START + 500;
+    const fetch = child.fetch(id, {
+      type: 'prover',
+      method: 'post',
+      path: '',
+      payload: { method: 'eth_blockNumber', params: [], version: 196611 },
+      accept: 'ssz',
+    });
+    await expect(fetch.done).resolves.toEqual({ error: 'Colibri fetch refused' });
+    expect(hop).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith('[Colibri] fetch refused', {
+      chain: LONE,
+      type: 'prover',
+      rule: 'request',
+    });
+
+    // A free after the cancel is a step of its own, no error; and the
+    // reply, read with the clock still set back, is the deadline's.
+    child.step(id);
+    child.stepped(id);
+    child.result(id, {
+      status: 'error',
+      error: 'remote proof failed (no local proving): Colibri fetch deadline passed',
+    });
+    await request.done;
+    expect(request.error.message).toBe('Colibri request cancelled at its deadline');
+    expect(child.exited).toBe(false);
+    expect(client.lastDeath).toBeNull();
   });
 });

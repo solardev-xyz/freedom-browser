@@ -40,9 +40,11 @@ const {
   COLIBRI_FETCH_TEXTS,
   MAX_ERROR_UNITS,
   REFUSALS_LOGGED,
+  bodyStream,
   colibriFetchHandler,
   cutUnits,
   errorText,
+  ownedPieces,
 } = require('./colibri-fetch');
 const { COLIBRI_FETCH_POOL_BYTES, ColibriFetchPool } = require('./colibri-fetch-pool');
 const { CHECKPOINT_PROOF_PAYLOAD } = require('./colibri-fetch-contract');
@@ -842,7 +844,7 @@ describe('error texts, as fetch_from_servers writes them', () => {
     expect(plain).toEqual({ error: 'Request to <url> failed: fetch failed' });
   });
 
-  test('an empty error body, and one that never ends: its first 8 KiB read, the rest torn down; the text cut to 2,000 units', async () => {
+  test("an empty error body, and one that never ends: read to its bound (here the variant's 64 KiB), the rest torn down; the text cut to 2,000 units", async () => {
     upstream.route = (req, res, { rest }) => {
       if (rest.startsWith('empty/')) {
         res.writeHead(404);
@@ -862,6 +864,31 @@ describe('error texts, as fetch_from_servers writes them', () => {
     const head = 'HTTP error! Status: 502, Details: ';
     expect(endless.error).toBe(`${head}${'é'.repeat(MAX_ERROR_UNITS - head.length)}`);
     await until(() => upstream.torn.length === 1, 'the error body torn down');
+  });
+
+  test('the details as response.text() decodes them: a BOM dropped, an unfinished sequence U+FFFD; URLs hidden before the cut, however long', async () => {
+    const replacement = String.fromCharCode(0xfffd);
+    const bodies = {
+      bom: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('oops')]),
+      // The first two bytes of a three-byte character, at the end.
+      unfinished: Buffer.concat([Buffer.from('bad'), Buffer.from([0xe2, 0x82])]),
+      broken: Buffer.concat([Buffer.from('a'), Buffer.from([0xff]), Buffer.from('b')]),
+      url: Buffer.from(`https://long.example/${'a'.repeat(8 * 1024)} sentinel`),
+    };
+    upstream.route = (req, res, { rest }) => {
+      res.writeHead(500);
+      res.end(bodies[rest.split('/')[0]]);
+    };
+    const details = async (name, shape = finality) => {
+      const answer = await call(shape(blockNumberOp({ prover: `${upstream.url}/prover/${name}` })));
+      return answer.error.replace('HTTP error! Status: 500, Details: ', '');
+    };
+
+    expect(await details('bom')).toBe('oops');
+    expect(await details('unfinished')).toBe(`bad${replacement}`);
+    expect(await details('broken')).toBe(`a${replacement}b`);
+    expect(await details('url')).toBe('<url> sentinel');
+    expect(await details('url', blockNumber)).toBe('<url> sentinel');
   });
 
   test('the cut never splits a character, and falls after the URLs are hidden', () => {
@@ -1239,6 +1266,53 @@ describe('bodies, through the service', () => {
     await until(() => child.terminals.length === 1, "main's terminal");
     expect(child.terminals).toEqual([{ id: fetch.id, type: 'abort', code: 'cancelled' }]);
     await goesOn(child);
+  });
+
+  test('a body given back to the pool keeps no storage behind: its pieces are its own, and those left never hold more than the reservation', async () => {
+    const body = bytes(MIB + 1, 5);
+    const pieces = ownedPieces(body);
+    expect(pieces).toHaveLength(17);
+    for (const piece of pieces) {
+      expect(piece.buffer).not.toBe(body.buffer);
+      expect(piece.byteOffset).toBe(0);
+      expect(piece.buffer.byteLength).toBe(piece.byteLength);
+      expect(piece.byteLength).toBeLessThanOrEqual(64 * KIB);
+    }
+    const reservation = pool.reserve(16 * MIB);
+    reservation.shrink(body.length);
+    const reader = bodyStream(pieces, reservation).getReader({ mode: 'byob' });
+    const backing = () => pieces.reduce((sum, piece) => sum + piece.buffer.byteLength, 0);
+    const parts = [];
+    let taken = 0;
+    // Read in odd sizes, as credit allows, pausing mid-piece and with one
+    // byte left: what the pieces still hold is always reserved.
+    for (const stop of [100_000, body.length - 1]) {
+      while (taken < stop) {
+        const { value } = await reader.read(new Uint8Array(Math.min(1000, stop - taken)));
+        parts.push(Buffer.from(value));
+        taken += value.byteLength;
+      }
+      expect(backing()).toBeLessThanOrEqual(reservation.held);
+      expect(pool.held).toBe(reservation.held);
+    }
+    expect(reservation.held).toBe(1);
+    expect(backing()).toBe(1);
+    const last = await reader.read(new Uint8Array(1000));
+    parts.push(Buffer.from(last.value));
+    expect((await reader.read(new Uint8Array(1))).done).toBe(true);
+    expect(Buffer.concat(parts)).toEqual(body);
+    expect(pieces).toEqual([]);
+    expect(pool.held).toBe(0);
+  });
+
+  test('a cancelled body lets go of every piece and gives back the reservation', async () => {
+    const pieces = ownedPieces(bytes(200 * KIB));
+    const reservation = pool.reserve(200 * KIB);
+    const reader = bodyStream(pieces, reservation).getReader({ mode: 'byob' });
+    await reader.read(new Uint8Array(1000));
+    await reader.cancel();
+    expect(pieces).toEqual([]);
+    expect(pool.held).toBe(0);
   });
 
   test('the reservation is given back as the service takes the body', async () => {
