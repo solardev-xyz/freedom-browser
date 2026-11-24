@@ -9,13 +9,14 @@ const DEFAULT_UPDATE_MS = 10000;
 const DEV_STALE_MS = 5000;
 const DEV_UPDATE_MS = 1000;
 // How long a start keeps trying the profile lock while another process holds
-// it (freedom-core design 0013, "The move"). A start reaches the lock only
-// after finding the profile not open a moment before, so the holder is then
-// a `profile migrate` run of a launch starting at the same moment: one that
-// settles the move with `--finish-only` takes the lock as soon as the move
-// lets go, for a few milliseconds when the move is done. Handing over to it
-// leaves no window: that launch then finds this one's gate held and hands
-// over too. A holder that keeps the lock past the wait is handed over to.
+// it (freedom-core design 0013, "The move"). A start waits only when its
+// lock didn't read fresh before its move and no gate held the profile
+// (startLockWaitMs, after index.js's held-elsewhere check), so a holder then
+// is a launch starting at the same moment. One that settles the move with
+// `--finish-only` takes the lock as soon as the move lets go, for a few
+// milliseconds when the move is done. Handing over to it leaves neither
+// open: that launch then finds this one's gate held and hands over too. A
+// holder that keeps the lock past the wait is handed over to.
 const PROFILE_LOCK_START_WAIT_MS = 2000;
 const PROFILE_LOCK_RETRY_MS = 25;
 
@@ -91,8 +92,10 @@ function hasStaleProfileLock(profile, options = {}) {
 /**
  * The wait for a start's own lock: PROFILE_LOCK_START_WAIT_MS, or none when
  * the lock read fresh before the start's move. A fresh lock whose gate
- * isn't held is an older build's, which takes no gate and keeps the lock:
- * it is handed over to at once, as before. `report` is `profile open`'s
+ * isn't held is a profile already open: an older build's, which takes no
+ * gate, or a new build's whose gate holder is being replaced (it keeps its
+ * lock while the new holder retries the gate). It is handed over to at
+ * once, as before. `report` is `profile open`'s
  * (`lockFresh`); where it didn't run (Windows's JS path), the lock is read
  * now, so this is called before the move, which takes the lock itself.
  */
