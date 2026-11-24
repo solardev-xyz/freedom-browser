@@ -7,70 +7,66 @@ jest.mock('../logger', () => ({
   debug: jest.fn(),
 }));
 
-// Colibri runs in a worker thread (colibri-worker-host / colibri-worker); this
-// suite covers the main-process client lifecycle above it, so the host is
-// replaced by in-process fake clients. The worker side has its own suites.
+// Colibri runs on one of two backends with one interface, picked by the
+// development switch (colibri-backend.js, freedom-core design 0014, COL-5):
+// the worker host (colibri-worker-host / colibri-worker) or the service
+// (colibri-service.js). This suite covers the main-process client lifecycle
+// above them, so each is replaced by in-process fake clients; the backends
+// have their own suites, and their shared contract runs on both in
+// colibri-worker-host.test.js. The lifecycle runs on each backend in turn.
 // Mock-prefixed names so Jest's "out-of-scope variable" guard permits them
-// in the factory (the factory runs before top-level `const` initializers).
+// in the factories (a factory runs before top-level `const` initializers).
 // Every client's `request` goes through `mockRequest(client, ...)`, so a
-// test scripts answers across rebuilds and sees which client asked.
+// test scripts answers across rebuilds and sees which client asked; each
+// client names its backend (`client.backend`). Once a test sets a backend's
+// `real`, that module itself answers in the fake's place.
 const mockCreateClient = jest.fn();
 const mockEnsureWorker = jest.fn(() => Promise.resolve());
 const mockRequest = jest.fn();
-const mockEndPrivateSession = jest.fn();
 const mockClientInstances = [];
-jest.mock('./colibri-worker-host', () => ({
-  // The host's class: the native backend's errors are its instances.
-  ColibriWorkerError: jest.requireActual('./colibri-worker-host').ColibriWorkerError,
-  ensureWorker: (...args) => mockEnsureWorker(...args),
-  endPrivateSession: (...args) => mockEndPrivateSession(...args),
-  createClient: (config) => {
-    mockCreateClient(config);
-    const client = {
-      config,
-      destroy: jest.fn(),
-    };
-    client.request = jest.fn((...args) => mockRequest(client, ...args));
-    mockClientInstances.push(client);
-    return client;
-  },
-}));
-
-// The native backend (colibri-service.js), behind the development switch:
-// the same interface, its own fake clients, answering '0xservice'; or, once
-// a test sets `real`, the module itself.
-const mockService = {
+/** Each backend's own calls, and how many times a registry loaded it. */
+const mockBackendCalls = () => ({
   createClient: jest.fn(),
-  ensureWorker: jest.fn(() => Promise.resolve()),
+  ensureWorker: jest.fn(),
   endPrivateSession: jest.fn(),
   stopAll: jest.fn(() => Promise.resolve()),
-  instances: [],
-  // How many times a module registry has loaded it.
   loads: 0,
   real: null,
-};
-jest.mock('./colibri-service', () => {
-  mockService.loads += 1;
+});
+const mockBackends = { wasm: mockBackendCalls(), service: mockBackendCalls() };
+function mockFakeBackend(kind) {
+  const backend = mockBackends[kind];
+  backend.loads += 1;
   const fake = {
-    ensureWorker: (...args) => mockService.ensureWorker(...args),
-    endPrivateSession: (...args) => mockService.endPrivateSession(...args),
-    stopAll: (...args) => mockService.stopAll(...args),
+    ensureWorker: (...args) => {
+      backend.ensureWorker(...args);
+      return mockEnsureWorker(...args);
+    },
+    endPrivateSession: (...args) => backend.endPrivateSession(...args),
+    stopAll: (...args) => backend.stopAll(...args),
     createClient: (config) => {
-      mockService.createClient(config);
-      const client = { config, destroy: jest.fn() };
-      client.request = jest.fn(() => Promise.resolve('0xservice'));
-      mockService.instances.push(client);
+      backend.createClient(config);
+      mockCreateClient(config);
+      const client = { backend: kind, config, destroy: jest.fn() };
+      client.request = jest.fn((...args) => mockRequest(client, ...args));
+      mockClientInstances.push(client);
       return client;
     },
   };
-  const backend = () => mockService.real ?? fake;
+  const current = () => backend.real ?? fake;
   return {
-    ensureWorker: (...args) => backend().ensureWorker(...args),
-    endPrivateSession: (...args) => backend().endPrivateSession(...args),
-    stopAll: (...args) => backend().stopAll(...args),
-    createClient: (config) => backend().createClient(config),
+    ensureWorker: (...args) => current().ensureWorker(...args),
+    endPrivateSession: (...args) => current().endPrivateSession(...args),
+    stopAll: (...args) => current().stopAll(...args),
+    createClient: (config) => current().createClient(config),
   };
-});
+}
+jest.mock('./colibri-worker-host', () => ({
+  // The host's class: the native backend's errors are its instances.
+  ColibriWorkerError: jest.requireActual('./colibri-worker-host').ColibriWorkerError,
+  ...mockFakeBackend('wasm'),
+}));
+jest.mock('./colibri-service', () => mockFakeBackend('service'));
 // colibri-backend.js reads whether the build is packaged from here.
 const mockApp = { isPackaged: false };
 jest.mock('electron', () => ({ app: mockApp }));
@@ -135,420 +131,460 @@ test('offers chain-data requests only, with no name-resolution adapter', () => {
   ]);
 });
 
-describe('the Colibri client', () => {
-  const BLOCK = ['eth_blockNumber', []];
-  const asked = (client, method = 'eth_blockNumber', params = []) => [
-    client,
-    { method, params },
-    { deadlineMs: undefined },
-  ];
+// The client lifecycle is the resolver's own: the same on either backend,
+// which the development switch picks.
+describe.each(['wasm', 'service'])('on the %s backend', (kind) => {
+  const ENV = 'FREEDOM_COLIBRI_BACKEND';
+  const other = kind === 'wasm' ? 'service' : 'wasm';
+  /** The backend's own end of the private session. */
+  const mockEndPrivateSession = mockBackends[kind].endPrivateSession;
+  let saved;
 
-  test('constructs the worker client lazily with the configured prover', async () => {
-    expect(mockCreateClient).not.toHaveBeenCalled();
-    await requestViaColibri(1, ...BLOCK);
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
-    expect(mockCreateClient).toHaveBeenCalledWith({
-      chainId: 1,
-      proverUrl: 'https://test-prover.example',
-      zkProof: true,
+  // The resolver loads the service at its first use, and ends its private
+  // session from then on: load it before the first test.
+  beforeAll(async () => {
+    if (kind !== 'service') return;
+    const before = process.env[ENV];
+    process.env[ENV] = kind;
+    try {
+      await requestViaColibri(1, 'eth_blockNumber');
+    } finally {
+      if (before === undefined) delete process.env[ENV];
+      else process.env[ENV] = before;
+      clearColibriClientForTest();
+    }
+  });
+
+  beforeEach(() => {
+    saved = process.env[ENV];
+    process.env[ENV] = kind;
+    mockApp.isPackaged = false;
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV];
+    else process.env[ENV] = saved;
+    // Every client came from this backend; the other was never asked.
+    expect(mockClientInstances.every((client) => client.backend === kind)).toBe(true);
+    expect(mockBackends[other].createClient).not.toHaveBeenCalled();
+    expect(mockBackends[other].ensureWorker).not.toHaveBeenCalled();
+  });
+
+  describe('the Colibri client', () => {
+    const BLOCK = ['eth_blockNumber', []];
+    const asked = (client, method = 'eth_blockNumber', params = []) => [
+      client,
+      { method, params },
+      { deadlineMs: undefined },
+    ];
+
+    test('constructs the worker client lazily with the configured prover', async () => {
+      expect(mockCreateClient).not.toHaveBeenCalled();
+      await requestViaColibri(1, ...BLOCK);
+      expect(mockCreateClient).toHaveBeenCalledTimes(1);
+      expect(mockCreateClient).toHaveBeenCalledWith({
+        chainId: 1,
+        proverUrl: 'https://test-prover.example',
+        zkProof: true,
+      });
+    });
+
+    // The client first, so the backend knows the lane's settings when it
+    // readies the lane (a native lane stopped under other ones starts again).
+    test('creates the first client, then uses it only once the chain worker is ready', async () => {
+      let releaseWorker;
+      mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
+      const pending = requestViaColibri(1, ...BLOCK);
+      await Promise.resolve();
+      expect(mockCreateClient).toHaveBeenCalledTimes(1);
+      expect(mockEnsureWorker).toHaveBeenCalledWith(1);
+      expect(mockCreateClient.mock.invocationCallOrder[0])
+        .toBeLessThan(mockEnsureWorker.mock.invocationCallOrder[0]);
+      expect(mockRequest).not.toHaveBeenCalled();
+      releaseWorker();
+      await expect(pending).resolves.toBe('0x2a');
+      expect(mockRequest).toHaveBeenCalledWith(...asked(mockClientInstances[0]));
+    });
+
+    test('fails the request when the chain worker cannot start, destroying the client', async () => {
+      mockEnsureWorker.mockRejectedValueOnce(new Error('Colibri worker failed to start: boom'));
+      await expect(requestViaColibri(1, ...BLOCK)).rejects.toThrow(/failed to start/);
+      expect(mockClientInstances).toHaveLength(1);
+      expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
+      expect(mockClientInstances[0].request).not.toHaveBeenCalled();
+      await expect(requestViaColibri(1, ...BLOCK)).resolves.toBe('0x2a');
+      expect(mockClientInstances).toHaveLength(2);
+      expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
+    });
+
+    test('reuses the singleton across calls when settings are unchanged', async () => {
+      await requestViaColibri(1, ...BLOCK);
+      await requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest']);
+      expect(mockCreateClient).toHaveBeenCalledTimes(1);
+      expect(mockRequest).toHaveBeenCalledWith(
+        ...asked(mockClientInstances[0], 'eth_getBalance', ['0xabc', 'latest'])
+      );
+    });
+
+    test('concurrent first calls collapse onto one construction', async () => {
+      const results = await Promise.all([
+        requestViaColibri(1, ...BLOCK),
+        requestViaColibri(1, ...BLOCK),
+        requestViaColibri(1, ...BLOCK),
+      ]);
+      expect(mockCreateClient).toHaveBeenCalledTimes(1);
+      expect(results).toEqual(['0x2a', '0x2a', '0x2a']);
+    });
+
+    test('rebuilds the client when the prover URL changes', async () => {
+      await requestViaColibri(1, ...BLOCK);
+      const firstClient = mockClientInstances[0];
+      mockLoadSettings.mockReturnValue({
+        ...DEFAULTS,
+        ensColibriProverUrl: 'https://other-prover.example',
+      });
+      await requestViaColibri(1, ...BLOCK);
+      expect(mockCreateClient).toHaveBeenCalledTimes(2);
+      expect(mockCreateClient.mock.calls[1][0].proverUrl).toBe('https://other-prover.example');
+      expect(firstClient.destroy).toHaveBeenCalledTimes(1);
+      expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
+    });
+
+    test('rebuilds the client when zk_proof toggles', async () => {
+      await requestViaColibri(1, ...BLOCK);
+      mockLoadSettings.mockReturnValue({ ...DEFAULTS, ensColibriZkProof: false });
+      await requestViaColibri(1, ...BLOCK);
+      expect(mockCreateClient).toHaveBeenCalledTimes(2);
+      expect(mockCreateClient.mock.calls[1][0].zkProof).toBe(false);
+    });
+
+    test('does not let an obsolete in-flight build replace newer settings', async () => {
+      let releaseWorker;
+      mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
+
+      const first = requestViaColibri(1, 'eth_getBalance', ['0x01', 'latest']);
+      mockLoadSettings.mockReturnValue({
+        ...DEFAULTS,
+        ensColibriProverUrl: 'https://new-prover.example',
+      });
+      const second = requestViaColibri(1, 'eth_getBalance', ['0x02', 'latest']);
+
+      releaseWorker();
+      await Promise.all([first, second]);
+
+      expect(mockCreateClient).toHaveBeenCalledTimes(2);
+      const byProver = (url) => mockClientInstances.find((c) => c.config.proverUrl === url);
+      const oldClient = byProver('https://test-prover.example');
+      const newClient = byProver('https://new-prover.example');
+      expect(oldClient.destroy).toHaveBeenCalledTimes(1);
+      expect(newClient.destroy).not.toHaveBeenCalled();
+      expect(mockRequest).toHaveBeenCalledWith(...asked(newClient, 'eth_getBalance', ['0x01', 'latest']));
+      expect(mockRequest).toHaveBeenCalledWith(...asked(newClient, 'eth_getBalance', ['0x02', 'latest']));
+      expect(oldClient.request).not.toHaveBeenCalled();
+    });
+
+    test('respects a custom prover URL from settings', async () => {
+      mockLoadSettings.mockReturnValue({
+        ...DEFAULTS,
+        ensColibriProverUrl: 'https://custom.example/keyXYZ',
+      });
+      await requestViaColibri(1, ...BLOCK);
+      expect(mockCreateClient.mock.calls[0][0].proverUrl).toBe('https://custom.example/keyXYZ');
+    });
+
+    test('propagates errors from the client (e.g. verification failure)', async () => {
+      const err = new Error('proof verification failed');
+      mockRequest.mockRejectedValue(err);
+      await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
+      expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    });
+
+    test('rebuilds once and retries a CALL_EXCEPTION without revert data', async () => {
+      const err = Object.assign(new Error('full ethers message with 0x' + 'ab'.repeat(200)), {
+        code: 'CALL_EXCEPTION',
+        shortMessage: 'missing revert data',
+        info: { error: { code: -32603, message: 'prover returned no response' } },
+      });
+      mockRequest.mockRejectedValueOnce(err).mockResolvedValueOnce('0xfeed');
+
+      await expect(requestViaColibri(1, ...BLOCK)).resolves.toBe('0xfeed');
+
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+      expect(mockCreateClient).toHaveBeenCalledTimes(2);
+      expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
+      expect(mockLogWarn).toHaveBeenCalledWith(
+        '[colibri] chain 1 request failed; rebuilding client and retrying once ' +
+        'error="missing revert data" code=CALL_EXCEPTION rpcCode=-32603 ' +
+        'rpcMessage="prover returned no response" revert=none'
+      );
+    });
+
+    test('bounds a retryable failure to one rebuild', async () => {
+      const err = Object.assign(new Error('request timed out'), { code: 'TIMEOUT' });
+      mockRequest.mockRejectedValue(err);
+
+      await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
+
+      expect(mockRequest).toHaveBeenCalledTimes(2);
+      expect(mockCreateClient).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not destroy a failed shared client while a sibling request still uses it', async () => {
+      let rejectFirst;
+      let resolveSibling;
+      mockRequest
+        .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveSibling = resolve; }))
+        .mockResolvedValueOnce('0xrecovered');
+
+      const first = requestViaColibri(1, ...BLOCK);
+      const sibling = requestViaColibri(1, ...BLOCK);
+      while (mockRequest.mock.calls.length < 2) await Promise.resolve();
+      const sharedClient = mockClientInstances[0];
+
+      rejectFirst(Object.assign(new Error('network unavailable'), { code: 'NETWORK_ERROR' }));
+      await expect(first).resolves.toBe('0xrecovered');
+      expect(sharedClient.destroy).not.toHaveBeenCalled();
+
+      resolveSibling('0xsibling');
+      await expect(sibling).resolves.toBe('0xsibling');
+      expect(sharedClient.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    test('does not retry an EVM revert carrying verified revert data', async () => {
+      const err = Object.assign(new Error('execution reverted'), {
+        code: 'CALL_EXCEPTION',
+        data: '0xdeadbeef',
+      });
+      mockRequest.mockRejectedValue(err);
+
+      await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
+
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+      expect(mockCreateClient).toHaveBeenCalledTimes(1);
     });
   });
 
-  // The client first, so the backend knows the lane's settings when it
-  // readies the lane (a native lane stopped under other ones starts again).
-  test('creates the first client, then uses it only once the chain worker is ready', async () => {
-    let releaseWorker;
-    mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
-    const pending = requestViaColibri(1, ...BLOCK);
-    await Promise.resolve();
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
-    expect(mockEnsureWorker).toHaveBeenCalledWith(1);
-    expect(mockCreateClient.mock.invocationCallOrder[0])
-      .toBeLessThan(mockEnsureWorker.mock.invocationCallOrder[0]);
-    expect(mockRequest).not.toHaveBeenCalled();
-    releaseWorker();
-    await expect(pending).resolves.toBe('0x2a');
-    expect(mockRequest).toHaveBeenCalledWith(...asked(mockClientInstances[0]));
-  });
+  describe('requestViaColibri', () => {
+    test('creates and reuses an independent Gnosis client', async () => {
+      mockLoadSettings.mockReturnValue({ ...DEFAULTS });
+      await expect(
+        requestViaColibri(100, 'eth_getBalance', ['0xabc', 'latest'])
+      ).resolves.toBe('0x2a');
+      const gnosisClient = mockClientInstances[0];
+      expect(mockCreateClient).toHaveBeenCalledWith(expect.objectContaining({ chainId: 100 }));
+      expect(gnosisClient.request).toHaveBeenCalledWith({
+        method: 'eth_getBalance',
+        params: ['0xabc', 'latest'],
+      }, { deadlineMs: undefined });
 
-  test('fails the request when the chain worker cannot start, destroying the client', async () => {
-    mockEnsureWorker.mockRejectedValueOnce(new Error('Colibri worker failed to start: boom'));
-    await expect(requestViaColibri(1, ...BLOCK)).rejects.toThrow(/failed to start/);
-    expect(mockClientInstances).toHaveLength(1);
-    expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
-    expect(mockClientInstances[0].request).not.toHaveBeenCalled();
-    await expect(requestViaColibri(1, ...BLOCK)).resolves.toBe('0x2a');
-    expect(mockClientInstances).toHaveLength(2);
-    expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
-  });
-
-  test('reuses the singleton across calls when settings are unchanged', async () => {
-    await requestViaColibri(1, ...BLOCK);
-    await requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest']);
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
-    expect(mockRequest).toHaveBeenCalledWith(
-      ...asked(mockClientInstances[0], 'eth_getBalance', ['0xabc', 'latest'])
-    );
-  });
-
-  test('concurrent first calls collapse onto one construction', async () => {
-    const results = await Promise.all([
-      requestViaColibri(1, ...BLOCK),
-      requestViaColibri(1, ...BLOCK),
-      requestViaColibri(1, ...BLOCK),
-    ]);
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
-    expect(results).toEqual(['0x2a', '0x2a', '0x2a']);
-  });
-
-  test('rebuilds the client when the prover URL changes', async () => {
-    await requestViaColibri(1, ...BLOCK);
-    const firstClient = mockClientInstances[0];
-    mockLoadSettings.mockReturnValue({
-      ...DEFAULTS,
-      ensColibriProverUrl: 'https://other-prover.example',
+      await requestViaColibri(1, 'eth_blockNumber');
+      expect(mockCreateClient).toHaveBeenCalledTimes(2);
     });
-    await requestViaColibri(1, ...BLOCK);
-    expect(mockCreateClient).toHaveBeenCalledTimes(2);
-    expect(mockCreateClient.mock.calls[1][0].proverUrl).toBe('https://other-prover.example');
-    expect(firstClient.destroy).toHaveBeenCalledTimes(1);
-    expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
-  });
 
-  test('rebuilds the client when zk_proof toggles', async () => {
-    await requestViaColibri(1, ...BLOCK);
-    mockLoadSettings.mockReturnValue({ ...DEFAULTS, ensColibriZkProof: false });
-    await requestViaColibri(1, ...BLOCK);
-    expect(mockCreateClient).toHaveBeenCalledTimes(2);
-    expect(mockCreateClient.mock.calls[1][0].zkProof).toBe(false);
-  });
-
-  test('does not let an obsolete in-flight build replace newer settings', async () => {
-    let releaseWorker;
-    mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
-
-    const first = requestViaColibri(1, 'eth_getBalance', ['0x01', 'latest']);
-    mockLoadSettings.mockReturnValue({
-      ...DEFAULTS,
-      ensColibriProverUrl: 'https://new-prover.example',
+    test('hands the caller deadline to the worker client', async () => {
+      await requestViaColibri(100, 'eth_call', [{}, 'latest'], { deadlineMs: 2000 });
+      expect(mockClientInstances[0].request).toHaveBeenCalledWith(
+        { method: 'eth_call', params: [{}, 'latest'] },
+        { deadlineMs: 2000 },
+      );
     });
-    const second = requestViaColibri(1, 'eth_getBalance', ['0x02', 'latest']);
 
-    releaseWorker();
-    await Promise.all([first, second]);
+    test('rebuilds the affected chain client once after a network failure', async () => {
+      await requestViaColibri(100, 'eth_blockNumber');
+      const firstClient = mockClientInstances[0];
+      firstClient.request
+        .mockRejectedValueOnce(Object.assign(new Error('network unavailable'), {
+          code: 'NETWORK_ERROR',
+        }));
 
-    expect(mockCreateClient).toHaveBeenCalledTimes(2);
-    const byProver = (url) => mockClientInstances.find((c) => c.config.proverUrl === url);
-    const oldClient = byProver('https://test-prover.example');
-    const newClient = byProver('https://new-prover.example');
-    expect(oldClient.destroy).toHaveBeenCalledTimes(1);
-    expect(newClient.destroy).not.toHaveBeenCalled();
-    expect(mockRequest).toHaveBeenCalledWith(...asked(newClient, 'eth_getBalance', ['0x01', 'latest']));
-    expect(mockRequest).toHaveBeenCalledWith(...asked(newClient, 'eth_getBalance', ['0x02', 'latest']));
-    expect(oldClient.request).not.toHaveBeenCalled();
-  });
+      await expect(requestViaColibri(100, 'eth_blockNumber')).resolves.toBe('0x2a');
 
-  test('respects a custom prover URL from settings', async () => {
-    mockLoadSettings.mockReturnValue({
-      ...DEFAULTS,
-      ensColibriProverUrl: 'https://custom.example/keyXYZ',
+      expect(firstClient.destroy).toHaveBeenCalledTimes(1);
+      expect(mockCreateClient).toHaveBeenCalledTimes(2);
+      expect(mockClientInstances[1].request).toHaveBeenCalledTimes(1);
     });
-    await requestViaColibri(1, ...BLOCK);
-    expect(mockCreateClient.mock.calls[0][0].proverUrl).toBe('https://custom.example/keyXYZ');
   });
 
-  test('propagates errors from the client (e.g. verification failure)', async () => {
-    const err = new Error('proof verification failed');
-    mockRequest.mockRejectedValue(err);
-    await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
-  });
+  // PRIVATE MODE GUARD (Colibri store, #1058): a read in a private window's
+  // async context runs on the chain's private worker, whose store is in memory
+  // only; every other read keeps the normal, disk-backed lane.
+  describe('private windows', () => {
+    const inPrivate = (fn) => runWithPrivateLogContext(true, fn);
+    // A private window is open for each test; the last one closing ends the
+    // session in private-log-context first, then runs the cleanup hook.
+    const closeLastPrivateWindow = () => {
+      endPrivateSession();
+      endPrivateColibriSession();
+    };
+    beforeEach(() => openPrivateSession());
+    afterEach(() => endPrivateSession());
+    const NORMAL = { chainId: 1, proverUrl: 'https://test-prover.example', zkProof: true };
+    const PRIVATE = { ...NORMAL, private: true };
+    const lanes = () => mockCreateClient.mock.calls.map(([config]) => config);
 
-  test('rebuilds once and retries a CALL_EXCEPTION without revert data', async () => {
-    const err = Object.assign(new Error('full ethers message with 0x' + 'ab'.repeat(200)), {
-      code: 'CALL_EXCEPTION',
-      shortMessage: 'missing revert data',
-      info: { error: { code: -32603, message: 'prover returned no response' } },
+    // Chain data is Colibri's only caller: names don't use it (#1076).
+    test.each([
+      ['a balance read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
+      ['a code read', () => requestViaColibri(1, 'eth_getCode', ['0xabc', 'latest'])],
+    ])('%s from a private window runs on the private worker', async (_label, read) => {
+      await inPrivate(read);
+      expect(lanes()).toEqual([PRIVATE]);
+      expect(mockEnsureWorker).toHaveBeenCalledWith(1, { private: true });
+      expect(mockEnsureWorker).not.toHaveBeenCalledWith(1);
     });
-    mockRequest.mockRejectedValueOnce(err).mockResolvedValueOnce('0xfeed');
 
-    await expect(requestViaColibri(1, ...BLOCK)).resolves.toBe('0xfeed');
-
-    expect(mockRequest).toHaveBeenCalledTimes(2);
-    expect(mockCreateClient).toHaveBeenCalledTimes(2);
-    expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
-    expect(mockLogWarn).toHaveBeenCalledWith(
-      '[colibri] chain 1 request failed; rebuilding client and retrying once ' +
-      'error="missing revert data" code=CALL_EXCEPTION rpcCode=-32603 ' +
-      'rpcMessage="prover returned no response" revert=none'
-    );
-  });
-
-  test('bounds a retryable failure to one rebuild', async () => {
-    const err = Object.assign(new Error('request timed out'), { code: 'TIMEOUT' });
-    mockRequest.mockRejectedValue(err);
-
-    await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
-
-    expect(mockRequest).toHaveBeenCalledTimes(2);
-    expect(mockCreateClient).toHaveBeenCalledTimes(2);
-  });
-
-  test('does not destroy a failed shared client while a sibling request still uses it', async () => {
-    let rejectFirst;
-    let resolveSibling;
-    mockRequest
-      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
-      .mockImplementationOnce(() => new Promise((resolve) => { resolveSibling = resolve; }))
-      .mockResolvedValueOnce('0xrecovered');
-
-    const first = requestViaColibri(1, ...BLOCK);
-    const sibling = requestViaColibri(1, ...BLOCK);
-    while (mockRequest.mock.calls.length < 2) await Promise.resolve();
-    const sharedClient = mockClientInstances[0];
-
-    rejectFirst(Object.assign(new Error('network unavailable'), { code: 'NETWORK_ERROR' }));
-    await expect(first).resolves.toBe('0xrecovered');
-    expect(sharedClient.destroy).not.toHaveBeenCalled();
-
-    resolveSibling('0xsibling');
-    await expect(sibling).resolves.toBe('0xsibling');
-    expect(sharedClient.destroy).toHaveBeenCalledTimes(1);
-  });
-
-  test('does not retry an EVM revert carrying verified revert data', async () => {
-    const err = Object.assign(new Error('execution reverted'), {
-      code: 'CALL_EXCEPTION',
-      data: '0xdeadbeef',
+    test.each([
+      ['a balance read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
+      ['a code read', () => requestViaColibri(1, 'eth_getCode', ['0xabc', 'latest'])],
+    ])('%s from a normal window keeps the normal worker, as before', async (_label, read) => {
+      await read();
+      expect(lanes()).toEqual([NORMAL]);
+      expect(mockEnsureWorker.mock.calls).toEqual([[1]]);
     });
-    mockRequest.mockRejectedValue(err);
 
-    await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
-
-    expect(mockRequest).toHaveBeenCalledTimes(1);
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('requestViaColibri', () => {
-  test('creates and reuses an independent Gnosis client', async () => {
-    mockLoadSettings.mockReturnValue({ ...DEFAULTS });
-    await expect(
-      requestViaColibri(100, 'eth_getBalance', ['0xabc', 'latest'])
-    ).resolves.toBe('0x2a');
-    const gnosisClient = mockClientInstances[0];
-    expect(mockCreateClient).toHaveBeenCalledWith(expect.objectContaining({ chainId: 100 }));
-    expect(gnosisClient.request).toHaveBeenCalledWith({
-      method: 'eth_getBalance',
-      params: ['0xabc', 'latest'],
-    }, { deadlineMs: undefined });
-
-    await requestViaColibri(1, 'eth_blockNumber');
-    expect(mockCreateClient).toHaveBeenCalledTimes(2);
-  });
-
-  test('hands the caller deadline to the worker client', async () => {
-    await requestViaColibri(100, 'eth_call', [{}, 'latest'], { deadlineMs: 2000 });
-    expect(mockClientInstances[0].request).toHaveBeenCalledWith(
-      { method: 'eth_call', params: [{}, 'latest'] },
-      { deadlineMs: 2000 },
-    );
-  });
-
-  test('rebuilds the affected chain client once after a network failure', async () => {
-    await requestViaColibri(100, 'eth_blockNumber');
-    const firstClient = mockClientInstances[0];
-    firstClient.request
-      .mockRejectedValueOnce(Object.assign(new Error('network unavailable'), {
-        code: 'NETWORK_ERROR',
-      }));
-
-    await expect(requestViaColibri(100, 'eth_blockNumber')).resolves.toBe('0x2a');
-
-    expect(firstClient.destroy).toHaveBeenCalledTimes(1);
-    expect(mockCreateClient).toHaveBeenCalledTimes(2);
-    expect(mockClientInstances[1].request).toHaveBeenCalledTimes(1);
-  });
-});
-
-// PRIVATE MODE GUARD (Colibri store, #1058): a read in a private window's
-// async context runs on the chain's private worker, whose store is in memory
-// only; every other read keeps the normal, disk-backed lane.
-describe('private windows', () => {
-  const inPrivate = (fn) => runWithPrivateLogContext(true, fn);
-  // A private window is open for each test; the last one closing ends the
-  // session in private-log-context first, then runs the cleanup hook.
-  const closeLastPrivateWindow = () => {
-    endPrivateSession();
-    endPrivateColibriSession();
-  };
-  beforeEach(() => openPrivateSession());
-  afterEach(() => endPrivateSession());
-  const NORMAL = { chainId: 1, proverUrl: 'https://test-prover.example', zkProof: true };
-  const PRIVATE = { ...NORMAL, private: true };
-  const lanes = () => mockCreateClient.mock.calls.map(([config]) => config);
-
-  // Chain data is Colibri's only caller: names don't use it (#1076).
-  test.each([
-    ['a balance read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
-    ['a code read', () => requestViaColibri(1, 'eth_getCode', ['0xabc', 'latest'])],
-  ])('%s from a private window runs on the private worker', async (_label, read) => {
-    await inPrivate(read);
-    expect(lanes()).toEqual([PRIVATE]);
-    expect(mockEnsureWorker).toHaveBeenCalledWith(1, { private: true });
-    expect(mockEnsureWorker).not.toHaveBeenCalledWith(1);
-  });
-
-  test.each([
-    ['a balance read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
-    ['a code read', () => requestViaColibri(1, 'eth_getCode', ['0xabc', 'latest'])],
-  ])('%s from a normal window keeps the normal worker, as before', async (_label, read) => {
-    await read();
-    expect(lanes()).toEqual([NORMAL]);
-    expect(mockEnsureWorker.mock.calls).toEqual([[1]]);
-  });
-
-  test('the two lanes keep separate clients side by side', async () => {
-    await requestViaColibri(1, 'eth_blockNumber');
-    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    await requestViaColibri(1, 'eth_blockNumber');
-    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    expect(lanes()).toEqual([NORMAL, PRIVATE]);
-    const [normal, priv] = mockClientInstances;
-    expect(normal.request).toHaveBeenCalledTimes(2);
-    expect(priv.request).toHaveBeenCalledTimes(2);
-    expect(normal.destroy).not.toHaveBeenCalled();
-    expect(priv.destroy).not.toHaveBeenCalled();
-  });
-
-  test('a retry after a transient failure stays on the private lane', async () => {
-    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    mockClientInstances[0].request.mockRejectedValueOnce(new Error('fetch failed'));
-    await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).resolves.toBe('0x2a');
-    expect(lanes()).toEqual([PRIVATE, PRIVATE]);
-  });
-
-  test('ending the private session drops the private clients only', async () => {
-    await requestViaColibri(1, 'eth_blockNumber');
-    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    await inPrivate(() => requestViaColibri(100, 'eth_blockNumber'));
-    const [normal, priv, privGnosis] = mockClientInstances;
-
-    closeLastPrivateWindow();
-    openPrivateSession();
-
-    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
-    expect(priv.destroy).toHaveBeenCalledTimes(1);
-    expect(privGnosis.destroy).toHaveBeenCalledTimes(1);
-    expect(normal.destroy).not.toHaveBeenCalled();
-
-    // The normal lane keeps its client; the next private read builds anew.
-    await requestViaColibri(1, 'eth_blockNumber');
-    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    expect(mockClientInstances).toHaveLength(4);
-    expect(mockCreateClient.mock.calls[3][0]).toEqual(PRIVATE);
-    expect(normal.request).toHaveBeenCalledTimes(2);
-  });
-
-  test('a private client still in use when the session ends is destroyed once released', async () => {
-    let release;
-    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    const [priv] = mockClientInstances;
-    priv.request.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
-    const pending = inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    await Promise.resolve();
-    await Promise.resolve();
-
-    closeLastPrivateWindow();
-    expect(priv.destroy).not.toHaveBeenCalled();
-    release('0x1');
-    await expect(pending).resolves.toBe('0x1');
-    expect(priv.destroy).toHaveBeenCalledTimes(1);
-  });
-
-  test('a private build in flight when the session ends is discarded, with no rebuild', async () => {
-    let releaseWorker;
-    mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
-    const pending = inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    pending.catch(() => {});
-    await Promise.resolve();
-
-    closeLastPrivateWindow();
-    releaseWorker();
-
-    // The client built for the ended session is destroyed at once, and the
-    // request is refused rather than rebuilt for the next session.
-    await expect(pending).rejects.toMatchObject({
-      message: 'Colibri private session ended',
-      colibriBystander: true,
+    test('the two lanes keep separate clients side by side', async () => {
+      await requestViaColibri(1, 'eth_blockNumber');
+      await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      await requestViaColibri(1, 'eth_blockNumber');
+      await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      expect(lanes()).toEqual([NORMAL, PRIVATE]);
+      const [normal, priv] = mockClientInstances;
+      expect(normal.request).toHaveBeenCalledTimes(2);
+      expect(priv.request).toHaveBeenCalledTimes(2);
+      expect(normal.destroy).not.toHaveBeenCalled();
+      expect(priv.destroy).not.toHaveBeenCalled();
     });
-    expect(lanes()).toEqual([PRIVATE]);
-    expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
-    expect(mockEnsureWorker).toHaveBeenCalledTimes(1);
-  });
 
-  // Codex review of #1070, finding 2: a read can wait on Myotis or the
-  // network before it reaches Colibri, so a private one can still be waiting
-  // when its last window closes.
-  test('a private read whose session ended before it reached Colibri starts nothing', async () => {
-    let releaseMyotis;
-    const myotis = new Promise((resolve) => { releaseMyotis = resolve; });
-    const pending = inPrivate(async () => {
-      await myotis;
-      return requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest']);
+    test('a retry after a transient failure stays on the private lane', async () => {
+      await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      mockClientInstances[0].request.mockRejectedValueOnce(new Error('fetch failed'));
+      await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).resolves.toBe('0x2a');
+      expect(lanes()).toEqual([PRIVATE, PRIVATE]);
     });
-    pending.catch(() => {});
 
-    closeLastPrivateWindow();
-    openPrivateSession(); // the next private window, before the read resumes
-    releaseMyotis();
+    test('ending the private session drops the private clients only', async () => {
+      await requestViaColibri(1, 'eth_blockNumber');
+      await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      await inPrivate(() => requestViaColibri(100, 'eth_blockNumber'));
+      const [normal, priv, privGnosis] = mockClientInstances;
 
-    await expect(pending).rejects.toMatchObject({
-      message: 'Colibri private session ended',
-      colibriBystander: true,
-    });
-    expect(mockEnsureWorker).not.toHaveBeenCalled();
-    expect(mockCreateClient).not.toHaveBeenCalled();
-    // The new session's own reads are served.
-    await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).resolves.toBe('0x2a');
-    expect(lanes()).toEqual([PRIVATE]);
-  });
-
-  test('a private read entered with no private window open starts nothing', async () => {
-    endPrivateSession();
-    await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).rejects.toMatchObject({
-      message: 'Colibri private session ended',
-    });
-    expect(mockEnsureWorker).not.toHaveBeenCalled();
-    // A normal read is unaffected.
-    await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
-  });
-
-  test('a retry after the session ended is refused too', async () => {
-    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
-    mockClientInstances[0].request.mockImplementationOnce(async () => {
       closeLastPrivateWindow();
-      throw new Error('fetch failed');
-    });
-    await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).rejects.toMatchObject({
-      message: 'Colibri private session ended',
-    });
-    expect(lanes()).toEqual([PRIVATE]);
-  });
+      openPrivateSession();
 
-  test('the cleanup hook ends the session only once the last private window has closed', () => {
-    let hook;
-    let open = 2;
-    registerColibriPrivateCleanup({
-      registerPrivateCleanup: (fn) => { hook = fn; },
-      getPrivateWindowCount: () => open,
+      expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+      expect(priv.destroy).toHaveBeenCalledTimes(1);
+      expect(privGnosis.destroy).toHaveBeenCalledTimes(1);
+      expect(normal.destroy).not.toHaveBeenCalled();
+
+      // The normal lane keeps its client; the next private read builds anew.
+      await requestViaColibri(1, 'eth_blockNumber');
+      await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      expect(mockClientInstances).toHaveLength(4);
+      expect(mockCreateClient.mock.calls[3][0]).toEqual(PRIVATE);
+      expect(normal.request).toHaveBeenCalledTimes(2);
     });
-    open = 1;
-    hook('private-a');
-    expect(mockEndPrivateSession).not.toHaveBeenCalled();
-    open = 0;
-    hook('private-b');
-    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+
+    test('a private client still in use when the session ends is destroyed once released', async () => {
+      let release;
+      await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      const [priv] = mockClientInstances;
+      priv.request.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      const pending = inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      closeLastPrivateWindow();
+      expect(priv.destroy).not.toHaveBeenCalled();
+      release('0x1');
+      await expect(pending).resolves.toBe('0x1');
+      expect(priv.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    test('a private build in flight when the session ends is discarded, with no rebuild', async () => {
+      let releaseWorker;
+      mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
+      const pending = inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      pending.catch(() => {});
+      await Promise.resolve();
+
+      closeLastPrivateWindow();
+      releaseWorker();
+
+      // The client built for the ended session is destroyed at once, and the
+      // request is refused rather than rebuilt for the next session.
+      await expect(pending).rejects.toMatchObject({
+        message: 'Colibri private session ended',
+        colibriBystander: true,
+      });
+      expect(lanes()).toEqual([PRIVATE]);
+      expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
+      expect(mockEnsureWorker).toHaveBeenCalledTimes(1);
+    });
+
+    // Codex review of #1070, finding 2: a read can wait on Myotis or the
+    // network before it reaches Colibri, so a private one can still be waiting
+    // when its last window closes.
+    test('a private read whose session ended before it reached Colibri starts nothing', async () => {
+      let releaseMyotis;
+      const myotis = new Promise((resolve) => { releaseMyotis = resolve; });
+      const pending = inPrivate(async () => {
+        await myotis;
+        return requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest']);
+      });
+      pending.catch(() => {});
+
+      closeLastPrivateWindow();
+      openPrivateSession(); // the next private window, before the read resumes
+      releaseMyotis();
+
+      await expect(pending).rejects.toMatchObject({
+        message: 'Colibri private session ended',
+        colibriBystander: true,
+      });
+      expect(mockEnsureWorker).not.toHaveBeenCalled();
+      expect(mockCreateClient).not.toHaveBeenCalled();
+      // The new session's own reads are served.
+      await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).resolves.toBe('0x2a');
+      expect(lanes()).toEqual([PRIVATE]);
+    });
+
+    test('a private read entered with no private window open starts nothing', async () => {
+      endPrivateSession();
+      await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).rejects.toMatchObject({
+        message: 'Colibri private session ended',
+      });
+      expect(mockEnsureWorker).not.toHaveBeenCalled();
+      // A normal read is unaffected.
+      await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
+    });
+
+    test('a retry after the session ended is refused too', async () => {
+      await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+      mockClientInstances[0].request.mockImplementationOnce(async () => {
+        closeLastPrivateWindow();
+        throw new Error('fetch failed');
+      });
+      await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).rejects.toMatchObject({
+        message: 'Colibri private session ended',
+      });
+      expect(lanes()).toEqual([PRIVATE]);
+    });
+
+    test('the cleanup hook ends the session only once the last private window has closed', () => {
+      let hook;
+      let open = 2;
+      registerColibriPrivateCleanup({
+        registerPrivateCleanup: (fn) => { hook = fn; },
+        getPrivateWindowCount: () => open,
+      });
+      open = 1;
+      hook('private-a');
+      expect(mockEndPrivateSession).not.toHaveBeenCalled();
+      open = 0;
+      hook('private-b');
+      expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+    });
   });
 });
 
@@ -559,13 +595,17 @@ describe('private windows', () => {
 describe('the backend switch', () => {
   const ENV = 'FREEDOM_COLIBRI_BACKEND';
   const CONFIG = { chainId: 1, proverUrl: 'https://test-prover.example', zkProof: true };
+  const serviceClients = () => mockClientInstances.filter((client) => client.backend === 'service');
   let saved;
 
   beforeEach(() => {
     saved = process.env[ENV];
     delete process.env[ENV];
     mockApp.isPackaged = false;
-    mockService.instances.length = 0;
+    // Each client answers with the backend it came from.
+    mockRequest.mockImplementation(async (client) =>
+      client.backend === 'service' ? '0xservice' : '0x2a'
+    );
   });
 
   afterEach(() => {
@@ -576,18 +616,18 @@ describe('the backend switch', () => {
 
   test('WASM by default: the worker host serves, and the service is never loaded', async () => {
     let fresh;
-    const loads = mockService.loads;
+    const loads = mockBackends.service.loads;
     jest.isolateModules(() => {
       fresh = require('./colibri-resolver');
     });
     await expect(fresh.requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
-    expect(mockCreateClient).toHaveBeenCalledWith(CONFIG);
+    expect(mockBackends.wasm.createClient).toHaveBeenCalledWith(CONFIG);
     fresh.endPrivateColibriSession();
-    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+    expect(mockBackends.wasm.endPrivateSession).toHaveBeenCalledTimes(1);
     await expect(fresh.stopColibri()).resolves.toBeUndefined();
-    expect(mockService.loads).toBe(loads);
-    expect(mockService.stopAll).not.toHaveBeenCalled();
-    expect(mockService.endPrivateSession).not.toHaveBeenCalled();
+    expect(mockBackends.service.loads).toBe(loads);
+    expect(mockBackends.service.stopAll).not.toHaveBeenCalled();
+    expect(mockBackends.service.endPrivateSession).not.toHaveBeenCalled();
   });
 
   test('the service when a development build names it', async () => {
@@ -595,14 +635,14 @@ describe('the backend switch', () => {
     await expect(requestViaColibri(1, 'eth_blockNumber', [], { deadlineMs: 2000 })).resolves.toBe(
       '0xservice'
     );
-    expect(mockService.ensureWorker).toHaveBeenCalledWith(1);
-    expect(mockService.createClient).toHaveBeenCalledWith(CONFIG);
-    expect(mockService.instances[0].request).toHaveBeenCalledWith(
+    expect(mockBackends.service.ensureWorker).toHaveBeenCalledWith(1);
+    expect(mockBackends.service.createClient).toHaveBeenCalledWith(CONFIG);
+    expect(serviceClients()[0].request).toHaveBeenCalledWith(
       { method: 'eth_blockNumber', params: [] },
       { deadlineMs: 2000 }
     );
-    expect(mockCreateClient).not.toHaveBeenCalled();
-    expect(mockEnsureWorker).not.toHaveBeenCalled();
+    expect(mockBackends.wasm.createClient).not.toHaveBeenCalled();
+    expect(mockBackends.wasm.ensureWorker).not.toHaveBeenCalled();
     expect(mockLogInfo).toHaveBeenCalledWith(
       '[colibri] chain 1 client ready (prover=test-prover.example, zk=true, service)'
     );
@@ -612,8 +652,8 @@ describe('the backend switch', () => {
     process.env[ENV] = 'service';
     mockApp.isPackaged = true;
     await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
-    expect(mockCreateClient).toHaveBeenCalledWith(CONFIG);
-    expect(mockService.createClient).not.toHaveBeenCalled();
+    expect(mockBackends.wasm.createClient).toHaveBeenCalledWith(CONFIG);
+    expect(mockBackends.service.createClient).not.toHaveBeenCalled();
   });
 
   test('a switch rebuilds the client on the other backend', async () => {
@@ -624,8 +664,8 @@ describe('the backend switch', () => {
     expect(wasm.destroy).toHaveBeenCalledTimes(1);
     delete process.env[ENV];
     await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
-    expect(mockService.instances[0].destroy).toHaveBeenCalledTimes(1);
-    expect(mockCreateClient).toHaveBeenCalledTimes(2);
+    expect(serviceClients()[0].destroy).toHaveBeenCalledTimes(1);
+    expect(mockBackends.wasm.createClient).toHaveBeenCalledTimes(2);
   });
 
   test("the service's private lane, the session's end and the quit", async () => {
@@ -633,17 +673,17 @@ describe('the backend switch', () => {
     openPrivateSession();
     try {
       await runWithPrivateLogContext(true, () => requestViaColibri(1, 'eth_blockNumber'));
-      expect(mockService.ensureWorker).toHaveBeenCalledWith(1, { private: true });
-      expect(mockService.createClient).toHaveBeenCalledWith({ ...CONFIG, private: true });
+      expect(mockBackends.service.ensureWorker).toHaveBeenCalledWith(1, { private: true });
+      expect(mockBackends.service.createClient).toHaveBeenCalledWith({ ...CONFIG, private: true });
     } finally {
       endPrivateSession();
     }
     endPrivateColibriSession();
-    expect(mockService.endPrivateSession).toHaveBeenCalledTimes(1);
-    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
-    expect(mockService.instances[0].destroy).toHaveBeenCalledTimes(1);
+    expect(mockBackends.service.endPrivateSession).toHaveBeenCalledTimes(1);
+    expect(mockBackends.wasm.endPrivateSession).toHaveBeenCalledTimes(1);
+    expect(serviceClients()[0].destroy).toHaveBeenCalledTimes(1);
     await colibriResolver.stopColibri();
-    expect(mockService.stopAll).toHaveBeenCalledTimes(1);
+    expect(mockBackends.service.stopAll).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -682,8 +722,8 @@ describe('over the native backend', () => {
     fake = fakeColibrid({
       request: (message, child) => setImmediate(() => child.serve(message, { result: '0x10' })),
     });
-    mockService.real = jest.requireActual('./colibri-service');
-    await mockService.real.resetForTest({
+    mockBackends.service.real = jest.requireActual('./colibri-service');
+    await mockBackends.service.real.resetForTest({
       storageDir: path.join(tmp, 'colibri'),
       spawn: fake.spawn,
       command: '/bin/freedom-colibrid',
@@ -697,8 +737,8 @@ describe('over the native backend', () => {
 
   afterEach(async () => {
     clearColibriClientForTest();
-    await mockService.real.resetForTest();
-    mockService.real = null;
+    await mockBackends.service.real.resetForTest();
+    mockBackends.service.real = null;
     priority.mockRestore();
     fs.rmSync(tmp, { recursive: true, force: true });
     if (saved === undefined) delete process.env[ENV];
