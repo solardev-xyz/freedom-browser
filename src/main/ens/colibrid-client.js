@@ -34,8 +34,12 @@
  *   operation once written, with main's request ID, and its deadline. At the
  *   deadline main cancels it, and its promise still settles only on the
  *   service's reply or the process's death (design 0014, Physical
- *   completion). No reply by the deadline + 15 s means the service is hung:
- *   it is killed. The generic `ServiceClient#request` is replaced: every
+ *   completion). A cancel of main's closes the operation to fetches before
+ *   it is written: none is admitted from then on, whatever the clock says,
+ *   though the markers keep the request open until its reply or the death,
+ *   so a step after the cancel (a context freed) is still attributed. No
+ *   reply by the deadline + 15 s means the service is hung: it is killed.
+ *   The generic `ServiceClient#request` is replaced: every
  *   `colibri.request` must be known to the markers, or its first step would
  *   kill the process.
  * - **Outcomes:** a reply's result as the service wrote it (colibri-outcome.js
@@ -50,10 +54,21 @@
  *     busy` marked `colibriRecycling`, for the owner to send to the
  *     process's successor; any other `busy`, or main's own bound:
  *     `Colibri service busy`;
- *   - `cancelled` after main's deadline cancel: `Colibri request cancelled at
- *     its deadline` (deviation `colibri-deadline`), no fault;
- *   - any other refusal (`too_large`, `invalid_argument`, an unasked
- *     `cancelled`, …): `Colibri service refused the request`;
+ *   - at or after the request's deadline (main's deadline cancel made, or
+ *     its clock there; the cancel first, so a clock set back can't undo
+ *     it), any reply but a result: a refusal (`cancelled` among them) or a
+ *     failure (`status: "error"` or `"revert"`): `Colibri request cancelled
+ *     at its deadline` (deviation `colibri-deadline`, design 0014's one
+ *     outcome at the deadline: the service's own fetch bound races main's
+ *     cancel), no fault, nothing else ended. A result is kept, and a reply
+ *     of no shape of the service's is left for the owner to refuse;
+ *   - any other refusal before the deadline (`too_large`,
+ *     `invalid_argument`, a `cancelled` main didn't ask for, …): `Colibri
+ *     service refused the request`;
+ *   - a reply while its own step is open (the step marker's protocol
+ *     broken): never the outcome. The process is abandoned for it, and the
+ *     request settles with its death as a bystander of it, as every other
+ *     open request does;
  *   - a request never written (no process serving): `Colibri service
  *     unavailable`.
  *   None of main's texts matches the fault pattern but the death's, nor the
@@ -240,16 +255,23 @@ function colibriError(message, marks = {}) {
 }
 
 /** What a refusal from the service, or main's own refusal of a request it
- * never wrote, becomes (see the header). */
-function refusalError(err, { sent, cancelled }) {
+ * never wrote, becomes (see the header): any refusal read at or after the
+ * deadline is the deadline's. */
+function refusalError(err, { sent, pastDeadline }) {
+  if (sent && pastDeadline) return colibriError(COLIBRID_TEXTS.deadline);
   const code = err?.code;
   if (code === 'busy') {
     const recycling = sent && isObject(err.data) && err.data.recycling === true;
     return colibriError(COLIBRID_TEXTS.busy, recycling ? { colibriRecycling: true } : {});
   }
   if (!sent && code === UNAVAILABLE_CODE) return colibriError(COLIBRID_TEXTS.unavailable);
-  if (sent && cancelled && code === 'cancelled') return colibriError(COLIBRID_TEXTS.deadline);
   return colibriError(COLIBRID_TEXTS.refused);
+}
+
+/** Whether a result the service wrote is a failure: a request's error or
+ * revert, a checkpoint's error. */
+function failedResult(result) {
+  return isObject(result) && (result.status === 'error' || result.status === 'revert');
 }
 
 class ColibridClient extends ServiceClient {
@@ -455,9 +477,21 @@ class ColibridClient extends ServiceClient {
       return Promise.reject(colibriError(COLIBRID_TEXTS.unavailable));
     }
     return new Promise((resolve, reject) => {
-      const deadline = new AbortController();
+      const cancel = new AbortController();
       let timer = null;
       let sent = false;
+      // Set as main's deadline cancel fires: the reply is read at or after
+      // the deadline, whatever the clock says later.
+      let cancelledAtDeadline = false;
+      // Main's cancel closes the operation to fetches before it is written:
+      // the executor admits none from then on. The markers keep the request
+      // open until its reply or the death.
+      const cancelOperation = () => {
+        op.ended = true;
+        cancel.abort();
+      };
+      const bystander = (death) =>
+        colibriError(`${COLIBRID_TEXTS.replaced}: ${death.reason}`, { colibriBystander: true });
       const onReply = (outcome) => {
         if (timer) this.clearTimer(timer);
         timer = null;
@@ -468,24 +502,33 @@ class ColibridClient extends ServiceClient {
             signal: gen.exitSignal,
             cause: gen.cause,
           });
-          const message = `${COLIBRID_TEXTS.replaced}: ${death.reason}`;
           reject(
             death.culprit === op.id
-              ? colibriError(message)
-              : colibriError(message, { colibriBystander: true })
+              ? colibriError(`${COLIBRID_TEXTS.replaced}: ${death.reason}`)
+              : bystander(death)
           );
           return;
         }
-        if (sent) markers.closed(op.id);
+        if (sent && !markers.closed(op.id)) {
+          // A reply that broke the step marker's protocol: never the
+          // outcome. The markers abandoned the process for it, and the
+          // request is a bystander of its death.
+          markers.afterDeath((death) => reject(bystander(death)));
+          return;
+        }
+        const pastDeadline = cancelledAtDeadline || this.now() >= op.deadlineAt;
         if (outcome.error) {
-          reject(refusalError(outcome.error, { sent, cancelled: deadline.signal.aborted }));
+          reject(refusalError(outcome.error, { sent, pastDeadline }));
+        } else if (sent && pastDeadline && failedResult(outcome.result)) {
+          // The service's own fetch bound may have failed it first.
+          reject(colibriError(COLIBRID_TEXTS.deadline));
         } else {
           resolve(outcome.result);
         }
       };
       this.send(gen, method, wire, CONTEXT, {
         onReply,
-        signal: deadline.signal,
+        signal: cancel.signal,
         // Cancelled at its deadline, it still waits for the reply.
         untilResponse: true,
         watchdogMs: deadlineMs + HANG_GRACE_MS,
@@ -496,7 +539,8 @@ class ColibridClient extends ServiceClient {
           timer = this.setTimer(
             () => {
               timer = null;
-              deadline.abort();
+              cancelledAtDeadline = true;
+              cancelOperation();
             },
             Math.max(0, op.deadlineAt - this.now())
           );
