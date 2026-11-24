@@ -1,0 +1,119 @@
+name: Colibri service (live run and contract suites)
+
+# freedom-colibrid on Linux, macOS and Windows (freedom-core design 0014):
+# COL-6 makes the service Colibri's default only once COL-5's contract suite
+# and its live chain-read run pass on all three (Migration, Q19). Two steps
+# per runner:
+#
+# - the gated live run (src/main/__tests__/integration/colibri-service-e2e.test.js,
+#   COLIBRI_SERVICE_E2E=1): chain reads through chain-verified from the
+#   default provers, beacon and checkpoint hosts on mainnet and Gnosis, on
+#   the service and on the WASM verifier, compared;
+# - the contract and parity suites on both backends, the service's on the
+#   real binary (FREEDOM_COLIBRID_REQUIRED=1 fails them without it), with
+#   freedom-core's Colibri vectors and their fixtures.
+#
+# It needs the network, so it never gates a pull request. GitHub dispatches
+# a workflow_dispatch workflow only once it is on the default branch, so it
+# runs on a push to a `colibri-live/<name>` branch: push the commit to test
+# there (`git push origin HEAD:colibri-live/<name>`).
+
+on:
+  push:
+    branches:
+      - 'colibri-live/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: colibri-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  colibri-live:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        id: deps
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      # electron 44 downloads its binary on the first `require('electron')`;
+      # pull it once, before parallel jest workers race to write it (`spawn
+      # ETXTBSY`), as the `test` job in ci.yml does.
+      - name: Warm the Electron binary download
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: node -e "require('electron')"
+
+      # As ci.yml downloads it: the pinned SHA256SUMS digest and the archive's
+      # checksum, and in Actions its build provenance.
+      - name: Download freedom-colibrid binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # freedom-core's Colibri vectors and their worlds, at the pin ci.yml's
+      # `test` job checks out (moved with it).
+      - name: Check out freedom-core's Colibri vectors
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: 00141d3b7c21d7ed5d9d029e0cd3e464aac5e33f
+          path: .freedom-core-colibri
+          persist-credentials: false
+          sparse-checkout: |
+            vectors/colibri.json
+            vectors/fixtures/colibri/
+          sparse-checkout-cone-mode: false
+
+      - name: Run the live chain reads on both backends
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        env:
+          COLIBRI_SERVICE_E2E: '1'
+        run: npx jest src/main/__tests__/integration/colibri-service-e2e.test.js
+
+      # The checkpoint path's suite (src/main/myotis/checkpoint-colibrid.test.js,
+      # COL-5 PR 9) runs once it is on the branch.
+      - name: Run the Colibri contract and parity suites on both backends
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        shell: bash
+        env:
+          FREEDOM_COLIBRID_REQUIRED: '1'
+          FREEDOM_CORE_COLIBRI_VECTORS: ${{ github.workspace }}/.freedom-core-colibri/vectors/colibri.json
+        run: |
+          set -euo pipefail
+          suites=(
+            src/main/ens/colibri-worker-host.test.js
+            src/main/ens/colibri-resolver.test.js
+            src/main/core/chain-verified.test.js
+            src/main/ens/colibri-private-store.test.js
+            src/main/ens/colibri-outage-parity.test.js
+            src/main/ens/colibri-replay-parity.test.js
+          )
+          if [ -f src/main/myotis/checkpoint-colibrid.test.js ]; then
+            suites+=(src/main/myotis/checkpoint-colibrid.test.js)
+          fi
+          npx jest --maxWorkers=2 "${suites[@]}"

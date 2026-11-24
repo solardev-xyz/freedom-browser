@@ -81,7 +81,7 @@ What changes with it (design 0014, Deviations):
 - Each chain has its own store, `<userData>/colibri/<chain>/` (at most six), so each chain's first read after the switch starts cold; the WASM verifier's flat files beside them are left alone. A private window's process keeps its store in memory and ends with the last private window.
 - Fetch errors name their URL as `<url>`.
 
-The Colibri suites run each backend-agnostic test on both backends, the service's on the real binary (skipped without it, failed without it under `FREEDOM_COLIBRID_REQUIRED=1`, as CI sets): `colibri-worker-host`, `chain-verified`, `colibri-private-store`, `colibri-outage-parity` and `colibri-replay-parity`, which replays freedom-core's recorded successful reads (`vectors/colibri.json` and `vectors/fixtures/colibri/` from one checkout) on both and needs `FREEDOM_CORE_COLIBRI_VECTORS`. The replay's transaction-cache cases need the C core's clock fixed, which only a debug build with the `testhooks` feature can do; they run when `FREEDOM_COLIBRID_TESTHOOKS_PATH` names one, built in a freedom-core checkout with `cargo build --features testhooks` in `services/freedom-colibrid`. The gated live run reads blocks, a transaction, its receipt and a balance from the default provers on mainnet and Gnosis through chain-verified on both backends, and compares them; no CI job runs it:
+The Colibri suites run each backend-agnostic test on both backends, the service's on the real binary (skipped without it, failed without it under `FREEDOM_COLIBRID_REQUIRED=1`, as CI sets): `colibri-worker-host`, `chain-verified`, `colibri-private-store`, `colibri-outage-parity` and `colibri-replay-parity`, which replays freedom-core's recorded successful reads (`vectors/colibri.json` and `vectors/fixtures/colibri/` from one checkout) on both and needs `FREEDOM_CORE_COLIBRI_VECTORS`. The replay's transaction-cache cases need the C core's clock fixed, which only a debug build with the `testhooks` feature can do; they run when `FREEDOM_COLIBRID_TESTHOOKS_PATH` names one, built in a freedom-core checkout with `cargo build --features testhooks` in `services/freedom-colibrid`. The gated live run reads blocks, a transaction, its receipt and a balance from the default provers on mainnet and Gnosis through chain-verified on both backends, and compares them; no pull-request job runs it:
 
 ```bash
 npm run colibrid:download
@@ -89,6 +89,8 @@ FREEDOM_CORE_COLIBRI_VECTORS=../freedom-core/vectors/colibri.json \
   npx jest src/main/ens/colibri-replay-parity.test.js src/main/ens/colibri-outage-parity.test.js
 COLIBRI_SERVICE_E2E=1 npx jest src/main/__tests__/integration/colibri-service-e2e.test.js
 ```
+
+`.github/workflows/colibri-live.yml` runs the live run and the contract and parity suites on Linux, macOS and Windows, which COL-6 needs green before the service becomes the default. It runs on a push to a `colibri-live/<name>` branch: `git push origin HEAD:colibri-live/<name>`.
 
 ### Experimental Windows Agent workspace backend
 

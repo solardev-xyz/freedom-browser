@@ -11,8 +11,10 @@
  * and receipt. A read at `latest` can: the block number is compared within a
  * margin, the balance once two reads agree.
  *
- * Gated by COLIBRI_SERVICE_E2E=1: it needs the network, and no CI job runs
- * it. It needs freedom-colibrid where colibrid-binary.js finds it in a
+ * Gated by COLIBRI_SERVICE_E2E=1: it needs the network, so no pull-request
+ * job runs it; .github/workflows/colibri-live.yml runs it on Linux, macOS and
+ * Windows on a push to a `colibri-live/<name>` branch. It needs
+ * freedom-colibrid where colibrid-binary.js finds it in a
  * development build (`npm run colibrid:download`, or FREEDOM_COLIBRID_PATH):
  *
  *   npm run colibrid:download
