@@ -87,6 +87,10 @@
  * service configuration it speaks to a fake child with, two-way
  * (`SERVICE_DUPLEX`), with `extra` over it. colibrid-client.js's is the
  * real one.
+ *
+ * `checkpointCheck(message, child, { decode, verify })` runs one
+ * `colibri.checkpoint` as freedom-colibrid's `checkpoint.rs` does, for a
+ * script's `checkpoint` handler (below).
  */
 
 const { EventEmitter } = require('events');
@@ -733,6 +737,65 @@ class FakeColibridChild extends EventEmitter {
 }
 
 /**
+ * One `colibri.checkpoint`, as freedom-colibrid's `checkpoint.rs` runs it,
+ * for a script's `checkpoint` handler: the proof asked of main once
+ * (`checkpoint_proof`, a POST with no path, 4 MiB at most); `decode(bytes)`
+ * inside a step (a throw, or nothing, is a proof that doesn't decode); then
+ * `verify(lookup, bytes)`, whose `lookup(path)` is one checkpointz fetch
+ * (64 KiB at most) giving its body parsed, and main's error as a throw. The
+ * reply is `{ decoded, result }` (`verify`'s value), or `{ status: "error",
+ * stage, error }` with the stage that failed (`decode` or `verify`, a throw's
+ * message the error); then the process exits 0 (`exit: false` keeps it).
+ * It starts once main's write has returned, as a real pipe's would.
+ */
+function checkpointCheck(message, child, { decode, verify, exit = true } = {}) {
+  const id = message.id;
+  const failed = (stage, error) => ({ status: 'error', stage, error });
+  const run = async () => {
+    const proof = await child.fetch(
+      id,
+      { type: 'checkpoint_proof', method: 'post', path: '', accept: 'ssz' },
+      { maxBody: 4 * 1024 * 1024 }
+    ).done;
+    if (proof.error !== undefined) return failed('decode', proof.error);
+    let decoded;
+    child.step(id);
+    try {
+      decoded = await decode(proof.bytes);
+    } catch {
+      decoded = undefined;
+    }
+    child.stepped(id);
+    if (decoded === undefined) return failed('decode', 'Unknown proof format');
+    const lookup = async (path) => {
+      const answer = await child.fetch(
+        id,
+        { type: 'checkpointz', method: 'get', path, accept: 'json' },
+        { maxBody: 64 * 1024 }
+      ).done;
+      if (answer.error !== undefined) throw new Error(answer.error);
+      return JSON.parse(answer.bytes.toString('utf8'));
+    };
+    try {
+      const result = await verify(lookup, proof.bytes);
+      return { decoded, result: result ?? null };
+    } catch (err) {
+      return failed('verify', String(err?.message ?? err));
+    }
+  };
+  setImmediate(() => {
+    run().then(
+      (reply) => {
+        if (child.exited) return;
+        child.result(id, reply);
+        if (exit) setImmediate(() => child.exit(0));
+      },
+      (err) => child.panic(err)
+    );
+  });
+}
+
+/**
  * A `spawn` that starts fake freedom-colibrid children: `script` answers,
  * by method, for every child; `children` lists them, with the command,
  * args and options each was spawned with (`spawned`).
@@ -750,6 +813,7 @@ function fakeColibrid(script = {}) {
 }
 
 module.exports = {
+  checkpointCheck,
   fakeColibrid,
   FakeColibridChild,
   FakeFetch,

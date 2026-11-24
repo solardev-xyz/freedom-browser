@@ -29,6 +29,7 @@ const {
   COLIBRID_TEXTS,
   DEFAULT_DEADLINE_MS,
   HANG_GRACE_MS,
+  SHUTDOWN_GRACE_MS,
 } = require('./colibrid-client');
 const { OVERRUN_MS } = require('./colibri-markers');
 const { ColibriWorkerError } = require('./colibri-worker-host');
@@ -509,6 +510,72 @@ describe('requests', () => {
     await expect(client.checkpoint({ minLatestBlockTs: -1 })).rejects.toBeInstanceOf(TypeError);
     // The checkpoint process serves no colibri.request.
     await expect(ask(client)).rejects.toBeInstanceOf(TypeError);
+  });
+
+  test("colibri.checkpoint's hooks ride on its operation, for the executor: answerRoot and onRefused; a hook that isn't a function is refused before anything is written", async () => {
+    const seen = [];
+    const answerRoot = async () => `0x${'12'.repeat(32)}`;
+    const onRefused = () => {};
+    const { client, children } = colibrid({
+      kind: 'checkpoint',
+      chain: 1,
+      script: {
+        checkpoint: (message, child) =>
+          setImmediate(() => {
+            seen.push(client.operations.get(message.id, { generation: client.current.number }));
+            child.serve(message, { reply: { status: 'error', stage: 'decode', error: 'x' } });
+          }),
+      },
+    });
+    await client.start();
+    await expect(client.checkpoint({ answerRoot, onRefused })).resolves.toEqual({
+      status: 'error',
+      stage: 'decode',
+      error: 'x',
+    });
+    expect(seen).toEqual([expect.objectContaining({ kind: 'checkpoint', answerRoot, onRefused })]);
+    // Only the call's own params cross the pipe.
+    expect(Object.keys(children[0].sent('colibri.checkpoint')[0].params).sort()).toEqual([
+      'deadline_ms',
+      'min_latest_block_ts',
+    ]);
+    await expect(client.checkpoint({ answerRoot: 'main' })).rejects.toBeInstanceOf(TypeError);
+    await expect(client.checkpoint({ onRefused: 1 })).rejects.toBeInstanceOf(TypeError);
+    expect(children[0].sent('colibri.checkpoint')).toHaveLength(1);
+  });
+
+  test('checkpointDone: a checkpoint process that answered is waited for, sent nothing, its exit no news; one that stays is stopped after the grace', async () => {
+    const answering = (exit) => ({
+      checkpoint: (message, child) =>
+        setImmediate(() => {
+          child.serve(message, { reply: { status: 'error', stage: 'decode', error: 'x' } });
+          if (exit) setImmediate(() => child.exit(0));
+        }),
+    });
+    const leaving = colibrid({ kind: 'checkpoint', chain: 1, script: answering(true) });
+    await leaving.client.start();
+    await leaving.client.checkpoint();
+    await leaving.client.checkpointDone();
+    expect(leaving.children[0].exited).toBe(true);
+    expect(leaving.children[0].sent('colibri.shutdown')).toEqual([]);
+    expect(leaving.children[0].stdinClosed).toBe(false);
+    expect(leaving.log.warn).not.toHaveBeenCalled();
+
+    const staying = colibrid({ kind: 'checkpoint', chain: 1, script: answering(false) });
+    await staying.client.start();
+    await staying.client.checkpoint();
+    let gone = false;
+    const done = staying.client.checkpointDone().then(() => (gone = true));
+    await tick();
+    expect(gone).toBe(false);
+    expect(staying.children[0].sent('colibri.shutdown')).toEqual([]);
+    staying.clock.advance(SHUTDOWN_GRACE_MS);
+    await done;
+    expect(staying.children[0].sent('colibri.shutdown')).toHaveLength(1);
+
+    // Only the checkpoint process's.
+    const { client } = colibrid();
+    await expect(client.checkpointDone()).rejects.toBeInstanceOf(TypeError);
   });
 
   test('colibri.forget and colibri.stats', async () => {

@@ -27,8 +27,10 @@
  * - **The connection** carries streams both ways (`SERVICE_DUPLEX`): the
  *   service's `shell.colibri_fetch` is answered by colibri-fetch.js's
  *   executor, with a head and main's body, for the open operations this
- *   client keeps (`operations`). Its events are read until its pipe closes
- *   (`eventsUntilClose`), so a marker written just before a death counts.
+ *   client keeps (`operations`); a checkpoint's roots by the hook its
+ *   caller gives (`checkpoint`'s `answerRoot`). Its events are read until
+ *   its pipe closes (`eventsUntilClose`), so a marker written just before a
+ *   death counts.
  * - **`request`** (`colibri.request`) and **`checkpoint`**
  *   (`colibri.checkpoint`, the checkpoint process's one call) open an
  *   operation once written, with main's request ID, and its deadline. At the
@@ -63,7 +65,9 @@
  *   the owner's `exit` listener runs, for its restart rules (three exits
  *   naming no culprit).
  * - **Shutdown** is `colibri.shutdown` and closing stdin; the process is
- *   killed 5 s later if it hasn't exited.
+ *   killed 5 s later if it hasn't exited. A checkpoint process that answered
+ *   exits by itself (`checkpointDone`): main waits for that, and stops it
+ *   only if it hasn't within those 5 s.
  */
 
 const os = require('os');
@@ -399,8 +403,14 @@ class ColibridClient extends ServiceClient {
    * `deadlineMs`; `params.minLatestBlockTs` is the freshness bound, now
    * − 60 s by default. Resolves to the service's result (`{ decoded,
    * result }` or `{ status: "error", stage, error }`); rejects as `request`.
+   *
+   * The check's fetches (colibri-fetch.js) are main's: `params.answerRoot`
+   * answers its `checkpoint_root` lookups, `(slot, { signal })` → a promise
+   * of the root (`slot` as the path names it, a decimal), from main's quorum
+   * (checkpoint-colibrid.js); without it they are refused. `params.onRefused`
+   * hears of each fetch of it the executor refuses, `(rule, type)`.
    */
-  checkpoint({ minLatestBlockTs } = {}, { deadlineMs } = {}) {
+  checkpoint({ minLatestBlockTs, answerRoot, onRefused } = {}, { deadlineMs } = {}) {
     if (this.kind !== 'checkpoint') {
       return Promise.reject(new TypeError('colibri.checkpoint is the checkpoint process’s'));
     }
@@ -410,6 +420,11 @@ class ColibridClient extends ServiceClient {
     if (!Number.isSafeInteger(bound) || bound < 0) {
       return Promise.reject(new TypeError('colibri.checkpoint needs a freshness bound'));
     }
+    for (const hook of [answerRoot, onRefused]) {
+      if (hook !== undefined && typeof hook !== 'function') {
+        return Promise.reject(new TypeError('colibri.checkpoint hooks must be functions'));
+      }
+    }
     const wire = { min_latest_block_ts: bound, deadline_ms: ms };
     const op = {
       kind: 'checkpoint',
@@ -418,8 +433,28 @@ class ColibridClient extends ServiceClient {
       deadlineAt: now + ms,
       taken: {},
       ended: false,
+      ...(answerRoot ? { answerRoot } : {}),
+      ...(onRefused ? { onRefused } : {}),
     };
     return this.operate('colibri.checkpoint', wire, op, ms);
+  }
+
+  /**
+   * The checkpoint process after its answer (design 0014, Spawn: it serves
+   * one `colibri.checkpoint`, then exits 0): resolves once it is gone.
+   * Nothing more is written to it, and its exit is the end main expects, no
+   * news (no warn, as for a stop); if it hasn't gone within the shutdown
+   * grace, it is stopped (`stop()`).
+   */
+  checkpointDone() {
+    if (this.kind !== 'checkpoint') {
+      return Promise.reject(new TypeError('checkpointDone is the checkpoint process’s'));
+    }
+    if (!this.current) return this.stop();
+    this.stopRequested = true;
+    const gone = new Promise((resolve) => this.stopWaiters.push(resolve));
+    const timer = this.setTimer(() => this.stop(), SHUTDOWN_GRACE_MS);
+    return gone.finally(() => this.clearTimer(timer));
   }
 
   /** `colibri.forget { client }`: the service drops what it keeps for one

@@ -19,7 +19,10 @@
  * - the error texts, as `fetch_from_servers` writes them;
  * - redirects: the same-variant GET followed, at most three, and every
  *   refusal (another origin, a downgrade, another variant or field, a
- *   POST's, another 3xx).
+ *   POST's, another 3xx);
+ * - a checkpoint's fetches: its roots answered from main's quorum, never
+ *   fetched (pool, cancel, deadline, at most 8, refusals told to the
+ *   check), its proof once and on HTTP 200 alone.
  *
  * The session itself (its proxy, Tor's PAC, Chromium's decoding) is
  * checked from a real Electron process in
@@ -399,18 +402,62 @@ describe('refusals', () => {
     expect(upstream.seen).toEqual([]);
   });
 
-  test("a checkpoint's root is never fetched: main answers it from its quorum (the checkpoint path), so here it is refused", async () => {
-    const op = { kind: 'checkpoint', id: 50, chain: 1, deadlineAt: Date.now() + 10_000 };
-    operations.set(op.id, op);
-    const root = {
-      request: op.id,
-      type: 'checkpointz',
-      method: 'get',
-      path: 'eth/v1/beacon/blocks/123/root',
-      accept: 'json',
-      exclude_mask: 0,
+  test("an operation without its deadline is main's bug", async () => {
+    operations.set(77, { ...blockNumberOp(), id: 77, deadlineAt: undefined });
+    await expect(handler(finality({ id: 77 }), {})).rejects.toThrow(TypeError);
+  });
+});
+
+describe("a checkpoint's fetches", () => {
+  const SLOT = '15241024';
+  /** A `colibri.checkpoint` main has open, with what its check gives. */
+  function checkpointOp(extra = {}) {
+    const op = {
+      kind: 'checkpoint',
+      id: nextId++,
+      chain: 1,
+      deadlineAt: Date.now() + 10_000,
+      ...extra,
     };
-    await expect(call(root)).resolves.toEqual({ error: 'Colibri fetch refused' });
+    operations.set(op.id, op);
+    return op;
+  }
+  const root = (op, extra = {}) => ({
+    request: op.id,
+    type: 'checkpointz',
+    method: 'get',
+    path: `eth/v1/beacon/blocks/${SLOT}/root`,
+    accept: 'json',
+    exclude_mask: 0,
+    ...extra,
+  });
+  const proof = (op) => ({
+    request: op.id,
+    type: 'checkpoint_proof',
+    method: 'post',
+    path: '',
+    accept: 'ssz',
+    exclude_mask: 0,
+  });
+  const rootBody = (value = ROOT) => Buffer.from(JSON.stringify({ data: { root: value } }));
+
+  test('a root is never fetched: main\'s quorum answers it (answerRoot) as {"data":{"root"}} from node 0, the slot as the path names it, the pool given back', async () => {
+    const answerRoot = jest.fn(async () => ROOT);
+    const op = checkpointOp({ answerRoot });
+
+    await expect(call(root(op))).resolves.toEqual({
+      head: { node: 0, bytes: rootBody().length },
+      body: rootBody(),
+    });
+    expect(answerRoot).toHaveBeenCalledWith(SLOT, { signal: expect.any(AbortSignal) });
+    expect(op.taken).toEqual({ checkpoint_root: 1 });
+    expect(transport.dialled).toEqual([]);
+    expect(pool.held).toBe(0);
+  });
+
+  test('without answerRoot a root is refused (local), nothing sent', async () => {
+    const op = checkpointOp();
+    await expect(call(root(op))).resolves.toEqual({ error: 'Colibri fetch refused' });
     expect(log.warn).toHaveBeenCalledWith('[Colibri] fetch refused', {
       chain: 1,
       type: 'checkpointz',
@@ -419,20 +466,128 @@ describe('refusals', () => {
     expect(transport.dialled).toEqual([]);
   });
 
-  test("a checkpoint's proof, main's own request, once: a second is refused (count)", async () => {
-    const op = { kind: 'checkpoint', id: 51, chain: 1, deadlineAt: Date.now() + 10_000 };
-    operations.set(op.id, op);
-    const proof = {
-      request: op.id,
-      type: 'checkpoint_proof',
-      method: 'post',
-      path: '',
-      accept: 'ssz',
-      exclude_mask: 0,
+  test('a quorum that gives no root, or not a root: Colibri checkpoint root unavailable, main\'s text alone', async () => {
+    const answers = [
+      async () => {
+        throw new Error('quorum failed at https://secret.invalid');
+      },
+      () => {
+        throw new Error('thrown at once');
+      },
+      async () => 'not a root',
+      async () => ROOT.toUpperCase(),
+      async () => `0x${'00'.repeat(31)}`,
+    ];
+    for (const answerRoot of answers) {
+      const op = checkpointOp({ answerRoot });
+      await expect(call(root(op))).resolves.toEqual({
+        error: 'Colibri checkpoint root unavailable',
+      });
+    }
+    expect(pool.held).toBe(0);
+    expect(transport.dialled).toEqual([]);
+  });
+
+  test('at most 8 roots; each refusal is told to the operation (onRefused) with its rule and type', async () => {
+    const onRefused = jest.fn();
+    const op = checkpointOp({ answerRoot: async () => ROOT, onRefused });
+    for (let i = 0; i < 8; i++) {
+      await expect(call(root(op))).resolves.toMatchObject({ head: { node: 0 } });
+    }
+    await expect(call(root(op))).resolves.toEqual({ error: 'Colibri fetch refused' });
+    await expect(call({ ...root(op), path: FINALITY })).resolves.toEqual({
+      error: 'Colibri fetch refused',
+    });
+    await expect(call(bootstrap(op))).resolves.toEqual({ error: 'Colibri fetch refused' });
+    await expect(call({ ...proof(op), method: 'get' })).resolves.toEqual({
+      error: 'Colibri fetch refused',
+    });
+    expect(onRefused.mock.calls).toEqual([
+      ['count', 'checkpointz'],
+      ['variant', 'checkpointz'],
+      ['variant', 'beacon_api'],
+      ['verb', 'checkpoint_proof'],
+    ]);
+    // A hook that throws changes nothing for the service.
+    const throwing = checkpointOp({
+      onRefused: () => {
+        throw new Error('hook');
+      },
+    });
+    await expect(call({ ...root(throwing), path: FINALITY })).resolves.toEqual({
+      error: 'Colibri fetch refused',
+    });
+    expect(transport.dialled).toEqual([]);
+  });
+
+  test("a mask excluding the check's one checkpointz server: All nodes failed, the quorum not asked", async () => {
+    const answerRoot = jest.fn(async () => ROOT);
+    const op = checkpointOp({ answerRoot });
+    await expect(call(root(op, { exclude_mask: 1 }))).resolves.toEqual({
+      error: 'All nodes failed',
+    });
+    expect(answerRoot).not.toHaveBeenCalled();
+  });
+
+  test('the pool full: nothing asked of the quorum', async () => {
+    const answerRoot = jest.fn(async () => ROOT);
+    const op = checkpointOp({ answerRoot });
+    const full = colibriFetchHandler({
+      operations,
+      pool: new ColibriFetchPool(1024),
+      hop: makeHop({ fetch: transport.fetch }),
+      log,
+    });
+    await expect(
+      full(root(op), { signal: new AbortController().signal, generation: 1 })
+    ).resolves.toEqual({ error: 'Colibri fetch pool full' });
+    expect(answerRoot).not.toHaveBeenCalled();
+  });
+
+  test('a cancel while the quorum is asked: the handler gives up at once, the pool is given back', async () => {
+    let asked = null;
+    const op = checkpointOp({
+      answerRoot: (slot, { signal }) =>
+        new Promise(() => {
+          asked = signal;
+        }),
+    });
+    const controller = new AbortController();
+    const pending = handler(root(op), { signal: controller.signal, generation: 1 });
+    await until(() => asked, 'the quorum asked');
+    expect(pool.held).toBe(64 * KIB);
+    controller.abort();
+    await expect(pending).rejects.toBeDefined();
+    expect(asked.aborted).toBe(true);
+    expect(pool.held).toBe(0);
+  });
+
+  test("past the operation's deadline while the quorum is asked: timeout", async () => {
+    const op = checkpointOp({
+      deadlineAt: Date.now() + 50,
+      answerRoot: () => new Promise(() => {}),
+    });
+    await expect(call(root(op))).rejects.toMatchObject({ code: 'timeout' });
+    expect(pool.held).toBe(0);
+  });
+
+  test("the proof, main's own request, succeeds on HTTP 200 alone", async () => {
+    upstream.route = (req, res) => {
+      res.writeHead(203);
+      res.end('not quite');
     };
+    const op = checkpointOp();
+    await expect(call(proof(op))).resolves.toEqual({
+      error: 'HTTP error! Status: 203, Details: not quite',
+    });
+    expect(pool.held).toBe(0);
+  });
+
+  test("a checkpoint's proof, once: a second is refused (count)", async () => {
+    const op = checkpointOp();
     upstream.route = (req, res) => res.end(bytes(64));
 
-    await expect(call(proof)).resolves.toMatchObject({ head: { node: 0, bytes: 64 } });
+    await expect(call(proof(op))).resolves.toMatchObject({ head: { node: 0, bytes: 64 } });
     expect(transport.dialled.map((entry) => entry.url)).toEqual([
       'https://mainnet1.colibri-proof.tech',
     ]);
@@ -442,17 +597,12 @@ describe('refusals', () => {
       version: 196611,
       zk_proof: true,
     });
-    await expect(call(proof)).resolves.toEqual({ error: 'Colibri fetch refused' });
+    await expect(call(proof(op))).resolves.toEqual({ error: 'Colibri fetch refused' });
     expect(log.warn).toHaveBeenCalledWith('[Colibri] fetch refused', {
       chain: 1,
       type: 'checkpoint_proof',
       rule: 'count',
     });
-  });
-
-  test("an operation without its deadline is main's bug", async () => {
-    operations.set(77, { ...blockNumberOp(), id: 77, deadlineAt: undefined });
-    await expect(handler(finality({ id: 77 }), {})).rejects.toThrow(TypeError);
   });
 });
 
@@ -602,6 +752,7 @@ describe('error texts, as fetch_from_servers writes them', () => {
       refused: 'Colibri fetch refused',
       poolFull: 'Colibri fetch pool full',
       allFailed: 'All nodes failed',
+      rootUnavailable: 'Colibri checkpoint root unavailable',
     });
   });
 });
