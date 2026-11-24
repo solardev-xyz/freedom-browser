@@ -35,6 +35,7 @@ const { fakeColibrid, testService } = require('../../../test/helpers/fake-colibr
 const {
   COLIBRI_FETCH_TEXTS,
   MAX_ERROR_UNITS,
+  REFUSALS_LOGGED,
   colibriFetchHandler,
   cutUnits,
   errorText,
@@ -452,6 +453,84 @@ describe('refusals', () => {
   test("an operation without its deadline is main's bug", async () => {
     operations.set(77, { ...blockNumberOp(), id: 77, deadlineAt: undefined });
     await expect(handler(finality({ id: 77 }), {})).rejects.toThrow(TypeError);
+  });
+});
+
+describe("the refusals' warn log, rate-limited per process generation", () => {
+  const SECOND = 1000;
+  let clock;
+  let limited;
+
+  beforeEach(() => {
+    clock = 1_000_000;
+    limited = colibriFetchHandler({
+      operations,
+      pool,
+      hop: makeHop({ fetch: transport.fetch }),
+      log,
+      now: () => clock,
+    });
+  });
+
+  /** A fetch naming no open operation: refused, by `generation`. */
+  const refused = (generation = 1) =>
+    limited(finality({ id: 999 }), { signal: new AbortController().signal, generation });
+  const logged = () =>
+    log.warn.mock.calls.filter(([message]) => message === '[Colibri] fetch refused');
+  const summaries = () =>
+    log.warn.mock.calls.filter(([message]) => message === '[Colibri] fetch refusals not logged');
+
+  test('ten a rolling minute one by one; the rest counted in one warn once a minute has passed; then one by one again', async () => {
+    expect(REFUSALS_LOGGED).toBe(10);
+    // Fifteen, a second apart: the 11th to the 15th aren't logged.
+    for (let i = 0; i < 15; i++) {
+      await expect(refused()).resolves.toEqual({ error: 'Colibri fetch refused' });
+      clock += SECOND;
+    }
+    expect(logged()).toHaveLength(10);
+    expect(logged()[0]).toEqual([
+      '[Colibri] fetch refused',
+      { chain: null, type: 'checkpointz', rule: 'request' },
+    ]);
+    // Still within the minute of the first held back: held back too, no
+    // count yet.
+    clock = 1_000_000 + 59 * SECOND;
+    await refused();
+    expect(logged()).toHaveLength(10);
+    expect(summaries()).toEqual([]);
+
+    // A minute after the first held back (and the window's ten expired):
+    // one count, then this refusal logged on its own.
+    clock = 1_000_000 + 70 * SECOND;
+    await refused();
+    expect(summaries()).toEqual([['[Colibri] fetch refusals not logged', { count: 6 }]]);
+    expect(logged()).toHaveLength(11);
+    clock += SECOND;
+    await refused();
+    expect(logged()).toHaveLength(12);
+    expect(summaries()).toHaveLength(1);
+    expect(log.warn).toHaveBeenCalledTimes(13);
+    expect(upstream.seen).toEqual([]);
+  });
+
+  test('a rolling window: a refusal is logged again as soon as the oldest logged one is a minute old', async () => {
+    for (let i = 0; i < 11; i++) await refused();
+    expect(logged()).toHaveLength(10);
+    clock += 60 * SECOND;
+    await refused();
+    // The window is free again; the one held back is counted with it.
+    expect(logged()).toHaveLength(11);
+    expect(summaries()).toEqual([['[Colibri] fetch refusals not logged', { count: 1 }]]);
+  });
+
+  test('a new generation has its own budget', async () => {
+    for (let i = 0; i < 12; i++) await refused(1);
+    expect(logged()).toHaveLength(10);
+    for (let i = 0; i < 10; i++) await refused(2);
+    expect(logged()).toHaveLength(20);
+    await refused(2);
+    expect(logged()).toHaveLength(20);
+    expect(summaries()).toEqual([]);
   });
 });
 

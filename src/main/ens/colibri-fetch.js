@@ -11,7 +11,14 @@
  *   one for an operation past its deadline, is answered
  *   `Colibri fetch refused` and logged at warn with the chain, the type and
  *   the rule, never the path or the payload. The process isn't killed: the
- *   contract already bounds what it can reach.
+ *   contract already bounds what it can reach. Nothing else bounds how many
+ *   it may send, and warn lines are written synchronously, so each process
+ *   generation logs at most 10 refusals in a rolling minute; past that, one
+ *   warn a minute counts those it didn't log (written with the next
+ *   refusal a minute after the first one held back).
+ * - **A checkpoint's roots** (`checkpoint_root`) are never fetched: main
+ *   answers them from its quorum, which the checkpoint path (COL-5 PR 9)
+ *   brings. Until then they are refused, logged with the rule `local`.
  * - **The pool:** before the first send, the variant's body maximum is
  *   reserved from main's Colibri fetch pool (`colibri-fetch-pool.js`); with
  *   no room, nothing is sent and the answer is `Colibri fetch pool full`.
@@ -20,7 +27,9 @@
  * - **The servers,** in turn, through `makeHop()` over `netGatewayFetch`
  *   (the session's proxy and Tor PAC, the onion gate, no cookies and no
  *   cache, `redirect: 'manual'`), the endpoint policy (`validateRpcUrl`) on
- *   every hop. The request is the contract's: the joined URL, its verb,
+ *   every hop. The default hop dials on the default session; which session
+ *   a private window's process uses is the service's to choose (COL-5 PR 7),
+ *   through `hop`. The request is the contract's: the joined URL, its verb,
  *   `Accept`, `Content-Type` only with a payload, `Cache-Control: max-age`
  *   only where the variant has one. Every attempt is bounded by the
  *   handler's signal (the service's cancel) and the operation's deadline;
@@ -84,6 +93,9 @@ const URLS = /https?:\/\/[^\s"'<>]+/gi;
  * checkpoint's roots come from main's quorum (design 0014, the
  * `colibri.checkpoint` row), which the checkpoint path supplies. */
 const LOCAL_VARIANTS = new Set(['checkpoint_root']);
+/** Refusals one process generation logs one by one in a rolling minute. */
+const REFUSALS_LOGGED = 10;
+const MINUTE_MS = 60_000;
 /** The types a fetch may name, as the warn log may print them. */
 const LOGGED_TYPES = new Set([
   'prover',
@@ -259,6 +271,35 @@ function bodyStream(bytes, reservation) {
 }
 
 /**
+ * The refusals' warn log, rate-limited per process generation: at most
+ * `REFUSALS_LOGGED` in a rolling minute, each with its chain, type and
+ * rule; those past it are counted, and the count is written once a minute
+ * has passed since the first of them, with the next refusal. A new
+ * generation starts with its own budget.
+ */
+function refusalLog(log, now) {
+  let state = null;
+  return (generation, fields) => {
+    const at = now();
+    if (state?.generation !== generation) {
+      state = { generation, logged: [], held: 0, heldSince: 0 };
+    }
+    while (state.logged.length && state.logged[0] <= at - MINUTE_MS) state.logged.shift();
+    if (state.held > 0 && at - state.heldSince >= MINUTE_MS) {
+      log.warn('[Colibri] fetch refusals not logged', { count: state.held });
+      state.held = 0;
+    }
+    if (state.logged.length < REFUSALS_LOGGED) {
+      state.logged.push(at);
+      log.warn('[Colibri] fetch refused', fields);
+      return;
+    }
+    if (state.held === 0) state.heldSince = at;
+    state.held += 1;
+  };
+}
+
+/**
  * The open operation a fetch names, as `admit` takes it: null for none,
  * and marked ended once past its deadline.
  */
@@ -285,7 +326,7 @@ function openOperation(operations, request, generation, now) {
  * @param {import('./colibri-fetch-pool').ColibriFetchPool} [options.pool] - the browser's by default
  * @param {Function} [options.hop] - `makeHop()` over the session by default
  * @param {object} [options.log]
- * @param {Function} [options.now]
+ * @param {Function} [options.now] - main's clock, for deadlines and the refusals' log
  * @returns {Function} `(params, { signal, generation })`
  */
 function colibriFetchHandler({
@@ -298,16 +339,17 @@ function colibriFetchHandler({
   if (typeof operations?.get !== 'function') {
     throw new TypeError("The Colibri fetch handler needs the process's operations");
   }
-  const refuse = (op, params, rule) => {
+  const logRefusal = refusalLog(log, now);
+  const refuse = (generation, op, params, rule) => {
     const type = LOGGED_TYPES.has(params?.type) ? params.type : 'other';
-    log.warn('[Colibri] fetch refused', { chain: op?.chain ?? null, type, rule });
+    logRefusal(generation, { chain: op?.chain ?? null, type, rule });
     return { error: COLIBRI_FETCH_TEXTS.refused };
   };
   return async (params, { signal = new AbortController().signal, generation = null } = {}) => {
     const op = openOperation(operations, params?.request, generation, now);
     const fetch = admit(op, params);
-    if (fetch.refused) return refuse(op, params, fetch.refused);
-    if (LOCAL_VARIANTS.has(fetch.variant)) return refuse(op, params, 'local');
+    if (fetch.refused) return refuse(generation, op, params, fetch.refused);
+    if (LOCAL_VARIANTS.has(fetch.variant)) return refuse(generation, op, params, 'local');
     op.taken = { ...op.taken, [fetch.variant]: (op.taken?.[fetch.variant] ?? 0) + 1 };
     if (fetch.attempts.length === 0) return { error: COLIBRI_FETCH_TEXTS.allFailed };
     if (signal.aborted) throw new ShellError('cancelled');
@@ -337,6 +379,7 @@ module.exports = {
   ERROR_DETAIL_BYTES,
   MAX_ERROR_UNITS,
   MAX_REDIRECTS,
+  REFUSALS_LOGGED,
   colibriFetchHandler,
   cutUnits,
   errorText,
