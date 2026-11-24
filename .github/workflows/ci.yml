@@ -130,6 +130,9 @@ jobs:
   # (`merge_group`), pushes to `main`/release branches and manual dispatches
   # still run the full matrix, so the queue — which requires `ci-ok` — stays
   # the gate that catches a macOS- or Windows-only failure before it lands.
+  # That only holds for `main`: `release/**` and `hotfix/**` have no queue, so
+  # a pull request into any base other than `main` keeps the full matrix on
+  # its own run.
   #
   # Opt in on a pull request with the `full-ci` label. The label is read live
   # from the API rather than from the event payload, because a re-run replays
@@ -176,10 +179,18 @@ jobs:
             echo "full_matrix=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The `full-ci` opt-in, read from the pull request as it is now. An
-          # API error fails open to the full matrix rather than failing this
-          # job (which would turn `ci-ok` red for a lookup).
-          if labelled=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" \
+          # Only `main` has a merge queue to run the macOS/Windows jobs before
+          # a change lands. A pull request into `release/**` or `hotfix/**`
+          # merges straight onto the branch an rc tag is cut from, and
+          # `release.yml` does not gate on CI, so it gets the full matrix on
+          # its own run, label or not.
+          # Otherwise, the `full-ci` opt-in, read from the pull request as it
+          # is now. An API error fails open to the full matrix rather than
+          # failing this job (which would turn `ci-ok` red for a lookup).
+          if [ "$BASE" != "main" ]; then
+            echo "pull request into $BASE, which has no merge queue — running the full matrix"
+            labelled=true
+          elif labelled=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" \
             --jq 'any(.labels[]; .name == "full-ci")'); then
             :
           else
@@ -207,7 +218,7 @@ jobs:
             labelled=false
           fi
           if [ "$labelled" = "true" ]; then
-            echo "full-ci label (or lookup failed) — running the macOS/Windows jobs too"
+            echo "full-ci label, a base other than main, or lookup failed — running the macOS/Windows jobs too"
             echo "full_matrix=true" >> "$GITHUB_OUTPUT"
           else
             echo "no full-ci label, or prose only — macOS/Windows jobs run in the merge queue"

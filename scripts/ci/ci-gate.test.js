@@ -499,8 +499,8 @@ describe('ci-ok', () => {
 });
 
 describe('the macOS/Windows jobs on a pull request', () => {
-  // macOS runners are the workflow's bottleneck, so a pull request without the
-  // `full-ci` label runs only the Linux leg of `e2e-desktop` and skips the
+  // macOS runners are the workflow's bottleneck, so a pull request into `main`
+  // without the `full-ci` label runs only the Linux leg of `e2e-desktop` and skips the
   // macOS-only jobs; the merge queue runs all of it. These pin that the
   // narrowing is opt-out-able, fails open, and never reaches a queue run.
   const block = (name) => {
@@ -543,6 +543,86 @@ describe('the macOS/Windows jobs on a pull request', () => {
       /echo "code=false" >> "\$GITHUB_OUTPUT"\n(?:\s+#.*\n)*\s+labelled=false\n/
     );
   });
+
+  // Run the gate's real script under bash with `gh` and `git` stubbed, so the
+  // decision table is pinned by what the script does, not by its text.
+  const runGate = ({
+    event = 'pull_request',
+    base,
+    label = false,
+    labelError = false,
+    changed,
+  }) => {
+    const { spawnSync } = require('child_process');
+    const os = require('os');
+    const script = workflow.match(
+      /^ {6}- name: Decide whether anything outside the docs changed\n[\s\S]*?^ {8}run: \|\n((?: {10}.*\n|\n)+)/m
+    );
+    expect(script).toBeTruthy();
+    const body = script[1].replace(/^ {10}/gm, '');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-gate-'));
+    try {
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(
+        path.join(bin, 'gh'),
+        labelError ? '#!/bin/sh\nexit 1\n' : `#!/bin/sh\necho ${label}\n`,
+        { mode: 0o755 }
+      );
+      fs.writeFileSync(
+        path.join(bin, 'git'),
+        `#!/bin/sh\n[ "$1" = diff ] && printf '%s\\n' ${changed.map((f) => `'${f}'`).join(' ')}\nexit 0\n`,
+        { mode: 0o755 }
+      );
+      const output = path.join(dir, 'output');
+      fs.writeFileSync(output, '');
+      const result = spawnSync('bash', ['-c', body], {
+        env: {
+          PATH: `${bin}:${process.env.PATH}`,
+          EVENT: event,
+          BASE: base,
+          PR_NUMBER: '1',
+          GH_REPO: 'o/r',
+          GITHUB_OUTPUT: output,
+        },
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(0);
+      return Object.fromEntries(
+        fs
+          .readFileSync(output, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => line.split('='))
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  (process.platform === 'win32' ? it.skip : it)(
+    'narrow only a pull request into main, the one base with a merge queue',
+    () => {
+      const code = ['src/main/index.js'];
+      expect(runGate({ base: 'main', changed: code }).full_matrix).toBe('false');
+      expect(runGate({ base: 'main', label: true, changed: code }).full_matrix).toBe('true');
+      expect(runGate({ base: 'main', labelError: true, changed: code }).full_matrix).toBe('true');
+      // `release/**` and `hotfix/**` have no queue and `release.yml` does not
+      // gate on CI, so their pull requests keep macOS/Windows on their own run.
+      for (const base of ['release/0.9.0', 'hotfix/0.8.5.1']) {
+        expect(runGate({ base, changed: code })).toEqual({ code: 'true', full_matrix: 'true' });
+      }
+      // Prose only still skips everything, whatever the base.
+      expect(runGate({ base: 'release/0.9.0', changed: ['docs/x.md'] })).toEqual({
+        code: 'false',
+        full_matrix: 'false',
+      });
+      expect(runGate({ event: 'merge_group', base: '', changed: [] })).toEqual({
+        code: 'true',
+        full_matrix: 'true',
+      });
+    }
+  );
 
   it('do not trigger on labeled, which would cancel the run in flight', () => {
     // `labeled` fires for any label and shares the concurrency group with the
