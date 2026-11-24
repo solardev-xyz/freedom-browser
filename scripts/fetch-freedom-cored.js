@@ -20,9 +20,9 @@ const PINNED_RELEASE_TAG = 'cored-v0.28.0';
 const PINNED_SHA256SUMS_DIGEST = 'd697223baeb956531a86c8f8fe4ac24bfa8f56937d9fe5664e7b4642d1c64d7d';
 
 // freedom-core tags the core's releases `cored-vX.Y.Z` from 0.6.0 on (its
-// service binaries get tags of their own, `ipfsd-v*` and `radicled-v*`), and
-// tagged them `vX.Y.Z` up to 0.5.0. Any other family is refused, including a
-// service release that `latest` might name.
+// service binaries get tags of their own, `ipfsd-v*`, `radicled-v*` and
+// `colibrid-v*`), and tagged them `vX.Y.Z` up to 0.5.0. Any other family is
+// refused, including a service release that `latest` might name.
 const TAG_PATTERN = /^(?:cored-)?v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 // The archives keep `vX.Y.Z` in their names under a `cored-vX.Y.Z` tag.

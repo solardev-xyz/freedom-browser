@@ -131,6 +131,43 @@
       ]
     },
     {
+      "name": "freedom-colibrid",
+      "version": "colibrid-v0.1.1",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github",
+        "url": "https://github.com/solardev-xyz/freedom-core"
+      },
+      "license": {
+        "spdx": [],
+        "raw": "Not selected yet",
+        "license_files": [],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-freedom-colibrid.js PINNED_RELEASE_TAG",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "red",
+      "issues": [
+        {
+          "kind": "missing-license",
+          "details": "freedom-colibrid is released from freedom-core, which has no license yet (the maintainer's decision). Every build ships it, and nothing runs it yet: Colibri still runs in the app's WASM workers (@corpus-core/colibri-stateless) until the service's client lands behind a development switch (freedom-core design 0014, COL-5). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
+          "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
+        },
+        {
+          "kind": "notice",
+          "details": "Statically links the C and C++ libraries colibri-stateless 3.0.3 builds, from solardev-xyz/colibri-stateless at 24d095198005e74bf3ed0a97d12d8fc7645aa93a (Colibri 3.0.3 with backported fixes; the commit colibrid-v0.1.1's Cargo.toml pins), verifier-only: Colibri's C core and its evmone and intx wrappers (MIT, Copyright (c) 2025,2026 corpus.core GmbH and Contributors), trezor-crypto in its libs/crypto (MIT), Mbed TLS's ripemd160.c there (Apache-2.0, ARM Limited), and, as its CMake fetches them, blst 0.3.13, evmone 0.23.0 with the EVMC it carries, and intx 0.15.0 (Apache-2.0). colibrid-v0.1.1's THIRD-PARTY-NOTICES lists each with its license text and ripemd160.c's header. None of the Apache-2.0 libraries ships a NOTICE file at those versions (supranational/blst v0.3.13, ipsilon/evmone v0.23.0 with its evmc/, chfast/intx v0.15.0), so section 4(d) asks for nothing beyond the license text. No prover or server source is compiled or included (freedom-core's license gate, design 0014 Licenses), so none of the sources Colibri's tree labels PolyForm-Noncommercial-1.0.0 (src/server/, and 12 files of src/chains/eth/server/) is in the binary. Every crate it links, the Rust standard library's included, is under permissive terms; none is MPL, GPL or LGPL.",
+          "recommended_fix": "Attribution only: keep the release's THIRD-PARTY-NOTICES beside the binary and NOTICES' summary current. On every colibrid pin bump, re-read the release's crate and C-library lists for copyleft and for new Apache-2.0 NOTICE files."
+        },
+        {
+          "kind": "copyleft",
+          "details": "The Linux binaries (x86_64, aarch64) are dynamically linked against the system's glibc (GLIBC_2.17 at most; libc, libpthread, libdl, ld-linux), built with cargo-zigbuild, and statically carry glibc's startup and libc_nonshared objects as Zig 0.15.2 builds them for glibc 2.17 (Scrt1.o, __libc_csu_init/__libc_csu_fini, stat64, fstat64, lstat64, fstat and fstatat64; LGPL-2.1-or-later), and Zig's copies of LLVM libunwind, libc++ and libc++abi (Apache-2.0 WITH LLVM-exception), the C++ runtime evmone and intx need. Each glibc file carries the GNU C Library's exception, which gives unlimited permission to link its compiled form with other programs and to distribute those programs without any restriction coming from the use of the file: the LGPL puts no relinking or source obligation on freedom-colibrid. glibc itself is the user's system library and is not distributed.",
+          "recommended_fix": "Attribution only: the release's THIRD-PARTY-NOTICES carries the license text and the exception, and NOTICES names the objects. Re-check on a pin bump that the Linux build still links only the startup objects under the exception."
+        }
+      ]
+    },
+    {
       "name": "whisper.cpp",
       "version": "1.9.5",
       "type": "native-binary",
