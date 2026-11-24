@@ -9,7 +9,7 @@ It complements `changelog-process.md` — that playbook covers the mechanics of 
 The flow at a glance:
 
 1. Branch `release/<version>` off `main` (§0), set the version to `<version>-rc.1` (§1), refresh dependencies (§2), draft the changelog (§3), check licenses and UI consistency (§4).
-2. Once CI is green on the branch head, tag `v<version>-rc.1` and push (§5). CI publishes a pre-release. Smoke-test it on every platform (§6). Fix on the release branch, bump to `rc.2`, tag again — until a candidate is clean.
+2. Once CI is green on the branch head, tag `v<version>-rc.1` and push (§5). CI publishes a pre-release. Smoke-test it on every platform (§6). Fix on the release branch, bump to `rc.2`, wait for CI to go green on the bump, tag again — until a candidate is clean.
 3. Set the bare `<version>`, finalize the changelog, and once CI is green on that commit, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
 4. Upload the draft's assets to `freedom.baby`, update the website, publish the draft (§7). Merge the branch into `main` (§8) and open the next dev cycle (§9).
 
@@ -324,7 +324,7 @@ FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" \
   FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged
 ```
 
-If any platform fails: fix on the release branch (PR), bump to the next `rc.N`, tag, push, and re-test that candidate. Do not proceed to §7 until every platform you intend to ship passes on the **same** candidate — one green build, not a patchwork of legs from different runs.
+If any platform fails: fix on the release branch (PR), bump to the next `rc.N`, wait for CI to go green on the bump (§5), tag, push, and re-test that candidate. Do not proceed to §7 until every platform you intend to ship passes on the **same** candidate — one green build, not a patchwork of legs from different runs.
 
 This step is intentionally separate from the source-tree checks — CI (gated before every tag in §5) and §4's license and UI checks verify the source tree; §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
 
