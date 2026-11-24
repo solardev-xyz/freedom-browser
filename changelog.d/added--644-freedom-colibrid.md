@@ -1,4 +1,5 @@
-- [freedom-colibrid](https://github.com/solardev-xyz/freedom-core) 0.1.1, Colibri's chain-data verifier as a confined process ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644)):
-  - Off by default: Colibri keeps verifying inside the browser, as before
-  - Development builds can switch chain reads and Myotis's checkpoint check to it
-  - Its pinned digest and checksums are checked on download, its build provenance in CI
+- [freedom-colibrid](https://github.com/solardev-xyz/freedom-core) 0.1.1: Colibri verifies chain data in a process of its own instead of inside the browser ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644)):
+  - A Colibri crash no longer takes the browser down; Myotis's checkpoint check moved too
+  - Colibri's requests follow your proxy and Tor settings
+  - Each chain's first verified read after updating is slower: its cache starts empty
+  - The app is about 9 MB smaller without Colibri's WebAssembly build

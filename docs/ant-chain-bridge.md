@@ -87,7 +87,8 @@ consults it before trying a source:
   not consulted while `eth_getLogs` stays off Colibri.
 - **Cost.** Myotis is serialized (one native read per chain at a time), so
   background callers such as Ant take it only when idle and never queue.
-  Colibri verifies proofs in a worker thread with a bounded number in flight.
+  Colibri verifies proofs in freedom-colibrid, at most three processes
+  browser-wide.
 - **Cut-short log answers.** For a source marked as possibly cutting a log
   answer short, the core checks each `eth_getLogs` answer over a numeric
   block range at least 2,000 blocks wide whose logs all fall in the last

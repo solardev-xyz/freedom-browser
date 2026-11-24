@@ -40,9 +40,8 @@ links there rather than restating it.
   script.
 - **freedom-colibrid** — the Colibri verifier as a service process,
   released from <https://github.com/solardev-xyz/freedom-core> (design
-  0014). Every build ships it, but nothing runs it yet: Colibri stays on the
-  WASM workers of `@corpus-core/colibri-stateless` until COL-5's development
-  switch and COL-6's default. Fetch script `scripts/fetch-freedom-colibrid.js`
+  0014): chain reads' verification and Myotis's checkpoint check, with no
+  other verifier since COL-6. Fetch script `scripts/fetch-freedom-colibrid.js`
   (`npm run colibrid:download`); pin `PINNED_RELEASE_TAG` +
   `PINNED_SHA256SUMS_DIGEST` in that script, and `PINNED_COLIBRID_VERSION`
   (below).
@@ -406,8 +405,10 @@ A freedom-colibrid bump changes `PINNED_COLIBRID_VERSION` in
 `src/main/ens/colibrid-pin.js` (`colibrid-pin.test.js`), and its entry in
 `licenses-audit.test.js`'s `MPL_CRATES` (none so far) once the new release's
 `THIRD-PARTY-NOTICES` has been re-read. Its `COLIBRI_VERSION` and
-`CLIENT_VERSION` move only with a new Colibri, together with the
-`@corpus-core/colibri-stateless` package while the WASM path remains.
+`CLIENT_VERSION` move only with a new Colibri, together with
+`colibrid-client.js`'s and NOTICES' (`colibrid-pin.test.js` checks all of
+them against the binary's hello), and `colibri-servers.js`'s built-in hosts
+are re-read then: design 0014 keeps Colibri 3.0.3's.
 
 ## Prebuilt natives (Arti, whisper.cpp, Windows sandbox)
 
