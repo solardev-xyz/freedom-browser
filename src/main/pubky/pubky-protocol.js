@@ -37,8 +37,8 @@
  *    spins until the socket gives up. Once headers are in, the body streams
  *    with no deadline but stays linked to `request.signal`.
  *  - Only `Range`/`If-Range`/`If-None-Match`/`If-Modified-Since` go from
- *    the page to the homeserver (media seeking, cache revalidation); no
- *    cookies, credentials or Referer.
+ *    the page to the homeserver (cache revalidation, and byte ranges for a
+ *    homeserver that serves them); no cookies, credentials or Referer.
  *  - Error responses carry fixed text, never SDK/WASM error messages.
  */
 
@@ -311,9 +311,13 @@ function toPageResponse(upstream) {
   });
 }
 
-// Page request headers the homeserver dial carries: byte ranges (so a
-// <video>/<audio> gets a 206 and can seek) and conditional reads (so a
-// cached file revalidates to a 304). An allowlist, not ipfs-protocol.js's
+// Page request headers the homeserver dial carries: conditional reads (so a
+// cached file revalidates to a 304) and byte ranges. The reference
+// homeserver (pubky-core d95161af, routes/tenants/read.rs) answers
+// If-None-Match/If-Modified-Since but ignores Range and returns 200 with
+// the whole file, so media there can seek only within what's buffered;
+// Range is forwarded so a homeserver that does serve 206 gets it, and a
+// 200 answer to a range request is still valid for the page. An allowlist, not ipfs-protocol.js's
 // denylist: the homeserver is whatever the key's owner chose, so cookies,
 // credentials, Referer and the rest of the page's headers stay here.
 const FORWARDED_REQUEST_HEADERS = ['range', 'if-range', 'if-none-match', 'if-modified-since'];

@@ -19,6 +19,8 @@ Freedom opens public files stored on [Pubky](https://pubky.org) homeservers. A P
 
 The handler in `src/main/pubky/pubky-protocol.js` uses the [Pubky JS SDK](https://www.npmjs.com/package/@synonymdev/pubky) to resolve the key's homeserver through Pkarr relays and fetch the file. The homeserver's status, headers and body go back to the page, so a missing file returns `404` and an HTML file renders as a page. As for `bzz:` and `ipfs:`, `Set-Cookie` and `Service-Worker-Allowed` are dropped, along with `Content-Encoding`, `Content-Length` and hop-by-hop headers, which describe the compressed upstream body rather than the decoded one the page gets.
 
+Of the page's request headers only `Range`, `If-Range`, `If-None-Match` and `If-Modified-Since` go to the homeserver; cookies, credentials and `Referer` don't. The reference homeserver ([pubky-core](https://github.com/pubky/pubky-core) as of `d95161af`) answers `If-None-Match`/`If-Modified-Since` with `304`, so cached files revalidate, but it ignores `Range` and returns the whole file with `200`. A `<video>` or `<audio>` there still plays, but Chromium treats a source that won't serve ranges as non-seekable, so seeking is limited to what it has already buffered. A homeserver that does answer `206` gets the page's range through.
+
 The key's owner chooses the homeserver address, so every request the SDK makes for a `pubky://` page is checked first:
 
 - Only `https://` is dialled.

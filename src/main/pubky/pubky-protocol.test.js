@@ -152,6 +152,24 @@ describe('handlePubkyRequest', () => {
     expect(await res.text()).toBe('partial');
   });
 
+  // The 206 above is the fixture's own answer. The reference homeserver
+  // (pubky-core d95161af) ignores Range and sends the whole file as 200;
+  // that answer must reach the page unchanged rather than be refused.
+  test('passes a 200 answer to a range request through whole', async () => {
+    upstream.mockResolvedValue(
+      withUrl(new Response('whole file', { headers: { 'content-type': 'video/mp4' } }), fileUrl)
+    );
+    const res = await handlePubkyRequest({
+      url: `pubky://${KEY}/pub/clip.mp4`,
+      method: 'GET',
+      headers: new Headers({ range: 'bytes=100-199' }),
+    });
+    expect(upstream.mock.calls[0][0].headers.get('range')).toBe('bytes=100-199');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-range')).toBeNull();
+    expect(await res.text()).toBe('whole file');
+  });
+
   test('passes a bodiless 304 through', async () => {
     upstream.mockResolvedValue(withUrl(new Response(null, { status: 304 }), fileUrl));
     const res = await handlePubkyRequest({ url: `pubky://${KEY}/pub/x`, method: 'GET' });
