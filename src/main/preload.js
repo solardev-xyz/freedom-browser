@@ -1055,6 +1055,12 @@ contextBridge.exposeInMainWorld('swarmPermissions', {
   getActGrants: (origin) => ipcRenderer.invoke('swarm:get-act-grants', origin),
   describeActRequest: (origin, params) =>
     ipcRenderer.invoke('swarm:describe-act-request', origin, params),
+  // A site lost its connection, by any route; the provider tells its pages.
+  onOriginDisconnected: (callback) => {
+    const handler = (_event, payload) => callback(payload?.origin);
+    ipcRenderer.on('swarm:origin-disconnected', handler);
+    return () => ipcRenderer.removeListener('swarm:origin-disconnected', handler);
+  },
   describeSharedSecretsRequest: (params) =>
     ipcRenderer.invoke('swarm:describe-shared-secrets-request', params),
 });
