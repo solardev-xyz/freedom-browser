@@ -317,6 +317,8 @@ describeIfBinary('the starting move through the real freedom-cored (0013, PRF-9 
         30_000,
         'the opened launch to let go'
       );
+      expectMovedAsSeeded(profile.userDataDir);
+      expect(movedNamesAtRoot(profile.userDataDir)).toEqual([]);
     } catch (error) {
       console.error(
         launches
@@ -325,8 +327,6 @@ describeIfBinary('the starting move through the real freedom-cored (0013, PRF-9 
       );
       throw error;
     }
-    expectMovedAsSeeded(profile.userDataDir);
-    expect(movedNamesAtRoot(profile.userDataDir)).toEqual([]);
   });
 
   test("the receipts at the profile's root are imported after the move, from their copy in freedom/, by a core main's getters point into freedom/", async () => {
