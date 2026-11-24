@@ -377,7 +377,8 @@ function registerX402Ipc() {
       });
       return { success: true };
     } catch (err) {
-      if (err.code === 'X402_CUSTODY_CHANGED' && resume) requestManualApprovalForAutoPay(id, resume.detection);
+      if (err.code === 'X402_CUSTODY_CHANGED' && resume)
+        requestManualApprovalForAutoPay(id, resume.detection);
       return { success: false, error: err.message };
     }
   });

@@ -15,7 +15,8 @@ const undecidedPages = new WeakSet();
 function setAgentPageCustody(contents, owned) {
   if (!contents || typeof contents !== 'object') return;
   undecidedPages.delete(contents);
-  if (Boolean(owned) !== agentPages.has(contents)) custodyVersions.set(contents, ++nextCustodyVersion);
+  if (Boolean(owned) !== agentPages.has(contents))
+    custodyVersions.set(contents, ++nextCustodyVersion);
   if (owned) agentPages.add(contents);
   else agentPages.delete(contents);
 }
@@ -25,7 +26,7 @@ function setPageCustodyUndecided(contents, undecided) {
   if (undecided) undecidedPages.add(contents);
   else undecidedPages.delete(contents);
 }
-const isUndecided = contents => undecidedPages.has(contents);
+const isUndecided = (contents) => undecidedPages.has(contents);
 
 function guestForId(webContentsId) {
   if (!Number.isInteger(webContentsId) || webContentsId < 0) return null;
@@ -43,7 +44,8 @@ const isAgentPageId = webContentsId => isAgentPage(guestForId(webContentsId));
 // A user -> Agent -> user round trip, or a replacement guest, invalidates it.
 function userPageCustodyVersion(webContentsId) {
   const contents = guestForId(webContentsId);
-  if (!contents || contents.isDestroyed?.() || isAgentPage(contents) || isUndecided(contents)) return null;
+  if (!contents || contents.isDestroyed?.() || isAgentPage(contents) || isUndecided(contents))
+    return null;
   if (!custodyVersions.has(contents)) custodyVersions.set(contents, ++nextCustodyVersion);
   return custodyVersions.get(contents);
 }
@@ -56,7 +58,8 @@ function hasUserPageCustodyVersion(webContentsId, version) {
 // unattributable request is refused like an Agent one.
 function autoApproveRefused(sender, webContentsId) {
   const contents = guestForId(webContentsId);
-  if (!contents || contents.isDestroyed?.() || isAgentPage(contents) || isUndecided(contents)) return true;
+  if (!contents || contents.isDestroyed?.() || isAgentPage(contents) || isUndecided(contents))
+    return true;
   return !Number.isInteger(sender?.id) || contents.hostWebContents?.id !== sender.id;
 }
 

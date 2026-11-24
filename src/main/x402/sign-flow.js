@@ -120,7 +120,10 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
   if (!origin) throw new Error('Refusing to pay: unnormalisable origin');
 
   const assertCustody = () => {
-    if (opts.authorizedBy === AUTHORIZED_BY.CAP && !hasUserPageCustodyVersion(webContentsId, detected.custodyVersion)) {
+    if (
+      opts.authorizedBy === AUTHORIZED_BY.CAP &&
+      !hasUserPageCustodyVersion(webContentsId, detected.custodyVersion)
+    ) {
       const error = new Error('Tab control changed. This payment needs a fresh approval.');
       error.code = 'X402_CUSTODY_CHANGED';
       throw error;

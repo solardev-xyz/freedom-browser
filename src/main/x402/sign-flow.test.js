@@ -254,28 +254,50 @@ describe('signAndQueueRetry — authorization freshness', () => {
 });
 
 describe('automatic payment custody binding', () => {
-  const detection = () => ({ url: 'https://api.example/article', requirements: requirementsWith(baseAccept), resourceType: 'xhr', custodyVersion: userPageCustodyVersion(7) });
+  const detection = () => ({
+    url: 'https://api.example/article',
+    requirements: requirementsWith(baseAccept),
+    resourceType: 'xhr',
+    custodyVersion: userPageCustodyVersion(7),
+  });
   test('an automatic payment cannot start from Agent custody', async () => {
-    const snapshot = detection(); setAgentPageCustody(mockGuest, true);
-    await expect(signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+    const snapshot = detection();
+    setAgentPageCustody(mockGuest, true);
+    await expect(
+      signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })
+    ).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
     expect(mockCreateClient).not.toHaveBeenCalled();
     expect(permissions.tryConsume).not.toHaveBeenCalled();
   });
   test('a user-to-Agent-to-user transition invalidates the original automatic consent', async () => {
-    const snapshot = detection(); setAgentPageCustody(mockGuest, true); setAgentPageCustody(mockGuest, false);
-    await expect(signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+    const snapshot = detection();
+    setAgentPageCustody(mockGuest, true);
+    setAgentPageCustody(mockGuest, false);
+    await expect(
+      signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })
+    ).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
     expect(mockCreateClient).not.toHaveBeenCalled();
   });
   test('custody changes during signer construction stop before payload signing', async () => {
     const snapshot = detection();
-    mockCreateClient.mockImplementationOnce(async () => { setAgentPageCustody(mockGuest, true); return mockClient; });
-    await expect(signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+    mockCreateClient.mockImplementationOnce(async () => {
+      setAgentPageCustody(mockGuest, true);
+      return mockClient;
+    });
+    await expect(
+      signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })
+    ).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
     expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
   });
   test('custody changes during device confirmation prevent dispatch or cap consumption', async () => {
     const snapshot = detection();
-    mockClient.createPaymentPayload.mockImplementationOnce(async () => { setAgentPageCustody(mockGuest, true); return { payload: { signature: 'fixture' } }; });
-    await expect(signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+    mockClient.createPaymentPayload.mockImplementationOnce(async () => {
+      setAgentPageCustody(mockGuest, true);
+      return { payload: { signature: 'fixture' } };
+    });
+    await expect(
+      signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })
+    ).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
     expect(consumePending(7, snapshot.url)).toBeNull();
     expect(permissions.tryConsume).not.toHaveBeenCalled();
     expect(mockLoadURL).not.toHaveBeenCalled();

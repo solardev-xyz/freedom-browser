@@ -51,7 +51,10 @@ async function createX402Client(walletIndex = 0, { beforeSign } = {}) {
   const walletSigner = getSigner(walletIndex);
   const signer = {
     address: await walletSigner.getAddress(),
-    signTypedData: (...args) => { beforeSign?.(); return walletSigner.signTypedData(...args); },
+    signTypedData: (...args) => {
+      beforeSign?.();
+      return walletSigner.signTypedData(...args);
+    },
   };
 
   const client = new x402Client();

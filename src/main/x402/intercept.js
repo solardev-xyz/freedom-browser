@@ -50,7 +50,10 @@ const { KINDS: PAYMENT_KINDS, STATUSES: PAYMENT_STATUSES } = paymentHistory;
 const { findCoveringPermission } = require('./payment-utils');
 const { tryConsume } = require('./permissions');
 const { isVaultLockedError } = require('../wallet/vault-errors');
-const { userPageCustodyVersion, hasUserPageCustodyVersion } = require('../wallet/agent-tab-custody');
+const {
+  userPageCustodyVersion,
+  hasUserPageCustodyVersion,
+} = require('../wallet/agent-tab-custody');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
 // Header names used on the wire. V2 uses the un-prefixed names; V1 (Coinbase
@@ -341,7 +344,8 @@ function captureRequestContextHandler(details) {
   }
   // Any resource can be paywalled. Bound the cache rather than guessing
   // from MIME/resource type; evicted requests fail closed to approval.
-  if (requestContext.size >= MAX_REQUEST_CONTEXT) forgetRequestContext(requestContext.keys().next().value);
+  if (requestContext.size >= MAX_REQUEST_CONTEXT)
+    forgetRequestContext(requestContext.keys().next().value);
   requestContext.set(details.id, {
     webContentsId: details.webContentsId,
     method: details.method ?? 'GET',
@@ -812,15 +816,29 @@ function requestManualApprovalForAutoPay(webContentsId, detection) {
   const guest = webContents.fromId(webContentsId);
   // webRequest URLs never carry a #fragment; the guest's committed URL
   // does. Compare without it so /article#intro is still "this page".
-  if (!guest || guest.isDestroyed?.() || withoutFragment(guest.getURL?.()) !== withoutFragment(detection.url)) {
+  if (
+    !guest ||
+    guest.isDestroyed?.() ||
+    withoutFragment(guest.getURL?.()) !== withoutFragment(detection.url)
+  ) {
     clearDetectedPayment(webContentsId);
     return false;
   }
   const detectionId = mintDetectionId({});
   abortPendingApprovalsForTab(webContentsId, new Error('superseded by manual approval'));
-  detectedPayments.set(webContentsId, { ...detection, detectionId, authorizedBy: AUTHORIZED_BY.MANUAL, detectedAt: Date.now() });
-  sendToHost(webContentsId, 'x402:approval-needed', { webContentsId, detectionId,
-    url: detection.url, requirements: detection.requirements, resourceType: detection.resourceType });
+  detectedPayments.set(webContentsId, {
+    ...detection,
+    detectionId,
+    authorizedBy: AUTHORIZED_BY.MANUAL,
+    detectedAt: Date.now(),
+  });
+  sendToHost(webContentsId, 'x402:approval-needed', {
+    webContentsId,
+    detectionId,
+    url: detection.url,
+    requirements: detection.requirements,
+    resourceType: detection.resourceType,
+  });
   return true;
 }
 
@@ -835,7 +853,10 @@ function requestManualApprovalForAutoPay(webContentsId, detection) {
  * happening synchronously before the first `await`. Preserve that
  * ordering when modifying this function.
  */
-async function detectPaymentRequiredHandler(details, { requireApproval = false, requestShape: heldShape = null } = {}) {
+async function detectPaymentRequiredHandler(
+  details,
+  { requireApproval = false, requestShape: heldShape = null } = {}
+) {
   if (!isStatus402(details.statusLine)) return null;
 
   // The app's own gateway / CCIP-Read dials (`ipfs/gateway-transport.js`) are
@@ -947,9 +968,10 @@ async function detectPaymentRequiredHandler(details, { requireApproval = false, 
   // be read for it, so it fails closed to the card as well.
   const origin = originKeyForUrl(details.url);
   const custodyVersion = captured?.custodyVersion;
-  const covering = !requireApproval && origin && hasUserPageCustodyVersion(details.webContentsId, custodyVersion)
-    ? findCoveringPermission(origin, requirements.accepts)
-    : null;
+  const covering =
+    !requireApproval && origin && hasUserPageCustodyVersion(details.webContentsId, custodyVersion)
+      ? findCoveringPermission(origin, requirements.accepts)
+      : null;
   if (covering) {
     log.info(`[x402:detect] active cap covers ${sanitizeUrlForLog(details.url)} — auto-paying`);
     const id = details.webContentsId;
@@ -972,7 +994,8 @@ async function detectPaymentRequiredHandler(details, { requireApproval = false, 
     // has a parallel latent gap tracked separately; full request-keyed
     // state for both is future work.
     const detection = {
-      detectionId, custodyVersion,
+      detectionId,
+      custodyVersion,
       url,
       requirements,
       resourceType: details.resourceType,
@@ -1295,7 +1318,10 @@ function injectPaymentSignatureHandler(details) {
     return null;
   }
 
-  if (signed.authorizedBy === AUTHORIZED_BY.CAP && !hasUserPageCustodyVersion(details.webContentsId, signed.custodyVersion)) {
+  if (
+    signed.authorizedBy === AUTHORIZED_BY.CAP &&
+    !hasUserPageCustodyVersion(details.webContentsId, signed.custodyVersion)
+  ) {
     log.info('[x402:inject] tab custody changed; withholding automatic payment');
     return null;
   }
