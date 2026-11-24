@@ -1,17 +1,20 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const lockfile = require('proper-lockfile');
 const {
   DEFAULT_STALE_MS,
   DEFAULT_UPDATE_MS,
   DEV_STALE_MS,
   DEV_UPDATE_MS,
+  PROFILE_LOCK_START_WAIT_MS,
   acquireProfileLock,
   getProfileLockTiming,
   getProfileLockPaths,
   isProfileLocked,
   isLockUnavailableError,
   releaseProfileLock,
+  startLockWaitMs,
 } = require('./profile-lock');
 
 function makeTempProfile(id = 'default') {
@@ -127,5 +130,105 @@ describe('profile lock', () => {
     expect(isLockUnavailableError({ code: 'ELOCKED' })).toBe(true);
     expect(isLockUnavailableError({ code: 'ENOENT' })).toBe(false);
     expect(isLockUnavailableError(null)).toBe(false);
+  });
+
+  describe("a start's wait for its lock", () => {
+    // A clock that moves only when the lock's retry sleeps.
+    function fakeClock() {
+      let now = 1_000_000;
+      const sleeps = [];
+      return {
+        sleeps,
+        now: () => now,
+        sleepSync: (ms) => {
+          sleeps.push(ms);
+          now += ms;
+        },
+      };
+    }
+
+    test('without a wait, a held lock is refused at once', () => {
+      const profile = trackProfile(makeTempProfile());
+      trackLock(acquireProfileLock(profile));
+      const clock = fakeClock();
+      expect(() => acquireProfileLock(profile, clock)).toThrow(
+        expect.objectContaining({ code: 'ELOCKED' })
+      );
+      expect(clock.sleeps).toEqual([]);
+    });
+
+    test('a holder that lets go within the wait: the lock is taken, tried every 25 ms', () => {
+      const profile = trackProfile(makeTempProfile());
+      const holder = acquireProfileLock(profile);
+      const clock = fakeClock();
+      const sleepSync = (ms) => {
+        clock.sleepSync(ms);
+        if (clock.sleeps.length === 3) releaseProfileLock(holder);
+      };
+      const lock = trackLock(
+        acquireProfileLock(profile, { now: clock.now, sleepSync, waitMs: 2000 })
+      );
+      expect(lock.released).toBe(false);
+      expect(isProfileLocked(profile)).toBe(true);
+      expect(clock.sleeps).toEqual([25, 25, 25]);
+    });
+
+    test('a holder that keeps the lock past the wait: refused once the wait is over', () => {
+      const profile = trackProfile(makeTempProfile());
+      trackLock(acquireProfileLock(profile));
+      const clock = fakeClock();
+      expect(() => acquireProfileLock(profile, { ...clock, waitMs: 100 })).toThrow(
+        expect.objectContaining({ code: 'ELOCKED' })
+      );
+      expect(clock.sleeps).toEqual([25, 25, 25, 25]);
+    });
+
+    test('any other failure is thrown at once, without waiting', () => {
+      const profile = trackProfile(makeTempProfile());
+      const clock = fakeClock();
+      const spy = jest.spyOn(lockfile, 'lockSync').mockImplementation(() => {
+        throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      });
+      try {
+        expect(() => acquireProfileLock(profile, { ...clock, waitMs: 2000 })).toThrow(
+          expect.objectContaining({ code: 'EACCES' })
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      expect(clock.sleeps).toEqual([]);
+    });
+
+    test("the wait: none when profile open's report says the lock was fresh, the full wait when not", () => {
+      const isLocked = jest.fn();
+      expect(startLockWaitMs({ lockFresh: true }, {}, { isLocked })).toBe(0);
+      expect(startLockWaitMs({ lockFresh: false }, {}, { isLocked })).toBe(
+        PROFILE_LOCK_START_WAIT_MS
+      );
+      expect(isLocked).not.toHaveBeenCalled();
+      expect(PROFILE_LOCK_START_WAIT_MS).toBe(2000);
+    });
+
+    test("where profile open didn't run, the lock is read: fresh or unreadable, no wait", () => {
+      const profile = { userDataDir: '/nowhere' };
+      expect(startLockWaitMs({ lockFresh: null }, profile, { isLocked: () => true })).toBe(0);
+      expect(startLockWaitMs({}, profile, { isLocked: () => false })).toBe(
+        PROFILE_LOCK_START_WAIT_MS
+      );
+      expect(
+        startLockWaitMs(null, profile, {
+          isLocked: () => {
+            throw new Error('unreadable');
+          },
+        })
+      ).toBe(0);
+    });
+
+    test('where profile open did not run, a real profile is read: idle, then held', () => {
+      const profile = trackProfile(makeTempProfile());
+      expect(startLockWaitMs({ lockFresh: null }, profile)).toBe(PROFILE_LOCK_START_WAIT_MS);
+      trackLock(acquireProfileLock(profile));
+      expect(startLockWaitMs({ lockFresh: null }, profile)).toBe(0);
+    });
   });
 });

@@ -2,7 +2,8 @@
 // profile-move.integration.test.js (freedom-core design 0013, PRF-9 B3):
 // `profile open` through freedom-cored, a journal settled, the
 // held-elsewhere check, the starting move, then the profile gate and the
-// profile lock, with main's own modules and in index.js's order.
+// profile lock (tried for as long as index.js tries it), with main's own
+// modules and in index.js's order.
 //
 //   node profile-move-launch.js <freedom-cored> <lock dir> <app root> <id> <release file> [<pause>]
 //
@@ -42,6 +43,7 @@ const {
   hasStaleProfileLock,
   isLockUnavailableError,
   releaseProfileLock,
+  startLockWaitMs,
 } = require('../../src/main/profile-lock');
 const {
   finishProfileMove,
@@ -89,6 +91,7 @@ if (
 ) {
   handOver('held', 'skipped');
 }
+const waitMs = startLockWaitMs(report, profile);
 let moved = { outcome: 'skipped', reason: 'layout' };
 if (report.layout === 'root') {
   moved = startProfileMove(app, profile, report, options);
@@ -97,7 +100,7 @@ if (report.layout === 'root') {
 const gate = startProfileGate(profile, { packaged: true, log, command, lockDir });
 let lock;
 try {
-  lock = acquireProfileLock(profile, { logger: log });
+  lock = acquireProfileLock(profile, { logger: log, waitMs });
 } catch (error) {
   if (!isLockUnavailableError(error)) throw error;
   gate.release().then(() => handOver('lock', moved.outcome));

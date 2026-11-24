@@ -133,6 +133,7 @@ const {
   hasStaleProfileLock,
   isLockUnavailableError,
   releaseProfileLock,
+  startLockWaitMs,
 } = require('./profile-lock');
 const {
   isProfileGateHeldSync,
@@ -222,6 +223,11 @@ if (
 ) {
   exitProfileLocked();
 }
+// How long main's lock is tried below (profile-lock.js), read before the
+// move, which takes the lock itself: a lock that read fresh is an older
+// build's and is handed over to at once; otherwise a holder is a launch
+// starting at the same moment, settling the move, that lets go in a moment.
+const profileLockWaitMs = startLockWaitMs(profileLaunch, activeProfile);
 // PRF-9's move (0013, "The move"): a profile in the root layout that is idle
 // has its Freedom-owned entries moved into `<userData>/freedom/` (a new
 // profile takes the empty move), under the move's own exclusion and its
@@ -261,7 +267,10 @@ const profileGate = startProfileGate(activeProfile, {
 });
 let activeProfileLock = null;
 try {
-  activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
+  activeProfileLock = acquireProfileLock(activeProfile, {
+    logger: console,
+    waitMs: profileLockWaitMs,
+  });
 } catch (error) {
   if (isLockUnavailableError(error)) {
     profileGate.release();

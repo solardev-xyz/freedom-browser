@@ -83,6 +83,15 @@ describe('startup order around the profile move', () => {
     expect(move).toBeLessThan(reset);
   });
 
+  test("main's lock wait is read after the held-elsewhere check and before the move, which takes the lock", () => {
+    const heldElsewhere = at('isProfileHeldElsewhere(profileLaunch');
+    const wait = at('startLockWaitMs(profileLaunch, activeProfile)');
+    const move = at('startProfileMove(app, activeProfile, profileLaunch)');
+    expect(heldElsewhere).toBeLessThan(wait);
+    expect(wait).toBeLessThan(move);
+    expect(at('waitMs: profileLockWaitMs')).toBeGreaterThan(at('acquireProfileLock(activeProfile'));
+  });
+
   test("the move and the reset come before the gate's holder and main's lock", () => {
     const reset = at('resetFreedomRoot();');
     expect(reset).toBeLessThan(code.indexOf('startProfileGate(activeProfile'));
