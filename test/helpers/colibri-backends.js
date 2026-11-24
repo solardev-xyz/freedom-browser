@@ -3,9 +3,10 @@
 /**
  * The two Colibri backends (freedom-core design 0014, COL-5) for the
  * contract suite: `colibri-worker-host`, `chain-verified`,
- * `colibri-private-store` and `colibri-outage-parity` run each of their
- * backend-agnostic parts once per backend, here, with the expectations that
- * differ by design marked with the deviation that makes them differ.
+ * `colibri-private-store`, `colibri-outage-parity` and `colibri-replay-parity`
+ * run each of their backend-agnostic parts once per backend, here, with the
+ * expectations that differ by design marked with the deviation that makes
+ * them differ.
  * (`colibri-resolver` runs its lifecycle above fakes of both.)
  *
  * - `wasm`: colibri-worker-host.js, the default, with its real worker
@@ -28,7 +29,8 @@
  * to be had, what a backend can answer is what the contract fixes byte for
  * byte without one: a failed remote proof (#1059), a refusal, and the
  * processes' lifecycle. test/helpers/colibri-prover-outage.js adds the
- * vectors' outage cases on both.
+ * vectors' outage cases on both, and test/helpers/colibri-replay.js their
+ * successful reads, from the recorded answers.
  *
  * `DEVIATIONS` names each expectation that differs by backend (design 0014,
  * Deviations), with the reason it does; `deviation(tag, backend, expected)`
@@ -73,6 +75,20 @@ const DEVIATIONS = Object.freeze({
     "methods outside the service's list (eth_getLogs, eth_chainId, writes): the " +
     'reference asks the prover (eth_chainId: answers from its configuration); the ' +
     'service refuses them, Method <m> is not supported; neither router asks for them',
+  // The vectors' F-1, F-11 and F-12 cases (colibri-replay-parity): what the
+  // reference answers there, the service refuses before any context, and
+  // the routers no longer ask for it (#1048, #279).
+  'colibri-unproofable':
+    'eth_gasPrice, eth_feeHistory and reads at pending: the reference answers from a ' +
+    'public RPC host without a proof; the service refuses them (Method <m> is not ' +
+    'supported, Colibri cannot prove <method> at block "<tag>")',
+  'colibri-no-calls':
+    'eth_call and eth_estimateGas: the reference runs them on code from a public RPC ' +
+    'host; the service refuses them, Method <m> is not supported',
+  'colibri-unbound':
+    'account reads and blocks at a form Colibri does not tie to the proven block ' +
+    '(safe, finalized, a number for an account): the reference answers from whichever ' +
+    "block the proof names; the service refuses them with #279's text",
 });
 
 /** Where the freedom-colibrid binary is for tests: colibrid-binary.js's
@@ -87,6 +103,15 @@ function colibridPath(env = process.env) {
 const COLIBRID = colibridPath();
 const colibridFound = fs.existsSync(COLIBRID);
 const colibridRequired = process.env.FREEDOM_COLIBRID_REQUIRED === '1';
+
+/**
+ * A freedom-colibrid built with its `testhooks` feature, which only a debug
+ * build may have (freedom-core's `services/freedom-colibrid/build.rs`), for
+ * the suites that must fix the C core's clock (`test_clock_ms`), as
+ * freedom-core's own replay of the vectors does: FREEDOM_COLIBRID_TESTHOOKS_PATH,
+ * or null. A released binary takes no such field.
+ */
+const COLIBRID_TESTHOOKS = process.env.FREEDOM_COLIBRID_TESTHOOKS_PATH || null;
 
 const BACKENDS = Object.freeze([
   Object.freeze({ kind: 'wasm', available: true, missing: null }),
@@ -136,6 +161,25 @@ function describeBackends(title, fn, { backends = BACKENDS } = {}) {
     }
   }
 }
+
+/** A test that needs the binary: skipped without it, its reason in the
+ * title, or failed under FREEDOM_COLIBRID_REQUIRED=1. */
+function serviceTest(name, fn, timeout) {
+  const service = backendOf('service');
+  if (service.available) return test(name, fn, timeout);
+  if (colibridRequired) {
+    return test(`${name} (FREEDOM_COLIBRID_REQUIRED=1)`, () => {
+      throw new Error(service.missing);
+    });
+  }
+  return test.skip(`${name}: ${service.missing}`, fn);
+}
+/** `serviceTest` per row: `%s` in the name is the row's first item. */
+serviceTest.each = (rows) => (name, fn, timeout) => {
+  for (const row of rows) {
+    serviceTest(name.replace('%s', row[0]), () => fn(...row), timeout);
+  }
+};
 
 // ---- the network ----
 
@@ -245,12 +289,16 @@ function recordingSpawn(spawned) {
  * (`createClient`, `ensureWorker`, `endPrivateSession`, …); `spawned`
  * records its processes (`{ private, storageDir, kill(), exited }`; the
  * WASM backend's only in a suite whose Worker is `workerThreads()`'s).
- * `hop` is the service's transport (Node's `fetch` by default). The
- * service's locks are outside `userData`, as the app's are
- * (`<appData>/Freedom/locks`). `close()` stops every process and resolves
- * once each has exited.
+ * `hop` is the service's transport (Node's `fetch` by default), `now` main's
+ * clock (`Date.now`), and `command` and `serviceVersion` another binary and
+ * the release its hello must name (null: any). The service's locks are
+ * outside `userData`, as the app's are (`<appData>/Freedom/locks`).
+ * `close()` stops every process and resolves once each has exited.
  */
-async function startBackend(backend, { userData, hop } = {}) {
+async function startBackend(
+  backend,
+  { userData, hop, now = Date.now, command = COLIBRID, serviceVersion } = {}
+) {
   const storageDir = path.join(userData, 'colibri');
   if (backend.kind === 'wasm') {
     const host = require(path.join(ENS, 'colibri-worker-host.js'));
@@ -266,7 +314,7 @@ async function startBackend(backend, { userData, hop } = {}) {
       },
     };
   }
-  if (!backend.available) throw new Error(backend.missing);
+  if (command === COLIBRID && !backend.available) throw new Error(backend.missing);
   const service = require(path.join(ENS, 'colibri-service.js'));
   const { makeHop } = require(path.join(ROOT, 'src', 'main', 'core', 'naming-shell.js'));
   const spawned = [];
@@ -274,8 +322,12 @@ async function startBackend(backend, { userData, hop } = {}) {
   await service.resetForTest({
     storageDir,
     lockDir,
-    command: COLIBRID,
-    serviceVersion: service.expectedColibridVersion({ packaged: false }),
+    command,
+    serviceVersion:
+      serviceVersion === undefined
+        ? service.expectedColibridVersion({ packaged: false })
+        : serviceVersion,
+    now,
     // Main's grant check needs the profile's roots; colibri-service.test.js
     // and service-grant.test.js have it.
     checkGrant: () => null,
@@ -306,6 +358,7 @@ const cut = (text, units = 2000) => text.slice(0, units);
 module.exports = {
   BACKENDS,
   COLIBRID,
+  COLIBRID_TESTHOOKS,
   DEVIATIONS,
   PROVER_DOWN,
   backendOf,
@@ -319,6 +372,7 @@ module.exports = {
   proverWorld,
   realWorker,
   recordingSpawn,
+  serviceTest,
   startBackend,
   workerThreads,
 };

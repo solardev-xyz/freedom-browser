@@ -19,10 +19,10 @@ jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn
 
 const {
   backendOf,
-  colibridRequired,
   cut,
   deviation,
   outcomeOf,
+  serviceTest,
 } = require('../../../test/helpers/colibri-backends');
 const {
   ACCOUNT,
@@ -37,24 +37,6 @@ const { colibriVectors, colibriVectorsRequired } = require('../../../test/helper
 
 const WASM = backendOf('wasm');
 const SERVICE = backendOf('service');
-
-/** A test that needs the binary: skipped without it, or failed under
- * FREEDOM_COLIBRID_REQUIRED=1. */
-function serviceTest(name, fn, timeout) {
-  if (SERVICE.available) return test(name, fn, timeout);
-  if (colibridRequired) {
-    return test(`${name} (FREEDOM_COLIBRID_REQUIRED=1)`, () => {
-      throw new Error(SERVICE.missing);
-    });
-  }
-  return test.skip(`${name}: ${SERVICE.missing}`, fn);
-}
-serviceTest.each = (rows) => (name, fn, timeout) => {
-  for (const row of rows) {
-    const title = name.replace('%s', row[0]);
-    serviceTest(title, () => fn(...row), timeout);
-  }
-};
 
 /** What `fetch-error-text` makes of the WASM path's error for the service:
  * URLs as `<url>` in the whole text, then the 2,000-unit cut. */
