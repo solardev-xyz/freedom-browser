@@ -35,6 +35,29 @@ const PROVERS = {
 const C4 = { 1: '0x017e070000', 100: '0x01ea0e0000' };
 const CHAR = (code) => String.fromCharCode(code);
 
+// The design's limits, written out here rather than read from the module
+// (design 0014, "Bounds on free fields" and "Body maximums").
+const KIB = 1024;
+const MIB = 1024 * KIB;
+const PAYLOAD_CAP = 64 * 1024;
+const MAX_BODY = {
+  lc_updates: 16 * MIB,
+  lc_bootstrap: 1 * MIB,
+  finality: 64 * KIB,
+  block_root: 64 * KIB,
+  pap_account: 16 * MIB,
+  pap_storage: 16 * MIB,
+  code: 16 * MIB,
+  block: 16 * MIB,
+  tx_cache: 16 * MIB,
+  tx_cache_incremental: 16 * MIB,
+  tx_fallback: 16 * MIB,
+  tx_receipts: 16 * MIB,
+  tx_block: 16 * MIB,
+  checkpoint_proof: 4 * MIB,
+  checkpoint_root: 64 * KIB,
+};
+
 /** A `colibri.request` main has open. */
 function request(method, params, { chain = 1, zk = true, id = 7, ...rest } = {}) {
   return {
@@ -184,6 +207,9 @@ function serversFor(type, chain) {
   }[type];
 }
 
+/** Every server in order, none excluded. */
+const everyAttempt = (servers) => servers.map((url, node) => ({ url, node }));
+
 describe('each variant is admitted with its derived fields', () => {
   test.each(CASES)('%s for %s, chain %i, ZK %s', (variant, operation, chain, zk, fetchFor) => {
     const op = OPERATIONS[operation]({ chain, zk });
@@ -198,12 +224,12 @@ describe('each variant is admitted with its derived fields', () => {
       payload: fetch.payload === undefined ? null : JSON.stringify(fetch.payload),
       accept: spec.encoding === 'json' ? 'application/json' : 'application/octet-stream',
       maxAge: fetch.max_age ?? null,
-      maxBody: spec.maxBody,
-      servers: serversFor(spec.type, chain),
+      maxBody: MAX_BODY[variant],
+      attempts: everyAttempt(serversFor(spec.type, chain)),
       fields: expect.any(Object),
     });
     expect(Object.isFrozen(admitted)).toBe(true);
-    expect(Object.isFrozen(admitted.servers)).toBe(true);
+    expect(Object.isFrozen(admitted.attempts)).toBe(true);
   });
 
   test.each([1, 100])("chain %i's checkpoint: the proof once, then roots", (chain) => {
@@ -217,8 +243,8 @@ describe('each variant is admitted with its derived fields', () => {
       payload: CHECKPOINT_PROOF_PAYLOAD,
       accept: 'application/octet-stream',
       maxAge: null,
-      maxBody: 4 * 1024 * 1024,
-      servers: [network.prover],
+      maxBody: MAX_BODY.checkpoint_proof,
+      attempts: [{ url: network.prover, node: 0 }],
       fields: {},
     });
     expect(admit(op, get(op, 'checkpointz', 'eth/v1/beacon/blocks/15241024/root'))).toEqual({
@@ -229,8 +255,8 @@ describe('each variant is admitted with its derived fields', () => {
       payload: null,
       accept: 'application/json',
       maxAge: null,
-      maxBody: 64 * 1024,
-      servers: [network.source],
+      maxBody: MAX_BODY.checkpoint_root,
+      attempts: [{ url: network.source, node: 0 }],
       fields: { slot: '15241024' },
     });
   });
@@ -242,6 +268,15 @@ describe('each variant is admitted with its derived fields', () => {
       version: 196611,
       zk_proof: true,
     });
+  });
+
+  test("every variant's body maximum and the payload cap are the design's", () => {
+    expect(
+      Object.fromEntries(
+        Object.entries(COLIBRI_FETCH_VARIANTS).map(([name, spec]) => [name, spec.maxBody])
+      )
+    ).toEqual(MAX_BODY);
+    expect(MAX_PAYLOAD_BYTES).toBe(64 * 1024);
   });
 
   test('every variant is reached', () => {
@@ -330,22 +365,61 @@ describe('each variant is admitted with its derived fields', () => {
   test('a payload of exactly 64 KiB is admitted', () => {
     const op = request('eth_blockNumber', ['']);
     const base = JSON.stringify(post(op, 'eth_blockNumber', ['']).payload).length;
-    const fill = 'a'.repeat(MAX_PAYLOAD_BYTES - base);
+    const fill = 'a'.repeat(PAYLOAD_CAP - base);
     const full = request('eth_blockNumber', [fill]);
     const fetch = post(full, 'eth_blockNumber', [fill]);
-    expect(Buffer.byteLength(JSON.stringify(fetch.payload))).toBe(MAX_PAYLOAD_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(fetch.payload))).toBe(PAYLOAD_CAP);
     expect(admit(full, fetch).variant).toBe('block');
   });
 
-  test("exclude_mask may skip any of the list's servers", () => {
+  test('exclude_mask skips the servers its bits name, each attempt keeping its node', () => {
     const op = OPERATIONS.blockNumber({});
-    expect(admit(op, { ...post(op, 'eth_blockNumber', []), exclude_mask: 1 }).variant).toBe(
-      'block'
-    );
-    expect(admit(op, { ...SYNC.lc_bootstrap(op), exclude_mask: 0b1111 }).variant).toBe(
-      'lc_bootstrap'
-    );
-    expect(admit(op, { ...SYNC.finality(op), exclude_mask: 2 ** 11 - 1 }).variant).toBe('finality');
+    const attempts = (fetch) => admit(op, fetch).attempts;
+    const prover = PROVERS[1];
+    // The one-server prover variant: kept, or excluded.
+    expect(attempts(post(op, 'eth_blockNumber', []))).toEqual([{ url: prover, node: 0 }]);
+    // Mainnet's checkpointz list: its 7 checkpointz servers, 3 beacon APIs,
+    // then the prover (11).
+    const list = [
+      'https://sync-mainnet.beaconcha.in',
+      'https://mainnet.checkpoint.sigp.io',
+      'https://mainnet-checkpoint-sync.attestant.io',
+      'https://beaconstate-mainnet.chainsafe.io',
+      'https://mainnet-checkpoint-sync.stakely.io',
+      'https://checkpointz.pietjepuk.net',
+      'https://beaconstate.ethstaker.cc',
+      'https://mainnet.colibri-proof.tech/consensus',
+      'https://gateway.tenderly.co/public/mainnet',
+      'https://ethereum-beacon-api.publicnode.com',
+      prover,
+    ];
+    const finality = (mask) => attempts({ ...SYNC.finality(op), exclude_mask: mask });
+    expect(finality(0)).toEqual(everyAttempt(list));
+    expect(finality(0b1)).toEqual(everyAttempt(list).slice(1));
+    expect(finality(0b10000000101)).toEqual([
+      { url: list[1], node: 1 },
+      { url: list[3], node: 3 },
+      { url: list[4], node: 4 },
+      { url: list[5], node: 5 },
+      { url: list[6], node: 6 },
+      { url: list[7], node: 7 },
+      { url: list[8], node: 8 },
+      { url: list[9], node: 9 },
+    ]);
+    expect(finality(2 ** 10)).toEqual(everyAttempt(list).slice(0, 10));
+  });
+
+  test('a mask that excludes every server is admitted with no attempts', () => {
+    // fetch_from_servers skips them all and throws its first lastError, `All
+    // nodes failed`: the executor answers that without sending anything.
+    const op = OPERATIONS.blockNumber({});
+    const all = admit(op, { ...post(op, 'eth_blockNumber', []), exclude_mask: 1 });
+    expect(all.variant).toBe('block');
+    expect(all.attempts).toEqual([]);
+    expect(admit(op, { ...SYNC.finality(op), exclude_mask: 2 ** 11 - 1 }).attempts).toEqual([]);
+    expect(admit(op, { ...SYNC.lc_bootstrap(op), exclude_mask: 0b1111 }).attempts).toEqual([]);
+    const cp = checkpoint();
+    expect(admit(cp, { ...proofRequest(cp), exclude_mask: 1 }).attempts).toEqual([]);
   });
 
   test('a checkpoint root up to the eighth', () => {
@@ -353,11 +427,6 @@ describe('each variant is admitted with its derived fields', () => {
     expect(admit(op, get(op, 'checkpointz', 'eth/v1/beacon/blocks/1/root')).variant).toBe(
       'checkpoint_root'
     );
-  });
-
-  test('an operation without an id admits by its shape alone', () => {
-    const op = { ...OPERATIONS.blockNumber({}), id: undefined };
-    expect(admit(op, { ...post(op, 'eth_blockNumber', []), request: 12345 }).variant).toBe('block');
   });
 });
 
@@ -370,7 +439,7 @@ describe('refusals: one test per rule', () => {
   const balance = OPERATIONS.balance({});
   const tx = OPERATIONS.tx({});
 
-  test('request: no open operation, an ended one, another one', () => {
+  test('request: no open operation, an ended one, or not its id', () => {
     const fetch = post(balance, 'eth_getProof', [ADDRESS, [], 'latest']);
     // No operation open, or another process's request id: main finds none.
     expectRefused(null, fetch, 'request');
@@ -378,8 +447,17 @@ describe('refusals: one test per rule', () => {
     // Replied, cancelled or past its deadline.
     expectRefused({ ...balance, ended: true }, fetch, 'request');
     expectRefused(checkpoint(1, { ended: true }), proofRequest(checkpoint()), 'request');
-    // Another operation's id.
-    expectRefused(balance, { ...fetch, request: balance.id + 1 }, 'request');
+    // Zero, a negative id, and an id no operation has.
+    expectRefused(balance, { ...fetch, request: 0 }, 'request');
+    expectRefused(balance, { ...fetch, request: -7 }, 'request');
+    expectRefused(balance, { ...fetch, request: 12345 }, 'request');
+    // Another open operation's id, with that operation's own shape.
+    const other = OPERATIONS.tx({ id: 8 });
+    expectRefused(balance, txCache(other), 'request');
+    expectRefused(balance, { ...fetch, request: other.id }, 'request');
+    expectRefused(other, fetch, 'request');
+    const cp = checkpoint(1, { id: 10 });
+    expectRefused(cp, { ...proofRequest(cp), request: balance.id }, 'request');
   });
 
   test("fetch: params that aren't shell.colibri_fetch's", () => {
@@ -574,11 +652,11 @@ describe('refusals: one test per rule', () => {
   test('payload: over 64 KiB, on a variant without one, or not an object', () => {
     const op = request('eth_blockNumber', ['']);
     const base = JSON.stringify(post(op, 'eth_blockNumber', ['']).payload).length;
-    const fill = 'a'.repeat(MAX_PAYLOAD_BYTES - base + 1);
+    const fill = 'a'.repeat(PAYLOAD_CAP - base + 1);
     const over = request('eth_blockNumber', [fill]);
     expectRefused(over, post(over, 'eth_blockNumber', [fill]), 'payload');
     // Counted in bytes: two-byte characters.
-    const wide = 'é'.repeat(Math.floor((MAX_PAYLOAD_BYTES - base) / 2) + 1);
+    const wide = 'é'.repeat(Math.floor((PAYLOAD_CAP - base) / 2) + 1);
     const wideOp = request('eth_blockNumber', [wide]);
     expectRefused(wideOp, post(wideOp, 'eth_blockNumber', [wide]), 'payload');
     expectRefused(tx, { ...txCache(tx), payload: { method: 'x' } }, 'payload');
@@ -888,14 +966,42 @@ describe('refusals: one test per rule', () => {
 
 describe("main's own operation is checked, not refused", () => {
   test.each([
-    [{ kind: 'stream', chain: 1 }],
-    [{ kind: 'request', chain: 0, method: 'eth_blockNumber', params: '[]', zk: true, prover: 'x' }],
-    [{ kind: 'request', chain: 1, method: 'eth_blockNumber', params: [], zk: true, prover: 'x' }],
-    [{ kind: 'request', chain: 1, method: 'eth_blockNumber', params: '[]', prover: 'x' }],
-    [{ kind: 'request', chain: 1, method: 'eth_blockNumber', params: '[]', zk: true }],
-    [{ kind: 'checkpoint', chain: '1' }],
+    // Every operation carries main's id, a positive integer.
+    [{ kind: 'checkpoint', chain: 1 }],
+    [{ kind: 'checkpoint', id: 0, chain: 1 }],
+    [{ kind: 'checkpoint', id: -1, chain: 1 }],
+    [{ kind: 'checkpoint', id: 1.5, chain: 1 }],
+    [{ kind: 'checkpoint', id: '9', chain: 1 }],
+    [{ kind: 'checkpoint', id: 2 ** 53, chain: 1 }],
+    [{ kind: 'request', chain: 1, method: 'eth_blockNumber', params: '[]', zk: true, prover: 'x' }],
+    [{ kind: 'stream', id: 1, chain: 1 }],
+    [
+      {
+        kind: 'request',
+        id: 1,
+        chain: 0,
+        method: 'eth_blockNumber',
+        params: '[]',
+        zk: true,
+        prover: 'x',
+      },
+    ],
+    [
+      {
+        kind: 'request',
+        id: 1,
+        chain: 1,
+        method: 'eth_blockNumber',
+        params: [],
+        zk: true,
+        prover: 'x',
+      },
+    ],
+    [{ kind: 'request', id: 1, chain: 1, method: 'eth_blockNumber', params: '[]', prover: 'x' }],
+    [{ kind: 'request', id: 1, chain: 1, method: 'eth_blockNumber', params: '[]', zk: true }],
+    [{ kind: 'checkpoint', id: 1, chain: '1' }],
   ])('%j', (op) => {
-    expect(() => admit(op, {})).toThrow(TypeError);
+    expect(() => admit(op, SYNC.finality({ id: 1 }))).toThrow(TypeError);
   });
 });
 

@@ -80,13 +80,20 @@ function headersOf(admitted) {
       expect(admitted.verb).toBe(params.method.toUpperCase());
       expect(admitted.path).toBe(params.path);
       expect(admitted.maxAge).toBe(params.max_age ?? null);
-      expect(admitted.maxBody).toBe(COLIBRI_FETCH_VARIANTS[variant].maxBody);
+      // The largest body the recording saw for the variant fits its maximum.
+      expect(admitted.maxBody).toBeGreaterThanOrEqual(
+        colibriVectors.variants[variant].largest_body
+      );
+      // The recording's exclude_mask is 0: every server, by its index.
+      expect(admitted.attempts.map(({ node }) => node)).toEqual(
+        admitted.attempts.map((_, index) => index)
+      );
       if (own) {
         // Main's own request, as today's checkpoint worker made it.
         expect(admitted.payload).toBe(CHECKPOINT_PROOF_PAYLOAD);
         expect(sent).toHaveLength(1);
         expect(sent[0].method).toBe('POST');
-        expect(sent[0].url).toBe(joinPath(admitted.servers[0], admitted.path));
+        expect(sent[0].url).toBe(joinPath(admitted.attempts[0].url, admitted.path));
         expect(sent[0].body).toBe(admitted.payload);
       } else {
         expect(admitted.payload).toBe(
@@ -95,7 +102,7 @@ function headersOf(admitted) {
         for (const request of sent) {
           expect([label, request.url]).toEqual([
             label,
-            joinPath(admitted.servers[request.index], admitted.path),
+            joinPath(admitted.attempts[request.index].url, admitted.path),
           ]);
           expect(request.method).toBe(admitted.verb);
           expect(request.headers).toEqual(headersOf(admitted));

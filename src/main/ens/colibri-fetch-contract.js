@@ -92,8 +92,8 @@ const SYNC_VARIANTS = Object.freeze(['lc_updates', 'lc_bootstrap', 'finality', '
 
 /**
  * The rules a fetch can break, in the order `admit` checks them:
- * - `request`: no open operation of this process, an ended one, or another
- *   operation's id;
+ * - `request`: no open operation of this process, an ended one, or a
+ *   `request` that isn't its id (zero, unknown, another operation's);
  * - `fetch`: params that aren't `shell.colibri_fetch`'s;
  * - `operation`: an operation in a form the service doesn't serve;
  * - `eth_rpc`: any `eth_rpc` fetch;
@@ -315,6 +315,9 @@ function joinPath(base, path) {
 }
 
 function checkOperation(op) {
+  if (!Number.isSafeInteger(op.id) || op.id <= 0) {
+    throw new TypeError('Colibri operation id must be a positive integer');
+  }
   if (op.kind !== 'request' && op.kind !== 'checkpoint') {
     throw new TypeError(`Colibri operation kind ${String(op.kind)} is not request or checkpoint`);
   }
@@ -544,25 +547,34 @@ function txCacheMaxAge(chain) {
  *
  * `op` is the open operation the fetch's `request` names on this process,
  * or `null` when it names none:
- * - `{ kind: 'request', id?, chain, method, params, zk, prover, ended?,
+ * - `{ kind: 'request', id, chain, method, params, zk, prover, ended?,
  *   taken? }`: a `colibri.request`, `params` being the JSON text main sent,
  *   `zk` the client's ZK setting and `prover` its prover URL;
- * - `{ kind: 'checkpoint', id?, chain, ended?, taken? }`: a
+ * - `{ kind: 'checkpoint', id, chain, ended?, taken? }`: a
  *   `colibri.checkpoint`.
- * `ended` marks one that has replied, been cancelled or passed its deadline;
- * `taken` counts the fetches of each variant already admitted for it, which
- * the caller keeps. With `id`, the fetch's `request` must be it.
+ * `id` is main's id for it (a positive integer, required: an operation
+ * without one is main's bug, a TypeError), and the fetch's `request` must be
+ * it. `ended` marks one that has replied, been cancelled or passed its
+ * deadline; `taken` counts the fetches of each variant already admitted for
+ * it, which the caller keeps.
  *
  * `fetch` is the service's params: `{ request, type, method, path, payload?,
  * accept, exclude_mask, max_age? }`, the payload parsed.
  *
  * The answer is `{ refused: rule }`, or what main sends: `{ variant, type,
- * verb, path, payload, accept, maxAge, maxBody, servers, fields }`, `verb`
+ * verb, path, payload, accept, maxAge, maxBody, attempts, fields }`, `verb`
  * being the HTTP method, `payload` the body text (`null` without one),
  * `accept` the `Accept` header, `maxAge` the `Cache-Control` max-age
- * (`null` without one), `maxBody` the most bytes main reads, `servers` the
- * list in order (`exclude_mask` skips by index) and `fields` the path's
- * fields, which `sameVariant` compares.
+ * (`null` without one), `maxBody` the most bytes main reads, and `fields`
+ * the path's fields, which `sameVariant` compares.
+ *
+ * `attempts` is `exclude_mask` applied: the servers to try, in order, as
+ * `{ url, node }`, `node` being the server's index in the type's full list,
+ * which the reply's head carries (`fetch_from_servers`' `nodeIndex`). A mask
+ * may exclude every server: the fetch is admitted with no attempts, and the
+ * executor answers it `All nodes failed` without sending anything, as
+ * `fetch_from_servers` throws its first `lastError` when it skips them all.
+ * A mask bit past the list is refused (`exclude_mask`).
  */
 function admit(op, fetch) {
   if (!op || op.ended) return refuse('request');
@@ -574,7 +586,6 @@ function admit(op, fetch) {
   const excludeMask = fetch.exclude_mask;
   if (
     !Number.isSafeInteger(request) ||
-    request < 0 ||
     typeof type !== 'string' ||
     typeof method !== 'string' ||
     typeof path !== 'string' ||
@@ -587,7 +598,7 @@ function admit(op, fetch) {
   ) {
     return refuse('fetch');
   }
-  if (op.id !== undefined && request !== op.id) return refuse('request');
+  if (request !== op.id) return refuse('request');
   const allowed = allowedBy(op);
   if (!allowed) return refuse('operation');
   if (type === 'eth_rpc') return refuse('eth_rpc');
@@ -629,6 +640,11 @@ function admit(op, fetch) {
   const servers = colibriServers({ kind: op.kind, chain: op.chain, type, prover: op.prover });
   if (servers.length === 0) return refuse('servers');
   if (servers.length < 32 && excludeMask >= 2 ** servers.length) return refuse('exclude_mask');
+  // `excludeMask & (1 << node)`, as `fetch_from_servers` reads it; the list
+  // is under 32 servers or the mask can't reach past index 31.
+  const attempts = servers
+    .map((url, node) => Object.freeze({ url, node }))
+    .filter(({ node }) => node >= 32 || Math.floor(excludeMask / 2 ** node) % 2 === 0);
   if (spec.limit !== undefined && (op.taken?.[name] ?? 0) >= spec.limit) return refuse('count');
   return Object.freeze({
     variant: name,
@@ -639,7 +655,7 @@ function admit(op, fetch) {
     accept: ACCEPT[spec.encoding],
     maxAge,
     maxBody: spec.maxBody,
-    servers: Object.freeze(servers),
+    attempts: Object.freeze(attempts),
     fields: Object.freeze({ ...shape.fields }),
   });
 }
