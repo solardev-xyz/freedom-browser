@@ -455,6 +455,7 @@ module.exports = {
   SWARM_REVOKE_ACT: 'swarm:revoke-act',
   SWARM_GET_ACT_GRANTS: 'swarm:get-act-grants',
   SWARM_DESCRIBE_ACT_REQUEST: 'swarm:describe-act-request',
+  SWARM_DESCRIBE_SHARED_SECRETS_REQUEST: 'swarm:describe-shared-secrets-request',
 
   // Swarm permission manifests
   SWARM_MANIFEST_CHECK: 'swarm:manifest-check',
@@ -466,6 +467,7 @@ module.exports = {
   // Swarm Provider (main-process authority)
   SWARM_PROVIDER_EXECUTE: 'swarm:provider-execute',
   SWARM_PROVIDER_EVENT: 'swarm:provider-event',
+  SWARM_ORIGIN_DISCONNECTED: 'swarm:origin-disconnected',
 
   // Swarm publish setup (src/main/swarm/publish-setup-service.js). Chrome
   // only, except the state read and push, which the internal pages also use.
@@ -474,6 +476,7 @@ module.exports = {
   SWARM_SETUP_WATCH: 'swarm:setup-watch',
   SWARM_SETUP_GET_PLANS: 'swarm:setup-get-plans',
   SWARM_SETUP_GET_EXTEND_OPTIONS: 'swarm:setup-get-extend-options',
+  SWARM_SETUP_QUOTE: 'swarm:setup-quote',
   SWARM_SETUP_ARM: 'swarm:setup-arm',
   SWARM_SETUP_CANCEL: 'swarm:setup-cancel',
   SWARM_SETUP_TRACK_FUNDING_TX: 'swarm:setup-track-funding-tx',

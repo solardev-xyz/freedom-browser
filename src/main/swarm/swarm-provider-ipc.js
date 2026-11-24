@@ -35,6 +35,7 @@ const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPermission, hasMessagingGrant, hasActGrant, onRevoke } = require('./swarm-permissions');
 const { validateActRequest } = require('./act-request');
+const { validateSharedSecretsRequest, MAX_SHARED_SECRET_KEYS } = require('./shared-secrets-request');
 const { openActShare } = require('./act-service');
 // Required on first use: private-windows.js pulls in the app logger and
 // BrowserWindow, which most of this module's callers (and tests) never need.
@@ -44,6 +45,7 @@ function isPrivateSender(event) {
 const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
+const { SigningKey } = require('ethers');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const { currentVaultEpoch } = require('../identity/vault-epoch');
 const {
@@ -75,6 +77,7 @@ const { isNoUsableBatchError } = require('./batch-errors');
 const {
   getDerivedKeys,
   getPublisherKey,
+  getSiteEncryptionKey,
   getUserWalletKey,
   getFreedomSigningAddresses,
 } = require('../identity-manager');
@@ -97,6 +100,8 @@ const LIMITS = {
   defaultTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   minTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   maxSubscriptions: 32,
+  // Public keys per swarm_deriveSharedSecrets call (shared-secrets-request.js).
+  maxSharedSecretKeys: MAX_SHARED_SECRET_KEYS,
 };
 
 const SPEC_VERSION = '1.0';
@@ -104,6 +109,10 @@ const MAX_U64 = (1n << 64n) - 1n;
 // A read's reachability probe: a node that stopped answering must not hang
 // the page's request.
 const REACHABLE_TIMEOUT_MS = 5_000;
+// How long a call waits for a node Freedom is starting, stopping or
+// restarting on purpose (#988). Under the 60 s the page's shim gives a short
+// call, so the call itself still has time once the node is up.
+const NODE_SETTLE_WAIT_MS = 30_000;
 
 const READ_BUDGETS = {
   connected: {
@@ -175,6 +184,8 @@ const KNOWN_METHODS = [
   'swarm_publishSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_getEncryptionKey',
+  'swarm_deriveSharedSecrets',
   'swarm_getMessagingIdentity',
   'swarm_subscribe',
   'swarm_unsubscribe',
@@ -234,6 +245,8 @@ const AUTO_APPROVABLE_METHODS = new Set([
   'swarm_writeFeedEntry',
   'swarm_writeSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_getEncryptionKey',
+  'swarm_deriveSharedSecrets',
   'swarm_sendPss',
   'swarm_sendGsoc',
   // Its "always allow" is per publisher (#648), but it is still a rule
@@ -542,6 +555,18 @@ async function executeSwarmMethod(method, params, origin, meta, context = {}) {
       return result;
     }
 
+    if (method === 'swarm_getEncryptionKey') {
+      const result = await handleGetEncryptionKey(normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
+    if (method === 'swarm_deriveSharedSecrets') {
+      const result = await handleDeriveSharedSecrets(params, normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
     // Messaging extension — no vault-timer reset: PSS/GSOC use node/mined
     // keys, never vault-derived signing keys.
     if (method === 'swarm_getMessagingIdentity') {
@@ -587,7 +612,8 @@ async function handleGetCapabilities(origin) {
   const permission = getPermission(origin);
   const isConnected = !!permission;
 
-  const preFlight = await checkSwarmPreFlight();
+  // A status read: answers at once, `node-not-ready` while the node restarts.
+  const preFlight = await checkSwarmPreFlight({ waitForNode: false });
 
   return {
     result: {
@@ -595,10 +621,13 @@ async function handleGetCapabilities(origin) {
       canPublish: isConnected && preFlight.ok,
       reason: !isConnected ? 'not-connected' : (preFlight.ok ? null : preFlight.reason),
       publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
-      features: ['messaging'],
+      // Extensions a page can detect, named as in the Swarm provider SWIP's
+      // companion drafts (messaging, encryption key).
+      features: ['messaging', 'encryption-key'],
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
+        encryptionKey: true,
         // swarm_publishSingleOwnerChunk: a SOC the page signed (#647).
         pageSignedSingleOwnerChunks: true,
         // swarm_openAct: content shared with this node through ACT (#648).
@@ -613,6 +642,7 @@ async function handleGetCapabilities(origin) {
         maxMessageBytes: LIMITS.maxMessageBytes,
         maxTargetDepth: LIMITS.maxTargetDepth,
         maxSubscriptions: LIMITS.maxSubscriptions,
+        maxSharedSecretKeys: LIMITS.maxSharedSecretKeys,
       },
     },
   };
@@ -1532,6 +1562,76 @@ async function handleGetSigningIdentity(origin) {
 }
 
 /**
+ * Handle swarm_getEncryptionKey: the site's encryption public key, after
+ * connection + feed/signing grant.
+ *
+ * The key (identity/derivation.js deriveSiteEncryptionKey) is one per
+ * permission key, the same whatever publisher identity the site signs with,
+ * and never shared with another site. That last point is why key agreement
+ * uses it and not the publisher identity: a bee-wallet or ethereum-wallet
+ * identity is shared across sites, so ECDH on it would let any site with
+ * signing access read what was encrypted to another.
+ */
+async function handleGetEncryptionKey(origin) {
+  if (!hasFeedGrant(origin)) {
+    return feedNotGranted();
+  }
+
+  try {
+    const key = await getSiteEncryptionKey(origin);
+    return {
+      result: {
+        publicKey: SigningKey.computePublicKey(key.privateKey, true).replace(/^0x/, ''),
+        curve: 'secp256k1',
+      },
+    };
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+/**
+ * Handle swarm_deriveSharedSecrets: ECDH between the site's encryption key
+ * and each given public key. Returns each shared point's x coordinate, the
+ * input of Bee's and Ant's ACT session keys, so a page can do ACT itself.
+ * The request is checked by shared-secrets-request.js, the same check the
+ * consent prompt is gated on.
+ */
+async function handleDeriveSharedSecrets(params, origin) {
+  const checked = validateSharedSecretsRequest(params);
+  if (!checked.ok) {
+    return invalidParams(checked.message, checked.reason, checked.data);
+  }
+  const parsed = checked.value.publicKeys;
+
+  if (!hasFeedGrant(origin)) {
+    return feedNotGranted();
+  }
+
+  let signingKey;
+  try {
+    const key = await getSiteEncryptionKey(origin);
+    signingKey = new SigningKey(key.privateKey);
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+
+  const sharedSecrets = [];
+  for (let index = 0; index < parsed.length; index += 1) {
+    let point;
+    try {
+      // 0x04 ‖ x ‖ y. Throws for a key that is not a point on the curve.
+      point = signingKey.computeSharedSecret(parsed[index]);
+    } catch {
+      return invalidParams('public key is not a point on secp256k1', 'invalid_public_key', { index });
+    }
+    sharedSecrets.push(point.slice(4, 68));
+  }
+
+  return { result: { sharedSecrets } };
+}
+
+/**
  * Handle swarm_createFeed: validate, check capability, create feed + manifest.
  */
 async function handleCreateFeed(params, origin) {
@@ -1720,11 +1820,25 @@ async function handleWriteFeedEntry(params, origin) {
 
   // Accept string or binary
   let payload = data;
-  if (typeof payload !== 'string') {
+  const isString = typeof payload === 'string';
+  if (!isString) {
     payload = normalizeBytes(payload);
     if (!payload) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'data must be a string, Uint8Array, or ArrayBuffer', data: { reason: 'invalid_params' } } };
     }
+  }
+
+  // publishData's limit: a payload over one chunk goes up through /bytes, so
+  // without it a feed entry would upload any amount past that limit (#1053).
+  const size = isString ? Buffer.byteLength(payload, 'utf-8') : payload.length;
+  if (size > LIMITS.maxDataBytes) {
+    return {
+      error: {
+        ...ERRORS.INVALID_PARAMS,
+        message: `Payload exceeds maximum size of ${LIMITS.maxDataBytes} bytes`,
+        data: { reason: 'payload_too_large', limit: LIMITS.maxDataBytes, actual: size },
+      },
+    };
   }
 
   if (index !== undefined && index !== null) {
@@ -1803,10 +1917,13 @@ async function handleWriteFeedEntry(params, origin) {
  * against the permission-free read budget, like swarm_readData, and the
  * entry's bytes against the byte budget as they are read: an explicit
  * index's SOC is charged once read and the size its wrapped chunk's span
- * gives is reserved before the node joins it; the latest entry is reserved
- * from its declared length, or as it streams. An entry larger than the whole
- * byte budget is data_too_large, and one that does not fit what is left of
- * the window is rate_limited, without reading the rest of it.
+ * gives is reserved before the node joins it. The latest entry is read the
+ * same way, at the index the node's feed lookup names (that lookup's body is
+ * never read); when the lookup can't name one, the update chunks probed to
+ * find it are charged too (see findLatestFeedIndex in feed-service.js). An
+ * entry larger than the whole byte budget is data_too_large, and one that
+ * does not fit what is left of the window is rate_limited, without reading
+ * the rest of it.
  */
 async function handleReadFeedEntry(params, origin) {
   if (!params || typeof params !== 'object') {
@@ -2439,12 +2556,27 @@ function handleUnsubscribe(params, origin) {
 }
 
 /**
+ * Whether the node is past any start, stop or planned restart (#988). With
+ * `wait`, waits up to NODE_SETTLE_WAIT_MS for it, so a node Freedom is
+ * bringing back answers the call instead of failing it. Ant's manager is
+ * required here, not at load, as publish-setup-service does.
+ * @returns {Promise<boolean>}
+ */
+async function nodeSettled({ wait = true } = {}) {
+  const antManager = require('../ant-manager');
+  return wait ? antManager.waitForNodeSettled(NODE_SETTLE_WAIT_MS) : antManager.isNodeSettled();
+}
+
+/**
  * Read-only pre-flight: is the Bee HTTP API reachable?
  * Intentionally separate from checkSwarmPreFlight — reads don't need
- * mode, readiness, or stamp checks.
+ * mode, readiness, or stamp checks. A node still starting or restarting
+ * after the wait is `node-not-ready`, which pages retry; `node-stopped` is
+ * for a node that is off, failed or does not answer.
  * @returns {{ ok: boolean, reason?: string }}
  */
 async function checkBeeReachable() {
+  if (!(await nodeSettled())) return { ok: false, reason: 'node-not-ready' };
   // Global `fetch` (undici), which never sees `session.setProxy` — so an
   // external Ant API on a `.onion` host is handed to the system resolver
   // instead of Tor, the shape #355 fixed for the external IPFS gateway.
@@ -2472,15 +2604,35 @@ async function checkBeeReachable() {
  * setup service, the one place that reads the node's chain init, mode, peer
  * readiness and usable stamps (publish-setup-service.js). `reason` is one of
  * `node-stopped`, `node-not-ready`, `ultra-light-mode`, `no-usable-stamps`.
+ * Waits first for a node Freedom is starting, stopping or restarting, as
+ * checkBeeReachable does; `waitForNode: false` answers at once instead.
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
-async function checkSwarmPreFlight() {
+async function checkSwarmPreFlight({ waitForNode = true } = {}) {
   try {
+    if (!(await nodeSettled({ wait: waitForNode }))) return { ok: false, reason: 'node-not-ready' };
     const readiness = await getPublishReadiness();
     return readiness.ok ? { ok: true } : { ok: false, reason: readiness.reason };
   } catch (err) {
     log.error('[SwarmProvider] Pre-flight check failed:', err.message);
     return { ok: false, reason: 'node-stopped' };
+  }
+}
+
+/**
+ * Tell every browser window that `origin` lost its connection, so each can
+ * send `disconnect` to its own pages of that site (#1158). Only the chrome
+ * can map a page to its address-bar origin, and only the chrome hears this:
+ * the origin a user disconnected is not for other sites' pages.
+ */
+function notifyChromeOfDisconnect(origin) {
+  const { isChromeIndexUrl } = require('../ipc-sender-policy');
+  for (const wc of webContents?.getAllWebContents?.() || []) {
+    try {
+      if (isChromeIndexUrl(wc.getURL())) wc.send(IPC.SWARM_ORIGIN_DISCONNECTED, { origin });
+    } catch {
+      // webContents may be destroyed mid-iteration
+    }
   }
 }
 
@@ -2496,6 +2648,12 @@ function registerSwarmProviderIpc() {
 
   // Live messaging subscriptions must not outlive the origin's grant.
   onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
+  // Every route that revokes a connection (the banner, Settings, a manifest
+  // that withdraws it) ends here, so this is where every window is told.
+  // Revoking only the messaging tier leaves the origin connected: no event.
+  onRevoke((origin, { scope } = {}) => {
+    if (scope === 'connection') notifyChromeOfDisconnect(origin);
+  });
 
   ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};

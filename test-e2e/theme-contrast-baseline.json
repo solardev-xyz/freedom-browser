@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 75,
+  "total": 76,
   "gaps": [
     {
       "surface": "Swarm connect approval",
@@ -532,22 +532,6 @@
     },
     {
       "surface": "settings permissions",
-      "theme": "dark",
-      "el": "p#adblock-status.row-help",
-      "text": "No filter lists available. Ad blocking c",
-      "ratio": 2.48,
-      "bar": 4.5
-    },
-    {
-      "surface": "settings permissions",
-      "theme": "dark",
-      "el": "p.row-label",
-      "text": "Block ads",
-      "ratio": 4.19,
-      "bar": 4.5
-    },
-    {
-      "surface": "settings permissions",
       "theme": "light",
       "el": "button.nav-item.active",
       "text": "Privacy and security",
@@ -555,7 +539,31 @@
       "bar": 4.5
     },
     {
-      "surface": "settings permissions",
+      "surface": "settings privacy",
+      "theme": "dark",
+      "el": "p#adblock-status.row-help",
+      "text": "No filter lists available. Ad blocking c",
+      "ratio": 2.48,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings privacy",
+      "theme": "dark",
+      "el": "p.row-label",
+      "text": "Enable ad blocking",
+      "ratio": 4.03,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings privacy",
+      "theme": "light",
+      "el": "button.nav-item.active",
+      "text": "Privacy and security",
+      "ratio": 4.32,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings privacy",
       "theme": "light",
       "el": "p#adblock-status.row-help",
       "text": "No filter lists available. Ad blocking c",
@@ -563,7 +571,7 @@
       "bar": 4.5
     },
     {
-      "surface": "settings permissions",
+      "surface": "settings privacy",
       "theme": "light",
       "el": "p.row-label",
       "text": "Block ads",

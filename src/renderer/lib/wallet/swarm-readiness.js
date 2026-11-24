@@ -26,9 +26,11 @@ export function formatSwarmMode(mode) {
   }
 }
 
-/** Plan sizes are decimal, like Swarm's effective-volume table: 1 GB = 1e9 bytes. */
+/** Storage sizes are decimal, like Swarm's effective-volume table: 1 GB = 1e9 bytes. */
 export function formatStorageSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '--';
+  if (bytes >= 1e12) return `${Number((bytes / 1e12).toFixed(1))} TB`;
+  if (bytes >= 1e11) return `${Math.round(bytes / 1e9)} GB`;
   if (bytes >= 1e9) return `${Number((bytes / 1e9).toFixed(1))} GB`;
   return `${Math.round(bytes / 1e6)} MB`;
 }
@@ -42,24 +44,52 @@ export function formatDays(days) {
 }
 
 export function describePlan(plan) {
-  return `Up to ${formatStorageSize(plan.safeLimitBytes)} for ${formatDays(plan.days)}`;
+  return `Up to ${formatStorageSize(plan.usableBytes)} for ${formatDays(plan.days)}`;
 }
 
-/** What the armed operation buys, in one line for the pay step. */
-export function describeOperationTarget(operation, plans = []) {
+/** One entry of the custom size picker (#1257): the depth, then what it holds. */
+export function describeSize(size) {
+  return `Depth ${size.depth} · up to ${formatStorageSize(size.usableBytes)}`;
+}
+
+// What a batch of this depth holds: the setup state's size list covers the
+// custom range, the plans their own depths.
+function usableBytesFor(depth, { plans = [], sizes = [] }) {
+  return (
+    sizes.find((s) => s.depth === depth)?.usableBytes ??
+    plans.find((p) => p.depth === depth)?.usableBytes ??
+    null
+  );
+}
+
+/**
+ * What the armed operation buys, in one line for the pay step. `state` is
+ * the setup state (its `plans` and `sizes`).
+ */
+export function describeOperationTarget(operation, state = {}) {
   const request = operation?.request || {};
+  const plans = state?.plans || [];
+  const sizes = state?.sizes || [];
   if (request.kind === 'buy') {
+    if (request.planId == null && Number.isInteger(request.depth)) {
+      const bytes = usableBytesFor(request.depth, { plans, sizes });
+      return bytes
+        ? `Custom: up to ${formatStorageSize(bytes)} for ${formatDays(request.days)}`
+        : 'Custom storage';
+    }
     const plan = plans.find((p) => p.id === request.planId);
     return plan
-      ? `${plan.title}: up to ${formatStorageSize(plan.safeLimitBytes)} for ${formatDays(plan.days)}`
+      ? `${plan.title}: up to ${formatStorageSize(plan.usableBytes)} for ${formatDays(plan.days)}`
       : 'Storage plan';
   }
   if (request.kind === 'extend') {
-    const size = plans.find((p) => p.depth === request.depth);
-    if (size && request.days) {
-      return `Grow to ${formatStorageSize(size.safeLimitBytes)} and add ${formatDays(request.days)}`;
+    const bytes = Number.isInteger(request.depth)
+      ? usableBytesFor(request.depth, { plans, sizes })
+      : null;
+    if (bytes && request.days) {
+      return `Grow to ${formatStorageSize(bytes)} and add ${formatDays(request.days)}`;
     }
-    if (size) return `Grow your storage to ${formatStorageSize(size.safeLimitBytes)}`;
+    if (bytes) return `Grow your storage to ${formatStorageSize(bytes)}`;
     return `Keep your storage ${formatDays(request.days)} longer`;
   }
   if (request.kind === 'deposit') {

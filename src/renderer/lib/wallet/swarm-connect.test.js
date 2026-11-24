@@ -678,6 +678,18 @@ describe('Single Owner Chunk prompt under a shared identity (SW-1)', () => {
     );
     expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
   });
+
+  test("the encryption key's prompt keeps its own warning under a shared identity (#991)", async () => {
+    for (const method of ['swarm_getEncryptionKey', 'swarm_deriveSharedSecrets']) {
+      const ctx = await showSigning(method, [
+        { id: 'bee-wallet', mode: 'bee-wallet', label: 'Ant wallet identity', shared: true },
+      ]);
+      expect(ctx.elements['swarm-feed-warning'].textContent).toBe(
+        'This key belongs to this site only. Using it lets the site read what others encrypted to it.'
+      );
+      expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
+    }
+  });
 });
 
 describe('disconnectSwarmApp', () => {
@@ -688,8 +700,10 @@ describe('disconnectSwarmApp', () => {
   });
 
   // A key from the permissions list can name a site in another tab: revoking
-  // it must leave the visible, still-connected site's banner (and its page)
-  // alone; revoking the visible site hides the banner and tells its page.
+  // it must leave the visible, still-connected site's banner alone; revoking
+  // the visible site hides the banner. Pages hear `disconnect` from main's
+  // revoke broadcast (swarm-provider.js notifySiteDisconnected), not from
+  // here, so no tab is told twice.
   test('hides the banner only when the revoked site is the one it shows', async () => {
     const ctx = await loadSwarmConnect();
     const provider = await import('../dapp-provider.js');
@@ -710,10 +724,7 @@ describe('disconnectSwarmApp', () => {
 
     await ctx.mod.disconnectSwarmApp('bzz://visible');
     expect(banner.classList.contains('hidden')).toBe(true);
-    expect(visible.send).toHaveBeenCalledWith('swarm:provider-event', {
-      event: 'disconnect',
-      data: { origin: 'bzz://visible' },
-    });
+    expect(visible.send).not.toHaveBeenCalled();
   });
 });
 

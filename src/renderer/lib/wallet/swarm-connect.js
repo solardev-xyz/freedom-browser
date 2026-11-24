@@ -9,7 +9,7 @@ import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-st
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { formatBytes } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getPermissionKey, getActiveWebview, getActivePageUrl } from '../dapp-provider.js';
+import { getPermissionKey, getActivePageUrl } from '../dapp-provider.js';
 import { showSwarmPermissions } from './permission-manage.js';
 import { createPromptQueue, setButtonsDisabled } from './prompt-queue.js';
 import {
@@ -149,6 +149,9 @@ function sharedIdentityBlocksFeedRequest() {
 function syncFeedSharedIdentityNotice() {
   const current = swarmFeedQueue.current;
   if (!current || current.autoApproveType !== 'signing' || !swarmFeedWarning) return;
+  // The encryption key is the site's own whatever identity it signs with, so
+  // its prompt keeps its own warning.
+  if (ENCRYPTION_METHODS.has(current.method)) return;
   const active = getActivePublisherIdentity(swarmFeedIdentityState);
   if (active?.shared !== true) {
     swarmFeedWarning.textContent = SIGNING_WARNING;
@@ -388,7 +391,7 @@ function closeSwarmConnect() {
 }
 
 async function approveSwarmConnect(pending) {
-  const { permissionKey, resolve, webview } = pending;
+  const { permissionKey, resolve } = pending;
 
   try {
     await window.swarmPermissions.grantPermission(permissionKey);
@@ -399,14 +402,8 @@ async function approveSwarmConnect(pending) {
       throw response.error;
     }
 
+    // swarm-provider.js announces `connect` to the page once this resolves.
     resolve(response.result);
-
-    if (webview && webview.send) {
-      webview.send('swarm:provider-event', {
-        event: 'connect',
-        data: { origin: permissionKey },
-      });
-    }
 
     console.log('[SwarmConnect] Approved:', permissionKey);
     updateSwarmConnectionBanner(permissionKey);
@@ -478,17 +475,9 @@ export async function disconnectSwarmApp(permissionKey = null) {
       await window.swarmPermissions.revokePermission(key);
       await window.swarmFeedStore?.revokeFeedAccess?.(key);
     }
+    // Main tells every window, and each sends `disconnect` to its pages of
+    // this site (swarm-provider.js notifySiteDisconnected).
     console.log('[SwarmConnect] Disconnected:', key);
-
-    // Only the visible page can be told — and only when it is the site
-    // that was disconnected.
-    const webview = getActiveWebview();
-    if (webview && webview.send && getPermissionKey(getActivePageUrl()) === key) {
-      webview.send('swarm:provider-event', {
-        event: 'disconnect',
-        data: { origin: key },
-      });
-    }
 
     // Only the banner of the site that was revoked: a key from the
     // permissions list can name a site in another tab.
@@ -990,16 +979,23 @@ function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, meth
   checkFeedUnlockStatus();
 }
 
+// The site's own encryption key shares the signing grant and its
+// auto-approve rule (swarm-provider.js), but gets its own wording.
+const ENCRYPTION_METHODS = new Set(['swarm_getEncryptionKey', 'swarm_deriveSharedSecrets']);
+
 function applyFeedPromptCopy(method, params, autoApproveType) {
   const signing = autoApproveType === 'signing';
+  const encryption = signing && ENCRYPTION_METHODS.has(method);
 
   if (swarmFeedTitle) {
-    swarmFeedTitle.textContent = signing ? 'Publisher Signing' : 'Feed Access';
+    swarmFeedTitle.textContent = encryption
+      ? 'Encryption Key'
+      : (signing ? 'Publisher Signing' : 'Feed Access');
   }
   if (swarmFeedWants) {
-    swarmFeedWants.textContent = signing
-      ? 'wants to use your publisher identity'
-      : 'wants to create and manage feeds';
+    swarmFeedWants.textContent = encryption
+      ? 'wants to use its encryption key'
+      : (signing ? 'wants to use your publisher identity' : 'wants to create and manage feeds');
   }
   if (swarmFeedDetailLabel) {
     swarmFeedDetailLabel.textContent = signing ? 'Request' : 'Feed name';
@@ -1010,15 +1006,26 @@ function applyFeedPromptCopy(method, params, autoApproveType) {
       : (params?.name || params?.feedId || params?.identifier || 'Feed operation');
   }
   if (swarmFeedWarning) {
-    swarmFeedWarning.textContent = signing
-      ? SIGNING_WARNING
-      : 'Feeds provide stable URLs that this app can update over time. Uses your stamps and bandwidth.';
+    if (encryption) {
+      swarmFeedWarning.textContent =
+        'This key belongs to this site only. Using it lets the site read what others encrypted to it.';
+    } else {
+      swarmFeedWarning.textContent = signing
+        ? SIGNING_WARNING
+        : 'Feeds provide stable URLs that this app can update over time. Uses your stamps and bandwidth.';
+    }
   }
   if (swarmFeedAutoApproveLabel) {
+    // One rule covers signing and the encryption key, so both prompts say so.
     swarmFeedAutoApproveLabel.textContent = signing
-      ? 'Always allow this site to use this publisher identity without asking'
+      ? 'Always allow this site to sign and use its encryption key without asking'
       : 'Always allow this site to manage feeds without asking';
   }
+}
+
+function shortPublicKey(value) {
+  const hex = typeof value === 'string' ? value.replace(/^0x/, '') : '';
+  return hex.length > 12 ? `${hex.slice(0, 6)}…${hex.slice(-4)}` : hex || 'a public key';
 }
 
 function signingRequestLabel(method, params) {
@@ -1027,6 +1034,15 @@ function signingRequestLabel(method, params) {
   }
   if (method === 'swarm_getSigningIdentity') {
     return 'Signing identity';
+  }
+  if (method === 'swarm_getEncryptionKey') {
+    return 'Encryption public key';
+  }
+  if (method === 'swarm_deriveSharedSecrets') {
+    const keys = Array.isArray(params?.publicKeys) ? params.publicKeys : [];
+    return keys.length === 1
+      ? `Shared key with ${shortPublicKey(keys[0])}`
+      : `Shared keys with ${keys.length} public keys`;
   }
   return 'Publisher signing';
 }

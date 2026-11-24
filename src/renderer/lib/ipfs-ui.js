@@ -12,12 +12,16 @@ let ipfsPeersCount = null;
 let ipfsBandwidth = null;
 let ipfsVersionText = null;
 let ipfsInfoPanel = null;
+let ipfsCacheNote = null;
 let ipfsStatusRow = null;
 let ipfsStatusLabel = null;
 let ipfsStatusValue = null;
 
 // Binary availability state
 let ipfsBinaryAvailable = true;
+// Why the add-on can't load, when main knows: 'glibc' on a Linux system too
+// old for it (#350).
+let ipfsUnavailableReason = null;
 
 // Guards one-time listener/subscription wiring so re-running initIpfsUi (e.g.
 // to re-check binary availability) doesn't bind the click handler twice.
@@ -289,13 +293,26 @@ export const updateIpfsToggleState = () => {
       : mode === 'external'
         ? 'Using an external IPFS gateway'
         : disabled
-          ? 'IPFS binary not found'
+          ? ipfsUnavailableReason === 'glibc'
+            ? 'Needs a newer Linux. Use an external node from Settings > Nodes.'
+            : 'IPFS binary not found'
           : null;
   if (title) {
     ipfsToggleBtn.setAttribute('title', title);
   } else {
     ipfsToggleBtn.removeAttribute('title');
   }
+
+  updateIpfsCacheNote();
+};
+
+// "Pages you've opened before still load" under a switched-off IPFS (#30).
+// Main publishes `cacheOnly` once the node has stopped on a profile whose
+// store it can serve; the switch's own state decides the rest, so the note
+// goes the moment the user switches IPFS back on.
+export const updateIpfsCacheNote = () => {
+  if (!ipfsCacheNote) return;
+  ipfsCacheNote.hidden = !(state.registry?.ipfs?.cacheOnly === true && !isIpfsEffectivelyRunning());
 };
 
 // True while the background reconcile loop is converging the backend toward the
@@ -356,14 +373,16 @@ export const initIpfsUi = () => {
   ipfsBandwidth = document.getElementById('ipfs-bandwidth');
   ipfsVersionText = document.getElementById('ipfs-version-text');
   ipfsInfoPanel = document.querySelector('.ipfs-info');
+  ipfsCacheNote = document.getElementById('ipfs-cache-note');
   ipfsStatusRow = document.getElementById('ipfs-status-row');
   ipfsStatusLabel = document.getElementById('ipfs-status-label');
   ipfsStatusValue = document.getElementById('ipfs-status-value');
 
   // Check binary availability
   if (window.ipfs) {
-    window.ipfs.checkBinary().then(({ available }) => {
+    window.ipfs.checkBinary().then(({ available, reason }) => {
       ipfsBinaryAvailable = available;
+      ipfsUnavailableReason = available ? null : reason || null;
       // Re-derive the toggle state from both inputs rather than disabling
       // outright: the profile may be on an external gateway, which the missing
       // addon says nothing about.
@@ -396,6 +415,7 @@ export const initIpfsUi = () => {
     // Update the switch and stats panel instantly; the reconcile loop drives the
     // backend toward this target in the background and coalesces rapid clicks.
     ipfsToggleSwitch?.classList.toggle('running', desired);
+    updateIpfsCacheNote();
     if (desired) {
       startIpfsInfoPolling();
     } else {
