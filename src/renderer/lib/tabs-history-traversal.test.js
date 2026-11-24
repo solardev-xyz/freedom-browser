@@ -31,6 +31,8 @@ const flushMicrotasks = async () => {
 
 const createWebview = (createdWebviews) => {
   const webview = createElement('webview');
+  const webContentsId = createdWebviews.length + 42;
+  webview.getWebContentsId = () => webContentsId;
   webview.getURL = jest.fn(() => webview.src || 'about:blank');
   webview.canGoBack = jest.fn(() => true);
   webview.canGoForward = jest.fn(() => true);
@@ -114,9 +116,10 @@ const loadModules = async () => {
 
   const traversalReports = () => events.filter((e) => e.name === 'history-traversal-committed');
   // The main process `preventDefault()`s a page-driven navigation to a custom
-  // protocol and replays it through this IPC, which is how such a navigation
-  // reaches `loadTarget` at all.
-  const replayNavigateToUrl = (url) => navigateToUrlListeners.forEach((cb) => cb(url));
+  // protocol and replays it through this IPC, naming the guest that started
+  // it, which is how such a navigation reaches `loadTarget` at all.
+  const replayNavigateToUrl = (url) =>
+    navigateToUrlListeners.forEach((cb) => cb(url, createdWebviews[0].getWebContentsId()));
 
   return {
     tabs,

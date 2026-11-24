@@ -84,9 +84,12 @@ preload guards already kept web pages away from these channels.
 - **Custom protocols:** no `bypassCSP` anywhere, and no `file:` interception.
   `web3:` is registered without service workers. Upstream URLs are built from
   a fixed base plus a validated host (hex ref / CID / RID / name regex), so
-  userinfo, ports and `..` in a page URL can't redirect the fetch. Redirects
-  are manual. `rad:` is GET/HEAD-only with a segment decoder that rejects `.`,
-  `..` and encoded separators. `radapi:` and `web3:` are gated by frame
+  userinfo, ports and `..` in a page URL can't redirect the fetch. `bzz:`,
+  `ipfs:` and `ipns:` also refuse a path that climbs out of its content root
+  once `%2E`/`%2F`/`%5C` are decoded, or that holds a `\` (#814,
+  `src/main/lib/gateway-path.js`). Redirects are manual. `rad:` is
+  GET/HEAD-only with a segment decoder that rejects `.`, `..` and encoded
+  separators. `radapi:` and `web3:` are gated by frame
   attribution in `onBeforeRequest`, not by `Origin`/CORS.
 - **`shell.openExternal`** has one call site (`external-protocol.js:273`),
   behind a scheme denylist, a user-gesture check and a per-site prompt.
@@ -376,6 +379,17 @@ of `/bzz/` with them is unconfirmed.
   through `bzz:` is intended.
 - Allowlist forwarded headers (`Range`, `If-*`, `Accept*`).
 - Reject encoded separators in the path.
+
+**ACT since then.** Ant does implement ACT (freedom-hq/ant#30), and `bzz:`
+still forwards no `Swarm-Act*` header. Pages open ACT shares only through
+`window.swarm.openAct`
+([#648](https://github.com/solardev-xyz/freedom-browser/issues/648)): main
+sends the ACT headers itself (`src/main/swarm/act-service.js`), and only
+after the user approved that call, in a prompt naming the publisher, or an
+"always allow" rule stored for that one site and publisher. Main normalises
+the publisher key and re-checks the rule; a private window's request is
+refused and it can store no rule. The node decrypts with its own key, which
+Freedom never reads.
 
 ### O-3 Gateway-form `ipfs:` URLs share one origin
 

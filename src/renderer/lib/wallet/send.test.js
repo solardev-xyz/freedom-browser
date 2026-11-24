@@ -160,6 +160,51 @@ describe('send wallet review', () => {
     expect(warning.getAttribute('aria-label')).toContain('spoof.gwei');
     expect(warning.title).toContain("doesn't forward-resolve back");
   });
+
+  // Colibri verifies no name (#1076): a public RPC could have chosen the
+  // address it returned. Main no longer asks it; a name that still claims
+  // its proof gets no checkmark and the unverified warning.
+  test('a recipient name with Colibri trust gets no checkmark', async () => {
+    installDocument();
+    global.window = { location: { href: 'file:///app/index.html' }, internalPages: { routable: {} } };
+    const { renderRecipientReview } = await loadSendTestApi();
+    const container = new FakeElement('div');
+
+    renderRecipientReview(container, ADDRESS, {
+      name: 'pay.eth',
+      trust: { level: 'verified', method: 'colibri', prover: 'prover.example', proof: 'ZK sync-committee proof' },
+    });
+
+    expect(container.children.map((child) => child.className)).toEqual([
+      'send-review-name',
+      'send-review-warning',
+      'send-review-recipient-address',
+    ]);
+    expect(container.textContent).toContain(ADDRESS);
+    const warning = container.children.find((child) => child.className === 'send-review-warning');
+    expect(warning.title).toContain('resolved without cryptographic or RPC quorum verification');
+    expect(warning.title).not.toContain('prover.example');
+  });
+
+  test('a recipient name the quorum verified keeps its checkmark', async () => {
+    installDocument();
+    global.window = { location: { href: 'file:///app/index.html' }, internalPages: { routable: {} } };
+    const { renderRecipientReview } = await loadSendTestApi();
+    const container = new FakeElement('div');
+
+    renderRecipientReview(container, ADDRESS, {
+      name: 'pay.eth',
+      trust: { level: 'verified', quorum: { k: 3, m: 2, achieved: true } },
+    });
+
+    expect(container.children.map((child) => child.className)).toEqual([
+      'send-review-name',
+      'send-review-verified',
+      'send-review-recipient-address',
+    ]);
+    const badge = container.children.find((child) => child.className === 'send-review-verified');
+    expect(badge.title).toBe('ENS resolution verified');
+  });
 });
 
 const { createDocument, createElement } = require('../../../../test/helpers/fake-dom.js');

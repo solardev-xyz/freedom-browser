@@ -67,6 +67,9 @@ const BRIDGE_ORIGIN = 'https://bridge.freedom.baby';
 let vendorPromise = null;
 const loadVendorOpenlv = () => (vendorPromise ??= import('../../vendor/openlv.esm.js'));
 
+/** Main's check that the phone holds an account (#1078; main's account-proof.js). */
+export const ACCOUNT_CHECK_PURPOSE = 'account-check';
+
 /**
  * User-facing status line per job-event phase, shared by the QR UIs
  * (connect-phone screen, remote-signing panel). Keys are the phases this
@@ -241,15 +244,25 @@ export function createRemoteSessionBroker({
   }
 
   /**
+   * What a job is for, as the panel words it: main's check that the
+   * phone holds an account (#1078), a co-signature for the user's own
+   * Safe, or a dApp's request.
+   */
+  function jobContext(purpose, method, params) {
+    if (purpose === ACCOUNT_CHECK_PURPOSE) return ACCOUNT_CHECK_PURPOSE;
+    return safeSignatureContext(method, params) || 'dapp';
+  }
+
+  /**
    * Host a session for one request and deliver the outcome via `respond`
    * — main's IPC reply for signing jobs, a local promise for the
    * connect-phone flow. `kind` ('signing' | 'connect') rides on every
    * emitted event so UI consumers can tell the flows apart.
    */
-  async function runJob({ jobId, method, params, chain }, kind, respond) {
+  async function runJob({ jobId, method, params, chain, purpose }, kind, respond) {
     if (jobs.has(jobId)) return;
     const entry = {
-      jobId, method, params, chain, kind, respond,
+      jobId, method, params, chain, kind, respond, purpose,
       session: null, settled: false, attempt: 0, unsubscribeStatus: null,
     };
     jobs.set(jobId, entry);
@@ -262,7 +275,7 @@ export function createRemoteSessionBroker({
    * settle the job nor emit UI events, hence the staleness guard.
    */
   async function runAttempt(entry) {
-    const { jobId, method, params, chain, kind } = entry;
+    const { jobId, method, params, chain, kind, purpose } = entry;
     const attempt = ++entry.attempt;
     const stale = () => entry.settled || entry.attempt !== attempt;
 
@@ -301,8 +314,9 @@ export function createRemoteSessionBroker({
         phase: 'qr',
         method,
         // A Safe signature is the user's own multi-owner account at
-        // work, not a dApp request — the panel words it accordingly.
-        context: safeSignatureContext(method, params) || 'dapp',
+        // work, and an account check is main's own; neither is a dApp
+        // request, and the panel words them accordingly.
+        context: jobContext(purpose, method, params),
         uri,
         bridgeUrl: `${bridgeOrigin}/#${uri}`,
       });

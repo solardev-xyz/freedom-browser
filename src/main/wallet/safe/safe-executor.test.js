@@ -1,6 +1,19 @@
-const { TypedDataEncoder, Interface, verifyTypedData } = require('ethers');
+const {
+  AbiCoder,
+  TypedDataEncoder,
+  Interface,
+  dataLength,
+  getAddress,
+  keccak256,
+  verifyTypedData,
+} = require('ethers');
 
-const { createStubChain, canonicalAddresses } = require('./__tests__/helpers/stub-chain');
+const {
+  createStubChain,
+  canonicalAddresses,
+  PROXY_CREATION_CODE_RESPONSE,
+} = require('./__tests__/helpers/stub-chain');
+const { PROXY_FACTORY_1_4_1_RUNTIME } = require('./__tests__/helpers/proxy-factory-code');
 const { ownerWallet, createTestSigner } = require('./__tests__/helpers/test-owners');
 const { withoutDomainType } = require('../signing-utils');
 const deployments = require('@safe-global/safe-deployments');
@@ -51,6 +64,7 @@ jest.mock('../provider-manager', () => ({
 
 const {
   SAFE_VERSION,
+  pinnedSafeDeployment,
   predictSafeAddress,
   buildDeploymentTransaction,
   buildSafeTransaction,
@@ -64,6 +78,45 @@ jest.setTimeout(20000);
 
 const INIT = { owners: OWNERS, threshold: 2, saltNonce: '7508' };
 const gnosis = () => createStubChain({ chainId: 100 });
+
+// INIT's address, as protocol-kit 8.0.11 predicts it against the recorded
+// proxyCreationCode() answer of the factory on Gnosis.
+const INIT_ADDRESS = '0xA6866927D91a760eDe6cf12fB88Ed97BD6ED2dC9';
+
+// What a lying endpoint answers for proxyCreationCode(): the real code
+// with one byte changed, which moves every CREATE2 address computed from it.
+const LYING_PROXY_CODE = (() => {
+  const [code] = AbiCoder.defaultAbiCoder().decode(['bytes'], PROXY_CREATION_CODE_RESPONSE);
+  return code.slice(0, -2) + (code.endsWith('00') ? '01' : '00');
+})();
+const lyingGnosis = () => createStubChain({ chainId: 100, proxyCreationCode: LYING_PROXY_CODE });
+
+/**
+ * The executor and protocol-kit in a module registry of their own:
+ * protocol-kit keeps the first proxyCreationCode() answer it gets for the
+ * process, so a lie must be the first answer it sees to be taken.
+ */
+function freshModules() {
+  let modules;
+  jest.isolateModules(() => {
+    modules = {
+      executor: require('./safe-executor'),
+      Safe: require('@safe-global/protocol-kit').default,
+    };
+  });
+  return modules;
+}
+
+async function protocolKitPrediction(Safe, provider, { owners, threshold, saltNonce } = INIT) {
+  const kit = await Safe.init({
+    provider,
+    predictedSafe: {
+      safeAccountConfig: { owners, threshold },
+      safeDeploymentConfig: { saltNonce, safeVersion: SAFE_VERSION },
+    },
+  });
+  return { address: getAddress(await kit.getAddress()), kit };
+}
 
 beforeEach(() => {
   mockGetSigner.mockClear();
@@ -81,14 +134,81 @@ describe('predictSafeAddress', () => {
     expect(a).toBe(b);
   });
 
-  test('same init params produce the same address on different chains (CREATE2 parity)', async () => {
-    const onGnosis = await predictSafeAddress({ ...INIT, chainId: 100, provider: gnosis() });
-    const onBase = await predictSafeAddress({
-      ...INIT,
-      chainId: 8453,
-      provider: createStubChain({ chainId: 8453 }),
+  test('matches protocol-kit against the honest factory answer', async () => {
+    const { executor, Safe } = freshModules();
+    const ours = await executor.predictSafeAddress({ ...INIT, chainId: 100 });
+    expect(ours).toBe(INIT_ADDRESS);
+    expect((await protocolKitPrediction(Safe, gnosis())).address).toBe(ours);
+
+    const oneOfTwo = { owners: OWNERS.slice(0, 2), threshold: 1, saltNonce: '20260709' };
+    expect(await executor.predictSafeAddress({ ...oneOfTwo, chainId: 100 })).toBe(
+      (await protocolKitPrediction(Safe, gnosis(), oneOfTwo)).address
+    );
+  });
+
+  test('a lying proxyCreationCode() answer cannot move the address (#1066)', async () => {
+    const { executor, Safe } = freshModules();
+    // The lie is the first answer this registry's protocol-kit sees, and
+    // it takes it: its own prediction moves.
+    const fooled = await protocolKitPrediction(Safe, lyingGnosis());
+    expect(fooled.address).not.toBe(INIT_ADDRESS);
+
+    // Ours rests on the pinned code alone.
+    const provider = lyingGnosis();
+    expect(await executor.predictSafeAddress({ ...INIT, chainId: 100, provider })).toBe(
+      INIT_ADDRESS
+    );
+    const deployment = await executor.buildDeploymentTransaction({ ...INIT, chainId: 100, provider });
+    expect(deployment.safeAddress).toBe(INIT_ADDRESS);
+
+    // The record's own address still signs: the lie can't make it look
+    // tampered with, give the SafeTx another address, or hide the
+    // deployed Safe (and with it its nonce).
+    const built = await executor.buildSafeTransaction({
+      chainId: 100,
+      safe: { ...INIT, address: INIT_ADDRESS },
+      tx: { to: OWNERS[0], value: '1', data: '0x' },
+      provider: createStubChain({
+        chainId: 100,
+        proxyCreationCode: LYING_PROXY_CODE,
+        deployedSafes: { [INIT_ADDRESS]: { nonce: 5, threshold: 2, owners: OWNERS } },
+      }),
     });
-    expect(onBase).toBe(onGnosis);
+    expect(built.safeAddress).toBe(INIT_ADDRESS);
+    expect(built.typedData.domain.verifyingContract).toBe(INIT_ADDRESS);
+    expect(built.deployed).toBe(true);
+    expect(built.safeTxData.nonce).toBe(5);
+  });
+
+  test('refuses a chain with no pinned deployment, and asks no RPC there', async () => {
+    const request = jest.fn();
+    await expect(
+      predictSafeAddress({ ...INIT, chainId: 8453, provider: { request } })
+    ).rejects.toMatchObject({ code: 'SAFE_UNSUPPORTED', message: /chain 8453/ });
+    await expect(
+      buildDeploymentTransaction({ ...INIT, chainId: 8453, provider: { request } })
+    ).rejects.toMatchObject({ code: 'SAFE_UNSUPPORTED' });
+    await expect(
+      buildSafeTransaction({
+        chainId: 8453,
+        safe: INIT,
+        tx: { to: OWNERS[0], value: '1' },
+        provider: { request },
+      })
+    ).rejects.toMatchObject({ code: 'SAFE_UNSUPPORTED' });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test('refuses a Safe version with no pinned deployment', () => {
+    expect(() => pinnedSafeDeployment(100, '1.3.0')).toThrow(
+      expect.objectContaining({ code: 'SAFE_UNSUPPORTED' })
+    );
+    expect(() => pinnedSafeDeployment(100, 'toString')).toThrow(
+      expect.objectContaining({ code: 'SAFE_UNSUPPORTED' })
+    );
+    expect(pinnedSafeDeployment(100, SAFE_VERSION).factory).toBe(
+      '0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67'
+    );
   });
 
   test('saltNonce and owner set both change the address', async () => {
@@ -110,7 +230,56 @@ describe('predictSafeAddress', () => {
   });
 });
 
+describe('the pinned Safe 1.4.1 deployment on Gnosis', () => {
+  const pinned = () => pinnedSafeDeployment(100);
+
+  test('is the canonical factory, SafeL2 singleton and fallback handler of safe-deployments', () => {
+    const entries = {
+      factory: deployments.getProxyFactoryDeployment({ version: SAFE_VERSION }),
+      singleton: deployments.getSafeL2SingletonDeployment({ version: SAFE_VERSION }),
+      fallbackHandler: deployments.getFallbackHandlerDeployment({ version: SAFE_VERSION }),
+    };
+    for (const [name, entry] of Object.entries(entries)) {
+      expect(pinned()[name]).toBe(getAddress(entry.deployments.canonical.address));
+      expect([entry.networkAddresses['100']].flat()).toContain(entry.deployments.canonical.address);
+    }
+  });
+
+  test('pins the factory proxy code: 486 bytes, keccak256 0x1856…af5f', () => {
+    expect(dataLength(pinned().proxyCreationCode)).toBe(486);
+    expect(keccak256(pinned().proxyCreationCode)).toBe(pinned().proxyCreationCodeHash);
+    expect(pinned().proxyCreationCodeHash).toBe(
+      '0x1856e0ee08399d74e0ea0b03adca210aeade6f748969ac023cdcb4dd62dcaf5f'
+    );
+  });
+
+  test('the proxy code is the one in the factory whose code hash safe-deployments lists', () => {
+    const factory = deployments.getProxyFactoryDeployment({ version: SAFE_VERSION });
+    expect(keccak256(PROXY_FACTORY_1_4_1_RUNTIME)).toBe(factory.deployments.canonical.codeHash);
+    const code = pinned().proxyCreationCode.slice(2);
+    expect(PROXY_FACTORY_1_4_1_RUNTIME.split(code)).toHaveLength(2);
+  });
+
+  test('is what the recorded proxyCreationCode() answer of the factory on Gnosis decodes to', () => {
+    const [code] = AbiCoder.defaultAbiCoder().decode(['bytes'], PROXY_CREATION_CODE_RESPONSE);
+    expect(code).toBe(pinned().proxyCreationCode);
+  });
+});
+
 describe('buildDeploymentTransaction', () => {
+  test('is byte for byte the deployment protocol-kit builds against the honest factory', async () => {
+    const { Safe } = freshModules();
+    const { kit } = await protocolKitPrediction(Safe, gnosis());
+    const fromProtocolKit = await kit.createSafeDeploymentTransaction();
+    const ours = await buildDeploymentTransaction({ ...INIT, chainId: 100 });
+    expect(ours).toEqual({
+      safeAddress: INIT_ADDRESS,
+      to: getAddress(fromProtocolKit.to),
+      value: String(fromProtocolKit.value),
+      data: fromProtocolKit.data,
+    });
+  });
+
   test('targets the canonical SafeProxyFactory from the deployments registry', async () => {
     const tx = await buildDeploymentTransaction({ ...INIT, chainId: 100, provider: gnosis() });
     const factory = deployments.getProxyFactoryDeployment({ version: SAFE_VERSION }).defaultAddress;

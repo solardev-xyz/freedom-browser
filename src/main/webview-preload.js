@@ -1424,12 +1424,20 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
 
   // Radicle
-  seedRadicle: guardInternal('seedRadicle', (rid) => ipcRenderer.invoke('radicle:seed', rid)),
+  // PRIVATE MODE GUARD (R-9): no seeding policy or fetched repository may
+  // outlive a private window; main refuses these too.
+  seedRadicle: guardInternal('seedRadicle', (rid) =>
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:seed', rid)
+  ),
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
-    ipcRenderer.invoke('radicle:syncRepo', rid)
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:syncRepo', rid)
   ),
   getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
     ipcRenderer.invoke('radicle:getSeedStatus', rid)
@@ -1474,6 +1482,23 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 // ============================================
 // Context Menu Handler (works on all pages)
 // ============================================
+
+// The URL a <video>/<audio> context menu addresses: the source the element is
+// actually playing (`currentSrc`, what Chrome's "Copy video address" uses),
+// so a multi-<source> element whose browser picked a later source copies that
+// one, not the first listed. Before resource selection has run (preload="none",
+// still loading) currentSrc is '', so fall back to the `src` attribute, then
+// the first <source> child that names a URL — skipping a src-less one rather
+// than stopping at it. '' when nothing is addressable (a `srcObject` stream).
+const getMediaElementSrc = (element) => {
+  if (element.currentSrc) return element.currentSrc;
+  if (element.src) return element.src;
+  const sources = element.querySelectorAll ? element.querySelectorAll('source') : [];
+  for (const source of sources) {
+    if (source.src) return source.src;
+  }
+  return '';
+};
 
 // The elements a `contextmenu` really passed through, innermost first, up to
 // (but not including) `document.body` — the same bound the plain ancestor walk
@@ -1586,21 +1611,13 @@ window.addEventListener(
       // Check for video
       if (element.tagName === 'VIDEO') {
         context.mediaType = 'video';
-        if (element.src) {
-          context.mediaSrc = element.src;
-        } else if (element.querySelector('source')) {
-          context.mediaSrc = element.querySelector('source').src;
-        }
+        context.mediaSrc = getMediaElementSrc(element);
       }
 
       // Check for audio
       if (element.tagName === 'AUDIO') {
         context.mediaType = 'audio';
-        if (element.src) {
-          context.mediaSrc = element.src;
-        } else if (element.querySelector('source')) {
-          context.mediaSrc = element.querySelector('source').src;
-        }
+        context.mediaSrc = getMediaElementSrc(element);
       }
 
       // Check if element is editable
@@ -1827,10 +1844,14 @@ const SWARM_INJECT_SOURCE = `
             method === 'swarm_writeFeedEntry' ||
             method === 'swarm_writeSingleOwnerChunk' ||
             method === 'swarm_getSigningIdentity' ||
+            method === 'swarm_getEncryptionKey' ||
+            method === 'swarm_deriveSharedSecrets' ||
             method === 'swarm_getMessagingIdentity' ||
             method === 'swarm_subscribe' ||
             // A blob of up to 5 MiB joined from the network can outlast 60s.
-            method === 'swarm_readData';
+            method === 'swarm_readData' ||
+            // Waits on the ACT prompt, then on the node's ACT lookup.
+            method === 'swarm_openAct';
           const timeout = longRunning ? 300000 : 60000;
           setTimeout(() => {
             if (pendingRequests.has(id)) {
@@ -1854,16 +1875,20 @@ const SWARM_INJECT_SOURCE = `
       readFeedEntry(params) { return this.request({ method: 'swarm_readFeedEntry', params: params }); },
       listFeeds() { return this.request({ method: 'swarm_listFeeds' }); },
       publishChunk(params) { return this.request({ method: 'swarm_publishChunk', params: params }); },
+      publishSingleOwnerChunk(params) { return this.request({ method: 'swarm_publishSingleOwnerChunk', params: params }); },
       readChunk(params) { return this.request({ method: 'swarm_readChunk', params: params }); },
       readData(params) { return this.request({ method: 'swarm_readData', params: params }); },
       writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
       readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
       getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
+      getEncryptionKey() { return this.request({ method: 'swarm_getEncryptionKey' }); },
+      deriveSharedSecrets(params) { return this.request({ method: 'swarm_deriveSharedSecrets', params: params }); },
       getMessagingIdentity() { return this.request({ method: 'swarm_getMessagingIdentity' }); },
       subscribe(params) { return this.request({ method: 'swarm_subscribe', params: params }); },
       unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
       sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
       sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
+      openAct(params) { return this.request({ method: 'swarm_openAct', params: params }); },
 
       on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
       removeListener(event, handler) {

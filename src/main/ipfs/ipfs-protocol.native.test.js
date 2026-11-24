@@ -36,6 +36,8 @@ const FIXTURE = 'Hello from IPFS Gateway Checker\n';
 let dataDir;
 let fake;
 let stack;
+// Settings > Appearance, as the not-saved page (#30) reads it.
+let appearance = 'system';
 
 // ipfs-manager in bundled mode, the real native node wrapper on top of the
 // fake add-on, and the protocol module, all in one module registry.
@@ -81,6 +83,9 @@ async function loadNativeStack() {
       }),
       [require.resolve('../profile-resolver')]: () => ({ getActiveProfile: () => null }),
       [require.resolve('../profile-paths')]: () => ({ getIpfsDataDir: () => dataDir }),
+      [require.resolve('../settings-store')]: () => ({
+        loadSettings: () => ({ theme: appearance }),
+      }),
       [require.resolve('../ens-resolver')]: () => ({ resolveEnsContent: jest.fn() }),
       [require.resolve('../tezos-domains-resolver')]: () => ({ resolveTezosDomain: jest.fn() }),
     },
@@ -384,17 +389,142 @@ describe('ipfs: native mode 30 s header deadline', () => {
   });
 });
 
-describe('ipfs: native node not available', () => {
-  test('a stopped node answers 503 at once, without starting a native request', async () => {
+describe('ipfs: IPFS off serves saved content (#30)', () => {
+  const offlineStarts = () =>
+    fake.addon.nodeStartNativeGatewayOnlineAsync.mock.calls.filter(
+      (call) => call[2] === fake.addon.constants.ROUTING_MODE_OFFLINE
+    );
+
+  test('a stopped node answers from the store through a cache-only node, without the marker', async () => {
     await stack.manager.stopIpfs();
+    fake.onRequest((request) =>
+      fake.serve(request, { headers: { 'content-type': 'text/html' }, body: '<p>saved</p>' })
+    );
 
-    const res = await ipfs('/index.html');
+    const res = await ipfs('/index.html', { headers: { Accept: NAVIGATION_ACCEPT } });
 
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ code: 503, message: 'freedom-ipfs node is not running' });
-    expect(fake.addon.gatewayRequestStart).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('<p>saved</p>');
+    expect(res.headers.has('x-freedom-ipfs-cache-only')).toBe(false);
+    expect(offlineStarts()).toHaveLength(1);
   });
 
+  test('a page load the store cannot serve gets a page that says so; other requests get the answer as is', async () => {
+    await stack.manager.stopIpfs();
+    fake.onRequest((request) =>
+      fake.serve(request, {
+        status: 502,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: '<title>502 Bad Gateway</title>',
+      })
+    );
+
+    const page = await ipfs('/', { headers: { Accept: NAVIGATION_ACCEPT } });
+    const image = await ipfs('/logo.png', { headers: { Accept: 'image/avif,image/webp,*/*' } });
+
+    expect(page.status).toBe(503);
+    expect(page.headers.get('cache-control')).toBe('no-store');
+    expect(page.headers.get('content-security-policy')).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'"
+    );
+    const html = await page.text();
+    expect(html).toContain('<title>Not saved on this device</title>');
+    expect(html).toContain('Turn IPFS on in the Nodes menu, then reload.');
+    expect(html).not.toMatch(/<script/i);
+    expect(image.status).toBe(502);
+    expect(image.headers.has('x-freedom-ipfs-cache-only')).toBe(false);
+  });
+
+  test.each(['dark', 'light'])(
+    'the not-saved page follows Settings > Appearance (%s), not the OS scheme',
+    async (theme) => {
+      appearance = theme;
+      await stack.manager.stopIpfs();
+      fake.onRequest((request) => fake.serve(request, { status: 502, body: 'missing' }));
+
+      const html = await (await ipfs('/', { headers: { Accept: NAVIGATION_ACCEPT } })).text();
+
+      expect(html).toContain(`<meta name="color-scheme" content="${theme}">`);
+      expect(html).toContain(`:root { color-scheme: ${theme}; }`);
+      appearance = 'system';
+    }
+  );
+
+  test('a cache-only node that cannot open the store gets a page too, not the raw 503 JSON', async () => {
+    await stack.manager.stopIpfs();
+    fake.addon.nodeStartNativeGatewayOnlineAsync.mockImplementation(
+      async (_node, _port, routingMode) => routingMode !== fake.addon.constants.ROUTING_MODE_OFFLINE
+    );
+
+    const page = await ipfs('/', { headers: { Accept: NAVIGATION_ACCEPT } });
+    // Inside the retry back-off: no second start, still the page.
+    const again = await ipfs('/', { headers: { Accept: NAVIGATION_ACCEPT } });
+    const image = await ipfs('/logo.png', { headers: { Accept: 'image/avif,image/webp,*/*' } });
+
+    expect(page.status).toBe(503);
+    expect(page.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(page.headers.get('cache-control')).toBe('no-store');
+    expect(page.headers.get('content-security-policy')).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'"
+    );
+    const html = await page.text();
+    expect(html).toContain('<title>Saved pages are unavailable</title>');
+    expect(html).toContain('turn IPFS on in the Nodes menu');
+    expect(html).not.toMatch(/<script/i);
+    expect(again.status).toBe(503);
+    expect(await again.text()).toContain('<title>Saved pages are unavailable</title>');
+    expect(offlineStarts()).toHaveLength(1);
+    // A subresource keeps the plain answer, without the marker.
+    expect(image.status).toBe(503);
+    expect(image.headers.has('x-freedom-ipfs-cache-only')).toBe(false);
+    expect(await image.json()).toEqual({ code: 503, message: 'freedom-ipfs node is not running' });
+  });
+
+  test('a page load the store can serve is never replaced', async () => {
+    await stack.manager.stopIpfs();
+    fake.onRequest((request) => fake.serve(request, { body: 'saved' }));
+
+    const res = await ipfs('/', { headers: { Accept: NAVIGATION_ACCEPT } });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('saved');
+  });
+
+  test('a path the saved content does not have stays a 404', async () => {
+    await stack.manager.stopIpfs();
+    fake.onRequest((request) =>
+      fake.serve(request, {
+        status: 404,
+        headers: { 'content-type': 'text/plain' },
+        body: 'no link',
+      })
+    );
+
+    const res = await ipfs('/missing.html', { headers: { Accept: NAVIGATION_ACCEPT } });
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('no link');
+  });
+
+  test('switching IPFS back on frees the cache-only node before the managed one starts', async () => {
+    await stack.manager.stopIpfs();
+    fake.onRequest((request) => fake.serve(request, { body: 'saved' }));
+    await (await ipfs('/index.html')).text();
+    const frees = fake.addon.nodeFreeAsync.mock.calls.length;
+
+    await stack.manager.startIpfs();
+
+    const starts = fake.addon.nodeStartNativeGatewayOnlineAsync.mock;
+    const lastStart = starts.calls.length - 1;
+    expect(starts.calls[lastStart][2]).toBe(fake.addon.constants.ROUTING_MODE_AUTO);
+    expect(fake.addon.nodeFreeAsync.mock.calls.length).toBe(frees + 1);
+    expect(fake.addon.nodeFreeAsync.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      starts.invocationCallOrder[lastStart]
+    );
+  });
+});
+
+describe('ipfs: native node not available', () => {
   test('a node whose event dispatcher dies fails its in-flight body and answers 503 after', async () => {
     fake.onRequest(endlessBody);
     const res = await ipfs('/big.bin');

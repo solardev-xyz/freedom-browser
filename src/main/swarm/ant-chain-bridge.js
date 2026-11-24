@@ -22,7 +22,7 @@ const MAX_ERROR_MESSAGE = 500;
 // with room for the router's own handling.
 const LOG_SCAN_QUORUM_TIMEOUT_MS = 30000;
 
-// Ant v0.5.77 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
+// Ant v0.5.78 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
 // unchanged since v0.5.45): its eth_getLogs scan shrinks the window only when
 // the error message contains one of these needles, and aborts
 // owned-batch/chequebook recovery otherwise.
@@ -146,13 +146,19 @@ function sanitizeErrorMessage(message) {
 // request", Colibri's RPC and publicnode below 50k), publicnode's gateway
 // ("exceed maximum block range: 50000"), dRPC's free plan ("ranges over 10000
 // blocks are not supported"), Alchemy-style ("up to a 10000 block range",
-// "up to a 2K block range"). A cap on the number of results or logs is not a
-// block range and is not read as one.
+// "up to a 2K block range"). Measured 2026-11-09 (#596): Nethermind now says
+// "Logs request reads 50001 blocks without the log index, over the maximum
+// of 10000 per request" (publicnode below 50k; RangeLimitedLogFinder's
+// Receipt.MaxBlockDepth check). It names no unit after the cap, so only that
+// exact sentence is read, not any "maximum of N per request" near "blocks".
+// A cap on the number of results or logs is not a block range and is not
+// read as one.
 const BLOCK_RANGE_CAP_TEXT = [
   /maximum of ([\d,]+)(k?) blocks?\b/i,
   /max(?:imum)? (?:allowed )?block range(?: is)?:? ?([\d,]+)(k?)\b/i,
   /(?:up to|limited to) an? ([\d,]+)(k?)[ -]?(?:blocks? )?range/i,
   /ranges? (?:over|above|greater than|larger than|wider than) ([\d,]+)(k?) blocks?\b/i,
+  /\breads [\d,]+ blocks without the log index, over the maximum of ([\d,]+)(k?) per request\b/i,
 ];
 
 // Wordings about the size of the answer rather than of the block range.
@@ -204,8 +210,10 @@ const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
 });
 
 // Whether a failed log scan failed because the configuration leaves no RPC
-// quorum at all (fewer endpoints than the quorum size, or no quorum in the
-// read order), rather than because endpoints are down for now.
+// quorum at all (fewer distinct providers than the quorum size, or no quorum
+// in the read order), rather than because endpoints are down for now. The
+// router's text goes on after "endpoints" (chain-data-router.js
+// quorumShortError); only its opening words are matched.
 function logScanQuorumMissing(error) {
   const message = typeof error?.message === 'string' ? error.message : '';
   return /RPC quorum needs \d+ endpoints|No chain source left for eth_getLogs/.test(message);
@@ -258,7 +266,7 @@ function antErrorReply(method, error) {
 }
 
 // How long a transaction's receipt lookups may fail and still reach Ant as
-// "not mined yet". Ant v0.5.77's `wait_for_receipt` polls for 60 s with a
+// "not mined yet". Ant v0.5.78's `wait_for_receipt` polls for 60 s with a
 // backoff capped at 8 s, so past 40 s at least one more poll lands before its
 // deadline and gets the real chain error, instead of Ant reporting a mined
 // transaction as "never mined" after a lasting read outage. Measured from the
@@ -325,9 +333,20 @@ async function startAntChainBridge({
     wait.inFlight += 1;
     return wait;
   }
+  // Every answer closes its connection, so Ant never reuses one. Ant's HTTP
+  // client keeps idle connections for 90 s and sends on them again; a request
+  // it sends just as the server drops the idle connection is reset, and Ant
+  // fails the whole funding step it was waiting on, after the step's
+  // transaction was sent (#992). Its receipt poll after a 2 s sleep met the
+  // 1 s keep-alive timeout plus Node's 1 s buffer on about one poll in six.
+  // A new loopback connection per request costs next to nothing.
   function send(res, status, body) {
     if (res.destroyed || res.writableEnded) return;
-    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      Connection: 'close',
+    });
     res.end(JSON.stringify(body));
   }
   const server = http.createServer(async (req, res) => {
@@ -475,7 +494,7 @@ async function startAntChainBridge({
         now() - receiptWait.first < receiptGraceMs &&
         !receiptFailureIsPermanent(error)
       ) {
-        // Ant v0.5.77 `wait_for_receipt` (crates/ant-chain/src/tx.rs) gives up
+        // Ant v0.5.78 `wait_for_receipt` (crates/ant-chain/src/tx.rs) gives up
         // on the first JSON-RPC error, even a passing one, and reports a
         // transaction it already sent as failed (#614: Colibri cannot prove a
         // receipt until the block after it exists). Null is "no receipt yet":
@@ -498,11 +517,20 @@ async function startAntChainBridge({
           receiptWaits.delete(receiptHash);
         const { code, message, data } = antErrorReply(method, error);
         fail(code, message, data);
-        log.warn(
-          `[Ant chain] ${
-            READ_METHODS.has(method) || method === 'eth_sendRawTransaction' ? method : 'request'
-          } failed (${code})`
-        );
+        if (method === 'eth_getLogs' && rankLogScanError(error) === RANK.REQUEST) {
+          // A window wider than an endpoint (or, once its cap is learned,
+          // the router) serves. Ant halves it and doubles the next one after
+          // an answer, so a scan meets one of these per window: verbose, like
+          // the reads they pace (#511, #596). A scan that fails anyway is
+          // still logged by Ant itself ("rediscovery scan failed").
+          log.verbose(`[Ant chain] eth_getLogs window too wide (${code}), Ant narrows it`);
+        } else {
+          log.warn(
+            `[Ant chain] ${
+              READ_METHODS.has(method) || method === 'eth_sendRawTransaction' ? method : 'request'
+            } failed (${code})`
+          );
+        }
         if (method === 'eth_getLogs' && !warnedNoLogQuorum && logScanQuorumMissing(error)) {
           // Ant only sees an error it does not halve on, ends the scan and
           // retries later, forever: say once why its batches and chequebook
@@ -510,7 +538,8 @@ async function startAntChainBridge({
           warnedNoLogQuorum = true;
           log.warn(
             '[Ant chain] eth_getLogs is answered by the RPC quorum only, and none is configured ' +
-              'for Gnosis: add RPC endpoints (at least the quorum size, m) and keep "quorum" in ' +
+              'for Gnosis: add RPC endpoints at distinct providers (at least the quorum size, m; ' +
+              'URLs at one provider count once) and keep "quorum" in ' +
               "the read order, or Ant cannot find its postage batches or chequebook"
           );
         }
@@ -528,7 +557,6 @@ async function startAntChainBridge({
   });
   server.requestTimeout = timeoutMs;
   server.headersTimeout = Math.min(10000, timeoutMs);
-  server.keepAliveTimeout = 1000;
   server.maxConnections = 16;
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -605,6 +633,7 @@ module.exports = {
   rankLogScanError,
   logScanRangeCap,
   antErrorReply,
+  logScanQuorumMissing,
   LOG_SCAN_ROUTER_OPTIONS,
   LOG_SCAN_ERROR_RANK: RANK,
   ANT_LOG_SCAN_SHRINK_NEEDLES,

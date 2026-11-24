@@ -2169,6 +2169,33 @@ describe('navigation', () => {
       expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
     });
 
+    // A background tab's own `bzz://` navigation (a page's scripted `location`
+    // change, replayed with that tab's webview) records its Swarm base on that
+    // tab and that guest — never on the tab the user is looking at (#969).
+    test("a background tab's Swarm navigation syncs its base to that tab, not the active one", async () => {
+      const bgTab = createTab(2, 'https://second.example', {
+        webview: createWebview('https://second.example', { webContentsId: 22 }),
+      });
+      const ctx = await loadNavigationModule();
+      const activeTab = ctx.activeRef.tab;
+      ctx.tabsRef.list = [activeTab, bgTab];
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`, null, bgTab.webview, { pageInitiated: true });
+      await flushMicrotasks();
+
+      expect(bgTab.navigationState.currentBzzBase).toBeTruthy();
+      expect(activeTab.navigationState.currentBzzBase || null).toBeNull();
+      expect(ctx.electronAPI.setBzzBase).toHaveBeenCalledWith(
+        22,
+        bgTab.navigationState.currentBzzBase
+      );
+      expect(ctx.electronAPI.setBzzBase).not.toHaveBeenCalledWith(
+        activeTab.webview.getWebContentsId(),
+        expect.anything()
+      );
+    });
+
     test('probes the in-manifest path so index-less manifests deep-link (#172)', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
@@ -2674,6 +2701,52 @@ describe('navigation', () => {
       const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
       expect(loadedUrl).toContain('pages/error.html');
       expect(loadedUrl).toContain('protocol=ipfs');
+    });
+
+    test('IPFS: a stopped node that still serves saved content loads the page (#30)', async () => {
+      const ctx = await loadNavigationModule({
+        currentIpfsStatus: 'stopped',
+        registry: { ipfs: { mode: 'none', cacheOnly: true } },
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('ipfs://QmSaved');
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toBe('ipfs://QmSaved');
+    });
+
+    test('IPFS: saved content does not cover a switch still in flight', async () => {
+      // Mid-stop main has no node to answer with; mid-start the store is
+      // about to change hands. Both keep the friendly page.
+      for (const desired of [false, true]) {
+        const ctx = await loadNavigationModule({
+          currentIpfsStatus: 'stopped',
+          registry: { ipfs: { mode: 'none', cacheOnly: true } },
+        });
+        await ctx.mod.initNavigation();
+        ctx.state.ipfsDesiredRunning = desired;
+
+        ctx.mod.loadTarget('ipfs://QmSaved');
+        await flushMicrotasks();
+
+        const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+        expect(loadedUrl).toContain('pages/error.html');
+      }
+    });
+
+    test('IPFS: saved content does not cover a node in error', async () => {
+      const ctx = await loadNavigationModule({
+        currentIpfsStatus: 'error',
+        registry: { ipfs: { mode: 'none', cacheOnly: true } },
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('ipfs://QmSaved');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain('pages/error.html');
     });
 
     test('IPFS: a running node navigates normally (no error page)', async () => {

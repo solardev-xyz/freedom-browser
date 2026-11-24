@@ -209,6 +209,12 @@ const SRC_ASSETS = {
   'src/main/agent/workspace-execution/native/windows/src/': {
     thirdParty: false, label: "Freedom's Windows sandbox adapter source",
   },
+  'src/renderer/assets/pdf-fonts/': {
+    thirdParty: true,
+    label: 'PDF standard fonts',
+    auditName: 'PDF standard fonts',
+    noticeMatch: /^PDF standard fonts \(Liberation Sans 2\.1\.5, Foxit Symbol and Dingbats\)$/m,
+  },
   'src/renderer/assets/provider-logos/': {
     thirdParty: true,
     label: 'model provider marks',

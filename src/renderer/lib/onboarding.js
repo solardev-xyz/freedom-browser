@@ -762,8 +762,12 @@ function displayIdentitySummary(result) {
     walletEl.title = result.userWallet.address;
   }
 
-  // Node identities (truncated)
-  if (result.bee?.address) {
+  // Node identities (truncated). A node whose data folder Freedom refused
+  // (a symbolic link, K-3) says so here; the full reason is in the tooltip
+  // and again when that node is started.
+  if (result.bee?.refused) {
+    showRefusedIdentity(ethEl, result.bee.error);
+  } else if (result.bee?.address) {
     const addr = result.bee.address;
     ethEl.textContent = addr.slice(0, 10) + '…' + addr.slice(-8);
     ethEl.title = addr;
@@ -781,13 +785,20 @@ function displayIdentitySummary(result) {
     ipfsEl.title = '';
   }
 
-  if (result.radicle?.did) {
+  if (result.radicle?.refused) {
+    showRefusedIdentity(radicleEl, result.radicle.error);
+  } else if (result.radicle?.did) {
     const did = result.radicle.did;
     // Extract just the key part after did:key:
     const keyPart = did.replace('did:key:', '');
     radicleEl.textContent = keyPart.slice(0, 12) + '…' + keyPart.slice(-8);
     radicleEl.title = did;
   }
+}
+
+function showRefusedIdentity(el, reason) {
+  el.textContent = 'Not set up: its data folder is a link';
+  el.title = reason || '';
 }
 
 async function startNodesFromSettings() {

@@ -1,0 +1,1 @@
+- An ENS answer is marked verified only when the configured number of network sources agree on it, including after some sources fail ([#813](https://github.com/solardev-xyz/freedom-browser/issues/813))

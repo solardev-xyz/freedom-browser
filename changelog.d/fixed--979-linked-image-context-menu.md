@@ -1,0 +1,3 @@
+- Right-clicking an image, video, or audio inside a link now displays both the link actions and media actions ([#979](https://github.com/solardev-xyz/freedom-browser/issues/979))
+  - Previously only image actions appeared for linked images, omitting "Open Link in New Tab" and "Copy Link Address"
+  - Right-clicking a video or audio that is not inside a link now offers "Open Video/Audio in New Tab" and "Copy Video/Audio Address" instead of the page menu (Back, Forward, Reload, View Page Source); both items are greyed out when the media has no addressable source, such as a camera or WebRTC stream

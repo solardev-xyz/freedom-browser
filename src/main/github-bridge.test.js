@@ -22,7 +22,19 @@ const mockEmbedded = {
   importRepo: jest.fn(async () => ({ rid: 'rad:z6mkt4nativeimport123' })),
 };
 
-jest.mock('electron', () => ({ ipcMain: mockIpcMain }));
+// The real private-window registry and fail-closed sender check (R-9); only
+// the window lookup is faked.
+const mockFixture =
+  require('../../test/helpers/private-window-fixture').createPrivateWindowFixture();
+
+jest.mock('electron', () => ({
+  ipcMain: mockIpcMain,
+  BrowserWindow: { fromWebContents: (contents) => mockFixture.fromWebContents(contents) },
+  session: { fromPartition: () => mockFixture.fromPartition() },
+}));
+jest.mock('./windows/mainWindow', () => ({
+  createMainWindow: () => mockFixture.createMainWindow(),
+}));
 jest.mock('child_process', () => ({ execFile: mockExecFile }));
 jest.mock('./radicle-manager', () => ({
   getRadicleDataPath: jest.fn(() => mockDataDir),
@@ -58,6 +70,7 @@ jest.mock('https', () => ({
 
 const IPC = require('../shared/ipc-channels');
 const { registerGithubBridgeIpc, validateGitHubUrl, cleanupTempDirs } = require('./github-bridge');
+const privateWindows = require('./private/private-windows');
 
 beforeAll(() => registerGithubBridgeIpc());
 afterEach(() => jest.clearAllMocks());
@@ -112,7 +125,7 @@ test('still accepts names that merely contain dots', () => {
 test.each(DOT_ONLY_INPUTS.filter((input) => input.startsWith('https://')))(
   'import and bridge check refuse dot-only names before cloning: %s',
   async (input) => {
-    const sender = { isDestroyed: () => false, send: jest.fn() };
+    const sender = mockFixture.publicSender();
     await expect(
       mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)({ sender }, input)
     ).resolves.toMatchObject({ success: false, error: { code: 'INVALID_URL_FORMAT' } });
@@ -158,7 +171,7 @@ test('detects native repositories by the persisted source description', async ()
 });
 
 test('imports a GitHub checkout directly through libradicle', async () => {
-  const sender = { isDestroyed: () => false, send: jest.fn() };
+  const sender = mockFixture.publicSender();
   await expect(
     mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)(
       { sender },
@@ -184,7 +197,7 @@ test('imports a GitHub checkout directly through libradicle', async () => {
 
 test('does not report success or persist a bridge when native import returns an invalid RID', async () => {
   mockEmbedded.importRepo.mockResolvedValueOnce({ rid: 'not-a-radicle-id' });
-  const sender = { isDestroyed: () => false, send: jest.fn() };
+  const sender = mockFixture.publicSender();
   await expect(
     mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)(
       { sender },
@@ -198,4 +211,42 @@ test('does not report success or persist a bridge when native import returns an 
     IPC.GITHUB_BRIDGE_PROGRESS,
     expect.objectContaining({ step: 'success' })
   );
+});
+
+// R-9: an import creates and seeds a Radicle repository, which would outlive
+// a private window. Refused before any clone or import, and fail-closed for a
+// sender main cannot classify as a known public window.
+test('import refuses a private or unclassifiable sender before cloning', async () => {
+  const refused = {
+    success: false,
+    error: { code: 'RADICLE_PRIVATE_WINDOW' },
+  };
+  const url = 'https://github.com/openai/private-project';
+  const privateChrome = mockFixture.privateSender(privateWindows);
+
+  await expect(
+    mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)({ sender: privateChrome }, url)
+  ).resolves.toMatchObject(refused);
+  // No sender, a sender with no window main can find, a lookup that throws.
+  await expect(mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)({}, url)).resolves.toMatchObject(refused);
+  await expect(
+    mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)({ sender: { isDestroyed: () => false } }, url)
+  ).resolves.toMatchObject(refused);
+  mockFixture.lookup.mode = 'throw';
+  try {
+    await expect(
+      mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)({ sender: mockFixture.publicSender() }, url)
+    ).resolves.toMatchObject(refused);
+  } finally {
+    mockFixture.lookup.mode = 'registry';
+  }
+
+  expect(mockExecFile).not.toHaveBeenCalledWith(
+    'git',
+    expect.arrayContaining(['clone']),
+    expect.anything(),
+    expect.anything()
+  );
+  expect(mockEmbedded.importRepo).not.toHaveBeenCalled();
+  expect(privateChrome.send).not.toHaveBeenCalled();
 });

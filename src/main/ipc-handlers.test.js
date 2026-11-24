@@ -1364,6 +1364,61 @@ describe('ipc-handlers', () => {
     }
   });
 
+  test('refuses a Swarm API on a .onion host but keeps an onion IPFS gateway (#360)', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      isDev: false,
+      metadata: { slot: 1, nodes: {} },
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile });
+    ctx.mod.registerBaseIpcHandlers();
+
+    // Node's HTTP stack dials the Swarm API outside the session's Tor
+    // routing, so an onion host would leak to the system resolver and fail.
+    for (const externalApi of [
+      'http://abcdefghijklmnop.onion:1633',
+      'ABCDEFGHIJKLMNOP.ONION:1633',
+      'https://abcdefghijklmnop.onion./',
+    ]) {
+      await expect(
+        ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+          protocol: 'bee',
+          config: { mode: 'external', externalApi },
+        })
+      ).resolves.toEqual(
+        failure(
+          'UNSUPPORTED_PROFILE_NODE_ENDPOINT',
+          "Freedom can't reach a Swarm node at a .onion address yet",
+          { field: 'externalApi' }
+        )
+      );
+    }
+    expect(ctx.updateActiveProfileNodeConfig).not.toHaveBeenCalled();
+
+    // A host that only contains "onion" is an ordinary name.
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'bee',
+        config: { mode: 'external', externalApi: 'http://onion.example.com:1633' },
+      })
+    ).resolves.toEqual(expect.objectContaining({ success: true }));
+
+    // The IPFS gateway goes through the session's transport, which routes
+    // onion hosts over Tor (#355).
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'ipfs',
+        config: { mode: 'external', externalGateway: 'http://abcdefghijklmnop.onion:8080' },
+      })
+    ).resolves.toEqual(expect.objectContaining({ success: true }));
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledWith('ipfs', {
+      mode: 'external',
+      externalGateway: 'http://abcdefghijklmnop.onion:8080',
+    });
+  });
+
   test('rejects invalid active profile node updates', async () => {
     const ctx = loadIpcHandlersModule({
       activeProfile: {
@@ -1451,6 +1506,63 @@ describe('ipc-handlers', () => {
         nodes: expect.objectContaining({ radicle: { mode: 'disabled' } }),
       })
     );
+  });
+
+  // R-8 review 4: a disable whose stop rejected resolves to an error status
+  // rather than throwing. It is saved, but not applied, and Settings must
+  // say so.
+  test('reports a disable whose stop was not proved as saved but not applied', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      metadata: { nodes: { radicle: { mode: 'managed' } } },
+    };
+    const radicleManager = {
+      syncProfileMode: jest.fn(async () => ({ status: 'error', error: 'shutdown failed' })),
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile, radicleManager });
+    ctx.mod.registerBaseIpcHandlers();
+
+    const result = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'radicle',
+      config: { mode: 'disabled' },
+    });
+
+    expect(radicleManager.syncProfileMode).toHaveBeenCalled();
+    expect(result).toEqual(
+      failure(
+        'PROFILE_NODE_APPLY_FAILED',
+        'shutdown failed',
+        { saved: true },
+        {
+          profile: expect.objectContaining({
+            nodes: expect.objectContaining({ radicle: { mode: 'disabled' } }),
+          }),
+        }
+      )
+    );
+  });
+
+  test('re-enabling over an earlier node error still applies the saved mode', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      metadata: { nodes: { radicle: { mode: 'disabled' } } },
+    };
+    // An error from before (say, a failed start): enabling stops nothing.
+    const radicleManager = {
+      syncProfileMode: jest.fn(async () => ({ status: 'error', error: 'start failed' })),
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile, radicleManager });
+    ctx.mod.registerBaseIpcHandlers();
+
+    const result = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'radicle',
+      config: { mode: 'managed' },
+    });
+    expect(result).toMatchObject({ success: true });
   });
 
   test('a saved Tor mode is published to the registry right away (#377)', async () => {

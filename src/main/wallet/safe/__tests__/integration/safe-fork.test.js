@@ -1,11 +1,13 @@
 /**
  * Fork-chain verification of the Safe reproducible-address story
- * (research doc Part B, decision 5): the SAME record init params must
- * produce the SAME address on every chain, and retroactive deployment
- * must claim funds that were sent to the address before it existed.
+ * (research doc Part B, decision 5): the record's init params predict,
+ * from the pinned proxy code, the address the real factory deploys, and
+ * a deployment after the fact claims funds that were sent to the address
+ * before it existed. Safes are created on Gnosis only (#1066: no other
+ * chain has a pinned deployment).
  *
- * Runs the real SafeExecutor against anvil forks of live Gnosis and Base
- * — canonical safe-deployments factories only, real protocol-kit
+ * Runs the real SafeExecutor against an anvil fork of live Gnosis —
+ * canonical safe-deployments factories only, real protocol-kit
  * encoding, the real transaction-service broadcast path. Only the signer
  * seam is faked (well-known anvil test keys stand in for vault/Ledger/
  * phone owners; they all sign the same EIP-712 payload).
@@ -16,8 +18,10 @@
 
 const { spawn, spawnSync } = require('child_process');
 const {
+  AbiCoder,
   Wallet,
   JsonRpcProvider,
+  keccak256,
   parseEther,
   hashMessage,
   Interface,
@@ -28,7 +32,6 @@ const { ownerWallet } = require('../helpers/test-owners');
 
 const FORKS = {
   gnosis: { chainId: 100, forkUrl: 'https://rpc.gnosischain.com', port: 18845 },
-  base: { chainId: 8453, forkUrl: 'https://mainnet.base.org', port: 18846 },
 };
 
 const anvilUrl = (fork) => `http://127.0.0.1:${fork.port}`;
@@ -59,10 +62,10 @@ jest.mock('../../../tx-recorder', () => ({
     jest.requireActual('../../../transaction-service').signAndSendTransaction(params, signer),
 }));
 
-// Point protocol-kit and Safe's raw reads at the anvil forks.
+// Point protocol-kit and Safe's raw reads at the anvil fork.
 jest.mock('../../../provider-manager', () => {
   const { JsonRpcProvider: Provider } = require('ethers');
-  const urls = { 100: 'http://127.0.0.1:18845', 8453: 'http://127.0.0.1:18846' };
+  const urls = { 100: 'http://127.0.0.1:18845' };
   const cache = new Map();
   return {
     getProvider: (chainId) => {
@@ -85,10 +88,10 @@ jest.mock('../../../provider-manager', () => {
 
 // Transaction-service now routes reads, fees, and broadcasts through the
 // capability-aware chain router. Give that router a direct-only policy whose
-// RPC inventory is the same pair of local forks; otherwise it would correctly
+// RPC inventory is the same local fork; otherwise it would correctly
 // follow the app's normal registry and accidentally exercise public chains.
 jest.mock('../../../../networks/network-registry', () => {
-  const urls = { 100: 'http://127.0.0.1:18845', 8453: 'http://127.0.0.1:18846' };
+  const urls = { 100: 'http://127.0.0.1:18845' };
   return {
     getNetwork: (chainId) => ({
       chainId: Number(chainId),
@@ -100,6 +103,7 @@ jest.mock('../../../../networks/network-registry', () => {
 });
 
 const {
+  pinnedSafeDeployment,
   predictSafeAddress,
   buildSafeTransaction,
   collectOwnerSignature,
@@ -199,7 +203,7 @@ async function startAnvil(fork) {
   }
 }
 
-describeFork('Safe on forked Gnosis + Base (reproducible addresses, retroactive deploy)', () => {
+describeFork('Safe on forked Gnosis (pinned addresses, retroactive deploy)', () => {
   const INIT = {
     owners: [ownerWallet(0).address, ownerWallet(2).address, ownerWallet(4).address],
     threshold: 2,
@@ -211,67 +215,62 @@ describeFork('Safe on forked Gnosis + Base (reproducible addresses, retroactive 
   let predicted;
 
   beforeAll(async () => {
-    const [gnosisProc, baseProc] = await Promise.all([
-      startAnvil(FORKS.gnosis),
-      startAnvil(FORKS.base),
-    ]);
-    procs.push(gnosisProc, baseProc);
+    procs.push(await startAnvil(FORKS.gnosis));
 
-    // The executor EOA pays gas on both forks.
+    // The executor EOA pays gas on the fork.
     const balance = '0x' + parseEther('10').toString(16);
     await rpc(anvilUrl(FORKS.gnosis), 'anvil_setBalance', [executorAddress, balance]);
-    await rpc(anvilUrl(FORKS.base), 'anvil_setBalance', [executorAddress, balance]);
   });
 
   afterAll(() => {
     for (const proc of procs) proc.kill();
   });
 
-  test('the same init params predict the same address on both chains', async () => {
-    const onGnosis = await predictSafeAddress({
-      ...INIT,
-      chainId: 100,
-      provider: anvilUrl(FORKS.gnosis),
+  test('the pinned proxy code is the forked factory\'s own, and Base is refused', async () => {
+    const pinned = pinnedSafeDeployment(100);
+    const factory = new Interface(['function proxyCreationCode() view returns (bytes)']);
+    const answer = await rpc(anvilUrl(FORKS.gnosis), 'eth_call', [
+      { to: pinned.factory, data: factory.encodeFunctionData('proxyCreationCode') },
+      'latest',
+    ]);
+    const [code] = AbiCoder.defaultAbiCoder().decode(['bytes'], answer);
+    expect(keccak256(code)).toBe(pinned.proxyCreationCodeHash);
+
+    predicted = await predictSafeAddress({ ...INIT, chainId: 100 });
+    expect(await getCode(FORKS.gnosis, predicted)).toBe('0x');
+    await expect(predictSafeAddress({ ...INIT, chainId: 8453 })).rejects.toMatchObject({
+      code: 'SAFE_UNSUPPORTED',
     });
-    const onBase = await predictSafeAddress({
-      ...INIT,
-      chainId: 8453,
-      provider: anvilUrl(FORKS.base),
-    });
-    expect(onBase).toBe(onGnosis);
-    expect(await getCode(FORKS.base, onBase)).toBe('0x');
-    predicted = onGnosis;
   });
 
-  test('retroactive deployment on Base claims funds sent to the empty address', async () => {
-    // Someone pays the Safe before it exists on this chain…
-    const funderProvider = new JsonRpcProvider(anvilUrl(FORKS.base), 8453, { staticNetwork: true });
+  test('retroactive deployment claims funds sent to the empty address', async () => {
+    // Someone pays the Safe before it exists…
+    const funderProvider = new JsonRpcProvider(anvilUrl(FORKS.gnosis), 100, { staticNetwork: true });
     const funder = ownerWallet(0).connect(funderProvider);
     const funding = await funder.sendTransaction({ to: predicted, value: parseEther('1') });
-    await waitForReceipt(FORKS.base, funding.hash);
+    await waitForReceipt(FORKS.gnosis, funding.hash);
     funderProvider.destroy();
-    expect(await getBalance(FORKS.base, predicted)).toBe(parseEther('1'));
-    expect(await getCode(FORKS.base, predicted)).toBe('0x');
+    expect(await getBalance(FORKS.gnosis, predicted)).toBe(parseEther('1'));
+    expect(await getCode(FORKS.gnosis, predicted)).toBe('0x');
 
     // …then the ORIGINAL init params deploy the Safe at that address.
     const { safeAddress, tx } = await deploySafe({
       ...INIT,
-      chainId: 8453,
+      chainId: 100,
       executorIndex: 0,
-      provider: anvilUrl(FORKS.base),
     });
     expect(safeAddress).toBe(predicted);
-    const receipt = await waitForReceipt(FORKS.base, tx.hash);
+    const receipt = await waitForReceipt(FORKS.gnosis, tx.hash);
     expect(receipt.status).toBe('0x1');
-    expect((await getCode(FORKS.base, predicted)).length).toBeGreaterThan(2);
+    expect((await getCode(FORKS.gnosis, predicted)).length).toBeGreaterThan(2);
 
     // …and a 2/3-signed SafeTx moves the pre-sent funds out.
     const recipient = Wallet.createRandom().address;
     const built = await buildSafeTransaction({
-      chainId: 8453,
+      chainId: 100,
       safe: { ...INIT, address: predicted },
       tx: { to: recipient, value: parseEther('1').toString(), data: '0x' },
-      provider: anvilUrl(FORKS.base),
+      provider: anvilUrl(FORKS.gnosis),
     });
     expect(built.deployed).toBe(true);
     expect(built.safeAddress).toBe(predicted);
@@ -281,30 +280,17 @@ describeFork('Safe on forked Gnosis + Base (reproducible addresses, retroactive 
       await collectOwnerSignature({ typedData: built.typedData, ownerIndex: 2 }),
     ];
     const result = await execTransaction({
-      chainId: 8453,
+      chainId: 100,
       safeAddress: predicted,
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
     });
-    const execReceipt = await waitForReceipt(FORKS.base, result.hash);
+    const execReceipt = await waitForReceipt(FORKS.gnosis, result.hash);
     expect(execReceipt.status).toBe('0x1');
 
-    expect(await getBalance(FORKS.base, recipient)).toBe(parseEther('1'));
-    expect(await getBalance(FORKS.base, predicted)).toBe(0n);
-  });
-
-  test('deploying on Gnosis lands on the identical address', async () => {
-    const { safeAddress, tx } = await deploySafe({
-      ...INIT,
-      chainId: 100,
-      executorIndex: 0,
-      provider: anvilUrl(FORKS.gnosis),
-    });
-    expect(safeAddress).toBe(predicted);
-    const receipt = await waitForReceipt(FORKS.gnosis, tx.hash);
-    expect(receipt.status).toBe('0x1');
-    expect((await getCode(FORKS.gnosis, predicted)).length).toBeGreaterThan(2);
+    expect(await getBalance(FORKS.gnosis, recipient)).toBe(parseEther('1'));
+    expect(await getBalance(FORKS.gnosis, predicted)).toBe(0n);
   });
 
   test('the send orchestrator moves funds starting from a wallet RECORD (owners as indexes)', async () => {

@@ -347,6 +347,10 @@ module.exports = {
   WALLET_SEND_TRANSACTION: 'wallet:send-transaction',
   WALLET_GET_TRANSACTION_STATUS: 'wallet:get-transaction-status',
   WALLET_WAIT_FOR_TRANSACTION: 'wallet:wait-for-transaction',
+  // Main→chrome broadcast: a stored wallet record changed outside a
+  // renderer-driven call (a Ledger sign turned a record `matched`,
+  // #1065). Receivers just re-query the wallet list.
+  WALLET_RECORDS_CHANGED: 'wallet:records-changed',
 
   // x402 — payment interstitial (renderer ↔ main)
   X402_GET_DETAILS: 'x402:get-details',
@@ -447,6 +451,11 @@ module.exports = {
   SWARM_GRANT_MESSAGING: 'swarm:grant-messaging',
   SWARM_REVOKE_MESSAGING: 'swarm:revoke-messaging',
   SWARM_HAS_MESSAGING_GRANT: 'swarm:has-messaging-grant',
+  SWARM_GRANT_ACT: 'swarm:grant-act',
+  SWARM_REVOKE_ACT: 'swarm:revoke-act',
+  SWARM_GET_ACT_GRANTS: 'swarm:get-act-grants',
+  SWARM_DESCRIBE_ACT_REQUEST: 'swarm:describe-act-request',
+  SWARM_DESCRIBE_SHARED_SECRETS_REQUEST: 'swarm:describe-shared-secrets-request',
 
   // Swarm permission manifests
   SWARM_MANIFEST_CHECK: 'swarm:manifest-check',
@@ -458,6 +467,7 @@ module.exports = {
   // Swarm Provider (main-process authority)
   SWARM_PROVIDER_EXECUTE: 'swarm:provider-execute',
   SWARM_PROVIDER_EVENT: 'swarm:provider-event',
+  SWARM_ORIGIN_DISCONNECTED: 'swarm:origin-disconnected',
 
   // Swarm publish setup (src/main/swarm/publish-setup-service.js). Chrome
   // only, except the state read and push, which the internal pages also use.
@@ -466,6 +476,7 @@ module.exports = {
   SWARM_SETUP_WATCH: 'swarm:setup-watch',
   SWARM_SETUP_GET_PLANS: 'swarm:setup-get-plans',
   SWARM_SETUP_GET_EXTEND_OPTIONS: 'swarm:setup-get-extend-options',
+  SWARM_SETUP_QUOTE: 'swarm:setup-quote',
   SWARM_SETUP_ARM: 'swarm:setup-arm',
   SWARM_SETUP_CANCEL: 'swarm:setup-cancel',
   SWARM_SETUP_TRACK_FUNDING_TX: 'swarm:setup-track-funding-tx',

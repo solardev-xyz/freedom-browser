@@ -1,0 +1,3 @@
+- Swarm files stored with redundancy no longer stop downloading part-way when read cold ([#1174](https://github.com/solardev-xyz/freedom-browser/issues/1174))
+- Files published to Swarm at some sizes, such as 524,289 bytes, get Bee's reference and read back whole ([#1174](https://github.com/solardev-xyz/freedom-browser/issues/1174))
+  - A file published before keeps its old reference; publish it again if its end reads back wrong

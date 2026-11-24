@@ -207,11 +207,11 @@ Ad-blocking filter lists (bundled data, not code)
     Shipped unmodified as `assets/adblock/resources.json` (sha256
     5ce0ce483f0e5514308ccb0240960a9dd7bfeab417debeef96960dce2c95f690),
     the build of those scriptlets that @ghostery/adblocker publishes:
-      https://github.com/ghostery/adblocker/blob/v2.20.1/packages/adblocker/assets/ublock-origin/resources.json
+      https://github.com/ghostery/adblocker/blob/v2.20.3/packages/adblocker/assets/ublock-origin/resources.json
     It entered that repository in commit
       https://github.com/ghostery/adblocker/commit/7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec
     written by Ghostery's asset build script at the same tag:
-      https://github.com/ghostery/adblocker/blob/v2.20.1/packages/adblocker/assets/update.js
+      https://github.com/ghostery/adblocker/blob/v2.20.3/packages/adblocker/assets/update.js
     Its script bodies are minified. The corresponding source is uBlock
     Origin development build 1.73.1b1 (commit
     6788ed72af9bf2670bcdc1c3da3925d8b4f36443):
@@ -258,7 +258,7 @@ MPL-2.0 in `LICENSE`.
 npm dependencies
   See package.json for the full list.
   Most use permissive licenses (MIT, ISC, BSD, Apache-2.0, 0BSD,
-  BlueOak-1.0.0, Python-2.0). The weak-copyleft ones are:
+  BlueOak-1.0.0, Python-2.0, Unlicense). The weak-copyleft ones are:
     MPL-2.0        @ghostery/adblocker and its @remusao/* helpers,
                    @ethereumjs/{rlp,tx,util}
     LGPL-3.0-only  @openlv/*, websocket-mqtt (both entries above)
@@ -266,3 +266,36 @@ npm dependencies
   MPL packages are consumed unmodified from npm, and the LGPL ones ship as
   the separate, replaceable `openlv.esm.js` bundle described above.
   better-sqlite3 (MIT) embeds SQLite, which is in the public domain.
+
+PDF.js (pdfjs-dist, the agent's PDF processor)
+  License: Apache-2.0
+  Copyright (c) Mozilla Foundation and PDF.js contributors
+  https://github.com/mozilla/pdf.js
+  The package ships these third-party parts, each with its licence text
+  beside it under `node_modules/pdfjs-dist/` in `app.asar` (its
+  standard_fonts/ directory is left out; see the next entry):
+  - JBIG2 decoder (wasm/jbig2.wasm), from PDFium: BSD-3-Clause,
+    Copyright 2014 The PDFium Authors (wasm/LICENSE_JBIG2)
+  - OpenJPEG (wasm/openjpeg.wasm): BSD-2-Clause, Copyright (c) 2002-2014,
+    Universite catholique de Louvain (UCL), Belgium, and the OpenJPEG
+    contributors
+    (wasm/LICENSE_OPENJPEG)
+  - qcms (wasm/qcms_bg.wasm): MIT, Copyright (C) 2009-2024 Mozilla
+    Corporation, Copyright (C) 1998-2007 Marti Maria (wasm/LICENSE_QCMS)
+  - Adobe CMaps (cmaps/): BSD-3-Clause, Copyright 1990-2009 Adobe Systems
+    Incorporated (cmaps/LICENSE)
+  - ICC colour profiles (iccs/): CC0-1.0 (iccs/LICENSE)
+  - QuickJS (wasm/quickjs-eval.wasm), the sandbox PDF.js evaluates
+    document scripts in: MIT, Copyright (c) 2017-2021 Fabrice Bellard and
+    Charlie Gordon, https://bellard.org/quickjs/
+
+PDF standard fonts (Liberation Sans 2.1.5, Foxit Symbol and Dingbats)
+  Shipped in `src/renderer/assets/pdf-fonts/` for the PDF processor, each
+  file unmodified, with its licence text beside it:
+  - Liberation Sans 2.1.5 (LiberationSans-*.ttf): SIL Open Font License
+    1.1. Digitized data copyright (c) 2010 Google Corporation with
+    Reserved Font Arimo, Tinos and Cousine. Copyright (c) 2012 Red Hat,
+    Inc. with Reserved Font Name Liberation. (LICENSE_LIBERATION)
+    https://github.com/liberationfonts/liberation-fonts
+  - FoxitSymbol.pfb, FoxitDingbats.pfb, from PDFium via pdfjs-dist:
+    BSD-3-Clause, Copyright 2014 PDFium Authors (LICENSE_FOXIT)

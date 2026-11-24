@@ -12,6 +12,7 @@ import {
   getActiveWebview,
   getActiveDisplayUrl,
   emitAccountsChanged,
+  emitConnect,
   getPermissionKey,
   getNavigationGeneration,
 } from '../dapp-provider.js';
@@ -349,10 +350,11 @@ async function approveDappConnect() {
         event: 'accountsChanged',
         data: accounts,
       });
-      webview.send('dapp:provider-event', {
-        event: 'connect',
-        data: { chainId: '0x' + grantedChainId.toString(16) },
-      });
+      // Through the provider, so the chain this tells the page is recorded
+      // as the one its transactions and signatures go to.
+      // "All Chains" with no pin grants no chain: the provider then tells
+      // the page the chain eth_chainId would answer.
+      emitConnect(webview, grantedChainId ? '0x' + grantedChainId.toString(16) : null);
     }
 
     console.log('[WalletUI] dApp connected:', permissionKey, '→', wallet.address);

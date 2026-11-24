@@ -9,12 +9,13 @@
 
 import { walletState, registerScreenHider } from './wallet-state.js';
 import { refuseSubscreenWhileInFlight } from './signature-flight.js';
-import { formatBytes } from './wallet-utils.js';
 import { openPublishSetup } from './publish-setup.js';
 import { formatDays, formatStorageSize } from './swarm-readiness.js';
 
 const TTL_WARN_SECONDS = 7 * 86400; // 7 days
 const TTL_CRITICAL_SECONDS = 86400; // 1 day
+// A typed number of days for "Keep Longer" is priced once typing pauses.
+const CUSTOM_DAYS_QUOTE_DELAY_MS = 400;
 
 // DOM references
 let stampManagerScreen;
@@ -94,7 +95,7 @@ export function initStampManager() {
   stampManagerBackBtn?.addEventListener('click', () => closeStampManager());
   buyMoreBtn?.addEventListener('click', () => {
     closeStampManager();
-    openPublishSetup();
+    openPublishSetup({ plans: true });
   });
   depositTopUpBtn?.addEventListener('click', () => startOperation({ kind: 'deposit' }));
 
@@ -385,7 +386,7 @@ function renderBatchList(stamps, { stale = false } = {}) {
   const signature = JSON.stringify([
     stamps.map(cardSignature),
     setupState?.canBuy,
-    (setupState?.plans || []).map((plan) => plan.depth),
+    (setupState?.sizes || []).map((size) => size.depth),
   ]);
   batchCount = stamps.length;
   failedBeforeWallet = null;
@@ -417,7 +418,8 @@ function renderBatchList(stamps, { stale = false } = {}) {
     ];
     card.appendChild(statusBadge);
 
-    card.appendChild(createRow('Size', batch.sizeBytes > 0 ? formatBytes(batch.sizeBytes) : '--'));
+    // Decimal, like the plans that sold it (#1257).
+    card.appendChild(createRow('Size', formatStorageSize(batch.sizeBytes)));
     card.appendChild(createRow('Used', `${batch.usagePercent}%`));
 
     const ttlRow = createRow('Time remaining', formatDuration(batch.ttlSeconds));
@@ -480,10 +482,10 @@ function setActionsLive(live) {
   });
 }
 
-// The plan sizes above this batch's depth: growing keeps its expiry date.
+// The sizes above this batch's depth (#1257): growing keeps its expiry date.
 function largerSizes(batch) {
   if (!Number.isInteger(batch.depth)) return [];
-  return (setupState?.plans || []).filter((plan) => plan.depth > batch.depth);
+  return (setupState?.sizes || []).filter((size) => size.depth > batch.depth);
 }
 
 function createRow(label, value) {
@@ -520,6 +522,8 @@ function showExtensionForm(card, batch, type) {
   presetRow.className = 'stamp-extend-presets';
   form.appendChild(presetRow);
 
+  if (type === 'duration') form.appendChild(createCustomDaysRow(batch));
+
   const statusEl = document.createElement('div');
   statusEl.className = 'stamp-extend-cost';
   statusEl.textContent = 'Getting prices…';
@@ -553,7 +557,7 @@ async function loadExtensionOptions(form, presetRow, statusEl, batch, type) {
           request: { kind: 'extend', batchId: batch.batchId, days: option.days },
         }))
       : (options?.sizes || []).map((option) => ({
-          label: `Up to ${formatStorageSize(option.safeLimitBytes)}`,
+          label: `Up to ${formatStorageSize(option.usableBytes)}`,
           option,
           request: { kind: 'extend', batchId: batch.batchId, days: 0, depth: option.depth },
         }));
@@ -571,6 +575,92 @@ async function loadExtensionOptions(form, presetRow, statusEl, batch, type) {
 
   const error = options?.error || entries.find((e) => e.option.error)?.option.error;
   statusEl.textContent = error || 'You pay in xDAI, the same way as for a new plan.';
+}
+
+// "Keep Longer" by any number of days (#1257): a days field and a button
+// that prices what was typed, then starts the extension like the presets.
+function createCustomDaysRow(batch) {
+  const maxDays = setupState?.maxDays || 3650;
+  const wrap = document.createElement('div');
+  wrap.className = 'stamp-extend-custom';
+
+  const row = document.createElement('div');
+  row.className = 'stamp-extend-custom-row';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'stamp-extend-days-input';
+  input.inputMode = 'numeric';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.placeholder = 'Days';
+  input.setAttribute('aria-label', 'Other number of days');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  // A preset button to setActionsLive, so a stale list turns it off too.
+  btn.className = 'stamp-extend-preset-btn stamp-extend-custom-btn';
+  btn.textContent = 'Other number of days';
+  btn.dataset.quoted = '';
+  btn.disabled = true;
+  row.append(input, btn);
+
+  const errorEl = document.createElement('div');
+  errorEl.className = 'stamp-extend-custom-error hidden';
+  errorEl.setAttribute('role', 'alert');
+  wrap.append(row, errorEl);
+
+  let timer = null;
+  let requestId = 0;
+  let pricedDays = null;
+  const showError = (message) => {
+    errorEl.textContent = message || '';
+    errorEl.classList.toggle('hidden', !message);
+    input.classList.toggle('error', Boolean(message));
+  };
+  const setButton = (label, quotedDays) => {
+    pricedDays = quotedDays;
+    btn.textContent = label;
+    btn.dataset.quoted = quotedDays ? 'true' : '';
+    btn.disabled = !quotedDays || !actionsLive;
+  };
+
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    requestId++;
+    const text = input.value.trim();
+    const days = /^\d+$/.test(text) ? Number(text) : null;
+    if (days === null || days < 1 || days > maxDays) {
+      setButton('Other number of days', null);
+      showError(text ? `Enter a whole number of days from 1 to ${maxDays}.` : '');
+      return;
+    }
+    showError('');
+    setButton(`+${formatDays(days)} · …`, null);
+    const id = requestId;
+    timer = setTimeout(async () => {
+      let result;
+      try {
+        result = await window.publishSetup?.quote({
+          kind: 'extend',
+          batchId: batch.batchId,
+          days,
+        });
+      } catch (err) {
+        result = { quote: null, error: err.message };
+      }
+      if (id !== requestId || !input.isConnected) return;
+      if (result?.quote) {
+        setButton(`+${formatDays(days)} · ${result.quote.price.display} xDAI`, days);
+      } else {
+        setButton(`+${formatDays(days)}`, null);
+        showError(result?.error || 'Could not get a price from the Swarm node.');
+      }
+    }, CUSTOM_DAYS_QUOTE_DELAY_MS);
+  });
+  btn.addEventListener('click', () => {
+    if (!pricedDays) return;
+    startOperation({ kind: 'extend', batchId: batch.batchId, days: pricedDays });
+  });
+  return wrap;
 }
 
 function formatDuration(seconds) {

@@ -123,17 +123,54 @@ export const showPageContextMenu = (x, y, context) => {
   const groups = pageContextMenu.querySelectorAll('.context-menu-group');
   groups.forEach((g) => g.classList.remove('visible'));
 
-  // Determine which groups to show based on context
-  // Priority: image > link > selection > page
+  // Determine which groups to show based on context.
+  // When an image or media (video/audio) sits inside a link, show both the
+  // link group (first) and the image/media group (second) with a single trailing
+  // Inspect item at the bottom of the composite menu. #979.
+  const hasLink = Boolean(context.linkUrl);
+  const hasImage = Boolean(context.imageSrc);
+  const hasMedia = Boolean(
+    context.mediaSrc || context.mediaType === 'video' || context.mediaType === 'audio'
+  );
 
-  if (context.imageSrc) {
-    // Image context - show image menu
-    const imageGroup = pageContextMenu.querySelector('[data-group="image"]');
-    if (imageGroup) imageGroup.classList.add('visible');
-  } else if (context.linkUrl) {
-    // Link context - show link menu
-    const linkGroup = pageContextMenu.querySelector('[data-group="link"]');
-    if (linkGroup) linkGroup.classList.add('visible');
+  if (hasLink || hasImage || hasMedia) {
+    const hasTrailingGroup = hasImage || hasMedia;
+    if (hasLink) {
+      const linkGroup = pageContextMenu.querySelector('[data-group="link"]');
+      if (linkGroup) {
+        linkGroup.classList.add('visible');
+        const linkInspectBtn = linkGroup.querySelector('[data-action="inspect"]');
+        if (linkInspectBtn) {
+          linkInspectBtn.classList.toggle('hidden', hasTrailingGroup);
+        }
+      }
+    }
+    if (hasImage) {
+      const imageGroup = pageContextMenu.querySelector('[data-group="image"]');
+      if (imageGroup) imageGroup.classList.add('visible');
+    } else if (hasMedia) {
+      const mediaGroup = pageContextMenu.querySelector('[data-group="media"]');
+      if (mediaGroup) {
+        mediaGroup.classList.add('visible');
+        const kind =
+          context.mediaType === 'video' ? 'Video' : context.mediaType === 'audio' ? 'Audio' : 'Media';
+        // A <video>/<audio> with no addressable source (fed by `srcObject`
+        // from a camera/WebRTC stream, or with no src/<source> yet) still gets
+        // the group, but with both items disabled, as Chrome does: an enabled
+        // item that silently does nothing is worse than a greyed-out one.
+        const noSrc = !context.mediaSrc;
+        const openBtn = mediaGroup.querySelector('[data-action="open-media-new-tab"]');
+        if (openBtn) {
+          openBtn.textContent = `Open ${kind} in New Tab`;
+          openBtn.disabled = noSrc;
+        }
+        const copyBtn = mediaGroup.querySelector('[data-action="copy-media-address"]');
+        if (copyBtn) {
+          copyBtn.textContent = `Copy ${kind} Address`;
+          copyBtn.disabled = noSrc;
+        }
+      }
+    }
   } else if (context.selectedText) {
     // Selection context - show selection menu
     const selectionGroup = pageContextMenu.querySelector('[data-group="selection"]');
@@ -463,6 +500,25 @@ const handleAction = async (action, { background = false } = {}) => {
         pushDebug(`Copied image address: ${dwebUrl}`);
       }
       break;
+
+    case 'open-media-new-tab':
+      if (currentContext.mediaSrc) {
+        pushDebug(`Opening media in new tab: ${currentContext.mediaSrc}`);
+        document.dispatchEvent(
+          new CustomEvent('open-url-new-tab', {
+            detail: { url: currentContext.mediaSrc },
+          })
+        );
+      }
+      break;
+
+    case 'copy-media-address':
+      if (currentContext.mediaSrc) {
+        const dwebUrl = toDwebUrl(currentContext.mediaSrc);
+        electronAPI?.copyText?.(dwebUrl);
+        pushDebug(`Copied media address: ${dwebUrl}`);
+      }
+      break;
   }
 
   hidePageContextMenu();
@@ -478,7 +534,9 @@ export const initPageContextMenu = async (options = {}) => {
   onOpening = options.onOpening ?? null;
   onReload = options.onReload ?? null;
   isActiveTabAgentOwned =
-    typeof options.isActiveTabAgentOwned === 'function' ? options.isActiveTabAgentOwned : () => false;
+    typeof options.isActiveTabAgentOwned === 'function'
+      ? options.isActiveTabAgentOwned
+      : () => false;
 
   // Handle menu item clicks
   if (pageContextMenu) {

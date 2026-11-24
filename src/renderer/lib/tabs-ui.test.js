@@ -62,7 +62,10 @@ const createWebview = (createdWebviews) => {
     removeEventListener(event, handler);
   });
   webview._devToolsOpen = false;
-  webview.getWebContentsId = jest.fn(() => createdWebviews.length + 41);
+  // Fixed at creation, like a real guest's webContents id, so each tab's
+  // webview answers with its own id (getTabByGuestId tells tabs apart by it).
+  const webContentsId = createdWebviews.length + 42;
+  webview.getWebContentsId = jest.fn(() => webContentsId);
   webview.getURL = jest.fn(() => webview.src || 'about:blank');
   webview.canGoBack = jest.fn(() => false);
   webview.canGoForward = jest.fn(() => false);
@@ -721,10 +724,10 @@ describe('tabs ui behavior', () => {
       const activeTab = mod.getActiveTab();
       const { webview } = activeTab;
 
-      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      electronHandlers.navigateToUrl('bzz://meinhard.eth', mod.getActiveTab().webview.getWebContentsId());
       // Flagged page-initiated: a scripted/link navigation the main process
       // bounced back here must not discard an address-bar edit (#305).
-      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth', null, null, {
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth', null, mod.getActiveTab().webview, {
         pageInitiated: true,
       });
       // Simulate the `loadTarget` dispatch flipping the spinner on (the
@@ -820,7 +823,7 @@ describe('tabs ui behavior', () => {
       const activeTab = mod.getActiveTab();
       const { webview } = activeTab;
 
-      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      electronHandlers.navigateToUrl('bzz://meinhard.eth', mod.getActiveTab().webview.getWebContentsId());
       activeTab.isLoading = true;
       onWebviewEvent.mockClear();
 
@@ -841,6 +844,57 @@ describe('tabs ui behavior', () => {
     }
   });
 
+  test("a background tab's page navigation loads in that tab, not the active one (#969)", async () => {
+    // The Swarm error page's auto-retry (or any page's scripted `location`
+    // change to a custom scheme) can fire while its tab is in the background.
+    // The main process names the guest that started it; the address must
+    // load there, and the phantom-stop handling is armed there too.
+    jest.useFakeTimers();
+    try {
+      const { mod, electronHandlers } = await loadTabsModule();
+      const onLoadTarget = jest.fn();
+      mod.setLoadTargetHandler(onLoadTarget);
+      await mod.initTabs();
+
+      const foreground = mod.getActiveTab();
+      const background = mod.createTab('https://example.test');
+      mod.switchTab(foreground.id);
+      expect(mod.getActiveTab().id).toBe(foreground.id);
+
+      electronHandlers.navigateToUrl('bzz://cafe', background.webview.getWebContentsId());
+
+      expect(onLoadTarget).toHaveBeenCalledTimes(1);
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://cafe', null, background.webview, {
+        pageInitiated: true,
+      });
+      expect(background.pendingAbortUrl).toBe('bzz://cafe');
+      expect(background.suppressNextStop).toBe(true);
+      expect(foreground.pendingAbortUrl).toBeFalsy();
+      expect(foreground.suppressNextStop).toBeFalsy();
+      expect(mod.getActiveTab().id).toBe(foreground.id);
+    } finally {
+      jest.runOnlyPendingTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  test('a page navigation from a tab that is gone, or naming none, is dropped (#969)', async () => {
+    const { mod, electronHandlers } = await loadTabsModule();
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    await mod.initTabs();
+
+    const closing = mod.createTab('https://example.test');
+    const closingId = closing.webview.getWebContentsId();
+    mod.closeTab(closing.id);
+
+    electronHandlers.navigateToUrl('bzz://cafe', closingId);
+    electronHandlers.navigateToUrl('bzz://cafe');
+
+    expect(onLoadTarget).not.toHaveBeenCalled();
+    expect(mod.getActiveTab().pendingAbortUrl).toBeFalsy();
+  });
+
   test('closing a tab during the phantom-abort window cancels the safety timer', async () => {
     // The 1500 ms self-clearing timer set by `navigateToUrl` must be
     // cleared when the tab is closed before the timer fires — otherwise
@@ -856,7 +910,7 @@ describe('tabs ui behavior', () => {
       const tabId = newTab.id;
       mod.switchTab(tabId);
 
-      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      electronHandlers.navigateToUrl('bzz://meinhard.eth', mod.getActiveTab().webview.getWebContentsId());
       const tabBeforeClose = mod.getTabs().find((t) => t.id === tabId);
       expect(tabBeforeClose.pendingAbortTimer).toBeDefined();
       expect(tabBeforeClose.pendingAbortTimer).not.toBeNull();
@@ -922,10 +976,10 @@ describe('tabs ui behavior', () => {
       // pendingAbortUrl (in case did-fail-load follows) AND
       // suppressNextStop (in case the paired did-stop-loading is still
       // in flight, which is exactly what's about to happen here).
-      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      electronHandlers.navigateToUrl('bzz://meinhard.eth', mod.getActiveTab().webview.getWebContentsId());
       // Flagged page-initiated: a scripted/link navigation the main process
       // bounced back here must not discard an address-bar edit (#305).
-      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth', null, null, {
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth', null, mod.getActiveTab().webview, {
         pageInitiated: true,
       });
       expect(activeTab.suppressNextStop).toBe(true);
@@ -974,7 +1028,7 @@ describe('tabs ui behavior', () => {
       await mod.initTabs();
 
       const activeTab = mod.getActiveTab();
-      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      electronHandlers.navigateToUrl('bzz://meinhard.eth', mod.getActiveTab().webview.getWebContentsId());
       expect(activeTab.suppressNextStop).toBe(true);
 
       jest.advanceTimersByTime(200);
@@ -1011,7 +1065,7 @@ describe('tabs ui behavior', () => {
       const activeTab = mod.getActiveTab();
       const { webview } = activeTab;
 
-      electronHandlers.navigateToUrl('freedom://settings');
+      electronHandlers.navigateToUrl('freedom://settings', mod.getActiveTab().webview.getWebContentsId());
       expect(activeTab.suppressNextStop).toBe(true);
 
       // Real load starts — disarms proactive suppression so the paired
@@ -1312,9 +1366,9 @@ describe('tabs ui behavior', () => {
       expect.objectContaining({ tagName: 'WEBVIEW' })
     );
 
-    electronHandlers.navigateToUrl('https://navigate.example');
+    electronHandlers.navigateToUrl('https://navigate.example', mod.getActiveTab().webview.getWebContentsId());
     electronHandlers.loadUrl('https://load.example');
-    expect(onLoadTarget).toHaveBeenCalledWith('https://navigate.example', null, null, {
+    expect(onLoadTarget).toHaveBeenCalledWith('https://navigate.example', null, mod.getActiveTab().webview, {
       pageInitiated: true,
     });
     expect(onLoadTarget).toHaveBeenCalledWith('https://load.example');
@@ -1985,6 +2039,39 @@ describe('tabs ui behavior', () => {
         false
       );
       expect(mod.getTabs()).toHaveLength(3);
+    });
+
+    // A background page navigating itself to `freedom://settings` reaches
+    // here with its own tab's webview (#969). The open must not pull the user
+    // away from the tab they are reading: a new Settings tab opens hidden, and
+    // an existing one is routed without being switched to.
+    test("a background tab's open lands in the background", async () => {
+      const mod = await setup();
+      const bgTab = mod.createTab('https://background.example/', { background: true });
+      const activeTab = mod.getActiveTab();
+      expect(activeTab.id).not.toBe(bgTab.id);
+
+      expect(mod.routeInternalPageNavigation('settings', null, bgTab.webview)).toBe(true);
+      const settingsTab = mod.getTabs().at(-1);
+      expect(settingsTab.url).toBe('freedom://settings');
+      expect(mod.getActiveTab().id).toBe(activeTab.id);
+    });
+
+    test("a background tab's open routes an existing Settings tab without focusing it", async () => {
+      jest.useFakeTimers();
+      const mod = await setup();
+      const onLoadTarget = jest.fn();
+      mod.setLoadTargetHandler(onLoadTarget);
+      const settingsTab = mod.createTab('freedom://settings');
+      settingsTab.url = SETTINGS_URL;
+      const bgTab = mod.createTab('https://background.example/', { background: true });
+      const readingTab = mod.createTab('https://reading.example/');
+      expect(mod.getActiveTab().id).toBe(readingTab.id);
+
+      expect(mod.routeInternalPageNavigation('settings', 'rpc', bgTab.webview)).toBe(true);
+      expect(mod.getActiveTab().id).toBe(readingTab.id);
+      jest.runOnlyPendingTimers();
+      expect(onLoadTarget).toHaveBeenCalledWith('freedom://settings/rpc', null, settingsTab.webview);
     });
 
     // A new-tab page is not a singleton: `freedom://home` typed in the address

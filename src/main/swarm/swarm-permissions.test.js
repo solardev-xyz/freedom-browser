@@ -103,8 +103,8 @@ describe('swarm-permissions', () => {
       grantPermission('myapp.eth');
 
       revokePermission('myapp.eth');
-      expect(listener).toHaveBeenCalledWith('myapp.eth');
-      expect(secondListener).toHaveBeenCalledWith('myapp.eth');
+      expect(listener).toHaveBeenCalledWith('myapp.eth', { scope: 'connection' });
+      expect(secondListener).toHaveBeenCalledWith('myapp.eth', { scope: 'connection' });
 
       listener.mockClear();
       revokePermission('myapp.eth');
@@ -119,7 +119,7 @@ describe('swarm-permissions', () => {
       grantMessaging('myapp.eth');
 
       expect(revokeMessaging('myapp.eth')).toBe(true);
-      expect(listener).toHaveBeenCalledWith('myapp.eth');
+      expect(listener).toHaveBeenCalledWith('myapp.eth', { scope: 'messaging' });
       expect(getPermission('myapp.eth')).not.toBeNull();
       expect(hasMessagingGrant('myapp.eth')).toBe(false);
       onRevoke(null);
@@ -227,3 +227,29 @@ describe('swarm-permissions', () => {
     });
   });
 });
+
+describe('swarm:describe-shared-secrets-request', () => {
+  const { SigningKey } = require('ethers');
+  const PEER = SigningKey.computePublicKey(`0x${'22'.repeat(32)}`, true);
+
+  beforeAll(() => {
+    registerSwarmPermissionsIpc();
+  });
+
+  const describeRequest = (params) => ipcHandlers['swarm:describe-shared-secrets-request']({}, params);
+
+  test('a request main would run is valid, in canonical form', () => {
+    expect(describeRequest({ publicKeys: [PEER.slice(2).toUpperCase()] }))
+      .toEqual({ valid: true, publicKeys: [PEER] });
+  });
+
+  test.each([
+    [{ publicKeys: 'x' }, 'invalid_public_key', {}],
+    [{ publicKeys: [] }, 'invalid_public_key', {}],
+    [{ publicKeys: new Array(1000).fill(PEER) }, 'payload_too_large', { limit: 256, actual: 1000 }],
+    [{ publicKeys: [`02${'ff'.repeat(32)}`] }, 'invalid_public_key', { index: 0 }],
+  ])('a request main would refuse is not valid (%#)', (params, reason, data) => {
+    expect(describeRequest(params)).toMatchObject({ valid: false, reason, data });
+  });
+});
+

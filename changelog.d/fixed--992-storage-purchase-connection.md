@@ -1,0 +1,2 @@
+- Buying, extending or topping up Swarm storage no longer fails partway through from a dropped connection to Gnosis Chain ([#992](https://github.com/solardev-xyz/freedom-browser/issues/992))
+  - A payment sent just before a drop now shows as possibly gone through, not failed
