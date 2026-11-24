@@ -26,6 +26,8 @@ const {
   parseDepositAmount,
   classifyChainFailure,
   PLANS,
+  SIZES,
+  MAX_STORAGE_DAYS,
   REQUOTE_MS,
   TRANSIENT_RETRY_MS,
   MAX_TRANSIENT_RETRIES,
@@ -1405,6 +1407,47 @@ describe('the armed purchase', () => {
     expect(service.getState().operation).toBeNull();
   });
 
+  test('buys a custom size and duration the same way as a plan (#1257)', async () => {
+    const { service, api } = setup();
+    expect(service.arm({ kind: 'buy', depth: 24, days: 45 })).toMatchObject({ ok: true });
+    await settle();
+
+    expect(api.getStorageQuote).toHaveBeenCalledWith({ depth: 24, days: 45 });
+    expect(service.getState().operation).toMatchObject({
+      phase: 'awaiting-funds',
+      request: { kind: 'buy', depth: 24, days: 45 },
+    });
+
+    api.getStorageQuote.mockResolvedValue(ok(funded({ amountPerChunk: '70000000' })));
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ batchID: BATCH_A, usable: true }] }));
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+    expect(api.buyStorage).toHaveBeenCalledWith({
+      depth: 24,
+      amountPerChunk: '70000000',
+      immutable: true,
+    });
+  });
+
+  test('refuses a custom size or duration outside the picker (#1257)', () => {
+    const { service } = setup();
+    expect(service.arm({ kind: 'buy', depth: 18, days: 30 })).toEqual({
+      ok: false,
+      error: 'Choose a size from the list.',
+    });
+    expect(service.arm({ kind: 'buy', depth: 29, days: 30 })).toMatchObject({ ok: false });
+    expect(service.arm({ kind: 'buy', depth: '20', days: 30 })).toMatchObject({ ok: false });
+    expect(service.arm({ kind: 'buy', depth: 20, days: 0 })).toEqual({
+      ok: false,
+      error: 'Choose a whole number of days from 1 to 3650.',
+    });
+    expect(service.arm({ kind: 'buy', depth: 20, days: 3651 })).toMatchObject({ ok: false });
+    expect(service.arm({ kind: 'buy', depth: 20, days: 1.5 })).toMatchObject({ ok: false });
+    expect(service.arm({ kind: 'buy', depth: 20 })).toMatchObject({ ok: false });
+    expect(service.getState().operation).toBeNull();
+  });
+
   test('never spends from a node Freedom found already running', () => {
     const { service, api } = setup({ registryMode: 'reused' });
     expect(service.arm({ kind: 'buy', planId: 'starter' })).toMatchObject({ ok: false });
@@ -2427,13 +2470,72 @@ describe('pickers', () => {
     const { durations, sizes } = await service.getExtendOptions(BATCH_A, 21);
 
     expect(durations.map((d) => d.days)).toEqual([30, 90, 180, 365]);
-    expect(sizes.map((s) => s.depth)).toEqual([22]);
+    // Every size up to the picker's largest, not only the plans' (#1257).
+    expect(sizes.map((s) => s.depth)).toEqual([22, 23, 24, 25, 26, 27, 28]);
+    expect(sizes[0]).toMatchObject({ depth: 22, usableBytes: 7_730_000_000 });
     expect(api.getStorageQuote).toHaveBeenCalledWith({ batchId: BATCH_A, days: 0, depth: 22 });
+    expect(api.getStorageQuote).toHaveBeenCalledWith({ batchId: BATCH_A, days: 0, depth: 28 });
     expect(durations[0].quote).toMatchObject({ price: { display: '0.45' } });
+    await expect(service.getExtendOptions(BATCH_A, 28)).resolves.toMatchObject({ sizes: [] });
 
     await expect(service.getExtendOptions('nope', 20)).resolves.toMatchObject({
       durations: [],
       sizes: [],
+    });
+  });
+});
+
+describe('sizes and custom prices (#1257)', () => {
+  test("plans and the picker are sized by Swarm's table", () => {
+    expect(PLANS.map((p) => [p.id, p.depth, p.usableBytes])).toEqual([
+      ['starter', 20, 687_620_000],
+      ['advanced', 21, 2_600_000_000],
+      ['plus', 22, 7_730_000_000],
+    ]);
+    expect(SIZES.map((s) => s.depth)).toEqual([19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
+    expect(SIZES.every((s) => Number.isInteger(s.usableBytes) && s.usableBytes > 0)).toBe(true);
+    const { service } = setup();
+    expect(service.getState()).toMatchObject({ sizes: SIZES, maxDays: MAX_STORAGE_DAYS });
+  });
+
+  test('prices a custom buy or extend request without arming it', async () => {
+    const { service, api } = setup();
+
+    await expect(service.quote({ kind: 'buy', depth: 23, days: 45 })).resolves.toMatchObject({
+      request: { kind: 'buy', depth: 23, days: 45 },
+      quote: { price: { display: '0.45' } },
+      error: null,
+    });
+    expect(api.getStorageQuote).toHaveBeenLastCalledWith({ depth: 23, days: 45 });
+
+    await expect(
+      service.quote({ kind: 'extend', batchId: BATCH_A, days: 400 })
+    ).resolves.toMatchObject({ request: { kind: 'extend', days: 400 }, error: null });
+    expect(api.getStorageQuote).toHaveBeenLastCalledWith({
+      batchId: BATCH_A,
+      days: 400,
+      depth: undefined,
+    });
+    expect(service.getState().operation).toBeNull();
+  });
+
+  test('a refused request or a failed price says why', async () => {
+    const { service, api } = setup();
+    await expect(service.quote({ kind: 'buy', depth: 40, days: 30 })).resolves.toEqual({
+      request: null,
+      quote: null,
+      error: 'Choose a size from the list.',
+    });
+    await expect(service.quote({ kind: 'deposit' })).resolves.toMatchObject({
+      quote: null,
+      error: 'Unknown operation.',
+    });
+    expect(api.getStorageQuote).not.toHaveBeenCalled();
+
+    api.getStorageQuote.mockResolvedValue(fail(502, 'rpc error'));
+    await expect(service.quote({ kind: 'buy', depth: 20, days: 2 })).resolves.toMatchObject({
+      quote: null,
+      error: 'Getting a price failed on Gnosis Chain: rpc error',
     });
   });
 });
@@ -2482,6 +2584,7 @@ describe('registerPublishSetupIpc', () => {
         'swarm:setup-get-extend-options',
         'swarm:setup-get-plans',
         'swarm:setup-get-state',
+        'swarm:setup-quote',
         'swarm:setup-restart-node',
         'swarm:setup-track-funding-tx',
         'swarm:setup-watch',

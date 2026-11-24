@@ -34,6 +34,7 @@ const { ipcMain } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const antStorageApi = require('./ant-storage-api');
+const { usableBytesForDepth } = require('./batch-sizes');
 const {
   parseWalletScan,
   isWalletScanFinished,
@@ -56,27 +57,28 @@ function hasRoom(batch) {
 
 const GNOSIS_CHAIN_ID = 100;
 
-// AntDrive's tiers (nodes/ant examples/ios-drive, DriveModels.swift). Each
-// depth is the smallest whose Swarm effective volume (unencrypted) covers the
-// advertised size: d20 ≈ 688 MB, d21 ≈ 2.60 GB, d22 ≈ 7.73 GB.
+// AntDrive's tiers (nodes/ant examples/ios-drive, DriveModels.swift), sized
+// by Swarm's own effective volume for each depth (batch-sizes.js, #1257)
+// rather than AntDrive's rounder 100 MB / 1 GB / 5 GB.
+const definePlan = (id, title, depth, days) =>
+  Object.freeze({ id, title, depth, days, usableBytes: usableBytesForDepth(depth) });
 const PLANS = Object.freeze([
-  Object.freeze({
-    id: 'starter',
-    title: 'Starter',
-    depth: 20,
-    days: 30,
-    safeLimitBytes: 100_000_000,
-  }),
-  Object.freeze({
-    id: 'advanced',
-    title: 'Advanced',
-    depth: 21,
-    days: 180,
-    safeLimitBytes: 1_000_000_000,
-  }),
-  Object.freeze({ id: 'plus', title: 'Plus', depth: 22, days: 365, safeLimitBytes: 5_000_000_000 }),
+  definePlan('starter', 'Starter', 20, 30),
+  definePlan('advanced', 'Advanced', 21, 180),
+  definePlan('plus', 'Plus', 22, 365),
 ]);
 const EXTEND_DAYS = Object.freeze([30, 90, 180, 365]);
+// The sizes a batch can be bought at or grown to outside the plans (#1257):
+// depth 19 (about 112 MB) to 28 (about 1 TB). Below 19 a batch holds a few
+// megabytes at most; each step up doubles the price.
+const MIN_SIZE_DEPTH = 19;
+const MAX_SIZE_DEPTH = 28;
+const SIZES = Object.freeze(
+  Array.from({ length: MAX_SIZE_DEPTH - MIN_SIZE_DEPTH + 1 }, (_, i) => {
+    const depth = MIN_SIZE_DEPTH + i;
+    return Object.freeze({ depth, usableBytes: usableBytesForDepth(depth) });
+  })
+);
 
 const REQUOTE_MS = 6_000;
 const WATCH_REFRESH_MS = 15_000;
@@ -94,7 +96,8 @@ const FUNDING_TX_TIMEOUT_MS = 15 * 60_000;
 // antd's chain init has no timeout of its own. After this long the setup
 // screen suggests checking the Gnosis RPC or restarting the node.
 const CHAIN_INIT_SLOW_MS = 3 * 60_000;
-const MAX_EXTEND_DAYS = 3650;
+// The longest a purchase or an extension may run, in days.
+const MAX_STORAGE_DAYS = 3650;
 // Ant's background batch rediscovery (#510, ant-wallet-scan.js): while it
 // runs, an empty `/stamps` does not mean the wallet owns no storage. A node
 // that reports `/health.walletScan` (Ant v0.5.59+) is held until it says
@@ -545,6 +548,7 @@ function parseDepositAmount(value) {
 function parseRequest(request) {
   const kind = request?.kind;
   if (kind === 'buy') {
+    if (request.planId == null) return parseCustomBuy(request);
     const plan = PLANS.find((p) => p.id === request.planId);
     if (!plan) return { error: 'Unknown storage plan.' };
     return {
@@ -557,7 +561,7 @@ function parseRequest(request) {
     const batchId = normalizeBatchId(request.batchId);
     if (!batchId) return { error: 'Invalid storage batch.' };
     const days = request.days == null ? 0 : request.days;
-    if (!Number.isInteger(days) || days < 0 || days > MAX_EXTEND_DAYS) {
+    if (!Number.isInteger(days) || days < 0 || days > MAX_STORAGE_DAYS) {
       return { error: 'Invalid duration.' };
     }
     const depth = request.depth == null ? null : request.depth;
@@ -584,6 +588,20 @@ function parseRequest(request) {
     };
   }
   return { error: 'Unknown operation.' };
+}
+
+// A size and duration the user picked instead of a plan (#1257).
+function parseCustomBuy(request) {
+  const { depth, days } = request;
+  if (!SIZES.some((size) => size.depth === depth)) return { error: 'Choose a size from the list.' };
+  if (!Number.isInteger(days) || days < 1 || days > MAX_STORAGE_DAYS) {
+    return { error: `Choose a whole number of days from 1 to ${MAX_STORAGE_DAYS}.` };
+  }
+  return {
+    kind: 'buy',
+    request: { kind: 'buy', depth, days },
+    params: { depth, days, immutable: true },
+  };
 }
 
 function createPublishSetupService({
@@ -893,6 +911,8 @@ function createPublishSetupService({
       operation: operation ? publicOperation(operation) : null,
       restart: { ...restart },
       plans: PLANS,
+      sizes: SIZES,
+      maxDays: MAX_STORAGE_DAYS,
     };
   }
 
@@ -1785,10 +1805,7 @@ function createPublishSetupService({
     if (!id) return { error: 'Invalid storage batch.', durations: [], sizes: [] };
     const durations = EXTEND_DAYS.map((days) => ({ days }));
     const sizes = Number.isInteger(currentDepth)
-      ? PLANS.filter((p) => p.depth > currentDepth).map((p) => ({
-          depth: p.depth,
-          safeLimitBytes: p.safeLimitBytes,
-        }))
+      ? SIZES.filter((size) => size.depth > currentDepth).map((size) => ({ ...size }))
       : [];
     const results = await Promise.all([
       ...durations.map(({ days }) => api.getStorageQuote({ batchId: id, days })),
@@ -1799,6 +1816,24 @@ function createPublishSetupService({
       durations: durations.map((d, i) => attachQuote(d, results[i], 'extend')),
       sizes: sizes.map((s, i) => attachQuote(s, results[durations.length + i], 'extend')),
     };
+  }
+
+  /**
+   * The price of one buy or extend request, without arming it: the custom
+   * size and duration pickers (#1257) price what the user typed before they
+   * choose it. Validated like arm(), so the price is for exactly what arming
+   * the same request would buy.
+   */
+  async function quote(request) {
+    const parsed = parseRequest(request);
+    if (parsed.error) return { request: null, quote: null, error: parsed.error };
+    if (parsed.kind !== 'buy' && parsed.kind !== 'extend') {
+      return { request: null, quote: null, error: 'Unknown operation.' };
+    }
+    const res = await fetchQuote({ kind: parsed.kind, params: parsed.params });
+    const priced = attachQuote({ request: parsed.request }, res, parsed.kind);
+    emit();
+    return priced;
   }
 
   async function getPublishReadiness() {
@@ -1831,6 +1866,7 @@ function createPublishSetupService({
     restartNode: restartNodeAction,
     getPlans,
     getExtendOptions,
+    quote,
     getPublishReadiness,
     dispose,
   };
@@ -1921,6 +1957,7 @@ function registerPublishSetupIpc() {
   ipcMain.handle(IPC.SWARM_SETUP_GET_EXTEND_OPTIONS, (_event, batchId, depth) =>
     svc.getExtendOptions(batchId, depth)
   );
+  ipcMain.handle(IPC.SWARM_SETUP_QUOTE, (_event, request) => svc.quote(request));
   ipcMain.handle(IPC.SWARM_SETUP_ARM, (_event, request) => svc.arm(request));
   // `{ dismiss: true }`: the screen is leaving a finished result it showed,
   // which another window may still have up (dismiss() above).
@@ -1953,6 +1990,8 @@ module.exports = {
   registerPublishSetupIpc,
   PLANS,
   EXTEND_DAYS,
+  SIZES,
+  MAX_STORAGE_DAYS,
   REQUOTE_MS,
   WATCH_REFRESH_MS,
   STARTUP_REFRESH_MS,

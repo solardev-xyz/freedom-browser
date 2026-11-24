@@ -76,11 +76,19 @@ describe('stamp-service', () => {
         usable: true,
         pending: false,
         isMutable: true,
-        sizeBytes: 5368709120,
-        remainingBytes: 4000000000,
+        sizeBytes: 7_730_000_000,
+        remainingBytes: 5_758_850_000,
         usagePercent: 26,
         ttlSeconds: 2592000,
         expiresApprox: '2026-04-14T00:00:00.000Z',
+      });
+    });
+
+    test("sizes a batch by Swarm's table for its depth, not bee-js's older one (#1257)", () => {
+      const batch = makeBatch({ depth: 20, usage: 0.5 });
+      expect(normalizeBatch(batch)).toMatchObject({
+        sizeBytes: 687_620_000,
+        remainingBytes: 343_810_000,
       });
     });
 
@@ -181,8 +189,8 @@ describe('stamp-service', () => {
         usable: true,
         pending: false,
         isMutable: false,
-        sizeBytes: 5368709120,
-        remainingBytes: 4000000000,
+        sizeBytes: 7_730_000_000,
+        remainingBytes: 5_758_850_000,
         usagePercent: 26,
         ttlSeconds: 2592000,
         expiresApprox: '2026-04-14T00:00:00.000Z',

@@ -11,6 +11,7 @@
 const { ipcMain } = require('electron');
 const { getBee, isPendingStamp, batchIdKey } = require('./swarm-service');
 const antApi = require('./ant-storage-api');
+const { usableBytesForDepth } = require('./batch-sizes');
 const log = require('electron-log');
 
 /**
@@ -22,15 +23,26 @@ const log = require('electron-log');
  * is read from there.
  */
 function normalizeBatch(batch, raw = null) {
+  const usageRaw = typeof batch.usage === 'number' ? batch.usage : 0;
+
+  // The size the storage plans quote for this depth (batch-sizes.js, #1257).
+  // bee-js's own `size` comes from an older, smaller table, so a batch bought
+  // as "up to 688 MB" would list as less. Its figures stay the fallback for
+  // a depth outside the table.
+  const usableBytes = usableBytesForDepth(batch.depth);
   let sizeBytes = 0;
-  if (batch.size && typeof batch.size.toBytes === 'function') {
+  if (usableBytes) {
+    sizeBytes = usableBytes;
+  } else if (batch.size && typeof batch.size.toBytes === 'function') {
     sizeBytes = batch.size.toBytes();
   } else if (typeof batch.size === 'number') {
     sizeBytes = batch.size;
   }
 
   let remainingBytes = 0;
-  if (batch.remainingSize && typeof batch.remainingSize.toBytes === 'function') {
+  if (usableBytes) {
+    remainingBytes = Math.ceil(usableBytes * (1 - usageRaw));
+  } else if (batch.remainingSize && typeof batch.remainingSize.toBytes === 'function') {
     remainingBytes = batch.remainingSize.toBytes();
   } else if (typeof batch.remainingSize === 'number') {
     remainingBytes = batch.remainingSize;
@@ -42,8 +54,6 @@ function normalizeBatch(batch, raw = null) {
   } else if (typeof batch.duration === 'number') {
     ttlSeconds = batch.duration;
   }
-
-  const usageRaw = typeof batch.usage === 'number' ? batch.usage : 0;
 
   const rawId = batch.batchID;
   const batchId = rawId && typeof rawId.toHex === 'function' ? rawId.toHex() : String(rawId || '');
