@@ -103,9 +103,9 @@
  * - **freedom-colibrid's grant** (`colibriGrantRefusal`, design 0014) is one
  *   chain's directory, `<userData>/colibri/<chain>`, for a persistent
  *   process (a private or checkpoint one has none). Only that directory is
- *   its own: the rest of `colibri/` (other chains' directories, the WASM
- *   verifier's flat files) stays protected, and so does another profile's
- *   `colibri/`, before it exists too (`SERVICE_DIRS`).
+ *   its own: the rest of `colibri/` (other chains' directories, the flat
+ *   files the WASM verifier left before COL-6) stays protected, and so does
+ *   another profile's `colibri/`, before it exists too (`SERVICE_DIRS`).
  * - **freedom-radicled's import** (design 0010, D5) reads a working copy,
  *   read only, besides those grants: main checks the working copy against
  *   the same roots and the two grants (`radicleSourceRefusal`), and hands
@@ -399,7 +399,8 @@ const PROFILE_INNER_ENTRIES = new Map([[FREEDOM_DIR, FREEDOM_ENTRIES]]);
 
 // freedom-colibrid's directories' parent at a profile's root (design 0014,
 // The store): one chain's directory in it is a persistent process's only
-// grant, and the WASM verifier's flat files beside them are a cache.
+// grant, and the flat files the WASM verifier left beside them before COL-6
+// are a cache.
 const COLIBRI_DIR = 'colibri';
 
 // A service's own directories that are no component's data directory
@@ -776,7 +777,7 @@ function ipfsGrantRefusal(dataDir, options = {}) {
  * `dataDir`, its chain's directory (`<userData>/colibri/<chainId>`), or
  * null (design 0014, Confinement; design 0010, step 7). That one directory
  * is its own: the rest of `colibri/` (the other chains' directories, the
- * WASM verifier's flat files) stays protected, as does every other
+ * flat files the WASM verifier left before COL-6) stays protected, as does every other
  * profile's `colibri/`, before it exists too.
  */
 function colibriGrantRefusal(dataDir, { chainId, ...options } = {}) {

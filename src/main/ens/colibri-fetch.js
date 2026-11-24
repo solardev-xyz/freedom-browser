@@ -2,7 +2,7 @@
  * Main's fetches for the Colibri service (freedom-core design 0014, "Main's
  * fetches"): the `shell.colibri_fetch` executor. For each data request a
  * `freedom-colibrid` process asks for, main does what the WASM path's
- * `fetch_from_servers` does (`cjs/http.js`), through the session, and only
+ * `fetch_from_servers` did (`cjs/http.js`), through the session, and only
  * for the request shapes the open operation allows
  * (`colibri-fetch-contract.js`).
  *
@@ -26,7 +26,7 @@
  *   logged with the rule `local`. Each fetch refused for an operation
  *   that asks (`onRefused`) is told to it, with the rule and the type.
  * - **A checkpoint's proof** (`checkpoint_proof`), main's own request to
- *   the chain's prover, as the WASM path's checkpoint worker makes it
+ *   the chain's prover, as the WASM path's checkpoint worker made it
  *   (`fetchBytes`): it succeeds on HTTP 200 alone, any other status failing
  *   as an error status does; and each attempt, its body included, has 20 s
  *   at most (`REQUEST_MS`) within the request's deadline. Past them the
@@ -117,11 +117,11 @@ const URLS = /https?:\/\/[^\s"'<>]+/gi;
  * `colibri.checkpoint` row), which the checkpoint path supplies. */
 const LOCAL_VARIANTS = new Set(['checkpoint_root']);
 /** The variants that succeed on HTTP 200 alone: the checkpoint's proof, as
- * the WASM path's worker takes it. */
+ * the WASM path's worker took it. */
 const EXACTLY_200 = new Set(['checkpoint_proof']);
 /** The longest one attempt of a variant may take, its body included, within
  * the request's deadline: the checkpoint's proof, as the WASM path's worker
- * bounds the whole fetch (`fetchBytes`' `REQUEST_MS`). */
+ * bounded the whole fetch (`fetchBytes`' `REQUEST_MS`). */
 const ATTEMPT_MS = Object.freeze({ checkpoint_proof: REQUEST_MS });
 /** A root as main's quorum gives it. */
 const ROOT = /^0x[0-9a-f]{64}$/;

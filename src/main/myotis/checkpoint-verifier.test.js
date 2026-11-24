@@ -1,18 +1,9 @@
-const { EventEmitter } = require('node:events');
-const { Worker } = require('node:worker_threads');
-
-jest.mock('node:worker_threads', () => ({ Worker: jest.fn() }));
-// The development switch, held at its default (the WASM worker) unless a
-// test says otherwise, whatever the environment running the tests says.
-jest.mock('../ens/colibri-backend', () => ({ colibriBackendKind: jest.fn(() => 'wasm') }));
 jest.mock('./checkpoint-colibrid', () => ({ acquireColibridCheckpoint: jest.fn() }));
-const { colibriBackendKind } = require('../ens/colibri-backend');
 const { acquireColibridCheckpoint } = require('./checkpoint-colibrid');
 const {
   acquireCheckpoint,
   validateCheckpoint,
   CHECKPOINT_NETWORKS,
-  DEADLINE_MS,
   MAX_AGE_MS,
 } = require('./checkpoint-verifier');
 
@@ -35,280 +26,23 @@ function checkpoint(chainId = 1) {
   };
 }
 
-describe('checkpoint worker lifecycle', () => {
-  let worker;
-  beforeEach(() => {
-    jest.useFakeTimers({ now: NOW });
-    Worker.mockReset();
-    Worker.mockImplementation(() => {
-      worker = new EventEmitter();
-      worker.terminate = jest.fn(() => Promise.resolve(1));
-      worker.stdout = { resume: jest.fn() };
-      worker.stderr = { resume: jest.fn() };
-      return worker;
-    });
-  });
-  afterEach(() => jest.useRealTimers());
+// The check itself, its bounds and its evidence are checkpoint-colibrid's
+// (checkpoint-colibrid.test.js).
+describe('the verifier', () => {
+  afterEach(() => acquireColibridCheckpoint.mockReset());
 
-  test('a successful narrow result terminates its isolated worker', async () => {
-    const promise = acquireCheckpoint(1);
-    expect(Worker).toHaveBeenCalledWith(expect.stringMatching(/checkpoint-verifier-worker\.js$/), {
-      workerData: { chainId: 1 },
-      execArgv: [],
-      env: { C4_DISABLE_NATIVE: '1' },
-      resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 },
-      stdout: true,
-      stderr: true,
-    });
-    worker.emit('message', { ok: true, checkpoint: { ...checkpoint(), extra: 'not persisted' } });
-    await expect(promise).resolves.toEqual(checkpoint());
-    expect(worker.terminate).toHaveBeenCalledTimes(1);
-    expect(jest.getTimerCount()).toBe(0);
-  });
-
-  test.each(['1', 10, null, {}, NaN])(
-    'rejects unsupported chain %p before spawning',
-    async (chainId) => {
-      await expect(acquireCheckpoint(chainId)).rejects.toMatchObject({
-        code: 'CHECKPOINT_MISMATCH',
-      });
-      expect(Worker).not.toHaveBeenCalled();
-    }
-  );
-
-  test('source diagnostics are allowlisted, bounded, stripped of extras and never settle verification', async () => {
-    const onDiagnostic = jest.fn();
-    const promise = acquireCheckpoint(100, { onDiagnostic });
-    const diagnostic = { source: CHECKPOINT_NETWORKS[100].sources[2], slot: checkpoint(100).slot,
-      elapsedMs: 123, outcome: 'CHECKPOINT_UNAVAILABLE', stage: 'block-root', failure: 'http', httpStatus: 503,
-      body: 'secret', url: 'https://secret.invalid/?token=secret' };
-    const emit = value => worker.emit('message', { type: 'checkpoint-source', diagnostic: value });
-    emit({ ...diagnostic, source: 'https://secret.invalid' });
-    emit({ ...diagnostic, outcome: 'untrusted server text' });
-    emit({ ...diagnostic, elapsedMs: Infinity });
-    expect(onDiagnostic).not.toHaveBeenCalled();
-    emit(diagnostic);
-    expect(onDiagnostic).toHaveBeenCalledWith({ chainId: 100, source: diagnostic.source,
-      slot: diagnostic.slot, elapsedMs: 123, outcome: diagnostic.outcome, stage: 'block-root', failure: 'http', httpStatus: 503 });
-    expect(worker.terminate).not.toHaveBeenCalled();
-    onDiagnostic.mockImplementation(() => { throw new Error('logging failed'); });
-    for (let i = 0; i < 100; i++) emit(diagnostic);
-    expect(onDiagnostic.mock.calls.length).toBe(61);
-    worker.emit('message', { ok: true, checkpoint: checkpoint(100) });
-    await expect(promise).resolves.toEqual(checkpoint(100));
-    emit(diagnostic);
-    expect(onDiagnostic.mock.calls.length).toBe(61);
-  });
-
-  test('pre-aborted requests never spawn', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    await expect(acquireCheckpoint(1, { signal: controller.signal })).rejects.toMatchObject({
-      name: 'AbortError',
-      code: 'CHECKPOINT_UNAVAILABLE',
-    });
-    expect(Worker).not.toHaveBeenCalled();
-  });
-
-  test('abort terminates a busy worker and ignores its late success/error', async () => {
-    const controller = new AbortController();
-    const promise = acquireCheckpoint(1, { signal: controller.signal });
-    const rejected = expect(promise).rejects.toMatchObject({ name: 'AbortError' });
-    controller.abort();
-    worker.emit('message', { ok: true, checkpoint: checkpoint() });
-    expect(() => worker.emit('error', new Error('late'))).not.toThrow();
-    await rejected;
-    expect(worker.terminate).toHaveBeenCalledTimes(1);
-    expect(jest.getTimerCount()).toBe(0);
-  });
-
-  test.each(['success', 'abort'])(
-    'waits for worker termination before settling %s',
-    async (outcome) => {
-      const controller = new AbortController();
-      let terminated;
-      const promise = acquireCheckpoint(1, { signal: controller.signal });
-      worker.terminate.mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            terminated = resolve;
-          })
-      );
-      let completed = false;
-      const observed = promise.then(
-        (value) => {
-          completed = true;
-          return value;
-        },
-        (error) => {
-          completed = true;
-          return error;
-        }
-      );
-      if (outcome === 'success') worker.emit('message', { ok: true, checkpoint: checkpoint() });
-      else controller.abort();
-      await Promise.resolve();
-      expect(completed).toBe(false);
-      worker.emit('error', new Error('late termination error'));
-      expect(completed).toBe(false);
-      terminated(1);
-      const result = await observed;
-      if (outcome === 'success') expect(result).toEqual(checkpoint());
-      else expect(result.name).toBe('AbortError');
-      expect(worker.terminate).toHaveBeenCalledTimes(1);
-    }
-  );
-
-  test.each(['reject', 'throw'])(
-    'termination %s never publishes a successful checkpoint',
-    async (failure) => {
-      const promise = acquireCheckpoint(1);
-      worker.terminate.mockImplementation(() => {
-        if (failure === 'throw') throw new Error('termination private details');
-        return Promise.reject(new Error('termination private details'));
-      });
-      worker.emit('message', { ok: true, checkpoint: checkpoint() });
-      await expect(promise).rejects.toMatchObject({
-        code: 'CHECKPOINT_UNAVAILABLE',
-        message: expect.not.stringContaining('private details'),
-      });
-    }
-  );
-
-  test('total deadline terminates work even with no worker event', async () => {
-    const promise = acquireCheckpoint(1);
-    const rejected = expect(promise).rejects.toMatchObject({ code: 'CHECKPOINT_UNAVAILABLE' });
-    jest.advanceTimersByTime(DEADLINE_MS);
-    await rejected;
-    expect(worker.terminate).toHaveBeenCalledTimes(1);
-  });
-
-  test.each(['error', 'exit'])('unexpected worker %s fails closed', async (event) => {
-    const promise = acquireCheckpoint(1);
-    worker.emit(event, event === 'error' ? new Error('private details') : 0);
-    await expect(promise).rejects.toMatchObject({ code: 'CHECKPOINT_UNAVAILABLE' });
-  });
-
-  test('spawn failure is bounded and sanitized', async () => {
-    Worker.mockImplementation(() => {
-      throw new Error('private path');
-    });
-    await expect(acquireCheckpoint(1)).rejects.toMatchObject({
-      code: 'CHECKPOINT_UNAVAILABLE',
-      message: expect.not.stringContaining('private path'),
-    });
-    expect(jest.getTimerCount()).toBe(0);
-  });
-
-  test.each([
-    'CHECKPOINT_MISMATCH',
-    'CHECKPOINT_STALE',
-    'CHECKPOINT_RACE',
-    'CHECKPOINT_CLOCK',
-    'CHECKPOINT_INCOMPATIBLE',
-    'CHECKPOINT_QUORUM_UNAVAILABLE',
-    'CHECKPOINT_QUORUM_CONFLICT',
-  ])(
-    'preserves worker error category %s without arbitrary message text',
-    async (code) => {
-      const promise = acquireCheckpoint(1);
-      worker.emit('message', { ok: false, error: { code, message: 'private details' } });
-      await expect(promise).rejects.toMatchObject({
-        code,
-        message: expect.not.stringContaining('private details'),
-      });
-    }
-  );
-
-  test('wrong-chain worker result cannot reach the caller', async () => {
-    const promise = acquireCheckpoint(1);
-    worker.emit('message', { ok: true, checkpoint: checkpoint(100) });
-    await expect(promise).rejects.toMatchObject({ code: 'CHECKPOINT_MISMATCH' });
-  });
-
-  test('abort actually terminates a worker running synchronous WASM', async () => {
-    jest.useRealTimers();
-    const { Worker: RealWorker } = jest.requireActual('node:worker_threads');
-    const started = new Int32Array(new SharedArrayBuffer(4));
-    let realWorker;
-    Worker.mockImplementation(() => {
-      realWorker = new RealWorker(
-        `
-        const {workerData} = require('node:worker_threads');
-        const module = new WebAssembly.Module(new Uint8Array([
-          0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,
-          7,8,1,4,115,112,105,110,0,0,10,9,1,7,0,3,64,12,0,11,11
-        ]));
-        const instance = new WebAssembly.Instance(module);
-        Atomics.store(new Int32Array(workerData), 0, 1);
-        instance.exports.spin();
-      `,
-        { eval: true, workerData: started.buffer }
-      );
-      return realWorker;
-    });
-    const controller = new AbortController();
-    const promise = acquireCheckpoint(1, { signal: controller.signal });
-    const rejected = expect(promise).rejects.toMatchObject({ name: 'AbortError' });
-    try {
-      const limit = Date.now() + 2000;
-      while (!Atomics.load(started, 0) && Date.now() < limit) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(Atomics.load(started, 0)).toBe(1);
-      const exited = new Promise((resolve) => realWorker.once('exit', resolve));
-      controller.abort();
-      await rejected;
-      await exited;
-      expect(realWorker.threadId).toBe(-1);
-    } finally {
-      controller.abort();
-      await realWorker.terminate();
-    }
-  }, 5000);
-
-  test('each attempt uses a distinct worker', async () => {
-    const first = acquireCheckpoint(1);
-    const firstWorker = worker;
-    firstWorker.emit('message', { ok: true, checkpoint: checkpoint() });
-    await first;
-    const second = acquireCheckpoint(1);
-    expect(worker).not.toBe(firstWorker);
-    worker.emit('message', { ok: true, checkpoint: checkpoint() });
-    await second;
-    expect(Worker).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe('the verifier the development switch picks', () => {
-  beforeEach(() => Worker.mockReset());
-  afterEach(() => {
-    colibriBackendKind.mockReset();
-    colibriBackendKind.mockImplementation(() => 'wasm');
-    acquireColibridCheckpoint.mockReset();
-    Worker.mockReset();
-  });
-
-  test("the service: freedom-colibrid's one-shot process, with the caller's options, and no worker", async () => {
-    colibriBackendKind.mockReturnValue('service');
+  test("freedom-colibrid's one-shot process, with the caller's options", async () => {
     const options = { signal: new AbortController().signal, onDiagnostic: () => {} };
     acquireColibridCheckpoint.mockResolvedValue(checkpoint(100));
     await expect(acquireCheckpoint(100, options)).resolves.toEqual(checkpoint(100));
     expect(acquireColibridCheckpoint).toHaveBeenCalledWith(100, options);
-    expect(Worker).not.toHaveBeenCalled();
   });
 
-  test('the WASM default (and every packaged build): the worker, never the process', async () => {
-    Worker.mockImplementation(() => {
-      const worker = new EventEmitter();
-      worker.terminate = jest.fn(() => Promise.resolve(1));
-      return worker;
-    });
-    const promise = acquireCheckpoint(1);
-    expect(Worker).toHaveBeenCalledTimes(1);
-    expect(acquireColibridCheckpoint).not.toHaveBeenCalled();
-    Worker.mock.results[0].value.emit('message', { ok: false, error: { code: 'CHECKPOINT_STALE' } });
-    await expect(promise).rejects.toMatchObject({ code: 'CHECKPOINT_STALE' });
+  test('its failure is the caller\'s, as it gave it', async () => {
+    const failure = Object.assign(new Error('stale'), { code: 'CHECKPOINT_STALE' });
+    acquireColibridCheckpoint.mockRejectedValue(failure);
+    await expect(acquireCheckpoint(1)).rejects.toBe(failure);
+    expect(acquireColibridCheckpoint).toHaveBeenCalledWith(1, {});
   });
 });
 

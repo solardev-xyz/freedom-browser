@@ -1,9 +1,8 @@
 /**
  * A checkpoint check through freedom-colibrid's one-shot process (freedom-core
- * design 0014, COL-5): `freedom-colibrid checkpoint --chain <id>`, the native
- * counterpart of the WASM worker (`checkpoint-verifier-worker.js`).
- * `acquireCheckpoint` (checkpoint-verifier.js) runs it behind the development
- * switch (colibri-backend.js), with the same interface and the same results.
+ * design 0014): `freedom-colibrid checkpoint --chain <id>`, which took the
+ * WASM worker's place in COL-6, with the same interface and the same
+ * results. `acquireCheckpoint` (checkpoint-verifier.js) runs it.
  *
  * - **At most 2 checks at once** (design 0014, How many): a third fails at
  *   once with `CHECKPOINT_UNAVAILABLE`, and spawns nothing. A check holds its
@@ -20,15 +19,15 @@
  *   at most, HTTP 200 only), through the session as every Colibri fetch;
  *   and the checkpointz root lookups (at most 8), which main answers
  *   `{"data":{"root"}}` from its quorum (`checkpointQuorum`, memoized per
- *   slot), recording each observation, as the worker's interception does.
+ *   slot), recording each observation, as the worker's interception did.
  *   The quorum's own requests go through the session too (`netGatewayFetch`:
  *   the proxy and Tor's PAC, no cookies, no cache), bounded as the worker's
  *   (`fetchBytes`), and are cut short when the check ends. Everything else
  *   the process asks for is refused. A lookup that fails keeps its reason
  *   (the worker's "transport error"); so does a checkpointz fetch the
  *   contract refuses: a ninth root lookup is `CHECKPOINT_UNAVAILABLE`, any
- *   other `CHECKPOINT_MISMATCH`, as the worker's interception records them.
- * - **The outcome,** as the worker maps its own:
+ *   other `CHECKPOINT_MISMATCH`, as the worker's interception recorded them.
+ * - **The outcome,** as the worker mapped its own:
  *   - `{ decoded, result }`: the proof verified; a recorded transport error
  *     still decides, then the evidence checks (checkpoint-evidence.js's
  *     `verifiedCheckpoint`: the decoded proof's checkpoint, its quorum
@@ -44,14 +43,14 @@
  *   Errors carry their class alone (`checkpointError(code)`), never a text
  *   from the service.
  * - **Settling:** a check settles once its process has exited and the
- *   quorum's requests have ended, as the worker's settle waits for its
+ *   quorum's requests have ended, as the worker's settle waited for its
  *   termination. A process that answered exits by itself (one check, then
  *   exit 0), and is stopped only if it hasn't within the shutdown grace;
  *   any other end (an abort, the 90 s deadline, a refusal, a handshake that
  *   failed) stops it at once (`colibri.shutdown`, its stdin closed, killed
  *   after 5 s). An abort rejects with `AbortError` (`CHECKPOINT_UNAVAILABLE`).
  * - **Diagnostics:** the quorum's per-source diagnostics, validated as the
- *   worker's are (`validateDiagnostic`), at most 64, none after the check
+ *   worker's were (`validateDiagnostic`), at most 64, none after the check
  *   settles.
  */
 
@@ -75,7 +74,7 @@ const MAX_CHECKS = 2;
 /** The freshness bound: the latest block at most this old, as the worker's
  * `max_latest_age_seconds`. */
 const FRESHNESS_S = 60;
-/** Diagnostics a check forwards, as the worker path bounds them. */
+/** Diagnostics a check forwards, as the worker path bounded them. */
 const MAX_DIAGNOSTICS = 64;
 
 let active = 0;
@@ -221,7 +220,7 @@ function acquireColibridCheckpoint(chainId, { signal, onDiagnostic } = {}, depen
     };
     const abort = () => finish(abortError());
 
-    // The quorum's diagnostics, as the worker path forwards its own.
+    // The quorum's diagnostics, as the worker path forwarded its own.
     const diagnostic = (value) => {
       if (finishing || ++diagnostics > MAX_DIAGNOSTICS) return;
       const safe = validateDiagnostic(value, chainId);

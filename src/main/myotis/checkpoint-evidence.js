@@ -1,9 +1,8 @@
 /**
- * Checkpoint evidence checks, shared by the WASM worker
- * (`checkpoint-verifier-worker.js`) and the native checkpoint process's
- * path (`checkpoint-colibrid.js`, `freedom-colibrid checkpoint`;
- * freedom-core design 0014, COL-5), so both judge a checkpoint by the same
- * rules:
+ * Checkpoint evidence checks for the checkpoint process's path
+ * (`checkpoint-colibrid.js`, `freedom-colibrid checkpoint`; freedom-core
+ * design 0014), the rules the WASM worker judged a checkpoint by until COL-6
+ * removed it:
  * - `fetchBytes`: one bounded HTTP request (20 s, no redirects, streamed
  *   bytes capped: 4 MiB for a proof, 64 KiB for metadata);
  * - `checkpointQuorum`: the checkpointz quorum for a slot (3 seats,

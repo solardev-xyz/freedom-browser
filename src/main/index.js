@@ -994,8 +994,8 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
   registerPrivateCleanup((partition) => closeDwebSession(partition));
   // Colibri's private store (#1058): the private windows share one in-memory
-  // verifier store per chain (a WASM worker's, or a freedom-colibrid private
-  // process's), dropped once the last of them has closed.
+  // verifier store per chain (a freedom-colibrid private process's), dropped
+  // once the last of them has closed.
   require('./ens/colibri-resolver').registerColibriPrivateCleanup({
     registerPrivateCleanup,
     getPrivateWindowCount,
@@ -1317,8 +1317,7 @@ async function windDown() {
     ['IPFS', stopIpfs],
     ['Radicle', stopRadicleAtQuit],
     ['Tor', stopTor],
-    // freedom-colibrid's processes (freedom-core design 0014), when the
-    // development switch runs them; nothing to stop on the WASM workers.
+    // freedom-colibrid's processes (freedom-core design 0014).
     ['Colibri', () => require('./ens/colibri-resolver').stopColibri()],
   ];
   // The async wrapper keeps a *synchronous* throw from a stop function inside

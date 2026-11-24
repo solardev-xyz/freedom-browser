@@ -3,8 +3,7 @@
  * process" and "The protocol"): `ServiceClient` (core/service-client.js),
  * configured for the Colibri service, with the step marker's attribution
  * (`colibri-markers.js`) and main's fetches for it (`colibri-fetch.js`).
- * colibri-service.js owns its processes, their bounds and restarts, behind
- * the development switch (colibri-backend.js).
+ * colibri-service.js owns its processes, their bounds and restarts.
  *
  * - **One process at a time:** `restart: false`, so an exit leaves the
  *   client stopped and the owner decides when, and whether, to start

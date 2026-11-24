@@ -1,18 +1,17 @@
 /**
- * Colibri's native backend (freedom-core design 0014, COL-5): the
- * freedom-colibrid processes behind colibri-worker-host.js's interface, so
- * colibri-resolver.js runs on either one by the development switch
- * (colibri-backend.js) and nothing above it changes (design 0014, What the
- * core sees). One `ColibridClient` (colibrid-client.js) runs each process;
- * this module decides which processes run, holds them to the browser-wide
- * bounds, restarts them, and builds what each request gets.
+ * Colibri's verifier (freedom-core design 0014): the freedom-colibrid
+ * processes, behind the interface the WASM worker host had until COL-6
+ * removed it, so nothing above colibri-resolver.js changed (design 0014,
+ * What the core sees). One `ColibridClient` (colibrid-client.js) runs each
+ * process; this module decides which processes run, holds them to the
+ * browser-wide bounds, restarts them, and builds what each request gets.
  *
  * - **The interface** is the WASM host's: `createClient({ chainId,
  *   proverUrl, zkProof, private })` → `{ request({ method, params },
  *   { deadlineMs }), destroy() }`, `ensureWorker(chainId, { private })`,
- *   `endPrivateSession()`, `ColibriWorkerError` (the host's class),
- *   `resetForTest` and `DEFAULT_DEADLINE_MS` (60 s); and `stopAll()` for
- *   the quit. `destroy` sends `colibri.forget` to each process the client
+ *   `endPrivateSession()`, `ColibriWorkerError` (the host's class, with
+ *   the same name and fields), `resetForTest` and `DEFAULT_DEADLINE_MS`
+ *   (60 s); and `stopAll()` for the quit. `destroy` sends `colibri.forget` to each process the client
  *   used. `ensureWorker` gets or spawns the lane's process under the
  *   bounds and waits for its handshake.
  * - **Lanes:** two per chain, `<chain>` and `<chain>:private`, as the host

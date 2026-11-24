@@ -91,6 +91,15 @@ describe('checkpointQuorum', () => {
     expect(contacted(fetch)).toEqual(MAINNET.sources.slice(0, 3));
   });
 
+  test('every authority request is a GET to a source origin, refusing redirects', async () => {
+    const fetch = authorities([ROOT, ROOT, ROOT, ROOT]);
+    await checkpointQuorum(SLOT, MAINNET, fetch, () => NOW);
+    for (const [url, options] of fetch.mock.calls) {
+      expect(MAINNET.sources).toContain(new URL(url).origin);
+      expect(options).toMatchObject({ method: 'GET', redirect: 'error' });
+    }
+  });
+
   test('two votes reach the threshold; a failed third seat is not refilled', async () => {
     const fetch = authorities([ROOT, ROOT]);
     const result = await checkpointQuorum(SLOT, MAINNET, fetch, () => NOW);
@@ -558,19 +567,6 @@ describe('verifyFailure', () => {
     [undefined, 'CHECKPOINT_MISMATCH'],
   ])('%p without a lookup failure is %s', (message, code) => {
     expect(verifyFailure(message, null)).toMatchObject({ code });
-  });
-});
-
-describe('the worker keeps its exported surface', () => {
-  test('it re-exports the shared functions and caps unchanged', () => {
-    const worker = require('./checkpoint-verifier-worker');
-    const evidence = require('./checkpoint-evidence');
-    expect(Object.keys(worker).sort()).toEqual([
-      'MAX_METADATA_BYTES', 'MAX_PROOF_BYTES', 'checkpointQuorum', 'fetchBytes', 'headerRoot', 'verifyCheckpoint',
-    ]);
-    for (const name of ['checkpointQuorum', 'fetchBytes', 'headerRoot', 'MAX_PROOF_BYTES', 'MAX_METADATA_BYTES']) {
-      expect(worker[name]).toBe(evidence[name]);
-    }
   });
 });
 

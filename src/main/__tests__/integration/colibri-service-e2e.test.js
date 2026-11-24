@@ -1,15 +1,21 @@
 /**
- * Gated live run of Colibri's chain reads on both backends (freedom-core
- * design 0014, COL-5): with the development switch on
- * (FREEDOM_COLIBRI_BACKEND=service), chain data's reads go through
- * chain-verified's executor (`shell.verified`, its `{ colibri: "request" }`
- * operation) and colibri-resolver to freedom-colibrid, which asks the real
- * default prover, beacon and checkpoint hosts for every chain the provers
- * cover (mainnet and Gnosis). Each read runs again with the switch off, on
- * the WASM verifier, and the two answers are compared wherever they can't
- * move between the reads: a block by number and by hash, its transaction
- * and receipt. A read at `latest` can: the block number is compared within a
- * margin, the balance once two reads agree.
+ * Gated live run of Colibri's chain reads (freedom-core design 0014): chain
+ * data's reads go through chain-verified's executor (`shell.verified`, its
+ * `{ colibri: "request" }` operation) and colibri-resolver to
+ * freedom-colibrid, which asks the real default prover, beacon and
+ * checkpoint hosts for every chain the provers cover (mainnet and Gnosis).
+ *
+ * What it expects, where it can't move: the recorded reference
+ * (freedom-core's `vectors/colibri.json`, COL-1's recording of the WASM
+ * verifier) gives each chain a block, one of its transactions and its
+ * receipt, which a live read must give again: the block by number and by
+ * hash byte for byte, the transaction and the receipt field for field
+ * (today's prover adds a null `contractAddress` to a receipt); and its
+ * latest block at capture, which today's must not be behind,
+ * nor ahead by more than a block per slot since. Without the vectors those
+ * parts are skipped, and fail when FREEDOM_CORE_COLIBRI_VECTORS names them.
+ * Everything else is held to itself: a settled block read by number and by
+ * hash, its transaction and receipt naming it, a balance read twice.
  *
  * Gated by COLIBRI_SERVICE_E2E=1: it needs the network, so no pull-request
  * job runs it; .github/workflows/colibri-live.yml runs it on Linux, macOS and
@@ -18,7 +24,8 @@
  * development build (`npm run colibrid:download`, or FREEDOM_COLIBRID_PATH):
  *
  *   npm run colibrid:download
- *   COLIBRI_SERVICE_E2E=1 npx jest src/main/__tests__/integration/colibri-service-e2e.test.js
+ *   COLIBRI_SERVICE_E2E=1 FREEDOM_CORE_COLIBRI_VECTORS=../freedom-core/vectors/colibri.json \
+ *     npx jest src/main/__tests__/integration/colibri-service-e2e.test.js
  *
  * Electron's paths are a fresh temporary directory, so the stores and the
  * locks stay out of the developer's profile; nothing else is stubbed but
@@ -28,6 +35,7 @@
 const E2E_ENABLED = process.env.COLIBRI_SERVICE_E2E === '1';
 const describeOrSkip = E2E_ENABLED ? describe : describe.skip;
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -63,7 +71,10 @@ const {
   requestViaColibri,
   stopColibri,
 } = require('../../ens/colibri-resolver');
-const workerHost = require('../../ens/colibri-worker-host');
+const {
+  colibriVectors,
+  colibriVectorsRequired,
+} = require('../../../../test/helpers/colibri-vectors');
 
 const TIMEOUT_MS = 120_000;
 const DEADLINE_MS = 60_000;
@@ -71,14 +82,13 @@ const DEADLINE_MS = 60_000;
  * blocks, within this budget, each read within what is left of it. */
 const SEARCH_BLOCKS = 8;
 const SEARCH_MS = 120_000;
-/** The block at latest on both backends, then the search. */
-const SEARCH_TIMEOUT_MS = 2 * DEADLINE_MS + SEARCH_MS + 10_000;
+/** The block at latest, then the search. */
+const SEARCH_TIMEOUT_MS = DEADLINE_MS + SEARCH_MS + 10_000;
 /** An account whose balance rarely moves (the ecrecover precompile). */
 const ACCOUNT = '0x0000000000000000000000000000000000000001';
 const CHAINS = [
-  // Blocks per minute, for the margin between two reads at latest.
-  { chainId: 1, name: 'mainnet', perMinute: 5 },
-  { chainId: 100, name: 'Gnosis', perMinute: 12 },
+  { chainId: 1, name: 'mainnet', slotMs: 12_000 },
+  { chainId: 100, name: 'Gnosis', slotMs: 5_000 },
 ];
 
 /**
@@ -122,14 +132,12 @@ function chainVerified() {
   };
 }
 
-const read = chainVerified();
+const verified = chainVerified();
 
-/** One read on `backend` (the development switch), its result. */
-async function readOn(backend, chainId, method, params, deadlineMs) {
-  process.env.FREEDOM_COLIBRI_BACKEND = backend;
-  const { reply, error } = await read(chainId, method, params, deadlineMs);
-  expect({ backend, method, reply, error }).toEqual({
-    backend,
+/** One read, its result. */
+async function read(chainId, method, params, deadlineMs) {
+  const { reply, error } = await verified(chainId, method, params, deadlineMs);
+  expect({ method, reply, error }).toEqual({
     method,
     reply: { result: expect.anything() },
     error: null,
@@ -137,19 +145,58 @@ async function readOn(backend, chainId, method, params, deadlineMs) {
   return reply.result;
 }
 
-/** The same read on the service, then on WASM: `{ service, wasm }`. */
-async function both(chainId, method, params) {
-  const service = await readOn('service', chainId, method, params);
-  const wasm = await readOn('wasm', chainId, method, params);
-  return { service, wasm };
-}
-
 const hexNumber = (value) => {
   expect(value).toMatch(/^0x(0|[1-9a-f][0-9a-f]*)$/);
   return Number(BigInt(value));
 };
 
-const savedBackend = process.env.FREEDOM_COLIBRI_BACKEND;
+/**
+ * `value` against a recorded outcome: a result recorded by its JSON text's
+ * length and SHA-256 (`result_json`, a block) is that text exactly; one
+ * recorded inline (a transaction, a receipt) has every recorded field, and
+ * any other only as null. Today's prover gives a receipt a
+ * `contractAddress: null` the recording's answers didn't carry.
+ */
+function expectRecorded(value, recorded) {
+  if (recorded.result_json) {
+    const text = JSON.stringify(value);
+    expect({
+      chars: text.length,
+      sha256: crypto.createHash('sha256').update(text).digest('hex'),
+    }).toEqual(recorded.result_json);
+    return;
+  }
+  const { result } = recorded;
+  if (result === null || typeof result !== 'object') {
+    expect(value).toEqual(result);
+    return;
+  }
+  expect(value).toMatchObject(result);
+  const added = Object.keys(value).filter((key) => !Object.hasOwn(result, key));
+  expect(Object.fromEntries(added.map((key) => [key, value[key]]))).toEqual(
+    Object.fromEntries(added.map((key) => [key, null]))
+  );
+}
+
+/** The recording's case `id`: its one request and its recorded outcome. */
+function recordedCase(id) {
+  const entry = colibriVectors.cases.find((item) => item.id === id);
+  if (!entry) throw new Error(`the Colibri vectors have no case ${id}`);
+  const [request] = entry.requests;
+  const [outcome] = entry.outcomes;
+  expect(outcome.ok).toBe(true);
+  return { request, outcome };
+}
+
+const recordedTest = colibriVectors ? test : test.skip;
+
+// Named outright, the vectors must be there, so their parts can't skip.
+(E2E_ENABLED && colibriVectorsRequired ? test : test.skip)(
+  'the vectors FREEDOM_CORE_COLIBRI_VECTORS names are there',
+  () => {
+    expect(colibriVectors).not.toBeNull();
+  }
+);
 
 // Jest runs a root teardown even when every test is skipped: registered
 // only for a gated run, it removes only the directory that run made.
@@ -157,130 +204,123 @@ if (E2E_ENABLED) {
   afterAll(async () => {
     clearColibriClientForTest();
     await stopColibri();
-    workerHost.resetForTest();
-    if (savedBackend === undefined) delete process.env.FREEDOM_COLIBRI_BACKEND;
-    else process.env.FREEDOM_COLIBRI_BACKEND = savedBackend;
     fs.rmSync(mockAppDir, { recursive: true, force: true });
   }, TIMEOUT_MS);
 }
 
-describeOrSkip.each(CHAINS)(
-  "Colibri's chain reads on both backends: $name",
-  ({ chainId, perMinute }) => {
-    // A settled block with a transaction, found from the service's latest.
-    let block = null;
+describeOrSkip.each(CHAINS)("Colibri's chain reads: $name", ({ chainId, slotMs }) => {
+  // A settled block with a transaction, found from latest.
+  let block = null;
 
-    test(
-      'eth_blockNumber: within the blocks made between the two reads',
-      async () => {
-        const startedAt = Date.now();
-        const { service, wasm } = await both(chainId, 'eth_blockNumber', []);
-        const minutes = (Date.now() - startedAt) / 60_000;
-        expect(Math.abs(hexNumber(service) - hexNumber(wasm))).toBeLessThanOrEqual(
-          Math.ceil((minutes + 1) * perMinute)
+  test(
+    'eth_blockNumber: a number, from the chain\'s own store',
+    async () => {
+      hexNumber(await read(chainId, 'eth_blockNumber', []));
+      // The chain's directory (deviation storage-per-chain), and nothing
+      // else under <userData>/colibri.
+      const store = path.join(mockAppDir, 'userData', 'colibri');
+      expect(fs.statSync(path.join(store, String(chainId))).isDirectory()).toBe(true);
+      expect(fs.readdirSync(store).every((name) => /^[1-9][0-9]*$/.test(name))).toBe(true);
+    },
+    TIMEOUT_MS
+  );
+
+  recordedTest(
+    "eth_blockNumber: not behind the recording's latest, nor ahead by more than a block per slot since",
+    async () => {
+      const { request, outcome } = recordedCase(`${chainId}-zk-cold`);
+      const recorded = hexNumber(outcome.result);
+      const latest = hexNumber(await read(chainId, 'eth_blockNumber', []));
+      const slots = Math.ceil((Date.now() - request.clock) / slotMs);
+      expect(latest).toBeGreaterThanOrEqual(recorded);
+      expect(latest - recorded).toBeLessThanOrEqual(slots + 1);
+    },
+    TIMEOUT_MS
+  );
+
+  test(
+    'eth_getBlockByNumber at latest: a block, then a settled one with a transaction',
+    async () => {
+      const latest = await read(chainId, 'eth_getBlockByNumber', ['latest', false]);
+      expect(latest).toMatchObject({
+        number: expect.stringMatching(/^0x/),
+        hash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+        transactions: expect.any(Array),
+      });
+      // A few blocks back, so no read finds it reorganised, with a
+      // transaction to read: at most SEARCH_BLOCKS blocks within SEARCH_MS.
+      const newest = hexNumber(latest.number) - 3;
+      const searchEnds = Date.now() + SEARCH_MS;
+      const searched = [];
+      for (let number = newest; !block && number > newest - SEARCH_BLOCKS; number -= 1) {
+        const left = Math.floor(searchEnds - Date.now());
+        if (left <= 0) break;
+        const candidate = await read(
+          chainId,
+          'eth_getBlockByNumber',
+          [`0x${number.toString(16)}`, false],
+          Math.min(DEADLINE_MS, left)
         );
-        // Each backend answered from its own store (deviation storage-per-chain):
-        // the service's chain directory, the WASM verifier's flat files.
-        const store = path.join(mockAppDir, 'userData', 'colibri');
-        expect(fs.statSync(path.join(store, String(chainId))).isDirectory()).toBe(true);
-        expect(fs.existsSync(path.join(store, `states_${chainId}`))).toBe(true);
-      },
-      TIMEOUT_MS
-    );
+        searched.push(number);
+        if (candidate.transactions.length > 0) block = candidate;
+      }
+      expect({ searched, found: block !== null }).toEqual({ searched, found: true });
+    },
+    SEARCH_TIMEOUT_MS
+  );
 
-    test(
-      'eth_getBlockByNumber at latest: a block on each',
-      async () => {
-        const { service, wasm } = await both(chainId, 'eth_getBlockByNumber', ['latest', false]);
-        for (const latest of [service, wasm]) {
-          expect(latest).toMatchObject({
-            number: expect.stringMatching(/^0x/),
-            hash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
-            transactions: expect.any(Array),
-          });
-        }
-        // A few blocks back, so neither read finds it reorganised, with a
-        // transaction to read: searched on the service, at most
-        // SEARCH_BLOCKS blocks within SEARCH_MS, then verified on both.
-        const newest = hexNumber(service.number) - 3;
-        const searchEnds = Date.now() + SEARCH_MS;
-        const searched = [];
-        for (let number = newest; !block && number > newest - SEARCH_BLOCKS; number -= 1) {
-          const left = Math.floor(searchEnds - Date.now());
-          if (left <= 0) break;
-          const candidate = await readOn(
-            'service',
-            chainId,
-            'eth_getBlockByNumber',
-            [`0x${number.toString(16)}`, false],
-            Math.min(DEADLINE_MS, left)
-          );
-          searched.push(number);
-          if (candidate.transactions.length > 0) block = candidate;
-        }
-        expect({ searched, found: block !== null }).toEqual({ searched, found: true });
-      },
-      SEARCH_TIMEOUT_MS
-    );
+  test(
+    'the settled block by hash, both ways: the same block',
+    async () => {
+      expect(await read(chainId, 'eth_getBlockByNumber', [block.hash, false])).toEqual(block);
+      expect(await read(chainId, 'eth_getBlockByHash', [block.hash, false])).toEqual(block);
+    },
+    TIMEOUT_MS
+  );
 
-    test(
-      'eth_getBlockByNumber at a number and at a hash: the same block',
-      async () => {
-        const byNumber = await both(chainId, 'eth_getBlockByNumber', [block.number, false]);
-        expect(byNumber.service).toEqual(block);
-        expect(byNumber.wasm).toEqual(block);
-        const byHash = await both(chainId, 'eth_getBlockByNumber', [block.hash, false]);
-        expect(byHash.service).toEqual(block);
-        expect(byHash.wasm).toEqual(block);
-      },
-      TIMEOUT_MS
-    );
+  test(
+    'a transaction of the settled block, and its receipt: both name the block',
+    async () => {
+      const [hash] = block.transactions;
+      expect(await read(chainId, 'eth_getTransactionByHash', [hash])).toMatchObject({
+        hash,
+        blockHash: block.hash,
+        blockNumber: block.number,
+      });
+      expect(await read(chainId, 'eth_getTransactionReceipt', [hash])).toMatchObject({
+        transactionHash: hash,
+        blockHash: block.hash,
+        blockNumber: block.number,
+      });
+    },
+    TIMEOUT_MS
+  );
 
-    test(
-      'eth_getBlockByHash: the same block',
-      async () => {
-        const { service, wasm } = await both(chainId, 'eth_getBlockByHash', [block.hash, false]);
-        expect(service).toEqual(block);
-        expect(wasm).toEqual(block);
-      },
-      TIMEOUT_MS
-    );
+  recordedTest.each([
+    ['the block by number', 'block-number'],
+    ['the block by hash', 'block-hash'],
+    ['eth_getBlockByHash', 'block-by-hash'],
+    ['its transaction', 'tx'],
+    ['its receipt', 'receipt'],
+  ])(
+    "the recording's block, %s: the recorded answer",
+    async (_label, name) => {
+      const { request, outcome } = recordedCase(`${chainId}-${name}`);
+      expectRecorded(await read(chainId, request.method, request.params), outcome);
+    },
+    TIMEOUT_MS
+  );
 
-    test(
-      'a transaction of the block, and its receipt: the same on both',
-      async () => {
-        const [hash] = block.transactions;
-        const tx = await both(chainId, 'eth_getTransactionByHash', [hash]);
-        expect(tx.service).toMatchObject({
-          hash,
-          blockHash: block.hash,
-          blockNumber: block.number,
-        });
-        expect(tx.wasm).toEqual(tx.service);
-        const receipt = await both(chainId, 'eth_getTransactionReceipt', [hash]);
-        expect(receipt.service).toMatchObject({
-          transactionHash: hash,
-          blockHash: block.hash,
-          blockNumber: block.number,
-        });
-        expect(receipt.wasm).toEqual(receipt.service);
-      },
-      TIMEOUT_MS
-    );
-
-    test(
-      'eth_getBalance at latest: the same once two reads agree',
-      async () => {
-        // The balance may move between the reads: read again, at most twice.
-        let last = null;
-        for (let round = 0; round < 3; round += 1) {
-          last = await both(chainId, 'eth_getBalance', [ACCOUNT, 'latest']);
-          hexNumber(last.service);
-          if (last.service === last.wasm) break;
-        }
-        expect(last.wasm).toBe(last.service);
-      },
-      TIMEOUT_MS
-    );
-  }
-);
+  test(
+    'eth_getBalance at latest: the same once two reads agree',
+    async () => {
+      // The balance may move between the reads: read again, at most twice.
+      const reads = [hexNumber(await read(chainId, 'eth_getBalance', [ACCOUNT, 'latest']))];
+      for (let round = 0; round < 2 && reads.at(-1) !== reads.at(-2); round += 1) {
+        reads.push(hexNumber(await read(chainId, 'eth_getBalance', [ACCOUNT, 'latest'])));
+      }
+      expect(reads.at(-1)).toBe(reads.at(-2));
+    },
+    TIMEOUT_MS
+  );
+});

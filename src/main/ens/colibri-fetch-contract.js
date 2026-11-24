@@ -3,9 +3,9 @@
  * contract"): which `shell.colibri_fetch` requests main makes for the Colibri
  * service, and exactly how. Pure: no I/O, no clock.
  *
- * Today the worker fetches whatever request the WASM instance returns. With
- * the service, main checks each data request against the variants its
- * operation allows and refuses anything else. The grammar is the source-level
+ * The WASM worker fetched whatever request its instance returned, until
+ * COL-6 removed it. Main checks each of the service's data requests against
+ * the variants its operation allows and refuses anything else. The grammar is the source-level
  * table of 3.0.3's verifier-only build, which freedom-core's COL-1 recording
  * (`vectors/colibri.json`) checks from both sides:
  * - sync, admitted for every operation the service serves: `lc_updates`,
@@ -25,9 +25,8 @@
  *   from the chain's prover with nothing taken from the service, and
  *   `checkpoint_root` (`eth/v1/beacon/blocks/<n>/root`) at most 8 times,
  *   which main answers from its quorum. Nothing else, the sync variants
- *   included: today's checkpoint worker intercepts only that root path
- *   (`checkpoint-verifier-worker.js`), and that interception is the
- *   reference.
+ *   included: the WASM checkpoint worker intercepted only that root path,
+ *   and that interception is the reference.
  *
  * Every prover POST ends with the props enrichment adds, and nothing else:
  * `version` 196611, an optional `c4` (the client state, at most 41 bytes), an
@@ -173,8 +172,8 @@ const PROVER_KEYS = Object.freeze([
 ]);
 
 /**
- * The checkpoint's proof request, as `checkpoint-verifier-worker.js` makes
- * it today: main's own, nothing taken from the service.
+ * The checkpoint's proof request, as the WASM checkpoint worker made it:
+ * main's own, nothing taken from the service.
  */
 const CHECKPOINT_PROOF_PAYLOAD = JSON.stringify({
   method: 'eth_getBlockByNumber',
