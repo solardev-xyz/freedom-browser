@@ -92,6 +92,38 @@ describe('guardedSdkFetch', () => {
     expect(await res.text()).toBe('public file');
   });
 
+  test('serves requests started in the same tick', async () => {
+    // The SDK's wasm-bindgen-futures queue runs dials started together in
+    // one batch, under the first request's async context; each request must
+    // still get its own vetted response, not a refusal.
+    const { base, hits } = await startFixture((req, res) => res.end(`file ${req.url}`));
+    const paths = Array.from({ length: 8 }, (_, i) => `/pub/${i}`);
+    const responses = await Promise.all(
+      paths.map((path) =>
+        pubky.guardedSdkFetch(`${base}${path}`, { method: 'GET' }, PUBLIC_FOR_TEST)
+      )
+    );
+    expect(responses.map((r) => r.status)).toEqual(paths.map(() => 200));
+    expect(await Promise.all(responses.map((r) => r.text()))).toEqual(
+      paths.map((path) => `file ${path}`)
+    );
+    expect(hits.map((h) => h.url).sort()).toEqual([...paths].sort());
+  });
+
+  test("a response vetted under another request's policy is refused", async () => {
+    // Same-tick batching hands the second request's dial the first one's
+    // context; if their policies differ the second fails closed.
+    const { base } = await startFixture((req, res) => res.end('x'));
+    const stricter = Object.freeze({ protocols: ['https:', 'http:'], isPublicAddress: () => true });
+    const [first, second] = await Promise.allSettled([
+      pubky.guardedSdkFetch(`${base}/pub/a`, { method: 'GET' }, PUBLIC_FOR_TEST),
+      pubky.guardedSdkFetch(`${base}/pub/b`, { method: 'GET' }, stricter),
+    ]);
+    expect(first.status).toBe('fulfilled');
+    expect(second.status).toBe('rejected');
+    expect(second.reason.name).toBe('PubkyDialRefused');
+  });
+
   test('passes a homeserver 404 through', async () => {
     const { base } = await startFixture((req, res) => {
       res.statusCode = 404;

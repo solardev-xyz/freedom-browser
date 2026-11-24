@@ -917,6 +917,17 @@ describe('permissions-manager', () => {
     expect(promptCount(host)).toBe(0);
   });
 
+  test('pubky:// pages are denied without a prompt', () => {
+    load();
+    const host = makeHost();
+    const callback = request('notifications', {
+      url: 'pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/app/index.html',
+      host,
+    });
+    expect(callback).toHaveBeenCalledWith(false);
+    expect(promptCount(host)).toBe(0);
+  });
+
   test('host destroyed-listener is disarmed when its last guest goes away', () => {
     load();
     const host = makeHost();

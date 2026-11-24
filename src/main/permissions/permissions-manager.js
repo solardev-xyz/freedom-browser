@@ -202,6 +202,9 @@ function permissionKeysForRequest(permission, details) {
 // The shapes getPermissionKey produces for real sites: a bare Ethereum
 // name, a dweb-scheme key, or a scheme://host[:port] web origin. Anything
 // else is its raw-string fallback and must not become a storage key.
+// `pubky://` pages are deliberately absent: getPermissionKey has no pubky
+// branch and keeps the whole URL, so they get no prompt and are denied
+// (docs/protocols/pubky.md, Limits).
 const VALID_ORIGIN_KEY_SHAPE =
   /^(?:[a-z0-9-]+\.(?:eth|box|wei|gwei)|(?:ipfs|ipns|bzz|rad):\/\/[^/?#\s]+|web3:\/\/0x[0-9a-f]{40}(?::[1-9][0-9]*)?|https?:\/\/[^/?#\s]+)$/i;
 

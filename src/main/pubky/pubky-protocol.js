@@ -22,7 +22,13 @@
  *    or LAN services (the local Ant API, a router) as same-origin content.
  *    Residual: undici resolves the host again when it connects, so a DNS
  *    answer that changes between our lookup and its dial (rebinding) is
- *    not caught.
+ *    not caught. https-only plus certificate validation still keeps that
+ *    from reaching a plain-http loopback/LAN service: the rebound target
+ *    would need a certificate valid for the attacker's hostname.
+ *  - The homeserver's status and body reach the page, but not its
+ *    `Set-Cookie`/`Service-Worker-Allowed` headers (as for bzz:/ipfs:,
+ *    O-12) nor its encoding/length/hop-by-hop headers, which describe a
+ *    body fetch has already decoded.
  *  - Error responses carry fixed text, never SDK/WASM error messages.
  */
 
@@ -30,6 +36,7 @@ const dns = require('node:dns');
 const net = require('node:net');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const log = require('../logger');
+const { stripPageStateHeaders } = require('../lib/gateway-response-headers');
 
 // 52 z-base-32 characters; the unused final bits are zero, so the last
 // character is `y` or `o`. Same rule as Pubky Chromium's IDENTIFIERS.md.
@@ -156,21 +163,30 @@ async function vetDestination(rawUrl, policy) {
   }
 }
 
+// Every response `guardedFetch` hands back, mapped to the policy that vetted
+// its dial. `guardedSdkFetch` checks the response the SDK returns against
+// this, not against its own async-context state: wasm-bindgen-futures runs
+// its queued tasks in one batch, so SDK dials started in the same tick by
+// several pubky requests all run under the first request's context. The
+// SDK returns the very Response object the dial produced, so identity is
+// the reliable link back to the guard.
+const vettedResponses = new WeakMap();
+
 async function guardedFetch(state, input, init) {
   // `redirect: 'manual'` on every dial: a 3xx comes back as itself and is
   // refused below instead of being followed to wherever it points.
   const request = new Request(input, { ...init, redirect: 'manual' });
   await vetDestination(request.url, state.policy);
-  state.vetted.add(request.url);
   const response = await originalFetch(request);
   if (response.status >= 300 && response.status < 400 && response.status !== 304) {
     response.body?.cancel().catch(() => {});
     throw new PubkyDialRefused();
   }
+  vettedResponses.set(response, state.policy);
   return response;
 }
 
-const newGuardState = (policy = DEFAULT_POLICY) => ({ vetted: new Set(), policy });
+const newGuardState = (policy = DEFAULT_POLICY) => ({ policy });
 
 // ponytail: the SDK loads its WASM on first use, so a profile that never
 // opens a pubky:// address never pays for it.
@@ -202,8 +218,9 @@ const loadSdk = () => {
 /**
  * Fetches `url` with the SDK client, every dial guarded by `policy`.
  * Rejects with PubkyDialRefused when a dial is refused or the response
- * did not come from a dial the guard vetted (fails closed should the
- * async context ever be lost inside the SDK).
+ * did not come from a dial the guard vetted under `policy` (fails closed
+ * should the async context ever be lost inside the SDK, or carry another
+ * request's policy).
  */
 function guardedSdkFetch(url, init, policy = DEFAULT_POLICY) {
   const state = newGuardState(policy);
@@ -213,13 +230,38 @@ function guardedSdkFetch(url, init, policy = DEFAULT_POLICY) {
     const status = response.status;
     if (
       response.redirected ||
-      !state.vetted.has(response.url) ||
+      vettedResponses.get(response) !== policy ||
       (status >= 300 && status < 400 && status !== 304)
     ) {
       response.body?.cancel().catch(() => {});
       throw new PubkyDialRefused();
     }
     return response;
+  });
+}
+
+// A 204/205/304 carries no body, and `Response` refuses one for them.
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
+// Body-describing and hop-by-hop headers fetch leaves on an already-decoded
+// body; forwarding `content-encoding: gzip` with the compressed length would
+// misdescribe it to the page. Same list as ipfs-manager.js.
+const DROPPED_UPSTREAM_RESPONSE_HEADERS = [
+  'content-encoding',
+  'content-length',
+  'transfer-encoding',
+  'connection',
+  'keep-alive',
+];
+
+function toPageResponse(upstream) {
+  const headers = new Headers(upstream.headers);
+  for (const name of DROPPED_UPSTREAM_RESPONSE_HEADERS) headers.delete(name);
+  stripPageStateHeaders(headers);
+  return new Response(NULL_BODY_STATUSES.has(upstream.status) ? null : upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
   });
 }
 
@@ -257,7 +299,7 @@ async function handlePubkyRequest(request) {
 
   try {
     const { resolvePubky } = loadSdk();
-    return await guardedSdkFetch(resolvePubky(address), { method });
+    return toPageResponse(await guardedSdkFetch(resolvePubky(address), { method }));
   } catch (err) {
     log.warn(`[pubky-protocol] request failed: ${err?.name || 'Error'}`);
     return textResponse(502, HOMESERVER_UNREACHABLE);

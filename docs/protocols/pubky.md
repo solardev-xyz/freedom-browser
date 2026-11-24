@@ -16,13 +16,13 @@ Freedom opens public files stored on [Pubky](https://pubky.org) homeservers. A P
 
 `pubky` is registered in `src/main/index.js` as a privileged standard scheme, like `ipfs` and `bzz`. Each public key is its own origin, so relative links, sub-resources and `fetch()` in a page served from `pubky://<public-key>/` work without a gateway.
 
-The handler in `src/main/pubky/pubky-protocol.js` uses the [Pubky JS SDK](https://www.npmjs.com/package/@synonymdev/pubky) to resolve the key's homeserver through Pkarr relays and fetch the file. The homeserver's status, headers and body go back to the page, so a missing file returns `404` and an HTML file renders as a page.
+The handler in `src/main/pubky/pubky-protocol.js` uses the [Pubky JS SDK](https://www.npmjs.com/package/@synonymdev/pubky) to resolve the key's homeserver through Pkarr relays and fetch the file. The homeserver's status, headers and body go back to the page, so a missing file returns `404` and an HTML file renders as a page. As for `bzz:` and `ipfs:`, `Set-Cookie` and `Service-Worker-Allowed` are dropped, along with `Content-Encoding`, `Content-Length` and hop-by-hop headers, which describe the compressed upstream body rather than the decoded one the page gets.
 
 The key's owner chooses the homeserver address, so every request the SDK makes for a `pubky://` page is checked first:
 
 - Only `https://` is dialled.
 - Redirects are never followed. A homeserver that answers with a redirect gets the page a `502`.
-- The host must resolve only to public addresses. Loopback, private (LAN), link-local, carrier-grade NAT and other reserved ranges are refused, so a `pubky://` page can't read the local Ant API or a router's admin page. A DNS answer that changes between this check and the connection (DNS rebinding) is not caught.
+- The host must resolve only to public addresses. Loopback, private (LAN), link-local, carrier-grade NAT and other reserved ranges are refused, so a `pubky://` page can't read the local Ant API or a router's admin page. A DNS answer that changes between this check and the connection (DNS rebinding) is not caught, but because only `https://` is dialled and the certificate is validated, a rebound address also needs a certificate valid for the attacker's hostname. That keeps rebinding from reaching plain-`http` loopback and LAN services.
 
 Loading the SDK replaces Node's global `fetch` with a cookie-storing wrapper. The handler puts the original back as soon as the SDK has loaded, so no cookie jar is kept for Pubky or for any other main-process request. The SDK's own requests are routed through the checks above; every other caller reaches the original `fetch` unchanged.
 
@@ -32,3 +32,4 @@ Loading the SDK replaces Node's global `fetch` with a cookie-storing wrapper. Th
 - Freedom never signs in to a homeserver, so it can't write files or read private data.
 - If the homeserver can't be resolved or reached, or a check above refuses it, the handler returns `502` with a fixed message. SDK error text never reaches the page.
 - The handler doesn't log request URLs, because they name the key being read.
+- Site permissions (notifications, camera, microphone and the like) aren't offered to `pubky://` pages. Such a request is denied without a prompt, because the permission store has no key form for a `pubky://` origin yet.
