@@ -560,6 +560,7 @@ async function applyBump({
   if (W.compareVersions(version, pinned) <= 0)
     throw new AlreadyBumped(`electron ${pinned} is already at or past ${version}`);
 
+  const lockedBefore = Object.keys(JSON.parse(readText(root, 'package-lock.json')).packages || {});
   exec(
     'npm',
     [
@@ -578,6 +579,21 @@ async function applyBump({
   if (locked !== version || range !== `^${version}`) {
     throw new Error(
       `npm left electron at ${locked} (range ${range}), expected ${version} (^${version})`
+    );
+  }
+
+  // An npm other than CI's resolves optional dependencies differently and
+  // drops the entries it would not install on this host, which breaks every
+  // `npm ci` in CI (release-process.md §2). Electron's own dependencies do
+  // not change within a major, so an entry gone is most likely that drift;
+  // stop either way and leave the bump to a maintainer.
+  const lockedAfter = new Set(
+    Object.keys(JSON.parse(readText(root, 'package-lock.json')).packages || {})
+  );
+  const dropped = lockedBefore.filter((key) => !lockedAfter.has(key));
+  if (dropped.length) {
+    throw new Error(
+      `npm dropped ${dropped.length} package-lock.json entr${dropped.length === 1 ? 'y' : 'ies'} (${dropped.slice(0, 5).join(', ')}${dropped.length > 5 ? ', …' : ''}); resolve with the npm CI uses`
     );
   }
 
@@ -642,6 +658,11 @@ function commitMessage(b, issue) {
 function pullBody(b, { issue, repo }) {
   const line = b.fragmentText.split('\n').find((l) => /- Electron /.test(l)) || '';
   return [
+    // dependency-updates.md's pull request format opens with the version table.
+    '| npm package | Before | After |',
+    '| ----------- | ------ | ----- |',
+    `| electron | ${b.pinned} | ${b.version} |`,
+    '',
     `Electron ${b.pinned} to ${b.version}${issue ? ` for #${issue}, which has the deadline, the fixes and the CVEs` : ''}. Opened by \`.github/workflows/electron-watch.yml\`; Electron-only, as the [security-release fast path](https://github.com/${repo}/blob/main/docs/agent-playbooks/release-process.md#security-release-electron) needs.`,
     '',
     '- `package.json`, `package-lock.json`: `electron` `^' +

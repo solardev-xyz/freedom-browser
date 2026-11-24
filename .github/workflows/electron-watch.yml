@@ -103,6 +103,10 @@ jobs:
           ref: main
           persist-credentials: false
 
+      # The same Node as ci.yml, so `npm install --package-lock-only` resolves
+      # with the npm CI's `npm ci` runs: another npm can drop optional entries
+      # and fail every CI job (release-process.md §2). electron-watch.test.js
+      # pins the match, and the bump refuses a lockfile that lost entries.
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

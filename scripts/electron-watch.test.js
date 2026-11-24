@@ -363,8 +363,31 @@ describe('bump', () => {
       path.join(root, 'changelog.d', 'README.md')
     );
     fs.writeFileSync(path.join(root, 'changelog.d', 'fixed--1-something.md'), '- Something\n');
+    // The copies come from the live repo, whose Electron pin moves (and will
+    // move on every bump this workflow opens); set them to the fixtures' base
+    // so these tests do not depend on what main pins today.
+    setPinnedCopy(BASE);
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const BASE = '44.7.0';
+  function setPinnedCopy(version) {
+    const edit = (f, change) =>
+      fs.writeFileSync(path.join(root, f), change(fs.readFileSync(path.join(root, f), 'utf8')));
+    edit('package.json', (text) => {
+      const pkg = JSON.parse(text);
+      pkg.devDependencies.electron = `^${version}`;
+      return `${JSON.stringify(pkg, null, 2)}\n`;
+    });
+    edit('package-lock.json', (text) => {
+      const lock = JSON.parse(text);
+      lock.packages[''].devDependencies.electron = `^${version}`;
+      lock.packages['node_modules/electron'].version = version;
+      return `${JSON.stringify(lock, null, 2)}\n`;
+    });
+    edit('licenses-audit.json', (text) => W.updateLicenseAuditJson(text, version));
+    edit('LICENSE_AUDIT.md', (text) => W.updateLicenseAuditMarkdown(text, version));
+  }
 
   const pinned = () =>
     JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')).packages[
@@ -394,6 +417,7 @@ describe('bump', () => {
 
   test('moves every file that records the Electron version, resolving without running package code', async () => {
     const from = pinned();
+    expect(from).toBe(BASE);
     const calls = [];
     const b = await watch.applyBump({
       version: '44.9.3',
@@ -471,6 +495,45 @@ describe('bump', () => {
     ).rejects.toThrow(/npm left electron at/);
   });
 
+  test('an npm that drops lockfile entries fails the bump before anything else is written', async () => {
+    const npm = fakeNpm([]);
+    const exec = (cmd, args, opts) => {
+      const out = npm(cmd, args, opts);
+      if (cmd === 'npm' && args[0] === 'install') {
+        // What an npm other than CI's does to optional entries it would not install here.
+        const lockPath = path.join(opts.cwd, 'package-lock.json');
+        const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        const victim = Object.keys(lock.packages).find((k) => k && k !== 'node_modules/electron');
+        delete lock.packages[victim];
+        fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+      }
+      return out;
+    };
+    const audit = fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8');
+    await expect(
+      watch.applyBump({ version: '44.9.3', root, exec, fetchers: fakeFetchers() })
+    ).rejects.toThrow(/npm dropped 1 package-lock\.json entry .*resolve with the npm CI uses/);
+    expect(fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8')).toBe(audit);
+    expect(fs.readdirSync(path.join(root, 'changelog.d')).sort()).toEqual([
+      'README.md',
+      'fixed--1-something.md',
+    ]);
+  });
+
+  test('the bump job resolves the lockfile with the Node (and so the npm) CI runs', () => {
+    // release-process.md §2: a lockfile resolved by another npm can drop
+    // optional entries and fail every `npm ci` in CI.
+    const versions = (file) =>
+      [
+        ...fs
+          .readFileSync(path.join(repoRoot, '.github', 'workflows', file), 'utf8')
+          .matchAll(/^\s*node-version:\s*['"]?([^'"\s#]+)/gm),
+      ].map((m) => m[1]);
+    const ci = [...new Set(versions('ci.yml'))];
+    expect(ci).toHaveLength(1);
+    expect(versions('electron-watch.yml')).toEqual([ci[0], ci[0]]);
+  });
+
   test('main having moved past the version since the watch job is a no-op, not a failure', async () => {
     const output = path.join(root, 'github-output');
     const saved = process.env.GITHUB_OUTPUT;
@@ -531,6 +594,11 @@ describe('open the pull request', () => {
       base: 'main',
       title: 'chore(deps): Electron 44.9.3 (security release)',
     });
+    expect(pr.body.split('\n').slice(0, 3)).toEqual([
+      '| npm package | Before | After |',
+      '| ----------- | ------ | ----- |',
+      '| electron | 44.7.0 | 44.9.3 |',
+    ]);
     expect(pr.body).toContain('Refs #900');
     expect(pr.body).toContain('dispatches `ci.yml` on this branch');
     const commit = calls.find((c) => c.includes('commit'));
