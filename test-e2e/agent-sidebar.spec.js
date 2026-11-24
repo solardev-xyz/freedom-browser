@@ -1009,6 +1009,11 @@ test('existing project picker and access controls work in both layouts and theme
     await window.locator('#agent-attachment-button').click();
     await window.locator('#agent-open-project').click();
     await expect(window.locator('#agent-run-message')).toContainText('Project opened');
+    // The composer is still flying in from the launcher, and its path crosses
+    // the Workspace strip attached above it: a click released over the moving
+    // composer never reaches the toggle.
+    await window.locator('#agent-composer').evaluate(element =>
+      Promise.allSettled(element.getAnimations().map(animation => animation.finished)));
     await window.locator('#agent-process-compact-toggle').click();
     const row = window.locator('[data-workspace-focus="project"]:visible');
     await expect(row).toContainText('Existing project');
