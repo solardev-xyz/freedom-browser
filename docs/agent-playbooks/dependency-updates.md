@@ -15,6 +15,27 @@ before installing a new version or running any of its lifecycle scripts, for
 direct dependencies and the changed transitive dependency tree. The purpose is
 to catch compromised releases as well as known vulnerabilities.
 
+Steps 1-4 are written for npm packages (registry, tarball, lockfile,
+lifecycle scripts). The gate covers the other two kinds of update in
+[Scope](#scope) too, through their own trust roots rather than the npm steps:
+
+- **Bundled node binaries** (Ant, freedom-ipfs, libradicle, Arti, Myotis):
+  step 1's provenance check applies as written (repository, release tag,
+  publisher, publication date, release notes against the components Freedom
+  actually ships). Steps 2-3 are replaced by re-deriving the trust root from
+  the upstream release yourself before any fetch script runs: the
+  `SHA256SUMS` digest for Ant and libradicle, the `myotis-node.SHA256SUMS`
+  digest for Myotis, each asset's sha256 for freedom-ipfs, the crates.io version (plus the patched Windows
+  crates' sha256) for Arti, per
+  [`bundled-binaries.md`](bundled-binaries.md#bumping-the-other-binaries).
+  Never copy a digest from the release page or the PR under review.
+- **Pinned upstream data** (the uBlock scriptlets in
+  `scripts/fetch-adblock-lists.js`, which are code injected into pages): check
+  the new pin's upstream tag, read the diff of the pinned content, and derive
+  its sha256 yourself before re-pinning.
+
+Step 4's "stop and report if suspicious" applies to all three kinds.
+
 1. **Establish provenance.** Check the exact package name, upstream repository,
    release tag, registry publisher/maintainer history and publication date. Look
    for unexpected ownership changes, anomalous releases or security notices.
@@ -35,8 +56,31 @@ to catch compromised releases as well as known vulnerabilities.
 4. **Decide before execution.** If provenance or changed code is suspicious,
    stop that upgrade and report the evidence; seek user input if a real tradeoff
    remains. Otherwise record what was checked and its limits, install in an
-   isolated worktree with lifecycle scripts disabled, and run only reviewed,
-   necessary build steps explicitly. Then run compatibility and native tests.
+   isolated worktree with lifecycle scripts disabled (`npm ci --ignore-scripts`),
+   and run only reviewed, necessary build steps explicitly. Then run
+   compatibility and native tests.
+
+   Disabling scripts also skips the repo's own root `postinstall`, which a
+   working checkout needs. Run its three steps by hand, in this order, after
+   reviewing any of them the update touches:
+
+   1. `npx install-electron`: fetches the Electron binary (the `electron`
+      package's `install.js`); without it nothing that launches Electron runs.
+   2. `node scripts/better-sqlite3-prebuilds.js`: prunes better-sqlite3's
+      `binding.gyp`. It must run **before** step 3, or `@electron/rebuild`
+      misclassifies better-sqlite3 and falls through to a node-gyp build
+      ([#197](https://github.com/solardev-xyz/freedom-browser/pull/197)).
+   3. `npx electron-builder install-app-deps`: rebuilds the remaining native
+      modules for Electron's ABI.
+
+   Separately, these locked packages declare their own install scripts, which
+   `--ignore-scripts` also skips: `@google/genai`, `esbuild`, `keccak`,
+   `node-hid`, `protobufjs`, `usb`, and the dev-only `@parcel/watcher`,
+   `electron-winstaller` and `unrs-resolver`. List the current set with
+   `node -e 'for (const [k, v] of Object.entries(require("./package-lock.json").packages)) if (k && v.hasInstallScript) console.log(k, v.version)'`.
+   Any of them the update adds or changes is reviewed under step 2; run only
+   the ones a failing test shows are needed, by hand
+   (`npm rebuild <name>`), and name them in the PR.
 
 A successful `npm audit`, signature check or test run does not establish that a
 package is free of malicious code. The PR must summarise provenance, source/tree
