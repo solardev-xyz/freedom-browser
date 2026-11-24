@@ -403,6 +403,15 @@ describe('derivation', () => {
       expect(() => deriveWalletAtPath(HARDHAT_MNEMONIC, path)).toThrow('reserved');
     });
 
+    test('refuses every Freedom key namespace in PATHS outside the wallet coin type', () => {
+      const namespaces = Object.values(PATHS).filter((p) => !p.startsWith("m/44'/60'/"));
+      expect(namespaces.length).toBeGreaterThan(0);
+      for (const namespace of namespaces) {
+        expect(() => deriveWalletAtPath(HARDHAT_MNEMONIC, namespace)).toThrow('reserved');
+        expect(() => deriveWalletAtPath(HARDHAT_MNEMONIC, `${namespace}/0'`)).toThrow('reserved');
+      }
+    });
+
     test("refuses the site encryption key's own path, so it can never sign", () => {
       const path = siteEncryptionKeyPath('myapp.eth');
       expect(deriveSiteEncryptionKey(HARDHAT_MNEMONIC, 'myapp.eth').path).toBe(path);
