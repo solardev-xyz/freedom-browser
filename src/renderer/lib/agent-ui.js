@@ -4328,10 +4328,6 @@ function applyAgentEvent(event) {
     typeof event.conversationId === 'string' &&
     event.conversationId !== currentConversationId
   ) {
-    // Another conversation's run registered a page. This view's projection
-    // carries every Agent tab, so refresh it: a page that run created or
-    // focused here is then released instead of waiting for this strip.
-    if (event.type === 'workspace_changed') void refreshWorkspaceProjection();
     return;
   }
   if (currentRunId && currentRunId !== event.runId) return;

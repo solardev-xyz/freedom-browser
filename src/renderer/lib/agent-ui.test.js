@@ -3779,10 +3779,11 @@ describe('Agent UI', () => {
       { rendererTabId: 12, custody: 'agent', conversationId: 'conversation_other' },
       { rendererTabId: 13, custody: 'agent', conversationId: null },
     ];
-    // Another conversation's run registering its page must still reach this
-    // view: its event is otherwise filtered as foreign.
+    // Main's IPC layer never forwards another conversation's run events here;
+    // the custody broadcast (sent to every chrome owner) is what repaints the
+    // projection and releases those pages.
     const calls = getAgentState.mock.calls.length;
-    ctx.emit({ type: 'workspace_changed', runId: 'run_other', conversationId: 'conversation_other' });
+    ctx.emit({ type: 'agent_tabs_changed' });
     await flush();
     expect(getAgentState.mock.calls.length).toBe(calls + 1);
     expect(ctx.releasePendingProjectedTabs).toHaveBeenLastCalledWith([12, 13]);
