@@ -297,24 +297,36 @@ describeIfBinary('the starting move through the real freedom-cored (0013, PRF-9 
     seed(profile.userDataDir);
     const release = path.join(root, 'release');
     const launches = [launch('race', release), launch('race', release)];
-    await waitFor(() => launches.every((l) => l.lines().length > 0), 60_000, 'both launches');
-    const first = launches.map((l) => l.lines()[0].split(' '));
-    // Exactly one holds the profile, and it reads the moved layout.
-    const opened = first.filter((words) => words[0] === 'opened');
-    expect(opened).toHaveLength(1);
-    expect(opened[0][2]).toBe('freedom');
-    expect(first.filter((words) => words[0] === 'handed-over')).toHaveLength(1);
-    // Exactly one moved: the other found it busy, open, or already moved.
-    const outcomes = first.map((words) => (words[0] === 'opened' ? words[1] : words[2]));
-    expect(outcomes.filter((outcome) => outcome === 'migrated')).toHaveLength(1);
-    fs.writeFileSync(release, '');
-    await waitFor(
-      () => launches.some((l) => l.lines().includes('released')),
-      30_000,
-      'the opened launch to let go'
-    );
-    expectMovedAsSeeded(profile.userDataDir);
-    expect(movedNamesAtRoot(profile.userDataDir)).toEqual([]);
+    // The race has failed on Windows runners only, with neither launch
+    // opening: a failed check logs both launches' whole output, which the
+    // counts below don't show.
+    try {
+      await waitFor(() => launches.every((l) => l.lines().length > 0), 60_000, 'both launches');
+      const first = launches.map((l) => l.lines()[0].split(' '));
+      // Exactly one holds the profile, and it reads the moved layout.
+      const opened = first.filter((words) => words[0] === 'opened');
+      expect(opened).toHaveLength(1);
+      expect(opened[0][2]).toBe('freedom');
+      expect(first.filter((words) => words[0] === 'handed-over')).toHaveLength(1);
+      // Exactly one moved: the other found it busy, open, or already moved.
+      const outcomes = first.map((words) => (words[0] === 'opened' ? words[1] : words[2]));
+      expect(outcomes.filter((outcome) => outcome === 'migrated')).toHaveLength(1);
+      fs.writeFileSync(release, '');
+      await waitFor(
+        () => launches.some((l) => l.lines().includes('released')),
+        30_000,
+        'the opened launch to let go'
+      );
+      expectMovedAsSeeded(profile.userDataDir);
+      expect(movedNamesAtRoot(profile.userDataDir)).toEqual([]);
+    } catch (error) {
+      console.error(
+        launches
+          .map((l, i) => `launch ${i + 1} stdout:\n${l.text}\nlaunch ${i + 1} stderr:\n${l.err}`)
+          .join('\n')
+      );
+      throw error;
+    }
   });
 
   test("the receipts at the profile's root are imported after the move, from their copy in freedom/, by a core main's getters point into freedom/", async () => {
