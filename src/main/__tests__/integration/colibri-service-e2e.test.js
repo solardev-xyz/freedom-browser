@@ -30,17 +30,20 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// Made only for a run: a skipped file runs no afterAll to remove it.
+// Made only for a gated run, and the only directory its teardown removes.
 const mockAppDir = E2E_ENABLED
   ? fs.mkdtempSync(path.join(os.tmpdir(), 'colibri-service-e2e-'))
-  : path.join(os.tmpdir(), 'colibri-service-e2e-skipped');
+  : null;
 
 jest.mock('electron', () => {
   const nodePath = require('node:path');
   return {
     app: {
       isPackaged: false,
-      getPath: (name) => nodePath.join(mockAppDir, name),
+      getPath: (name) => {
+        if (!mockAppDir) throw new Error('the live run is off (COLIBRI_SERVICE_E2E)');
+        return nodePath.join(mockAppDir, name);
+      },
       getVersion: () => 'colibri-service-e2e',
     },
     ipcMain: { handle: jest.fn() },
@@ -62,6 +65,12 @@ const workerHost = require('../../ens/colibri-worker-host');
 
 const TIMEOUT_MS = 120_000;
 const DEADLINE_MS = 60_000;
+/** The search for a settled block with a transaction: at most this many
+ * blocks, within this budget, each read within what is left of it. */
+const SEARCH_BLOCKS = 8;
+const SEARCH_MS = 120_000;
+/** The block at latest on both backends, then the search. */
+const SEARCH_TIMEOUT_MS = 2 * DEADLINE_MS + SEARCH_MS + 10_000;
 /** An account whose balance rarely moves (the ecrecover precompile). */
 const ACCOUNT = '0x0000000000000000000000000000000000000001';
 const CHAINS = [
@@ -73,8 +82,8 @@ const CHAINS = [
 /**
  * chain-verified's executor, as the core calls it, on its own Colibri
  * adapter (colibri-resolver's `requestViaColibri`): `read(chainId, method,
- * params)` resolves to its reply (`{ result }`, `{ failure }`, …) and the
- * adapter's error, which the reply carries only as a class.
+ * params, deadlineMs)` resolves to its reply (`{ result }`, `{ failure }`,
+ * …) and the adapter's error, which the reply carries only as a class.
  */
 function chainVerified() {
   const routes = [];
@@ -90,14 +99,14 @@ function chainVerified() {
     });
   registerChainVerified(client, { generation: () => 1 }, { adapters: { colibriRequest } });
   const route = routes.find((entry) => entry.method === 'shell.verified');
-  return async (chainId, method, params) => {
+  return async (chainId, method, params, deadlineMs = DEADLINE_MS) => {
     const operation = {
       chain_id: chainId,
       generation: 1,
       colibri: 'request',
       method,
       params,
-      deadline_ms: DEADLINE_MS,
+      deadline_ms: deadlineMs,
     };
     expect(route.options.when(operation)).toBe(true);
     error = null;
@@ -114,9 +123,9 @@ function chainVerified() {
 const read = chainVerified();
 
 /** One read on `backend` (the development switch), its result. */
-async function readOn(backend, chainId, method, params) {
+async function readOn(backend, chainId, method, params, deadlineMs) {
   process.env.FREEDOM_COLIBRI_BACKEND = backend;
-  const { reply, error } = await read(chainId, method, params);
+  const { reply, error } = await read(chainId, method, params, deadlineMs);
   expect({ backend, method, reply, error }).toEqual({
     backend,
     method,
@@ -140,14 +149,18 @@ const hexNumber = (value) => {
 
 const savedBackend = process.env.FREEDOM_COLIBRI_BACKEND;
 
-afterAll(async () => {
-  clearColibriClientForTest();
-  await stopColibri();
-  workerHost.resetForTest();
-  if (savedBackend === undefined) delete process.env.FREEDOM_COLIBRI_BACKEND;
-  else process.env.FREEDOM_COLIBRI_BACKEND = savedBackend;
-  fs.rmSync(mockAppDir, { recursive: true, force: true });
-}, TIMEOUT_MS);
+// Jest runs a root teardown even when every test is skipped: registered
+// only for a gated run, it removes only the directory that run made.
+if (E2E_ENABLED) {
+  afterAll(async () => {
+    clearColibriClientForTest();
+    await stopColibri();
+    workerHost.resetForTest();
+    if (savedBackend === undefined) delete process.env.FREEDOM_COLIBRI_BACKEND;
+    else process.env.FREEDOM_COLIBRI_BACKEND = savedBackend;
+    fs.rmSync(mockAppDir, { recursive: true, force: true });
+  }, TIMEOUT_MS);
+}
 
 describeOrSkip.each(CHAINS)(
   "Colibri's chain reads on both backends: $name",
@@ -185,16 +198,27 @@ describeOrSkip.each(CHAINS)(
           });
         }
         // A few blocks back, so neither read finds it reorganised, with a
-        // transaction to read.
-        for (let number = hexNumber(service.number) - 3; !block; number -= 1) {
-          const candidate = await readOn('service', chainId, 'eth_getBlockByNumber', [
-            `0x${number.toString(16)}`,
-            false,
-          ]);
+        // transaction to read: searched on the service, at most
+        // SEARCH_BLOCKS blocks within SEARCH_MS, then verified on both.
+        const newest = hexNumber(service.number) - 3;
+        const searchEnds = Date.now() + SEARCH_MS;
+        const searched = [];
+        for (let number = newest; !block && number > newest - SEARCH_BLOCKS; number -= 1) {
+          const left = Math.floor(searchEnds - Date.now());
+          if (left <= 0) break;
+          const candidate = await readOn(
+            'service',
+            chainId,
+            'eth_getBlockByNumber',
+            [`0x${number.toString(16)}`, false],
+            Math.min(DEADLINE_MS, left)
+          );
+          searched.push(number);
           if (candidate.transactions.length > 0) block = candidate;
         }
+        expect({ searched, found: block !== null }).toEqual({ searched, found: true });
       },
-      TIMEOUT_MS
+      SEARCH_TIMEOUT_MS
     );
 
     test(

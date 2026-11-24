@@ -70,7 +70,7 @@ See [Myotis isolation and qualification](myotis-process-isolation.md).
 
 ### Colibri's native verifier (development switch)
 
-Colibri verifies chain reads in a WASM worker thread per chain by default. `FREEDOM_COLIBRI_BACKEND=service` runs it in freedom-colibrid instead (freedom-core design 0014, COL-5): a confined process per chain with no network of its own, whose every fetch main makes through the session (its proxy and Tor included) and only in the shapes the design's fetch contract allows. Myotis's checkpoint check then runs in a one-shot freedom-colibrid process too. The switch works only in a development build: packaged builds ship the binary but ignore the switch and run WASM, until COL-6 makes the service the default and removes the WASM path. `npm run colibrid:download` fetches the pinned release into `freedom-colibrid-bin/<os>-<arch>/`, with its digest and build provenance checked; `FREEDOM_COLIBRID_PATH` points a development build at another build of the binary, whatever release it reports. Any other value of the switch is warned of and runs WASM.
+Colibri verifies chain reads in a WASM worker thread per chain by default. `FREEDOM_COLIBRI_BACKEND=service` runs it in freedom-colibrid instead (freedom-core design 0014, COL-5): a confined process per chain with no network of its own, whose every fetch main makes through the session (its proxy and Tor included) and only in the shapes the design's fetch contract allows. Myotis's checkpoint check then runs in a one-shot freedom-colibrid process too. The switch works only in a development build: packaged builds ship the binary but ignore the switch and run WASM, until COL-6 makes the service the default and removes the WASM path. `npm run colibrid:download` fetches the pinned release into `freedom-colibrid-bin/<os>-<arch>/` and checks the pinned digest of its `SHA256SUMS` and the archive's checksum; in CI (GitHub Actions) it also verifies the build provenance with `gh attestation verify`. `FREEDOM_COLIBRID_PATH` points a development build at another build of the binary, whatever release it reports. Any other value of the switch is warned of and runs WASM.
 
 What changes with it (design 0014, Deviations):
 
@@ -164,7 +164,7 @@ Protocol and privileged logic belongs in the main process. The renderer talks to
 | `npm run ipfsd:download`         | Download the pinned freedom-ipfsd binary, the IPFS node                            |
 | `npm run ipfs:download`          | Download the pinned freedom-ipfs native addon, the rollback (see above)            |
 | `npm run radicled:download`      | Download the pinned freedom-radicled binary, the Radicle node                      |
-| `npm run colibrid:download`      | Download the pinned freedom-colibrid binary, the Colibri service (not yet run)     |
+| `npm run colibrid:download`      | Download the pinned freedom-colibrid binary, the Colibri service (behind a switch) |
 | `npm run myotis:download`        | Download the pinned Myotis native addon                                            |
 | `npm run radicle:download`       | Download the libradicle addon for the current platform, the rollback (see above)   |
 | `npm run radicle:build-addon`    | Build the libradicle addon from a sibling checkout                                 |
