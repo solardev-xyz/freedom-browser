@@ -875,6 +875,36 @@ test('ENSv2 supports DAI without accepting an arbitrary payment contract', async
   expect(invalid.wallet.send).not.toHaveBeenCalled();
 });
 
+test('a saved ENS plan is not returned for a different requested payment token or term', async () => {
+  const f = fixture('eth');
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  await expect(f.service.prepare({ name: f.state.name, intent: 'renew', paymentToken: 'DAI' }, f.context))
+    .rejects.toMatchObject({ code: 'DOMAIN_INVALID', message: expect.stringContaining('paying in USDC') });
+  await expect(f.service.prepare({ name: f.state.name, intent: 'renew', durationSeconds: 2 * 31536000 }, f.context))
+    .rejects.toMatchObject({ code: 'DOMAIN_INVALID', message: expect.stringContaining('term cannot be changed') });
+  expect(await f.service.prepare({ name: f.state.name, intent: 'renew', paymentToken: 'USDC', durationSeconds: 31536000 }, f.context)).toMatchObject({ operationId: plan.operationId });
+  expect(await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context)).toMatchObject({ operationId: plan.operationId });
+  expect(f.store.list()).toHaveLength(1);
+  expect(f.wallet.send).not.toHaveBeenCalled();
+});
+
+test('a declined registration with a paid commitment is not returned for a different payment token', async () => {
+  const f = fixture('eth', true);
+  f.v2.allowance = 0n; f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context);
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId });
+  f.wallet.send.mockRejectedValueOnce(new DomainError('DOMAIN_DECLINED', 'Not approved'));
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'declined', step: 'approve_payment' });
+  expect(f.wallet.send.mock.calls[1][0].presentation.action).toBe('approve_payment');
+  await expect(f.service.prepare({ name: f.state.name, intent: 'register', paymentToken: 'DAI' }, f.context))
+    .rejects.toMatchObject({ code: 'DOMAIN_INVALID', message: expect.stringContaining('paying in USDC') });
+  expect(await f.service.prepare({ name: f.state.name, intent: 'register', paymentToken: 'USDC' }, f.context)).toMatchObject({ operationId, state: 'declined' });
+  expect(f.store.list()).toHaveLength(1);
+  expect(f.wallet.send).toHaveBeenCalledTimes(2);
+});
+
 test('insufficient ENS payment tokens are refused before a paid commitment', async () => {
   const f = fixture('eth', true); f.v2.balance = 0n;
   await expect(f.service.prepare({ name: f.state.name, intent: 'register' }, f.context)).rejects.toMatchObject({ code: 'DOMAIN_BALANCE' });

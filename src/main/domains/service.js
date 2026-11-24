@@ -187,9 +187,9 @@ class DomainService {
     // An ambiguous prior dispatch blocks a new plan too, even after restart.
     const uncertain = this.store.list().find(item => item.name === parsed.name && ['dispatching', 'dispatch_unknown', 'verification_needed'].includes(item.state));
     if (uncertain) return publicOperation(uncertain);
-    if (existing) return publicOperation(existing);
+    if (existing) return this.#reuse(existing, input);
     const declinedReveal = this.store.list().find(item => item.name === parsed.name && item.account.address === account.address && item.state === 'declined' && item.intent === 'register' && (item.step === 'reveal' || item.transactions.some(tx => tx.step === 'commit')));
-    if (declinedReveal) return publicOperation(declinedReveal);
+    if (declinedReveal) return this.#reuse(declinedReveal, input);
     const operation = { ...parsed, id: `domain_${crypto.randomBytes(12).toString('hex')}`, version: 1,
       intent: input.intent, account, sourceConversationId: context.conversationId || null,
       createdAt: Date.now(), state: 'ready', step: input.intent === 'register' ? 'commit' : input.intent, transactions: [] };
@@ -231,6 +231,20 @@ class DomainService {
     context.signal?.throwIfAborted();
     this.store.save(operation);
     return publicOperation(operation);
+  }
+  // A saved plan is returned in place of a new one only when it carries the
+  // terms the caller asked for; an explicitly requested payment token or term
+  // that differs is refused rather than silently ignored.
+  #reuse(saved, input) {
+    if (['register', 'renew'].includes(saved.intent)) {
+      if (input.paymentToken !== undefined && saved.protocol === 'ensv2' && (saved.paymentToken ?? 'USDC') !== input.paymentToken) {
+        refuse(`An ENS ${saved.intent === 'register' ? 'registration' : 'renewal'} of ${saved.name} is already saved (${saved.id}) paying in ${saved.paymentToken ?? 'USDC'}; its payment token cannot be changed. Continue that operation${saved.state === 'declined' ? ' (resume it on the user\u2019s request)' : ''} or wait until it ends.`, 'DOMAIN_INVALID');
+      }
+      if (input.durationSeconds !== undefined && saved.duration !== input.durationSeconds) {
+        refuse(`A ${saved.intent === 'register' ? 'registration' : 'renewal'} of ${saved.name} is already saved (${saved.id}) for ${saved.duration} seconds; its term cannot be changed. Continue that operation${saved.state === 'declined' ? ' (resume it on the user\u2019s request)' : ''} or wait until it ends.`, 'DOMAIN_INVALID');
+      }
+    }
+    return publicOperation(saved);
   }
   #retireLegacyEnsPlan(operation) {
     if (operation.namespace !== 'eth' || operation.protocol === 'ensv2' || !['register', 'renew'].includes(operation.intent) ||
