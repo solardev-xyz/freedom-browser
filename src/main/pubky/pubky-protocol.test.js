@@ -115,6 +115,43 @@ describe('handlePubkyRequest', () => {
     expect(await res.text()).toBe('<p>decoded</p>');
   });
 
+  test('forwards range and conditional headers, and nothing else', async () => {
+    const pageHeaders = new Headers({
+      range: 'bytes=100-199',
+      'if-range': '"v1"',
+      'if-none-match': '"v1"',
+      'if-modified-since': 'Tue, 01 Sep 2026 00:00:00 GMT',
+      cookie: 'session=secret',
+      authorization: 'Bearer secret',
+      referer: `pubky://${KEY}/pub/page.html`,
+      'x-custom': '1',
+    });
+    upstream.mockResolvedValue(
+      withUrl(
+        new Response('partial', {
+          status: 206,
+          headers: { 'content-range': 'bytes 100-199/1000', 'accept-ranges': 'bytes' },
+        }),
+        fileUrl
+      )
+    );
+    const res = await handlePubkyRequest({
+      url: `pubky://${KEY}/pub/clip.mp4`,
+      method: 'GET',
+      headers: pageHeaders,
+    });
+    const [request] = upstream.mock.calls[0];
+    expect(Object.fromEntries(request.headers)).toEqual({
+      range: 'bytes=100-199',
+      'if-range': '"v1"',
+      'if-none-match': '"v1"',
+      'if-modified-since': 'Tue, 01 Sep 2026 00:00:00 GMT',
+    });
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-range')).toBe('bytes 100-199/1000');
+    expect(await res.text()).toBe('partial');
+  });
+
   test('passes a bodiless 304 through', async () => {
     upstream.mockResolvedValue(withUrl(new Response(null, { status: 304 }), fileUrl));
     const res = await handlePubkyRequest({ url: `pubky://${KEY}/pub/x`, method: 'GET' });

@@ -36,6 +36,9 @@
  *    the connection and never answers gets a 504 instead of a tab that
  *    spins until the socket gives up. Once headers are in, the body streams
  *    with no deadline but stays linked to `request.signal`.
+ *  - Only `Range`/`If-Range`/`If-None-Match`/`If-Modified-Since` go from
+ *    the page to the homeserver (media seeking, cache revalidation); no
+ *    cookies, credentials or Referer.
  *  - Error responses carry fixed text, never SDK/WASM error messages.
  */
 
@@ -308,6 +311,22 @@ function toPageResponse(upstream) {
   });
 }
 
+// Page request headers the homeserver dial carries: byte ranges (so a
+// <video>/<audio> gets a 206 and can seek) and conditional reads (so a
+// cached file revalidates to a 304). An allowlist, not ipfs-protocol.js's
+// denylist: the homeserver is whatever the key's owner chose, so cookies,
+// credentials, Referer and the rest of the page's headers stay here.
+const FORWARDED_REQUEST_HEADERS = ['range', 'if-range', 'if-none-match', 'if-modified-since'];
+
+function forwardedRequestHeaders(request) {
+  const out = {};
+  for (const name of FORWARDED_REQUEST_HEADERS) {
+    const value = request.headers?.get?.(name);
+    if (value) out[name] = value;
+  }
+  return out;
+}
+
 const textResponse = (status, message) =>
   new Response(message, {
     status,
@@ -360,7 +379,11 @@ async function handlePubkyRequest(request, { timeoutMs = FETCH_TIMEOUT_MS } = {}
   try {
     const { resolvePubky } = loadSdk();
     return toPageResponse(
-      await guardedSdkFetch(resolvePubky(address), { method, signal: controller.signal })
+      await guardedSdkFetch(resolvePubky(address), {
+        method,
+        headers: forwardedRequestHeaders(request),
+        signal: controller.signal,
+      })
     );
   } catch (err) {
     if (timedOut && !pageSignal?.aborted) {

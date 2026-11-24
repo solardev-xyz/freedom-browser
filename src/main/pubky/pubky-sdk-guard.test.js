@@ -92,6 +92,25 @@ describe('guardedSdkFetch', () => {
     expect(await res.text()).toBe('public file');
   });
 
+  test('the real SDK carries a Range header to the homeserver', async () => {
+    let seen;
+    const { base } = await startFixture((req, res) => {
+      seen = { range: req.headers.range, ifNoneMatch: req.headers['if-none-match'] };
+      res.statusCode = 206;
+      res.setHeader('Content-Range', 'bytes 2-4/10');
+      res.end('234');
+    });
+    const res = await pubky.guardedSdkFetch(
+      `${base}/pub/clip.mp4`,
+      { method: 'GET', headers: { range: 'bytes=2-4', 'if-none-match': '"v1"' } },
+      PUBLIC_FOR_TEST
+    );
+    expect(seen).toEqual({ range: 'bytes=2-4', ifNoneMatch: '"v1"' });
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-range')).toBe('bytes 2-4/10');
+    expect(await res.text()).toBe('234');
+  });
+
   test('serves requests started in the same tick', async () => {
     // The SDK's wasm-bindgen-futures queue runs dials started together in
     // one batch, under the first request's async context; each request must
