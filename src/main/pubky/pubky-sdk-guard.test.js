@@ -112,12 +112,18 @@ describe('guardedSdkFetch', () => {
 
   test("a response vetted under another request's policy is refused", async () => {
     // Same-tick batching hands the second request's dial the first one's
-    // context; if their policies differ the second fails closed.
+    // context; if their policies differ the second fails closed. The second
+    // policy has the same settings as PUBLIC_FOR_TEST but is a separate
+    // object: the guard matches policies by identity, so any other policy
+    // is refused, whether stricter, looser or equal in content.
     const { base } = await startFixture((req, res) => res.end('x'));
-    const stricter = Object.freeze({ protocols: ['https:', 'http:'], isPublicAddress: () => true });
+    const otherPolicy = Object.freeze({
+      protocols: ['https:', 'http:'],
+      isPublicAddress: () => true,
+    });
     const [first, second] = await Promise.allSettled([
       pubky.guardedSdkFetch(`${base}/pub/a`, { method: 'GET' }, PUBLIC_FOR_TEST),
-      pubky.guardedSdkFetch(`${base}/pub/b`, { method: 'GET' }, stricter),
+      pubky.guardedSdkFetch(`${base}/pub/b`, { method: 'GET' }, otherPolicy),
     ]);
     expect(first.status).toBe('fulfilled');
     expect(second.status).toBe('rejected');
