@@ -226,6 +226,26 @@ jobs:
             protocol/schema.json
           sparse-checkout-cone-mode: false
 
+      # freedom-core's Colibri vectors (design 0014, COL-1), which the fetch
+      # contract's suites (`colibri-served`, `colibri-servers` and
+      # `colibri-fetch-contract.vectors`) replay. A pin of its own, separate
+      # from the one above: the file landed after c44ed23e, and moving that
+      # pin would change the stream vectors `stream-vectors.test.js` replays
+      # (its service_duplex cases). This is freedom-core's main where the
+      # file is (00141d3b), moved on purpose when the Colibri vectors change.
+      # The suites fail if the file FREEDOM_CORE_COLIBRI_VECTORS names is
+      # missing.
+      - name: Check out freedom-core's Colibri vectors
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: 00141d3b7c21d7ed5d9d029e0cd3e464aac5e33f
+          path: .freedom-core-colibri
+          persist-credentials: false
+          sparse-checkout: |
+            vectors/colibri.json
+          sparse-checkout-cone-mode: false
+
       - name: Run test coverage
         env:
           FREEDOM_CORE_STREAM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/streams.json
@@ -233,6 +253,7 @@ jobs:
           FREEDOM_CORE_KEYSTORE_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/keystore.json
           FREEDOM_CORE_LAYOUT_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/layout.json
           FREEDOM_CORE_SCHEMA: ${{ github.workspace }}/.freedom-core/protocol/schema.json
+          FREEDOM_CORE_COLIBRI_VECTORS: ${{ github.workspace }}/.freedom-core-colibri/vectors/colibri.json
         run: npm run test:coverage
 
       - name: Upload coverage artifact
