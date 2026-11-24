@@ -1,8 +1,8 @@
 /**
  * Where the freedom-colibrid binary is (freedom-core design 0014, Spawn):
  * `<resources>/freedom-colibrid/` in a packaged build, which ships it
- * (check-binaries requires it). colibri-service.js spawns it from here,
- * behind the development switch (colibri-backend.js).
+ * (check-binaries requires it). colibri-service.js and the checkpoint check
+ * (checkpoint-colibrid.js) spawn it from here.
  */
 
 const path = require('path');

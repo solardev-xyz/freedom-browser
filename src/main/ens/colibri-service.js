@@ -1,18 +1,17 @@
 /**
- * Colibri's native backend (freedom-core design 0014, COL-5): the
- * freedom-colibrid processes behind colibri-worker-host.js's interface, so
- * colibri-resolver.js runs on either one by the development switch
- * (colibri-backend.js) and nothing above it changes (design 0014, What the
- * core sees). One `ColibridClient` (colibrid-client.js) runs each process;
- * this module decides which processes run, holds them to the browser-wide
- * bounds, restarts them, and builds what each request gets.
+ * Colibri's verifier (freedom-core design 0014): the freedom-colibrid
+ * processes, behind the interface the WASM worker host had until COL-6
+ * removed it, so nothing above colibri-resolver.js changed (design 0014,
+ * What the core sees). One `ColibridClient` (colibrid-client.js) runs each
+ * process; this module decides which processes run, holds them to the
+ * browser-wide bounds, restarts them, and builds what each request gets.
  *
  * - **The interface** is the WASM host's: `createClient({ chainId,
  *   proverUrl, zkProof, private })` → `{ request({ method, params },
  *   { deadlineMs }), destroy() }`, `ensureWorker(chainId, { private })`,
- *   `endPrivateSession()`, `ColibriWorkerError` (the host's class),
- *   `resetForTest` and `DEFAULT_DEADLINE_MS` (60 s); and `stopAll()` for
- *   the quit. `destroy` sends `colibri.forget` to each process the client
+ *   `endPrivateSession()`, `ColibriWorkerError` (colibri-outcome.js: the
+ *   host's class, with the same name and fields), `resetForTest` and
+ *   `DEFAULT_DEADLINE_MS` (60 s); and `stopAll()` for the quit. `destroy` sends `colibri.forget` to each process the client
  *   used. `ensureWorker` gets or spawns the lane's process under the
  *   bounds and waits for its handshake.
  * - **Lanes:** two per chain, `<chain>` and `<chain>:private`, as the host
@@ -53,8 +52,8 @@
  *   Each spawn sets its directory's modification time; before one that
  *   would make a seventh, the oldest directory whose chain has no process
  *   here is deleted (a cache: that chain bootstraps again). Only
- *   directories named by a chain ID count, so the WASM path's flat files
- *   there are left alone. Before each persistent spawn main checks the
+ *   directories named by a chain ID count, so the flat files the WASM path
+ *   left there are left alone. Before each persistent spawn main checks the
  *   grant (service-grant.js, `colibriGrantRefusal`; design 0010, step 7):
  *   a refusal, a directory that can't be made, or one due to be cleared
  *   (below) that can't be, spawns nothing and stops the lane.
@@ -89,8 +88,7 @@ const path = require('path');
 const log = require('../logger');
 const { ColibridClient, COLIBRID_TEXTS, DEFAULT_DEADLINE_MS } = require('./colibrid-client');
 const { DEATH_REASONS } = require('./colibri-markers');
-const { replyOutcome } = require('./colibri-outcome');
-const { ColibriWorkerError } = require('./colibri-worker-host');
+const { ColibriWorkerError, replyOutcome } = require('./colibri-outcome');
 const { PINNED_COLIBRID_VERSION } = require('./colibrid-pin');
 
 /** Persistent and private processes live at once, browser-wide. */

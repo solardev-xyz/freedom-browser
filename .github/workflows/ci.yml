@@ -108,7 +108,8 @@ jobs:
   # (`src/shared/shortcuts.test.js`'s shortcut-registry guard and
   # `settings-search.test.js`), `CHANGELOG.md` (`settings-search.test.js`),
   # `docs/agent-playbooks/ui-consistency.md` (`renderer-copy.test.js`),
-  # `docs/audits/evidence/` (`checkpoint-verifier-worker.test.js`) — and two
+  # `docs/audits/evidence/` (`checkpoint-colibrid.test.js`,
+  # `checkpoint-evidence.test.js`) — and two
   # `*.test.js` files live under `docs/` outright, where jest's `**/*.test.js`
   # picks them up and `eslint .` lints them. Skipping `test` on a docs-only
   # pull request would let exactly the drift those guards exist to catch merge
@@ -231,8 +232,8 @@ jobs:
       # contract's suites (`colibri-served`, `colibri-servers` and
       # `colibri-fetch-contract.vectors`) replay, and their worlds
       # (`fixtures/colibri/`: each recorded answer's body, by its SHA-256),
-      # from which `colibri-replay-parity` replays successful reads on both
-      # backends. A pin of its own, separate
+      # from which `colibri-replay-parity` replays successful reads on
+      # freedom-colibrid. A pin of its own, separate
       # from the one above: the file landed after c44ed23e, and moving that
       # pin would change the stream vectors `stream-vectors.test.js` replays
       # (its service_duplex cases). This is freedom-core's main where the
@@ -251,10 +252,11 @@ jobs:
             vectors/fixtures/colibri/
           sparse-checkout-cone-mode: false
 
-      # The Colibri contract suite (freedom-core design 0014, COL-5) runs its
-      # service backend on the real freedom-colibrid: `colibri-worker-host`,
-      # `chain-verified`, `colibri-private-store`, `colibri-outage-parity` and
-      # `colibri-replay-parity` (test/helpers/colibri-backends.js). The
+      # Colibri runs on freedom-colibrid alone (freedom-core design 0014,
+      # COL-6), and its suites run on the real binary:
+      # `colibri-service-contract`, `chain-verified`, `colibri-private-store`,
+      # `colibri-outage-parity`, `colibri-replay-parity`, `colibrid-pin` and
+      # `checkpoint-colibrid` (test/helpers/colibri-service-harness.js). The
       # replay's cases that need the C core's clock fixed need a debug build
       # with the `testhooks` feature (FREEDOM_COLIBRID_TESTHOOKS_PATH), and
       # are skipped here. Downloaded as e2e-desktop does,
@@ -990,6 +992,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # freedom-colibrid (freedom-core design 0014), Colibri's verifier: the
+      # app under test runs on it, so it comes before the first app launch
+      # below (Quick Setup), and the `test` job runs the Colibri
+      # suites on it on Linux; this is the per-PR run of its real fetch on
+      # all three OSes, Windows' ZIP path included, with the pinned digest
+      # and build provenance checked as release.yml checks them.
+      - name: Download freedom-colibrid binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       # Design 0013's "previous core release", for PRF-6's rollout tests
       # only: into freedom-cored-bin-previous/, verified against its own
       # in-repo digest. The app never runs it.
@@ -1438,19 +1454,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      # freedom-colibrid (freedom-core design 0014, COL-5): the `test` job
-      # runs the Colibri contract suite on it on Linux; this is the per-PR
-      # run of its real fetch on all three OSes, Windows' ZIP path included,
-      # with the pinned digest and build provenance checked as release.yml
-      # checks them.
-      - name: Download freedom-colibrid binaries
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        timeout-minutes: 7
-        shell: bash
-        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
       - name: Download IPFS native addon
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npm run ipfs:download
@@ -1742,6 +1745,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # freedom-colibrid (freedom-core design 0014), Colibri's verifier: a
+      # packaged build ships it, so the app under test runs on it too.
+      # Without it Colibri cannot start and its reads go to the next source
+      # at once, a timing no shipped build has. Downloaded as e2e-desktop
+      # does, with the pinned digest and build provenance checked.
+      - name: Download freedom-colibrid binaries
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run Freedom Myotis resolver E2E
         shell: bash
         env:
@@ -1893,6 +1908,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # freedom-colibrid (freedom-core design 0014), Colibri's verifier: a
+      # packaged build ships it, so the app under test runs on it too.
+      # Without it Colibri cannot start and its reads go to the next source
+      # at once, a timing no shipped build has. Downloaded as e2e-desktop
+      # does, with the pinned digest and build provenance checked.
+      - name: Download freedom-colibrid binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       # ── was the `ipfs-gateway-proxy` job ──
       # Whether a request honours `session.setProxy` — the `.onion` PAC in
       # `src/main/tor-proxy.js` — is decided by Chromium's network stack, which no
@@ -1987,9 +2015,9 @@ jobs:
       # green skip. `safe-phone.spec.js` stays on the not-in-CI list for #452.
       #
       # The fixtures read Gnosis from the fork only (a proof source verifies the
-      # live chain), so the specs no longer pass through Colibri on chain 100; the
-      # crash itself is pinned by the jest step below, which needs this job's
-      # Electron binary.
+      # live chain), so the specs no longer pass through Colibri on chain 100;
+      # since COL-6 Colibri runs in freedom-colibrid, outside the main process,
+      # so a verifier crash can no longer take it down.
       - name: Install foundry (anvil)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
@@ -2008,19 +2036,6 @@ jobs:
           rm "$archive"
           ./anvil --version
           echo "$dir" >> "$GITHUB_PATH"
-
-      # The jest guard for the fix itself (#453): a Colibri WASM trap must be
-      # a catchable error in Electron's *full* main process, and must swap in
-      # a fresh instance. The `test` job runs it too but has no Electron
-      # binary, so there it skips; here the binary is fetched first (the
-      # `electron` package downloads it on first require) and a skip fails.
-      - name: Colibri WASM trap guard under Electron's main process
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        env:
-          FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED: '1'
-        run: |
-          node -e "require('electron')"
-          npx jest src/main/ens/colibri-runtime.test.js
 
       - name: Run Safe E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
@@ -2167,6 +2182,19 @@ jobs:
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # freedom-colibrid (freedom-core design 0014), Colibri's verifier: a
+      # packaged build ships it, so the app under test runs on it too.
+      # Without it Colibri cannot start and its reads go to the next source
+      # at once, a timing no shipped build has. Downloaded as e2e-desktop
+      # does, with the pinned digest and build provenance checked.
+      - name: Download freedom-colibrid binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -2437,6 +2465,14 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      - name: Download freedom-colibrid binaries
+        # Colibri's verifier (freedom-core design 0014): a packaged build
+        # ships it, so the app under test runs on it too.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Build macOS workspace supervisor
         run: npm run build:workspace-supervisor
       - name: Run agent E2E
@@ -2527,6 +2563,14 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      - name: Download freedom-colibrid binaries
+        # Colibri's verifier (freedom-core design 0014): a packaged build
+        # ships it, so the app under test runs on it too.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Build macOS workspace supervisor
         id: supervisor
         run: npm run build:workspace-supervisor
@@ -2612,6 +2656,18 @@ jobs:
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # freedom-colibrid (freedom-core design 0014), Colibri's verifier: a
+      # packaged build ships it, so the app under test runs on it too.
+      # Without it Colibri cannot start and its reads go to the next source
+      # at once, a timing no shipped build has. Downloaded as e2e-desktop
+      # does, with the pinned digest and build provenance checked.
+      - name: Download freedom-colibrid binaries
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -2710,6 +2766,19 @@ jobs:
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # freedom-colibrid (freedom-core design 0014), Colibri's verifier: a
+      # packaged build ships it, so the app under test runs on it too.
+      # Without it Colibri cannot start and its reads go to the next source
+      # at once, a timing no shipped build has. Downloaded as e2e-desktop
+      # does, with the pinned digest and build provenance checked.
+      - name: Download freedom-colibrid binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -2926,6 +2995,19 @@ jobs:
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # freedom-colibrid (freedom-core design 0014), Colibri's verifier: a
+      # packaged build ships it, so the app under test runs on it too.
+      # Without it Colibri cannot start and its reads go to the next source
+      # at once, a timing no shipped build has. Downloaded as e2e-desktop
+      # does, with the pinned digest and build provenance checked.
+      - name: Download freedom-colibrid binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

@@ -1,27 +1,25 @@
 /* global jest */
 /**
- * A checkpoint check's world for main's tests, on either verifier path
- * (checkpoint-verifier.js's `acquireCheckpoint`): the WASM worker
- * (`verifyCheckpoint` with a scripted runtime) and the one-shot
- * freedom-colibrid process (`acquireColibridCheckpoint` with
- * test/helpers/fake-colibrid.js's scripted check). Both meet the same
- * authorities, the same prover and the same verifier model:
+ * A checkpoint check's world for main's tests (checkpoint-verifier.js's
+ * `acquireCheckpoint`): the one-shot freedom-colibrid process
+ * (`acquireColibridCheckpoint`) with test/helpers/fake-colibrid.js's
+ * scripted check, meeting scripted authorities, a scripted prover and a
+ * verifier model:
  *
  * - `fetch`: every request main makes, the proof's POST to the chain's prover
  *   (a bounded test proof) and the quorum's GETs (each authority's block
  *   root and finality for the fixture's slot, the Beacon API's flags where
  *   the chain has one). Tests re-script it (`mockImplementation`).
- * - `decoded`: what decoding the proof gives (`runtime.decode_proof`, which
- *   both paths call), a checkpoint at the fixture's slot.
+ * - `decoded`: what decoding the proof gives (`decodeProof`, the process's
+ *   decoder), a checkpoint at the fixture's slot.
  * - `verifier.run(lookup)`: the verification, after decoding. `lookup(path)`
- *   is one checkpointz lookup (the WASM path's intercepted fetch of
- *   `<source>/<path>`, the service's `checkpointz` fetch), its body parsed;
- *   by default it looks up `verifier.rootPath` (the fixture's slot) once,
- *   then fails with `failVerification`'s error, if any. Tests replace `run`.
- * - `dependencies`: the WASM path's (`runtime`, `fetch`, `now`, and an
- *   `onDiagnostic` a test sets); `colibrid()`: a fresh fake process and the
- *   native path's dependencies, reading the same `fetch`, `now` and
- *   verifier, the proof POSTed through the executor's hop.
+ *   is one of the service's `checkpointz` fetches, its body parsed; by
+ *   default it looks up `verifier.rootPath` (the fixture's slot) once, then
+ *   fails with `failVerification`'s error, if any. Tests replace `run`.
+ * - `dependencies`: `now`, and an `onDiagnostic` a test sets; `colibrid()`:
+ *   a fresh fake process and the check's dependencies, reading the same
+ *   `fetch`, `now` and verifier, the proof POSTed through the executor's
+ *   hop.
  */
 
 const { headerRoot } = require('../../src/main/myotis/checkpoint-evidence');
@@ -63,9 +61,6 @@ function checkpointFixture(chainId = 1) {
   };
   let verify;
   let verifyFailure;
-  let requestUrl;
-  let storage;
-  let clientConfig;
   const verifier = {
     rootPath: `eth/v1/beacon/blocks/${slot}/root`,
     async run(lookup) {
@@ -74,24 +69,7 @@ function checkpointFixture(chainId = 1) {
       return { number: '0x1' };
     },
   };
-  const runtime = {
-    clientVersion: 196608,
-    Strategy: { VerifiedOnly: 0 },
-    Colibri: class {
-      static async register_storage(value) {
-        storage = value;
-      }
-      constructor(value) {
-        clientConfig = value;
-      }
-      async verifyProof(_method, _params, proof) {
-        verify = proof;
-        return verifier.run((path) => clientConfig.fetch(requestUrl || `${config.source}/${path}`));
-      }
-      destroy() {}
-    },
-    decode_proof: jest.fn(async () => decoded),
-  };
+  const decodeProof = jest.fn(async () => decoded);
   const fetch = jest.fn(async (url) => {
     if (url === config.prover) return new Response(Buffer.from('bounded test proof'));
     if (url.endsWith('finality_checkpoints')) return new Response(JSON.stringify(finality));
@@ -104,7 +82,7 @@ function checkpointFixture(chainId = 1) {
       })
     );
   });
-  const dependencies = { runtime, fetch, now: () => NOW };
+  const dependencies = { now: () => NOW };
   return {
     chainId,
     config,
@@ -112,23 +90,19 @@ function checkpointFixture(chainId = 1) {
     finality,
     header,
     slot,
-    runtime,
+    decodeProof,
     fetch,
     verifier,
     dependencies,
     failVerification: (error) => {
       verifyFailure = error;
     },
-    // The WASM path's intercepted URL, whole (another origin included).
-    trustUrl: (value) => {
-      requestUrl = value;
-    },
-    /** A fresh fake checkpoint process and the native path's dependencies. */
+    /** A fresh fake checkpoint process and the check's dependencies. */
     colibrid(extra = {}) {
       const fake = fakeColibrid({
         checkpoint: (message, child) =>
           checkpointCheck(message, child, {
-            decode: (bytes) => runtime.decode_proof(bytes),
+            decode: (bytes) => decodeProof(bytes),
             verify: (lookup, bytes) => {
               verify = bytes;
               return verifier.run(lookup);
@@ -154,12 +128,6 @@ function checkpointFixture(chainId = 1) {
     },
     get verifyBytes() {
       return verify;
-    },
-    get storage() {
-      return storage;
-    },
-    get clientConfig() {
-      return clientConfig;
     },
   };
 }

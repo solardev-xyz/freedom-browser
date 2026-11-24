@@ -98,6 +98,31 @@ describe('findAsarProblems', () => {
     ]);
   });
 
+  // COL-6 (freedom-core design 0014): freedom-colibrid replaced them.
+  test("flags Colibri's removed WASM build and native add-ons", () => {
+    const files = [
+      'node_modules/stale/c4w.wasm',
+      'node_modules/stale/prebuilds/linux-x64/colibri_native.node',
+      'node_modules/other/wasm/module.wasm',
+    ];
+    expect(findAsarProblems({ files, targets })).toEqual([
+      'removed Colibri WASM file packed: node_modules/stale/c4w.wasm',
+      'removed Colibri WASM file packed: node_modules/stale/prebuilds/linux-x64/colibri_native.node',
+    ]);
+  });
+
+  test('flags them outside node_modules too, under a packed top-level entry', () => {
+    const files = [
+      'src/main/ens/c4w.wasm',
+      'src/main/ens/colibri_native.node',
+      'src/main/ens/colibri-service.js',
+    ];
+    expect(findAsarProblems({ files, targets })).toEqual([
+      'removed Colibri WASM file packed: src/main/ens/c4w.wasm',
+      'removed Colibri WASM file packed: src/main/ens/colibri_native.node',
+    ]);
+  });
+
   test.each(['mac', 'linux', 'win'])('%s files list leaves out those paths', (platform) => {
     for (const files of [pkg.build.files, pkg.build[platform].files]) {
       expect(files).toContain('!**/node_modules/pdfjs-dist/standard_fonts/**');

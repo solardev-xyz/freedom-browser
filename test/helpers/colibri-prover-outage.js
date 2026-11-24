@@ -1,37 +1,25 @@
 /**
- * A Colibri read while its prover fails (#1059, F-9), on either backend
- * (freedom-core design 0014, A failed remote proof; COL-5). Nothing leaves
- * the machine: every request is answered here, by `failure`, an HTTP error
+ * A Colibri read while its prover fails (#1059, F-9), on freedom-colibrid
+ * (freedom-core design 0014, A failed remote proof). Nothing leaves the
+ * machine: every request is answered here, by `failure`, an HTTP error
  * (`{ status, body }`) or a transport failure (`{ transport }`, the error
- * Node's `fetch` throws).
+ * Node's `fetch` throws). The read runs on colibri-service.js with the real
+ * binary (test/helpers/colibri-service-harness.js), its fetches through
+ * main's executor on a scripted hop.
  *
- * - **wasm:** the real package, through colibri-runtime and colibri-worker.js's
- *   own service (its client config, its disk store, its error serializer),
- *   in a child process whose `fetch` is scripted. A child because Jest
- *   cannot load the WASM runtime, and because a worker thread can't have
- *   its `fetch` scripted. The outcome is what the worker posts, revived as
- *   the host revives it; `raw` is the client's error message before the
- *   worker's 2,000-unit cut.
- * - **service:** colibri-service.js on the real freedom-colibrid binary
- *   (`test/helpers/colibri-backends.js`), its fetches through main's
- *   executor on a scripted hop.
+ * `store` seeds the chain's directory (key → hex), as a session's earlier
+ * requests left it. Each run starts its own process with its own store.
  *
- * `store` seeds the chain's store (key → hex), as a session's earlier
- * requests left it: the WASM worker's flat directory, the service's chain
- * directory. Each run starts its own process with its own store.
- *
- * `proverOutage(kind, options)` resolves to `{ error, raw, fetched }`: the
- * error the host's caller gets (`null` if the read was answered), and every
- * request made (`{ url, method, body }`). `proverOutageError()` is the WASM
- * one's error, synchronously, as chain.integration.test.js takes it.
- * `f9Cases(vectors)` lists the vectors' outage cases with what each
- * backend's outcome must be.
+ * `proverOutage(options)` resolves to `{ error, fetched }`: the error the
+ * client's caller gets (`null` if the read was answered), and every request
+ * made (`{ url, method, body }`). `proverOutageError()` is that error as
+ * main builds it from the service's failed remote proof, at once, as
+ * chain.integration.test.js takes it. `f9Cases(vectors)` lists the vectors'
+ * outage cases with what the service's outcome must be.
  */
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFile, execFileSync } = require('node:child_process');
-const { promisify } = require('node:util');
 
 const ENS = path.join(__dirname, '..', '..', 'src', 'main', 'ens');
 const NAMING_SHELL = path.join(__dirname, '..', '..', 'src', 'main', 'core', 'naming-shell.js');
@@ -53,93 +41,11 @@ function readOptions({
   return { chain, zk, prover, method, params, failure, store };
 }
 
-/** The child's source: each read in `reads` on a fresh worker service and
- * store, one JSON line of outcomes on stdout. */
-function wasmSource(reads) {
-  return `
-    const fs = require('node:fs');
-    const os = require('node:os');
-    const path = require('node:path');
-    const runtime = require(${JSON.stringify(path.join(ENS, 'colibri-runtime.js'))});
-    const { createColibriService } = require(${JSON.stringify(path.join(ENS, 'colibri-worker.js'))});
-    // The client's own error, before the worker's serializer cuts it. The
-    // package protects its prototype, so the worker gets a subclass.
-    let raw = null;
-    class RecordingColibri extends runtime.Colibri {
-      async request(args) {
-        try {
-          return await super.request(args);
-        } catch (err) {
-          raw = String(err && err.message);
-          throw err;
-        }
-      }
-    }
-    const recording = { ...runtime, Colibri: RecordingColibri };
-    let current = null;
-    globalThis.fetch = async (url, init = {}) => {
-      current.fetched.push({ url: String(url), method: init.method, body: init.body ?? null });
-      if (current.failure.transport) throw new TypeError(current.failure.transport);
-      return new Response(current.failure.body, { status: current.failure.status });
-    };
-    (async () => {
-      const outcomes = [];
-      for (const read of ${JSON.stringify(reads)}) {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-colibri-outage-'));
-        for (const [key, hex] of Object.entries(read.store)) {
-          fs.writeFileSync(path.join(dir, key), Buffer.from(hex, 'hex'));
-        }
-        current = { failure: read.failure, fetched: [] };
-        raw = null;
-        const posted = [];
-        const service = createColibriService({ runtime: recording, storageDir: dir, post: (m) => posted.push(m) });
-        await service.init();
-        await service.handle({
-          type: 'request', id: 1, clientId: outcomes.length + 1,
-          config: { chainId: read.chain, proverUrl: read.prover, zkProof: read.zk },
-          method: read.method, params: read.params,
-        });
-        fs.rmSync(dir, { recursive: true, force: true });
-        outcomes.push({ posted: posted.find((m) => m.type === 'result'), raw, fetched: current.fetched });
-      }
-      return outcomes;
-    })().then(
-      (outcomes) => { console.log(JSON.stringify({ outage: true, outcomes })); process.exit(0); },
-      (err) => { console.log(JSON.stringify({ outage: true, error: String(err && err.stack || err) })); process.exit(0); },
-    );
-  `;
-}
-
-/** The outcomes from the child's stdout, revived as the host revives an
- * error (colibri-worker-host.js, `reviveError`). */
-function wasmOutcomes(stdout) {
-  const line = stdout.split('\n').find((text) => text.startsWith('{"outage"'));
-  const parsed = JSON.parse(line);
-  if (parsed.error) throw new Error(`the WASM outage child failed: ${parsed.error}`);
-  return parsed.outcomes.map(({ posted, raw, fetched }) => {
-    if (!posted || posted.ok) return { error: null, raw, fetched };
-    const { name, message, code, data } = posted.error;
-    const error = Object.assign(new Error(message), { name });
-    if (code !== undefined) error.code = code;
-    if (data !== undefined) error.data = data;
-    return { error, raw, fetched };
-  });
-}
-
-/** Each of `reads` (readOptions) on the WASM backend, in one child. */
-async function wasmOutages(reads) {
-  const { stdout } = await promisify(execFile)(
-    process.execPath,
-    ['-e', wasmSource(reads.map((read) => readOptions(read)))],
-    { encoding: 'utf8', timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }
-  );
-  return wasmOutcomes(stdout);
-}
-
-/** One read on the service backend: its own process and store. */
-async function serviceOutage(options) {
+/** A read while the prover fails (see the header): its own process and
+ * store. */
+async function proverOutage(options = {}) {
   const read = readOptions(options);
-  const { backendOf, startBackend } = require('./colibri-backends');
+  const { startService } = require('./colibri-service-harness');
   const { makeHop } = require(NAMING_SHELL);
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-colibri-outage-'));
   const fetched = [];
@@ -153,10 +59,7 @@ async function serviceOutage(options) {
   for (const [key, hex] of Object.entries(read.store)) {
     fs.writeFileSync(path.join(chainDir, key), Buffer.from(hex, 'hex'));
   }
-  const started = await startBackend(backendOf('service'), {
-    userData,
-    hop: makeHop({ fetch }),
-  });
+  const started = await startService({ userData, hop: makeHop({ fetch }) });
   try {
     const client = started.host.createClient({
       chainId: read.chain,
@@ -167,39 +70,36 @@ async function serviceOutage(options) {
       () => null,
       (err) => err
     );
-    return { error, raw: null, fetched };
+    return { error, fetched };
   } finally {
     await started.close();
     fs.rmSync(userData, { recursive: true, force: true });
   }
 }
 
-/** A read while the prover fails, on backend `kind` (see the header). */
-async function proverOutage(kind, options = {}) {
-  if (kind === 'wasm') return (await wasmOutages([options]))[0];
-  if (kind === 'service') return serviceOutage(options);
-  throw new Error(`unknown Colibri backend: ${kind}`);
-}
-
-/** The WASM backend's error for a read while the prover is down, at once. */
-function proverOutageError(options = {}) {
-  const stdout = execFileSync(process.execPath, ['-e', wasmSource([readOptions(options)])], {
-    encoding: 'utf8',
-    timeout: 60_000,
-  });
-  const [{ error }] = wasmOutcomes(stdout);
-  if (!error) throw new Error(`${options.method || 'eth_getBalance'} answered with the prover down`);
-  return error;
+/**
+ * The adapter's error for a read while the prover is down (an HTTP 503),
+ * as main builds it from the service's failed remote proof
+ * (colibri-outcome.js), at once. colibri-outage-parity.test.js holds the
+ * real binary to it.
+ */
+function proverOutageError({ method = 'eth_getBalance', params = [ACCOUNT, 'latest'] } = {}) {
+  const { replyOutcome } = require(path.join(ENS, 'colibri-outcome.js'));
+  const text = `HTTP error! Status: ${HTTP_503.status}, Details: ${HTTP_503.body}`;
+  return replyOutcome(
+    { status: 'error', error: `remote proof failed (no local proving): ${text}` },
+    { method, params }
+  ).error;
 }
 
 /**
  * The vectors' F-9 cases (design 0014, Vectors): each proofable method the
  * service serves with its prover failing by an HTTP error or a transport
  * error, and the cases whose completed message crosses the 2,000-unit cut.
- * Each is `{ id, read, outcome, design }`: the read as `proverOutage` takes
- * it, the reference's recorded outcome (today's WASM path), and the one
- * the design gives the service (the same but where the case is marked
- * `fetch-error-text`). The store is the session's, as its recorded fetch
+ * Each is `{ id, read, body, outcome, design }`: the read as `proverOutage`
+ * takes it, the prover request's recorded body, the reference's recorded
+ * outcome (the WASM path's), and the one the design gives the service (the
+ * same but where the case is marked `fetch-error-text`). The store is the session's, as its recorded fetch
  * shows it: the prover request carries `states_<chain>` as its `c4`, and the
  * case's recorded store entry for it must agree.
  */
@@ -246,6 +146,7 @@ function f9Cases(vectors) {
           failure,
           store,
         },
+        body: fetch.body,
         outcome: outcome.error,
         design: design.error,
       };
@@ -260,5 +161,4 @@ module.exports = {
   f9Cases,
   proverOutage,
   proverOutageError,
-  wasmOutages,
 };

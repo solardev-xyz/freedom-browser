@@ -4,22 +4,24 @@
  * main's table by type, never from the Colibri service:
  * - `prover`: the opening client's prover (the registry's first prover for
  *   the chain), passed in;
- * - `beacon_api`: the package's `beacon_apis` for the chain, then the prover;
- * - `checkpointz`: the package's `checkpointz`, then its `beacon_apis`, then
+ * - `beacon_api`: Colibri 3.0.3's built-in `beacon_apis` for the chain, then
+ *   the prover;
+ * - `checkpointz`: its built-in `checkpointz`, then its `beacon_apis`, then
  *   the prover;
  * - `eth_rpc`: none. No variant of the fetch contract uses it, so the table
  *   has no RPC hosts.
  *
- * That is `handle_request`'s order (`cjs/http.js:151–168`) with the package's
- * defaults for the chain and `prover: [proverUrl]`, as `colibri-worker.js`
- * configures the client today. A chain outside the package's lists has the
- * prover alone, as the package gives it.
+ * That is `handle_request`'s order in Colibri 3.0.3's JS client
+ * (`cjs/http.js:151–168`) with its defaults for the chain and
+ * `prover: [proverUrl]`, as the WASM worker configured the client until
+ * COL-6 removed it. A chain outside the built-in lists has the prover alone,
+ * as the client gave it.
  *
- * A checkpoint process (`checkpoint --chain N`) has the servers today's
- * checkpoint worker gives Colibri (`checkpoint-verifier-worker.js`): its
- * `checkpointz` is the chain's intercepted origin alone, which main answers
- * from its quorum; its `checkpoint_proof` is the chain's prover, which main
- * fetches itself; it has no `beacon_api` and no `prover`.
+ * A checkpoint process (`checkpoint --chain N`) has the servers the WASM
+ * checkpoint worker gave Colibri: its `checkpointz` is the chain's
+ * intercepted origin alone, which main answers from its quorum; its
+ * `checkpoint_proof` is the chain's prover, which main fetches itself; it has
+ * no `beacon_api` and no `prover`.
  */
 
 const { CHECKPOINT_NETWORKS } = require('../myotis/checkpoint-verifier');
@@ -32,9 +34,15 @@ function frozenLists(beacon_apis, checkpointz) {
 }
 
 /**
- * The package's lists (`@corpus-core/colibri-stateless` 3.0.3,
- * `chains.generated.js`), by chain. `colibri-servers.test.js` pins this
- * table to the installed package and to freedom-core's vectors (F-2).
+ * Colibri 3.0.3's built-in beacon and checkpoint hosts, by chain, embedded
+ * unchanged: the `beacon_apis` and `checkpointz` of `default_config` in the
+ * `@corpus-core/colibri-stateless` 3.0.3 npm package's
+ * `cjs/chains.generated.js` (sha256 2a91eee0…c921), which the app depended
+ * on until COL-6. Design 0014 (Q1, decided 2026-11-22) keeps exactly these
+ * hosts, reached through the session, so a change here is a design change.
+ * `colibri-servers.test.js` pins this table to that file's lists, recorded
+ * in test/fixtures/colibri/package-chains-3.0.3.json, and to the servers
+ * freedom-core's vectors recorded (F-2).
  */
 const COLIBRI_PACKAGE_SERVERS = Object.freeze({
   1: frozenLists(

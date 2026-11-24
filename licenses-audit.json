@@ -152,7 +152,7 @@
       "issues": [
         {
           "kind": "missing-license",
-          "details": "freedom-colibrid is released from freedom-core, which has no license yet (the maintainer's decision). Every build ships it, and nothing runs it yet: Colibri still runs in the app's WASM workers (@corpus-core/colibri-stateless) until the service's client lands behind a development switch (freedom-core design 0014, COL-5). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
+          "details": "freedom-colibrid is released from freedom-core, which has no license yet (the maintainer's decision). Every build ships it, and it is Colibri's verifier: since COL-6 (freedom-core design 0014) the app runs no other, and the npm package whose WASM build it replaced is no longer a dependency. The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
           "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
         },
         {
@@ -603,29 +603,6 @@
       "issues": []
     },
     {
-      "name": "@corpus-core/colibri-stateless",
-      "version": "3.0.3",
-      "type": "direct",
-      "scope": "runtime",
-      "source": { "ecosystem": "npm", "url": "https://github.com/corpus-core/c4" },
-      "license": {
-        "spdx": ["MIT"],
-        "raw": "MIT",
-        "license_files": ["LICENSE"],
-        "notice_required": false
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": [
-        {
-          "kind": "note",
-          "details": "Up to 3.0.2 the shipped c4w.wasm compiled in src/chains/op/verifier/op_zstd.{c,h}, which carried a PolyForm-Noncommercial-1.0.0 header despite the package's MIT licence (corpus-core/colibri-stateless#401). 3.0.3 relicenses that wrapper to MIT (#403), so everything in the package is MIT. Its LICENSE now names corpus.core GmbH instead of the .NET Foundation template line.",
-          "recommended_fix": null
-        }
-      ]
-    },
-    {
       "name": "@ensdomains/content-hash",
       "version": "3.1.1",
       "type": "direct",
@@ -990,9 +967,9 @@
     }
   ],
   "production_license_distribution": {
-    "unique_packages": 360,
+    "unique_packages": 359,
     "counts": {
-      "MIT": 233,
+      "MIT": 232,
       "Apache-2.0": 58,
       "ISC": 22,
       "BSD-3-Clause": 17,
@@ -1160,7 +1137,7 @@
     }
   ],
   "summary": {
-    "green": 353,
+    "green": 352,
     "yellow": 3,
     "orange": 5,
     "red": 0,

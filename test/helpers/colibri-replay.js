@@ -1,45 +1,53 @@
 /**
- * Successful Colibri reads replayed on both backends (freedom-core design
- * 0014, COL-5), from freedom-core's recordings: `vectors/colibri.json`'s
- * cases, each fetch's answer from `vectors/fixtures/colibri/bodies/<sha256>.bin`
- * by the trace's `reply.sha256` (a flipped or scripted answer from its
- * `derived`), its content type from `fixtures/colibri/sessions.json`. Nothing
- * leaves the machine: a fetch the case didn't record fails as a transport
- * error, and is reported.
+ * Successful Colibri reads replayed on freedom-colibrid (freedom-core design
+ * 0014), from freedom-core's recordings of the reference (the WASM verifier,
+ * which COL-6 removed): `vectors/colibri.json`'s cases, each fetch's answer
+ * from `vectors/fixtures/colibri/bodies/<sha256>.bin` by the trace's
+ * `reply.sha256` (a flipped or scripted answer from its `derived`), its
+ * content type from `fixtures/colibri/sessions.json`. Nothing leaves the
+ * machine: a fetch the case didn't record fails as a transport error, and
+ * is reported.
  *
- * - **wasm:** the real package in a child process per case
- *   (test/helpers/colibri-replay-wasm.js), `Date.now` at each request's
- *   recorded instant: the clock the generator fixed, which the WASM
- *   verifier reads too.
- * - **service:** colibri-service.js on the real freedom-colibrid
- *   (test/helpers/colibri-backends.js), its fetches through main's executor
- *   on a scripted hop, main's clock (`now`, which sets each request's
- *   freshness bound) at the request's instant. A released binary's C core
- *   reads the system clock, which nothing outside it can fix: that clock is
- *   read only by the transaction cache (its age and its pending list), so a
- *   case whose fetches depend on that age (`cCoreClock`) needs a binary built
- *   with the `testhooks` feature (FREEDOM_COLIBRID_TESTHOOKS_PATH), whose
- *   `test_clock_ms` fixes the C core's clock, as freedom-core's own replay
- *   (`services/freedom-colibrid/tests/service_vectors.rs`) does. `testClock`
- *   adds it to each `colibri.request` main sends.
+ * Each case runs on colibri-service.js with the real freedom-colibrid
+ * (test/helpers/colibri-service-harness.js), its fetches through main's
+ * executor on a scripted hop, main's clock (`now`, which sets each
+ * request's freshness bound) at the request's recorded instant. A released
+ * binary's C core reads the system clock, which nothing outside it can fix:
+ * that clock is read only by the transaction cache (its age and its pending
+ * list), so a case whose fetches depend on that age (`cCoreClock`) needs a
+ * binary built with the `testhooks` feature (FREEDOM_COLIBRID_TESTHOOKS_PATH),
+ * whose `test_clock_ms` fixes the C core's clock, as freedom-core's own
+ * replay (`services/freedom-colibrid/tests/service_vectors.rs`) does.
+ * `testClock` adds it to each `colibri.request` main sends.
  *
- * A warm case starts from the store its source case (`store.from`) left on
- * the same backend, so each backend's runs are kept (`wasmReplay`,
- * `serviceReplay`) until `cleanup()`. Each run starts its own process, as
- * the verifier keeps state between requests (the transaction cache).
+ * A warm case starts from the store its source case (`store.from`) left, so
+ * each binary's runs are kept (`serviceReplay`) until `cleanup()`. Each run
+ * starts its own process, as the verifier keeps state between requests (the
+ * transaction cache).
  */
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
-const { keyOf } = require('./colibri-replay-wasm');
 
 const ROOT = path.join(__dirname, '..', '..');
 const ENS = path.join(ROOT, 'src', 'main', 'ens');
-const CHILD = path.join(__dirname, 'colibri-replay-wasm.js');
+
+/**
+ * A fetch's key in a world: its URL (an origin's empty path written as
+ * none, as the package wrote a prover's URL and main's join doesn't), its
+ * verb, and its body.
+ */
+function keyOf({ url, method = 'GET', body = null }) {
+  const parsed = new URL(url);
+  const pathname = parsed.pathname === '/' ? '' : parsed.pathname;
+  return JSON.stringify([
+    `${parsed.origin}${pathname}${parsed.search}`,
+    method.toUpperCase(),
+    body,
+  ]);
+}
 
 /**
  * The cases replayed on each chain (`<chain>-<name>`): every method the
@@ -255,69 +263,12 @@ function cleanup() {
   runs.clear();
 }
 
-// Each backend's runs, by `<backend>:<case>`: a warm case's source runs once.
+// Each binary's runs, by `<binary>:<case>`: a warm case's source runs once.
 const runs = new Map();
 
 function memo(key, run) {
   if (!runs.has(key)) runs.set(key, run());
   return runs.get(key);
-}
-
-/** An adapter outcome as the worker posts it. */
-function postedOutcome(message) {
-  if (!message) return null;
-  if (message.ok) return { ok: true, result: message.result };
-  const { name, code, message: text, data } = message.error;
-  return { ok: false, error: { name, code, message: text, data } };
-}
-
-/**
- * Case `entry` on the WASM backend: `{ outcomes, fetched, unscripted,
- * storageDir, store }`. `cases` holds its source.
- */
-function wasmReplay(entry, cases, fixturesDir) {
-  return memo(`wasm:${entry.id}`, async () => {
-    const storageDir = entry.private ? null : tempDir('freedom-colibri-replay-wasm-');
-    if (entry.source) {
-      const source = await wasmReplay(cases.get(entry.source), cases, fixturesDir);
-      copyDir(source.storageDir, storageDir);
-    }
-    const world = [...worldOf(entry, fixturesDir).values()].map(
-      ({ bytes, sha256: _sha, ...answer }) =>
-        bytes ? { ...answer, base64: bytes.toString('base64') } : answer
-    );
-    const plan = path.join(tempDir('freedom-colibri-replay-plan-'), 'plan.json');
-    fs.writeFileSync(
-      plan,
-      JSON.stringify({
-        ens: ENS,
-        chain: entry.chain,
-        zk: entry.zk,
-        prover: entry.prover,
-        storageDir,
-        requests: entry.requests,
-        world,
-      })
-    );
-    const { stdout } = await promisify(execFile)(process.execPath, [CHILD, plan], {
-      encoding: 'utf8',
-      timeout: 180_000,
-      maxBuffer: 256 * 1024 * 1024,
-    });
-    const line = stdout.split('\n').find((text) => text.startsWith('{"replay"'));
-    const parsed = JSON.parse(line);
-    if (parsed.error) throw new Error(`the WASM replay of ${entry.id} failed: ${parsed.error}`);
-    const results = parsed.posted.filter((message) => message.type === 'result');
-    return {
-      outcomes: entry.requests.map((_, index) =>
-        postedOutcome(results.find((message) => message.id === index + 1))
-      ),
-      fetched: parsed.fetched,
-      unscripted: parsed.unscripted,
-      storageDir,
-      store: storageDir ? storeOf(storageDir) : null,
-    };
-  });
 }
 
 /**
@@ -341,14 +292,14 @@ function testClock(clock) {
 }
 
 /**
- * Case `entry` on the service backend with `binary` (`{ label, command,
+ * Case `entry` on freedom-colibrid with `binary` (`{ label, command,
  * serviceVersion, testClock }`): `{ outcomes, fetched, unscripted,
  * chainDir, store, written }`, `written` every file under
  * `<userData>/colibri` once its processes have exited.
  */
 function serviceReplay(entry, cases, fixturesDir, binary) {
   return memo(`${binary.label}:${entry.id}`, async () => {
-    const { backendOf, outcomeOf, startBackend } = require('./colibri-backends');
+    const { outcomeOf, startService } = require('./colibri-service-harness');
     const { makeHop } = require(path.join(ROOT, 'src', 'main', 'core', 'naming-shell.js'));
     const userData = tempDir('freedom-colibri-replay-service-');
     const chainDir = path.join(userData, 'colibri', String(entry.chain));
@@ -379,7 +330,7 @@ function serviceReplay(entry, cases, fixturesDir, binary) {
     const undo = binary.testClock ? testClock(() => clock) : null;
     const outcomes = [];
     try {
-      const started = await startBackend(backendOf('service'), {
+      const started = await startService({
         userData,
         hop: makeHop({ fetch }),
         now: () => clock,
@@ -432,6 +383,5 @@ module.exports = {
   replayCases,
   serviceReplay,
   storeOf,
-  wasmReplay,
   worldOf,
 };

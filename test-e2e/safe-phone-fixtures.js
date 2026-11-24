@@ -152,9 +152,9 @@ const test = base.extend({
         // verifying source can never serve a fork. This keeps the
         // "nothing escapes to the live chain" promise above; it is not
         // what kept these specs alive — the SIGSEGV they used to hit (#453,
-        // a Colibri receipt lookup trapping in WASM) is fixed in
-        // colibri-runtime.js and pinned by colibri-runtime.test.js under
-        // Electron's full main process.
+        // a Colibri receipt lookup trapping in WASM) was fixed in the WASM
+        // runtime, and since COL-6 Colibri runs in freedom-colibrid, outside
+        // Electron's main process.
         //
         // The quorum is asked first, so the Safe flow runs on verified reads,
         // as it would with two providers that agree. Direct answers when the

@@ -36,7 +36,7 @@ const {
   SHUTDOWN_GRACE_MS,
 } = require('./colibrid-client');
 const { OVERRUN_MS } = require('./colibri-markers');
-const { ColibriWorkerError } = require('./colibri-worker-host');
+const { ColibriWorkerError } = require('./colibri-outcome');
 const { ColibriFetchPool } = require('./colibri-fetch-pool');
 const { makeHop } = require('../core/naming-shell');
 const { isColibriFault } = require('../core/chain-verified');
@@ -249,7 +249,7 @@ describe('the process', () => {
       expect(fake.spawned[0].args).toEqual(
         colibridArgs(kind, { chain: 100, parentPid: 4242, ...dirs })
       );
-      expect(Object.keys(fake.spawned[0].options.env)).not.toContain('FREEDOM_COLIBRI_BACKEND');
+      expect(Object.keys(fake.spawned[0].options.env)).not.toContain('FREEDOM_COLIBRID_PATH');
     }
   });
 

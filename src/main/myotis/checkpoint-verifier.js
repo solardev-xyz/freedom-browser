@@ -1,9 +1,6 @@
 // Checkpoint recovery belongs to the node service. Each verification attempt has
-// its own verifier and store, independent of the ENS verifier's global cache:
-// a JS/WASM worker by default, or a one-shot freedom-colibrid process behind
-// the development switch (colibri-backend.js; checkpoint-colibrid.js).
-const path = require('node:path');
-const { Worker } = require('node:worker_threads');
+// its own verifier and store, independent of chain reads' Colibri processes:
+// a one-shot freedom-colibrid process (checkpoint-colibrid.js).
 
 const DEADLINE_MS = 90_000;
 const MAX_AGE_MS = 60 * 60 * 1000;
@@ -71,12 +68,12 @@ function networkFor(chainId) {
   return CHECKPOINT_NETWORKS[chainId];
 }
 
-// Revalidate the narrow worker result before allowing it into lifecycle/storage
+// Revalidate the narrow verifier result before allowing it into lifecycle/storage
 // code. This also gives persisted checkpoints the same chain and freshness rules.
 function validateCheckpoint(value, chainId, { now = Date.now(), fresh = true } = {}) {
   const config = networkFor(chainId);
   // Existing generations retain their original trust policy. New recovery and
-  // worker results always require v2 quorum provenance, even for fresh v1 records.
+  // verifier results always require v2 quorum provenance, even for fresh v1 records.
   const legacy = !fresh && value?.schemaVersion === 1 && value.source === config.source;
   const quorum = value?.schemaVersion === 2 &&
     Array.isArray(value.sources) &&
@@ -126,123 +123,16 @@ function validateCheckpoint(value, chainId, { now = Date.now(), fresh = true } =
   };
 }
 
-// The checkpoint for `chainId`, verified by the backend the development switch
-// picks (colibri-backend.js: the WASM worker by default, always in a packaged
-// build; freedom-colibrid with FREEDOM_COLIBRI_BACKEND=service), with the same
-// interface and results either way. Required lazily: the worker thread loads
-// this module too, and neither Electron nor the service client belongs there.
+// The checkpoint for `chainId`, verified by freedom-colibrid's one-shot
+// `checkpoint` process. Required lazily: checkpoint-colibrid.js requires this
+// module for its errors and its network table.
 function acquireCheckpoint(chainId, options = {}) {
-  if (require('../ens/colibri-backend').colibriBackendKind() === 'service') {
-    return require('./checkpoint-colibrid').acquireColibridCheckpoint(chainId, options);
-  }
-  return acquireWorkerCheckpoint(chainId, options);
+  return require('./checkpoint-colibrid').acquireColibridCheckpoint(chainId, options);
 }
 
-function acquireWorkerCheckpoint(chainId, { signal, onDiagnostic } = {}) {
-  return new Promise((resolve, reject) => {
-    try {
-      networkFor(chainId);
-    } catch (error) {
-      reject(error);
-      return;
-    }
-    if (
-      signal &&
-      (typeof signal.addEventListener !== 'function' ||
-        typeof signal.removeEventListener !== 'function')
-    ) {
-      reject(checkpointError('CHECKPOINT_MISMATCH'));
-      return;
-    }
-    const abortError = () => {
-      const error = checkpointError('CHECKPOINT_UNAVAILABLE');
-      error.name = 'AbortError';
-      return error;
-    };
-    if (signal?.aborted) {
-      reject(abortError());
-      return;
-    }
-    let worker;
-    let timer;
-    let settled = false;
-    let diagnosticCount = 0;
-    const finish = (error, result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', abort);
-      // Await the terminal receipt: lifecycle shutdown awaits this promise and
-      // must not finish while the worker still owns a WASM verifier or sockets.
-      const complete = () => {
-        if (error) reject(error);
-        else resolve(result);
-      };
-      if (!worker) {
-        complete();
-        return;
-      }
-      try {
-        Promise.resolve(worker.terminate()).then(complete, () => {
-          // A termination failure must never turn a verified result into success.
-          reject(error || checkpointError('CHECKPOINT_UNAVAILABLE'));
-        });
-      } catch {
-        reject(error || checkpointError('CHECKPOINT_UNAVAILABLE'));
-      }
-    };
-    const abort = () => finish(abortError());
-    try {
-      worker = new Worker(path.join(__dirname, 'checkpoint-verifier-worker.js'), {
-        workerData: { chainId },
-        execArgv: [],
-        env: { C4_DISABLE_NATIVE: '1' },
-        resourceLimits: {
-          maxOldGenerationSizeMb: 128,
-          maxYoungGenerationSizeMb: 16,
-          stackSizeMb: 4,
-        },
-        stdout: true,
-        stderr: true,
-      });
-      worker.stdout?.resume();
-      worker.stderr?.resume();
-      worker.on('message', (message) => {
-        if (settled) return;
-        if (message?.type === 'checkpoint-source') {
-          if (++diagnosticCount > 64) return;
-          const diagnostic = validateDiagnostic(message.diagnostic, chainId);
-          if (diagnostic && typeof onDiagnostic === 'function') {
-            try { onDiagnostic(diagnostic); } catch { /* diagnostics cannot affect verification */ }
-          }
-          return;
-        }
-        if (message?.ok !== true) {
-          finish(checkpointError(message?.error?.code));
-          return;
-        }
-        try {
-          finish(null, validateCheckpoint(message.checkpoint, chainId));
-        } catch (error) {
-          finish(error);
-        }
-      });
-      // Keep these handlers attached through termination: a late worker error
-      // must not become an unhandled main-process EventEmitter error.
-      worker.on('error', () => finish(checkpointError('CHECKPOINT_UNAVAILABLE')));
-      worker.on('exit', () => finish(checkpointError('CHECKPOINT_UNAVAILABLE')));
-      timer = setTimeout(() => finish(checkpointError('CHECKPOINT_UNAVAILABLE')), DEADLINE_MS);
-      signal?.addEventListener('abort', abort, { once: true });
-      if (signal?.aborted) abort();
-    } catch {
-      finish(checkpointError('CHECKPOINT_UNAVAILABLE'));
-    }
-  });
-}
-
-// Diagnostics cross a trust boundary too (the worker's messages; the native
-// path's quorum, checkpoint-colibrid.js). Never forward response bodies,
-// arbitrary URLs/messages or fields into main-process logs or renderer status.
+// Diagnostics cross a trust boundary too (the quorum's, checkpoint-colibrid.js).
+// Never forward response bodies, arbitrary URLs/messages or fields into
+// main-process logs or renderer status.
 function validateDiagnostic(value, chainId) {
   if (!value || !networkFor(chainId).sources.includes(value.source) ||
       !Number.isSafeInteger(value.slot) || value.slot <= 0 ||

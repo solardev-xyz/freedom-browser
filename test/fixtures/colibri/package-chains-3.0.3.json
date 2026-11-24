@@ -1,0 +1,110 @@
+{
+  "source": {
+    "release": "Colibri 3.0.3, the npm build of https://github.com/corpus-core/c4",
+    "file": "cjs/chains.generated.js (default_config)",
+    "sha256": "2a91eee079cce5de728934e6c1b19094300c1a23a3c15e08af3f77d85380c921"
+  },
+  "chains": {
+    "1": {
+      "rpcs": [
+        "https://mainnet.colibri-proof.tech/execution",
+        "https://eth.drpc.org",
+        "https://ethereum-rpc.publicnode.com",
+        "https://singapore.rpc.blxrbdn.com"
+      ],
+      "beacon_apis": [
+        "https://mainnet.colibri-proof.tech/consensus",
+        "https://gateway.tenderly.co/public/mainnet",
+        "https://ethereum-beacon-api.publicnode.com"
+      ],
+      "checkpointz": [
+        "https://sync-mainnet.beaconcha.in",
+        "https://mainnet.checkpoint.sigp.io",
+        "https://mainnet-checkpoint-sync.attestant.io",
+        "https://beaconstate-mainnet.chainsafe.io",
+        "https://mainnet-checkpoint-sync.stakely.io",
+        "https://checkpointz.pietjepuk.net",
+        "https://beaconstate.ethstaker.cc"
+      ],
+      "prover": [
+        "https://mainnet.colibri-proof.tech",
+        "https://mainnet1.colibri-proof.tech",
+        "https://mainnet-prover.incubed.net",
+        "https://mainnet.colimind.com"
+      ]
+    },
+    "100": {
+      "rpcs": [
+        "https://gnosis.colibri-proof.tech/execution",
+        "https://rpc.gnosischain.com",
+        "https://rpc.gnosis.gateway.fm",
+        "https://gnosis-rpc.publicnode.com"
+      ],
+      "beacon_apis": [
+        "https://gnosis.colibri-proof.tech/consensus",
+        "https://rpc-gbc.gnosischain.com",
+        "https://gnosis-beacon-api.publicnode.com"
+      ],
+      "checkpointz": [
+        "https://checkpoint.gnosischain.com"
+      ],
+      "prover": [
+        "https://gnosis.colibri-proof.tech",
+        "https://gnosis1.colibri-proof.tech",
+        "https://gnosis.colimind.com"
+      ]
+    },
+    "10200": {
+      "rpcs": [
+        "https://rpc.chiado.gnosis.gateway.fm",
+        "https://rpc.chiadochain.net",
+        "https://gnosis-chiado-rpc.publicnode.com"
+      ],
+      "beacon_apis": [
+        "https://rpc-gbc.chiadochain.net"
+      ],
+      "checkpointz": [
+        "https://checkpoint.chiadochain.net"
+      ],
+      "prover": [
+        "https://chiado.colibri-proof.tech"
+      ]
+    },
+    "11155111": {
+      "rpcs": [
+        "https://sepolia.colibri-proof.tech/execution",
+        "https://ethereum-sepolia-rpc.publicnode.com",
+        "https://sepolia.gateway.tenderly.co"
+      ],
+      "beacon_apis": [
+        "https://sepolia.colibri-proof.tech/consensus",
+        "https://ethereum-sepolia-beacon-api.publicnode.com"
+      ],
+      "checkpointz": [
+        "https://checkpoint-sync.sepolia.ethpandaops.io",
+        "https://beaconstate-sepolia.chainsafe.io"
+      ],
+      "prover": [
+        "https://sepolia.colibri-proof.tech",
+        "https://sepolia1.colibri-proof.tech",
+        "https://sepolia.colimind.com"
+      ]
+    },
+    "7091047534": {
+      "rpcs": [
+        "https://plataberget.colibri-proof.tech/execution",
+        "https://rpc.glamsterdam-devnet-8.ethpandaops.io/"
+      ],
+      "beacon_apis": [
+        "https://plataberget.colibri-proof.tech/consensus",
+        "https://beacon.glamsterdam-devnet-8.ethpandaops.io/"
+      ],
+      "checkpointz": [
+        "https://checkpoint-sync.glamsterdam-devnet-8.ethpandaops.io"
+      ],
+      "prover": [
+        "https://plataberget.colibri-proof.tech"
+      ]
+    }
+  }
+}

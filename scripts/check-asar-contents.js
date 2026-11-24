@@ -24,6 +24,11 @@ const EXCLUDED_DEPENDENCY_PATHS = [
   // pdfjs-dist's optional Skia canvas, which the PDF processor never loads.
   'node_modules/@napi-rs/',
 ];
+// Colibri's WASM verifier and its native add-ons, which left with Colibri's
+// WASM path (freedom-core design 0014, COL-6: freedom-colibrid verifies
+// instead). No dependency brings them now, but a node_modules installed
+// before then still holds them; the asar header lists the unpacked add-ons.
+const REMOVED_COLIBRI_FILES = [/(^|\/)c4w\.wasm$/, /(^|\/)colibri_native\.node$/];
 
 // The asar header is a pickled JSON string: an 8-byte size pickle, then a
 // 4-byte payload length and a 4-byte string length, then the JSON itself.
@@ -62,6 +67,10 @@ function findAsarProblems({ files, prebuilds = [], targets = [] }) {
   const strayTopLevel = new Set();
   const excludedPacked = new Set();
   for (const file of files) {
+    // Anywhere in the archive, not only under node_modules.
+    if (REMOVED_COLIBRI_FILES.some((pattern) => pattern.test(file))) {
+      problems.push(`removed Colibri WASM file packed: ${file}`);
+    }
     const top = file.split('/')[0];
     if (top === 'node_modules') {
       const excluded = EXCLUDED_DEPENDENCY_PATHS.find((prefix) => file.startsWith(prefix));

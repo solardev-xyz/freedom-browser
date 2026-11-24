@@ -113,6 +113,9 @@ const UNREAD = held({
   },
 });
 
+// The balances showIdentity puts in the wallet's state.
+const BALANCES = { 'base-native': { formatted: '1.0', symbol: 'ETH' } };
+
 function stubMainIpc(electronApp, intents) {
   return electronApp.evaluate(
     ({ ipcMain }, { intents, fees }) => {
@@ -148,7 +151,7 @@ function stubMainIpc(electronApp, intents) {
 }
 
 async function showIdentity(window) {
-  await window.evaluate(async (ledger) => {
+  await window.evaluate(async ({ ledger, balances }) => {
     const { walletState } = await import('./lib/wallet/wallet-state.js');
     const sidebar = await import('./lib/sidebar.js');
     const held = await import('./lib/wallet/held-payments.js');
@@ -174,9 +177,9 @@ async function showIdentity(window) {
         builtin: true,
       },
     };
-    walletState.currentBalances = { 'base-native': { formatted: '1.0', symbol: 'ETH' } };
+    walletState.currentBalances = balances;
     await held.refreshHeldPayments();
-  }, LEDGER);
+  }, { ledger: LEDGER, balances: BALANCES });
 }
 
 const setTheme = (window, theme) =>
@@ -440,11 +443,24 @@ test.describe("with the Ledger account in main's wallet list", () => {
       .poll(() => electronApp.evaluate(() => Boolean(globalThis.__releaseList)))
       .toBe(true);
 
-    // Meanwhile a send starts its Ledger approval.
-    await window.evaluate(async (recipient) => {
-      const send = await import('./lib/wallet/send.js');
-      send.openSend({ recipient, chainId: 8453 });
-    }, RECIPIENT);
+    // Meanwhile a send starts its Ledger approval. The balances are seeded
+    // again as it opens, as the other Ledger send specs do: with the account
+    // in main's wallet list the chrome's own start-up asked main for its
+    // balances before stubMainIpc ran (the wallet tab counts as visible with
+    // the sidebar collapsed), and that answer, the account's real balances
+    // (none), lands whenever the chain reads behind it finish, which may be
+    // after showIdentity. Without freedom-colibrid those reads fall to the
+    // next source at once, and the answer landed just before this, leaving
+    // the send no asset to send.
+    await window.evaluate(
+      async ({ recipient, balances }) => {
+        const { walletState } = await import('./lib/wallet/wallet-state.js');
+        const send = await import('./lib/wallet/send.js');
+        walletState.currentBalances = balances;
+        send.openSend({ recipient, chainId: 8453 });
+      },
+      { recipient: RECIPIENT, balances: BALANCES }
+    );
     await window.fill('#send-amount', '0.001');
     await window.click('#send-continue-btn');
     await expect(window.locator('#send-review-view')).toBeVisible();

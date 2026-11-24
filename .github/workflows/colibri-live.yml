@@ -1,17 +1,17 @@
 name: Colibri service (live run and contract suites)
 
-# freedom-colibrid on Linux, macOS and Windows (freedom-core design 0014):
-# COL-6 makes the service Colibri's default only once COL-5's contract suite
-# and its live chain-read run pass on all three (Migration, Q19). Two steps
-# per runner:
+# freedom-colibrid, Colibri's only verifier since COL-6, on Linux, macOS and
+# Windows (freedom-core design 0014). Two steps per runner:
 #
 # - the gated live run (src/main/__tests__/integration/colibri-service-e2e.test.js,
 #   COLIBRI_SERVICE_E2E=1): chain reads through chain-verified from the
-#   default provers, beacon and checkpoint hosts on mainnet and Gnosis, on
-#   the service and on the WASM verifier, compared;
-# - the contract and parity suites on both backends, the service's on the
-#   real binary (FREEDOM_COLIBRID_REQUIRED=1 fails them without it), with
-#   freedom-core's Colibri vectors and their fixtures.
+#   default provers, beacon and checkpoint hosts on mainnet and Gnosis, held
+#   to freedom-core's recorded reference where the answer can't move;
+# - the Colibri suites on the real binary (FREEDOM_COLIBRID_REQUIRED=1 fails
+#   them without it), with freedom-core's Colibri vectors and their fixtures.
+#
+# The unit job in ci.yml runs the same suites on Linux on every pull
+# request; this workflow is their run on macOS and Windows too.
 #
 # It needs the network, so it never gates a pull request. GitHub dispatches
 # a workflow_dispatch workflow only once it is on the default branch, so it
@@ -89,15 +89,15 @@ jobs:
             vectors/fixtures/colibri/
           sparse-checkout-cone-mode: false
 
-      - name: Run the live chain reads on both backends
+      - name: Run the live chain reads
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           COLIBRI_SERVICE_E2E: '1'
+          FREEDOM_COLIBRID_REQUIRED: '1'
+          FREEDOM_CORE_COLIBRI_VECTORS: ${{ github.workspace }}/.freedom-core-colibri/vectors/colibri.json
         run: npx jest src/main/__tests__/integration/colibri-service-e2e.test.js
 
-      # The checkpoint path's suite (src/main/myotis/checkpoint-colibrid.test.js,
-      # COL-5 PR 9) runs once it is on the branch.
-      - name: Run the Colibri contract and parity suites on both backends
+      - name: Run the Colibri suites on freedom-colibrid
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         shell: bash
         env:
@@ -106,14 +106,13 @@ jobs:
         run: |
           set -euo pipefail
           suites=(
-            src/main/ens/colibri-worker-host.test.js
+            src/main/ens/colibri-service-contract.test.js
             src/main/ens/colibri-resolver.test.js
             src/main/core/chain-verified.test.js
             src/main/ens/colibri-private-store.test.js
             src/main/ens/colibri-outage-parity.test.js
             src/main/ens/colibri-replay-parity.test.js
+            src/main/ens/colibrid-pin.test.js
+            src/main/myotis/checkpoint-colibrid.test.js
           )
-          if [ -f src/main/myotis/checkpoint-colibrid.test.js ]; then
-            suites+=(src/main/myotis/checkpoint-colibrid.test.js)
-          fi
           npx jest --maxWorkers=2 "${suites[@]}"

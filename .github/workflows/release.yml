@@ -1979,6 +1979,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download freedom-colibrid binaries
+        # Colibri's verifier (freedom-core design 0014): a packaged build
+        # ships it, so the app under test runs on it too. Same bounded
+        # watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run the full harness E2E suite
         env:
           SHARD: ${{ matrix.shard }}
