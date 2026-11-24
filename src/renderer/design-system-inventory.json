@@ -1,7 +1,7 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/1198",
   "totals": {
-    "legacyClasses": 186,
+    "legacyClasses": 187,
     "oldTokens": 235,
     "literalSizes": 237,
     "bareOutlines": 16
@@ -211,6 +211,7 @@
       "stamp-batch-card",
       "stamp-buy-another-btn",
       "stamp-extend-cancel-btn",
+      "stamp-extend-days-input",
       "stamp-extend-preset-btn",
       "stamp-preset-btn",
       "stamp-purchase-btn",
