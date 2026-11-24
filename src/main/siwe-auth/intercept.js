@@ -130,10 +130,14 @@ function rememberAccount(origin, address) {
  */
 function forgetAllAccounts() {
   storeCache = { version: 1, origins: {} };
-  try {
-    fs.rmSync(storePath(), { force: true });
-  } catch (err) {
-    log.warn(`[SIWE] could not delete the remembered sign-in accounts: ${err.message}`);
+  // The temp copy too: a crash between saveStore's write and its rename
+  // leaves the full list there.
+  for (const file of [storePath(), `${storePath()}.tmp`]) {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch (err) {
+      log.warn(`[SIWE] could not delete the remembered sign-in accounts: ${err.message}`);
+    }
   }
 }
 

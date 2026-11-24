@@ -92,6 +92,7 @@ beforeEach(() => {
   mockTabs.clear();
   mockAgentPages.clear();
   fs.rmSync(path.join(mockUserData, 'siwe-accounts.json'), { force: true });
+  fs.rmSync(path.join(mockUserData, 'siwe-accounts.json.tmp'), { force: true });
   tab = makeTab(TAB);
 });
 
@@ -391,6 +392,33 @@ describe('prepare and complete', () => {
     siwe._resetForTests();
     siwe.detectHandler(response({ id: 402 }));
     expect(sentChallenge(tab).rememberedAddress).toBeNull();
+  });
+
+  test('forgetting accounts also removes a temp copy a crashed save left behind', async () => {
+    const { id, message } = await prepared();
+    await siwe.complete({ id, walletIndex: 0, signature: await signer.signMessage(message) });
+    const file = path.join(mockUserData, 'siwe-accounts.json');
+    const temp = `${file}.tmp`;
+    // What saveStore leaves when the app dies between its write and rename.
+    fs.copyFileSync(file, temp);
+    expect(fs.readFileSync(temp, 'utf8')).toContain(signer.address);
+    siwe.forgetAllAccounts();
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(temp)).toBe(false);
+  });
+
+  test('a temp copy that cannot be removed does not stop the main file going', async () => {
+    const { id, message } = await prepared();
+    await siwe.complete({ id, walletIndex: 0, signature: await signer.signMessage(message) });
+    const file = path.join(mockUserData, 'siwe-accounts.json');
+    const temp = `${file}.tmp`;
+    fs.mkdirSync(temp); // rmSync without `recursive` refuses a directory
+    try {
+      expect(() => siwe.forgetAllAccounts()).not.toThrow();
+      expect(fs.existsSync(file)).toBe(false);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   test('forgetting accounts never throws when the file cannot be removed', () => {
