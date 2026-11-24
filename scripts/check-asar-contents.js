@@ -67,13 +67,14 @@ function findAsarProblems({ files, prebuilds = [], targets = [] }) {
   const strayTopLevel = new Set();
   const excludedPacked = new Set();
   for (const file of files) {
+    // Anywhere in the archive, not only under node_modules.
+    if (REMOVED_COLIBRI_FILES.some((pattern) => pattern.test(file))) {
+      problems.push(`removed Colibri WASM file packed: ${file}`);
+    }
     const top = file.split('/')[0];
     if (top === 'node_modules') {
       const excluded = EXCLUDED_DEPENDENCY_PATHS.find((prefix) => file.startsWith(prefix));
       if (excluded) excludedPacked.add(excluded);
-      if (REMOVED_COLIBRI_FILES.some((pattern) => pattern.test(file))) {
-        problems.push(`removed Colibri WASM file packed: ${file}`);
-      }
       continue;
     }
     if (!ALLOWED_TOP_LEVEL.has(top)) strayTopLevel.add(top);

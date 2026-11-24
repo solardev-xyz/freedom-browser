@@ -111,6 +111,18 @@ describe('findAsarProblems', () => {
     ]);
   });
 
+  test('flags them outside node_modules too, under a packed top-level entry', () => {
+    const files = [
+      'src/main/ens/c4w.wasm',
+      'src/main/ens/colibri_native.node',
+      'src/main/ens/colibri-service.js',
+    ];
+    expect(findAsarProblems({ files, targets })).toEqual([
+      'removed Colibri WASM file packed: src/main/ens/c4w.wasm',
+      'removed Colibri WASM file packed: src/main/ens/colibri_native.node',
+    ]);
+  });
+
   test.each(['mac', 'linux', 'win'])('%s files list leaves out those paths', (platform) => {
     for (const files of [pkg.build.files, pkg.build[platform].files]) {
       expect(files).toContain('!**/node_modules/pdfjs-dist/standard_fonts/**');
