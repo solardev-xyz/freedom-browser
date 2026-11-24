@@ -90,6 +90,7 @@ function isStoredConnection(connection, providerId) {
   ) {
     return false;
   }
+  if (connection.organizationPolicyAcknowledged !== undefined && typeof connection.organizationPolicyAcknowledged !== 'boolean') return false;
   if (
     connection.privacyPolicy !== undefined &&
     !['standard', 'zdr', 'private', 'tee'].includes(connection.privacyPolicy)
@@ -213,6 +214,7 @@ class AgentProviderStore {
         ...(candidate.favoriteModelIds && { favoriteModelIds: [...candidate.favoriteModelIds] }),
         ...(candidate.kind === 'compatible' && { name: candidate.name, baseUrl: candidate.baseUrl, models: structuredClone(candidate.models), hasApiKey: Boolean(candidate.encryptedApiKey), updatedAt: candidate.updatedAt }),
         ...(candidate.privacyPolicy && { privacyPolicy: candidate.privacyPolicy }),
+        ...(candidate.providerId === 'anthropic-claude' && { organizationPolicyAcknowledged: candidate.organizationPolicyAcknowledged === true }),
         ...(candidate.kind === 'ollama' && {
           baseUrl: candidate.baseUrl,
           modelIds: [...candidate.modelIds],
@@ -343,7 +345,9 @@ class AgentProviderStore {
     this.#write({
       connections: {
         ...payload.connections,
-        [providerId]: { kind: 'subscription', providerId, modelId },
+        [providerId]: { ...(providerId === 'anthropic-claude' && payload.connections[providerId]?.kind === 'subscription' ? payload.connections[providerId] : {}),
+          kind: 'subscription', providerId, modelId,
+          ...(providerId === 'anthropic-claude' && { organizationPolicyAcknowledged: true }) },
       },
       activeProviderId: providerId,
       credentials: payload.credentials,

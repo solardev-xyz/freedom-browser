@@ -14,6 +14,22 @@ test('connect installed Claude, chat, remember context, and show privacy in the 
   await providerPage.locator('#agent-provider-chatgpt').click();
   await expect(providerPage.locator('#agent-provider-login')).toHaveText('Connect installed Claude');
   const models = providerPage.locator('#agent-provider-models-list');
+  await expect(providerPage.locator('#agent-subscription-note')).toContainText('Organization scripts may run outside Freedom’s approval controls and receive your messages and the content Agent reads.');
+  await expect(models).toContainText('CLI default');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
+    await expect(providerPage.locator('html')).toHaveAttribute('data-theme', theme);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`claude-before-connect-${theme}.png`) });
+  }
+  await providerPage.locator('#agent-provider-login').click();
+  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });
+  // The first connected provider opens Agent in a foreground start-page tab.
+  // Bring Settings back before inspecting or capturing its connected detail.
+  const settingsTabId = await window.evaluate(() => [...document.querySelectorAll('webview')]
+    .find(webview => webview.getURL().includes('/pages/settings.html')).dataset.tabId);
+  await window.locator(`.tab[data-tab-id="${settingsTabId}"]`).click();
+  if ((await window.locator('#agent-toggle-btn').getAttribute('aria-expanded')) === 'true')
+    await window.locator('#agent-sidebar-close').click();
   await expect(models).toContainText(/Claude Opus \d/);
   await expect(models).toContainText(/Claude Sonnet \d/);
   await expect(models).toContainText(/Claude Haiku \d/);
@@ -21,10 +37,10 @@ test('connect installed Claude, chat, remember context, and show privacy in the 
   await expect(models).not.toContainText('CLI default');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
-    await providerPage.locator('#providers').screenshot({ path: testInfo.outputPath(`claude-connect-${theme}.png`) });
+    await expect(providerPage.locator('html')).toHaveAttribute('data-theme', theme);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`claude-connect-${theme}.png`) });
   }
-  await providerPage.locator('#agent-provider-login').click();
-  await expect(providerPage.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 25000 });
+  await expect(providerPage.locator('#agent-subscription-note')).toBeVisible();
   await closeProviderSettings(window);
   await window.locator('#agent-prompt').fill('Remember the word ORBIT. Reply exactly: Ready.');
   await window.locator('#agent-run').click();

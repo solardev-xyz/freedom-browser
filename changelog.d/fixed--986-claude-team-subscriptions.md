@@ -1,0 +1,2 @@
+- Claude subscription connections support Team and Enterprise accounts, with organization automation disclosed ([#986](https://github.com/solardev-xyz/freedom-browser/issues/986)):
+  - Existing Claude connections require a one-time reconnect to review organization automation
