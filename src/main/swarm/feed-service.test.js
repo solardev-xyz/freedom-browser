@@ -59,6 +59,11 @@ class MockFeedIndex {
 class MockSpan {
   constructor(value) { this._value = BigInt(value); }
   toBigInt() { return this._value; }
+  toUint8Array() {
+    const bytes = Buffer.alloc(8);
+    bytes.writeBigUInt64LE(this._value);
+    return bytes;
+  }
 }
 
 // Stand-in for bee-js Bytes — an object wrapping a Uint8Array.
@@ -74,7 +79,9 @@ class MockBytes {
   }
   toUint8Array() { return this._bytes; }
   toHex() { return Buffer.from(this._bytes).toString('hex'); }
-  static keccak256(_bytes) { return new MockBytes(new Uint8Array(32).fill(7)); }
+  // Not a hash: keeps the topic||index input so tests can tell which feed
+  // index an update-chunk address was derived for (see mockFeedChunksUpTo).
+  static keccak256(bytes) { return new MockBytes(Uint8Array.from(bytes)); }
 }
 
 class MockIdentifier extends MockBytes {}
@@ -129,7 +136,7 @@ jest.mock('electron-log', () => ({
   error: jest.fn(),
 }));
 
-const { buildTopicString, createFeed, updateFeed, writeFeedPayload, readFeedPayload, withWriteLock, feedIndexToNumber, isNotFoundError } = require('./feed-service');
+const { buildTopicString, createFeed, updateFeed, writeFeedPayload, readFeedPayload, readFeedState, withWriteLock, feedIndexToNumber, isNotFoundError } = require('./feed-service');
 
 const TEST_PRIVATE_KEY = '0x' + 'ab'.repeat(32);
 const MOCK_MANIFEST_REF = 'ff'.repeat(32);
@@ -173,7 +180,27 @@ function createMockReader({ downloadPayloadResult, downloadPayloadFn } = {}) {
   return reader;
 }
 
-function mockExactFeedPayload(data = 'exact data', span = 1n) {
+// Model a feed whose update chunks exist at indexes 0..lastIndex (GET /chunks),
+// independent of what the latest-update lookup (GET /feeds) answers.
+// Returns the list of indexes probed.
+function mockFeedChunksUpTo(lastIndex) {
+  const probed = [];
+  mockCalculateSingleOwnerChunkAddress.mockImplementation((identifier) => ({
+    index: Number(Buffer.from(identifier.toUint8Array()).readBigUInt64BE(identifier.length - 8)),
+  }));
+  mockDownloadChunk.mockImplementation(async (ref) => {
+    probed.push(ref.index);
+    if (ref.index <= lastIndex) return new MockBytes('soc');
+    throw make404();
+  });
+  return probed;
+}
+
+function make404WrappedChunk() {
+  return new MockBeeResponseError(404, 'wrapped chunk cannot be retrieved');
+}
+
+function mockExactFeedPayload(data = 'exact data', span = BigInt(Buffer.byteLength(data))) {
   const reference = new MockReference('ee'.repeat(32));
   const payload = new MockBytes(data);
   const soc = { payload, span: new MockSpan(span) };
@@ -414,6 +441,49 @@ describe('feed-service', () => {
         .rejects.toThrow('network error');
     });
 
+    test('continues a live feed after its head when the latest lookup 404s on expired content', async () => {
+      const writer = createMockWriter();
+      writer.downloadPayload.mockRejectedValue(make404WrappedChunk());
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+      for (const head of [0, 1, 6, 7, 8, 1000]) {
+        mockFeedChunksUpTo(head);
+        writer.uploadReference.mockClear();
+        await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF)).resolves.toEqual({ index: head + 1 });
+        expect(writer.uploadReference.mock.calls[0][2]).toEqual({ index: head + 1 });
+      }
+    });
+
+    test('minIndex keeps a write above an index the caller knows, even when the probe reads the feed as empty', async () => {
+      // Index 0 expired with its batch while later updates survive: the
+      // probe can't see past it, so only the caller's known index helps.
+      const writer = createMockWriter();
+      writer.downloadPayload.mockRejectedValue(make404());
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+      mockFeedChunksUpTo(-1);
+      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: 6 })).resolves.toEqual({ index: 6 });
+      expect(writer.uploadReference.mock.calls[0][2]).toEqual({ index: 6 });
+      // A network head past minIndex still wins.
+      writer.uploadReference.mockClear();
+      mockFeedChunksUpTo(9);
+      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: 6 })).resolves.toEqual({ index: 10 });
+      // An absent or invalid minIndex changes nothing.
+      writer.uploadReference.mockClear();
+      mockFeedChunksUpTo(-1);
+      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, undefined, { minIndex: -3 })).resolves.toEqual({ index: 0 });
+    });
+
+    test('a 500 from an update-chunk probe fails the write instead of reading the chunk as missing', async () => {
+      const writer = createMockWriter();
+      writer.downloadPayload.mockRejectedValue(make404WrappedChunk());
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+      mockDownloadChunk.mockRejectedValue(new MockBeeResponseError(500, 'read chunk failed'));
+      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF)).rejects.toBeInstanceOf(MockBeeResponseError);
+      expect(writer.uploadReference).not.toHaveBeenCalled();
+    });
+
     test('propagates non-404 errors from resolveNextIndex (does not default to 0)', async () => {
       const writer = createMockWriter();
       writer.downloadPayload.mockRejectedValue(new Error('network timeout'));
@@ -560,6 +630,77 @@ describe('feed-service', () => {
       expect(writer.uploadPayload).not.toHaveBeenCalled();
     });
 
+    test('an empty payload is refused as the page\'s, by reason, before any upload', async () => {
+      const writer = createMockWriter();
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+
+      for (const data of ['', Buffer.alloc(0)]) {
+        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', data)).rejects.toMatchObject({
+          reason: 'payload_too_large',
+        });
+      }
+      expect(writer.uploadPayload).not.toHaveBeenCalled();
+    });
+
+    describe('only a 404 frees an explicit index (#1054)', () => {
+      test('a 404 for the update chunk writes at the index', async () => {
+        const writer = createMockWriter();
+        mockDownloadChunk.mockRejectedValue(make404());
+        mockMakeFeedWriter.mockReturnValue(writer);
+        mockBatchForAutoSelect();
+
+        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 }))
+          .resolves.toEqual({ index: 5 });
+        expect(writer.uploadPayload.mock.calls[0][2]).toEqual({ index: 5 });
+      });
+
+      test.each([
+        ['a 500', () => new MockBeeResponseError(500, 'Internal Server Error: read chunk failed'), 'read chunk failed'],
+        ['a 503', () => new MockBeeResponseError(503, 'Service Unavailable'), 'Service Unavailable'],
+        ['a timeout', () => Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }), 'timeout'],
+      ])('%s refuses the write with that error', async (_label, makeError, message) => {
+        const writer = createMockWriter();
+        mockDownloadChunk.mockRejectedValue(makeError());
+        mockMakeFeedWriter.mockReturnValue(writer);
+        mockBatchForAutoSelect();
+
+        const failure = writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 });
+
+        await expect(failure).rejects.toThrow(message);
+        await expect(failure).rejects.not.toHaveProperty('reason', 'index_already_exists');
+        expect(writer.uploadPayload).not.toHaveBeenCalled();
+      });
+
+      test('an answer that is not the SOC at that address refuses the write', async () => {
+        const writer = createMockWriter();
+        mockDownloadChunk.mockResolvedValue(new MockBytes('not a soc'));
+        mockUnmarshalSingleOwnerChunk.mockImplementationOnce(() => {
+          throw new Error('SOC data does not match given address');
+        });
+        mockMakeFeedWriter.mockReturnValue(writer);
+        mockBatchForAutoSelect();
+
+        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 }))
+          .rejects.toThrow('SOC data does not match given address');
+        expect(writer.uploadPayload).not.toHaveBeenCalled();
+      });
+
+      test('an entry whose wrapped content is gone still holds its index', async () => {
+        // The SOC is there; the large payload it wraps can no longer be joined.
+        const writer = createMockWriter();
+        mockExactFeedPayload('root chunk', 10_000n);
+        mockDownloadData.mockRejectedValue(make404());
+        mockMakeFeedWriter.mockReturnValue(writer);
+        mockBatchForAutoSelect();
+
+        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 }))
+          .rejects.toMatchObject({ reason: 'index_already_exists' });
+        expect(mockDownloadData).not.toHaveBeenCalled();
+        expect(writer.uploadPayload).not.toHaveBeenCalled();
+      });
+    });
+
     test('propagates non-404 errors during auto-increment (does not default to 0)', async () => {
       const writer = createMockWriter();
       writer.downloadPayload.mockRejectedValue(new Error('Bee internal error'));
@@ -595,37 +736,126 @@ describe('feed-service', () => {
     });
   });
 
-  describe('readFeedPayload', () => {
-    test('reads latest entry when no index provided', async () => {
-      const reader = createMockReader({
-        downloadPayloadResult: {
-          payload: new MockBytes('latest data'),
-          feedIndex: new MockFeedIndex(3),
-          feedIndexNext: new MockFeedIndex(4),
-        },
-      });
+  describe('readFeedState', () => {
+    test('reports the latest index of a feed that has an update', async () => {
+      const reader = createMockReader({ downloadPayloadResult: { payload: new MockBytes('x'), feedIndex: new MockFeedIndex(4) } });
       mockMakeFeedReader.mockReturnValue(reader);
-
-      const result = await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)));
-
-      expect(reader.downloadPayload).toHaveBeenCalledWith();
-      expect(result.payload).toEqual(Buffer.from('latest data'));
-      expect(result.index).toBe(3);
-      expect(result.nextIndex).toBe(4);
+      await expect(readFeedState(MOCK_OWNER, 'freedom-agent/stable-address/site')).resolves.toEqual({ exists: true, index: 4 });
+      expect(mockMakeFeedReader.mock.calls[0][0]).toBeInstanceOf(MockTopic);
     });
+
+    test('a 404 for a live feed whose latest content expired still reads as existing', async () => {
+      // Ant answers GET /feeds with 404 "wrapped chunk cannot be retrieved"
+      // when the latest legacy update points at a chunk that is gone.
+      mockMakeFeedReader.mockReturnValue({ downloadPayload: jest.fn().mockRejectedValue(make404WrappedChunk()) });
+      const probed = mockFeedChunksUpTo(5);
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: true, index: 5 });
+      expect(probed[0]).toBe(0);
+    });
+
+    test('a 404 with no update chunk at index 0 is an empty feed', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      const probed = mockFeedChunksUpTo(-1);
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: false });
+      expect(probed).toEqual([0]);
+    });
+
+    test('an unreachable chunk probe reads as unknown, not empty', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockDownloadChunk.mockRejectedValue(new Error('connect ECONNREFUSED'));
+      await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toThrow('ECONNREFUSED');
+    });
+
+    test('a 500 from an update-chunk probe reads as unknown, not as a missing chunk', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockFeedChunksUpTo(5);
+      const chunkPresent = mockDownloadChunk.getMockImplementation();
+      // After the /feeds 404, index 0 answers 500.
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 0) throw new MockBeeResponseError(500, 'read chunk failed');
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toBeInstanceOf(MockBeeResponseError);
+      // Mid-bracket too: a 500 at index 3 must not end the probe at 1.
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 3) throw new MockBeeResponseError(500, 'read chunk failed');
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toBeInstanceOf(MockBeeResponseError);
+    });
+
+    test('the probe steps as the node does, so a gap reads as the node reads it', async () => {
+      // From the highest index found: 1, 2, 4, ... past it (indexes 1, 3, 7,
+      // 15), then bisect. A gap stepped over is passed; one stepped on ends
+      // the walk below it. Documented limit (see probeFeedHead): the writer's
+      // minIndex and the controller's read-back cover it.
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      const probed = mockFeedChunksUpTo(9);
+      const chunkPresent = mockDownloadChunk.getMockImplementation();
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 2) throw make404();
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: true, index: 9 });
+      expect(probed).toEqual([0, 1, 3, 7, 15, 11, 9, 10]);
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 1) throw make404();
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: true, index: 0 });
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 0) throw make404();
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: false });
+    });
+
+    test('only a 404 means the feed has no update yet', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: false });
+      // A 500 can't tell an empty feed from an unreachable one.
+      mockMakeFeedReader.mockReturnValue({ downloadPayload: jest.fn().mockRejectedValue(new MockBeeResponseError(500)) });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toBeInstanceOf(MockBeeResponseError);
+    });
+  });
+
+  describe('readFeedPayload', () => {
+    // The latest entry (GET /feeds, read as it streams) and entries larger
+    // than one chunk are read over real HTTP in feed-read-budget.http.test.js.
+    function meter() {
+      return {
+        maxBytes: 512 * 1024,
+        charge: jest.fn(() => null),
+        reserve: jest.fn(() => null),
+      };
+    }
 
     test('reads specific index when provided', async () => {
       const reader = createMockReader();
       mockExactFeedPayload('entry 2');
       mockMakeFeedReader.mockReturnValue(reader);
 
-      const result = await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 2);
+      const result = await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 2, meter());
 
       expect(reader.downloadPayload).not.toHaveBeenCalled();
       expect(mockDownloadChunk).toHaveBeenCalled();
       expect(result.payload).toEqual(Buffer.from('entry 2'));
       expect(result.index).toBe(2);
       expect(result.nextIndex).toBe(3);
+    });
+
+    test('charges the SOC it read, and returns nothing when that is refused', async () => {
+      mockExactFeedPayload('entry 2');
+      const paid = meter();
+
+      await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 2, paid);
+      expect(paid.charge).toHaveBeenCalledWith(Buffer.byteLength('raw soc'));
+      expect(paid.reserve).not.toHaveBeenCalled();
+
+      const refusal = { error: { code: -32602, data: { reason: 'rate_limited' } } };
+      paid.charge.mockReturnValue(refusal);
+      await expect(readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 2, paid))
+        .rejects.toMatchObject({ refusal });
     });
 
     test('unwraps bee-js Bytes payload via toUint8Array (regression test for zeroing bug)', async () => {
@@ -637,38 +867,10 @@ describe('feed-service', () => {
       mockExactFeedPayload('HELLO-WORLD');
       mockMakeFeedReader.mockReturnValue(reader);
 
-      const result = await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 0);
+      const result = await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 0, meter());
 
       // The actual text must round-trip, not a Buffer of zeros of matching length
       expect(result.payload.toString('utf8')).toBe('HELLO-WORLD');
-    });
-
-    test('passes Topic object directly to feed.makeReader', async () => {
-      const topic = new MockTopic('cd'.repeat(32));
-      const reader = createMockReader({
-        downloadPayloadResult: {
-          payload: new MockBytes('data'),
-          feedIndex: new MockFeedIndex(0),
-        },
-      });
-      mockMakeFeedReader.mockReturnValue(reader);
-
-      await readFeedPayload(MOCK_OWNER, topic);
-
-      expect(mockMakeFeedReader).toHaveBeenCalledWith(topic, expect.any(MockEthAddress));
-    });
-
-    test('throws feed_empty on empty feed (latest read)', async () => {
-      const reader = createMockReader(); // downloadPayload rejects
-      mockMakeFeedReader.mockReturnValue(reader);
-
-      try {
-        await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)));
-        throw new Error('should have thrown');
-      } catch (err) {
-        expect(err.reason).toBe('feed_empty');
-        expect(err.message).toContain('empty');
-      }
     });
 
     test('throws entry_not_found on missing index (indexed read)', async () => {
@@ -677,7 +879,7 @@ describe('feed-service', () => {
       mockDownloadChunk.mockRejectedValue(make404());
 
       try {
-        await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 99);
+        await readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 99, meter());
         throw new Error('should have thrown');
       } catch (err) {
         expect(err.reason).toBe('entry_not_found');
@@ -685,37 +887,13 @@ describe('feed-service', () => {
       }
     });
 
-    test('propagates non-404 errors on latest read (does not return feed_empty)', async () => {
-      const reader = createMockReader();
-      reader.downloadPayload.mockRejectedValue(new Error('network timeout'));
-      mockMakeFeedReader.mockReturnValue(reader);
-
-      await expect(readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32))))
-        .rejects.toThrow('network timeout');
-    });
-
     test('propagates non-404 errors on indexed read (does not return entry_not_found)', async () => {
       const reader = createMockReader();
       mockDownloadChunk.mockRejectedValue(new Error('Bee internal error'));
       mockMakeFeedReader.mockReturnValue(reader);
 
-      await expect(readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 5))
+      await expect(readFeedPayload(MOCK_OWNER, new MockTopic('ab'.repeat(32)), 5, meter()))
         .rejects.toThrow('Bee internal error');
-    });
-
-    test('constructs EthAddress from owner string', async () => {
-      const reader = createMockReader({
-        downloadPayloadResult: {
-          payload: new MockBytes('data'),
-          feedIndex: new MockFeedIndex(0),
-        },
-      });
-      mockMakeFeedReader.mockReturnValue(reader);
-
-      await readFeedPayload('0x1234567890abcdef1234567890abcdef12345678', new MockTopic('ab'.repeat(32)));
-
-      const [, ownerArg] = mockMakeFeedReader.mock.calls[0];
-      expect(ownerArg).toBeInstanceOf(MockEthAddress);
     });
   });
 
@@ -791,6 +969,89 @@ describe('feed-service', () => {
       await withWriteLock('cleanup-test', async () => 'immediate');
       const elapsed = Date.now() - start;
       expect(elapsed).toBeLessThan(20);
+    });
+
+    // K-1: a write queued behind another holds its signer's key until its
+    // turn; a vault lock meanwhile (a new epoch) must stop it.
+    test('a queued write whose vault epoch has ended never runs', async () => {
+      const vaultEpoch = require('../identity/vault-epoch');
+      let release;
+      const first = withWriteLock('topic-epoch', () => new Promise((resolve) => {
+        release = resolve;
+      }));
+      const signed = jest.fn(async () => 'signed');
+      const queued = withWriteLock('topic-epoch', signed);
+      queued.catch(() => {});
+      // The first write is running (it took its turn in the old epoch).
+      for (let i = 0; i < 10 && !release; i += 1) await Promise.resolve();
+      expect(release).toEqual(expect.any(Function));
+
+      vaultEpoch.advanceVaultEpoch();
+      release('first');
+      await expect(first).resolves.toBe('first');
+      await expect(queued).rejects.toThrow(/locked/i);
+      expect(signed).not.toHaveBeenCalled();
+    });
+
+    test('an update whose index lookup outlasts the vault epoch uploads nothing', async () => {
+      const vaultEpoch = require('../identity/vault-epoch');
+      let answerLookup;
+      const writer = createMockWriter();
+      writer.downloadPayload = jest.fn(() => new Promise((resolve) => {
+        answerLookup = resolve;
+      }));
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+
+      const updating = updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/epoch', 'cc'.repeat(32), undefined, {
+        epoch: vaultEpoch.currentVaultEpoch(),
+      });
+      updating.catch(() => {});
+      for (let i = 0; i < 10 && !answerLookup; i += 1) await Promise.resolve();
+      vaultEpoch.advanceVaultEpoch();
+      answerLookup({ payload: Buffer.from('x'), feedIndex: new MockFeedIndex(1), feedIndexNext: new MockFeedIndex(2) });
+
+      await expect(updating).rejects.toThrow(/locked/i);
+      expect(writer.uploadReference).not.toHaveBeenCalled();
+    });
+
+    // The explicit-index check (#1054) awaits the node too: a vault lock
+    // while it is out must stop the write after it answers, before upload.
+    test('a write whose explicit-index check outlasts the vault epoch uploads nothing', async () => {
+      const vaultEpoch = require('../identity/vault-epoch');
+      let answerCheck;
+      const writer = createMockWriter();
+      mockDownloadChunk.mockImplementation(() => new Promise((_resolve, reject) => {
+        answerCheck = reject;
+      }));
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+
+      const writing = writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/epoch', 'x', {
+        index: 5,
+        epoch: vaultEpoch.currentVaultEpoch(),
+      });
+      writing.catch(() => {});
+      for (let i = 0; i < 10 && !answerCheck; i += 1) await Promise.resolve();
+      expect(answerCheck).toBeDefined();
+      vaultEpoch.advanceVaultEpoch();
+      answerCheck(make404()); // the index is free
+
+      await expect(writing).rejects.toThrow(/locked/i);
+      expect(writer.uploadPayload).not.toHaveBeenCalled();
+    });
+
+    test('a key read in an earlier epoch is refused at once', async () => {
+      const vaultEpoch = require('../identity/vault-epoch');
+      const taken = vaultEpoch.currentVaultEpoch();
+      vaultEpoch.advanceVaultEpoch();
+      const writer = createMockWriter();
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+      await expect(
+        writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/epoch', 'x', { epoch: taken })
+      ).rejects.toThrow(/locked/i);
+      expect(writer.uploadPayload).not.toHaveBeenCalled();
     });
   });
 });

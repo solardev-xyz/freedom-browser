@@ -30,6 +30,7 @@ const {
   consumeConfirmation,
 } = require('./signing-confirmation');
 const dappPermissions = require('./dapp-permissions');
+const { isAgentPage } = require('./agent-tab-custody');
 const { normalizeOrigin, isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { ipnsMhToCidV1Base36 } = require('../../shared/cid-utils');
 
@@ -140,7 +141,7 @@ async function requesterBelongsTo(sender, webContentsId, permissionKey) {
     return false;
   }
   const guestKey = () => {
-    if (!contents || contents.isDestroyed?.()) return null;
+    if (!contents || contents.isDestroyed?.() || isAgentPage(contents)) return null;
     if (!Number.isInteger(sender?.id) || contents.hostWebContents?.id !== sender.id) return null;
     try {
       return normalizeOrigin(contents.getURL()) || null;
@@ -529,7 +530,7 @@ function registerWalletIpc() {
       const status = await getSafeStatus(index);
       return { success: true, status };
     } catch (err) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, code: err.code };
     }
   });
 
@@ -540,7 +541,9 @@ function registerWalletIpc() {
       return { success: true, ...result };
     } catch (err) {
       const code = err.code ?? (isVaultLockedError(err) ? 'VAULT_LOCKED' : undefined);
-      return { success: false, error: err.message, code };
+      // `hash` is set only on a SAFE_UNVERIFIED thrown after the
+      // deployment was sent (safe-service confirmDeployment).
+      return { success: false, error: err.message, code, hash: err.hash };
     }
   });
 

@@ -33,18 +33,37 @@
 const { ipcMain, webContents } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
-const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissions');
+const { getPermission, hasMessagingGrant, hasActGrant, onRevoke } = require('./swarm-permissions');
+const { validateActRequest } = require('./act-request');
+const { validateSharedSecretsRequest, MAX_SHARED_SECRET_KEYS } = require('./shared-secrets-request');
+const { openActShare } = require('./act-service');
+// Required on first use: private-windows.js pulls in the app logger and
+// BrowserWindow, which most of this module's callers (and tests) never need.
+function isPrivateSender(event) {
+  return require('../private/private-sender').isPrivateSender(event);
+}
 const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
+const { SigningKey } = require('ethers');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
-const { getOriginEntry, getFeed, setFeed, updateFeedReference, hasFeedGrant, getAllFeeds } = require('./feed-store');
+const { currentVaultEpoch } = require('../identity/vault-epoch');
+const {
+  getOriginEntry,
+  getFeed,
+  setFeed,
+  updateFeedReference,
+  hasFeedGrant,
+  getAllFeeds,
+  isIdentitySharedWithOtherOrigins,
+} = require('./feed-store');
 const {
   publishChunk,
   readChunk,
   readDataRoot,
   readData,
   writeSingleOwnerChunk,
+  publishSignedSingleOwnerChunk,
   readSingleOwnerChunk,
   getSignerAddress,
 } = require('./chunk-service');
@@ -55,8 +74,15 @@ const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { isNoUsableBatchError } = require('./batch-errors');
-const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
+const {
+  getDerivedKeys,
+  getPublisherKey,
+  getSiteEncryptionKey,
+  getUserWalletKey,
+  getFreedomSigningAddresses,
+} = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
+const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 const log = require('electron-log');
 
 const LIMITS = {
@@ -74,6 +100,8 @@ const LIMITS = {
   defaultTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   minTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   maxSubscriptions: 32,
+  // Public keys per swarm_deriveSharedSecrets call (shared-secrets-request.js).
+  maxSharedSecretKeys: MAX_SHARED_SECRET_KEYS,
 };
 
 const SPEC_VERSION = '1.0';
@@ -81,6 +109,10 @@ const MAX_U64 = (1n << 64n) - 1n;
 // A read's reachability probe: a node that stopped answering must not hang
 // the page's request.
 const REACHABLE_TIMEOUT_MS = 5_000;
+// How long a call waits for a node Freedom is starting, stopping or
+// restarting on purpose (#988). Under the 60 s the page's shim gives a short
+// call, so the call itself still has time once the node is up.
+const NODE_SETTLE_WAIT_MS = 30_000;
 
 const READ_BUDGETS = {
   connected: {
@@ -149,13 +181,17 @@ const KNOWN_METHODS = [
   'swarm_readChunk',
   'swarm_readData',
   'swarm_writeSingleOwnerChunk',
+  'swarm_publishSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_getEncryptionKey',
+  'swarm_deriveSharedSecrets',
   'swarm_getMessagingIdentity',
   'swarm_subscribe',
   'swarm_unsubscribe',
   'swarm_sendPss',
   'swarm_sendGsoc',
+  'swarm_openAct',
 ];
 
 // Tag ownership: tagUid → origin. Session-scoped, not persisted.
@@ -189,6 +225,45 @@ function notAuthorized(reason) {
       data: { reason },
     },
   };
+}
+
+// Methods a site's auto-approve rule (publish, feeds, signing, messaging)
+// may let run without a prompt. The renderer reports the path it took in
+// `meta.approval` ('user' after a prompt, 'auto' when a rule answered) and
+// names the requesting guest in `meta.webContentsId`; main's own custody
+// reading decides whether an automatic path may run. A guest in Agent
+// custody, or an automatic request main cannot attribute to a guest of the
+// sending window, is refused — the same refusal wallet-ipc.js applies to
+// dApp auto-approve rules.
+const AUTO_APPROVABLE_METHODS = new Set([
+  'swarm_publishData',
+  'swarm_publishFiles',
+  'swarm_publishChunk',
+  'swarm_publishSingleOwnerChunk',
+  'swarm_createFeed',
+  'swarm_updateFeed',
+  'swarm_writeFeedEntry',
+  'swarm_writeSingleOwnerChunk',
+  'swarm_getSigningIdentity',
+  'swarm_getEncryptionKey',
+  'swarm_deriveSharedSecrets',
+  'swarm_sendPss',
+  'swarm_sendGsoc',
+  // Its "always allow" is per publisher (#648), but it is still a rule
+  // answering for the user, so an Agent-held tab is prompted instead.
+  'swarm_openAct',
+]);
+
+function agentCustodyRefusal(sender, method, meta) {
+  if (!AUTO_APPROVABLE_METHODS.has(method) || meta?.approval === 'user') return null;
+  const webContentsId = meta?.webContentsId;
+  if (
+    isAgentPageId(webContentsId) ||
+    (meta?.approval === 'auto' && autoApproveRefused(sender, webContentsId))
+  ) {
+    return notAuthorized('agent_custody');
+  }
+  return null;
 }
 
 function notConnected() {
@@ -335,16 +410,35 @@ function reservePermissionFreeReadBytes(origin, bytes) {
 }
 
 /**
+ * The read budget as feed-service meters a feed read (readFeedPayload):
+ * what came off the network is charged, what is about to be read is
+ * reserved first, and an entry larger than the whole byte budget is refused
+ * as data_too_large.
+ */
+function permissionFreeReadMeter(origin) {
+  return {
+    maxBytes: getReadBudget(origin).maxBytes,
+    charge: (bytes) => consumePermissionFreeReadBudget(origin, { bytes }),
+    reserve: (bytes) => reservePermissionFreeReadBytes(origin, bytes),
+  };
+}
+
+/**
  * Execute a Swarm provider method.
  * @param {string} method
  * @param {*} params
  * @param {string} origin - Normalized origin from renderer
- * @param {{ webContentsId?: number }} [meta] - Renderer-supplied routing info
- *   (trusted like origin — the renderer is Freedom's own code). Only
- *   swarm_subscribe uses it, to target message delivery at the webview.
+ * @param {{ webContentsId?: number, approval?: 'user'|'auto' }} [meta] -
+ *   Renderer-supplied routing info (trusted like origin — the renderer is
+ *   Freedom's own code). swarm_subscribe uses webContentsId to target
+ *   message delivery at the webview; the IPC handler checks both fields
+ *   against Agent custody first (agentCustodyRefusal).
+ * @param {{ sender?: Electron.WebContents }} [context] - main's own view of
+ *   the request: the IPC sender, for checks that must not rest on the
+ *   renderer's word (swarm_openAct refuses a private window's).
  * @returns {{ result?, error? }}
  */
-async function executeSwarmMethod(method, params, origin, meta) {
+async function executeSwarmMethod(method, params, origin, meta, context = {}) {
   try {
     if (!method || typeof method !== 'string') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'Method is required' } };
@@ -421,6 +515,12 @@ async function executeSwarmMethod(method, params, origin, meta) {
       return result;
     }
 
+    if (method === 'swarm_publishSingleOwnerChunk') {
+      const result = await handlePublishSingleOwnerChunk(params, normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
     if (method === 'swarm_getUploadStatus') {
       return handleGetUploadStatus(params, normalizedOrigin);
     }
@@ -455,6 +555,18 @@ async function executeSwarmMethod(method, params, origin, meta) {
       return result;
     }
 
+    if (method === 'swarm_getEncryptionKey') {
+      const result = await handleGetEncryptionKey(normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
+    if (method === 'swarm_deriveSharedSecrets') {
+      const result = await handleDeriveSharedSecrets(params, normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
     // Messaging extension — no vault-timer reset: PSS/GSOC use node/mined
     // keys, never vault-derived signing keys.
     if (method === 'swarm_getMessagingIdentity') {
@@ -477,6 +589,10 @@ async function executeSwarmMethod(method, params, origin, meta) {
       return handleUnsubscribe(params, normalizedOrigin);
     }
 
+    if (method === 'swarm_openAct') {
+      return handleOpenAct(params, normalizedOrigin, meta, context.sender);
+    }
+
     return { error: ERRORS.INTERNAL_ERROR };
   } catch (err) {
     log.error('[SwarmProvider] executeSwarmMethod failed:', err.message);
@@ -496,7 +612,8 @@ async function handleGetCapabilities(origin) {
   const permission = getPermission(origin);
   const isConnected = !!permission;
 
-  const preFlight = await checkSwarmPreFlight();
+  // A status read: answers at once, `node-not-ready` while the node restarts.
+  const preFlight = await checkSwarmPreFlight({ waitForNode: false });
 
   return {
     result: {
@@ -504,10 +621,17 @@ async function handleGetCapabilities(origin) {
       canPublish: isConnected && preFlight.ok,
       reason: !isConnected ? 'not-connected' : (preFlight.ok ? null : preFlight.reason),
       publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
-      features: ['messaging'],
+      // Extensions a page can detect, named as in the Swarm provider SWIP's
+      // companion drafts (messaging, encryption key).
+      features: ['messaging', 'encryption-key'],
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
+        encryptionKey: true,
+        // swarm_publishSingleOwnerChunk: a SOC the page signed (#647).
+        pageSignedSingleOwnerChunks: true,
+        // swarm_openAct: content shared with this node through ACT (#648).
+        actShares: true,
       },
       limits: {
         maxDataBytes: LIMITS.maxDataBytes,
@@ -518,6 +642,7 @@ async function handleGetCapabilities(origin) {
         maxMessageBytes: LIMITS.maxMessageBytes,
         maxTargetDepth: LIMITS.maxTargetDepth,
         maxSubscriptions: LIMITS.maxSubscriptions,
+        maxSharedSecretKeys: LIMITS.maxSharedSecretKeys,
       },
     },
   };
@@ -598,7 +723,9 @@ async function handlePublishData(params, origin) {
 
 // Windows device names: a path segment named one of these (any case, with or
 // without an extension, trailing dots/spaces ignored) opens the device instead
-// of a file in the temp directory publishFilesFromContent writes to.
+// of a file on Windows. publishFiles no longer writes the files to disk
+// (#1052), but these paths stay refused: a site that uses them can't be saved
+// to a Windows disk, and the paths a page may publish stay what they were.
 const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i;
 
 function isWindowsReservedName(segment) {
@@ -643,8 +770,8 @@ function validateVirtualPath(p) {
       return { valid: false, message: '"." and ".." segments are not allowed' };
     }
     // Win32 path normalization trims a trailing dot or space from every
-    // segment, so 'foo.' would land on 'foo' (silently overwriting it in the
-    // temp directory) and '.. ' would trim toward '..'.
+    // segment, so 'foo.' would land on 'foo' (silently overwriting it once
+    // saved to a Windows disk) and '.. ' would trim toward '..'.
     if (/[. ]$/.test(seg)) {
       return { valid: false, message: 'Path segments may not end in a dot or space' };
     }
@@ -675,7 +802,7 @@ function normalizeBytes(bytes) {
 }
 
 /**
- * Handle swarm_publishFiles: validate, enforce limits, write to temp dir, publish.
+ * Handle swarm_publishFiles: validate, enforce limits, publish the files as a collection.
  */
 async function handlePublishFiles(params, origin) {
   if (!params || typeof params !== 'object') {
@@ -992,6 +1119,25 @@ async function handleWriteSingleOwnerChunk(params, origin) {
 
   const originEntry = getOriginEntry(origin);
   const activeIdentity = getActiveOriginIdentity(originEntry);
+  // SW-1: the identifier is the page's to choose, so under an identity other
+  // sites sign with too (the Ant wallet, an Ethereum wallet account, a
+  // publisher key another origin holds) a raw SOC could be another site's
+  // feed entry, keccak256(topic || index), written as that shared owner.
+  // Feeds stay available under such an identity: their topics are
+  // origin-namespaced. Raw SOCs need an identity only this site uses.
+  if (isIdentitySharedWithOtherOrigins(origin, activeIdentity)) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message:
+          'Single Owner Chunks need a publisher identity only this site uses; the active one is shared with other sites',
+        data: { reason: 'shared_identity' },
+      },
+    };
+  }
+  // The key is good for the vault epoch it is read in; the write checks it
+  // again before signing and uploading (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   try {
     signerKey = await resolveSignerKey(activeIdentity);
@@ -1013,7 +1159,10 @@ async function handleWriteSingleOwnerChunk(params, origin) {
   });
 
   try {
-    const result = await writeSingleOwnerChunk(signerKey, params.identifier, payload, { span: span.value });
+    const result = await writeSingleOwnerChunk(signerKey, params.identifier, payload, {
+      span: span.value,
+      epoch,
+    });
     updateEntry(historyEntry.id, {
       status: 'completed',
       reference: result.reference,
@@ -1030,6 +1179,204 @@ async function handleWriteSingleOwnerChunk(params, origin) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] writeSingleOwnerChunk failed for ${origin}:`, err.message);
     return nodeWriteError(err);
+  }
+}
+
+/**
+ * Handle swarm_publishSingleOwnerChunk: publish a Single Owner Chunk the page
+ * signed itself, stamped by the node (#647). Connection tier, like
+ * swarm_publishChunk: no Freedom key is used, so the feed/signing grant is
+ * not needed. The signature must recover to `owner` for this identifier and
+ * chunk before anything is stamped.
+ *
+ * An owner that is one of Freedom's own signing addresses (the Ant node key,
+ * a wallet account) is refused (SW-1, #950): a page can ask a wallet account
+ * for a `personal_sign` of 32 bytes, which is exactly a SOC signature, and
+ * would then write raw SOCs, another site's feed entries included, as that
+ * shared owner. App-scoped publisher keys sign only Freedom's own writes, so
+ * under one a page can publish only a chunk already signed for the network.
+ */
+async function handlePublishSingleOwnerChunk(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  const owner = normalizeAddress(params.owner);
+  if (!/^[0-9a-fA-F]{40}$/.test(owner)) {
+    return invalidParams('owner must be a valid 40-character hex address', 'invalid_owner');
+  }
+
+  const identifierError = validateHexString(params.identifier, 32, 'invalid_identifier', 'identifier');
+  if (identifierError) return identifierError;
+
+  const signatureError = validateHexString(params.signature, 65, 'invalid_signature', 'signature', {
+    allow0xPrefix: true,
+  });
+  if (signatureError) return signatureError;
+
+  const { payload, error } = validateChunkPayload(params.data);
+  if (error) return { error };
+
+  const span = validateSpan(params.span);
+  if (!span.ok) {
+    return invalidParams('span must be a non-negative unsigned 64-bit integer', 'invalid_span');
+  }
+
+  let held;
+  try {
+    held = await getFreedomSigningAddresses();
+  } catch (err) {
+    log.error(`[SwarmProvider] Freedom signing addresses unavailable for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: 'Could not check the owner against Freedom identities' } };
+  }
+  if (held.addresses.has(owner.toLowerCase())) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message: 'The owner is one of Freedom\'s own identities; use swarm_writeSingleOwnerChunk or a feed method',
+        data: { reason: 'freedom_identity' },
+      },
+    };
+  }
+  if (!held.complete) {
+    return {
+      error: {
+        ...ERRORS.INTERNAL_ERROR,
+        message: `${VAULT_LOCKED_MESSAGE}: an account address is not known while the vault is locked`,
+        data: { reason: 'vault_locked' },
+      },
+    };
+  }
+
+  const preFlight = await checkSwarmPreFlight();
+  if (!preFlight.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+  }
+
+  let historyEntry = null;
+  try {
+    const result = await publishSignedSingleOwnerChunk({
+      owner,
+      identifier: params.identifier,
+      signature: params.signature,
+      data: payload,
+      span: span.value,
+      onVerified: () => {
+        historyEntry = addEntry({
+          type: 'soc',
+          name: 'Signed SOC chunk',
+          status: 'uploading',
+          origin,
+          bytesSize: payload.length,
+        });
+      },
+    });
+    updateEntry(historyEntry.id, {
+      status: 'completed',
+      reference: result.reference,
+      batchIdUsed: result.batchIdUsed,
+    });
+    return {
+      result: {
+        reference: result.reference,
+        owner: result.owner,
+        identifier: result.identifier,
+      },
+    };
+  } catch (err) {
+    if (err.reason === 'invalid_signature') {
+      return invalidParams(err.message, 'invalid_signature');
+    }
+    if (historyEntry) updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
+    log.error(`[SwarmProvider] publishSingleOwnerChunk failed for ${origin}:`, err.message);
+    return nodeWriteError(err);
+  }
+}
+
+/**
+ * Handle swarm_openAct (#648): open content shared with this node through
+ * ACT. The node decrypts with its own key; Freedom only passes it the share's
+ * coordinates, after checking the user's consent for this (origin,
+ * publisher) pair:
+ *
+ * - the renderer reports `meta.approval: 'user'` when the user approved this
+ *   call in the ACT prompt, which names the publisher;
+ * - anything else (an "always allow" rule answered, or no meta at all) needs
+ *   a stored grant for exactly this origin and publisher. A grant for one
+ *   publisher opens nothing from another: the node's key is one identity for
+ *   every site, so a per-site grant would expose everything ever shared with
+ *   the user.
+ *
+ * A private window's sender is refused outright (private windows get no
+ * provider and no lasting grant), as is one main cannot classify.
+ *
+ * The bytes are charged to the origin's read budget (connected origins only
+ * reach this method, so 5 MiB per 60 s window): a declared length is
+ * reserved before the body is read, an undeclared one as it streams.
+ */
+async function handleOpenAct(params, origin, meta, sender) {
+  if (isPrivateSender({ sender })) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message: 'ACT content cannot be opened from a private window',
+        data: { reason: 'private_window' },
+      },
+    };
+  }
+
+  // The same check, and the same canonical values, as the consent prompt
+  // was given (swarm-permissions.js describeActRequest).
+  const request = validateActRequest(params);
+  if (!request.ok) {
+    return invalidParams(request.message, request.reason, request.option ? { option: request.option } : {});
+  }
+  const share = request.value;
+
+  if (meta?.approval !== 'user' && !hasActGrant(origin, share.publisher)) {
+    return notAuthorized('act_not_granted');
+  }
+
+  const budgetError = consumePermissionFreeReadBudget(origin, { requests: 1 });
+  if (budgetError) return budgetError;
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+  }
+
+  try {
+    const result = await openActShare(
+      {
+        reference: share.reference,
+        publisher: share.publisher,
+        historyAddress: share.historyAddress,
+        timestamp: share.timestamp,
+        path: share.path,
+      },
+      permissionFreeReadMeter(origin)
+    );
+    return { result };
+  } catch (err) {
+    if (err.reason === 'refused') return err.refusal;
+    if (err.reason === 'data_too_large') {
+      return invalidParams(err.message, 'data_too_large', {
+        limit: err.limit,
+        ...(err.actual !== undefined && { actual: err.actual }),
+      });
+    }
+    if (err.reason === 'act_not_found' || err.reason === 'content_not_found') {
+      return invalidParams(err.message, err.reason);
+    }
+    if (err.reason === 'invalid_params') return invalidParams(err.message);
+    if (err.reason === 'node-stopped') {
+      return { error: { ...ERRORS.NODE_UNAVAILABLE, message: err.message, data: { reason: 'node-stopped' } } };
+    }
+    log.error(`[SwarmProvider] openAct failed for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
 }
 
@@ -1215,6 +1562,76 @@ async function handleGetSigningIdentity(origin) {
 }
 
 /**
+ * Handle swarm_getEncryptionKey: the site's encryption public key, after
+ * connection + feed/signing grant.
+ *
+ * The key (identity/derivation.js deriveSiteEncryptionKey) is one per
+ * permission key, the same whatever publisher identity the site signs with,
+ * and never shared with another site. That last point is why key agreement
+ * uses it and not the publisher identity: a bee-wallet or ethereum-wallet
+ * identity is shared across sites, so ECDH on it would let any site with
+ * signing access read what was encrypted to another.
+ */
+async function handleGetEncryptionKey(origin) {
+  if (!hasFeedGrant(origin)) {
+    return feedNotGranted();
+  }
+
+  try {
+    const key = await getSiteEncryptionKey(origin);
+    return {
+      result: {
+        publicKey: SigningKey.computePublicKey(key.privateKey, true).replace(/^0x/, ''),
+        curve: 'secp256k1',
+      },
+    };
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+/**
+ * Handle swarm_deriveSharedSecrets: ECDH between the site's encryption key
+ * and each given public key. Returns each shared point's x coordinate, the
+ * input of Bee's and Ant's ACT session keys, so a page can do ACT itself.
+ * The request is checked by shared-secrets-request.js, the same check the
+ * consent prompt is gated on.
+ */
+async function handleDeriveSharedSecrets(params, origin) {
+  const checked = validateSharedSecretsRequest(params);
+  if (!checked.ok) {
+    return invalidParams(checked.message, checked.reason, checked.data);
+  }
+  const parsed = checked.value.publicKeys;
+
+  if (!hasFeedGrant(origin)) {
+    return feedNotGranted();
+  }
+
+  let signingKey;
+  try {
+    const key = await getSiteEncryptionKey(origin);
+    signingKey = new SigningKey(key.privateKey);
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+
+  const sharedSecrets = [];
+  for (let index = 0; index < parsed.length; index += 1) {
+    let point;
+    try {
+      // 0x04 ‖ x ‖ y. Throws for a key that is not a point on the curve.
+      point = signingKey.computeSharedSecret(parsed[index]);
+    } catch {
+      return invalidParams('public key is not a point on secp256k1', 'invalid_public_key', { index });
+    }
+    sharedSecrets.push(point.slice(4, 68));
+  }
+
+  return { result: { sharedSecrets } };
+}
+
+/**
  * Handle swarm_createFeed: validate, check capability, create feed + manifest.
  */
 async function handleCreateFeed(params, origin) {
@@ -1340,6 +1757,8 @@ async function handleUpdateFeed(params, origin) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
+  // The key is good for the vault epoch it is read in (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
@@ -1358,7 +1777,7 @@ async function handleUpdateFeed(params, origin) {
   });
 
   try {
-    const updateResult = await updateFeed(signerKey, topicString, reference);
+    const updateResult = await updateFeed(signerKey, topicString, reference, undefined, { epoch });
 
     updateFeedReference(origin, feedId, reference);
     updateEntry(historyEntry.id, { status: 'completed', ...updateResult, reference });
@@ -1401,11 +1820,25 @@ async function handleWriteFeedEntry(params, origin) {
 
   // Accept string or binary
   let payload = data;
-  if (typeof payload !== 'string') {
+  const isString = typeof payload === 'string';
+  if (!isString) {
     payload = normalizeBytes(payload);
     if (!payload) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'data must be a string, Uint8Array, or ArrayBuffer', data: { reason: 'invalid_params' } } };
     }
+  }
+
+  // publishData's limit: a payload over one chunk goes up through /bytes, so
+  // without it a feed entry would upload any amount past that limit (#1053).
+  const size = isString ? Buffer.byteLength(payload, 'utf-8') : payload.length;
+  if (size > LIMITS.maxDataBytes) {
+    return {
+      error: {
+        ...ERRORS.INVALID_PARAMS,
+        message: `Payload exceeds maximum size of ${LIMITS.maxDataBytes} bytes`,
+        data: { reason: 'payload_too_large', limit: LIMITS.maxDataBytes, actual: size },
+      },
+    };
   }
 
   if (index !== undefined && index !== null) {
@@ -1430,6 +1863,8 @@ async function handleWriteFeedEntry(params, origin) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
+  // The key is good for the vault epoch it is read in (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
@@ -1449,7 +1884,7 @@ async function handleWriteFeedEntry(params, origin) {
   });
 
   try {
-    const result = await writeFeedPayload(signerKey, topicString, payload, { index });
+    const result = await writeFeedPayload(signerKey, topicString, payload, { index, epoch });
 
     updateEntry(historyEntry.id, { status: 'completed' });
     log.info(`[SwarmProvider] writeFeedEntry succeeded for ${origin}: feed=${name}, index=${result.index}`);
@@ -1463,9 +1898,12 @@ async function handleWriteFeedEntry(params, origin) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'index_already_exists' } } };
     }
 
-    // Translate SOC payload size errors
-    if (err.message && (err.message.includes('too large') || err.message.includes('payload size'))) {
-      return { error: { ...ERRORS.INVALID_PARAMS, message: 'Payload exceeds maximum SOC size', data: { reason: 'payload_too_large' } } };
+    // The page's payload, refused by feed-service. Matched by reason, not by
+    // text: a node's malformed answer can read "payload size … exceeds" too,
+    // and that is the node's failure, a retryable -32603 (#1054). The only
+    // payload it refuses is an empty one, so its own text is the message.
+    if (err.reason === 'payload_too_large') {
+      return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'payload_too_large' } } };
     }
 
     log.error(`[SwarmProvider] writeFeedEntry failed for ${origin}:`, err.message);
@@ -1475,7 +1913,17 @@ async function handleWriteFeedEntry(params, origin) {
 
 /**
  * Handle swarm_readFeedEntry: validate, resolve topic/owner, read feed entry.
- * Does NOT require feed grant or vault — read-only operation.
+ * Does NOT require feed grant or vault — read-only operation. One request
+ * against the permission-free read budget, like swarm_readData, and the
+ * entry's bytes against the byte budget as they are read: an explicit
+ * index's SOC is charged once read and the size its wrapped chunk's span
+ * gives is reserved before the node joins it. The latest entry is read the
+ * same way, at the index the node's feed lookup names (that lookup's body is
+ * never read); when the lookup can't name one, the update chunks probed to
+ * find it are charged too (see findLatestFeedIndex in feed-service.js). An
+ * entry larger than the whole byte budget is data_too_large, and one that
+ * does not fit what is left of the window is rate_limited, without reading
+ * the rest of it.
  */
 async function handleReadFeedEntry(params, origin) {
   if (!params || typeof params !== 'object') {
@@ -1557,23 +2005,25 @@ async function handleReadFeedEntry(params, origin) {
   }
 
   try {
-    const result = await readFeedPayload(resolvedOwner, resolvedTopic, index);
-
-    const base64Data = result.payload.toString('base64');
-    const byteBudgetError = consumePermissionFreeReadBudget(origin, {
-      bytes: result.payload.length,
-    });
-    if (byteBudgetError) return byteBudgetError;
+    // The entry's bytes are paid for as they are read, before they are held.
+    const result = await readFeedPayload(resolvedOwner, resolvedTopic, index, permissionFreeReadMeter(origin));
 
     return {
       result: {
-        data: base64Data,
+        data: result.payload.toString('base64'),
         encoding: 'base64',
         index: result.index,
         nextIndex: result.nextIndex,
       },
     };
   } catch (err) {
+    if (err.refusal) return err.refusal;
+    if (err.reason === 'data_too_large') {
+      return invalidParams(err.message, 'data_too_large', {
+        limit: err.limit,
+        ...(err.actual !== undefined && { actual: err.actual }),
+      });
+    }
     if (err.reason === 'feed_empty') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'feed_empty' } } };
     }
@@ -1744,7 +2194,8 @@ async function handleSendPss(params, origin) {
     await messagingService.sendPss({
       topic: params.topic,
       targets: targets.toLowerCase(),
-      recipient,
+      // The compressed SEC1 key, 66 hex, lowercased like `targets` (#1062).
+      recipient: recipient.toLowerCase(),
       data: payload,
     });
     return { result: { sent: true } };
@@ -2105,12 +2556,27 @@ function handleUnsubscribe(params, origin) {
 }
 
 /**
+ * Whether the node is past any start, stop or planned restart (#988). With
+ * `wait`, waits up to NODE_SETTLE_WAIT_MS for it, so a node Freedom is
+ * bringing back answers the call instead of failing it. Ant's manager is
+ * required here, not at load, as publish-setup-service does.
+ * @returns {Promise<boolean>}
+ */
+async function nodeSettled({ wait = true } = {}) {
+  const antManager = require('../ant-manager');
+  return wait ? antManager.waitForNodeSettled(NODE_SETTLE_WAIT_MS) : antManager.isNodeSettled();
+}
+
+/**
  * Read-only pre-flight: is the Bee HTTP API reachable?
  * Intentionally separate from checkSwarmPreFlight — reads don't need
- * mode, readiness, or stamp checks.
+ * mode, readiness, or stamp checks. A node still starting or restarting
+ * after the wait is `node-not-ready`, which pages retry; `node-stopped` is
+ * for a node that is off, failed or does not answer.
  * @returns {{ ok: boolean, reason?: string }}
  */
 async function checkBeeReachable() {
+  if (!(await nodeSettled())) return { ok: false, reason: 'node-not-ready' };
   // Global `fetch` (undici), which never sees `session.setProxy` — so an
   // external Ant API on a `.onion` host is handed to the system resolver
   // instead of Tor, the shape #355 fixed for the external IPFS gateway.
@@ -2138,10 +2604,13 @@ async function checkBeeReachable() {
  * setup service, the one place that reads the node's chain init, mode, peer
  * readiness and usable stamps (publish-setup-service.js). `reason` is one of
  * `node-stopped`, `node-not-ready`, `ultra-light-mode`, `no-usable-stamps`.
+ * Waits first for a node Freedom is starting, stopping or restarting, as
+ * checkBeeReachable does; `waitForNode: false` answers at once instead.
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
-async function checkSwarmPreFlight() {
+async function checkSwarmPreFlight({ waitForNode = true } = {}) {
   try {
+    if (!(await nodeSettled({ wait: waitForNode }))) return { ok: false, reason: 'node-not-ready' };
     const readiness = await getPublishReadiness();
     return readiness.ok ? { ok: true } : { ok: false, reason: readiness.reason };
   } catch (err) {
@@ -2163,9 +2632,10 @@ function registerSwarmProviderIpc() {
   // Live messaging subscriptions must not outlive the origin's grant.
   onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
 
-  ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (_event, args) => {
+  ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};
-    return executeSwarmMethod(method, params, origin, meta);
+    return agentCustodyRefusal(event?.sender, method, meta) ||
+      executeSwarmMethod(method, params, origin, meta, { sender: event?.sender });
   });
 
   log.info('[SwarmProvider] IPC handler registered');

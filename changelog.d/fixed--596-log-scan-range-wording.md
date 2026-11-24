@@ -1,0 +1,2 @@
+- Looking for your existing Swarm storage no longer fills the log with Gnosis Chain warnings, and asks the public Gnosis Chain servers fewer questions ([#596](https://github.com/solardev-xyz/freedom-browser/issues/596))
+  - publicnode had changed how it words its 10,000-block limit, so Freedom asked it again for every window it could not serve

@@ -43,7 +43,10 @@ const { withRetry, MAX_ATTEMPTS } = require('./lib/fetch-with-retry');
 
 // Pin a known-good Arti release. Bump deliberately and re-test the SOCKS flags
 // (`arti proxy -c <config>`) and the `arti.toml` keys tor-manager.js writes.
-const PINNED_ARTI_VERSION = '2.7.0';
+// Windows needs 2.8.0 or later: earlier releases pull in a saturating-time
+// whose find_limit() never returns there, so Tor never bootstraps (#925).
+// 2.8.0's saturating-time 0.6.0 has upstream's fix.
+const PINNED_ARTI_VERSION = '2.8.0';
 const ARTI_VERSION = process.env.ARTI_VERSION || PINNED_ARTI_VERSION;
 // MSRV of PINNED_ARTI_VERSION only (Arti 2.7.0 raised it to 1.92) — bump it in
 // the same commit as the pin. Checked up front because `cargo install` only

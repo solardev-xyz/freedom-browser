@@ -28,14 +28,26 @@
  *    detecting endpoints — and need to fail fast so the page can render
  *    its own fallback rather than stalling for ~50 s per missing asset.
  *  - Every other method gets 405: `bzz:` is read-only, like `rad:`
- *    (security audit O-2, #429). Request headers are allowlisted and a
- *    path with an encoded `/` or `\` is refused — see below.
+ *    (security audit O-2, #429). Request headers are allowlisted, and a
+ *    path with an encoded `/` or `\`, a `\`, or a dot segment hidden in
+ *    escapes is refused — see below and `lib/gateway-path.js`.
  *  - Every outgoing request carries `Swarm-Chunk-Retrieval-Timeout`,
  *    `Swarm-Redundancy-Strategy`, and `Swarm-Redundancy-Fallback-Mode`
  *    so Bee gets extra server-side runway per chunk. These are ignored
  *    by Bee for non-redundant content, so they're always safe to set.
  *  - Response body is streamed (no buffering), so large files and media
  *    Range requests don't balloon memory.
+ *  - Single-range reads are a kept contract (#169): `Range: bytes=a-b`,
+ *    `bytes=a-` and `bytes=-n` are forwarded verbatim and the node's 206
+ *    (`Content-Range: bytes a-b/<total>`, exact `Content-Length`, the slice)
+ *    reaches the page unmodified, cold or cached; a range running past the
+ *    end comes back clamped, one starting at or past it as 416 with an
+ *    unsatisfied-range `Content-Range` (`bytes` star slash total), never
+ *    retried. A 200 HEAD always carries `Accept-Ranges: bytes` (see
+ *    `withHeadAcceptRanges`).
+ *    Multi-range is passed through as the node answers it and is not part
+ *    of the contract. See docs/protocols/swarm.md,
+ *    "Byte ranges on `bzz://`".
  */
 
 const log = require('../logger');
@@ -48,6 +60,7 @@ const {
 } = require('../content-name-resolver');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { rewriteGatewayLocation } = require('../lib/gateway-location');
+const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
   PAGE_STATE_RESPONSE_HEADERS,
   stripPageStateHeaders,
@@ -57,6 +70,7 @@ const {
   redactForLog,
   redactUrlForLog,
   redactedFailure,
+  errorCodeForLog,
 } = require('../private/private-log-context');
 
 // Per-attempt retry schedule. First entry is the delay BEFORE the 2nd
@@ -121,14 +135,18 @@ function sanitizeRequestHeaders(requestHeaders) {
 // node's router can be steered out of `/bzz/` with one
 // (`bzz://<ref>/..%2F..%2Fstamps`) is unconfirmed (O-2); it is not worth
 // finding out, since a manifest path never needs either. Case-insensitive.
-const ENCODED_SEPARATOR_RE = /%(?:2f|5c)/i;
-
-function hasEncodedSeparator(bzzUrl) {
+// A literal `\` is refused too: undici reads it as `/`, so
+// `bzz://<ref>/a/..\..\..\stamps` would reach the node's own `/stamps`.
+// Chromium rewrites a page's `\` before it gets here; a direct caller of the
+// handler doesn't.
+function hasUnsafePath(bzzUrl) {
+  let pathname;
   try {
-    return ENCODED_SEPARATOR_RE.test(new URL(bzzUrl).pathname);
+    ({ pathname } = new URL(bzzUrl));
   } catch {
     return false;
   }
+  return !isContainedPath(pathname, { encodedSeparators: false });
 }
 
 /**
@@ -144,7 +162,7 @@ function hasEncodedSeparator(bzzUrl) {
  *    than the resolved hash.
  *
  * Returns one of:
- *  - `{ ok: true, url }`              — usable Bee gateway URL.
+ *  - `{ ok: true, url, base }`        — usable Bee gateway URL and the node base it extends.
  *  - `{ ok: false, status, message, logMessage }` — semantic failure (404
  *    mismatch / no contenthash, 415 unsupported codec, 502 resolver
  *    conflict/error). `message` goes to the page, `logMessage` to the
@@ -170,6 +188,7 @@ async function buildGatewayUrl(bzzUrl) {
 
     return {
       ok: true,
+      base: antApiUrl,
       url: `${antApiUrl}/bzz/${host}${parsed.pathname}${parsed.search}`,
     };
   }
@@ -239,6 +258,7 @@ async function resolveEnsToGatewayUrl(host, parsed, antApiUrl) {
     }
     return {
       ok: true,
+      base: antApiUrl,
       url: `${antApiUrl}/bzz/${result.decoded}${joinPublishedPath(result.basePath, parsed.pathname)}${parsed.search}`,
     };
   }
@@ -449,6 +469,24 @@ function withoutPageStateHeaders(response) {
   return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
+// Ant answers a `bzz:` HEAD with the file's `Content-Length` but no
+// `Accept-Ranges` (observed on antd v0.5.77, 2026-11-11), although the GET it
+// describes honours a single `Range` and says so. A reader that sizes a file
+// with HEAD and looks for `Accept-Ranges: bytes` before reading it lazily
+// would then fall back to fetching the whole object. Every node the handler
+// talks to serves a `bzz:` file GET with byte ranges (Ant's streaming joiner,
+// Bee's `http.ServeContent`), so a successful HEAD gets the header the GET
+// would have carried. Only a 200 HEAD: redirects, 304s and errors describe no
+// byte-addressable file. A node that already sends the header streams through
+// untouched.
+function withHeadAcceptRanges(response, method) {
+  if (method !== 'HEAD' || response.status !== 200) return response;
+  if (response.headers.has('accept-ranges')) return response;
+  const headers = new Headers(response.headers);
+  headers.set('accept-ranges', 'bytes');
+  return new Response(null, { status: response.status, statusText: response.statusText, headers });
+}
+
 /**
  * Core handler, exported for testability. `fetchImpl` defaults to global
  * fetch but tests can inject a stub. `attemptTimeoutMs` is exposed for
@@ -470,7 +508,10 @@ async function handleBzzRequest(
   if (!IDEMPOTENT_METHODS.has(method)) {
     return jsonErrorResponse(405, 'method not allowed');
   }
-  if (hasEncodedSeparator(request.url)) {
+  if (hasUnsafePath(request.url)) {
+    log.info(
+      `[bzz-protocol] 400 for ${redactUrlForLog(request.url)}: path leaves its content root`
+    );
     return jsonErrorResponse(400, 'invalid bzz path');
   }
   const built = await buildGatewayUrl(request.url);
@@ -489,6 +530,15 @@ async function handleBzzRequest(
     return jsonErrorResponse(built.status, built.message);
   }
   const gatewayUrl = built.url;
+  // The target as undici will send it, whatever supplied its path (a name's
+  // record can carry one), stays beneath `/bzz/<ref>/` under the node's own
+  // base, which for an external node can carry a path prefix.
+  if (!isContainedTarget(gatewayUrl, ['bzz'], { encodedSeparators: false, base: built.base })) {
+    log.info(
+      `[bzz-protocol] 502 for ${redactUrlForLog(request.url)}: target leaves its content root`
+    );
+    return jsonErrorResponse(502, 'bzz target leaves its content root');
+  }
 
   const headers = sanitizeRequestHeaders(request.headers);
 
@@ -499,13 +549,16 @@ async function handleBzzRequest(
       fetchImpl,
       attemptTimeoutMs
     );
-    return withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl));
+    return withHeadAcceptRanges(
+      withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl)),
+      method
+    );
   } catch (err) {
-    const code = err?.cause?.code || err?.code || '';
+    const code = errorCodeForLog(err);
     const isConnRefused = code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND';
+    // The code only: an error's text can name the URL or path asked for.
     log.warn(
-      `[bzz-protocol] fetch failed for ${redactUrlForLog(gatewayUrl)}: ${err?.message || err}` +
-        (code ? ` (${code})` : '')
+      `[bzz-protocol] fetch failed for ${redactUrlForLog(gatewayUrl)}` + (code ? ` (${code})` : '')
     );
     return jsonErrorResponse(
       isConnRefused ? 503 : 502,

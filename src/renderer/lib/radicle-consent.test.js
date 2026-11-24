@@ -30,6 +30,9 @@ const loadConsent = async () => {
     'radicle-consent-wants': createElement('div'),
     'radicle-consent-allows': createElement('ul'),
     'radicle-consent-warning': createElement('p'),
+    'radicle-consent-always-row': createElement('label', { classes: ['hidden'] }),
+    'radicle-consent-always': createElement('input'),
+    'radicle-consent-always-label': createElement('span'),
     'radicle-consent-approve': createElement('button'),
     'radicle-consent-reject': createElement('button'),
     'radicle-consent-back': createElement('button'),
@@ -97,5 +100,252 @@ describe('radicle-consent owner binding', () => {
   test('dismissRadicleConsent without a pending prompt is a no-op', async () => {
     const { mod } = await loadConsent();
     expect(() => mod.dismissRadicleConsent(createElement('webview'))).not.toThrow();
+  });
+
+  test('the per-write prompt shows the exact content to be signed', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+
+    const promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_createIssue',
+      { rid: 'rad:zExample', title: '<b>Bug</b>', description: 'Steps to reproduce' },
+      owner
+    );
+
+    expect(elementsById['radicle-consent-title'].textContent).toBe('Open this issue as you?');
+    expect(elementsById['radicle-consent-wants'].textContent).toBe(
+      'asks to open an issue in rad:zExample'
+    );
+    expect(elementsById['radicle-consent-allows'].children.map((li) => li.textContent)).toEqual([
+      'Title: <b>Bug</b>',
+      'Description: Steps to reproduce',
+    ]);
+    const warning = elementsById['radicle-consent-warning'].textContent;
+    expect(warning).toContain('signed with your Radicle identity');
+    expect(warning).toContain('public and permanent');
+    expect(warning).not.toContain('Freedom Agent');
+    expect(elementsById['radicle-consent-approve'].textContent).toBe('Open issue');
+    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(false);
+    // The site's "always allow writes" rule is offered, off.
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(false);
+    expect(elementsById['radicle-consent-always-label'].textContent).toContain('Always allow');
+    expect(elementsById['radicle-consent-always'].checked).toBe(false);
+
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toEqual({ alwaysAllow: false });
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+  });
+
+  test('the per-write prompt reports the "always allow" checkbox as approved', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
+
+    // Shown because main's limit stopped an automatic write: the box is checked.
+    let promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true }
+    );
+    expect(elementsById['radicle-consent-always'].checked).toBe(true);
+    elementsById['radicle-consent-always'].checked = false;
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toEqual({ alwaysAllow: false });
+
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner
+    );
+    elementsById['radicle-consent-always'].checked = true;
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toEqual({ alwaysAllow: true });
+  });
+
+  test('a rejected per-write prompt reports the "always allow" checkbox too', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
+
+    // Unchecked, then Reject: the rejection says the rule should be off.
+    let promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true }
+    );
+    elementsById['radicle-consent-always'].checked = false;
+    elementsById['radicle-consent-reject'].dispatch('click');
+    await expect(promptPromise).rejects.toEqual({
+      code: 4001,
+      message: 'User rejected the request',
+      alwaysAllow: false,
+    });
+
+    // Back and a dismissal carry it the same way.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true }
+    );
+    elementsById['radicle-consent-always'].checked = false;
+    mod.dismissRadicleConsent(owner);
+    await expect(promptPromise).rejects.toMatchObject({ code: 4001, alwaysAllow: false });
+
+    // A prompt that offered no rule rejects without the field.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { agentHeld: true }
+    );
+    elementsById['radicle-consent-reject'].dispatch('click');
+    await expect(promptPromise).rejects.toEqual({
+      code: 4001,
+      message: 'User rejected the request',
+    });
+  });
+
+  test('the rate-limit fallback prompt says the site hit its automatic-write limit', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
+    const warning = () => elementsById['radicle-consent-warning'].textContent;
+
+    let promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true, limited: true }
+    );
+    expect(warning()).toContain('reached its limit of automatic writes');
+    expect(warning()).toContain('public and permanent');
+    expect(elementsById['radicle-consent-always'].checked).toBe(true);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await promptPromise;
+
+    // An ordinary per-write prompt says nothing about a limit.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner
+    );
+    expect(warning()).not.toContain('limit');
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await promptPromise;
+  });
+
+  test('the limit notice quotes the numbers main enforces', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const { LIMITS } = require('../../main/radicle/auto-write-limiter.js');
+    const source = fs.readFileSync(path.join(__dirname, 'radicle-consent.js'), 'utf8');
+    const notice = source.match(/AUTO_WRITE_LIMIT_NOTICE =\s*'([^']*)'/)[1];
+    expect(notice).toContain(`${LIMITS.BURST} in a row`);
+    expect(notice).toContain(`one every ${LIMITS.REFILL_MS / 1000} seconds`);
+    expect(notice).toContain(`at most ${LIMITS.DAILY_MAX} a day`);
+    expect(LIMITS.DAY_MS).toBe(24 * 60 * 60 * 1000);
+    expect(source).toContain(`at most ${LIMITS.DAILY_MAX} writes a day`);
+  });
+
+  test('on a tab in Agent custody the per-write prompt offers no rule', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+
+    const promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_createIssue',
+      { rid: 'rad:zExample', title: 'Bug', description: 'Steps' },
+      owner,
+      { agentHeld: true }
+    );
+
+    const warning = elementsById['radicle-consent-warning'].textContent;
+    expect(warning).toContain('Freedom Agent');
+    expect(warning).toContain('public and permanent');
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toBeUndefined();
+  });
+
+  test('other prompts never show the "always allow" checkbox', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+
+    const promptPromise = mod.showRadicleSigningApproval('https://app.example', owner);
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toBeUndefined();
+  });
+
+  test('the per-write prompt names every parameter main signs with', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const lines = () => elementsById['radicle-consent-allows'].children.map((li) => li.textContent);
+    const show = (method, params) => {
+      const promptPromise = mod.showRadicleSignedWriteApproval(
+        'https://app.example',
+        method,
+        params,
+        owner
+      );
+      const seen = {
+        title: elementsById['radicle-consent-title'].textContent,
+        wants: elementsById['radicle-consent-wants'].textContent,
+        allows: lines(),
+      };
+      elementsById['radicle-consent-approve'].dispatch('click');
+      return promptPromise.then(() => seen);
+    };
+
+    // commentPatch is signed against revisionId when given, not patchId.
+    const patch = await show('radicle_commentPatch', {
+      rid: 'rad:zExample',
+      patchId: 'aaaa',
+      revisionId: 'bbbb',
+      body: 'LGTM',
+    });
+    expect(patch.wants).toBe(
+      'asks to comment on revision bbbb (the page says it belongs to patch aaaa) in rad:zExample'
+    );
+    expect(patch.allows).toEqual(['Comment: LGTM']);
+    const plainPatch = await show('radicle_commentPatch', {
+      rid: 'rad:zExample',
+      patchId: 'aaaa',
+      body: 'x',
+    });
+    expect(plainPatch.wants).toBe('asks to comment on patch aaaa in rad:zExample');
+
+    const labelled = await show('radicle_createIssue', {
+      rid: 'rad:zExample',
+      title: 'T',
+      description: 'D',
+      labels: ['bug', 'a, b'],
+    });
+    expect(labelled.allows).toEqual(['Title: T', 'Description: D', 'Label: bug', 'Label: a, b']);
+
+    const reply = await show('radicle_commentIssue', {
+      rid: 'rad:zExample',
+      issueId: 'cccc',
+      body: 'Me too',
+      replyTo: 'dddd',
+    });
+    expect(reply.allows).toEqual(['Comment: Me too', 'In reply to comment dddd']);
+
+    // An unknown signed write never borrows another method's summary.
+    const unknown = await show('radicle_somethingNew', { rid: 'rad:zExample', x: 1 });
+    expect(unknown.title).toBe('Sign this as you?');
+    expect(unknown.allows).toEqual(['Parameters: {"rid":"rad:zExample","x":1}']);
   });
 });

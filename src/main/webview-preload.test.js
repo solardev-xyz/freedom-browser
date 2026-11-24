@@ -197,6 +197,31 @@ function loadWebviewPreloadModule(options = {}) {
 }
 
 describe('webview-preload', () => {
+  test.each(['home.html', 'settings.html'])('opens Agent from %s without returning provider authority to home', async file => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({ location: {
+      protocol: 'file:', pathname: `/app/pages/${file}`, href: `file:///app/pages/${file}`,
+    } });
+    await exposures.freedomAPI.openAgent();
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open');
+    await exposures.freedomAPI.openAgent({ freshPage: true });
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open', { freshPage: true });
+    await exposures.freedomAPI.openAgent({ freshPage: 1, other: 'x' });
+    expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('agent:open');
+    await exposures.freedomAPI.getAgentSetupState();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith('agent:setup-state');
+    if (file === 'home.html') {
+      await expect(exposures.freedomAPI.getAgentProviderCatalog()).rejects.toThrow('only available on settings');
+      await expect(exposures.freedomAPI.getAgentProviderStatus()).rejects.toThrow('only available on settings');
+    }
+  });
+  test('does not expose the Agent launcher to other internal pages or websites', async () => {
+    const { exposures, ipcRenderer, location } = loadWebviewPreloadModule();
+    await expect(exposures.freedomAPI.openAgent()).rejects.toThrow('Open Agent from');
+    await expect(exposures.freedomAPI.getAgentSetupState()).rejects.toThrow('Open Agent from');
+    location.protocol = 'https:'; location.pathname = '/pages/home.html';
+    await expect(exposures.freedomAPI.openAgent()).rejects.toThrow('Open Agent from');
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith('agent:open');
+  });
   let consoleLogSpy;
   let consoleWarnSpy;
   let consoleErrorSpy;
@@ -272,6 +297,31 @@ describe('webview-preload', () => {
     expect(consoleLogSpy).toHaveBeenCalledWith(
       '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
     );
+  });
+
+  test('the internal Radicle viewer cannot seed or sync from a private window (R-9)', async () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+      isPrivateWindow: true,
+      location: {
+        href: 'file:///app/pages/rad-browser.html',
+        protocol: 'file:',
+        pathname: '/app/pages/rad-browser.html',
+      },
+    });
+
+    ipcRenderer.invoke.mockClear();
+    await expect(exposures.freedomAPI.seedRadicle('z3abc')).rejects.toThrow(
+      'Seeding is not available in private windows'
+    );
+    await expect(exposures.freedomAPI.syncRadicleRepo('z3abc')).rejects.toThrow(
+      'Seeding is not available in private windows'
+    );
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.RADICLE_SEED, 'z3abc');
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.RADICLE_SYNC_REPO, 'z3abc');
+
+    // Reading status stays available.
+    await exposures.freedomAPI.getRadicleStatus();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.RADICLE_GET_STATUS);
   });
 
   test('exposes profile mutation methods only on the settings page', async () => {
@@ -396,6 +446,29 @@ describe('webview-preload', () => {
     expect(consoleWarnSpy).toHaveBeenCalledWith(
       '[freedomAPI] blocked profile-management "createProfile" on page: file:///app/pages/history.html'
     );
+  });
+
+  test.each([
+    ['onAgentProviderAuthEvent', 'agent:provider:auth-event', 'settings.html'],
+    ['onAgentProviderChanged', 'agent:provider:changed', 'settings.html'],
+    ['onAgentProviderChanged', 'agent:provider:changed', 'home.html'],
+  ])('%s reaches %s and unsubscribes on navigation', (name, channel, file) => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({ location: { href: `file:///app/pages/${file}`, protocol: 'file:', pathname: `/app/pages/${file}` } });
+    const callback = jest.fn();
+    exposures.freedomAPI[name](callback);
+    ipcRenderer.emit(channel, { type: 'fixture' });
+    expect(callback).toHaveBeenCalled();
+    global.window.addEventListener.mock.calls.find(([event]) => event === 'pagehide')[1]();
+    callback.mockClear();
+    ipcRenderer.emit(channel, {});
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  test('provider sign-in events stay with Settings, and other pages get no provider events', async () => {
+    const home = loadWebviewPreloadModule({ location: { href: 'file:///app/pages/home.html', protocol: 'file:', pathname: '/app/pages/home.html' } });
+    await expect(home.exposures.freedomAPI.onAgentProviderAuthEvent(jest.fn())).rejects.toThrow('only available on settings');
+    const history = loadWebviewPreloadModule();
+    await expect(history.exposures.freedomAPI.onAgentProviderChanged(jest.fn())).rejects.toThrow('Open Agent from');
   });
 
   test('onSettingsUpdated forwards the broadcast and unsubscribes on pagehide', () => {
@@ -1424,15 +1497,16 @@ describe('webview-preload', () => {
     const video = {
       tagName: 'VIDEO',
       src: '',
-      querySelector: jest.fn((selector) =>
-        selector === 'source' ? { src: 'https://cdn.example/video.mp4' } : null
+      // A src-less first <source> is skipped, not taken as "no source".
+      querySelectorAll: jest.fn((selector) =>
+        selector === 'source' ? [{ src: '' }, { src: 'https://cdn.example/video.mp4' }] : []
       ),
       parentElement: body,
     };
     const audio = {
       tagName: 'AUDIO',
       src: 'https://cdn.example/audio.mp3',
-      querySelector: jest.fn(() => null),
+      querySelectorAll: jest.fn(() => []),
       parentElement: body,
     };
 
@@ -1464,6 +1538,60 @@ describe('webview-preload', () => {
         mediaType: 'audio',
         mediaSrc: 'https://cdn.example/audio.mp3',
       })
+    );
+  });
+
+  test('addresses the source a media element is playing, not the first <source>', async () => {
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      location: {
+        href: 'https://example.com/media',
+        protocol: 'https:',
+        pathname: '/media',
+      },
+    });
+    const body = global.document.body;
+    // <video><source src=a.webm><source src=a.mp4></video> where the browser
+    // picked a.mp4: currentSrc wins over both `src` and the first <source>.
+    const video = {
+      tagName: 'VIDEO',
+      src: '',
+      currentSrc: 'https://cdn.example/a.mp4',
+      querySelectorAll: jest.fn(() => [
+        { src: 'https://cdn.example/a.webm' },
+        { src: 'https://cdn.example/a.mp4' },
+      ]),
+      parentElement: body,
+    };
+    const stream = {
+      tagName: 'VIDEO',
+      src: '',
+      currentSrc: '',
+      querySelectorAll: jest.fn(() => [{ src: '' }]),
+      parentElement: body,
+    };
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 1,
+      clientY: 2,
+      target: video,
+      defaultPrevented: false,
+    });
+    await flushTimers();
+    expect(ipcRenderer.sendToHost).toHaveBeenLastCalledWith(
+      'context-menu',
+      expect.objectContaining({ mediaType: 'video', mediaSrc: 'https://cdn.example/a.mp4' })
+    );
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 3,
+      clientY: 4,
+      target: stream,
+      defaultPrevented: false,
+    });
+    await flushTimers();
+    expect(ipcRenderer.sendToHost).toHaveBeenLastCalledWith(
+      'context-menu',
+      expect.objectContaining({ mediaType: 'video', mediaSrc: '' })
     );
   });
 
@@ -1556,6 +1684,9 @@ describe('injected provider request timeouts', () => {
   // Parity with the sibling provider the radicle one was modelled on.
   test('swarm prompt/long-running methods use the same 300s budget', () => {
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getSigningIdentity')).toBe(300000);
+    // They prompt like signing (#991).
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getEncryptionKey')).toBe(300000);
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_deriveSharedSecrets')).toBe(300000);
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readChunk')).toBe(60000);
   });
 
@@ -1660,6 +1791,28 @@ describe('webview-preload private windows', () => {
     expect(sources[2]).toContain('FREEDOM_RADICLE_REQUEST');
     expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain(
       'DOMContentLoaded'
+    );
+  });
+
+  test('isolated workspace preview: no providers or provider bridges are installed', () => {
+    const { ipcRenderer, document } = loadWebviewPreloadModule({
+      location: {
+        href: `freedom-preview://${'a'.repeat(40)}/index.html`,
+        protocol: 'freedom-preview:',
+        pathname: '/index.html',
+      },
+    });
+
+    const onChannels = ipcRenderer.on.mock.calls.map(([channel]) => channel);
+    for (const channel of providerChannels) expect(onChannels).not.toContain(channel);
+    expect(
+      global.window.addEventListener.mock.calls.filter(([event]) => event === 'message')
+    ).toHaveLength(0);
+    expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain(
+      'DOMContentLoaded'
+    );
+    expect(consoleLogSpy).toHaveBeenCalledWith(
+      '[webview-preload] Loaded (context menu — isolated preview, providers disabled)'
     );
   });
 
@@ -1902,6 +2055,7 @@ describe('webview-preload internal-page theme', () => {
     expect(documentElement.setAttribute).not.toHaveBeenCalled();
     expect(ipcRenderer.listeners.get(IPC.SETTINGS_UPDATED)).toBeUndefined();
   });
+
 });
 
 // #410: filter-list scriptlets (`youtube.com##+js(json-prune, …)`) must run in
@@ -2527,6 +2681,31 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
       IPC.GET_ETHEREUM_INJECT_SOURCE,
       IPC.GET_INTERNAL_PAGES,
     ];
+
+    test('an isolated Agent preview stays provider-free with normal-window boot metadata', () => {
+      const { contextBridge, ipcRenderer, document } = loadWebviewPreloadModule({
+        location: {
+          href: `freedom-preview://${'a'.repeat(40)}/index.html`,
+          protocol: 'freedom-preview:',
+          pathname: '/index.html',
+        },
+        argv: ['electron', bootArg(normalBoot)],
+      });
+      expect(providerCalls(contextBridge)).toHaveLength(0);
+      for (const channel of [
+        'dapp:provider-response',
+        'dapp:provider-event',
+        'swarm:provider-response',
+        'swarm:provider-event',
+        'radicle:provider-response',
+        'radicle:provider-event',
+      ]) {
+        expect(ipcRenderer.on.mock.calls.map(([name]) => name)).not.toContain(channel);
+      }
+      for (const channel of STATIC_CHANNELS) expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(channel);
+      expect(global.window.addEventListener.mock.calls.filter(([event]) => event === 'message')).toHaveLength(0);
+      expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain('DOMContentLoaded');
+    });
 
     test('a page load makes none of the static sync calls and still gets its provider', () => {
       const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({

@@ -1,0 +1,3 @@
+- On Linux systems too old for the built-in IPFS node, Freedom now says so instead of reporting a generic failure ([#350](https://github.com/solardev-xyz/freedom-browser/issues/350))
+  - `ipfs://` and `ipns://` pages explain the cause and point to using your own IPFS node
+  - The greyed-out IPFS switch in the Nodes menu says the same when you hover it, instead of "IPFS binary not found"

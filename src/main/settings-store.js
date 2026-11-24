@@ -6,6 +6,8 @@ const IPC = require('../shared/ipc-channels');
 const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
 const { sanitizeOverrides } = require('../shared/shortcuts');
 const { normalizeCacheBytes } = require('./swarm/ant-cache');
+const { SECURE_DNS_DEFAULTS, SECURE_DNS_KEYS, secureDnsSaveValue } = require('./secure-dns');
+const { refusedSettingsKeys, describeSender } = require('./ipc-sender-policy');
 
 // Apply theme to nativeTheme so webviews get correct prefers-color-scheme
 function applyNativeTheme(theme) {
@@ -31,8 +33,24 @@ const RENAMED_KEYS = {
 // Swarm node now always starts able to publish, so there is nothing to pick.
 const REMOVED_KEYS = new Set(['enableRadicleIntegration', 'antNodeMode', 'beeNodeMode']);
 
+const AI_INVITATION_STEPS = ['enable', 'connect', 'resume'];
+const isAiInvitationDismissed = (value) => value === false || AI_INVITATION_STEPS.includes(value);
+
+// Before #881 a dismissal was stored as `true`, which hid every step. The
+// banner the user could dismiss was usually the introduction, so `true` reads
+// as that step: a later step ("Finish setting up", "Agent is off") shows again.
+function normalizeAiInvitationDismissed(value) {
+  if (value === true) return 'enable';
+  return AI_INVITATION_STEPS.includes(value) ? value : false;
+}
+
 const DEFAULT_SETTINGS = {
   theme: 'system',
+  enableAi: false,
+  // The Freedom Agent setup step whose start-page banner the user dismissed
+  // ('enable', 'connect' or 'resume'; see pages/scripts/ai-invitation-step.js),
+  // or false. Only that step stays hidden, so a later step still shows (#881).
+  aiInvitationDismissed: false,
   enableIdentityWallet: true,
   startAntAtLaunch: true,
   // Bee's `swap-enable` for the bundled Swarm node (#488): pay peers with
@@ -106,6 +124,13 @@ const DEFAULT_SETTINGS = {
   // Pull refreshed filter lists from Swarm on a schedule (WP5). On by
   // default; dormant anyway until a feed trust anchor is compiled in.
   adblockAutoUpdate: true,
+  // Secure DNS (#472, secure-dns.js): DNS over HTTPS for what Chromium
+  // resolves. 'automatic' (fall back to the system's DNS), 'secure'
+  // (Strict, no fallback) or 'off'; the provider is quad9, cloudflare,
+  // mullvad or custom (with secureDnsCustomTemplate, an https:// address).
+  // saveSettings stores only valid values, and only Settings may write them
+  // (ipc-sender-policy.js).
+  ...SECURE_DNS_DEFAULTS,
   // Keyboard-shortcut remaps: shortcut id → accelerator string. Only ids
   // from the shared registry (src/shared/shortcuts.js) with valid, non-
   // reserved accelerators survive sanitization. The one non-primitive
@@ -246,6 +271,8 @@ function loadSettings() {
         }
       }
       cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
+      cachedSettings.enableAi = parsed.enableAi === true;
+      cachedSettings.aiInvitationDismissed = normalizeAiInvitationDismissed(parsed.aiInvitationDismissed);
     } else {
       cachedSettings = { ...DEFAULT_SETTINGS };
     }
@@ -265,7 +292,7 @@ function loadSettings() {
   cachedSettings.shortcutOverrides = sanitizeOverrides(
     cachedSettings.shortcutOverrides,
     process.platform,
-    { onDrop: recordRevertedOverrides(reverted) }
+    { onDrop: recordRevertedOverrides(reverted), aiEnabled: cachedSettings.enableAi === true }
   );
   revertedShortcutOverrides = reverted;
 
@@ -311,10 +338,17 @@ function saveSettings(newSettings) {
     const previous = loadSettings();
     const merged = { ...previous };
     let changed = false;
+    // AI shortcuts take no part in the conflict pass while AI is off (see
+    // sanitizeOverrides), so a save is judged against the AI state it leaves.
+    const aiEnabled =
+      typeof newSettings?.enableAi === 'boolean' ? newSettings.enableAi : previous.enableAi === true;
 
     if (newSettings && typeof newSettings === 'object') {
       for (const key of Object.keys(DEFAULT_SETTINGS)) {
         if (!Object.prototype.hasOwnProperty.call(newSettings, key)) continue;
+
+        if (key === 'enableAi' && typeof newSettings[key] !== 'boolean') continue;
+        if (key === 'aiInvitationDismissed' && !isAiInvitationDismissed(newSettings[key])) continue;
 
         if (key === 'shortcutOverrides') {
           // The conflict pass has to run here too, not just at load: this is
@@ -327,6 +361,7 @@ function saveSettings(newSettings) {
           const dropped = {};
           const sanitized = sanitizeOverrides(newSettings[key], process.platform, {
             onDrop: recordRevertedOverrides(dropped),
+            aiEnabled,
           });
           const overridesChanged =
             JSON.stringify(sanitized) !== JSON.stringify(previous[key] || {});
@@ -355,6 +390,21 @@ function saveSettings(newSettings) {
           continue;
         }
 
+        // Secure DNS: an invalid value, or `custom` with no usable address
+        // to go with it, leaves the stored setting as it was.
+        if (SECURE_DNS_KEYS.includes(key)) {
+          const value = secureDnsSaveValue(key, newSettings[key], {
+            previous,
+            incoming: newSettings,
+          });
+          if (value === undefined) continue;
+          if (previous[key] !== value) {
+            merged[key] = value;
+            changed = true;
+          }
+          continue;
+        }
+
         const nextValue =
           key === 'customSearchProviders'
             ? normalizeCustomSearchProviders(newSettings[key])
@@ -368,6 +418,21 @@ function saveSettings(newSettings) {
           merged[key] = nextValue;
           changed = true;
         }
+      }
+    }
+
+    // Turning AI on brings Show Agent and Start dictation back, and with
+    // them their chords: a shortcut remapped onto one of those while AI was
+    // off now collides, so settle it the way a load would, visibly.
+    if (merged.enableAi === true && previous.enableAi !== true) {
+      const dropped = {};
+      const settled = sanitizeOverrides(merged.shortcutOverrides, process.platform, {
+        onDrop: recordRevertedOverrides(dropped),
+        aiEnabled: true,
+      });
+      if (Object.keys(dropped).length > 0) {
+        merged.shortcutOverrides = settled;
+        revertedShortcutOverrides = { ...revertedShortcutOverrides, ...dropped };
       }
     }
 
@@ -408,7 +473,14 @@ function registerSettingsIpc() {
     return loadSettings();
   });
 
-  ipcMain.handle(IPC.SETTINGS_SAVE, (_event, newSettings) => {
+  ipcMain.handle(IPC.SETTINGS_SAVE, (event, newSettings) => {
+    // Refuse the whole save rather than drop the key: the caller learns it
+    // failed, and nothing else in the same request is half-applied.
+    const refused = refusedSettingsKeys(event, newSettings);
+    if (refused.length > 0) {
+      log.warn(`[settings] refused ${refused.join(', ')} from ${describeSender(event)}`);
+      return false;
+    }
     return saveSettings(newSettings);
   });
 

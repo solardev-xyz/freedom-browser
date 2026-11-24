@@ -30,9 +30,10 @@ const SOURCE = [
 
 // Containers a `.rpc-input` may sit in. Each establishes a flex or grid
 // formatting context, so the input's `flex: 1` (or the track it is placed in)
-// gives it a width. `row-control` is the deliberate exception: those fields
-// (the ad-block allow-list entry, the profile name) share their row with a
-// button and are meant to stay at their natural width.
+// gives it a width. `row-control` is the deliberate exception: it is a flex
+// row too (#834), but one that never grows, so those fields (the ad-block
+// allow-list entry, the profile name) share their row with a button and stay
+// at their natural width.
 const SIZING_WRAPPERS = [
   'rpc-row',
   'resolver-config-line',
@@ -130,9 +131,28 @@ describe('settings.html text-field layout', () => {
     for (const name of SIZING_WRAPPERS) {
       expect(sizing).toContain(`.${name}`);
     }
-    // …and the exception genuinely does not, or it would not need naming.
+    // …and the exception genuinely does not, or it would not need naming: it
+    // lays its children out in a row, but the box itself is content-sized —
+    // it never grows into the row's free space, so neither does its field.
+    const css = SOURCE.match(/<style\b[^>]*>([\s\S]*?)<\/style>/)[1];
     for (const name of INTRINSIC_WRAPPERS) {
-      expect(sizing).not.toContain(`.${name}`);
+      const bodies = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter(([, prelude]) =>
+          prelude
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .split(',')
+            .some((selector) => selector.trim() === `.${name}`)
+        )
+        .map(([, , body]) => body);
+      expect(bodies.length).toBeGreaterThan(0);
+      for (const body of bodies) {
+        expect(body).toMatch(/flex-shrink:\s*0/);
+        // A flex row with no wrap holds its field and button on one line, so
+        // its min-content width is their sum and a narrow window overflows;
+        // the inline boxes it replaced could wrap.
+        expect(body).toMatch(/flex-wrap:\s*wrap/);
+        expect(body).not.toMatch(/\bflex(?:-grow)?:\s*[1-9]|(?:^|[\s;])(?:min-)?width:/);
+      }
     }
   });
 

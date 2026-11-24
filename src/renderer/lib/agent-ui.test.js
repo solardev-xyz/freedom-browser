@@ -1,0 +1,6479 @@
+const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
+
+const flush = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
+function createAgentElements() {
+  const ids = [
+    'agent-provider-form-heading',
+    'agent-provider-test', 'agent-provider-test-note',
+    'agent-provider-search', 'agent-model-search', 'agent-model-refresh', 'agent-model-details',
+    'agent-provider-disconnect', 'agent-model-menu-search', 'agent-catalog-status',
+    'agent-provider-disconnect-confirm', 'agent-provider-disconnect-question',
+    'agent-provider-disconnect-accept', 'agent-provider-disconnect-cancel',
+    'agent-privacy-controls', 'agent-privacy-policy', 'agent-privacy-save',
+    'agent-toggle-btn',
+    'agent-sidebar',
+    'agent-sidebar-close',
+    'agent-first-toggle',
+    'agent-first-titlebar',
+    'agent-first-reduce',
+    'agent-first-title',
+    'agent-session-sidebar-toggle',
+    'agent-workspace-sidebar-toggle',
+    'agent-session-sidebar',
+    'agent-mode-toggle',
+    'agent-mode-menu',
+    'agent-mode-agent',
+    'agent-mode-browser',
+    'agent-session-resizer',
+    'agent-page-surface',
+    'agent-workspace-resizer',
+    'agent-session-new-chat',
+    'agent-session-list',
+    'agent-session-history-empty',
+    'agent-task-pages',
+    'agent-task-page-count',
+    'agent-task-page-list',
+    'agent-task-pages-empty',
+    'agent-task-pages-note',
+    'agent-workspace-nav',
+    'agent-workspace-back',
+    'agent-workspace-forward',
+    'agent-workspace-reload',
+    'agent-workspace-address-host',
+    'agent-sidebar-back',
+    'agent-sidebar-title',
+    'agent-sidebar-subtitle',
+    'agent-loading-view',
+    'agent-setup-view',
+    'agent-workspace-view',
+    'agent-workspace-body',
+    'agent-workspace-inspector-panel',
+    'agent-workspace-inspector-compact',
+    'agent-process-panel',
+    'agent-process-panel-count',
+    'agent-process-panel-heading',
+    'agent-process-panel-label',
+    'agent-process-compact-heading',
+    'agent-process-compact-heading-label',
+    'agent-process-panel-list',
+    'agent-process-compact',
+    'agent-process-compact-toggle',
+    'agent-workspace-refresh',
+    'agent-process-compact-label',
+    'agent-process-compact-popover',
+    'agent-process-compact-count',
+    'agent-process-compact-list',
+    'agent-mcp-open', 'agent-mcp-panel',
+    'agent-compatibility', 'agent-compatibility-model', 'agent-compatibility-note',
+    'agent-compatibility-actions', 'agent-compatibility-result', 'agent-compatibility-continue',
+    'agent-custom-fields', 'agent-custom-name', 'agent-custom-url', 'agent-custom-models', 'agent-custom-clear-key',
+    'agent-custom-clear-key-field', 'agent-custom-transport', 'agent-custom-model-settings', 'agent-custom-context', 'agent-custom-output',
+    'agent-custom-vision', 'agent-custom-reasoning', 'agent-custom-schema',
+    'agent-provider-home',
+    'agent-provider-browser',
+    'agent-provider-detail',
+    'agent-provider-add',
+    'agent-provider-list-back',
+    'agent-provider-detail-back',
+    'agent-provider-choices',
+    'agent-provider-methods',
+    'agent-provider-chatgpt',
+    'agent-provider-chatgpt-state',
+    'agent-provider-api-state',
+    'agent-provider-api',
+    'agent-provider-connection-fields',
+    'agent-provider-advanced',
+    'agent-provider-models-heading',
+    'agent-provider-models-list',
+    'agent-provider-models-empty',
+    'agent-provider-models-privacy-hint',
+    'agent-provider-key-settings',
+    'agent-model-list',
+    'agent-subscription-note',
+    'agent-connected-providers',
+    'agent-connected-provider-list',
+    'agent-provider-select',
+    'agent-provider-status',
+    'agent-provider-privacy',
+    'agent-hosted-fields',
+    'agent-api-key-field',
+    'agent-subscription-fields',
+    'agent-ollama-fields',
+    'agent-model-select',
+    'agent-api-key',
+    'agent-ollama-url',
+    'agent-provider-save',
+    'agent-provider-login',
+    'agent-provider-cancel-login',
+    'agent-auth-callback',
+    'agent-auth-callback-input',
+    'agent-auth-callback-submit',
+    'agent-auth-code',
+    'agent-auth-user-code',
+    'agent-auth-code-instruction',
+    'agent-subscription-method-title',
+    'agent-subscription-method-help',
+    'agent-provider-message',
+    'agent-provider-connect-message',
+    'agent-ollama-install',
+    'agent-page-contexts',
+    'agent-page-context',
+    'agent-page-context-label',
+    'agent-composer',
+    'agent-composer-wrap',
+    'agent-prompt',
+    'agent-run',
+    'agent-new-chat',
+    'agent-page-interlock',
+    'agent-page-lock-trigger',
+    'agent-page-lock-hint',
+    'agent-takeover-dialog',
+    'agent-takeover-cancel',
+    'agent-takeover-confirm',
+    'agent-run-status',
+    'agent-run-message',
+    'agent-approval',
+    'agent-approval-action',
+    'agent-approval-origin',
+    'agent-page-tool-details',
+    'agent-page-tool-arguments',
+    'agent-workspace-permission-details',
+    'agent-workspace-permission-summary',
+    'agent-approval-approve',
+    'agent-approval-allow-conversation',
+    'agent-approval-decline',
+    'agent-approval-stop',
+    'agent-approval-message',
+    'agent-wallet-approval-details',
+    'agent-wallet-approval-summary',
+    'agent-node-request-details',
+    'agent-node-request-summary',
+    'agent-publication-details',
+    'agent-publication-summary',
+    'agent-publication-permanent',
+    'agent-publication-draft-notice',
+    'agent-publication-stable-notice',
+    'agent-publication-postage-warning',
+    'agent-publication-findings',
+    'agent-wallet-account-field',
+    'agent-wallet-account',
+    'agent-wallet-unlock',
+    'agent-wallet-password',
+    'agent-wallet-unlock-submit',
+    'agent-transcript',
+    'agent-empty-state',
+    'agent-examples',
+    'agent-model-menu-button',
+    'agent-active-model-label',
+    'agent-model-menu',
+    'agent-model-menu-list',
+    'agent-manage-providers',
+    'agent-approval-mode-button',
+    'agent-active-approval-mode-label',
+    'agent-approval-mode-popover',
+    'agent-approval-mode-every',
+    'agent-approval-mode-sensitive',
+    'agent-approval-mode-allow',
+    'agent-attachment-button',
+    'agent-attachment-menu',
+    'agent-attach-files',
+    'agent-attach-folder',
+    'agent-open-project',
+    'agent-attachment-contexts',
+    'agent-scope-help',
+    'agent-scope-help-text',
+    'agent-float-title',
+  ];
+  const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
+  elements['agent-toggle-btn'] = createElement('button');
+  elements['agent-sidebar'] = createElement('aside', { classes: ['collapsed'] });
+  elements['agent-sidebar-close'] = createElement('button');
+  elements['agent-first-toggle'] = createElement('button');
+  elements['agent-first-toggle'].hidden = true;
+  elements['agent-first-titlebar'] = createElement('div');
+  elements['agent-first-titlebar'].hidden = true;
+  elements['agent-session-sidebar-toggle'] = createElement('button');
+  elements['agent-workspace-sidebar-toggle'] = createElement('button');
+  elements['agent-session-sidebar'] = createElement('aside', {
+    rect: { left: 0, right: 242, width: 242 },
+  });
+  elements['agent-session-sidebar'].hidden = true;
+  elements['agent-session-resizer'] = createElement('div');
+  elements['agent-page-surface'] = createElement('section', {
+    rect: { left: 860, right: 1280, width: 420 },
+  });
+  elements['agent-workspace-resizer'] = createElement('div');
+  elements['agent-session-new-chat'] = createElement('button');
+  elements['agent-session-list'] = createElement('div');
+  elements['agent-session-history-empty'] = createElement('div');
+  elements['agent-task-pages'] = createElement('aside');
+  elements['agent-task-pages'].hidden = true;
+  elements['agent-task-page-count'] = createElement('span', { textContent: '0' });
+  elements['agent-task-page-list'] = createElement('div');
+  elements['agent-task-pages-empty'] = createElement('div');
+  elements['agent-workspace-nav'] = createElement('form');
+  elements['agent-workspace-back'] = createElement('button');
+  elements['agent-workspace-forward'] = createElement('button');
+  elements['agent-workspace-reload'] = createElement('button');
+  elements['agent-workspace-address-host'] = createElement('div');
+  elements['agent-sidebar-back'] = createElement('button');
+  elements['agent-setup-view'].hidden = true;
+  const mcpForm = createElement('form');
+  const mcpList = createElement('div');
+  const mcpMessage = createElement('p');
+  const mcpHome = createElement('div');
+  const mcpAdd = createElement('button');
+  elements['agent-mcp-panel'].querySelector = selector => ({ form: mcpForm, '[data-mcp-list]': mcpList, '[data-mcp-message]': mcpMessage, '[data-mcp-home]': mcpHome, '[data-mcp-add]': mcpAdd })[selector];
+  elements['agent-workspace-view'].hidden = true;
+  elements['agent-process-panel'].hidden = true;
+  elements['agent-process-compact'].hidden = true;
+  elements['agent-process-compact-toggle'] = createElement('button');
+  elements['agent-process-compact-popover'].hidden = true;
+  elements['agent-connected-providers'].hidden = true;
+  elements['agent-provider-select'] = createElement('select', { value: 'openai' });
+  elements['agent-model-select'] = createElement('select');
+  elements['agent-api-key'] = createElement('input');
+  elements['agent-ollama-url'] = createElement('input', {
+    value: 'http://127.0.0.1:11434/v1',
+  });
+  elements['agent-provider-save'] = createElement('button');
+  elements['agent-provider-login'] = createElement('button');
+  elements['agent-provider-cancel-login'] = createElement('button');
+  elements['agent-auth-code'].hidden = true;
+  elements['agent-page-contexts'].hidden = true;
+  elements['agent-page-context'] = createElement('button');
+  elements['agent-composer'] = createElement('div');
+  elements['agent-prompt'] = createElement('textarea');
+  elements['agent-run'] = createElement('button');
+  elements['agent-new-chat'] = createElement('button');
+  elements['agent-new-chat'].hidden = true;
+  elements['agent-page-interlock'] = createElement('div');
+  elements['agent-page-interlock'].hidden = true;
+  elements['agent-page-lock-trigger'] = createElement('button');
+  elements['agent-page-lock-hint'] = createElement('div');
+  elements['agent-takeover-dialog'] = createElement('section');
+  elements['agent-takeover-dialog'].hidden = true;
+  elements['agent-takeover-cancel'] = createElement('button');
+  elements['agent-takeover-confirm'] = createElement('button');
+  elements['agent-takeover-dialog'].appendChild(elements['agent-takeover-cancel']);
+  elements['agent-takeover-dialog'].appendChild(elements['agent-takeover-confirm']);
+  elements['agent-page-lock-trigger'].appendChild(elements['agent-page-lock-hint']);
+  elements['agent-page-interlock'].appendChild(elements['agent-page-lock-trigger']);
+  elements['agent-page-interlock'].appendChild(elements['agent-takeover-dialog']);
+  elements['agent-approval'] = createElement('div');
+  elements['agent-approval'].hidden = true;
+  elements['agent-approval-approve'] = createElement('button');
+  elements['agent-approval-allow-conversation'] = createElement('button');
+  elements['agent-approval-decline'] = createElement('button');
+  elements['agent-approval-stop'] = createElement('button');
+  elements['agent-wallet-approval-details'].hidden = true;
+  elements['agent-wallet-approval-summary'] = createElement('dl');
+  elements['agent-node-request-details'].hidden = true;
+  elements['agent-node-request-summary'] = createElement('dl');
+  elements['agent-publication-details'].hidden = true;
+  elements['agent-publication-summary'] = createElement('dl');
+  elements['agent-publication-findings'] = createElement('div');
+  elements['agent-publication-findings'].hidden = true;
+  elements['agent-wallet-account-field'].hidden = true;
+  elements['agent-wallet-account'] = createElement('select');
+  elements['agent-wallet-unlock'].hidden = true;
+  elements['agent-wallet-password'] = createElement('input');
+  elements['agent-wallet-unlock-submit'] = createElement('button');
+  elements['agent-transcript'].hidden = true;
+  const example = createElement('button');
+  example.dataset.agentExample = 'Build a small browser game';
+  elements['agent-examples'].appendChild(example);
+  elements['agent-model-menu-button'] = createElement('button');
+  elements['agent-model-menu'] = createElement('div');
+  elements['agent-model-menu'].hidden = true;
+  elements['agent-manage-providers'] = createElement('button');
+  elements['agent-approval-mode-button'] = createElement('button');
+  elements['agent-active-approval-mode-label'] = createElement('span', {
+    textContent: 'Ask when needed',
+  });
+  elements['agent-approval-mode-popover'] = createElement('div');
+  elements['agent-approval-mode-popover'].hidden = true;
+  elements['agent-approval-mode-every'] = createElement('button', { classes: ['active'] });
+  elements['agent-approval-mode-every'].appendChild(createElement('span'));
+  elements['agent-approval-mode-every'].appendChild(
+    createElement('span', { classes: ['agent-approval-mode-check'], textContent: '✓' })
+  );
+  elements['agent-approval-mode-sensitive'] = createElement('button');
+  elements['agent-approval-mode-sensitive'].appendChild(createElement('span'));
+  elements['agent-approval-mode-sensitive'].appendChild(
+    createElement('span', { classes: ['agent-approval-mode-check'] })
+  );
+  elements['agent-approval-mode-allow'] = createElement('button');
+  elements['agent-approval-mode-allow'].appendChild(createElement('span'));
+  elements['agent-approval-mode-allow'].appendChild(
+    createElement('span', { classes: ['agent-approval-mode-check'] })
+  );
+  elements['agent-attachment-button'] = createElement('button');
+  elements['agent-attachment-menu'] = createElement('div');
+  elements['agent-attachment-menu'].hidden = true;
+  elements['agent-attach-files'] = createElement('button');
+  elements['agent-attach-folder'] = createElement('button');
+  elements['agent-attachment-contexts'] = createElement('div');
+  elements['agent-workspace-view'].appendChild(elements['agent-composer-wrap']);
+  elements['agent-composer-wrap'].appendChild(elements['agent-process-compact']);
+  elements['agent-composer-wrap'].appendChild(elements['agent-attachment-menu']);
+  return elements;
+}
+
+async function loadAgentUi(options = {}) {
+  jest.resetModules();
+  const elements = createAgentElements();
+  elements['agent-workspace-view'].style.setProperty = jest.fn((name, value) => {
+    elements['agent-workspace-view'].style[name] = value;
+  });
+  const document = createDocument({ elementsById: elements });
+  document.dispatchEvent = jest.fn();
+  let eventHandler = null;
+  let providerAuthEventHandler = null;
+  const electronAPI = {
+    getSettings: jest.fn().mockResolvedValue({ enableAi: true }),
+    getAgentProviderStatus: jest.fn().mockResolvedValue({
+      ok: true,
+      status: {
+        configured: true,
+        secureStorageAvailable: true,
+        kind: 'hosted',
+        providerId: 'openai',
+        modelId: 'gpt-4.1-mini',
+        connections: [{ kind: 'hosted', providerId: 'openai', modelId: 'gpt-4.1-mini' }],
+      },
+    }),
+    getAgentProviderCatalog: jest.fn().mockResolvedValue({
+      ok: true,
+      catalog: [
+        {
+          providerId: 'openai',
+          name: 'OpenAI',
+          authType: 'api_key',
+          models: [{ id: 'gpt-4.1-mini', name: 'GPT 4.1 mini' }],
+        },
+        {
+          providerId: 'openai-chatgpt',
+          name: 'OpenAI · ChatGPT',
+          authType: 'subscription',
+          models: [{ id: 'codex-model', name: 'Codex Model' }],
+        },
+        { providerId: 'openai-codex', name: 'OpenAI · ChatGPT (legacy)', authType: 'subscription', models: [{ id: 'codex-model', name: 'Codex Model' }] },
+      ],
+    }),
+    configureHostedAgentProvider: jest.fn().mockResolvedValue({
+      ok: true,
+      status: { configured: true, providerId: 'openai', modelId: 'gpt-4.1-mini' },
+    }),
+    configureOllamaAgentProvider: jest.fn(),
+    loginSubscriptionAgentProvider: jest.fn(),
+    cancelAgentProviderLogin: jest.fn().mockResolvedValue({ ok: true, cancelled: true }),
+    selectAgentModel: jest.fn(),
+    removeAgentProvider: jest.fn(),
+    getAgentState: jest.fn().mockResolvedValue({ ok: true, state: { status: 'idle' } }),
+    startAgent: jest.fn().mockResolvedValue({
+      ok: true,
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+    }),
+    steerAgent: jest.fn().mockResolvedValue({
+      ok: true,
+      guidance: {
+        guidanceId: 'guidance_test',
+        text: 'Focus on primary sources',
+        status: 'queued',
+      },
+    }),
+    clearAgentConversation: jest.fn().mockResolvedValue({ ok: true, cleared: true }),
+    listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions: [] }),
+    openAgentSession: jest.fn(),
+    renameAgentSession: jest.fn(),
+    deleteAgentSession: jest.fn(),
+    pickAgentFiles: jest.fn().mockResolvedValue({ ok: true, selections: [] }),
+    pickAgentFolder: jest.fn().mockResolvedValue({ ok: true, selections: [] }),
+    removeAgentAttachment: jest.fn().mockResolvedValue({ ok: true, removed: true }),
+    revokeAgentAttachment: jest.fn().mockResolvedValue({
+      ok: true,
+      revoked: true,
+      resources: [],
+    }),
+    getAgentAttachmentPreview: jest.fn().mockResolvedValue({ ok: false }),
+    setAgentApprovalMode: jest.fn(async (conversationId, approvalMode) => ({
+      ok: true,
+      conversationId,
+      approvalMode,
+    })),
+    claimAgentTab: jest.fn(),
+    stopAgentProcess: jest.fn().mockResolvedValue({ ok: true, state: { workspace: null } }),
+    openAgentProcessPreview: jest.fn().mockResolvedValue({
+      ok: true,
+      state: { workspace: { processes: [] } },
+    }),
+    openAgentArtifact: jest.fn().mockResolvedValue({ success: true }),
+    showAgentArtifactInFolder: jest.fn().mockResolvedValue({ success: true }),
+    openAgentPublication: jest.fn().mockResolvedValue({ ok: true, opened: true }),
+    copyText: jest.fn().mockResolvedValue({ success: true }),
+    pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
+    resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
+    stopAgentHelper: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
+    stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
+    decideAgentApproval: jest.fn().mockResolvedValue({ ok: true, decided: true }),
+    onAgentEvent: jest.fn((handler) => {
+      eventHandler = handler;
+      return jest.fn();
+    }),
+    onAgentProviderAuthEvent: jest.fn((handler) => {
+      providerAuthEventHandler = handler;
+      return jest.fn();
+    }),
+    ...options.electronAPI,
+  };
+  global.document = document;
+  global.window = {
+    addEventListener: jest.fn(),
+    electronAPI,
+    identity: {
+      getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }),
+      unlock: jest.fn().mockResolvedValue({ success: true }),
+    },
+    quickUnlock: {
+      canUseTouchId: jest.fn().mockResolvedValue(false),
+      isEnabled: jest.fn().mockResolvedValue(false),
+      unlock: jest.fn(),
+    },
+    confirm: jest.fn(() => true),
+    prompt: jest.fn(() => null),
+    innerWidth: 1280,
+    ...(options.windowGlobals || {}),
+  };
+  global.CustomEvent = class {
+    constructor(type) {
+      this.type = type;
+    }
+  };
+  const sidebar = {
+    close: jest.fn(),
+    isVisible: jest.fn(() => false),
+  };
+  jest.doMock('./private-mode.js', () => ({ isPrivateWindow: () => options.isPrivate === true }));
+  jest.doMock('./page-urls.js', () => ({ homeUrl: 'file:///app/pages/home.html' }));
+  jest.doMock('./sidebar.js', () => sidebar);
+  jest.doMock('./wallet/signature-flight.js', () => ({
+    isSignatureInFlight: () => false,
+    onSignatureFlightChange: jest.fn(),
+  }));
+  const setAgentControlledTab = jest.fn();
+  const setAgentTabCustody = jest.fn();
+  const setAgentTabClaimHandler = jest.fn();
+  const switchTab = jest.fn();
+  const openLinkInNewTab = jest.fn();
+  const openStartPage = jest.fn();
+  const setTabStripProjection = jest.fn();
+  const setWorkspaceNavigationProjection = jest.fn();
+  const setWorkspaceNavigationEditable = jest.fn();
+  const getOpenTabs =
+    options.getOpenTabs ||
+    (() => [
+      {
+        id: 7,
+        url: 'https://example.com/start',
+        title: 'Start page',
+        favicon: '',
+        isLoading: false,
+        isActive: true,
+      },
+    ]);
+  let tabPresentationListener;
+  const openSettings = jest.fn();
+  const mod = await import('./agent-ui.js');
+  mod.initAgentUi({
+    openSettings,
+    getActiveTab:
+      options.getActiveTab || (() => getOpenTabs().find((tab) => tab.isActive) || getOpenTabs()[0]),
+    getOpenTabs,
+    isTabAgentOwned: options.isTabAgentOwned || (() => false),
+    setAgentControlledTab,
+    setAgentTabCustody,
+    setAgentTabClaimHandler,
+    setTabStripProjection,
+    setWorkspaceNavigationProjection,
+    setWorkspaceNavigationEditable,
+    subscribeTabPresentation: (listener) => {
+      tabPresentationListener = listener;
+      listener(getOpenTabs());
+      return jest.fn();
+    },
+    switchTab,
+    openLinkInNewTab,
+    openStartPage,
+  });
+  await flush();
+  return {
+    openLinkInNewTab,
+    openStartPage,
+    mod,
+    openSettings,
+    elements,
+    document,
+    electronAPI,
+    sidebar,
+    setAgentControlledTab,
+    setAgentTabCustody,
+    setAgentTabClaimHandler,
+    switchTab,
+    setTabStripProjection,
+    setWorkspaceNavigationProjection,
+    setWorkspaceNavigationEditable,
+    emitTabs: (tabs) => tabPresentationListener(tabs),
+    emit: (event) => eventHandler(event),
+    emitProviderAuth: (event) => providerAuthEventHandler(event),
+  };
+}
+
+describe('Agent UI', () => {
+  test('dropping files highlights the composer and attaches them before the prompt can send', async () => {
+    let resolveDrop;
+    const dropAgentFiles = jest.fn(() => new Promise(resolve => { resolveDrop = resolve; }));
+    const ctx = await loadAgentUi({ electronAPI: { dropAgentFiles } });
+    const composer = ctx.elements['agent-composer'];
+    const files = [{ name: 'notes.txt' }, { name: 'photo.png' }];
+    const event = { dataTransfer: { types: ['Files'], files }, preventDefault: jest.fn(), stopPropagation: jest.fn() };
+    composer.dispatch('dragenter', event);
+    composer.dispatch('dragenter', event);
+    composer.dispatch('dragleave', event);
+    expect(composer.classList.contains('file-drop-active')).toBe(true);
+    composer.dispatch('dragover', event);
+    expect(event.dataTransfer.dropEffect).toBe('copy');
+    ctx.elements['agent-prompt'].value = 'Review these';
+    composer.dispatch('drop', event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(composer.classList.contains('file-drop-active')).toBe(false);
+    expect(dropAgentFiles).toHaveBeenCalledWith(files);
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
+    const selectionId = 'selection_' + 'a'.repeat(20);
+    resolveDrop({ ok: true, selections: [{ selectionId, name: 'notes.txt', kind: 'file', category: 'text' }] });
+    await flush();
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(1);
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(expect.anything(), 'Review these', expect.any(String), [selectionId]);
+  });
+
+  test('text drags remain native; file drops during a run are blocked without navigation', async () => {
+    const dropAgentFiles = jest.fn();
+    const ctx = await loadAgentUi({ electronAPI: { dropAgentFiles } });
+    const composer = ctx.elements['agent-composer'];
+    const text = { dataTransfer: { types: ['text/plain'] }, preventDefault: jest.fn() };
+    composer.dispatch('dragenter', text);
+    composer.dispatch('drop', text);
+    expect(text.preventDefault).not.toHaveBeenCalled();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const event = { dataTransfer: { types: ['Files'], files: [{}] }, preventDefault: jest.fn(), stopPropagation: jest.fn() };
+    composer.dispatch('drop', event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(dropAgentFiles).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-run-message'].textContent).toContain('Wait for Agent');
+  });
+
+  function messages(ctx) {
+    return ctx.elements['agent-transcript'].children.flatMap(turn => turn.children.flatMap(row => {
+      if (row.classList.contains('agent-helper-list')) return row.children.map(card => card.querySelector('.agent-helper-title').textContent);
+      const text = row.querySelector('.agent-output') || row.querySelector('.agent-user-message');
+      return text?.textContent ? [text.textContent] : [];
+    }));
+  }
+
+  test('keeps helper starts and user guidance before the final response without moving updated cards', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_text_delta', text: 'Starting.' });
+    emit({ type: 'tool_started', toolCallId: 'first', operation: 'delegate_task' });
+    const helper = { type: 'tool_finished', toolCallId: 'first', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'First helper', state: 'running' } };
+    emit(helper);
+    emit({ type: 'guidance_queued', guidance: { guidanceId: 'guide', text: 'Focus on dates.', status: 'queued' } });
+    emit({ type: 'assistant_text_delta', text: 'Checking.' });
+    emit({ type: 'tool_started', toolCallId: 'second', operation: 'delegate_task' });
+    emit({ type: 'tool_finished', toolCallId: 'second', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Second helper', state: 'completed', report: 'Findings' } });
+    emit({ ...helper, subagent: { ...helper.subagent, state: 'completed', report: 'Done' } });
+    emit({ type: 'assistant_text_delta', text: 'Final ' });
+    emit({ type: 'assistant_text_delta', text: 'answer.' });
+    emit({ type: 'run_finished', status: 'completed' });
+    expect(messages(ctx)).toEqual(['Research', 'Starting.', 'First helper', 'Focus on dates.', 'Checking.', 'Second helper', 'Final answer.']);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-activity').open).toBe(false);
+  });
+
+  test.each([true, false])('restores chronological messages with timeline metadata present=%s', async hasOffsets => {
+    const position = (textOffset, timelineOrder) => hasOffsets ? { textOffset, timelineOrder } : {};
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Starting.Final answer.', status: 'completed',
+          activity: [{ toolCallId: 'first', operation: 'delegate_task', status: 'succeeded', ...position(9, 0),
+            subagent: { title: 'First helper', state: 'completed', report: 'Done' } }],
+          guidance: [{ guidanceId: 'guide', text: 'Focus on dates.', status: 'applied', ...position(9, 1) }],
+        }],
+      } }),
+    } });
+    expect(messages(ctx)).toEqual(hasOffsets
+      ? ['Research', 'Starting.', 'First helper', 'Focus on dates.', 'Final answer.']
+      : ['Research', 'First helper', 'Focus on dates.', 'Starting.Final answer.']);
+  });
+
+  function timeline(ctx) {
+    return ctx.elements['agent-transcript'].children.flatMap(turn => turn.children.flatMap(row => {
+      if (row.classList.contains('agent-thinking')) {
+        return [`${row.open ? 'open' : 'closed'} ${row.children[0].textContent}: ${row.children[1].textContent}`];
+      }
+      const text = row.querySelector('.agent-output') || row.querySelector('.agent-user-message');
+      return text?.textContent ? [text.textContent] : [];
+    }));
+  }
+
+  test('shows the model thinking as a closed disclosure above the answer it led to', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: 'Plan the ' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking…: Plan the ']);
+    emit({ type: 'assistant_thinking_delta', text: 'search.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 2_400 });
+    emit({ type: 'assistant_text_delta', text: 'Checking.' });
+    emit({ type: 'tool_started', toolCallId: 'read', operation: 'browser_snapshot' });
+    emit({ type: 'tool_finished', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    // An empty (redacted) block shows nothing.
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_end', durationMs: 100 });
+    emit({ type: 'assistant_thinking_start' });
+    emit({ type: 'assistant_thinking_delta', text: 'Verify the dates.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 61_000 });
+    emit({ type: 'assistant_text_delta', text: 'Final answer.' });
+    emit({ type: 'run_finished', status: 'completed' });
+    expect(timeline(ctx)).toEqual([
+      'Research',
+      'closed Thinking · 2s: Plan the search.',
+      'Checking.',
+      'closed Thinking · 1m 1s: Verify the dates.',
+      'Final answer.',
+    ]);
+  });
+
+  test('a thinking block the run ends inside is closed without a duration', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_thinking_delta', text: 'Half a thought' });
+    emit({ type: 'run_finished', status: 'cancelled' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking: Half a thought']);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-thinking').dataset.state).toBe('done');
+  });
+
+  test('restores thinking at its place in the turn', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Starting.Final answer.', status: 'completed',
+          thinking: [
+            { text: 'Plan.', textOffset: 0, timelineOrder: 0, durationMs: 3_000 },
+            { text: '', textOffset: 9, timelineOrder: 1 },
+            { text: 'Check.', textOffset: 9, timelineOrder: 1, durationMs: 1_000 },
+          ],
+          activity: [{ toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded', textOffset: 9, timelineOrder: 0 }],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)).toEqual([
+      'Research', 'closed Thinking · 3s: Plan.', 'Starting.', 'closed Thinking · 1s: Check.', 'Final answer.',
+    ]);
+  });
+
+  test('a panel restored mid-thought keeps extending the same thinking block', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'running', runId: 'run_live', conversationId: 'conversation_live', transcript: [{
+          runId: 'run_live', userText: 'Research', assistantText: '', status: 'running',
+          thinking: [{ text: 'Half a ', textOffset: 0, timelineOrder: 0, open: true }],
+          activity: [],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking…: Half a ']);
+    const emit = event => ctx.emit({ runId: 'run_live', ...event });
+    emit({ type: 'assistant_thinking_delta', text: 'thought.' });
+    emit({ type: 'assistant_thinking_end', durationMs: 4_000 });
+    emit({ type: 'assistant_text_delta', text: 'Answer.' });
+    expect(timeline(ctx)).toEqual(['Research', 'closed Thinking · 4s: Half a thought.', 'Answer.']);
+  });
+
+  test('restored thinking main cut short is marked as cut', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Answer.', status: 'completed',
+          thinking: [{ text: 'Long start', textOffset: 0, timelineOrder: 0, durationMs: 2_000, truncated: true }],
+          activity: [],
+        }],
+      } }),
+    } });
+    expect(timeline(ctx)[1]).toMatch(/^closed Thinking · 2s: Long start\s*…$/);
+  });
+
+  test('a saved cancelled tool call is restored as stopped, not as succeeded', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Click it', assistantText: 'Stopped.', status: 'cancelled',
+          activity: [
+            { toolCallId: 'done', operation: 'browser_click', status: 'succeeded', label: 'Clicked', effect: 'changed' },
+            { toolCallId: 'stopped', operation: 'browser_click', status: 'cancelled', label: 'Click', effect: 'changed' },
+          ],
+        }],
+      } }),
+    } });
+    const rows = ctx.elements['agent-transcript'].querySelectorAll('.agent-tool-item');
+    expect(rows.map(row => [row.dataset.state, row.children[0].textContent])).toEqual([
+      ['succeeded', '✓'], ['cancelled', '•'],
+    ]);
+  });
+
+  test('incoming text and status follow the bottom but preserve a reader scroll position', async () => {
+    const ctx = await loadAgentUi();
+    const scroller = createElement('div', { classes: ['agent-workspace-scroll'] });
+    ctx.elements['agent-workspace-body'].appendChild(scroller);
+    scroller.scrollHeight = 2000;
+    scroller.clientHeight = 500;
+    scroller.scrollTop = 100;
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'New output' });
+    ctx.emit({ type: 'run_thinking', runId: 'run_test' });
+    expect(scroller.scrollTop).toBe(100);
+    scroller.scrollTop = 1490;
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: ' continues' });
+    expect(scroller.scrollTop).toBe(2000);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-output').textContent).toBe('New output continues');
+  });
+
+  test('renders separate parallel reports and neutral completion/stopping without a recovery warning', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', intent: 'Delegating two read-only tasks' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', status: 'failed',
+      label: '1 report received · 1 task stopped', subagents: [
+        { title: 'Structure', state: 'completed', report: '<script>untrusted()</script>', toolCalls: 2, toolScripts: 2 },
+        { title: 'Accessibility', state: 'cancelled', report: '', toolCalls: 1, toolScripts: 1 },
+      ] });
+    const reports = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
+    expect(reports.length).toBe(2);
+    expect(reports[0].children[1].textContent).toBe('2 tool calls · 2 tool scripts · Model-generated findings');
+    expect(reports[1].children[1].textContent).toBe('1 tool call · 1 tool script · Model-generated findings');
+    expect(reports[0].querySelector('.agent-helper-title').textContent).toBe('Structure');
+    expect(reports[0].querySelector('.agent-helper-status').textContent).toContain('Completed');
+    expect(reports[1].querySelector('.agent-helper-status').textContent).toContain('Stopped');
+    expect(reports[0].children[2].textContent).toBe('<script>untrusted()</script>');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('1 report received · 1 task stopped');
+  });
+  test.each([2, 6])('%i helper cards remain outside the action log and Stop targets only one helper with stable focus and expansion', async count => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', status: 'succeeded',
+      subagents: ['a', 'b', 'c', 'd', 'e', 'f'].slice(0, count).map(id => ({ taskId: 'delegate_' + id.repeat(24), title: id, state: 'running', activity: 'Reading a page' })) };
+    ctx.emit(event);
+    const cards = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
+    expect(cards).toHaveLength(count);
+    const button = cards[0].querySelector('.agent-helper-stop');
+    expect(cards[0].parentNode.className).toBe('agent-helper-list');
+    expect(button.hidden).toBe(false);
+    cards[0].open = true;
+    ctx.emit(event);
+    expect(cards[0].querySelector('.agent-helper-stop')).toBe(button);
+    expect(cards[0].open).toBe(true);
+    await button.dispatch('click', { preventDefault() {}, stopPropagation() {} }); await flush();
+    expect(ctx.electronAPI.stopAgentHelper).toHaveBeenCalledWith('run_test', event.subagents[0].taskId);
+    expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
+    ctx.emit({ ...event, subagents: event.subagents.map((receipt, i) => i === 0 ? { ...receipt, state: 'cancelled' } : receipt) });
+    expect(button.hidden).toBe(true);
+    expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(false);
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+    expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(true);
+  });
+  test('saved helper cards load only when expanded, page on demand, and preserve loaded text across updates', async () => {
+    const read = jest.fn().mockResolvedValueOnce({ ok: true, result: { text: 'First page ', nextOffset: 11 } })
+      .mockResolvedValueOnce({ ok: true, result: { text: 'last finding', nextOffset: null } });
+    const ctx = await loadAgentUi({ electronAPI: { readAgentHelperReport: read } });
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Preview', reportId: 'report_' + 'a'.repeat(64), reportChars: 23 } };
+    ctx.emit(event);
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(read).not.toHaveBeenCalled();
+    card.open = true; await card.dispatch('toggle'); await flush();
+    expect(read).toHaveBeenCalledWith('conversation_test', event.subagent.reportId, 0);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page ');
+    ctx.emit(event);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page ');
+    const more = [...card.children].find(child => child.tagName === 'BUTTON');
+    expect(more.textContent).toBe('Show more');
+    await more.dispatch('click'); await flush();
+    expect(read).toHaveBeenLastCalledWith('conversation_test', event.subagent.reportId, 11);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page last finding');
+    expect(more.hidden).toBe(true);
+  });
+
+  test('report loading can retry and ignores a late page for an older helper follow-up', async () => {
+    let resolveOld;
+    const read = jest.fn().mockRejectedValueOnce(new Error('Unavailable'))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }))
+      .mockResolvedValue({ ok: true, result: { text: 'New report', nextOffset: null } });
+    const ctx = await loadAgentUi({ electronAPI: { readAgentHelperReport: read } });
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Preview', reportId: 'report_' + 'a'.repeat(64) } };
+    ctx.emit(event);
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    card.open = true; await card.dispatch('toggle'); await flush();
+    const retry = [...card.children].find(child => child.tagName === 'BUTTON');
+    expect(retry.textContent).toBe('Retry loading report');
+    retry.dispatch('click'); await flush();
+    ctx.emit({ ...event, subagent: { ...event.subagent, reportId: 'report_' + 'b'.repeat(64) } }); await flush();
+    resolveOld({ ok: true, result: { text: 'Old report', nextOffset: null } }); await flush();
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('New report');
+  });
+
+  test('helper reports use the same restricted Markdown renderer as the main response', async () => {
+    const sanitize = jest.fn(() => '<p><strong>Finding</strong></p>');
+    const ctx = await loadAgentUi({ windowGlobals: {
+      marked: { parse: jest.fn(() => '<p><strong>Finding</strong><img src=x onerror=alert(1)></p>') },
+      DOMPurify: { sanitize },
+    } });
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: '**Finding**' } });
+    const body = ctx.elements['agent-transcript'].querySelector('.agent-helper-report-body');
+    expect(body.innerHTML).toBe('<p><strong>Finding</strong></p>');
+    expect(body.classList.contains('rendered-markdown')).toBe(true);
+    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual(['href']);
+    expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('img');
+    expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('script');
+  });
+  test('shows recorded helper edits and unsettled writes as inert text', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', userText: 'Edit project' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'edit', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'edit', operation: 'delegate_task', status: 'failed',
+      subagent: { mode: 'edit', state: 'cancelled', report: '', changedFiles: ['README.md'], attemptedFiles: ['README.md', '<script>'], writesPending: true } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(report.querySelector('.agent-helper-status').textContent).toContain('Editing helper');
+    expect(report.children[3].textContent).toContain('Files changed: README.md');
+    expect(report.children[3].textContent).toContain('still settling');
+    expect(report.querySelector('script')).toBeNull();
+  });
+  test('renders helper reports as expandable inert text and labels interruptions without browser errors', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'Review the project' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', intent: 'Delegating: Review' });
+    ctx.emit({ type: 'run_progress', runId: 'run_test', source: 'subagent', message: 'Helper is inspecting: Review' });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-live-status').children[1].textContent).toBe('Helper is inspecting: Review');
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task',
+      status: 'succeeded', label: 'Received helper report — Review',
+      subagent: { state: 'completed', toolCalls: 2, report: '<img src="https://invalid.test/track">README.md needs an example.' } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(report.querySelector('.agent-helper-status').textContent).toContain('Completed');
+    expect(report.children[2].textContent).toContain('<img');
+    expect(report.querySelector('img')).toBeNull();
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task',
+      status: 'failed', label: 'Helper stopped — Review', subagent: { state: 'cancelled', report: '' } });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-subagent-report').children[2].textContent).toBe('No complete report was returned');
+    expect(ctx.elements['agent-run-message'].textContent).not.toContain('Browser');
+  });
+  afterEach(() => {
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+  });
+
+  test('shows provider setup when no model is connected', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        getAgentProviderStatus: jest.fn().mockResolvedValue({
+          ok: true,
+          status: { configured: false, secureStorageAvailable: true, connections: [] },
+        }),
+      },
+    });
+
+    expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
+    expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar-title'].textContent).toBe('Set up Agent');
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
+  });
+
+  describe('Settings opening Agent on a start page (#864)', () => {
+    const settingsTab = { id: 3, url: 'freedom://settings/ai/providers/ollama', title: 'Settings', isActive: true };
+    async function load(tabs, options = {}) {
+      let showAgent;
+      const ctx = await loadAgentUi({
+        getOpenTabs: () => tabs,
+        ...options,
+        electronAPI: {
+          onShowAgent: jest.fn((callback) => {
+            showAgent = callback;
+            return jest.fn();
+          }),
+        },
+      });
+      return { ctx, showAgent, panel: ctx.elements['agent-sidebar'] };
+    }
+
+    test('opens a new start page before showing the panel, not over the page that asked', async () => {
+      const { ctx, showAgent, panel } = await load([settingsTab]);
+      ctx.openStartPage.mockImplementation(() => {
+        expect(panel.classList.contains('collapsed')).toBe(true);
+      });
+      showAgent({ freshPage: true });
+      expect(ctx.openStartPage).toHaveBeenCalledTimes(1);
+      expect(ctx.switchTab).not.toHaveBeenCalled();
+      expect(panel.classList.contains('collapsed')).toBe(false);
+      expect(panel.dataset.presentation).toBe('launcher');
+    });
+
+    test('reuses an open start page Agent is not driving, and stays on an active one', async () => {
+      const home = 'file:///app/pages/home.html';
+      const tabs = [
+        settingsTab,
+        { id: 4, url: home, title: 'Agent', isActive: false },
+        { id: 5, url: home, title: 'Viewer', isActive: false, kind: 'workspace-viewer' },
+        { id: 6, url: home, title: 'New Tab', isActive: false },
+      ];
+      const { ctx, showAgent } = await load(tabs, { isTabAgentOwned: (id) => id === 4 });
+      showAgent({ freshPage: true });
+      expect(ctx.switchTab).toHaveBeenCalledWith(6);
+      expect(ctx.openStartPage).not.toHaveBeenCalled();
+
+      const onHome = await load([{ id: 6, url: home, title: 'New Tab', isActive: true }]);
+      onHome.showAgent({ freshPage: true });
+      expect(onHome.ctx.switchTab).not.toHaveBeenCalled();
+      expect(onHome.ctx.openStartPage).not.toHaveBeenCalled();
+      expect(onHome.panel.classList.contains('collapsed')).toBe(false);
+    });
+
+    test('a plain open (start page, the Open Agent button) stays on the current page', async () => {
+      const { ctx, showAgent, panel } = await load([settingsTab]);
+      showAgent({ freshPage: false });
+      showAgent();
+      expect(ctx.openStartPage).not.toHaveBeenCalled();
+      expect(ctx.switchTab).not.toHaveBeenCalled();
+      expect(panel.classList.contains('collapsed')).toBe(false);
+    });
+  });
+
+  test('floats over the page: centred before a task, a right column once one runs, inert while closed', async () => {
+    let toggleAgent;
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        onToggleAgent: jest.fn((callback) => {
+          toggleAgent = callback;
+          return jest.fn();
+        }),
+      },
+    });
+    const panel = ctx.elements['agent-sidebar'];
+    expect(panel.classList.contains('agent-floating')).toBe(true);
+    expect(panel.inert).toBe(true);
+
+    // Cmd/Ctrl+K arriving through the View menu while the page has focus.
+    toggleAgent();
+    expect(panel.classList.contains('collapsed')).toBe(false);
+    expect(panel.inert).toBe(false);
+    expect(panel.dataset.presentation).toBe('launcher');
+
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'Read this page' });
+    expect(panel.dataset.presentation).toBe('column');
+    expect(ctx.document.body.classList.contains('agent-floating-column')).toBe(true);
+
+    // Escape only puts the surface away; the run keeps going.
+    ctx.document.handlers.keydown({ key: 'Escape', target: ctx.document.body, preventDefault: jest.fn() });
+    expect(panel.classList.contains('collapsed')).toBe(true);
+    expect(panel.inert).toBe(true);
+    expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
+
+    // Reopening an existing conversation goes straight to the right column.
+    toggleAgent();
+    expect(panel.classList.contains('collapsed')).toBe(false);
+    expect(panel.dataset.presentation).toBe('column');
+  });
+
+  test('keeps Workspace above floating composer glass and restores its Agent-first placement', async () => {
+    const ctx = await loadAgentUi();
+    const view = ctx.elements['agent-workspace-view'];
+    const wrap = ctx.elements['agent-composer-wrap'];
+    const strip = ctx.elements['agent-process-compact'];
+    view.appendChild(wrap);
+    wrap.appendChild(strip);
+    wrap.appendChild(ctx.elements['agent-attachment-menu']);
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    expect(strip.parentNode).toBe(wrap);
+    ctx.emit({ type: 'run_started', runId: 'run_workspace', conversationId: 'workspace_test', userText: 'Build an app' });
+    expect(strip.parentNode).toBe(view);
+    expect(view.children.indexOf(strip)).toBeLessThan(view.children.indexOf(wrap));
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(strip.parentNode).toBe(wrap);
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(strip.parentNode).toBe(view);
+    expect(view.children.filter(child => child === strip)).toHaveLength(1);
+  });
+
+  test('restores the sessions column the compact layout closed once the window widens again', async () => {
+    const ctx = await loadAgentUi({ windowGlobals: { innerWidth: 1280 } });
+    const resize = () => window.addEventListener.mock.calls
+      .filter(([type]) => type === 'resize')
+      .forEach(([, handler]) => handler());
+    const closed = () => ctx.document.body.classList.contains('agent-session-sidebar-closed');
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.emit({ type: 'run_started', runId: 'run_compact', conversationId: 'compact_test', userText: 'Plan a trip' });
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(closed()).toBe(false);
+
+    window.innerWidth = 1000;
+    resize();
+    expect(closed()).toBe(true);
+    window.innerWidth = 1280;
+    resize();
+    expect(closed()).toBe(false);
+    expect(ctx.elements['agent-session-sidebar-toggle'].getAttribute('aria-expanded')).toBe('true');
+
+    // A column the user hid before narrowing stays hidden after widening.
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    expect(closed()).toBe(true);
+    window.innerWidth = 1000;
+    resize();
+    window.innerWidth = 1280;
+    resize();
+    expect(closed()).toBe(true);
+
+    // A column hidden before narrowing but opened while compact stays open.
+    window.innerWidth = 1000;
+    resize();
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    expect(closed()).toBe(false);
+    window.innerWidth = 1280;
+    resize();
+    expect(closed()).toBe(false);
+
+    // A column open before narrowing but closed while compact stays closed.
+    window.innerWidth = 1000;
+    resize();
+    expect(closed()).toBe(true);
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    expect(closed()).toBe(false);
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    expect(closed()).toBe(true);
+    window.innerWidth = 1280;
+    resize();
+    expect(closed()).toBe(true);
+  });
+
+  test('keeps the scope explanation as help that follows the conversation and never lingers', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [{ conversationId: 'conversation_saved', title: 'Saved', status: 'ready', turnCount: 1 }],
+        }),
+        openAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_saved',
+            title: 'Saved',
+            rendererTabId: 1,
+            transcript: [{ runId: 'run_saved', userText: 'Read it', assistantText: 'Done.', status: 'completed', activity: [] }],
+            taskTabs: [],
+          },
+        }),
+      },
+    });
+    const help = ctx.elements['agent-scope-help'];
+    const note = ctx.elements['agent-scope-help-text'];
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    expect(help.hidden).toBe(false);
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+
+    help.dispatch('click');
+    expect(note.hidden).toBe(false);
+    expect(help.getAttribute('aria-expanded')).toBe('true');
+    // Escape closes the note first and leaves the surface open.
+    ctx.document.handlers.keydown({ key: 'Escape', target: ctx.document.body, preventDefault: jest.fn() });
+    expect(note.hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+
+    // An open note never follows Agent into provider settings.
+    help.dispatch('click');
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    expect(note.hidden).toBe(true);
+    expect(help.getAttribute('aria-expanded')).toBe('false');
+
+    // New chat clears it; a reopened conversation shows its own shared-page state.
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+    expect(help.hidden).toBe(true);
+    expect(note.textContent).toBe('');
+    ctx.elements['agent-session-list'].children[0].children[0].dispatch('click');
+    await flush();
+    expect(help.hidden).toBe(false);
+    expect(note.textContent).toContain('page you shared');
+  });
+
+  test('examples start immediately once and never replace an existing draft', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    const button = ctx.elements['agent-examples'].children[0];
+    const prompt = ctx.elements['agent-prompt'];
+    prompt.value = 'Keep my own draft';
+    prompt.dispatch('input');
+    button.dispatch('click');
+    expect(prompt.value).toBe('Keep my own draft');
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+
+    prompt.value = '';
+    prompt.dispatch('input');
+    button.dispatch('click');
+    button.dispatch('click');
+    prompt.dispatch('keydown', { key: 'Enter', repeat: true, preventDefault: jest.fn() });
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledTimes(1);
+    expect(ctx.electronAPI.startAgent.mock.calls[0][1]).toBe('Build a small browser game');
+    expect(ctx.electronAPI.startAgent.mock.calls[0][0]).toBe(null);
+    expect(prompt.value).toBe('');
+    await flush();
+    expect(ctx.elements['agent-examples'].hidden).toBe(true);
+  });
+
+  test('an example submits staged attachments through the ordinary composer path', async () => {
+    const selectionId = `selection_${'e'.repeat(20)}`;
+    const ctx = await loadAgentUi({ electronAPI: {
+      pickAgentFiles: jest.fn().mockResolvedValue({ ok: true, selections: [
+        { selectionId, kind: 'file', name: 'notes.txt', category: 'text', bytes: 10 },
+      ] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.elements['agent-attach-files'].dispatch('click');
+    await flush();
+    ctx.elements['agent-examples'].children[0].dispatch('click');
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null, 'Build a small browser game', 'sensitive_actions', [selectionId]
+    );
+  });
+
+  test('a failed example start restores its prompt for retry', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      startAgent: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Could not start' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.elements['agent-examples'].children[0].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-prompt'].value).toBe('Build a small browser game');
+    expect(ctx.elements['agent-examples'].children[0].disabled).toBe(true);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(true);
+  });
+
+  test('focuses the composer when Agent opens and keeps it ready after sending', async () => {
+    const ctx = await loadAgentUi();
+    const focus = jest.spyOn(ctx.elements['agent-prompt'], 'focus');
+
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    focus.mockClear();
+    ctx.elements['agent-prompt'].value = 'Summarize this page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    focus.mockClear();
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  test('does not reclaim focus claimed elsewhere while a send is starting', async () => {
+    let resolveStart;
+    const startPending = new Promise((resolve) => {
+      resolveStart = resolve;
+    });
+    const ctx = await loadAgentUi({
+      electronAPI: { startAgent: jest.fn(() => startPending) },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    const focus = jest.spyOn(ctx.elements['agent-prompt'], 'focus');
+
+    ctx.elements['agent-prompt'].value = 'Summarize this page';
+    ctx.elements['agent-run'].dispatch('click');
+    ctx.document.activeElement = ctx.elements['agent-sidebar-back'];
+    resolveStart({
+      ok: true,
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+    });
+    await flush();
+
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  test('focuses the composer on Agent-first entry but not over an approval', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    const focus = jest.spyOn(ctx.elements['agent-prompt'], 'focus');
+
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    ctx.elements['agent-prompt'].value = 'Submit the form';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      label: 'Submit',
+    });
+    focus.mockClear();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  test('submits a configured task with Enter while Shift+Enter remains multiline', async () => {
+    const ctx = await loadAgentUi();
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe('Ask when needed');
+    expect(ctx.elements['agent-approval-mode-sensitive'].getAttribute('aria-pressed')).toBe('true');
+    expect(ctx.elements['agent-approval-mode-every'].getAttribute('aria-pressed')).toBe('false');
+    ctx.elements['agent-prompt'].value = 'Summarize this page';
+    ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+
+    const multiline = { key: 'Enter', shiftKey: true, preventDefault: jest.fn() };
+    ctx.elements['agent-prompt'].dispatch('keydown', multiline);
+    expect(multiline.preventDefault).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+
+    const submit = { key: 'Enter', shiftKey: false, preventDefault: jest.fn() };
+    ctx.elements['agent-prompt'].dispatch('keydown', submit);
+    await flush();
+    expect(submit.preventDefault).toHaveBeenCalledTimes(1);
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Summarize this page',
+      'sensitive_actions'
+    );
+  });
+
+  test('adds opaque file and folder selections through the composer drop-up', async () => {
+    const fileSelectionId = `selection_${'a'.repeat(20)}`;
+    const folderSelectionId = `selection_${'b'.repeat(20)}`;
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        pickAgentFiles: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            {
+              selectionId: fileSelectionId,
+              kind: 'file',
+              name: 'notes.txt',
+              category: 'text',
+              bytes: 2_048,
+            },
+          ],
+        }),
+        pickAgentFolder: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            {
+              selectionId: folderSelectionId,
+              kind: 'folder',
+              name: 'Project',
+              category: 'folder',
+              available: true,
+            },
+          ],
+        }),
+      },
+    });
+
+    ctx.elements['agent-attachment-button'].dispatch('click');
+    expect(ctx.elements['agent-attachment-menu'].hidden).toBe(false);
+    ctx.elements['agent-attach-files'].dispatch('click');
+    await flush();
+    ctx.elements['agent-attachment-button'].dispatch('click');
+    ctx.elements['agent-attach-folder'].dispatch('click');
+    await flush();
+
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(2);
+    expect(ctx.elements['agent-attachment-contexts'].children[0].children[0].textContent).toContain(
+      'notes.txt'
+    );
+    expect(ctx.elements['agent-attachment-contexts'].children[1].children[0].textContent).toContain(
+      'Project'
+    );
+
+    ctx.elements['agent-prompt'].value = 'Review these resources';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Review these resources',
+      'sensitive_actions',
+      [fileSelectionId, folderSelectionId]
+    );
+
+    ctx.emit({
+      type: 'run_started',
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+      userText: 'Review these resources',
+      attachments: [
+        {
+          resourceId: `attachment_${'c'.repeat(20)}`,
+          kind: 'file',
+          name: 'notes.txt',
+          category: 'text',
+          bytes: 2_048,
+          available: true,
+        },
+        {
+          resourceId: `folder_${'d'.repeat(20)}`,
+          kind: 'folder',
+          name: 'Project',
+          category: 'folder',
+          available: true,
+        },
+        {
+          resourceId: `attachment_${'e'.repeat(20)}`,
+          kind: 'file',
+          name: 'founding-document.pdf',
+          category: 'pdf',
+          bytes: 4_096,
+          available: true,
+        },
+        {
+          resourceId: `attachment_${'f'.repeat(20)}`,
+          kind: 'file',
+          name: 'diagram.png',
+          category: 'image',
+          bytes: 8_192,
+          available: true,
+        },
+        {
+          resourceId: `attachment_${'1'.repeat(20)}`,
+          kind: 'file',
+          name: 'worker.ts',
+          category: 'text',
+          bytes: 1_024,
+          available: true,
+        },
+      ],
+    });
+    const sentAttachments = ctx.elements['agent-transcript'].querySelectorAll(
+      '.agent-message-attachment'
+    );
+    expect(sentAttachments).toHaveLength(5);
+    expect(sentAttachments[0].dataset.kind).toBe('text');
+    expect(sentAttachments[0].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'TXT'
+    );
+    expect(sentAttachments[0].querySelector('.agent-message-attachment-name').textContent).toBe(
+      'notes.txt'
+    );
+    expect(sentAttachments[1].dataset.kind).toBe('folder');
+    expect(sentAttachments[1].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'Folder'
+    );
+    expect(sentAttachments[2].dataset.kind).toBe('pdf');
+    expect(sentAttachments[2].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'PDF'
+    );
+    expect(sentAttachments[3].dataset.kind).toBe('image');
+    expect(sentAttachments[3].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'PNG'
+    );
+    expect(sentAttachments[4].dataset.kind).toBe('code');
+    expect(sentAttachments[4].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'TS'
+    );
+    const attachmentShelf =
+      ctx.elements['agent-transcript'].querySelector('.agent-user-attachments');
+    expect(attachmentShelf.getAttribute('role')).toBe('list');
+    expect(attachmentShelf.getAttribute('aria-label')).toBe('Attached files and folders');
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(1);
+    expect(ctx.elements['agent-attachment-contexts'].children[0].children[0].textContent).toContain(
+      'Project'
+    );
+  });
+
+  test('removes a pending attachment before it is sent', async () => {
+    const selectionId = `selection_${'e'.repeat(20)}`;
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        pickAgentFiles: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            { selectionId, kind: 'file', name: 'draft.md', category: 'text', bytes: 10 },
+          ],
+        }),
+      },
+    });
+
+    ctx.elements['agent-attach-files'].dispatch('click');
+    await flush();
+    ctx.elements['agent-attachment-contexts'].children[0].children[1].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.removeAgentAttachment).toHaveBeenCalledWith(selectionId);
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(0);
+  });
+
+  test('stops sharing a live folder without rewriting the historical turn', async () => {
+    const folderId = `folder_${'f'.repeat(20)}`;
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+      userText: 'Review this folder',
+      attachments: [
+        {
+          resourceId: folderId,
+          kind: 'folder',
+          name: 'Bug reports',
+          category: 'folder',
+          available: true,
+        },
+      ],
+    });
+
+    const historicalAttachment = ctx.elements['agent-transcript'].querySelector(
+      '.agent-message-attachment'
+    );
+    const liveChip = ctx.elements['agent-attachment-contexts'].children[0];
+    expect(liveChip.children[1].title).toBe('Stop sharing this folder');
+
+    liveChip.children[1].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.revokeAgentAttachment).toHaveBeenCalledWith(
+      'conversation_test',
+      folderId
+    );
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(0);
+    expect(historicalAttachment.querySelector('.agent-message-attachment-name').textContent).toBe(
+      'Bug reports'
+    );
+    expect(ctx.elements['agent-run-message'].textContent).toContain(
+      'content already read remains in this conversation'
+    );
+  });
+
+  test('loads bounded image and PDF previews without replacing the fallback icon', async () => {
+    const previewDataUrl = `data:image/png;base64,${Buffer.from('preview').toString('base64')}`;
+    const getAgentAttachmentPreview = jest.fn().mockResolvedValue({
+      ok: true,
+      preview: {
+        sourceKind: 'image',
+        width: 64,
+        height: 48,
+        dataUrl: previewDataUrl,
+      },
+    });
+    const ctx = await loadAgentUi({ electronAPI: { getAgentAttachmentPreview } });
+    ctx.emit({
+      type: 'run_started',
+      runId: 'run_preview',
+      conversationId: 'conversation_preview',
+      userText: 'Review these',
+      attachments: [
+        {
+          resourceId: `attachment_${'a'.repeat(20)}`,
+          kind: 'file',
+          name: 'diagram.png',
+          category: 'image',
+          available: true,
+        },
+        {
+          resourceId: `attachment_${'b'.repeat(20)}`,
+          kind: 'file',
+          name: 'report.pdf',
+          category: 'pdf',
+          available: true,
+        },
+      ],
+    });
+    await flush();
+
+    expect(getAgentAttachmentPreview).toHaveBeenCalledTimes(2);
+    const tiles = ctx.elements['agent-transcript'].querySelectorAll('.agent-message-attachment');
+    const image = tiles[0].querySelector('.agent-message-attachment-preview');
+    const pdf = tiles[1].querySelector('.agent-message-attachment-preview');
+    expect(image.src).toBe(previewDataUrl);
+    expect(pdf.src).toBe(previewDataUrl);
+    expect(tiles[0].querySelector('.agent-message-attachment-icon')).not.toBeNull();
+    image.dispatch('load');
+    expect(
+      tiles[0].querySelector('.agent-message-attachment-visual').classList.contains('has-preview')
+    ).toBe(true);
+  });
+
+  test('starts without page access instead of adopting an Agent-owned tab', async () => {
+    const ctx = await loadAgentUi({ isTabAgentOwned: (tabId) => tabId === 7 });
+
+    ctx.elements['agent-prompt'].value = 'Continue this work in a new chat';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Continue this work in a new chat',
+      'sensitive_actions'
+    );
+  });
+
+  test('a new task workspace leaves out the previous chat\'s page and viewers (#851)', async () => {
+    let agentOwned = false;
+    let tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: false },
+      { id: 8, url: 'https://news.example.test/', title: 'Example News', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => tabs,
+      isTabAgentOwned: (tabId) => agentOwned && tabId === 8,
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+
+    // A user's own page is where a new task starts, so it is shown.
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(false);
+
+    // The same page opened by Agent belongs to an earlier chat.
+    agentOwned = true;
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+    expect(ctx.elements['agent-task-pages-empty'].hidden).toBe(false);
+    expect(ctx.document.body.classList.contains('agent-workspace-page-empty')).toBe(true);
+    expect(ctx.elements['agent-workspace-sidebar-toggle'].disabled).toBe(true);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [],
+    });
+
+    // So does another chat's read-only workspace viewer.
+    agentOwned = false;
+    tabs = [{ id: 9, kind: 'workspace-viewer', conversationId: 'conversation_old', title: 'notes.md', isActive: true }];
+    ctx.emitTabs(tabs);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('0');
+  });
+
+  test('a new task workspace only says Agent starts from the page it will share', async () => {
+    const tabs = [
+      { id: 7, url: 'https://example.com/start', title: 'Start page', favicon: '', isLoading: false, isActive: true },
+    ];
+    const ctx = await loadAgentUi({ getOpenTabs: () => tabs });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const note = () => ctx.elements['agent-task-pages-note'].textContent;
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start from the page you are currently viewing.');
+
+    // Removing the "Attached page" chip keeps the page on screen, but the run
+    // no longer starts from it, so the workspace must stop saying it does.
+    ctx.elements['agent-page-context'].dispatch('click');
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(note()).toBe('Agent will start without a page.');
+    ctx.elements['agent-prompt'].value = 'Research independently';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      null,
+      'Research independently',
+      'sensitive_actions'
+    );
+  });
+
+  test('a new task workspace does not claim Agent starts from the homepage', async () => {
+    const homeTab = {
+      id: 7, url: 'file:///app/pages/home.html', title: 'New Tab', favicon: '', isLoading: false, isActive: true,
+    };
+    const ctx = await loadAgentUi({ getOpenTabs: () => [homeTab] });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    // The homepage stays as the surface to browse from, but is never shared.
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.elements['agent-task-pages-note'].textContent).toBe('Agent will start without a page.');
+  });
+
+  test('keeps the pristine homepage outside a new Agent workspace', async () => {
+    const homeTab = {
+      id: 7,
+      url: 'file:///app/pages/home.html',
+      title: 'New Tab',
+      favicon: '',
+      isLoading: false,
+      isActive: true,
+    };
+    const ctx = await loadAgentUi({ getOpenTabs: () => [homeTab] });
+
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+    ctx.elements['agent-prompt'].value = 'Research five sources';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Research five sources',
+      'sensitive_actions'
+    );
+  });
+
+  test('keeps the pristine homepage hidden when file and folder pills expose the context row', async () => {
+    const homeTab = {
+      id: 7,
+      url: 'file:///app/pages/home.html',
+      title: 'New Tab',
+      favicon: '',
+      isLoading: false,
+      isActive: true,
+    };
+    const fileSelectionId = `selection_${'1'.repeat(20)}`;
+    const folderSelectionId = `selection_${'2'.repeat(20)}`;
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => [homeTab],
+      electronAPI: {
+        pickAgentFiles: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            {
+              selectionId: fileSelectionId,
+              kind: 'file',
+              name: 'notes.txt',
+              category: 'text',
+              bytes: 20,
+            },
+          ],
+        }),
+        pickAgentFolder: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            {
+              selectionId: folderSelectionId,
+              kind: 'folder',
+              name: 'Reports',
+              category: 'folder',
+              available: true,
+            },
+          ],
+        }),
+      },
+    });
+
+    ctx.elements['agent-attach-files'].dispatch('click');
+    await flush();
+    ctx.elements['agent-attach-folder'].dispatch('click');
+    await flush();
+
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-context'].hidden).toBe(true);
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(2);
+
+    ctx.elements['agent-prompt'].value = 'Review these';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Review these',
+      'sensitive_actions',
+      [fileSelectionId, folderSelectionId]
+    );
+  });
+
+  test('shares an ordinary current page visibly and lets the user remove it', async () => {
+    const ctx = await loadAgentUi();
+
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-context-label'].textContent).toBe('Attached page · Start page');
+    ctx.elements['agent-page-context'].dispatch('click');
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+
+    ctx.elements['agent-prompt'].value = 'Research independently';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Research independently',
+      'sensitive_actions'
+    );
+  });
+
+  test('ignores a stale workspace refresh after New chat', async () => {
+    let resolveStaleProjection;
+    const getAgentState = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, state: { status: 'idle' } })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveStaleProjection = resolve;
+        })
+      )
+      .mockResolvedValue({ ok: true, state: { status: 'idle' } });
+    const ctx = await loadAgentUi({ electronAPI: { getAgentState } });
+
+    ctx.elements['agent-prompt'].value = 'Open supporting pages';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+    });
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.clearAgentConversation).toHaveBeenCalledTimes(1);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+
+    resolveStaleProjection({
+      ok: true,
+      state: {
+        status: 'ready',
+        conversationId: 'conversation_test',
+        taskTabs: [{ rendererTabId: 8, agentActive: true }],
+        agentTabs: [
+          {
+            rendererTabId: 8,
+            provenance: 'agent',
+            custody: 'agent',
+            conversationId: 'conversation_test',
+          },
+        ],
+      },
+    });
+    await flush();
+
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([]);
+  });
+
+  test('repaints Agent tab badges on a custody hint with no run in progress', async () => {
+    const ctx = await loadAgentUi();
+    ctx.electronAPI.getAgentState.mockResolvedValue({ ok: true, state: { status: 'idle', taskTabs: [],
+      agentTabs: [{ rendererTabId: 9, provenance: 'agent', custody: 'agent', conversationId: null }] } });
+    ctx.emit({ type: 'agent_tabs_changed' });
+    await flush();
+    expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([
+      { rendererTabId: 9, provenance: 'agent', custody: 'agent', conversationId: null },
+    ]);
+  });
+
+  test('selects each website interaction approval behavior', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-approval-mode-sensitive'].dispatch('click');
+
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe('Ask when needed');
+    expect(ctx.elements['agent-approval-mode-sensitive'].getAttribute('aria-pressed')).toBe('true');
+
+    ctx.elements['agent-approval-mode-allow'].dispatch('click');
+
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
+      'Fewer interruptions'
+    );
+    expect(ctx.elements['agent-approval-mode-allow'].getAttribute('aria-pressed')).toBe('true');
+    expect(ctx.elements['agent-approval-mode-sensitive'].disabled).toBe(false);
+
+    ctx.elements['agent-approval-mode-every'].dispatch('click');
+
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe('Ask every time');
+    expect(ctx.elements['agent-approval-mode-every'].getAttribute('aria-pressed')).toBe('true');
+
+    ctx.elements['agent-approval-mode-allow'].dispatch('click');
+
+    ctx.elements['agent-prompt'].value = 'Compare these sources';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Compare these sources',
+      'allow_website_interactions'
+    );
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
+  });
+
+  test('shows reviewer provenance on a completed access request without opening an approval sheet', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Run tests';
+    ctx.elements['agent-run'].dispatch('click'); await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'permission', operation: 'request_permissions' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'permission', operation: 'request_permissions',
+      status: 'succeeded', approval: 'reviewer_approved', label: 'Command access granted' });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent).toBe('Approved by reviewer');
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+  });
+
+  test.each(['invalid_classifier_output', 'classifier_invalid_json', 'classifier_invalid_schema', 'classifier_empty_output', 'classifier_provider_error', 'classifier_timeout'])('explains %s in the approval sheet without a raw error code', async reason => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Search for Freedom';
+    ctx.elements['agent-run'].dispatch('click'); await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'classification_failed',
+      action: 'browser_interaction', operation: 'browser_type', origin: 'https://www.google.com', label: 'Search',
+      interaction: { kind: 'uncertain', confidence: 0, summary: 'Unavailable', uncertainties: [reason] },
+    });
+    const copy = ctx.elements['agent-approval-origin'].textContent;
+    expect(copy).not.toContain(reason);
+    expect(copy).toContain('Please review this action.');
+    expect(ctx.elements['agent-approval'].hidden).toBe(false);
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+  });
+
+  test('explains an intent-classified consequential website approval honestly', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Publish my response';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_consequential',
+      action: 'browser_interaction',
+      operation: 'browser_click',
+      origin: 'https://community.example/post/1',
+      label: 'Publish',
+      interaction: {
+        kind: 'consequential',
+        confidence: 0.98,
+        summary: 'Publish the comment.',
+        uncertainties: [],
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish the comment?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Based on Agent’s stated intent and the visible target on community.example'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Freedom has not audited the page’s hidden behavior.'
+    );
+  });
+
+  test('shows exact website tool arguments as text, separate from unverified website claims', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Use a website tool';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const argumentsJSON = '{"value":"<script>website()</script>"}';
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_tool',
+      action: 'browser_interaction', operation: 'browser_call_page_tool', origin: 'https://example.test/',
+      pageTool: { name: 'submit_feedback', argumentsJSON, manualSubmit: true } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Run website tool “submit_feedback”?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('not verified');
+    // No adapter reports manual submission; a forged flag adds no claim.
+    expect(ctx.elements['agent-approval-origin'].textContent).not.toContain('submit the form yourself');
+    expect(ctx.elements['agent-page-tool-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-tool-arguments'].textContent).toBe(argumentsJSON);
+  });
+
+  test('shows the MCP service, destination and exact arguments without treating them as markup', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Use my notes';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const argumentsJSON = '{"note":"<script>untrusted()</script>"}';
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'mcp_approval',
+      action: 'mcp', operation: 'mcp_request', origin: 'https://notes.example/',
+      mcp: { server: 'My notes', name: 'create_note', argumentsJSON } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “create_note” on My notes?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('notes.example');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('not verified');
+    expect(ctx.elements['agent-page-tool-arguments'].textContent).toBe(argumentsJSON);
+    expect(ctx.elements['agent-page-tool-details'].hidden).toBe(false);
+  });
+
+  test('makes invisible approval controls visible without changing request bytes or international text', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const pageTool = { name: '検索\u202Epay', argumentsJSON: '{"value":"a\u200Bb\u{E0061}👩‍💻"}' };
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_controls',
+      action: 'browser_interaction', operation: 'browser_call_page_tool', origin: 'https://example.test',
+      pageTool, pageMessage: 'مرحبا\u2066pay\u2069' });
+    expect(ctx.elements['agent-approval-action'].textContent).toContain('検索\\u{202E}pay');
+    expect(ctx.elements['agent-page-tool-arguments'].textContent).toContain('a\\u{200B}b');
+    expect(ctx.elements['agent-page-tool-arguments'].textContent).toContain('\\u{E0061}👩‍💻');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('مرحبا\\u{2066}pay\\u{2069}');
+    expect(pageTool.name).toBe('検索\u202Epay');
+    expect(pageTool.argumentsJSON).toContain('a\u200Bb');
+  });
+
+  test('disconnects a provider through the management view and returns to setup', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        removeAgentProvider: jest.fn().mockResolvedValue({
+          ok: true,
+          status: { configured: false, secureStorageAvailable: true, connections: [] },
+        }),
+      },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+
+    const disconnect = ctx.elements['agent-provider-disconnect'];
+    disconnect.dispatch('click');
+    await flush();
+
+    // Asked in the page, never through a native dialog, and nothing is
+    // removed until the destructive answer is given.
+    expect(global.window.confirm).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-provider-disconnect-confirm'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-disconnect-question'].textContent).toBe(
+      'Disconnect OpenAI · API from Agent? Its saved API key is deleted from this device.'
+    );
+    expect(ctx.electronAPI.removeAgentProvider).not.toHaveBeenCalled();
+    ctx.elements['agent-provider-disconnect-cancel'].dispatch('click');
+    expect(ctx.elements['agent-provider-disconnect-confirm'].hidden).toBe(true);
+    expect(disconnect.hidden).toBe(false);
+    disconnect.dispatch('click');
+    ctx.elements['agent-provider-disconnect-accept'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.removeAgentProvider).toHaveBeenCalledWith('openai');
+    expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
+    expect(ctx.elements['agent-sidebar-back'].hidden).toBe(true);
+  });
+
+  test('provider navigation shows OpenAI once and separates subscription and API connection methods', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    expect(ctx.elements['agent-provider-home'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-detail'].hidden).toBe(true);
+    ctx.elements['agent-provider-add'].dispatch('click');
+    const choices = ctx.elements['agent-provider-choices'].children.flatMap((item) => item.children || []).filter((item) => item.tagName === 'BUTTON');
+    expect(choices.filter((item) => item.getAttribute('aria-label') === 'OpenAI')).toHaveLength(1);
+    expect(choices.some((item) => /ChatGPT|Codex/.test(item.textContent))).toBe(false);
+    choices.find((item) => item.getAttribute('aria-label') === 'OpenAI').dispatch('click');
+    expect(ctx.elements['agent-provider-methods'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-connection-fields'].hidden).toBe(true);
+    ctx.elements['agent-api-key'].value = 'draft-key';
+    ctx.elements['agent-provider-chatgpt'].dispatch('click');
+    expect(ctx.elements['agent-provider-select'].value).toBe('openai-chatgpt');
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    expect(ctx.elements['agent-provider-methods'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(false);
+    expect(ctx.elements['agent-auth-code'].hidden).toBe(true);
+    ctx.elements['agent-provider-detail-back'].dispatch('click');
+    expect(ctx.elements['agent-provider-home'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-detail'].hidden).toBe(true);
+  });
+
+  test('OpenAI summarizes the subscription connection and keeps API setup free of model selection', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: {
+        configured: true, providerId: 'openai-codex', modelId: 'codex-model',
+        connections: [{ kind: 'subscription', providerId: 'openai-codex', modelId: 'codex-model' }],
+      } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-add'].dispatch('click');
+    const choice = ctx.elements['agent-provider-choices'].children.flatMap((item) => item.children || [])
+      .find((item) => item.getAttribute('aria-label') === 'OpenAI');
+    expect(choice.children[2].textContent).toBe('✓');
+    choice.dispatch('click');
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Connected');
+    expect(ctx.elements['agent-provider-chatgpt-state'].textContent).toBe('Connected');
+    expect(ctx.elements['agent-provider-api-state'].textContent).toBe('›');
+    expect(ctx.elements['agent-provider-api-state'].getAttribute('aria-hidden')).toBe('true');
+    expect(ctx.elements['agent-provider-api-state'].classList.contains('active')).toBe(false);
+    expect(ctx.elements['agent-provider-chatgpt-state'].getAttribute('aria-hidden')).toBeFalsy();
+    expect(ctx.elements['agent-provider-chatgpt-state'].classList.contains('active')).toBe(true);
+    ctx.elements['agent-provider-api'].dispatch('click');
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Not connected');
+    expect(ctx.elements['agent-hosted-fields'].classList.contains('hidden')).toBe(true);
+    expect(ctx.elements['agent-api-key-field'].classList.contains('hidden')).toBe(false);
+    // The storage note is help text under the field (#857), not a placeholder.
+    expect(ctx.elements['agent-api-key'].placeholder).toBe('');
+  });
+
+  test('a late catalogue response cannot overwrite a newer Settings connection change', async () => {
+    let changed;
+    let finishOld;
+    const ctx = await loadAgentUi({ electronAPI: {
+      onAgentProviderChanged: callback => { changed = callback; },
+    } });
+    ctx.electronAPI.getAgentProviderCatalog
+      .mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }))
+      .mockResolvedValueOnce({ ok: true, catalog: [{ providerId: 'openai', models: [{ id: 'gpt-4.1-mini', name: 'Updated catalogue' }] }] });
+    changed();
+    changed();
+    await flush();
+    finishOld({ ok: true, catalog: [{ providerId: 'openai', models: [{ id: 'gpt-4.1-mini', name: 'Old catalogue' }] }] });
+    await flush();
+    expect(ctx.elements['agent-active-model-label'].textContent).toBe('Updated catalogue');
+  });
+
+  test('Settings changes the new-chat model without relabelling an existing conversation', async () => {
+    let changed;
+    const ctx = await loadAgentUi({ electronAPI: {
+      onAgentProviderChanged: callback => { changed = callback; },
+    } });
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', providerId: 'openai', modelId: 'gpt-4.1-mini' });
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+    ctx.electronAPI.getAgentProviderStatus.mockResolvedValue({ ok: true, status: {
+      configured: true, providerId: 'ollama', modelId: 'local-model',
+      connections: [{ providerId: 'ollama', modelId: 'local-model', modelIds: ['local-model'] }],
+    } });
+    changed();
+    await flush();
+    expect(ctx.elements['agent-active-model-label'].textContent).toBe('GPT 4.1 mini');
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-active-model-label'].textContent).toBe('local-model');
+  });
+
+  test('an idle conversation keeps its model picker locked but not dimmed; a run dims it (#872)', async () => {
+    const ctx = await loadAgentUi();
+    const button = ctx.elements['agent-model-menu-button'];
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    expect(button.disabled).toBe(false);
+    expect(button.dataset.modelLock).toBeUndefined();
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini');
+
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', providerId: 'openai', modelId: 'gpt-4.1-mini' });
+    expect(button.disabled).toBe(true);
+    expect(button.dataset.modelLock).toBeUndefined();
+
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    expect(button.disabled).toBe(true);
+    expect(button.dataset.modelLock).toBe('conversation');
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini. This conversation keeps its model; start a new chat to use another.');
+
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+    expect(button.disabled).toBe(false);
+    expect(button.dataset.modelLock).toBeUndefined();
+    expect(button.title).toBe('OpenAI · API · gpt-4.1-mini');
+  });
+
+  test('shows model privacy capabilities in the picker and setup before any inference', async () => {
+    const model = { id: 'qwen', name: 'Qwen', privacy: 'tee', attestation: true, tools: true };
+    const connection = { kind: 'hosted', providerId: 'near-ai', modelId: model.id };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: true, ...connection, connections: [connection] } }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{ providerId: 'near-ai', name: 'NEAR AI', models: [model] }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const row = ctx.elements['agent-model-menu-list'].children.find(item => item.className === 'agent-model-row');
+    expect(row.children[0].children[2].textContent).toBe('');
+    expect(row.children[0].children[2].children.map(icon => icon.dataset.privacy)).toEqual(['shield', 'lock']);
+    expect(row.children[0].children[2].children[1].title).toContain('Messages and tool contents');
+    expect(row.children[0].title).toContain('Freedom encrypts messages and tool contents');
+    ctx.elements['agent-provider-select'].value = 'near-ai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    const preview = ctx.elements['agent-provider-models-list'].children[0];
+    expect(preview.children[1].textContent).toBe('');
+    expect(preview.children[1].children.map(icon => icon.dataset.privacy)).toEqual(['shield', 'lock']);
+    expect(preview.title).toContain('Hardware health is checked when used');
+    expect(ctx.elements['agent-model-details'].children[0].children[0].title).toContain('does not mean the hardware has passed');
+  });
+
+  test('provider pages hide the privacy hint and disable refresh until something is connected (#856)', async () => {
+    const model = { id: 'qwen', name: 'Qwen', privacy: 'tee', attestation: true, tools: true };
+    const connection = { kind: 'hosted', providerId: 'near-ai', modelId: model.id };
+    const catalog = [
+      { providerId: 'openai', name: 'OpenAI', authType: 'api_key', models: [{ id: 'gpt-4.1-mini', name: 'GPT 4.1 mini' }] },
+      { providerId: 'near-ai', name: 'NEAR AI', canRefresh: true, models: [] },
+      { providerId: 'venice', name: 'Venice', canRefresh: true, models: [] },
+    ];
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Refresh unavailable' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const hint = ctx.elements['agent-provider-models-privacy-hint'];
+    const refresh = ctx.elements['agent-model-refresh'];
+    const open = (providerId) => {
+      ctx.elements['agent-provider-select'].value = providerId;
+      ctx.elements['agent-provider-select'].dispatch('change');
+    };
+    // Not connected, nothing listed: no hint, refresh shown but disabled.
+    for (const providerId of ['near-ai', 'venice']) {
+      open(providerId);
+      expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(false);
+      expect(ctx.elements['agent-provider-models-empty'].textContent).toBe('Connect to discover available models');
+      expect(hint.hidden).toBe(true);
+      expect(refresh.hidden).toBe(false);
+      expect(refresh.disabled).toBe(true);
+    }
+    // A failed refresh must not leave the button enabled on an unconnected provider.
+    refresh.dispatch('click');
+    await flush();
+    expect(refresh.disabled).toBe(true);
+    // Connected lab provider: models listed, but no privacy symbols, so no hint.
+    open('openai');
+    expect(ctx.elements['agent-provider-models-list'].hidden).toBe(false);
+    expect(hint.hidden).toBe(true);
+
+    // Connected NEAR AI with a symbolled model: hint shown, refresh enabled.
+    ctx.electronAPI.refreshAgentProviderModels.mockResolvedValue({
+      ok: true, catalog: catalog.map((entry) => entry.providerId === 'near-ai' ? { ...entry, models: [model] } : entry),
+      status: { configured: true, ...connection, connections: [connection] },
+    });
+    open('near-ai');
+    refresh.dispatch('click');
+    await flush();
+    await flush();
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['Qwen']);
+    expect(hint.hidden).toBe(false);
+    expect(refresh.disabled).toBe(false);
+  });
+
+  test('connecting an uncatalogued provider discovers models and stays on the provider screen', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All'], ['tee', 'TEE only']], models: [] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: true, catalog: [{ ...definition, models: [
+        { id: 'private', name: 'Private', privacy: 'private', tools: true },
+        { id: 'tee', name: 'TEE', privacy: 'tee', tools: true },
+      ] }] }),
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: true, status: {
+        configured: true, providerId: 'venice', modelId: 'tee',
+        connections: [{ kind: 'hosted', providerId: 'venice', modelId: 'tee', privacyPolicy: 'tee' }],
+      } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-privacy-policy'].value = 'tee';
+    ctx.elements['agent-api-key'].value = 'test-key';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    await flush();
+    expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('venice', 'test-key');
+    expect(ctx.electronAPI.configureHostedAgentProvider).toHaveBeenCalledWith('venice', 'tee', 'test-key', 'tee');
+    expect(ctx.openSettings).toHaveBeenCalled();
+    expect(ctx.elements['agent-workspace-view'].hidden).toBe(false);
+    expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+  });
+
+  test('searches connected models beyond favorites and saves favorites without credentials', async () => {
+    const connection = { kind: 'hosted', providerId: 'openai', modelId: 'one', favoriteModelIds: ['one'] };
+    const status = { configured: true, providerId: 'openai', modelId: 'one', connections: [connection] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{
+        providerId: 'openai', name: 'OpenAI', models: [{ id: 'two', name: 'Two' }, { id: 'one', name: 'One' }],
+      }] }),
+      setAgentProviderPreferences: jest.fn().mockResolvedValue({ ok: true, status: { ...status, connections: [{ ...connection, favoriteModelIds: ['one', 'two'] }] } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')).toHaveLength(1);
+    expect(ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[0].querySelector('.agent-model-name').textContent).toBe('One');
+    ctx.elements['agent-model-menu-search'].value = 'two';
+    ctx.elements['agent-model-menu-search'].dispatch('input');
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')[0].children[0].querySelector('.agent-model-name').textContent).toBe('Two');
+    ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[1].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.setAgentProviderPreferences).toHaveBeenCalledWith('openai', { favoriteModelIds: ['one', 'two'] });
+    ctx.elements['agent-model-menu-search'].value = '';
+    ctx.elements['agent-model-menu-search'].dispatch('input');
+    expect(ctx.elements['agent-model-menu-list'].children[0].getAttribute('aria-expanded')).toBe('false');
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')).toHaveLength(2);
+  });
+
+  test('provider groups start collapsed, expand independently and retain their state through search', async () => {
+    const connections = [
+      { kind: 'hosted', providerId: 'openai', modelId: 'one', favoriteModelIds: ['one'] },
+      { kind: 'ollama', providerId: 'ollama', modelId: 'local', modelIds: ['local'], favoriteModelIds: [] },
+    ];
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: true, ...connections[0], connections } }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{
+        providerId: 'openai', name: 'OpenAI', models: [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }],
+      }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const children = () => ctx.elements['agent-model-menu-list'].children;
+    const headers = () => children().filter((item) => item.className === 'agent-model-group-label');
+    const names = () => children().filter((item) => item.className === 'agent-model-row').map((row) => row.children[0].querySelector('.agent-model-name').textContent);
+    expect(headers().map((header) => header.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
+    expect(names()).toEqual(['One']);
+    headers()[0].dispatch('click', { stopPropagation() {} });
+    expect(names()).toEqual(['One', 'Two']);
+    // A single leading check marks the selected model; the star stays last.
+    const rows = children().filter((item) => item.className === 'agent-model-row');
+    expect(rows.map((row) => row.children[0].children[0].className)).toEqual(['agent-model-check', 'agent-model-check']);
+    expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['✓', '']);
+    expect(rows.map((row) => row.children.at(-1).className)).toEqual(['agent-model-star', 'agent-model-star']);
+    expect(headers()[1].getAttribute('aria-expanded')).toBe('false');
+    headers()[0].dispatch('click', { stopPropagation() {} });
+    headers()[1].dispatch('click', { stopPropagation() {} });
+    expect(names()).toEqual(['One', 'local']);
+    ctx.elements['agent-model-menu-search'].value = 'two';
+    ctx.elements['agent-model-menu-search'].dispatch('input');
+    expect(names()).toEqual(['Two']);
+    expect(headers()[0].getAttribute('aria-expanded')).toBe('true');
+    ctx.elements['agent-model-menu-search'].value = '';
+    ctx.elements['agent-model-menu-search'].dispatch('input');
+    expect(names()).toEqual(['One', 'local']);
+    expect(headers().map((header) => header.getAttribute('aria-expanded'))).toEqual(['false', 'true']);
+  });
+
+  test('switching providers clears typed credentials and a failed refresh keeps models', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Refresh unavailable' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-api-key'].value = 'do-not-forward';
+    ctx.elements['agent-provider-select'].value = 'openai-codex';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    const models = [...ctx.elements['agent-model-select'].children];
+    ctx.elements['agent-model-refresh'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('openai-codex', undefined);
+    expect(ctx.elements['agent-model-select'].children).toEqual(models);
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('Refresh unavailable');
+  });
+
+  test('connection inference happens only after an explicit test click', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      testAgentProviderConnection: jest.fn().mockResolvedValue({ ok: true, result: { elapsedMs: 500 } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.testAgentProviderConnection).not.toHaveBeenCalled();
+    ctx.elements['agent-provider-test'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.testAgentProviderConnection).toHaveBeenCalledWith('openai', 'gpt-4.1-mini');
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('Model responded in 0.5s');
+  });
+
+  test('saves credentials without retaining the key and renders structured run events as text', async () => {
+    const ctx = await loadAgentUi();
+    expect(ctx.electronAPI.getAgentProviderCatalog).not.toHaveBeenCalled();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.getAgentProviderCatalog).toHaveBeenCalledTimes(1);
+    ctx.elements['agent-model-select'].value = 'gpt-4.1-mini';
+    ctx.elements['agent-api-key'].value = 'sk-user-secret';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.configureHostedAgentProvider).toHaveBeenCalledWith(
+      'openai',
+      'gpt-4.1-mini',
+      'sk-user-secret'
+    );
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Connected');
+
+    ctx.elements['agent-prompt'].value = 'Summarize this page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Summarize this page',
+      'sensitive_actions'
+    );
+
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'assistant_text_delta',
+      runId: 'run_test',
+      text: '<img src=x onerror=alert(1)>Summary',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'tool_1',
+      operation: 'browser_snapshot',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'tool_1',
+      operation: 'browser_snapshot',
+      status: 'succeeded',
+    });
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+
+    const output = ctx.elements['agent-transcript'].querySelector('.agent-output');
+    const toolList = ctx.elements['agent-transcript'].querySelector('.agent-tool-list');
+    expect(output.textContent).toBe('<img src=x onerror=alert(1)>Summary');
+    expect(output.children).toHaveLength(0);
+    expect(toolList.children[0].children[0].textContent).toBe('✓');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
+    expect(ctx.setAgentControlledTab).toHaveBeenNthCalledWith(1, 7);
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('keeps follow-up prompts in one chat and collapses completed activity', async () => {
+    const startAgent = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        runId: 'run_first',
+        conversationId: 'conversation_test',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        runId: 'run_followup',
+        conversationId: 'conversation_test',
+      });
+    const ctx = await loadAgentUi({ electronAPI: { startAgent } });
+
+    ctx.elements['agent-prompt'].value = 'Find the account settings';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      userText: 'Find the account settings',
+    });
+    ctx.emit({
+      type: 'context_compaction_started',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+    });
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Making room for more conversation…'
+    );
+    ctx.emit({
+      type: 'context_compaction_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      status: 'succeeded',
+    });
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Conversation compacted. Continuing…'
+    );
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      toolCallId: 'tool_first',
+      operation: 'browser_click',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      toolCallId: 'tool_first',
+      operation: 'browser_click',
+      status: 'succeeded',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      status: 'completed',
+      durationMs: 72_000,
+      actionCount: 1,
+    });
+
+    const firstTurn = ctx.elements['agent-transcript'].children[0];
+    const firstActivity = firstTurn.querySelector('.agent-turn-activity');
+    expect(firstTurn.querySelector('.agent-user-message').textContent).toBe(
+      'Find the account settings'
+    );
+    expect(firstActivity.open).toBe(false);
+    expect(firstActivity.children[0].textContent).toBe('Worked for 1m 12s · 1 action');
+    expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(false);
+    expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
+
+    ctx.elements['agent-prompt'].value = 'Now enable notifications';
+    ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_followup',
+      userText: 'Now enable notifications',
+    });
+
+    expect(startAgent).toHaveBeenNthCalledWith(
+      2,
+      7,
+      'Now enable notifications',
+      'sensitive_actions'
+    );
+    expect(ctx.elements['agent-transcript'].children).toHaveLength(2);
+    expect(
+      ctx.elements['agent-transcript'].children[1].querySelector('.agent-user-message').textContent
+    ).toBe('Now enable notifications');
+  });
+
+  test('changes approval mode between turns while keeping it locked during a run', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      userText: 'Inspect this page',
+      approvalMode: 'every_interaction',
+    });
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      status: 'completed',
+    });
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(false);
+
+    ctx.elements['agent-approval-mode-button'].dispatch('click');
+    ctx.elements['agent-approval-mode-allow'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.setAgentApprovalMode).toHaveBeenCalledWith(
+      'conversation_test',
+      'allow_website_interactions'
+    );
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
+      'Fewer interruptions'
+    );
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Approval setting updated for the next message.'
+    );
+
+    ctx.elements['agent-prompt'].value = 'Now submit the form';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      null,
+      'Now submit the form',
+      'allow_website_interactions'
+    );
+  });
+
+  test('starts a fresh chat only after clearing the idle conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'First task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'First task',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+    });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(false);
+
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.clearAgentConversation).toHaveBeenCalledTimes(1);
+    // A fresh task names no run state (#876): no "Idle" badge.
+    expect(ctx.elements['agent-run-status'].textContent).toBe('');
+    expect(ctx.elements['agent-run-status'].hidden).toBe(true);
+    expect(ctx.elements['agent-transcript'].children).toHaveLength(0);
+    expect(ctx.elements['agent-transcript'].hidden).toBe(true);
+    expect(ctx.elements['agent-empty-state'].hidden).toBe(false);
+    expect(ctx.elements['agent-new-chat'].hidden).toBe(true);
+    expect(ctx.elements['agent-model-menu-button'].disabled).toBe(false);
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(false);
+  });
+
+  test('renders verified download receipts with trusted file actions', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Download the report';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Download the report',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      intent: 'Downloading a file',
+    });
+    ctx.emit({
+      type: 'tool_progress',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      receivedBytes: 1024,
+      totalBytes: 2048,
+      state: 'in_progress',
+    });
+    const artifact = {
+      artifactId: 'artifact_1234567890abcdef1234',
+      filename: 'report.pdf',
+      bytes: 2048,
+      state: 'completed',
+      location: 'downloads',
+      available: true,
+    };
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      status: 'succeeded',
+      label: 'Downloaded report.pdf',
+      artifact,
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const artifactList = turn.querySelector('.agent-artifact-list');
+    expect(artifactList.hidden).toBe(false);
+    expect(artifactList.children[0].children[0].children[0].textContent).toBe('report.pdf');
+    expect(artifactList.children[0].children[0].children[1].textContent).not.toContain('/Users/');
+    artifactList.children[0].children[1].children[0].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.openAgentArtifact).toHaveBeenCalledWith(artifact.artifactId);
+  });
+
+  test('renders a cancelled download without exposing a phantom artifact', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Download the image';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Download the image',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      intent: 'Downloading a file',
+    });
+    ctx.emit({
+      type: 'tool_progress',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      receivedBytes: 0,
+      totalBytes: 6_000_000_000,
+      state: 'cancelled',
+      artifact: {
+        artifactId: 'artifact_1234567890abcdef1234',
+        filename: 'large.iso',
+        bytes: 0,
+        state: 'cancelled',
+        location: 'downloads',
+        available: false,
+      },
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      status: 'failed',
+      errorCode: 'DOWNLOAD_CANCELLED_BY_USER',
+      label: 'Downloaded a file',
+      approval: 'approved',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 1_000,
+      actionCount: 1,
+      outcome: {
+        kind: 'completed',
+        verification: 'download_cancelled',
+        tone: 'neutral',
+        headline: 'Download cancelled',
+        detail: 'You stopped the transfer. Freedom did not record a completed file.',
+      },
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const toolRow = turn.querySelector('.agent-tool-item');
+    expect(toolRow.classList.contains('failed')).toBe(false);
+    expect(toolRow.classList.contains('cancelled')).toBe(true);
+    expect(toolRow.children[0].textContent).toBe('•');
+    expect(toolRow.children[1].textContent).toContain('Download cancelled by you');
+    expect(toolRow.children[2].textContent).toBe('Cancelled by you');
+    expect(turn.querySelector('.agent-artifact-list').hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-outcome').hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toContain(
+      'Download cancelled'
+    );
+  });
+
+  test('shows live browser intent and trusted completion evidence', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getCachedFavicon: jest.fn().mockResolvedValue('data:image/png;base64,aWNvbg=='),
+    } });
+    ctx.elements['agent-prompt'].value = 'Update the profile';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Update the profile',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_snapshot',
+      operation: 'browser_snapshot',
+      intent: 'Reading https://example.test',
+      label: 'Read https://example.test',
+    });
+
+    expect(ctx.elements['agent-run-message'].textContent).toBe('Reading https://example.test');
+    const liveActivity = ctx.elements['agent-transcript'].querySelector('.agent-turn-activity');
+    expect(liveActivity.children[0].textContent).toBe('Reading https://example.test');
+
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_snapshot',
+      operation: 'browser_snapshot',
+      status: 'succeeded',
+      label: 'Read https://example.test',
+      origin: 'https://example.test',
+      pageTitle: '<b>Example article</b>',
+    });
+    await flush();
+    const pageRow = ctx.elements['agent-transcript'].querySelector('.agent-tool-item');
+    expect(pageRow.querySelector('.agent-tool-page-title').textContent).toBe('Read <b>Example article</b>');
+    expect(pageRow.querySelector('.agent-tool-page-site').textContent).toBe('example.test');
+    expect(ctx.electronAPI.getCachedFavicon).toHaveBeenCalledWith('https://example.test');
+    expect(pageRow.querySelector('.agent-tool-page-icon').children.find((child) => child.tagName === 'IMG').src).toBe('data:image/png;base64,aWNvbg==');
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 4_000,
+      actionCount: 1,
+      outcome: {
+        kind: 'completed',
+        verification: 'browser_observed',
+        tone: 'success',
+        headline: 'Browser state inspected',
+        detail: 'Freedom recorded 1 successful browser action. No browser change was made.',
+      },
+    });
+
+    const outcome = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(outcome.hidden).toBe(true);
+    expect(liveActivity.children[0].textContent).toBe(
+      'Worked for 4s · 1 action · Browser inspected'
+    );
+  });
+
+  test('explains automatic provider retries and connection recovery', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Continue the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Continue the task',
+    });
+    ctx.emit({
+      type: 'run_retrying',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 2_000,
+      message: 'The connection to the model provider was interrupted.',
+      providerFailure: { category: 'connection', recovery: 'transient' },
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Reconnecting');
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'The connection to the model provider was interrupted. Retrying automatically (1 of 2) in 2s…'
+    );
+    const liveStatus = ctx.elements['agent-transcript'].querySelector('.agent-live-status');
+    expect(liveStatus.hidden).toBe(false);
+    expect(liveStatus.classList.contains('active')).toBe(true);
+    expect(liveStatus.children[1].textContent).toBe('Reconnecting · attempt 1 of 2…');
+
+    ctx.emit({
+      type: 'run_retry_recovered',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      attempt: 1,
+    });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Model connection restored. Agent is continuing…'
+    );
+    expect(liveStatus.children[1].textContent).toBe('Connection restored. Continuing…');
+  });
+
+  test('shows semantic live activity and replaces it with the completed turn summary', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Research this',
+    });
+    const turn = ctx.elements['agent-transcript'].querySelector('.agent-turn');
+    const liveStatus = turn.querySelector('.agent-live-status');
+    expect(liveStatus.hidden).toBe(false);
+    expect(liveStatus.children[1].textContent).toBe('Thinking…');
+
+    ctx.emit({ type: 'run_responding', runId: 'run_test' });
+    expect(liveStatus.children[1].textContent).toBe('Responding…');
+
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'call_1',
+      operation: 'browser_snapshot',
+      intent: 'Reading the page…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Reading the page…');
+
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_1',
+      toolCallId: 'call_1',
+      label: 'Continue',
+    });
+    expect(liveStatus.classList.contains('active')).toBe(false);
+    expect(liveStatus.classList.contains('waiting')).toBe(true);
+    expect(liveStatus.children[1].textContent).toBe('Waiting for your approval');
+
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 1_000,
+      actionCount: 1,
+      outcome: { verification: 'actions_recorded' },
+    });
+    expect(liveStatus.hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
+      'Worked for 1s · 1 action · Actions recorded'
+    );
+  });
+
+  test('uses explicit reasoning progress until verified activity or response takes over', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Build a page',
+    });
+    const turn = ctx.elements['agent-transcript'].querySelector('.agent-turn');
+    const liveStatus = turn.querySelector('.agent-live-status');
+    expect(liveStatus.children[1].textContent).toBe('Thinking…');
+
+    ctx.emit({
+      type: 'run_progress',
+      runId: 'run_test',
+      source: 'reasoning_heading',
+      message: 'Planning basic landing page creation…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Planning basic landing page creation…');
+
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'write_1',
+      operation: 'write',
+      intent: 'Writing index.html…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Writing index.html…');
+
+    ctx.emit({
+      type: 'workspace_phase',
+      runId: 'run_test',
+      toolCallId: 'write_1',
+      operation: 'write',
+      phase: 'creating_workspace',
+      message: 'Creating the project workspace…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Creating the project workspace…');
+
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'write_1',
+      operation: 'write',
+      status: 'succeeded',
+      label: 'Wrote index.html',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Checking the result…');
+
+    ctx.emit({
+      type: 'run_progress',
+      runId: 'run_test',
+      source: 'reasoning_heading',
+      message: 'Verifying workspace snapshot…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Verifying workspace snapshot…');
+
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Done.' });
+    expect(liveStatus.children[1].textContent).toBe('Responding…');
+  });
+
+  test('renders attached-source evidence semantically and consolidates paginated reads', async () => {
+    const ctx = await loadAgentUi();
+    const folderId = `folder_${'a'.repeat(20)}`;
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Check the attached folder',
+    });
+
+    for (const [toolCallId, offset] of [
+      ['attachment_read_1', 0],
+      ['attachment_read_2', 65_536],
+    ]) {
+      ctx.emit({
+        type: 'tool_started',
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        toolCallId,
+        operation: 'attachment_read',
+        intent: 'Reading report.json…',
+        label: 'Read report.json',
+      });
+      ctx.emit({
+        type: 'tool_finished',
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        toolCallId,
+        operation: 'attachment_read',
+        status: 'succeeded',
+        label: 'Read report.json',
+        attachment: {
+          action: 'read',
+          resourceId: folderId,
+          resourceKind: 'folder',
+          folderName: 'Bug reports',
+          relativePath: 'report.json',
+          name: 'report.json',
+          bytesRead: 65_536,
+          offset,
+          truncated: offset === 0,
+        },
+      });
+    }
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 2_000,
+      actionCount: 2,
+      outcome: {
+        kind: 'completed',
+        verification: 'attachments_inspected',
+        tone: 'success',
+        headline: 'Attached sources inspected',
+        detail:
+          'Freedom verified access to 1 attached file in the shared folder. This confirms source access, not necessarily the model conclusions.',
+      },
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const toolList = turn.querySelector('.agent-tool-list');
+    expect(toolList.children).toHaveLength(1);
+    expect(toolList.children[0].children[1].textContent).toBe('Read report.json');
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
+      'Worked for 2s · 2 actions · Sources inspected'
+    );
+  });
+
+  test('labels a terminal provider failure as a provider issue', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Continue the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Continue the task',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'failed',
+      durationMs: 6_000,
+      actionCount: 0,
+      error: {
+        code: 'PROVIDER_ERROR',
+        message: 'The model provider remained unavailable. Freedom exhausted 2 automatic retries.',
+      },
+      outcome: {
+        kind: 'recovery',
+        verification: 'none',
+        tone: 'danger',
+        headline: 'Agent stopped before completion',
+        detail: 'The model provider remained unavailable.',
+        technicalDetails:
+          'The provider returned HTTP 503. Freedom made 3 attempts total: the initial request plus 2 automatic retries.',
+        nextStep: 'Wait a moment, then continue this conversation.',
+        retrySafety: 'safe',
+        canRetry: true,
+      },
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Provider issue');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    const outcome = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    const technical = outcome.querySelector('.agent-turn-outcome-technical');
+    const retry = outcome.querySelector('.agent-turn-outcome-actions').children[0];
+    expect(technical.hidden).toBe(false);
+    expect(technical.open).toBe(false);
+    expect(technical.children[1].textContent).toContain('HTTP 503');
+    expect(retry.hidden).toBe(false);
+    retry.dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      7,
+      'Continue the task',
+      'sensitive_actions'
+    );
+  });
+
+  test('does not show a browser-evidence outcome for conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Hello';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Hello',
+    });
+    ctx.emit({
+      type: 'assistant_text_delta',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      text: 'Hello! How can I help?',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 1_000,
+      actionCount: 0,
+      outcome: {
+        kind: 'completed',
+        verification: 'not_applicable',
+        tone: 'neutral',
+      },
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    expect(turn.querySelector('.agent-output').textContent).toBe('Hello! How can I help?');
+    expect(turn.querySelector('.agent-turn-outcome').hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-activity').hidden).toBe(true);
+  });
+
+  test('shows node diagnostics as node evidence rather than browser evidence', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'How are my nodes doing?';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'How are my nodes doing?',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_node_status',
+      operation: 'node_status',
+      intent: 'Checking Freedom nodes',
+      label: 'Checked Freedom nodes',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_node_status',
+      operation: 'node_status',
+      status: 'succeeded',
+      label: 'Checked 6 services',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 2_000,
+      actionCount: 1,
+      outcome: {
+        kind: 'completed',
+        verification: 'nodes_inspected',
+        tone: 'caution',
+        headline: 'Node status checked',
+        detail: 'Freedom checked 6 integrated services: 3 ready, 1 disabled, 2 need attention.',
+      },
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
+      'Worked for 2s · 1 action · Node status checked'
+    );
+  });
+
+  test('explains partial failure and does not present an unsafe blind retry', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Submit the application';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Submit the application',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_click',
+      operation: 'browser_click',
+      label: 'Clicking on https://example.test',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_click',
+      operation: 'browser_click',
+      status: 'failed',
+      errorCode: 'STALE_ELEMENT_REFERENCE',
+      label: 'Clicked on https://example.test',
+      origin: 'https://example.test',
+      pageTitle: 'Example form',
+    });
+    const pageRow = ctx.elements['agent-transcript'].querySelector('.agent-tool-item');
+    expect(pageRow.querySelector('.agent-tool-page-title').textContent).toBe('Clicked on Example form');
+    expect(pageRow.querySelector('.agent-tool-page-error').textContent).toContain('Page changed');
+    expect(ctx.elements['agent-run-message'].textContent).toContain(
+      'Page changed before this could run'
+    );
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'failed',
+      durationMs: 2_000,
+      actionCount: 1,
+      error: { code: 'PROVIDER_ERROR', message: 'The model provider request failed' },
+      outcome: {
+        kind: 'recovery',
+        verification: 'partial',
+        tone: 'danger',
+        headline: 'Agent stopped before completion',
+        detail: 'The model connection failed. 1 earlier browser change remains in place.',
+        nextStep: 'Review the Agent tabs, then tell Agent what to continue or redo.',
+        retrySafety: 'review',
+      },
+    });
+
+    const outcome = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(outcome.classList.contains('danger')).toBe(true);
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped before completion');
+    expect(outcome.children[1].children[2].textContent).toContain('Review the Agent tabs');
+    expect(outcome.children[1].children[2].textContent).not.toContain('safely try');
+    expect(
+      ctx.elements['agent-transcript'].querySelector('.agent-tool-item').children[1].textContent
+    ).toContain('Page changed before this could run');
+  });
+
+  test('restores an idle in-memory conversation when the sidebar UI reloads', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        getAgentState: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_restored',
+            rendererTabId: 7,
+            approvalMode: 'allow_website_interactions',
+            transcript: [
+              {
+                runId: 'run_restored',
+                userText: 'What is on this page?',
+                assistantText: 'A settings page.',
+                status: 'completed',
+                durationMs: 2_000,
+                activity: [],
+              },
+            ],
+          },
+        }),
+      },
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Ready');
+    expect(ctx.elements['agent-transcript'].children).toHaveLength(1);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-user-message').textContent).toBe(
+      'What is on this page?'
+    );
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
+      'Fewer interruptions'
+    );
+    expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
+    expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
+  });
+
+  test.each([
+    ['agent-approval-mode-button', 'agent-approval-mode-popover'],
+    ['agent-attachment-button', 'agent-attachment-menu'],
+  ])('an empty workspace refresh preserves the open %s menu', async (button, menu) => {
+    let resolveProjection;
+    const pendingProjection = new Promise(resolve => { resolveProjection = resolve; });
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn()
+        .mockResolvedValueOnce({ ok: true, state: { status: 'idle' } })
+        .mockReturnValue(pendingProjection),
+    } });
+    ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Research' });
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    ctx.elements[button].dispatch('click');
+    expect(ctx.elements[menu].hidden).toBe(false);
+    resolveProjection({ ok: true, state: { status: 'ready', conversationId: 'conversation_test', workspace: null } });
+    await flush();
+    expect(ctx.elements['agent-process-compact'].hidden).toBe(true);
+    expect(ctx.elements[menu].hidden).toBe(false);
+    expect(ctx.elements[button].getAttribute('aria-expanded')).toBe('true');
+  });
+
+  test('shows conversation-owned running processes and exposes preview and stop controls', async () => {
+    const process = {
+      processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa',
+      command: 'node server.js',
+      workingDirectory: '.',
+      state: 'running',
+      backend: 'macos-seatbelt',
+      networkPosture: 'full',
+      previewPort: 4_173,
+    };
+    const state = {
+      status: 'ready',
+      conversationId: 'conversation_process',
+      taskTabs: [{ rendererTabId: 7, agentActive: true }],
+      approvalMode: 'every_interaction',
+      transcript: [],
+      workspace: { processes: [process], commands: [] },
+    };
+    const stopAgentProcess = jest.fn().mockResolvedValue({
+      ok: true,
+      state: { ...state, workspace: { processes: [], commands: [] } },
+    });
+    const openAgentProcessPreview = jest.fn().mockResolvedValue({ ok: true, state });
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        getAgentState: jest.fn().mockResolvedValue({ ok: true, state }),
+        stopAgentProcess,
+        openAgentProcessPreview,
+      },
+    });
+
+    expect(ctx.elements['agent-workspace-body'].classList.contains('has-processes')).toBe(true);
+    expect(ctx.elements['agent-process-panel'].hidden).toBe(false);
+    expect(ctx.elements['agent-process-compact'].hidden).toBe(false);
+    expect(ctx.elements['agent-process-compact-label'].textContent).toBe('node server.js');
+    expect(ctx.elements['agent-process-panel-list'].children).toHaveLength(1);
+    expect(ctx.elements['agent-process-panel-list'].children[0].children[1].textContent).toContain(
+      'Network access'
+    );
+
+    ctx.elements['agent-process-compact-toggle'].dispatch('click');
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(false);
+    const removedTarget = createElement('button');
+    ctx.document.handlers.click({ target: removedTarget, composedPath: () => [removedTarget, ctx.elements['agent-process-compact-popover']] });
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(false);
+    ctx.document.handlers.click({ target: removedTarget, composedPath: () => [removedTarget] });
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(false);
+    ctx.elements['agent-process-compact-toggle'].dispatch('click');
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(true);
+    ctx.elements['agent-process-compact-toggle'].dispatch('click');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(true);
+    expect(ctx.elements['agent-process-compact-toggle'].getAttribute('aria-expanded')).toBe('false');
+
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    ctx.elements['agent-workspace-sidebar-toggle'].dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-workspace-sidebar-closed')).toBe(true);
+    const actions = ctx.elements['agent-process-panel-list'].children[0].children[2];
+    actions.children[0].dispatch('click');
+    await flush();
+    expect(openAgentProcessPreview).toHaveBeenCalledWith(process.processId);
+    expect(ctx.document.body.classList.contains('agent-workspace-sidebar-closed')).toBe(false);
+
+    actions.children[1].dispatch('click');
+    await flush();
+    expect(stopAgentProcess).toHaveBeenCalledWith(process.processId);
+    expect(ctx.elements['agent-process-compact'].hidden).toBe(true);
+    expect(ctx.elements['agent-workspace-body'].classList.contains('has-processes')).toBe(false);
+  });
+
+  test('shows saved stopped servers and requests restart through the Agent', async () => {
+    const serverId = `workspace_server_${'a'.repeat(24)}`;
+    const state = { status: 'ready', conversationId: 'conversation_server', transcript: [],
+      workspace: { processes: [], commands: [], servers: [{ serverId,
+        command: 'npm run dev', workingDirectory: 'game', state: 'stopped', previewPort: 5173 }] } };
+    const startAgent = jest.fn(async () => ({ ok: true, runId: 'run_server' }));
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn(async () => ({ ok: true, state })), startAgent,
+    } });
+    const panel = ctx.elements['agent-process-panel-list'];
+    expect(panel.children).toHaveLength(1);
+    expect(ctx.elements['agent-process-panel-label'].textContent).toBe('Development servers');
+    expect(ctx.elements['agent-process-panel-count'].hidden).toBe(true);
+    expect(panel.children[0].querySelector('.agent-server-meta').textContent).toBe('Stopped · :5173');
+    const details = panel.children[0].querySelector('.agent-process-details');
+    expect(details.children[0].tagName).toBe('SUMMARY');
+    expect(details.children[2].textContent).toBe('Directory: game');
+    expect(details.children[3].textContent).toBe('Port: 5173');
+    const button = panel.children[0].querySelector('.agent-process-actions').children[0];
+    expect(button.getAttribute('aria-label')).toBe('Start server');
+    expect(button.title).toContain('Agent checks');
+    button.dispatch('click'); await flush();
+    expect(startAgent.mock.calls[0][1]).toContain(serverId);
+    expect(startAgent.mock.calls[0][1]).toContain('permissions');
+  });
+
+  test('disables saved server restart when previous exit is unconfirmed', async () => {
+    const state = { status: 'ready', conversationId: 'conversation_server', transcript: [],
+      workspace: { processes: [], commands: [], servers: [{ serverId: `workspace_server_${'a'.repeat(24)}`,
+        command: 'npm run dev', workingDirectory: 'game', state: 'exit_unconfirmed', previewPort: 5173 }] } };
+    const ctx = await loadAgentUi({ electronAPI: { getAgentState: jest.fn(async () => ({ ok: true, state })) } });
+    const row = ctx.elements['agent-process-panel-list'].children[0];
+    expect(row.querySelector('.agent-server-meta').textContent).toContain('Exit unconfirmed');
+    const button = row.querySelector('.agent-process-actions').children[0];
+    expect(button.disabled).toBe(true);
+    expect(button.title).toContain('exit is unconfirmed');
+    button.dispatch('click');
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+  });
+
+  test('compact running server controls keep preview, stop and Agent restart routes', async () => {
+    const serverId = `workspace_server_${'b'.repeat(24)}`;
+    const processId = `workspace_process_${'c'.repeat(24)}`;
+    const server = { serverId, processId, command: 'npm run dev', workingDirectory: '.', state: 'running', previewPort: 5173 };
+    const state = { status: 'ready', conversationId: 'conversation_server', transcript: [], workspace: { processes: [], commands: [], servers: [server] } };
+    const openAgentProcessPreview = jest.fn(async () => ({ ok: true, state }));
+    const stopAgentProcess = jest.fn(async () => ({ ok: true, state }));
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn(async () => ({ ok: true, state })), openAgentProcessPreview, stopAgentProcess,
+    } });
+    const row = () => ctx.elements['agent-process-panel-list'].children[0];
+    const actions = () => row().querySelector('.agent-process-actions').children;
+    expect(actions().map(button => button.getAttribute('aria-label'))).toEqual(['Open preview', 'Stop server', 'Restart server']);
+    row().querySelector('.agent-process-details').open = true;
+    actions()[0].dispatch('click'); await flush();
+    expect(openAgentProcessPreview).toHaveBeenCalledWith(processId);
+    expect(row().querySelector('.agent-process-details').open).toBe(true);
+    actions()[1].dispatch('click'); await flush();
+    expect(stopAgentProcess).toHaveBeenCalledWith(processId);
+    actions()[2].dispatch('click'); await flush();
+    expect(ctx.electronAPI.startAgent.mock.calls[0][1]).toContain(serverId);
+  });
+
+  test('opens a saved session and continues without silently adopting the current page', async () => {
+    const sessions = [
+      {
+        conversationId: 'conversation_saved',
+        title: 'Saved comparison',
+        status: 'ready',
+        turnCount: 1,
+      },
+    ];
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions }),
+        openAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_saved',
+            title: 'Saved comparison',
+            approvalMode: 'every_interaction',
+            runtimeAvailable: false,
+            transcript: [
+              {
+                runId: 'run_saved',
+                userText: 'Compare these pages',
+                assistantText: 'The first one is newer.',
+                status: 'completed',
+                activity: [],
+              },
+            ],
+            taskTabs: [],
+          },
+        }),
+        startAgent: jest.fn().mockResolvedValue({
+          ok: true,
+          runId: 'run_followup',
+          conversationId: 'conversation_saved',
+        }),
+      },
+    });
+
+    const row = ctx.elements['agent-session-list'].children[0];
+    row.children[0].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.openAgentSession).toHaveBeenCalledWith('conversation_saved');
+    expect(ctx.elements['agent-first-title'].textContent).toBe('Saved comparison');
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-user-message').textContent).toBe(
+      'Compare these pages'
+    );
+    expect(ctx.elements['agent-run-message'].textContent).toContain('fresh page');
+
+    ctx.elements['agent-prompt'].value = 'Now compare their authors';
+    ctx.elements['agent-prompt'].dispatch('input');
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Now compare their authors',
+      'every_interaction'
+    );
+  });
+
+  test('restores a live session workspace and claims an Agent-owned tab', async () => {
+    const agentTab = {
+      rendererTabId: 8,
+      provenance: 'agent',
+      custody: 'agent',
+      conversationId: 'conversation_live',
+    };
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [
+            {
+              conversationId: 'conversation_live',
+              title: 'Live research',
+              status: 'ready',
+              turnCount: 1,
+            },
+          ],
+        }),
+        openAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_live',
+            title: 'Live research',
+            approvalMode: 'every_interaction',
+            runtimeAvailable: true,
+            transcript: [],
+            taskTabs: [{ rendererTabId: 8, agentActive: true }],
+            agentTabs: [agentTab],
+          },
+        }),
+        claimAgentTab: jest.fn().mockResolvedValue({
+          ok: true,
+          claimed: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_live',
+            taskTabs: [],
+            agentTabs: [],
+          },
+        }),
+      },
+    });
+
+    ctx.elements['agent-session-list'].children[0].children[0].dispatch('click');
+    await flush();
+
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Live conversation and workspace restored.'
+    );
+    expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([agentTab]);
+
+    const claimHandler = ctx.setAgentTabClaimHandler.mock.calls[0][0];
+    await claimHandler(8);
+
+    expect(ctx.electronAPI.claimAgentTab).toHaveBeenCalledWith(8);
+    expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([]);
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'This tab is now yours. Agent no longer controls it.'
+    );
+  });
+
+  test('renames and deletes saved sessions from their sidebar menu', async () => {
+    const sessions = [
+      {
+        conversationId: 'conversation_saved',
+        title: 'Original title',
+        status: 'ready',
+        turnCount: 2,
+      },
+    ];
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions }),
+        renameAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          session: { ...sessions[0], title: 'Renamed title' },
+        }),
+        deleteAgentSession: jest.fn().mockResolvedValue({ ok: true, deleted: true }),
+      },
+      windowGlobals: {
+        prompt: jest.fn(() => 'Renamed title'),
+        confirm: jest.fn(() => true),
+      },
+    });
+
+    let row = ctx.elements['agent-session-list'].children[0];
+    expect(row.children.map(child => child.className)).toEqual([
+      'agent-session-select', 'agent-session-more', 'agent-session-actions',
+    ]);
+    expect(row.children[0].children).toHaveLength(1);
+    row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
+    expect(row.children[2].hidden).toBe(false);
+    row.children[2].children[0].dispatch('click');
+    // The inline field takes the title's place; the ⋯ trigger steps aside.
+    const renameInput = row.children[1];
+    expect(renameInput.getAttribute('aria-label')).toBe('Session title');
+    expect(row.querySelector('.agent-session-more').hidden).toBe(true);
+    renameInput.value = 'Renamed title';
+    renameInput.dispatch('keydown', { key: 'Enter', preventDefault: jest.fn(), stopPropagation: jest.fn() });
+    await flush();
+    expect(ctx.electronAPI.renameAgentSession).toHaveBeenCalledWith(
+      'conversation_saved',
+      'Renamed title'
+    );
+
+    row = ctx.elements['agent-session-list'].children[0];
+    expect(row.querySelector('.agent-session-more').hidden).toBeFalsy();
+    // The visible ⋯ trigger opens the same menu right-click does.
+    row.children[1].dispatch('click', { preventDefault: jest.fn() });
+    expect(row.children[2].hidden).toBe(false);
+    row.children[2].children[1].dispatch('click');
+    await flush();
+    expect(global.window.confirm).toHaveBeenCalledWith(
+      'Delete “Original title”? This cannot be undone.'
+    );
+    expect(ctx.electronAPI.deleteAgentSession).toHaveBeenCalledWith('conversation_saved');
+  });
+
+  test('opens session actions by keyboard and dismisses on Escape, outside click, or scrolling', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions: [
+          { conversationId: 'first', title: 'First session', turnCount: 8 },
+          { conversationId: 'second', title: 'Second session', turnCount: 2 },
+        ] }),
+      },
+    });
+    const [first, second] = ctx.elements['agent-session-list'].children;
+    const select = first.children[0];
+    const more = first.children[1];
+    const menu = first.children[2];
+    jest.spyOn(select, 'focus');
+    jest.spyOn(more, 'focus');
+    jest.spyOn(menu.children[0], 'focus');
+    jest.spyOn(menu.children[1], 'focus');
+    const keyboard = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
+    select.dispatch('keydown', keyboard);
+    expect(keyboard.preventDefault).toHaveBeenCalled();
+    expect(menu.hidden).toBe(false);
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    expect(menu.children[0].focus).toHaveBeenCalled();
+    menu.dispatch('keydown', { key: 'End', preventDefault: jest.fn() });
+    expect(menu.children[1].focus).toHaveBeenCalled();
+    ctx.document.handlers.keydown( { key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(select.focus).toHaveBeenCalled();
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+
+    // Opened from ⋯: its own click (bubbling to document) must not close it,
+    // a second click toggles it shut, and focus returns to ⋯, not the title.
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.click({ target: more });
+    expect(menu.hidden).toBe(false);
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.click({ target: more });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalled();
+    more.dispatch('click', { preventDefault: jest.fn() });
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(2);
+
+    // Shift+F10 / the ContextMenu key with ⋯ focused: off macOS it reaches
+    // the row as a coordinate-less contextmenu targeting ⋯; on macOS Chromium
+    // fires no contextmenu, so ⋯'s own keydown has to open it. Either way ⋯ is
+    // the opener: the menu anchors under it and Escape hands focus back to it.
+    select.setRect({ left: 10, bottom: 40 });
+    more.setRect({ left: 200, bottom: 44 });
+    global.window.innerHeight = 800;
+    select.focus.mockClear();
+    const moreKey = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
+    more.dispatch('keydown', moreKey);
+    expect(moreKey.preventDefault).toHaveBeenCalled();
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    more.focus.mockClear();
+    first.dispatch('contextmenu', { target: more, clientX: 0, clientY: 0, preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('44px');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(more.focus).toHaveBeenCalledTimes(1);
+    expect(select.focus).not.toHaveBeenCalled();
+
+    select.dispatch('keydown', keyboard);
+    second.dispatch('contextmenu', { clientX: 24, clientY: 100, preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(second.children[2].hidden).toBe(false);
+    ctx.document.handlers.click( { target: ctx.document.body });
+    expect(second.children[2].hidden).toBe(true);
+    select.dispatch('keydown', keyboard);
+    ctx.document.handlers.scroll();
+    expect(menu.hidden).toBe(true);
+    expect(ctx.electronAPI.openAgentSession).not.toHaveBeenCalled();
+  });
+
+  test('projects owned pages and conversation viewers without leaving Agent-first', async () => {
+    const getOpenTabs = () => [
+      {
+        id: 7,
+        url: 'https://unrelated.example/',
+        title: 'Unrelated page',
+        favicon: '',
+        isLoading: false,
+        isActive: true,
+      },
+      {
+        id: 8,
+        url: 'https://en.wikipedia.org/wiki/Agent',
+        title: 'Agent — Wikipedia',
+        favicon: '',
+        isLoading: false,
+        isActive: false,
+      },
+      { id: 9, kind: 'workspace-viewer', conversationId: 'conversation_restored', title: 'Changes', url: '' },
+      { id: 10, kind: 'workspace-viewer', conversationId: 'conversation_other', title: 'Other changes', url: '' },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs,
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [
+            {
+              conversationId: 'conversation_restored',
+              title: 'Compare agent definitions',
+              status: 'ready',
+              turnCount: 1,
+            },
+          ],
+        }),
+        getAgentState: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_restored',
+            rendererTabId: 7,
+            approvalMode: 'every_interaction',
+            transcript: [
+              {
+                runId: 'run_restored',
+                userText: 'Compare agent definitions',
+                assistantText: 'Ready.',
+                status: 'completed',
+                activity: [],
+              },
+            ],
+            taskTabs: [{ rendererTabId: 8, agentActive: true }],
+          },
+        }),
+      },
+    });
+
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-first-toggle'].hidden).toBe(false);
+
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(ctx.elements['agent-first-titlebar'].hidden).toBe(false);
+    expect(ctx.elements['agent-session-sidebar'].hidden).toBe(false);
+    expect(ctx.elements['agent-session-list'].children).toHaveLength(1);
+    expect(ctx.elements['agent-session-list'].children[0].classList.contains('active')).toBe(true);
+    expect(ctx.elements['agent-first-title'].textContent).toBe('Compare agent definitions');
+    expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('2');
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [8, 9],
+    });
+    expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith(
+      ctx.elements['agent-workspace-address-host']
+    );
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    ctx.elements['agent-workspace-sidebar-toggle'].dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-session-sidebar-closed')).toBe(true);
+    expect(ctx.document.body.classList.contains('agent-workspace-sidebar-closed')).toBe(true);
+
+    ctx.elements['agent-mode-toggle'].dispatch('click');
+    ctx.elements['agent-mode-browser'].dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
+    expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith();
+  });
+
+  test('collapses an empty conversation pane and remembers manual hiding per conversation', async () => {
+    let tabs = [
+      { id: 7, title: 'Home', isActive: true },
+      { id: 8, title: 'Loading page', isActive: false, isLoading: true },
+    ];
+    const sessions = [
+      { conversationId: 'empty', title: 'Empty conversation' },
+      { conversationId: 'with_page', title: 'Conversation with page' },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => tabs,
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions }),
+        openAgentSession: jest.fn(async (conversationId) => ({ ok: true, state: {
+          conversationId, status: 'ready', title: conversationId, transcript: [],
+          taskTabs: conversationId === 'with_page' ? [{ rendererTabId: 8, agentActive: true }] : [],
+        } })),
+      },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const toggle = ctx.elements['agent-workspace-sidebar-toggle'];
+    const closed = () => ctx.document.body.classList.contains('agent-workspace-sidebar-closed');
+    const select = async (index) => {
+      ctx.elements['agent-session-list'].children[index].children[0].dispatch('click');
+      await flush();
+    };
+    expect(closed()).toBe(false); // A new conversation starts with the current Home tab.
+    await select(0);
+    expect(closed()).toBe(true);
+    expect(toggle.hidden).not.toBe(true);
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    toggle.dispatch('click');
+    expect(closed()).toBe(true);
+    await select(1);
+    expect(closed()).toBe(false); // Loading is content, not an empty pane.
+    expect(toggle.disabled).toBe(false);
+    toggle.dispatch('click');
+    expect(closed()).toBe(true);
+    ctx.emitTabs(tabs.map(tab => ({ ...tab, isLoading: false })));
+    expect(closed()).toBe(true); // A background update cannot undo the manual close.
+    await select(0);
+    await select(1);
+    expect(closed()).toBe(true); // The manual choice belongs to this conversation.
+    toggle.dispatch('click');
+    expect(closed()).toBe(false);
+    tabs = tabs.filter(tab => tab.id !== 8);
+    ctx.emitTabs(tabs);
+    expect(closed()).toBe(true);
+    expect(toggle.disabled).toBe(true);
+    tabs = [...tabs, { id: 9, kind: 'workspace-viewer', conversationId: 'with_page', title: 'Changes', isActive: true }];
+    ctx.emitTabs(tabs);
+    expect(closed()).toBe(false); // A viewer also counts as content.
+    expect(toggle.disabled).toBe(false);
+  });
+
+  test('switches to Browser from the mode menu without closing the conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const toggle = ctx.elements['agent-mode-toggle'];
+    const menu = ctx.elements['agent-mode-menu'];
+    const agent = ctx.elements['agent-mode-agent'];
+    const browser = ctx.elements['agent-mode-browser'];
+    jest.spyOn(toggle, 'focus');
+    jest.spyOn(browser, 'focus');
+    expect(agent.getAttribute('aria-checked')).toBe('true');
+    expect(browser.getAttribute('aria-checked')).toBe('false');
+    toggle.dispatch('click');
+    expect(menu.hidden).toBe(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    agent.dispatch('click');
+    expect(menu.hidden).toBe(true);
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    toggle.dispatch('keydown', { key: 'ArrowUp', preventDefault: jest.fn() });
+    expect(browser.focus).toHaveBeenCalled();
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(toggle.focus).toHaveBeenCalled();
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    toggle.dispatch('click');
+    ctx.document.handlers.click({ target: ctx.document.body });
+    expect(menu.hidden).toBe(true);
+    toggle.dispatch('click');
+    browser.dispatch('click');
+    expect(menu.hidden).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+    expect(browser.getAttribute('aria-checked')).toBe('true');
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
+    // The floating panel is titled "Agent", not a "Freedom Browser" mode
+    // switch (#867); its expand button is the way back to Agent-first.
+    expect(ctx.elements['agent-sidebar-title'].hidden).toBe(false);
+    expect(ctx.elements['agent-sidebar-title'].textContent).toBe('Agent');
+    expect(ctx.elements['agent-sidebar-subtitle'].hidden).toBe(true);
+    const expand = ctx.elements['agent-first-toggle'];
+    expect(expand.hidden).toBe(false);
+    expect(expand.title).toBe('Make Agent the main view');
+    expect(expand.getAttribute('aria-label')).toBe('Make Agent the main view');
+    expand.dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(expand.title).toBe('Return to browser view');
+    expect(agent.getAttribute('aria-checked')).toBe('true');
+  });
+
+  test('the full view reduce button returns to the panel on the same chat (#921)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-prompt'].value = 'draft kept across the switch';
+    const expand = ctx.elements['agent-first-toggle'];
+    expand.dispatch('click');
+    await flush();
+    const reduce = ctx.elements['agent-first-reduce'];
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(ctx.elements['agent-first-titlebar'].hidden).toBe(false);
+    jest.spyOn(expand, 'focus');
+    reduce.dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
+    expect(ctx.elements['agent-first-titlebar'].hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+    expect(ctx.elements['agent-mode-browser'].getAttribute('aria-checked')).toBe('true');
+    expect(ctx.elements['agent-prompt'].value).toBe('draft kept across the switch');
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
+    // Focus lands on the button that leads back into full view.
+    expect(expand.focus).toHaveBeenCalled();
+    expect(expand.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  test('the reduce button says what the expand toggle says in full view, and promises no shortcut (#921)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const expand = ctx.elements['agent-first-toggle'];
+    expand.dispatch('click');
+    await flush();
+    const html = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+    const tag = html.match(/<button\s[^>]*id="agent-first-reduce"[^>]*>/)[0];
+    const attr = (name) => tag.match(new RegExp(`\\s${name}="([^"]*)"`))[1];
+    // One wording for both the mouse and the screen reader, matching the
+    // toggle's own full-view label. Esc is not named: a focused workspace
+    // page owns the keyboard and the shell's Escape handler never sees it.
+    expect(attr('aria-label')).toBe(expand.getAttribute('aria-label'));
+    expect(attr('title')).toBe(expand.title);
+    expect(attr('title')).not.toMatch(/esc/i);
+  });
+
+  test('delegates workspace address editing policy to shared browser navigation', async () => {
+    const ctx = await loadAgentUi();
+
+    expect(ctx.setWorkspaceNavigationEditable).toHaveBeenLastCalledWith(true);
+
+    ctx.elements['agent-prompt'].value = 'Inspect this page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.setWorkspaceNavigationEditable).toHaveBeenLastCalledWith(false);
+
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'run_paused', runId: 'run_test' });
+    expect(ctx.setWorkspaceNavigationEditable).toHaveBeenLastCalledWith(true);
+
+    ctx.emit({ type: 'run_resumed', runId: 'run_test' });
+    expect(ctx.setWorkspaceNavigationEditable).toHaveBeenLastCalledWith(false);
+  });
+
+  test('translates wheel gestures into horizontal workspace tab scrolling', async () => {
+    const ctx = await loadAgentUi();
+    const tabList = ctx.elements['agent-task-page-list'];
+    tabList.scrollWidth = 600;
+    tabList.clientWidth = 240;
+    tabList.scrollLeft = 0;
+    const preventDefault = jest.fn();
+
+    tabList.dispatch('wheel', { deltaX: 0, deltaY: 52, preventDefault });
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(tabList.scrollLeft).toBe(52);
+  });
+
+  test('resizes both Agent-first sidebars with pointer and keyboard input', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+
+    const sessionHandle = ctx.elements['agent-session-resizer'];
+    sessionHandle.dispatch('pointerdown', {
+      button: 0,
+      pointerId: 1,
+      preventDefault: jest.fn(),
+    });
+    sessionHandle.dispatch('pointermove', { pointerId: 1, clientX: 320 });
+    expect(ctx.document.body.style['--agent-session-sidebar-width']).toBe('320px');
+    expect(sessionHandle.attributes['aria-valuenow']).toBe('320');
+    expect(ctx.document.body.classList.contains('agent-sidebar-resizing')).toBe(true);
+    sessionHandle.dispatch('pointerup', { pointerId: 1 });
+    expect(ctx.document.body.classList.contains('agent-sidebar-resizing')).toBe(false);
+
+    const workspaceHandle = ctx.elements['agent-workspace-resizer'];
+    workspaceHandle.dispatch('pointerdown', {
+      button: 0,
+      pointerId: 2,
+      preventDefault: jest.fn(),
+    });
+    workspaceHandle.dispatch('pointermove', { pointerId: 2, clientX: 760 });
+    workspaceHandle.dispatch('pointerup', { pointerId: 2 });
+    expect(ctx.document.body.style['--agent-workspace-sidebar-width']).toBe('520px');
+
+    workspaceHandle.dispatch('keydown', { key: 'ArrowLeft', preventDefault: jest.fn() });
+    expect(ctx.document.body.style['--agent-workspace-sidebar-width']).toBe('536px');
+    workspaceHandle.dispatch('dblclick');
+    expect(ctx.document.body.style['--agent-workspace-sidebar-width']).toBeUndefined();
+  });
+
+  test('sanitizes completed assistant Markdown with a restricted element allowlist', async () => {
+    const sanitize = jest.fn(() => '<p>Safe response</p>');
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        marked: { parse: jest.fn(() => '<img src=x onerror=alert(1)><p>Safe response</p>') },
+        DOMPurify: { sanitize },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Summarize';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Summarize',
+    });
+    ctx.emit({
+      type: 'assistant_text_delta',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      text: '<img src=x onerror=alert(1)>Safe response',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+    });
+
+    expect(sanitize).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ ALLOWED_ATTR: ['href'] })
+    );
+    const allowedTags = sanitize.mock.calls[0][1].ALLOWED_TAGS;
+    expect(allowedTags).not.toContain('img');
+    expect(allowedTags).toContain('a');
+    // Links keep their URL (#848), but only for schemes a tab can open.
+    const uriPattern = sanitize.mock.calls[0][1].ALLOWED_URI_REGEXP;
+    for (const url of ['https://docs.ethswarm.org/x', 'http://a.test', 'bzz://site.eth/', 'ipfs://bafy', 'ipns://k51']) {
+      expect(uriPattern.test(url)).toBe(true);
+    }
+    for (const url of ['javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'freedom://settings', 'docs.ethswarm.org']) {
+      expect(uriPattern.test(url)).toBe(false);
+    }
+    expect(allowedTags).toEqual(
+      expect.arrayContaining(['table', 'thead', 'tbody', 'tr', 'th', 'td'])
+    );
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-output').innerHTML).toBe(
+      '<p>Safe response</p>'
+    );
+  });
+
+  test('links in a rendered answer open in a tab instead of navigating the chrome (#848)', async () => {
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        marked: { parse: jest.fn(() => '<p><a href="https://docs.ethswarm.org/">the docs</a></p>') },
+        DOMPurify: { sanitize: jest.fn((html) => html) },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Summarize';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Summarize' });
+    ctx.emit({ type: 'assistant_text_delta', conversationId: 'conversation_test', runId: 'run_test', text: '[the docs](https://docs.ethswarm.org/)' });
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    const output = ctx.elements['agent-transcript'].querySelector('.agent-output');
+    expect(output.classList.contains('rendered-markdown')).toBe(true);
+    // The fake DOM does not parse innerHTML; stand in the parsed link.
+    const link = ctx.document.createElement('a');
+    link.setAttribute('href', 'https://docs.ethswarm.org/');
+    output.appendChild(link);
+    const click = (type, extra = {}) => {
+      const event = { type, target: link, currentTarget: output, button: type === 'auxclick' ? 1 : 0, preventDefault: jest.fn(), ...extra };
+      output.dispatch(type, event);
+      return event;
+    };
+
+    expect(click('click').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('click', { ctrlKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: true });
+    expect(click('auxclick').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: true });
+    click('click', { ctrlKey: true, shiftKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    ctx.electronAPI.openUrlInNewWindow = jest.fn();
+    click('click', { shiftKey: true });
+    expect(ctx.electronAPI.openUrlInNewWindow).toHaveBeenCalledWith('https://docs.ethswarm.org/');
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
+
+    // A right-click auxclick is not an activation; a scheme the sanitizer
+    // should have dropped is never opened even if it reaches the DOM.
+    click('auxclick', { button: 2 });
+    link.setAttribute('href', 'javascript:alert(1)');
+    expect(click('click').preventDefault).toHaveBeenCalled();
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(4);
+
+    // Agent-first mode's tab strip lists only the conversation's pages, so a
+    // background tab would be invisible there: Ctrl+click and middle-click
+    // open in the foreground instead (and leave agent-first, like a click).
+    link.setAttribute('href', 'https://docs.ethswarm.org/');
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    click('click', { ctrlKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('click', { metaKey: true });
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    click('auxclick');
+    expect(ctx.openLinkInNewTab).toHaveBeenLastCalledWith('https://docs.ethswarm.org/', { background: false });
+    expect(ctx.openLinkInNewTab).toHaveBeenCalledTimes(7);
+  });
+
+  test('falls back to text when completed assistant Markdown cannot be rendered', async () => {
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        marked: { parse: jest.fn(() => '<p>Response</p>') },
+        DOMPurify: {
+          sanitize: jest.fn(() => {
+            throw new Error('sanitizer failed');
+          }),
+        },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Summarize';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Summarize',
+    });
+    ctx.emit({
+      type: 'assistant_text_delta',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      text: '<unsafe>Response',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-output').textContent).toBe(
+      '<unsafe>Response'
+    );
+  });
+
+  test('uses the empty running composer as Stop without conflating it with takeover', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+
+    // In the floating column the scope explanation is help, not a status line.
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    expect(ctx.elements['agent-scope-help-text'].textContent).toContain(
+      'page you shared and any tabs it opens'
+    );
+    expect(ctx.elements['agent-scope-help'].hidden).toBe(false);
+    expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('Stopping Agent…');
+
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Working on it, comparing' });
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: { kind: 'interrupted', tone: 'neutral', headline: 'Run stopped', counts: { changed: 0 } },
+    });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Stopped');
+    // The stop notice belongs to the turn it ended, after its partial answer,
+    // not in the status line above the transcript.
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const output = turn.querySelector('.agent-output');
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(output.textContent).toBe('Working on it, comparing');
+    expect(output.classList.contains('incomplete')).toBe(true);
+    expect(outcome.hidden).toBe(false);
+    expect(turn.children.indexOf(outcome)).toBeGreaterThan(turn.children.indexOf(output.parentNode));
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe('The answer above is incomplete.');
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('a stop with an uncertain browser action keeps the caution inside the stop notice', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: {
+        kind: 'interrupted',
+        tone: 'neutral',
+        headline: 'Run stopped',
+        counts: { changed: 0 },
+        notice: {
+          tone: 'caution',
+          headline: 'Browser action outcome uncertain',
+          detail: 'Check the page before repeating it.',
+        },
+      },
+    });
+    const outcome = ctx.elements['agent-transcript'].children[0].querySelector('.agent-turn-outcome');
+    expect(outcome.className).toBe('agent-turn-outcome caution');
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe(
+      'Browser action outcome uncertain. Check the page before repeating it.'
+    );
+  });
+
+  test('a stop between tool calls notes the stop without marking finished text as cut off', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Opening the page.' });
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'tool_1',
+      operation: 'browser_navigate',
+      label: 'Open page',
+    });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: {
+        kind: 'interrupted',
+        tone: 'neutral',
+        headline: 'Run stopped',
+        detail: '1 earlier browser change remains in place.',
+        counts: { changed: 1 },
+      },
+    });
+    const turn = ctx.elements['agent-transcript'].children[0];
+    expect(turn.querySelector('.agent-output').classList.contains('incomplete')).toBe(false);
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.hidden).toBe(false);
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe(
+      'Changes made before stopping remain in place. Review the activity before continuing.'
+    );
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+  });
+
+  test('guidance sent mid-answer does not hide that a later stop cut the answer off', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Comparing the first' });
+    ctx.emit({ type: 'guidance_queued', runId: 'run_test', guidance: { guidanceId: 'guide', text: 'Be brief.', status: 'queued' } });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+    const turn = ctx.elements['agent-transcript'].children[0];
+    expect(turn.querySelector('.agent-output').classList.contains('incomplete')).toBe(true);
+    expect(turn.querySelector('.agent-output').classList.contains('agent-cutoff-end')).toBe(true);
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+    expect(outcome.children[1].children[1].textContent).toBe('The answer above is incomplete.');
+  });
+
+  test('a run the service stopped on its own reads as stopped in the pill and the turn alike', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Halfway' });
+    // No Stop click: e.g. the user claimed the agent's tab, or provider access was revoked.
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Stopped');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    const outcome = ctx.elements['agent-transcript'].children[0].querySelector('.agent-turn-outcome');
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped');
+  });
+
+  test('a stop with a caution and earlier changes names both', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'cancelled',
+      outcome: {
+        kind: 'interrupted',
+        tone: 'neutral',
+        headline: 'Run stopped',
+        counts: { changed: 2 },
+        notice: { tone: 'caution', headline: 'Browser action outcome uncertain', detail: 'Check the page before repeating it.' },
+      },
+    });
+    const outcome = ctx.elements['agent-transcript'].children[0].querySelector('.agent-turn-outcome');
+    expect(outcome.className).toBe('agent-turn-outcome caution');
+    expect(outcome.children[1].children[1].textContent).toBe(
+      'Browser action outcome uncertain. Check the page before repeating it. ' +
+      'Changes made before stopping remain in place. Review the activity before continuing.'
+    );
+  });
+
+  test('intercepts the controlled page before takeover and resumes from the composer', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    const preventScroll = jest.fn();
+    ctx.elements['agent-page-interlock'].dispatch('wheel', { preventDefault: preventScroll });
+    expect(preventScroll).toHaveBeenCalled();
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(true);
+    ctx.elements['agent-page-lock-trigger'].dispatch('click');
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(false);
+    ctx.elements['agent-takeover-cancel'].dispatch('click', {
+      stopPropagation: jest.fn(),
+    });
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(true);
+    expect(ctx.electronAPI.pauseAgent).not.toHaveBeenCalled();
+
+    ctx.elements['agent-page-lock-trigger'].dispatch('click');
+    ctx.elements['agent-takeover-confirm'].dispatch('click', {
+      stopPropagation: jest.fn(),
+    });
+    await flush();
+    expect(ctx.electronAPI.pauseAgent).toHaveBeenCalledWith('run_test');
+
+    ctx.emit({ type: 'run_pausing', runId: 'run_test' });
+    ctx.emit({ type: 'run_paused', runId: 'run_test' });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('You’re in control');
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(true);
+    expect(ctx.elements['agent-run'].dataset.action).toBe('resume');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
+
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith('run_test', undefined);
+    ctx.emit({ type: 'run_resuming', runId: 'run_test' });
+    ctx.emit({ type: 'run_resumed', runId: 'run_test' });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
+    expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    expect(ctx.elements['agent-run-message'].textContent).toContain('re-reading');
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
+
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+  });
+
+  test('routes an Agent-owned tab claim through takeover while a run is active', async () => {
+    const ctx = await loadAgentUi({ isTabAgentOwned: (tabId) => tabId === 7 });
+    ctx.elements['agent-prompt'].value = 'Keep researching';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    const claimHandler = ctx.setAgentTabClaimHandler.mock.calls[0][0];
+    await claimHandler(7);
+
+    expect(ctx.electronAPI.claimAgentTab).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(false);
+    ctx.elements['agent-takeover-cancel'].dispatch('click', {
+      stopPropagation: jest.fn(),
+    });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+  });
+
+  test.each([
+    ['completed', 'Complete'],
+    ['cancelled', 'Stopped'],
+  ])('keeps a take-over pill on an Agent-held tab after the run ends (%s)', async (status, label) => {
+    let owned = true;
+    const ctx = await loadAgentUi({
+      isTabAgentOwned: (tabId) => owned && tabId === 7,
+      electronAPI: {
+        claimAgentTab: jest.fn().mockImplementation(async () => {
+          owned = false;
+          return { ok: true, claimed: true, state: { status: 'ready', taskTabs: [], agentTabs: [] } };
+        }),
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Open the page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex') ?? null).toBeNull();
+    if (status === 'cancelled') {
+      ctx.elements['agent-run'].dispatch('click');
+      await flush();
+      expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
+    }
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe(label);
+    // The tab is still in Agent custody, so the hint stays, but only as a pill.
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(true);
+    expect(ctx.elements['agent-page-lock-hint'].textContent).toBe(
+      'Agent still holds this tab · Click to take over'
+    );
+    // The page-sized trigger leaves the Tab order, and the wheel over the pill
+    // still scrolls the page.
+    expect(ctx.elements['agent-page-lock-trigger'].getAttribute('tabindex')).toBe('-1');
+    const preventScroll = jest.fn();
+    ctx.elements['agent-page-interlock'].dispatch('wheel', { preventDefault: preventScroll });
+    expect(preventScroll).not.toHaveBeenCalled();
+
+    // No run to pause: the click hands the tab back without the run dialog.
+    ctx.elements['agent-page-lock-trigger'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(true);
+    expect(ctx.electronAPI.pauseAgent).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.claimAgentTab).toHaveBeenCalledWith(7);
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(true);
+    expect(ctx.elements['agent-page-interlock'].classList.contains('held')).toBe(false);
+  });
+
+  test('morphs the composer into a decision surface until approval resolves', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test', userText: 'Complete the task' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      label: 'Submit',
+    });
+
+    expect(ctx.elements['agent-prompt'].disabled).toBe(true);
+    expect(ctx.elements['agent-composer'].classList.contains('approval-pending')).toBe(true);
+    expect(ctx.elements['agent-approval'].hidden).toBe(false);
+    expect(ctx.elements['agent-approval-message'].textContent).toBe('Agent is waiting');
+    expect(ctx.elements['agent-approval-stop'].disabled).toBe(false);
+    expect(ctx.electronAPI.steerAgent).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+
+    ctx.emit({
+      type: 'approval_resolved',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      decision: 'declined',
+    });
+
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+    expect(ctx.elements['agent-composer'].classList.contains('approval-pending')).toBe(false);
+    expect(ctx.elements['agent-prompt'].disabled).toBe(false);
+  });
+
+  test('stops the task directly from the approval composer', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test', userText: 'Complete the task' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      label: 'Submit',
+    });
+
+    ctx.elements['agent-approval-stop'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
+    expect(ctx.elements['agent-approval-message'].textContent).toBe('Stopping…');
+    expect(ctx.elements['agent-approval-stop'].disabled).toBe(true);
+
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+    expect(ctx.elements['agent-prompt'].disabled).toBe(false);
+  });
+
+  test('submits paused composer text as resume guidance', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'run_paused', runId: 'run_test' });
+
+    expect(ctx.elements['agent-prompt'].placeholder).toBe('Add guidance and resume…');
+    expect(ctx.elements['agent-run'].dataset.action).toBe('resume');
+    ctx.elements['agent-prompt'].value = 'I logged in; continue';
+    ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].dataset.action).toBe('send');
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith('run_test', 'I logged in; continue');
+    expect(ctx.electronAPI.steerAgent).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-prompt'].value).toBe('');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Resuming');
+  });
+
+  test('withdraws approval UI on pause and reports a refused resume without detaching', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        resumeAgent: jest.fn().mockResolvedValue({
+          ok: false,
+          error: {
+            code: 'AGENT_RESUME_SCOPE_CHANGED',
+            message: "The controlled tab left the task's starting site.",
+          },
+        }),
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Submit the form';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'tool_approval',
+      operation: 'browser_click',
+      intent: 'Clicking on the current page',
+    });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      toolCallId: 'tool_approval',
+    });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent).toBe(
+      'Approval needed'
+    );
+    ctx.emit({
+      type: 'approval_resolved',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      decision: 'withdrawn',
+      toolCallId: 'tool_approval',
+    });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent).toBe(
+      'Withdrawn'
+    );
+    ctx.emit({ type: 'run_pausing', runId: 'run_test' });
+    ctx.emit({ type: 'run_paused', runId: 'run_test' });
+
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('You’re in control');
+    expect(ctx.elements['agent-run-message'].textContent).toContain('left the task');
+    expect(ctx.elements['agent-run-message'].classList.contains('error')).toBe(true);
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
+
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+  });
+
+  test('renders form approval details as text and sends a one-shot decision', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Submit the form';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      origin: 'https://trusted.example',
+      destinationOrigin: 'https://submit.example',
+      label: '<img src=x onerror=alert(1)>',
+    });
+
+    expect(ctx.elements['agent-approval'].hidden).toBe(false);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Approval needed');
+    expect(ctx.elements['agent-approval-action'].textContent).toContain(
+      '<img src=x onerror=alert(1)>'
+    );
+    expect(ctx.elements['agent-approval-action'].children).toHaveLength(0);
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'trusted.example → submit.example'
+    );
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_test',
+      true
+    );
+
+    ctx.emit({
+      type: 'approval_resolved',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      decision: 'approved',
+    });
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
+  });
+
+  test('renders an honest provider diagnostic disclosure and can grant the conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Diagnose IPFS';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_diagnostics',
+      action: 'diagnostic_data',
+      operation: 'node_diagnostics',
+      diagnostic: {
+        scope: 'node',
+        service: 'ipfs',
+        providerId: 'openai',
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+        local: false,
+        maxLines: 200,
+        maxBytes: 49152,
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Let Agent inspect recent ipfs node logs?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'A bounded excerpt is added to this conversation and sent to your selected model at OpenAI (gpt-5.6-sol) to troubleshoot this problem.'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('local paths');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Share once');
+    expect(ctx.elements['agent-approval'].classList.contains('diagnostic-approval')).toBe(true);
+    expect(ctx.elements['agent-approval-approve'].classList.contains('secondary')).toBe(true);
+    expect(ctx.elements['agent-approval-approve'].classList.contains('primary')).toBe(false);
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(false);
+
+    ctx.elements['agent-approval-allow-conversation'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_diagnostics',
+      true,
+      { diagnosticScope: 'conversation' }
+    );
+  });
+
+  test('renders the exact classified node request as a one-shot approval', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Create a postage stamp';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_node_request',
+      action: 'node_request',
+      operation: 'node_request',
+      nodeRequest: {
+        service: 'ant',
+        transport: 'http',
+        request: {
+          method: 'POST',
+          path: '/stamps/100/20',
+          headers: { 'content-type': 'application/json' },
+          body: '{"immutable":false}',
+        },
+        effect: 'persistent_change',
+        classification: {
+          summary: 'Creates a durable postage batch.',
+          confidence: 0.96,
+          uncertainties: [],
+        },
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Allow this Ant node request?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'OpenAI using gpt-5.6-sol independently classified this request as persistent change.'
+    );
+    expect(ctx.elements['agent-node-request-details'].hidden).toBe(false);
+    expect(
+      ctx.elements['agent-node-request-summary'].children.map((child) => child.textContent)
+    ).toEqual([
+      'Request',
+      'POST /stamps/100/20',
+      'Effect',
+      'Persistent change',
+      'Classifier',
+      'Creates a durable postage batch.',
+      'Headers',
+      'content-type: application/json',
+      'Body',
+      '{"immutable":false}',
+    ]);
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_node_request',
+      true
+    );
+  });
+
+  test('renders an exact node lifecycle approval with current state and classifier result', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Restart IPFS';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_node_lifecycle',
+      action: 'node_lifecycle',
+      operation: 'node_lifecycle',
+      nodeLifecycle: {
+        service: 'ipfs',
+        action: 'restart',
+        beforeState: 'running',
+        effect: 'reversible_admin',
+        classification: {
+          summary: 'Restarts one Freedom-managed IPFS process.',
+          confidence: 0.99,
+          uncertainties: [],
+        },
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Restart the IPFS node?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Freedom will run it through the node manager and verify the resulting state.'
+    );
+    expect(
+      ctx.elements['agent-node-request-summary'].children.map((child) => child.textContent)
+    ).toEqual([
+      'Action',
+      'restart ipfs',
+      'Current state',
+      'running',
+      'Effect',
+      'Reversible admin change',
+      'Classifier',
+      'Restarts one Freedom-managed IPFS process.',
+    ]);
+  });
+
+  test('condenses same-origin download approval copy without repeating Download', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Download Ubuntu';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'file_download',
+      origin: 'https://ubuntu.com',
+      destinationOrigin: 'https://ubuntu.com',
+      label: 'Download Ubuntu 26.04 LTS amd64',
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Download Ubuntu 26.04 LTS amd64?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe('ubuntu.com');
+  });
+
+  test('renders an Agent-native wallet decision and sends the selected public account', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Connect my wallet';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_wallet',
+      action: 'wallet_connection',
+      origin: 'https://app.example',
+      destinationOrigin: 'https://app.example',
+      wallet: {
+        kind: 'connection',
+        chainId: 100,
+        chainName: 'Gnosis',
+        defaultWalletIndex: 2,
+        requiresUnlock: false,
+        wallets: [
+          {
+            index: 0,
+            name: 'Main Wallet',
+            address: '0x1111111111111111111111111111111111111111',
+            type: 'mnemonic',
+          },
+          {
+            index: 2,
+            name: 'Ledger',
+            address: '0x2222222222222222222222222222222222222222',
+            type: 'ledger',
+          },
+        ],
+      },
+    });
+
+    expect(ctx.elements['agent-wallet-approval-details'].hidden).toBe(false);
+    expect(
+      ctx.elements['agent-wallet-approval-summary'].children.some(
+        (child) => child.textContent === 'Gnosis'
+      )
+    ).toBe(true);
+    expect(ctx.elements['agent-wallet-account-field'].hidden).toBe(false);
+    expect(ctx.elements['agent-wallet-account'].children).toHaveLength(2);
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Connect once');
+
+    ctx.elements['agent-wallet-account'].value = '2';
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_wallet',
+      true,
+      { walletIndex: 2 }
+    );
+  });
+
+  test('does not apply a second click to a newly queued approval', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const approval = approvalId => ({ type: 'approval_requested', runId: 'run_test', approvalId,
+      action: 'browser_interaction', operation: 'browser_click', label: 'Continue', origin: 'https://example.test' });
+    ctx.emit(approval('first'));
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    ctx.emit(approval('second'));
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 2 });
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval.mock.calls).toEqual([['run_test', 'first', true]]);
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(true);
+  });
+
+  test('a delayed password unlock cannot approve a replacement request', async () => {
+    let finishUnlock;
+    const ctx = await loadAgentUi({ windowGlobals: { identity: {
+      getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }),
+      unlock: jest.fn(() => new Promise(resolve => { finishUnlock = resolve; })),
+    } } });
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'wallet_first',
+      action: 'wallet_transaction', wallet: { kind: 'transaction', requiresUnlock: true } });
+    ctx.elements['agent-wallet-password'].value = 'fixture password';
+    ctx.elements['agent-wallet-unlock-submit'].dispatch('click');
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'replacement',
+      action: 'browser_interaction', operation: 'browser_click', label: 'Continue' });
+    finishUnlock({ success: true });
+    await flush(); await flush();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+  });
+
+  test('sending guidance twice and pressing Enter on an empty composer do not stop the run', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.elements['agent-prompt'].value = 'Use a blue background';
+    ctx.elements['agent-run'].dispatch('click', { detail: 1 });
+    ctx.elements['agent-run'].dispatch('click', { detail: 2 });
+    ctx.elements['agent-prompt'].dispatch('keydown', { key: 'Enter', preventDefault: jest.fn() });
+    await flush();
+    expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
+  });
+
+  test('keeps a locked transaction approval in the composer until password unlock succeeds', async () => {
+    const unlock = jest.fn().mockResolvedValue({ success: true });
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        identity: {
+          getStatus: jest
+            .fn()
+            .mockResolvedValueOnce({ isUnlocked: false })
+            .mockResolvedValue({ isUnlocked: true }),
+          unlock,
+        },
+        quickUnlock: {
+          canUseTouchId: jest.fn().mockResolvedValue(false),
+          isEnabled: jest.fn().mockResolvedValue(false),
+          unlock: jest.fn(),
+        },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Send transaction';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_tx',
+      action: 'wallet_transaction',
+      origin: 'https://app.example',
+      wallet: {
+        kind: 'transaction',
+        chainId: 100,
+        chainName: 'Gnosis',
+        requiresUnlock: true,
+        account: {
+          index: 0,
+          name: 'Main Wallet',
+          address: '0x1111111111111111111111111111111111111111',
+          type: 'mnemonic',
+        },
+        to: '0x3333333333333333333333333333333333333333',
+        value: '1.0 xDAI',
+        maxFee: '0.000024 xDAI',
+      },
+    });
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-wallet-unlock'].hidden).toBe(false);
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+
+    ctx.elements['agent-wallet-password'].value = 'secret';
+    ctx.elements['agent-wallet-unlock-submit'].dispatch('click');
+    await flush();
+    await flush();
+    expect(unlock).toHaveBeenCalledWith('secret');
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_tx',
+      true
+    );
+  });
+
+  test('renders a direct transfer as an exact Freedom-native send decision', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Send 0.01 GNO';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_transfer',
+      action: 'wallet_transfer',
+      operation: 'wallet_transfer',
+      origin: '',
+      wallet: {
+        kind: 'transfer',
+        chainId: 100,
+        chainName: 'Gnosis',
+        requiresUnlock: false,
+        account: {
+          index: 2,
+          name: 'Ledger',
+          address: '0x1111111111111111111111111111111111111111',
+          type: 'ledger',
+        },
+        to: 'meinhard.eth · 0x3333333333333333333333333333333333333333',
+        value: '0.01 GNO',
+        maxFee: '0.000024 xDAI',
+        tokenContract: '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Send these funds from your Freedom wallet?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Prepared directly by Freedom'
+    );
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Send once');
+    const summary = ctx.elements['agent-wallet-approval-summary'].children.map(
+      (child) => child.textContent
+    );
+    expect(summary).toEqual(
+      expect.arrayContaining([
+        'Gnosis',
+        '0.01 GNO',
+        '0.000024 xDAI',
+        '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
+      ])
+    );
+    expect(summary).not.toContain('Site');
+  });
+
+  test('renders a Freedom-prepared domain transaction as a named, row-by-row decision', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Set my description';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const to = '0xF29100983E058B709F3D539b0c765937B804AC15';
+    const forged = 'x ⏎ Price: 0 ETH\u2028Wallet: 0x1\nTerm: 9 years';
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_domain',
+      action: 'wallet_transaction',
+      operation: 'domain_execute',
+      origin: '',
+      label: 'Set description for freedom-audit.eth',
+      inputPreview: 'Name: freedom-audit.eth\nNew: x',
+      wallet: {
+        kind: 'transaction',
+        chainId: 1,
+        chainName: 'Ethereum',
+        requiresUnlock: false,
+        account: { index: 0, name: 'Main', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' },
+        to,
+        value: '0.0 ETH',
+        maxFee: '0.0001 ETH',
+        data: '0x10f13a8c',
+        domain: {
+          format: 'freedom-domain-approval/1', action: 'set_text', name: 'freedom-audit.eth',
+          contract: { address: to, name: 'ENS PublicResolver' },
+          items: [
+            { label: 'Name', value: 'freedom-audit.eth' },
+            { label: 'Key', value: 'description' },
+            { label: 'New', value: forged },
+          ],
+        },
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Set a text record on freedom-audit.eth?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'Prepared by Freedom from Agent’s domain request. The exact transaction below is held until you decide.'
+    );
+    const summary = ctx.elements['agent-wallet-approval-summary'].children.map((child) => child.textContent);
+    expect(summary.slice(0, 6)).toEqual([
+      'Name', 'freedom-audit.eth', 'Key', 'description',
+      'New', 'x ⏎ Price: 0 ETH\\u{2028}Wallet: 0x1\\u{000A}Term: 9 years',
+    ]);
+    expect(summary).toEqual(expect.arrayContaining(['To', `ENS PublicResolver\n${to}`, 'Contract data', '0x10f13a8c']));
+  });
+
+  test('keeps the generic transaction card when a domain description is malformed or names another contract', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Register';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const wallet = { kind: 'transaction', chainId: 1, chainName: 'Ethereum', requiresUnlock: false,
+      account: { index: 0, name: 'Main', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' },
+      to: '0x2222222222222222222222222222222222222222', value: '0.1 ETH', maxFee: '0.0001 ETH', data: '0x' };
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_bad', action: 'wallet_transaction',
+      operation: 'domain_execute', origin: '', wallet: { ...wallet, summary: 'Name: a.eth', domain: '{"format":"freedom-domain-approval/1"}' } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Approve this wallet transaction?');
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_other', action: 'wallet_transaction',
+      operation: 'domain_execute', origin: '', wallet: { ...wallet, domain: {
+        format: 'freedom-domain-approval/1', action: 'register', name: 'a.eth', durationSeconds: 31536000,
+        contract: { address: '0x59E16fcCd424Cc24e280Be16E11Bcd56fb0CE547', name: 'ENS ETHRegistrarController' },
+        items: [{ label: 'Name', value: 'a.eth' }] } } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Register a.eth for 1 year?');
+    const summary = ctx.elements['agent-wallet-approval-summary'].children.map((child) => child.textContent);
+    expect(summary).toContain('0x2222222222222222222222222222222222222222');
+    expect(summary).not.toContain('ENS ETHRegistrarController\n0x2222222222222222222222222222222222222222');
+  });
+
+  test.each(['signature', 'transaction'])('uses the main-process Touch ID result for an Agent-native %s approval', async kind => {
+    const identityUnlock = jest.fn().mockResolvedValue({ success: true });
+    const quickUnlock = jest.fn().mockResolvedValue({
+      success: true,
+    });
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        identity: {
+          getStatus: jest.fn().mockResolvedValue({ isUnlocked: false }),
+          unlock: identityUnlock,
+        },
+        quickUnlock: {
+          canUseTouchId: jest.fn().mockResolvedValue(true),
+          isEnabled: jest.fn().mockResolvedValue(true),
+          unlock: quickUnlock,
+        },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Sign message';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_signature',
+      action: `wallet_${kind}`,
+      origin: 'https://app.example',
+      wallet: {
+        kind,
+        chainId: 100,
+        chainName: 'Gnosis',
+        requiresUnlock: true,
+        account: {
+          index: 0,
+          name: 'Main Wallet',
+          address: '0x1111111111111111111111111111111111111111',
+          type: 'mnemonic',
+        },
+        signatureType: 'Personal message',
+        summary: 'Approve this exact message',
+      },
+    });
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    await flush();
+
+    expect(quickUnlock).toHaveBeenCalledTimes(1);
+    expect(identityUnlock).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-approval-message'].classList.contains('error')).toBe(false);
+    expect(ctx.elements['agent-wallet-unlock'].hidden).toBe(true);
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_signature',
+      true
+    );
+  });
+
+  test('unsuccessful Touch ID keeps the wallet decision pending without a second unlock', async () => {
+    const identityUnlock = jest.fn();
+    const ctx = await loadAgentUi({ windowGlobals: {
+      identity: { getStatus: jest.fn().mockResolvedValue({ isUnlocked: false }), unlock: identityUnlock },
+      quickUnlock: {
+        canUseTouchId: jest.fn().mockResolvedValue(true), isEnabled: jest.fn().mockResolvedValue(true),
+        unlock: jest.fn().mockResolvedValue({ success: false, error: 'Touch ID cancelled' }),
+      },
+    } });
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_tx',
+      action: 'wallet_transaction', wallet: { kind: 'transaction', requiresUnlock: true } });
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush(); await flush();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+    expect(identityUnlock).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-approval-message'].textContent).toBe('Touch ID cancelled');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(false);
+  });
+
+  test('uses the native picker as the final consent surface for a file upload', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Upload my résumé';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_upload',
+      action: 'file_upload',
+      operation: 'browser_upload',
+      origin: 'https://jobs.example',
+      destinationOrigin: 'https://jobs.example',
+      label: 'Résumé or CV',
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Choose a file to share with jobs.example?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('For “Résumé or CV”');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('never shows Agent');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Choose file…');
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_upload',
+      true
+    );
+    ctx.emit({
+      type: 'approval_resolved',
+      runId: 'run_test',
+      approvalId: 'approval_upload',
+      decision: 'approved',
+    });
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Allow once');
+  });
+
+  test('renders a public Swarm publication as an Agent-native decision and receipt', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Publish the attached site';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_publish',
+      action: 'swarm_publish',
+      operation: 'swarm_publish',
+      label: 'website',
+      publication: {
+        kind: 'folder',
+        name: 'website',
+        public: true,
+        indexDocument: 'index.html',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “website” to Swarm?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('snapshot listed below');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('public, unencrypted');
+    expect(ctx.elements['agent-publication-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-publication-summary'].textContent).not.toContain('/Users/');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    // swarm_publish is approved one publication at a time: no conversation-wide grant.
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_publish',
+      true
+    );
+
+    const publication = {
+      publicationId: `swarm_pub_${'a'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'folder',
+      name: 'website',
+      public: true,
+      progress: 100,
+      reference: 'b'.repeat(64),
+      bzzUrl: `bzz://${'b'.repeat(64)}`,
+      verified: true,
+    };
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'publish_call',
+      operation: 'swarm_publish',
+      intent: 'Publishing website',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'publish_call',
+      operation: 'swarm_publish',
+      status: 'succeeded',
+      label: 'Published website to Swarm',
+      publication,
+    });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
+    expect(card.dataset.publicationId).toBe(publication.publicationId);
+    card.children[1].children[0].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.openAgentPublication).toHaveBeenCalledWith(publication.bzzUrl);
+  });
+
+  test('a private draft link is its own action with its own fixed notice, postage and receipt (#741 E, G)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_draft',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+      publication: { kind: 'folder', name: 'dist', workspacePath: 'dist', target: 'draft', public: false, encrypted: true,
+        postage: { status: 'ready', batchId: 'c'.repeat(64), usable: true, ttlSeconds: 3 * 86_400 + 5, expiry: 'soon',
+          estimatedCostPlur: '123456789012', estimatedChunks: 6 },
+        findings: [{ id: 'finding_1', path: 'index.html', kind: 'third-party', rule: 'third-party-script', label: 'Script from a third-party site', line: 4, excerpt: 'https://unpkg.com', blocking: false }] },
+    });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Create a private draft link for “dist”?');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Create private draft link');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('publishing it publicly later needs its own approval');
+    expect(ctx.elements['agent-publication-permanent'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-draft-notice'].hidden).toBe(false);
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(true);
+    const summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('Private draft link (encrypted)');
+    expect(summary).toContain('cccccccc…cccccccc');
+    expect(summary).toContain('≈ 0.0000123 xBZZ of this batch’s prepaid storage (about 6 chunks). Nothing new is bought.');
+    expect(summary).toContain('3 days');
+    const warning = ctx.elements['agent-publication-postage-warning'];
+    expect(warning.hidden).toBe(false);
+    expect(warning.dataset.level).toBe('warn');
+    expect(warning.textContent).toBe('This postage batch expires in 3 days. After that the content can no longer be retrieved unless the batch is extended in Storage.');
+    const finding = ctx.elements['agent-publication-findings'].querySelectorAll('.agent-publication-finding-badge')[0];
+    expect(finding.textContent).toBe('Third party · warning');
+    await new Promise(resolve => setTimeout(resolve, 650));
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(false);
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_draft', true);
+
+    const encrypted = 'e'.repeat(128);
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'draft_call', operation: 'swarm_publish', intent: 'Publishing dist' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'draft_call', operation: 'swarm_publish', status: 'succeeded',
+      label: 'Published dist', publication: { publicationId: `swarm_pub_${'d'.repeat(24)}`, state: 'completed', applicationState: 'applied',
+        kind: 'folder', name: 'dist', target: 'draft', public: false, encrypted: true, progress: 100, reference: encrypted,
+        bzzUrl: `bzz://${encrypted}`, verified: true, message: 'Private draft link ready · retrieval verified' } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
+    expect(card.children[0].children.at(-1).textContent).toBe('Private draft link ready · retrieval verified · encrypted, anyone with the link can read it');
+    expect(card.children[1].children.map(button => button.textContent)).toEqual(['Open', 'Copy draft link']);
+    card.children[1].children[1].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.copyText).toHaveBeenCalledWith(`bzz://${encrypted}`);
+  });
+
+  test('a stable-address publication says older versions stay retrievable, and an expired or missing batch is explained (#741 F, G)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const ask = (approvalId, publication) => ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId,
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist', publication: { kind: 'folder', name: 'dist', target: 'public', public: true, ...publication } });
+    ask('approval_stable', { stableAddress: { name: 'my-site', owner: `0x${'1'.repeat(40)}`, currentBzzUrl: `bzz://${'f'.repeat(64)}` },
+      postage: { status: 'ready', batchId: 'c'.repeat(64), usable: true, ttlSeconds: 0, expiry: 'expired' } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “dist” to Swarm?');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    expect(ctx.elements['agent-publication-permanent'].hidden).toBe(false);
+    expect(ctx.elements['agent-publication-draft-notice'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(false);
+    let summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('my-site · owned by your Swarm identity');
+    expect(summary).toContain(`Updates bzz://${'f'.repeat(64)}`);
+    expect(summary).toContain('Expired');
+    expect(ctx.elements['agent-publication-postage-warning'].dataset.level).toBe('critical');
+    expect(ctx.elements['agent-publication-postage-warning'].textContent).toContain('has expired');
+
+    ctx.elements['agent-approval-decline'].dispatch('click');
+    await flush();
+    ask('approval_none', { postage: { status: 'none' } });
+    expect(ctx.elements['agent-publication-stable-notice'].hidden).toBe(true);
+    expect(ctx.elements['agent-publication-postage-warning'].hidden).toBe(true);
+    summary = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summary).toContain('No usable batch yet. Freedom checks again before uploading and never buys postage on its own.');
+  });
+
+  test('a stable address with no local record says whether it already exists, never assuming it is new (#741 F)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const owner = `0x${'1'.repeat(40)}`;
+    const summaryFor = async (approvalId, stableAddress) => {
+      ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId, action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+        publication: { kind: 'folder', name: 'dist', target: 'public', public: true, stableAddress: { name: 'site', owner, ...stableAddress } } });
+      const text = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+      ctx.elements['agent-approval-decline'].dispatch('click');
+      await flush();
+      return text;
+    };
+    const live = await summaryFor('a1', { existing: 'yes', latestIndex: 2 });
+    expect(live).toContain('This address already exists (3 earlier versions). Publishing points it at this content, and anything linked to it, such as an ENS name, will show this publication');
+    expect(live).not.toContain('A new address');
+    expect(await summaryFor('a2', { existing: 'no' })).toContain('No earlier version of this address was found on the network, so publishing creates it');
+    for (const [id, state] of [['a3', { existing: 'unknown' }], ['a4', {}]]) {
+      const text = await summaryFor(id, state);
+      expect(text).toContain('Freedom could not check whether this address already exists');
+      expect(text).not.toContain('A new address');
+    }
+  });
+
+  test('publication findings block Publish publicly until each secret is resolved', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_findings',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'dist',
+      publication: {
+        kind: 'folder', name: 'dist', workspacePath: 'dist', public: true,
+        files: [{ path: 'index.html', bytes: 20 }, { path: 'app.js', bytes: 40 }, { path: 'keys.js', bytes: 10 }],
+        excluded: [{ path: '.env', reason: 'Credential file' }],
+        stripped: [{ path: 'photo.jpg', reason: 'Image metadata (EXIF, GPS, XMP) removed' }],
+        findings: [
+          { id: 'finding_1', path: 'app.js', kind: 'secret', rule: 'stripe-secret-key', label: 'Stripe secret key', line: 3, excerpt: 'sk_liv•••••••• (31 characters)', blocking: true },
+          { id: 'finding_2', path: 'index.html', kind: 'personal', rule: 'email-address', label: 'Email address', line: 1, excerpt: 'a•••@proton.me', blocking: false },
+          { id: 'finding_3', path: 'keys.js', kind: 'secret', rule: 'ethereum-private-key', label: 'Ethereum private key', line: 1, excerpt: '4c0883••••', blocking: true },
+        ],
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 650));
+    const summaryText = ctx.elements['agent-publication-summary'].children.map(child => child.textContent).join('\n');
+    expect(summaryText).toContain('.env · Credential file');
+    expect(summaryText).toContain('photo.jpg · Image metadata (EXIF, GPS, XMP) removed');
+    const findings = ctx.elements['agent-publication-findings'];
+    expect(findings.hidden).toBe(false);
+    const groups = findings.querySelectorAll('.agent-publication-finding-group');
+    expect(groups.map(group => group.dataset.path)).toEqual(['app.js', 'keys.js', 'index.html']);
+    expect(groups[2].querySelector('.agent-publication-anyway')).toBeNull(); // warnings never block
+    expect(groups[0].querySelector('.agent-publication-finding-excerpt').textContent).toBe('sk_liv•••••••• (31 characters)');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish publicly');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(true);
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+
+    const anyway = groups[0].querySelector('.agent-publication-anyway');
+    anyway.checked = true;
+    anyway.dispatch('change');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(true);
+    groups[1].querySelector('.agent-publication-exclude').dispatch('click');
+    expect(groups[1].querySelector('.agent-publication-exclude').textContent).toBe('Include file');
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(false);
+
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_findings', true, {
+      publicationExclusions: ['keys.js'], publicationAcknowledged: ['finding_1'],
+    });
+  });
+
+  test('Ask Agent to fix declines with only the file path', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested', runId: 'run_test', approvalId: 'approval_fix',
+      action: 'swarm_publish', operation: 'swarm_publish', label: 'Text',
+      publication: {
+        kind: 'text', name: 'Text', public: true, text: 'key',
+        findings: [{ id: 'finding_1', path: 'Text', kind: 'secret', rule: 'jwt', label: 'JSON Web Token', line: 1, excerpt: 'eyJhbG••••', blocking: true }],
+      },
+    });
+    const group = ctx.elements['agent-publication-findings'].querySelector('.agent-publication-finding-group');
+    expect(group.querySelector('.agent-publication-exclude')).toBeNull(); // a single text cannot drop a file
+    group.querySelector('.agent-publication-fix').dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_fix', false, {
+      publicationFix: { paths: ['Text'] },
+    });
+  });
+
+  test('identifies a managed project source in the Swarm approval without a host path', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_workspace_publish',
+      action: 'swarm_publish',
+      operation: 'swarm_publish',
+      label: 'dist',
+      publication: {
+        kind: 'folder',
+        name: 'dist',
+        workspacePath: 'apps/site/dist',
+        public: true,
+        indexDocument: 'index.html',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “dist” to Swarm?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'managed project source snapshot listed below'
+    );
+    const summaryText = ctx.elements['agent-publication-summary'].children
+      .map((child) => child.textContent)
+      .join(' ');
+    expect(summaryText).toContain('Project folder');
+    expect(summaryText).toContain('apps/site/dist');
+    expect(summaryText).not.toContain('/Users/');
+  });
+
+  test('Windows workspace disclosure explains required networking without implying offline execution', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'windows-workspace',
+      action: 'workspace_execution', operation: 'write', workspace: {
+        available: true, backend: 'windows-elevated', network: 'approval_required',
+        offlineCommandsAvailable: false, filesystem: 'windows_broad_reads_scoped_writes',
+      } });
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('Strictly offline shell commands are unavailable on Windows');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('Built-in file tools remain available');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('You approve it once or for the conversation; the automatic reviewer never grants it.');
+  });
+
+  test('renders managed workspace enablement as one Agent-native disclosure', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_workspace',
+      action: 'workspace_execution',
+      operation: 'bash',
+      workspace: {
+        available: true,
+        backend: 'macos-seatbelt',
+        network: 'disabled',
+        filesystem: 'managed_workspace_only',
+        cancellationGuarantee: 'best_effort',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Enable a managed project workspace for this conversation?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).not.toContain('Network');
+    expect(ctx.elements['agent-approval-origin'].textContent).not.toContain('best-effort');
+    expect(ctx.elements['agent-workspace-permission-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'removes it when the conversation is deleted'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'root’s .git metadata remains read-only'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'separately approved executable packages'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('Nested repositories are not recursively protected');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'does not grant internet, localhost, or LAN access'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('best-effort');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).not.toContain('/Users/');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Enable workspace');
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_workspace',
+      true
+    );
+  });
+
+  test('renders a project editing sheet with its scope and no allow-once ambiguity', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_project',
+      action: 'project_write', operation: 'request_permissions', label: 'Commit cookbook changes',
+      projectAccess: { name: 'Cookbook', mode: 'write', scope: 'conversation' } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Allow editing “Cookbook”?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('local Git commits');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('revoke it or restart Freedom');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Allow editing');
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+    ctx.elements['agent-approval-approve'].dispatch('click'); await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_project', true);
+  });
+
+  test('renders exact executable access and can grant it for the conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_executable',
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Run the project validation script',
+      workspacePermission: {
+        kind: 'command_access',
+        command: 'node validate.js',
+        workingDirectory: 'site',
+        commands: [
+          {
+            name: 'node',
+            status: 'requires_permission',
+            executablePath: '/opt/homebrew/Cellar/node/24/bin/node',
+            rootPath: '/opt/homebrew/Cellar/node/24',
+          },
+        ],
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “node validate.js”?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'Agent request: Run the project validation script\nInstalled tools needing workspace access: node.'
+    );
+    expect(ctx.elements['agent-workspace-permission-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'Working directory: site'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      '/opt/homebrew/Cellar/node/24'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'cannot write there'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'Network access is not part of this request'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'Agent says: Run the project validation script'
+    );
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Allow once');
+    expect(ctx.elements['agent-approval'].classList.contains('conversation-approval')).toBe(true);
+    expect(ctx.elements['agent-approval-approve'].classList.contains('secondary')).toBe(true);
+    expect(ctx.elements['agent-approval-approve'].classList.contains('primary')).toBe(false);
+    expect(ctx.elements['agent-approval-allow-conversation'].textContent).toBe(
+      'Allow for conversation'
+    );
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(false);
+
+    ctx.elements['agent-approval-allow-conversation'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_executable',
+      true,
+      { workspacePermissionScope: 'conversation' }
+    );
+  });
+
+  test('shows the network qualifier above collapsed command-specific details', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_network',
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Install three@0.180.0 from the npm registry into aoe-demo',
+      workspacePermission: {
+        kind: 'command_access',
+        command: 'npm install',
+        workingDirectory: '.',
+        commands: [],
+        network: {
+          posture: 'full',
+          publicInternet: true,
+          hostLoopback: true,
+          privateLan: true,
+          hostAbstractUnixSockets: 'reachable',
+        },
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “npm install”?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'Agent request: Install three@0.180.0 from the npm registry into aoe-demo\nWith access to the internet, localhost, and LAN.'
+    );
+    expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'public internet, services on this computer’s localhost, and private/LAN addresses'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'host abstract Unix sockets'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'keeps the disclosed network access available'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).not.toContain(
+      'package access'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'Agent says: Install three@0.180.0 from the npm registry into aoe-demo'
+    );
+  });
+
+  test('presents inline Swarm text as text rather than inventing a file', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_text',
+      action: 'swarm_publish',
+      operation: 'swarm_publish',
+      label: 'Text',
+      publication: {
+        kind: 'text',
+        name: 'Text',
+        public: true,
+        contentType: 'text/plain; charset=utf-8',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish this text to Swarm?');
+    expect(ctx.elements['agent-publication-summary'].textContent).not.toContain('.txt');
+
+    const publication = {
+      publicationId: `swarm_pub_${'c'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'text',
+      name: 'Text',
+      public: true,
+      reference: 'd'.repeat(64),
+      bzzUrl: `bzz://${'d'.repeat(64)}`,
+      verified: true,
+    };
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'publish_text',
+      operation: 'swarm_publish',
+      intent: 'Publishing text',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'publish_text',
+      operation: 'swarm_publish',
+      status: 'succeeded',
+      label: 'Published text to Swarm',
+      publication,
+    });
+
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
+    expect(card.children[0].children[0].textContent).toBe('Text');
+    expect(card.textContent).not.toContain('.txt');
+  });
+
+  test('keeps the conversation reusable after a failed run', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'failed',
+      error: {
+        code: 'RUN_FAILED',
+        message: 'The agent could not complete this turn',
+      },
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('failed');
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'The agent could not complete this turn'
+    );
+    ctx.elements['agent-prompt'].value = 'Try a different approach';
+    ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    expect(ctx.elements['agent-run'].dataset.action).toBe('send');
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test.each([
+    ['workspace_history', 'PROJECT_READ_ONLY', 'Project is read-only. Agent can request editing access if needed'],
+    ['workspace_history', 'PROJECT_RECONNECT_REQUIRED', 'Reconnect the project from its menu to continue'],
+    ['workspace_history', 'PROJECT_CHANGED', 'Project moved or became unavailable. Reconnect it to continue'],
+    ['workspace_history', 'WORKSPACE_HISTORY_UNAVAILABLE', 'Git operation unavailable. Inspect repository state before retrying'],
+    ['workspace_history', 'WORKSPACE_HISTORY_INVALID_REQUEST', 'Project history request is missing or has invalid arguments'],
+    ['workspace_history', 'WORKSPACE_HISTORY_INVALID_PATH', 'Project history needs an exact file path, not a directory'],
+    ['workspace_history', 'WORKSPACE_HISTORY_REVIEW_REQUIRED', 'Checkpoint needs fresh file reviews before it can be saved'],
+    ['workspace_history', 'WORKSPACE_PROTECTED_PATH', 'Blocked protected workspace path'],
+    ['workspace_history', 'INTERNAL_ERROR', 'Git operation failed unexpectedly'],
+    ['workspace_history', 'UNKNOWN_GIT_ERROR', 'Git operation failed'],
+    ['bash', 'WORKSPACE_COMMAND_NOT_FOUND', 'Command unavailable in this workspace; check installed-tool access before retrying'],
+    ['request_permissions', 'WORKSPACE_OPERATION_CANCELLED', 'Project operation was stopped'],
+    ['request_permissions', 'UNKNOWN_PERMISSION_ERROR', 'Workspace operation failed'],
+    ['write_stdin', 'UNKNOWN_PROCESS_ERROR', 'Workspace operation failed'],
+  ])('renders %s failures as workspace errors (%s)', async (operation, errorCode, message) => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'bash_missing',
+      operation,
+      intent: 'Running missing-tool',
+      label: 'Ran missing-tool',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'bash_missing',
+      operation,
+      status: 'failed',
+      errorCode,
+      label: 'Workspace operation failed — missing-tool',
+    });
+
+    const row = ctx.elements['agent-transcript'].querySelector('.agent-tool-list').children[0];
+    expect(row.children[1].textContent).toContain(message);
+    expect(row.children[1].textContent).not.toContain('Browser action failed');
+    expect(ctx.elements['agent-run-message'].textContent).toContain(message);
+  });
+
+  test('reconciles a yielded workspace process after its Agent run has finished', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      userText: 'Start the worker',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      toolCallId: 'tool_process',
+      operation: 'bash',
+      intent: 'Starting the worker',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      toolCallId: 'tool_process',
+      operation: 'bash',
+      status: 'succeeded',
+      label: 'Process still running',
+      workspace: {
+        state: 'running',
+        processId: 'workspace_process_1234567890abcdef12345678',
+        terminationScope: 'pending',
+      },
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      status: 'completed',
+      durationMs: 12_000,
+      actionCount: 1,
+    });
+
+    const row = ctx.elements['agent-transcript'].querySelector('.agent-tool-item');
+    expect(row.children[1].textContent).toBe('Process still running');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      toolCallId: 'tool_process',
+      operation: 'bash',
+      status: 'succeeded',
+      label: 'Ran the worker',
+      workspace: {
+        state: 'completed',
+        processId: 'workspace_process_1234567890abcdef12345678',
+        terminationScope: 'pid_namespace',
+      },
+    });
+
+    expect(row.children[0].textContent).toBe('✓');
+    expect(row.children[1].textContent).toBe('Ran the worker');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+  });
+
+  test('connects Ollama in place and makes discovered models available without opening the composer', async () => {
+    const connection = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...connection, connections: [connection] },
+      }),
+    } });
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(ctx.elements['agent-provider-save'].textContent).toBe('Connect to Ollama');
+    expect(ctx.elements['agent-provider-save'].classList.contains('primary')).toBe(true);
+    expect(ctx.elements['agent-provider-save'].classList.contains('secondary')).toBe(false);
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.configureOllamaAgentProvider).toHaveBeenCalledWith(undefined, 'http://127.0.0.1:11434/v1');
+    expect(ctx.openSettings).toHaveBeenCalled();
+    expect(ctx.elements['agent-workspace-view'].hidden).toBe(false);
+    expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
+    const rows = ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row');
+    expect(rows.map((row) => row.children[0].querySelector('.agent-model-name').textContent)).toEqual(['qwen3:8b']);
+    expect(ctx.elements['agent-provider-save'].textContent).toBe('Save connection');
+    expect(ctx.elements['agent-provider-save'].classList.contains('secondary')).toBe(true);
+    expect(ctx.elements['agent-provider-save'].classList.contains('primary')).toBe(false);
+    expect(ctx.elements['agent-sidebar-back'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
+    ctx.electronAPI.refreshAgentProviderModels = jest.fn().mockResolvedValue({
+      ok: true, catalog: [], status: { configured: true, ...connection, connections: [{ ...connection, modelIds: ['qwen3:8b', 'new-model'] }] },
+    });
+    ctx.elements['agent-model-refresh'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('ollama', undefined);
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'new-model']);
+  });
+
+  test('a failed connect reports under the button, hides the placeholder and points at Ollama (#858)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const failure = 'Could not load models from Ollama. Make sure Ollama is running and check the local URL in connection settings.';
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn()
+        .mockResolvedValueOnce({ ok: false, error: { code: 'AGENT_OLLAMA_DISCOVERY_FAILED', message: failure } })
+        .mockResolvedValueOnce({ ok: true, status: { configured: true, ...ollama, connections: [ollama] } }),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    const install = ctx.elements['agent-ollama-install'];
+    const placeholder = ctx.elements['agent-provider-models-empty'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(placeholder.hidden).toBe(false);
+    expect(install.hidden).toBe(true);
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe(failure);
+    expect(slot.classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('');
+    expect(install.hidden).toBe(false);
+    expect(placeholder.hidden).toBe(true);
+    // Re-rendering the provider form keeps the placeholder hidden behind the error.
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(placeholder.hidden).toBe(true);
+
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('Ollama models ready');
+    expect(slot.classList.contains('error')).toBe(false);
+    expect(install.hidden).toBe(true);
+  });
+
+  test.each([
+    ['AGENT_OLLAMA_NO_MODELS', 'Ollama is running, but no models are installed. Download a model in Ollama, then connect again.'],
+    ['AGENT_OLLAMA_MODEL_LIMIT', 'This Ollama server has more than the supported 128 models.'],
+    ['AGENT_PROVIDER_INVALID', 'Ollama URL must be absolute'],
+    [undefined, undefined],
+  ])('a %s connect error does not suggest downloading Ollama (#858)', async (code, message) => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue(
+        code ? { ok: false, error: { code, message } } : { ok: false }
+      ),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe(message || 'Could not save model');
+    expect(slot.classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
+    expect(ctx.elements['agent-ollama-install'].hidden).toBe(true);
+  });
+
+  test('a later bottom-line report clears the Connect result under the button (#858)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({ ok: true, status: { configured: true, ...ollama, connections: [ollama] } }),
+      removeAgentProvider: jest.fn().mockResolvedValue({ ok: false }),
+    } });
+    const slot = ctx.elements['agent-provider-connect-message'];
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('Ollama models ready');
+    ctx.elements['agent-provider-disconnect'].dispatch('click');
+    ctx.elements['agent-provider-disconnect-accept'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('Could not disconnect Ollama');
+    expect(slot.textContent).toBe('');
+  });
+
+  test('changing the privacy setting clears a Connect error and brings the placeholder back (#858)', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All'], ['tee', 'TEE only']], models: [] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: true, catalog: [{ ...definition, models: [
+        { id: 'open', name: 'Open', privacy: 'anonymized', tools: true },
+      ] }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-privacy-policy'].value = 'tee';
+    ctx.elements['agent-api-key'].value = 'test-key';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    await flush();
+    const slot = ctx.elements['agent-provider-connect-message'];
+    expect(slot.textContent).toBe('No supported models meet this privacy setting');
+    ctx.elements['agent-privacy-policy'].value = 'standard';
+    ctx.elements['agent-privacy-policy'].dispatch('change');
+    expect(slot.textContent).toBe('');
+    expect(slot.classList.contains('error')).toBe(false);
+  });
+
+  test('a connect-time catalog failure does not promise a previous catalog (#858)', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All']], models: [] };
+    const refresh = jest.fn()
+      .mockResolvedValueOnce({ ok: false, error: {
+        code: 'AGENT_CATALOG_UNAVAILABLE',
+        message: 'Could not refresh models. The previous catalog is still available.',
+      } })
+      .mockRejectedValueOnce(new Error('ipc'))
+      .mockResolvedValueOnce({ ok: false, error: {
+        code: 'AGENT_CATALOG_AUTH_FAILED', message: 'The provider did not accept this API key.',
+      } })
+      .mockResolvedValueOnce({ ok: false });
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: refresh,
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    const slot = ctx.elements['agent-provider-connect-message'];
+    const connect = async () => {
+      ctx.elements['agent-api-key'].value = 'test-key';
+      ctx.elements['agent-provider-save'].dispatch('click');
+      await flush();
+      await flush();
+    };
+    await connect();
+    expect(slot.textContent).toBe('Could not load this provider’s models. Try connecting again.');
+    expect(slot.classList.contains('error')).toBe(true);
+    await connect();
+    expect(slot.textContent).toBe('Could not load this provider’s models. Try connecting again.');
+    await connect();
+    expect(slot.textContent).toBe('The provider did not accept this API key.');
+    // A manual refresh still reports in the bottom line with the old wording.
+    ctx.elements['agent-model-refresh'].dispatch('click');
+    await flush();
+    expect(slot.textContent).toBe('');
+    expect(ctx.elements['agent-provider-message'].textContent).toBe(
+      'Could not refresh models. Your previous catalog is still available.'
+    );
+  });
+
+  test('a failed hosted connect reports under the button without the Ollama pointer (#858)', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Invalid API key' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-provider-select'].value = 'openai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-model-select'].value = ctx.elements['agent-model-select'].children[0]?.value || 'gpt-5';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-connect-message'].textContent).toBeTruthy();
+    expect(ctx.elements['agent-provider-connect-message'].classList.contains('error')).toBe(true);
+    expect(ctx.elements['agent-ollama-install'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
+  });
+
+  test('Ollama details describe the connected model right after connecting (#846)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama] },
+      }),
+    } });
+    const details = () => ctx.elements['agent-model-details'].textContent;
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    // Right after connecting: the connected model, not "No matching models".
+    expect(details()).toBe('qwen3:8b · Tool support not reported');
+    expect(ctx.elements['agent-model-details'].hidden).toBe(false);
+  });
+
+  test('Ollama details do not keep another provider\'s model on a later visit (#846)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{
+        providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4', contextWindow: 8192 }],
+      }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const details = () => ctx.elements['agent-model-details'].textContent;
+    // Another provider's page fills the same line with its own model...
+    ctx.elements['agent-provider-select'].value = 'near-ai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(details()).toBe('gpt-4 · 8,192 context · Tool support not reported');
+
+    // ...which must not survive into Ollama's page on a later visit.
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(details()).toBe('qwen3:8b · Tool support not reported');
+  });
+
+  test('a connected provider page offers Save only for unsaved changes, names the default model and bills nothing locally (#859)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4', hasApiKey: true };
+    const local = {
+      kind: 'compatible', providerId: 'custom-local', name: 'Local server', modelId: 'm1',
+      baseUrl: 'http://localhost:8080/v1', models: [{ id: 'm1' }],
+    };
+    const remote = { ...local, providerId: 'custom-remote', baseUrl: 'https://models.example/v1' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted, local, remote] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [
+        { providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4' }] },
+        { providerId: 'custom-local', name: 'Local server', models: [{ id: 'm1', name: 'm1' }] },
+        { providerId: 'custom-remote', name: 'Remote server', models: [{ id: 'm1', name: 'm1' }] },
+      ] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const save = ctx.elements['agent-provider-save'];
+    const note = () => ctx.elements['agent-provider-test-note'].textContent;
+    // Opened the way Settings opens a connected provider, with its saved values loaded.
+    const ids = ['ollama', 'near-ai', 'custom-local', 'custom-remote'];
+    const open = (providerId) => {
+      const rows = ctx.elements['agent-connected-provider-list'].children;
+      if (ids.includes(providerId)) {
+        expect(rows).toHaveLength(ids.length);
+        rows[ids.indexOf(providerId)].dispatch('click');
+        expect(ctx.elements['agent-provider-select'].value).toBe(providerId);
+      } else {
+        ctx.elements['agent-provider-select'].value = providerId;
+        ctx.elements['agent-provider-select'].dispatch('change');
+      }
+    };
+
+    open('ollama');
+    expect(ctx.elements['agent-provider-disconnect'].hidden).toBe(false);
+    expect(save.hidden).toBe(true);
+    const url = ctx.elements['agent-ollama-url'];
+    url.value = 'http://127.0.0.1:11500/v1';
+    url.dispatch('input');
+    expect(save.hidden).toBe(false);
+    url.value = ' http://127.0.0.1:11434/v1 ';
+    url.dispatch('input');
+    expect(save.hidden).toBe(true);
+    expect(note()).toBe('Sends only “Reply with OK.” to this model.');
+    const [first, second] = ctx.elements['agent-provider-models-list'].children;
+    const tag = first.children[0].children[1];
+    expect(tag.className).toBe('agent-model-default-tag');
+    expect(tag.textContent).toBe('Default');
+    expect(second.children[0].children).toHaveLength(1);
+
+    open('near-ai');
+    expect(save.hidden).toBe(true);
+    expect(note()).toBe('Sends only “Reply with OK.” to this model. Token charges may apply.');
+    ctx.elements['agent-api-key'].value = 'replacement-key';
+    ctx.elements['agent-api-key'].dispatch('input');
+    expect(save.hidden).toBe(false);
+
+    open('custom-local');
+    expect(save.hidden).toBe(true);
+    expect(note()).not.toContain('Token charges');
+    ctx.elements['agent-custom-context'].value = '64000';
+    ctx.elements['agent-custom-context'].dispatch('input');
+    expect(save.hidden).toBe(false);
+
+    open('custom-remote');
+    expect(note()).toContain('Token charges may apply.');
+
+    // Not connected: Save is how a provider gets connected.
+    open('venice');
+    expect(save.hidden).toBe(false);
+    expect(ctx.elements['agent-provider-disconnect'].hidden).toBe(true);
+  });
+
+  test('Save visibility follows the stored form after a normalized save, a failed save and a field reset (#859)', async () => {
+    const ollama = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const hosted = { kind: 'hosted', providerId: 'near-ai', modelId: 'gpt-4', hasApiKey: true };
+    const local = {
+      kind: 'compatible', providerId: 'custom-local', name: 'Local server', modelId: 'm1',
+      baseUrl: 'http://localhost:8080/v1', models: [{ id: 'm1' }],
+    };
+    const moved = { ...ollama, baseUrl: 'http://127.0.0.1:11500/v1' };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...ollama, connections: [ollama, hosted, local] },
+      }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [
+        { providerId: 'near-ai', name: 'NEAR AI', models: [{ id: 'gpt-4', name: 'gpt-4' }] },
+        { providerId: 'custom-local', name: 'Local server', models: [{ id: 'm1', name: 'm1' }] },
+      ] }),
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Bad key' } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...moved, connections: [moved, hosted, local] },
+      }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const save = ctx.elements['agent-provider-save'];
+    const open = (index) => ctx.elements['agent-connected-provider-list'].children[index].dispatch('click');
+
+    // R1-M2: a failed save clears the key, so nothing is left to save.
+    open(1);
+    ctx.elements['agent-api-key'].value = 'bad-key';
+    ctx.elements['agent-api-key'].dispatch('input');
+    expect(save.hidden).toBe(false);
+    save.dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.configureHostedAgentProvider).toHaveBeenCalled();
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    expect(save.hidden).toBe(true);
+
+    // R1-M2: re-rendering the model options resets the custom fields to what is stored.
+    open(2);
+    ctx.elements['agent-custom-context'].value = '64000';
+    ctx.elements['agent-custom-context'].dispatch('input');
+    expect(save.hidden).toBe(false);
+    ctx.elements['agent-privacy-policy'].dispatch('change');
+    expect(ctx.elements['agent-custom-context'].value).toBe(32768);
+    expect(save.hidden).toBe(true);
+
+    // R1-M1: a URL main would store unchanged is not a change ...
+    open(0);
+    const url = ctx.elements['agent-ollama-url'];
+    url.value = 'http://127.0.0.1:11434/';
+    url.dispatch('input');
+    expect(save.hidden).toBe(true);
+    // ... and after saving one main normalizes, the field matches what is stored.
+    url.value = 'http://127.0.0.1:11500';
+    url.dispatch('input');
+    expect(save.hidden).toBe(false);
+    save.dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.configureOllamaAgentProvider).toHaveBeenCalledWith(undefined, 'http://127.0.0.1:11500');
+    expect(url.value).toBe('http://127.0.0.1:11500/v1');
+    expect(save.hidden).toBe(true);
+  });
+
+  test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
+    let resolveLogin;
+    const loginPromise = new Promise((resolve) => {
+      resolveLogin = resolve;
+    });
+    const ctx = await loadAgentUi({
+      electronAPI: { loginSubscriptionAgentProvider: jest.fn(() => loginPromise) },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-provider-select'].value = 'openai-codex';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-model-select'].value = 'codex-model';
+
+    expect(ctx.elements['agent-api-key-field'].classList.contains('hidden')).toBe(true);
+    expect(ctx.elements['agent-provider-save'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(false);
+    ctx.elements['agent-provider-login'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.loginSubscriptionAgentProvider).toHaveBeenCalledWith(
+      'openai-codex',
+      'codex-model'
+    );
+    ctx.emitProviderAuth({
+      type: 'device_code',
+      providerId: 'openai-codex',
+      userCode: 'ABCD-1234',
+      verificationUri: 'https://auth.openai.com/codex/device',
+    });
+    expect(ctx.elements['agent-auth-user-code'].textContent).toBe('ABCD-1234');
+    expect(ctx.elements['agent-auth-code'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-message'].textContent).toContain('OpenAI page');
+
+    resolveLogin({
+      ok: true,
+      status: {
+        configured: true,
+        kind: 'subscription',
+        providerId: 'openai-codex',
+        modelId: 'codex-model',
+      },
+    });
+    await flush();
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Connected');
+    expect(ctx.elements['agent-provider-message'].textContent).toBe(
+      'ChatGPT connected'
+    );
+    expect(ctx.elements['agent-provider-login'].textContent).toBe('Upgrade ChatGPT sign-in');
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(false);
+  });
+
+  test('never initializes provider or run IPC in a private window', async () => {
+    const ctx = await loadAgentUi({ isPrivate: true });
+
+    expect(ctx.elements['agent-toggle-btn'].classList.contains('hidden')).toBe(true);
+    expect(ctx.electronAPI.getAgentProviderStatus).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.getAgentProviderCatalog).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.listAgentSessions).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.onAgentEvent).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.onAgentProviderAuthEvent).not.toHaveBeenCalled();
+  });
+
+  test('formats tool operations for a compact activity timeline', async () => {
+    const ctx = await loadAgentUi();
+    expect(ctx.mod.formatOperation('browser_get_page_text')).toBe('get page text');
+    expect(ctx.mod.providerPrivacyMessage('openrouter')).toContain('sent to OpenRouter');
+    expect(ctx.elements['agent-provider-privacy'].textContent).toContain('sent to OpenAI');
+
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(ctx.elements['agent-provider-privacy'].textContent).toBe(
+      'Model requests stay on this device and are sent only to your local Ollama server.'
+    );
+    expect(ctx.mod.responseMessage({}, 'Fallback')).toBe('Fallback');
+  });
+
+  test('does not resurrect a run that finishes before start IPC resolves', async () => {
+    let resolveStart;
+    const startPromise = new Promise((resolve) => {
+      resolveStart = resolve;
+    });
+    const ctx = await loadAgentUi({
+      electronAPI: { startAgent: jest.fn(() => startPromise) },
+    });
+    ctx.elements['agent-prompt'].value = 'Quick task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    ctx.emit({ type: 'run_started', runId: 'run_fast' });
+    ctx.emit({ type: 'run_finished', runId: 'run_fast', status: 'completed' });
+    resolveStart({ ok: true, runId: 'run_fast' });
+    await flush();
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
+    expect(ctx.elements['agent-run'].dataset.action).toBe('send');
+  });
+});
+
+test('consolidates process polls by owned process ID, preserving separate executions', async () => {
+  const ctx = await loadAgentUi();
+  ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Build the app' });
+  for (const [index, id, state] of [[0, 'a', 'running'], [1, 'a', 'running'], [2, 'a', 'completed'], [3, 'a', 'running'], [4, 'b', 'running']]) {
+    const event = { runId: 'run_test', toolCallId: `process_${index}`, operation: index === 0 ? 'bash' : 'write_stdin' };
+    ctx.emit({ ...event, type: 'tool_started', intent: 'Checking process' });
+    ctx.emit({ ...event, type: 'tool_finished', status: 'succeeded', label: `${id}: ${state}`, workspace: { processId: `workspace_process_${id.repeat(24)}`, state } });
+  }
+  const list = ctx.elements['agent-transcript'].children[0].querySelector('.agent-tool-list');
+  expect(list.children).toHaveLength(2);
+  expect(list.children[0].children[1].textContent).toBe('a: completed');
+  expect(list.children[1].children[1].textContent).toBe('b: running');
+});
+
+
+describe('selective result notices', () => {
+  test.each([
+    ['actions_recorded', {}], ['result_observed', {}], ['model_only', {}],
+    ['delegated_report', {}], ['historical_report', {}], ['workspace_preview_opened', {}],
+    ['workspace_execution_recorded', { workspace: { state: 'completed' } }],
+    ['artifact_available', {}], ['swarm_publication_verified', {}],
+    ['node_lifecycle_verified', {}], ['wallet_declined', {}],
+  ])('hides routine %s summaries while keeping activity', async (verification, extra) => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'quiet', userText: 'Do the task' });
+    ctx.emit({ type: 'tool_started', runId: 'quiet', toolCallId: 'read', operation: 'browser_snapshot' });
+    ctx.emit({ type: 'tool_finished', runId: 'quiet', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    ctx.emit({ type: 'run_finished', runId: 'quiet', status: 'completed', actionCount: 1,
+      outcome: { kind: 'completed', verification, tone: 'caution', headline: 'Routine evidence', ...extra } });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome').hidden).toBe(true);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-activity').hidden).toBe(false);
+  });
+  test.each(['wallet_broadcast', 'page_tool_unresolved', 'swarm_publication_failed',
+    'swarm_publication_outcome_unknown', 'node_delivery_uncertain', 'node_request_in_flight'])(
+    'keeps useful receipts and unresolved %s outcomes', async verification => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'notice', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'notice', status: 'completed',
+      outcome: { kind: 'completed', verification, tone: 'caution', headline: 'Check this result', detail: 'Receipt details' } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.children[1].children[1].textContent).toBe('Receipt details');
+  });
+  test('a declined approval renders as a neutral, not-run step and summary (#845)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'declined', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'read', operation: 'browser_snapshot' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'submit', operation: 'browser_click', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'submit', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_started', runId: 'declined', toolCallId: 'retry', operation: 'browser_click', label: 'Click “Place order”' });
+    ctx.emit({ type: 'tool_finished', runId: 'declined', toolCallId: 'retry', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', repeatsDecline: true, label: 'Click “Place order”' });
+    ctx.emit({ type: 'run_finished', runId: 'declined', status: 'completed', actionCount: 2, durationMs: 8000, outcome: {
+      kind: 'completed', verification: 'result_observed', tone: 'success', headline: 'Result checked in the browser',
+      notice: { tone: 'neutral', headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' },
+    } });
+    const transcript = ctx.elements['agent-transcript'];
+    const rows = transcript.querySelectorAll('.agent-tool-item');
+    expect(rows[1].dataset.state).toBe('cancelled');
+    expect(rows[1].classList.contains('failed')).toBe(false);
+    expect(rows[1].children[0].textContent).toBe('•');
+    expect(rows[1].children[1].textContent).toBe('Click “Place order” — Not run; you declined it');
+    expect(rows[1].children[2].textContent).toBe('Declined');
+    // The tooltip explains the row rather than repeating it.
+    expect(rows[1].title).toBe('This action never reached the page, so nothing it would have changed took effect.');
+    // A retry refused because of the earlier decline (no new prompt) reads the same.
+    const retry = rows[2];
+    expect(retry.dataset.state).toBe('cancelled');
+    expect(retry.classList.contains('failed')).toBe(false);
+    expect(retry.children[1].textContent).toBe('Click “Place order” — Not run; you declined it');
+    // A page-bound step keeps its declined wording in the page row too.
+    ctx.emit({ type: 'run_started', runId: 'page', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'page', toolCallId: 'pageSubmit', operation: 'browser_click' });
+    ctx.emit({ type: 'tool_finished', runId: 'page', toolCallId: 'pageSubmit', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'declined', label: 'Clicked https://shop.test', origin: 'https://shop.test' });
+    expect(ctx.elements['agent-transcript'].querySelectorAll('.agent-tool-page-error').at(-1).textContent)
+      .toBe('Not run; you declined it');
+    expect(transcript.querySelector('.agent-turn-activity').dataset.state).toBe('done');
+    const card = transcript.querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.className).toBe('agent-turn-outcome neutral');
+    expect(card.children[1].children[0].textContent).toBe('Browser action declined');
+  });
+  test('a browser helper\'s declined action is listed as not run, not as failed (#845)', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'helper', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'helper', toolCallId: 'browse', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'helper', toolCallId: 'browse', operation: 'delegate_task', status: 'succeeded',
+      subagent: { title: 'Order', state: 'completed', mode: 'browser', report: 'Done', browserActions: [
+        { operation: 'browser_click', status: 'succeeded', pageTitle: 'Page' },
+        { operation: 'browser_click', status: 'failed', errorCode: 'USER_CANCELLED', approval: 'declined', pageTitle: 'Page' },
+        { operation: 'browser_type', status: 'failed', errorCode: 'USER_CANCELLED', approval: 'withdrawn', pageTitle: 'Page' },
+        { operation: 'browser_click', status: 'failed', errorCode: 'INTERNAL_ERROR', pageTitle: 'Page' },
+      ] } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    const items = report.children.find(child => child.tagName === 'UL').children.map(item => item.textContent);
+    expect(items).toEqual(['✓ click — Page', '• click — Page — Not run; you declined it',
+      '• type — Page — Not run; approval withdrawn', '× click — Page']);
+  });
+  test('a stopped action whose approval was granted still reads as a failure', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'approved', userText: 'Place the order' });
+    ctx.emit({ type: 'tool_started', runId: 'approved', toolCallId: 'submit2', operation: 'browser_click' });
+    ctx.emit({ type: 'tool_finished', runId: 'approved', toolCallId: 'submit2', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'approved' });
+    ctx.emit({ type: 'tool_started', runId: 'approved', toolCallId: 'withdrawn', operation: 'browser_click', label: 'Click' });
+    ctx.emit({ type: 'tool_finished', runId: 'approved', toolCallId: 'withdrawn', operation: 'browser_click', status: 'failed',
+      errorCode: 'USER_CANCELLED', approval: 'withdrawn', label: 'Click' });
+    const [approvedRow, withdrawnRow] = ctx.elements['agent-transcript'].querySelectorAll('.agent-tool-item');
+    expect(withdrawnRow.dataset.state).toBe('cancelled');
+    expect(withdrawnRow.children[1].textContent).toBe('Click — Not run; approval withdrawn');
+    expect(withdrawnRow.children[2].textContent).toBe('Withdrawn');
+    expect(approvedRow.dataset.state).toBe('failed');
+    expect(approvedRow.children[1].textContent).toContain('effects may remain');
+  });
+  test('a neutral declined notice never hides an unresolved outcome', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'mixed', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'mixed', status: 'completed', outcome: {
+      kind: 'completed', verification: 'wallet_broadcast', tone: 'caution', headline: 'Check this result', detail: 'Receipt details',
+      notice: { tone: 'neutral', headline: 'Browser action declined', detail: 'You declined an action, so it did not run.' },
+    } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(card.children[1].children[1].textContent).toBe('Receipt details');
+  });
+  test('shows a concise uncertainty notice instead of routine verification counts', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'uncertain', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'uncertain', status: 'completed', outcome: {
+      verification: 'actions_recorded', detail: '42 actions recorded',
+      notice: { tone: 'caution', headline: 'Browser action outcome uncertain', detail: 'Check the page before repeating it.' },
+    } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.children[1].children[1].textContent).toBe('Check the page before repeating it.');
+  });
+});

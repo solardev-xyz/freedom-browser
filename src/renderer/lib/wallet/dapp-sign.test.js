@@ -30,13 +30,15 @@ function flush() {
 
 function deferred() {
   let resolve;
-  const promise = new Promise((res) => {
+  let reject;
+  const promise = new Promise((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
-async function loadDappSign() {
+async function loadDappSign({ safe = false } = {}) {
   jest.resetModules();
 
   const elementsById = Object.fromEntries(
@@ -45,6 +47,8 @@ async function loadDappSign() {
   elementsById['dapp-sign-auto-approve'].checked = false;
   const messageParent = createElement('div');
   messageParent.appendChild(elementsById['dapp-sign-message']);
+  // As in index.html: the prompt starts hidden.
+  elementsById['sidebar-dapp-sign'].classList.add('hidden');
   global.document = createDocument({ elementsById });
 
   const sign = deferred();
@@ -65,7 +69,7 @@ async function loadDappSign() {
       return true;
     }),
     bypassUnlockGateForSafe: jest.fn(() => false),
-    isSafeAccount: jest.fn(() => false),
+    isSafeAccount: jest.fn(() => safe),
     signingButtonLabel: jest.fn(() => 'Confirm on your Ledger…'),
   }));
   jest.doMock('./safe-signing.js', () => ({
@@ -99,7 +103,10 @@ async function loadDappSign() {
     return { settled, promise };
   }
 
-  return { mod, elements: elementsById, sign, setSigningAutoApprove, openApproval };
+  // The screen hider this module registered (another screen opening).
+  const hideForOtherScreen = () => require('./wallet-state.js').registerScreenHider.mock.calls[0][0]();
+
+  return { mod, elements: elementsById, sign, setSigningAutoApprove, openApproval, executeSign, hideForOtherScreen };
 }
 
 describe('dapp-sign approval lifecycle', () => {
@@ -107,6 +114,148 @@ describe('dapp-sign approval lifecycle', () => {
     global.window = originalWindow;
     global.document = originalDocument;
     jest.restoreAllMocks();
+  });
+
+  test('a newcomer never replaces the message on screen', async () => {
+    const { mod, elements, sign, openApproval, executeSign } = await loadDappSign();
+    const first = await openApproval();
+
+    const second = mod.showDappSignApproval({}, 'https://other.example', 'personal_sign', ['0xbad0', '0xledger']);
+    await expect(second).rejects.toMatchObject({ code: -32002 });
+    expect(elements['dapp-sign-site'].textContent).toBe('https://app.example');
+
+    elements['dapp-sign-approve'].dispatch('click');
+    await flush();
+    expect(JSON.stringify(executeSign.mock.calls[0])).toContain('0xdeadbeef');
+    expect(JSON.stringify(executeSign.mock.calls[0])).not.toContain('0xbad0');
+    sign.resolve('0xsignature');
+    await first.promise;
+
+    const third = await openApproval();
+    expect(third.settled.state).toBe('pending');
+  });
+
+  describe('a Safe request parked on its board while a newer one shows', () => {
+    async function parkSafeThenShowNewcomer() {
+      const env = await loadDappSign({ safe: true });
+      const { mod, elements, openApproval, hideForOtherScreen, executeSign } = env;
+      const a = await openApproval();
+      elements['dapp-sign-approve'].dispatch('click');
+      await flush();
+      expect(executeSign).toHaveBeenCalledTimes(1);
+      // The board takes the sidebar (hides the sign screen); the user parks it.
+      hideForOtherScreen();
+      const bState = { state: 'pending' };
+      mod
+        .showDappSignApproval({}, 'https://b.example', 'personal_sign', ['0xb0b0', '0xledger'])
+        .then(() => (bState.state = 'resolved'), () => (bState.state = 'rejected'));
+      await flush();
+      expect(elements['sidebar-dapp-sign'].classList.contains('hidden')).toBe(false);
+      expect(elements['dapp-sign-site'].textContent).toBe('https://b.example');
+      return { ...env, a, bState };
+    }
+
+    test('closing its board answers it, not the newcomer, and leaves the newcomer on screen', async () => {
+      const { a, bState, sign, elements } = await parkSafeThenShowNewcomer();
+      sign.reject({ code: 4001, message: 'User rejected the request' });
+      await a.promise;
+      await flush();
+      expect(a.settled).toMatchObject({ state: 'rejected', value: { code: 4001 } });
+      expect(bState.state).toBe('pending');
+      expect(elements['sidebar-dapp-sign'].classList.contains('hidden')).toBe(false);
+      expect(elements['dapp-sign-site'].textContent).toBe('https://b.example');
+    });
+
+    test('its failure answers it and paints no error on the newcomer', async () => {
+      const { a, bState, sign, elements } = await parkSafeThenShowNewcomer();
+      sign.reject(new Error('threshold not reached'));
+      await a.promise;
+      await flush();
+      expect(a.settled).toMatchObject({ state: 'rejected', value: { message: 'threshold not reached' } });
+      expect(bState.state).toBe('pending');
+      expect(elements['dapp-sign-error'].classList.contains('hidden')).toBe(true);
+    });
+
+    test('its signature answers it and leaves the newcomer answerable', async () => {
+      const { a, bState, sign, elements } = await parkSafeThenShowNewcomer();
+      sign.resolve('0xsafesig');
+      await a.promise;
+      await flush();
+      expect(a.settled).toMatchObject({ state: 'resolved', value: '0xsafesig' });
+      expect(bState.state).toBe('pending');
+      elements['dapp-sign-reject'].dispatch('click');
+      await flush();
+      expect(bState.state).toBe('rejected');
+    });
+  });
+
+  test('a prompt another screen hid holds off nothing', async () => {
+    const { openApproval, hideForOtherScreen } = await loadDappSign();
+    await openApproval();
+
+    hideForOtherScreen();
+    const second = await openApproval();
+    expect(second.settled.state).toBe('pending');
+  });
+
+  test('a prompt shown while this one prepared keeps the screen', async () => {
+    const { mod, elements } = await loadDappSign();
+    // A vault account: preparing waits on the vault status.
+    require('./wallet-utils.js').bypassUnlockGateForDevice.mockReturnValueOnce(false);
+    let status;
+    window.identity = { getStatus: jest.fn(() => new Promise((resolve) => (status = resolve))) };
+    const pending = mod.showDappSignApproval({}, 'https://app.example', 'personal_sign', ['0xdeadbeef', '0xvault']);
+    await flush();
+    (await import('./dapp-prompt-guard.js')).registerDappPrompt(() => true);
+    status({ isUnlocked: true });
+    await expect(pending).rejects.toMatchObject({ code: -32002 });
+    expect(elements['sidebar-dapp-sign'].classList.contains('hidden')).toBe(true);
+  });
+
+  test("a replaced request's late preparation never shows its message", async () => {
+    const { mod, elements, executeSign, sign } = await loadDappSign();
+    require('./wallet-utils.js').bypassUnlockGateForDevice.mockReturnValueOnce(false);
+    let statusA;
+    window.identity = { getStatus: jest.fn(() => new Promise((resolve) => (statusA = resolve))) };
+    const a = mod.showDappSignApproval({}, 'https://a.example', 'personal_sign', ['0xaaaa', '0xvault']);
+    await flush();
+    // B (a device account, no wait) replaces A, which was never shown.
+    const b = mod.showDappSignApproval({}, 'https://b.example', 'personal_sign', ['0xbbbb', '0xledger']);
+    await flush();
+    await expect(a).rejects.toMatchObject({ code: 4001 });
+    statusA({ isUnlocked: true });
+    await flush();
+    expect(elements['dapp-sign-site'].textContent).toBe('https://b.example');
+    elements['dapp-sign-approve'].dispatch('click');
+    await flush();
+    expect(JSON.stringify(executeSign.mock.calls[0])).toContain('0xbbbb');
+    sign.resolve('0xsig');
+    await expect(b).resolves.toBe('0xsig');
+  });
+
+  test("a replaced request's failed vault check paints nothing on its successor", async () => {
+    const { mod, elements } = await loadDappSign();
+    require('./wallet-utils.js').bypassUnlockGateForDevice.mockReturnValueOnce(false);
+    let failA;
+    window.identity = { getStatus: jest.fn(() => new Promise((_resolve, reject) => (failA = reject))) };
+    const a = mod.showDappSignApproval({}, 'https://a.example', 'personal_sign', ['0xaaaa', '0xvault']);
+    a.catch(() => {});
+    await flush();
+    // B (a device account) replaces A and shows, with no unlock section.
+    mod.showDappSignApproval({}, 'https://b.example', 'personal_sign', ['0xbbbb', '0xledger']).catch(() => {});
+    await flush();
+    elements['dapp-sign-unlock'].classList.add('hidden');
+    failA(new Error('status unavailable'));
+    await flush();
+    expect(elements['dapp-sign-unlock'].classList.contains('hidden')).toBe(true);
+  });
+
+  test('a message that cannot be displayed is refused and holds off nothing', async () => {
+    const { mod, openApproval } = await loadDappSign();
+    await expect(mod.showDappSignApproval({}, 'https://app.example', 'personal_sign', [12345, '0xledger'])).rejects.toThrow();
+
+    const next = await openApproval();
+    expect(next.settled.state).toBe('pending');
   });
 
   test('reject and back are inert while a Ledger signature is in flight', async () => {

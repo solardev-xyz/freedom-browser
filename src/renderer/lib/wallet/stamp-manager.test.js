@@ -45,6 +45,12 @@ class FakeElement {
   appendChild(node) {
     this.children.push(node);
   }
+  append(...nodes) {
+    this.children.push(...nodes);
+  }
+  setAttribute(name, value) {
+    (this.attributes ||= {})[name] = String(value);
+  }
   querySelector() {
     return null;
   }
@@ -273,6 +279,14 @@ describe('the storage screen during the wallet-history search', () => {
     land({ success: true, stamps: [] });
     await flush();
     expect(visible('stamp-list-empty')).toBe(true);
+  });
+
+  test('Buy More Storage opens the publish setup on its plan list', async () => {
+    const { elements } = await load({ state: ready(), stamps: [BATCH] });
+    const { openPublishSetup } = await import('./publish-setup.js');
+    elements['stamp-buy-another-btn'].listeners.click[0]();
+    // Not on "Ready to publish", whose Manage Storage only leads back here.
+    expect(openPublishSetup).toHaveBeenCalledWith({ plans: true });
   });
 
   test("opening clears a previous visit's cards even if close never ran", async () => {
@@ -594,9 +608,13 @@ describe('the storage screen while /stamps loads (#595)', () => {
     const keepLonger = actionButtons(elements).find((btn) => btn.textContent === 'Keep Longer');
     keepLonger.listeners.click[0]();
     await flush();
-    const presets = () => elements['stamp-batch-list'].querySelectorAll('.stamp-extend-preset-btn');
+    const presets = () =>
+      elements['stamp-batch-list'].querySelectorAll('.stamp-extend-presets')[0].children;
+    const custom = () =>
+      elements['stamp-batch-list'].querySelectorAll('.stamp-extend-custom-btn')[0];
     expect(presets()).toHaveLength(2);
     expect(presets().map((btn) => btn.disabled)).toEqual([false, true]);
+    expect(custom().disabled).toBe(true);
 
     // A purchase elsewhere reloads the list, and the reload fails.
     let pending = slowStamps();
@@ -605,6 +623,7 @@ describe('the storage screen while /stamps loads (#595)', () => {
     await flush();
     expect(keepLonger.disabled).toBe(true);
     expect(presets().map((btn) => btn.disabled)).toEqual([true, true]);
+    expect(custom().disabled).toBe(true);
 
     // The next reload lands: the quoted preset is back, the unquoted one stays off.
     pending = slowStamps();
@@ -632,9 +651,95 @@ describe('the storage screen while /stamps loads (#595)', () => {
     await flush();
     prices({ durations: [{ days: 30, quote: { price: { display: '1.0' } } }] });
     await flush();
-    const presets = elements['stamp-batch-list'].querySelectorAll('.stamp-extend-preset-btn');
+    const presets =
+      elements['stamp-batch-list'].querySelectorAll('.stamp-extend-presets')[0].children;
     expect(presets).toHaveLength(1);
     expect(presets[0].disabled).toBe(true);
+  });
+
+  test('Keep Longer prices and starts any number of days (#1257)', async () => {
+    jest.useFakeTimers();
+    try {
+      const { elements, emit } = await load({ state: withWallet(ready()), stamps: [BATCH] });
+      await emit({ ...withWallet(ready()), operation: { id: 'op-0', phase: 'done' } });
+      global.window.publishSetup.getExtendOptions = jest.fn().mockResolvedValue({ durations: [] });
+      global.window.publishSetup.quote = jest
+        .fn()
+        .mockResolvedValue({ quote: { price: { display: '2.5' } }, error: null });
+      global.window.publishSetup.arm = jest.fn().mockResolvedValue({ ok: true });
+      const keepLonger = actionButtons(elements).find((btn) => btn.textContent === 'Keep Longer');
+      keepLonger.listeners.click[0]();
+      await flush();
+
+      const list = elements['stamp-batch-list'];
+      const input = list.querySelectorAll('.stamp-extend-days-input')[0];
+      const button = list.querySelectorAll('.stamp-extend-custom-btn')[0];
+      const error = list.querySelectorAll('.stamp-extend-custom-error')[0];
+      const type = async (value) => {
+        input.value = value;
+        input.listeners.input[0]();
+        jest.advanceTimersByTime(400);
+        await flush();
+      };
+
+      await type('0');
+      expect(error.textContent).toBe('Enter a whole number of days from 1 to 3650.');
+      expect(error.classList.contains('hidden')).toBe(false);
+      expect(global.window.publishSetup.quote).not.toHaveBeenCalled();
+      expect(button.disabled).toBe(true);
+
+      await type('400');
+      expect(global.window.publishSetup.quote).toHaveBeenCalledWith({
+        kind: 'extend',
+        batchId: BATCH.batchId,
+        days: 400,
+      });
+      expect(error.classList.contains('hidden')).toBe(true);
+      expect(button.textContent).toBe('+400 days · 2.5 xDAI');
+      expect(button.disabled).toBe(false);
+
+      button.listeners.click[0]();
+      await flush();
+      expect(global.window.publishSetup.arm).toHaveBeenCalledWith({
+        kind: 'extend',
+        batchId: BATCH.batchId,
+        days: 400,
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('Make Bigger offers every larger size, past the plans (#1257)', async () => {
+    const sized = () => ({
+      ...withWallet(ready()),
+      sizes: [
+        { depth: 22, usableBytes: 7_730_000_000 },
+        { depth: 23, usableBytes: 19_940_000_000 },
+        { depth: 28, usableBytes: 993_650_000_000 },
+      ],
+    });
+    const { elements, emit } = await load({ state: sized(), stamps: [BATCH] });
+    await emit({ ...sized(), operation: { id: 'op-0', phase: 'done' } });
+    global.window.publishSetup.getExtendOptions = jest.fn().mockResolvedValue({
+      sizes: [
+        { depth: 23, usableBytes: 19_940_000_000, quote: { price: { display: '1.0' } } },
+        { depth: 28, usableBytes: 993_650_000_000, quote: { price: { display: '32.0' } } },
+      ],
+    });
+    const grow = actionButtons(elements).find((btn) => btn.textContent === 'Make Bigger');
+    expect(grow).toBeDefined();
+    grow.listeners.click[0]();
+    await flush();
+    const presets =
+      elements['stamp-batch-list'].querySelectorAll('.stamp-extend-presets')[0].children;
+    expect(presets.map((btn) => btn.textContent)).toEqual([
+      'Up to 19.9 GB · 1.0 xDAI',
+      'Up to 994 GB · 32.0 xDAI',
+    ]);
+    expect(elements['stamp-batch-list'].querySelectorAll('.stamp-extend-days-input')).toHaveLength(
+      0
+    );
   });
 
   test('cached cards wait for getState to confirm the wallet', async () => {

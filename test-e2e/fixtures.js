@@ -94,13 +94,16 @@ const test = base.extend({
   // (e.g., bookmarks bar visible, theme=light) without the racing
   // problem above.
   seedSettings: [null, { option: true }],
+  // Existing Agent/chrome qualification opts in explicitly. Use null to test
+  // a genuine fresh profile without any stored AI choice, or false for off.
+  aiEnabled: [true, { option: true }],
 
   // The scratch profile this test's app instances run against. Kept separate
   // from `electronApp` so a spec can shut the app down and start another one
   // on the same on-disk state (see `relaunchApp`).
-  userDataDir: async ({ seedSettings: settingsOverride }, use) => {
+  userDataDir: async ({ seedSettings: settingsOverride, aiEnabled }, use) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-e2e-'));
-    seedSettings(dir, settingsOverride);
+    seedSettings(dir, aiEnabled === null ? settingsOverride : { enableAi: aiEnabled, ...settingsOverride });
 
     await use(dir);
 

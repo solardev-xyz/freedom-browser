@@ -54,3 +54,54 @@ body.browser-fullscreen .toolbar:not(:focus-within):not(:has(.permission-prompt:
 .fullscreen-exit-hint[hidden] {
   display: none;
 }
+
+/* Agent presentation is restored on exit without interrupting the run.
+   The page pane fills the screen even if it had been folded in Agent-first. */
+body.browser-fullscreen .agent-sidebar,
+body.browser-fullscreen .agent-session-sidebar,
+body.browser-fullscreen .agent-task-pages,
+body.browser-fullscreen .agent-task-pages-empty,
+body.browser-fullscreen .agent-pane-resizer,
+body.browser-fullscreen .agent-page-lock-hint {
+  display: none !important;
+}
+
+body.browser-fullscreen.agent-first-mode .agent-page-surface {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  max-width: none;
+  flex: 1;
+  margin: 0;
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  border: 0;
+  pointer-events: auto;
+}
+
+body.browser-fullscreen.agent-first-mode .agent-page-surface > .content {
+  display: flex;
+}
+
+/* The re-hosted address bar follows the same focus/permission rule as the
+   ordinary toolbar; keeping it focusable preserves Ctrl/Cmd+L. */
+body.browser-fullscreen.agent-first-mode .agent-workspace-nav {
+  display: flex;
+}
+
+body.browser-fullscreen.agent-first-mode .agent-workspace-nav:not(:focus-within):not(:has(.permission-prompt:not([hidden]))) {
+  position: fixed;
+  width: 0;
+  height: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.browser-fullscreen.agent-floating-column .download-shelf,
+body.browser-fullscreen.agent-floating-column .find-bar {
+  right: 16px;
+}

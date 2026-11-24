@@ -212,6 +212,11 @@ function clearErrorState(service) {
   broadcastRegistryUpdate();
 }
 
+// Facts about this machine rather than about one run of a node, such as an
+// IPFS add-on the system's glibc is too old to load (#350). A reset between
+// runs keeps them; the service's manager clears them itself.
+const HOST_FACT_KEYS = ['unavailableReason', 'hostGlibc'];
+
 /**
  * Clear service state (when stopped)
  */
@@ -222,7 +227,13 @@ function clearService(service) {
     clearTimeout(registry[service].tempMessageTimeout);
   }
 
-  registry[service] = createEmptyServiceState(service);
+  const hostFacts = Object.fromEntries(
+    HOST_FACT_KEYS.filter((key) => registry[service][key] != null).map((key) => [
+      key,
+      registry[service][key],
+    ])
+  );
+  registry[service] = { ...createEmptyServiceState(service), ...hostFacts };
 
   broadcastRegistryUpdate();
 }

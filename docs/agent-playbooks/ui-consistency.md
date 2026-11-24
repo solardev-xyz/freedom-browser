@@ -113,7 +113,14 @@ sub-screen header.
 **Settings sections.** `h2.section-title` for the section, `h3.row-label` (or
 the 12 px uppercase category style) for sub-headings, never a second large
 heading. Cards with `.row` / `.row.sub` for nested toggles. Links inside copy
-use the `row-help` link style, not the default anchor.
+use the `row-help` link style, not the default anchor. One deliberate
+exception: the AI section's Voice dictation page (`#voice`) labels its groups
+in 12 px muted sentence case (`#voice .subsection-title` in
+`pages/styles/ai.css`), matching the AI provider picker's
+`.agent-provider-group-label` ("Model labs") rather than the uppercase
+category style (#861). Do not "fix" those labels back to uppercase, and do not
+spread the sentence-case override to other Settings pages without the same
+kind of decision.
 
 **Menus and counters.** The Nodes menu shows `0` for an empty counter, never
 `--`. Shortcut hints render as `Ctrl+T` on Linux/Windows and `⌘T` on macOS in
@@ -216,6 +223,15 @@ re-rendered file with its committed self, and adopt the ones that moved
 visibly; a repeat sweep rewrites ~14 files by 1–2/255 of gradient dithering, so
 byte equality is not the bar. See the header of
 `test-e2e/renderer-screenshots.spec.js`.
+
+When a Linux machine is unavailable, dispatch `ci.yml` on the review branch
+with `renderer_baselines=true`. The `renderer-baseline-candidates` artifact
+contains a fresh render of every surface in both themes. Capture still runs the
+ordinary comparisons, including failures, and never changes the references in
+Git. Inspect candidates against the committed images, adopt only intended visible
+changes, and let the ordinary
+pull-request comparison validate the resulting commit. Never adopt macOS renders
+as Linux references.
 
 ## Checks before opening or approving a PR that touches the renderer
 

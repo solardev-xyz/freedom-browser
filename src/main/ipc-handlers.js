@@ -21,6 +21,7 @@ const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
 const { normalizeSocksEndpoint } = require('../shared/socks-endpoint');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
+const { isOnionGatewayUrl } = require('./ipfs/gateway-transport');
 const {
   startProbe: startSwarmProbe,
   cancelProbe: cancelSwarmProbe,
@@ -259,6 +260,20 @@ function validateProfileNodeConfigUpdate(protocol, patch = {}) {
         }),
       };
     }
+    // The main process dials the Swarm API with Node's own HTTP stack, which
+    // ignores the session's Tor routing, so an onion host would go to the
+    // system resolver: a lookup that leaks the name and cannot succeed (#360).
+    // An IPFS gateway is dialled over the session and may be an onion host.
+    if (field === 'externalApi' && isOnionGatewayUrl(normalized)) {
+      return {
+        ok: false,
+        response: failure(
+          'UNSUPPORTED_PROFILE_NODE_ENDPOINT',
+          "Freedom can't reach a Swarm node at a .onion address yet",
+          { field }
+        ),
+      };
+    }
     sanitized[field] = normalized;
   }
 
@@ -327,7 +342,12 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
     }
     if (protocol === 'radicle') {
       const radicleManager = require('./radicle-manager');
-      await radicleManager.syncProfileMode();
+      const status = await radicleManager.syncProfileMode();
+      // A disable whose stop wasn't proved (R-8): the mode is saved, but the
+      // node may still be running, so it was not applied.
+      if (validation.sanitized.mode === 'disabled' && status?.status === 'error') {
+        throw new Error(status.error || 'The Radicle node did not stop');
+      }
     }
     if (protocol === 'ipfs') {
       // Publish the newly configured mode to the service registry. Nothing is

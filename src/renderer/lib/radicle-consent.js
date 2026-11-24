@@ -27,6 +27,9 @@ let siteEl;
 let wantsEl;
 let allowsEl;
 let warningEl;
+let alwaysRow;
+let alwaysInput;
+let alwaysLabel;
 let approveBtn;
 let rejectBtn;
 let backBtn;
@@ -44,6 +47,9 @@ export function initRadicleConsent() {
   wantsEl = document.getElementById('radicle-consent-wants');
   allowsEl = document.getElementById('radicle-consent-allows');
   warningEl = document.getElementById('radicle-consent-warning');
+  alwaysRow = document.getElementById('radicle-consent-always-row');
+  alwaysInput = document.getElementById('radicle-consent-always');
+  alwaysLabel = document.getElementById('radicle-consent-always-label');
   approveBtn = document.getElementById('radicle-consent-approve');
   rejectBtn = document.getElementById('radicle-consent-reject');
   backBtn = document.getElementById('radicle-consent-back');
@@ -68,8 +74,10 @@ export function initRadicleConsent() {
 
 function finish(approved, { keepSidebar = false } = {}) {
   if (!pending) return;
-  const { resolve, reject, sidebarWasOpen } = pending;
+  const { resolve, reject, sidebarWasOpen, offersAlways } = pending;
   pending = null;
+  const alwaysAllow = offersAlways ? alwaysInput?.checked === true : undefined;
+  alwaysRow?.classList.add('hidden');
 
   screen.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
@@ -77,8 +85,17 @@ function finish(approved, { keepSidebar = false } = {}) {
   // than leaving the wallet view behind (which may not even be enabled).
   if (!keepSidebar && !sidebarWasOpen) closeSidebar();
 
-  if (approved) resolve();
-  else reject({ code: 4001, message: 'User rejected the request' });
+  if (approved) {
+    resolve(offersAlways ? { alwaysAllow } : undefined);
+    return;
+  }
+  // The checkbox state goes back with a rejection too: unchecking the rule
+  // and rejecting is how the user stops a site without publishing the
+  // write in front of them. It rides on the rejection object only; the
+  // provider passes code/message/data on to the page, never this field.
+  const rejection = { code: 4001, message: 'User rejected the request' };
+  if (offersAlways) rejection.alwaysAllow = alwaysAllow;
+  reject(rejection);
 }
 
 /**
@@ -86,8 +103,12 @@ function finish(approved, { keepSidebar = false } = {}) {
  * cancel/back/panel-close. Only one prompt can be active; a second request
  * while one is showing is rejected immediately (prevents prompt-queue
  * confusion from spammy pages).
+ *
+ * With `always: { label, checked }` the prompt also shows that checkbox,
+ * and resolves to `{ alwaysAllow }`, its state when approved; a rejection
+ * then also carries `alwaysAllow`, the box's state when rejected.
  */
-function prompt({ title, origin, wants, allows, warning, approveLabel, owner }) {
+function prompt({ title, origin, wants, allows, warning, approveLabel, owner, always = null }) {
   return new Promise((resolve, reject) => {
     if (!screen) {
       reject({ code: -32603, message: 'Consent UI unavailable' });
@@ -110,8 +131,16 @@ function prompt({ title, origin, wants, allows, warning, approveLabel, owner }) 
     );
     warningEl.textContent = warning;
     approveBtn.textContent = approveLabel;
+    const offersAlways = Boolean(always && alwaysRow && alwaysInput);
+    if (offersAlways) {
+      if (alwaysLabel) alwaysLabel.textContent = always.label;
+      alwaysInput.checked = always.checked === true;
+      alwaysRow.classList.remove('hidden');
+    } else {
+      alwaysRow?.classList.add('hidden');
+    }
 
-    pending = { resolve, reject, sidebarWasOpen: isSidebarVisible(), owner };
+    pending = { resolve, reject, sidebarWasOpen: isSidebarVisible(), owner, offersAlways };
 
     hideAllSubscreens();
     walletState.identityView?.classList.add('hidden');
@@ -185,10 +214,121 @@ export function showRadicleSigningApproval(permissionKey, owner) {
     wants: 'wants to author content as your Radicle identity',
     allows: [
       'Know your Radicle DID and alias',
-      'Open issues, comment, and change issue states as you',
+      'Ask to open issues, comment, and change issue states as you. You approve each one.',
     ],
     warning:
-      'Everything it writes is signed with your key, published to the Radicle network, and cannot be unpublished.',
+      'Everything it writes is signed with your Radicle identity, published to the Radicle network, and cannot be unpublished.',
     approveLabel: 'Allow',
+  });
+}
+
+// What one signed write does, in the prompt's own words. Every parameter
+// main signs with is shown — a parameter the prompt leaves out (a patch
+// revision, a reply target, labels) is one the page could steer unseen.
+// Page-supplied text only ever lands in textContent.
+const shown = (value) => (value === undefined || value === null ? '' : String(value));
+
+function describeSignedWrite(method, params = {}) {
+  const rid = shown(params.rid);
+  switch (method) {
+    case 'radicle_createIssue': {
+      const allows = [`Title: ${shown(params.title)}`, `Description: ${shown(params.description)}`];
+      if (params.labels !== undefined) {
+        const labels = Array.isArray(params.labels) ? params.labels : [params.labels];
+        for (const label of labels) allows.push(`Label: ${shown(label)}`);
+      }
+      return {
+        title: 'Open this issue as you?',
+        wants: `asks to open an issue in ${rid}`,
+        allows,
+        approveLabel: 'Open issue',
+      };
+    }
+    case 'radicle_commentIssue': {
+      const allows = [`Comment: ${shown(params.body)}`];
+      if (params.replyTo !== undefined) allows.push(`In reply to comment ${shown(params.replyTo)}`);
+      return {
+        title: 'Post this comment as you?',
+        wants: `asks to comment on issue ${shown(params.issueId)} in ${rid}`,
+        allows,
+        approveLabel: 'Post comment',
+      };
+    }
+    case 'radicle_editIssueState':
+      return {
+        title: 'Change this issue as you?',
+        wants: `asks to change issue ${shown(params.issueId)} in ${rid}`,
+        allows: [`Set its state to ${shown(params.state)}`],
+        approveLabel: 'Change state',
+      };
+    case 'radicle_commentPatch': {
+      // Main signs against revisionId when one is given, not patchId, so
+      // the prompt names the revision that actually receives the comment.
+      const target =
+        params.revisionId !== undefined && params.revisionId !== params.patchId
+          ? `revision ${shown(params.revisionId)} (the page says it belongs to patch ${shown(params.patchId)})`
+          : `patch ${shown(params.patchId)}`;
+      return {
+        title: 'Post this comment as you?',
+        wants: `asks to comment on ${target} in ${rid}`,
+        allows: [`Comment: ${shown(params.body)}`],
+        approveLabel: 'Post comment',
+      };
+    }
+    default: {
+      // A signed write this prompt has no wording for still shows every
+      // parameter rather than borrowing another method's summary.
+      let detail;
+      try {
+        detail = JSON.stringify(params);
+      } catch {
+        detail = '(unreadable parameters)';
+      }
+      return {
+        title: 'Sign this as you?',
+        wants: `asks to sign ${shown(method)} in ${rid}`,
+        allows: [`Parameters: ${detail}`],
+        approveLabel: 'Sign',
+      };
+    }
+  }
+}
+
+// Mirrors LIMITS in src/main/radicle/auto-write-limiter.js (main-only).
+const AUTO_WRITE_LIMIT_NOTICE =
+  'This site has reached its limit of automatic writes (5 in a row, then one every 30 seconds, at most 50 a day), so this one needs your approval.';
+
+const SIGNED_WRITE_WARNING =
+  'This is signed with your Radicle identity and published to the Radicle network. It is public and permanent: it cannot be edited away or unpublished.';
+
+/**
+ * Per-write prompt: the user sees and approves the exact content before it
+ * is signed (R-6). Outside Agent custody it also offers the site's "always
+ * allow writes" rule, checked when the rule is already on (the prompt then
+ * shows because main's rate limit stopped an automatic write), and resolves
+ * to `{ alwaysAllow }`. With `limited` (that rate-limit fallback) the
+ * warning says so, so a user whose rule is on knows why they are asked.
+ */
+export function showRadicleSignedWriteApproval(
+  permissionKey,
+  method,
+  params,
+  owner,
+  { agentHeld = false, alwaysAllow = false, limited = false } = {}
+) {
+  let warning = SIGNED_WRITE_WARNING;
+  if (limited && !agentHeld) warning = `${AUTO_WRITE_LIMIT_NOTICE} ${warning}`;
+  if (agentHeld) warning = `Freedom Agent is using this tab. ${warning}`;
+  return prompt({
+    owner,
+    origin: permissionKey,
+    ...describeSignedWrite(method, params),
+    warning,
+    always: agentHeld
+      ? null
+      : {
+          label: 'Always allow this site to write as you without asking (at most 50 writes a day)',
+          checked: alwaysAllow,
+        },
   });
 }

@@ -1,1 +1,0 @@
-- Full screen hides the tab strip, toolbar, bookmarks bar and sidebar so the page fills the screen; F11 leaves it again ([#78](https://github.com/solardev-xyz/freedom-browser/issues/78))

@@ -23,7 +23,7 @@ async function advisoryState(app, advisories, gnosisExtra = {}) {
       available: true,
       supported: true,
       running: true,
-      version: '0.1.16',
+      version: '0.1.18',
       peerCount: 9,
     };
     const statuses = {

@@ -12,8 +12,11 @@
  * on the default session and drives it with `session.fetch` (no window: the
  * CI `test` job has no display), and asserts the probe's report.
  *
- * Not covered here, because they need a renderer: a `<video>` seek (bursts of
- * cancel and re-request) and a download resumed by Range.
+ * Page script on a `bzz:` page (an offscreen window, still no display) issues
+ * the ranged `fetch` / XHR reads a lazy reader does (#169).
+ *
+ * Not covered here: a `<video>` seek (bursts of cancel and re-request) and a
+ * download resumed by Range.
  *
  * Skipped when the Electron binary cannot be resolved, like
  * `ipfs-gateway-proxy.test.js`; `FREEDOM_ELECTRON_NET_TEST=1` turns a missing
@@ -157,8 +160,66 @@ describeWithElectron('bzz: through protocol.handle in a real Electron process', 
     expect(bytes(results.staleIfRange)).toEqual(content);
   });
 
-  test('HEAD answers with the headers', () => {
-    expect(results.head).toEqual({ status: 200, contentLength: '1000' });
+  test("HEAD answers with the headers, plus the Accept-Ranges Ant's HEAD leaves out", () => {
+    expect(results.head).toEqual({ status: 200, contentLength: '1000', acceptRanges: 'bytes' });
+  });
+
+  // #169: what a lazy reader on a bzz: page actually gets from its own
+  // `fetch` / XHR — the 1-byte size probe, a slice, and HEAD.
+  describe('page script on a bzz: page', () => {
+    test('runs on the bzz: origin', () => {
+      expect(results.page.origin).toBe(`bzz://${HASH}`);
+    });
+
+    test('a 1-byte fetch probe sees 206 and the total size in Content-Range', () => {
+      expect(results.page.probe).toMatchObject({
+        status: 206,
+        contentRange: 'bytes 0-0/1000',
+        contentLength: '1',
+        acceptRanges: 'bytes',
+      });
+      expect(bytes(results.page.probe)).toEqual(content.subarray(0, 1));
+    });
+
+    test('a ranged fetch gets exactly its slice', () => {
+      expect(results.page.slice).toMatchObject({
+        status: 206,
+        contentRange: 'bytes 200-299/1000',
+        contentLength: '100',
+      });
+      expect(bytes(results.page.slice)).toEqual(content.subarray(200, 300));
+    });
+
+    test('a ranged sync XHR gets exactly its slice', () => {
+      expect(results.page.xhr).toMatchObject({
+        status: 206,
+        contentRange: 'bytes 300-303/1000',
+        contentLength: '4',
+      });
+      expect(bytes(results.page.xhr)).toEqual(content.subarray(300, 304));
+    });
+
+    test('a HEAD fetch sees the length and Accept-Ranges: bytes', () => {
+      expect(results.page.head).toMatchObject({
+        status: 200,
+        contentRange: null,
+        contentLength: '1000',
+        acceptRanges: 'bytes',
+      });
+    });
+
+    test('every page read reached the node with its Range verbatim', () => {
+      const pageReads = results.seen
+        .filter((entry) => entry.url === `/bzz/${HASH}/video.mp4`)
+        .slice(-4)
+        .map(({ method, range }) => [method, range]);
+      expect(pageReads).toEqual([
+        ['GET', 'bytes=300-303'],
+        ['GET', 'bytes=0-0'],
+        ['GET', 'bytes=200-299'],
+        ['HEAD', null],
+      ]);
+    });
   });
 
   // #95: the handler re-expresses Ant's gateway-space Location relative to the

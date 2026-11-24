@@ -14,6 +14,7 @@ const {
   clearService,
 } = require('./service-registry');
 const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
+const { describeGlibcTooOld } = require('./ipfs/freedom-ipfs-native-binding');
 const {
   IPFS_GATEWAY_PROBE_PATH,
   isIpfsGatewayProbeResponse,
@@ -23,7 +24,7 @@ const {
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
 const { gatewayFetch, isLoopbackHostname, isOnionHostname } = require('./ipfs/gateway-transport');
 const { stripPageStateHeaders } = require('./lib/gateway-response-headers');
-const { redactForLog } = require('./private/private-log-context');
+const { redactForLog, errorCodeForLog } = require('./private/private-log-context');
 const { rewriteGatewayLocation } = require('./lib/gateway-location');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 
@@ -39,6 +40,31 @@ let currentState = STATUS.STOPPED;
 let lastError = null;
 let activeNode = null;
 let healthCheckInterval = null;
+
+// "IPFS off" serves what is already stored (#30). While the managed node is
+// stopped, an `ipfs://` request starts this second node on the same data dir
+// in the add-on's offline routing mode: it answers from the local store and
+// from IPNS/DNSLink records saved earlier, and opens no network connection.
+// It starts on the first request, not when IPFS is switched off, so a profile
+// that never opens IPFS content while off never opens the store. Every
+// start/stop goes through enqueueOp, so it and the managed node never hold
+// the data dir at the same time. Not for a profile with IPFS disabled (that
+// means no IPFS at all) or on an external gateway (Freedom's store isn't the
+// one in use there).
+let cacheNode = null;
+// When a cache-only start last failed (performance.now(), null if it hasn't),
+// so a page full of subresources doesn't retry the add-on once per request.
+// Monotonic: a wall clock stepped back would stretch the back-off to hours.
+let cacheNodeFailedAt = null;
+const CACHE_NODE_RETRY_MS = 10_000;
+// Closed by the final stop at quit: a request still waiting on its name
+// lookup when the windows went away must not reopen the store afterwards.
+let cacheAdmissionClosed = false;
+// Set on the cache-only node's responses for ipfs-protocol.js, which turns a
+// miss on a page load into a page that says why, and strips the header.
+// Its value is CACHE_UNAVAILABLE when no cache-only node could answer at all.
+const CACHE_ONLY_HEADER = 'x-freedom-ipfs-cache-only';
+const CACHE_UNAVAILABLE = 'unavailable';
 
 // Which backend is currently serving `ipfs://` / `ipns://`. BUNDLED is the
 // in-process freedom-ipfs native node; EXTERNAL routes gateway requests to a
@@ -148,6 +174,12 @@ function isDisabledIpfsConfig(config = getProfileIpfsConfig()) {
 
 function isExternalIpfsConfig(config = getProfileIpfsConfig()) {
   return config?.mode === 'external';
+}
+
+// Whether "IPFS off" can still serve saved content for this profile: the
+// managed (bundled) backend, with an add-on that loads.
+function canServeFromCache(config = getProfileIpfsConfig()) {
+  return !isDisabledIpfsConfig(config) && !isExternalIpfsConfig(config) && checkBinary();
 }
 
 // Accept a bare host:port or a full URL and return a canonical http(s) origin
@@ -413,6 +445,10 @@ function checkHealth() {
   }
 }
 
+function getStatus() {
+  return { status: currentState, error: lastError };
+}
+
 function stopHealthCheck() {
   if (!healthCheckInterval) return;
   clearInterval(healthCheckInterval);
@@ -532,6 +568,47 @@ function checkBinary() {
   return FreedomIpfsNativeNode.isAvailable();
 }
 
+let glibcTooOldPublished = false;
+
+// A glibc older than the add-on's build (#350) is the one load failure no
+// restart fixes. The registry carries it as a fact about this machine (a
+// reset between runs keeps it), so the error page can point to an external
+// node instead of the Nodes menu. Returns `{ host }` or null.
+function publishGlibcTooOld(err = FreedomIpfsNativeNode.loadError()) {
+  const glibc = describeGlibcTooOld(err);
+  if (glibc) {
+    updateService('ipfs', { unavailableReason: 'glibc', hostGlibc: glibc.host });
+    glibcTooOldPublished = true;
+  }
+  return glibc;
+}
+
+// The add-on loads after all (a dev rebuilt it mid-session, say).
+function clearGlibcTooOld() {
+  if (!glibcTooOldPublished) return;
+  updateService('ipfs', { unavailableReason: null, hostGlibc: null });
+  glibcTooOldPublished = false;
+}
+
+// The native add-on can't load: log why (isAvailable() keeps the error to
+// itself) and say so in the Nodes menu.
+function reportNativeAddonUnavailable() {
+  const err = FreedomIpfsNativeNode.loadError();
+  const glibc = publishGlibcTooOld(err);
+  if (glibc) {
+    log.error(
+      `[IPFS] freedom-ipfs native addon needs a newer glibc than this system's (${glibc.host || 'unknown'}):`,
+      err.message
+    );
+    updateState(STATUS.ERROR, 'freedom-ipfs native addon needs a newer glibc');
+    setStatusMessage('ipfs', 'Needs a newer Linux');
+    return;
+  }
+  if (err) log.error('[IPFS] freedom-ipfs native addon failed to load:', err.message);
+  updateState(STATUS.ERROR, 'freedom-ipfs native addon not built');
+  setStatusMessage('ipfs', 'Native node unavailable');
+}
+
 function startDisabledIpfs() {
   // Reachable from a soft-ERROR external node or from a standby one, both of
   // which still have their health check running (both deliberately keep probing
@@ -572,6 +649,7 @@ function publishExternalIpfsMode(gateway, { serving = false } = {}) {
     externalGateway: gateway || null,
     mode: MODE.EXTERNAL,
     backend: 'external-gateway',
+    cacheOnly: false,
   });
 }
 
@@ -682,6 +760,78 @@ async function startExternalIpfs(config) {
   activateExternalGateway(url);
 }
 
+function handleCacheNodeFailure(reason, node) {
+  if (!node || node !== cacheNode) return;
+  log.warn(`[IPFS] Cache-only node failed: ${reason || 'unknown reason'}`);
+  cacheNodeFailedAt = performance.now();
+  void enqueueOp(() => stopCacheNode(node));
+}
+
+// Stops the cache-only node (or the given one, if it is still the current
+// one). Called inside enqueueOp ops only.
+async function stopCacheNode(node = cacheNode) {
+  if (!node || node !== cacheNode) return;
+  cacheNode = null;
+  try {
+    await node.stop();
+  } catch (err) {
+    log.warn('[IPFS] Error while stopping the cache-only node:', err.message);
+  }
+}
+
+async function doEnsureCacheNode(signal) {
+  if (cacheNode) return cacheNode;
+  if (cacheAdmissionClosed || signal?.aborted) return null;
+  if (currentState !== STATUS.STOPPED || activeNode) return null;
+  if (!canServeFromCache()) return null;
+  if (cacheNodeFailedAt !== null && performance.now() - cacheNodeFailedAt < CACHE_NODE_RETRY_MS) {
+    return null;
+  }
+
+  const node = new FreedomIpfsNativeNode({
+    dataDir: getIpfsDataPath(),
+    cacheOnly: true,
+    onFailure: (reason, failedNode) => handleCacheNodeFailure(reason, failedNode),
+  });
+  try {
+    if (!(await node.start())) {
+      cacheNodeFailedAt = performance.now();
+      log.warn('[IPFS] Cache-only node failed to start');
+      return null;
+    }
+  } catch (err) {
+    cacheNodeFailedAt = performance.now();
+    log.warn('[IPFS] Cache-only node failed to start:', err.message);
+    return null;
+  }
+  // A start or a config change queued meanwhile runs after this op, and
+  // stops this node first.
+  cacheNode = node;
+  cacheNodeFailedAt = null;
+  log.info('[IPFS] IPFS is off: serving saved content only');
+  return node;
+}
+
+function ensureCacheNode(signal) {
+  if (cacheNode && currentState === STATUS.STOPPED) return Promise.resolve(cacheNode);
+  return enqueueOp(() => doEnsureCacheNode(signal));
+}
+
+async function serveFromCache({ path: gatewayPath, method, headers, signal }) {
+  // A cancelled request (its tab closed) starts nothing.
+  if (cacheAdmissionClosed || signal?.aborted) return null;
+  const node = await ensureCacheNode(signal);
+  if (!node || (typeof node.isHealthy === 'function' && !node.isHealthy())) return null;
+  const response = await node.request({ method, path: gatewayPath, headers, signal });
+  const marked = new Headers(response.headers);
+  marked.set(CACHE_ONLY_HEADER, '1');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: marked,
+  });
+}
+
 async function doStartIpfs() {
   if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
     log.info(`[IPFS] Ignoring start request, current state: ${currentState}`);
@@ -689,6 +839,8 @@ async function doStartIpfs() {
   }
 
   updateState(STATUS.STARTING);
+  // The managed node opens the same data dir: the cache-only one goes first.
+  await stopCacheNode();
 
   const profileConfig = getProfileIpfsConfig();
 
@@ -709,10 +861,10 @@ async function doStartIpfs() {
   clearExternalGatewayState();
 
   if (!checkBinary()) {
-    updateState(STATUS.ERROR, 'freedom-ipfs native addon not built');
-    setStatusMessage('ipfs', 'Native node unavailable');
+    reportNativeAddonUnavailable();
     return;
   }
+  clearGlibcTooOld();
 
   const dataDir = getIpfsDataPath();
   const node = new FreedomIpfsNativeNode({
@@ -744,6 +896,7 @@ async function doStartIpfs() {
     gateway: null,
     mode: MODE.BUNDLED,
     backend: 'freedom-ipfs',
+    cacheOnly: false,
   });
   setStatusMessage('ipfs', `Node: ${nodeLabel}`);
   updateState(STATUS.RUNNING);
@@ -763,6 +916,12 @@ function publishStoppedIpfsMode() {
     return;
   }
   clearService('ipfs');
+  // Tells the renderer an `ipfs://` load can still go through (#30): the
+  // Nodes menu says so, and navigation stops sending it to the "not running"
+  // page.
+  if (canServeFromCache(config)) {
+    updateService('ipfs', { cacheOnly: true });
+  }
 }
 
 // The profile's IPFS node config changed (Settings > Nodes) or the node was
@@ -775,6 +934,10 @@ function publishStoppedIpfsMode() {
 // native addon cannot load left the toggle hard-disabled until the next launch.
 async function doSyncIpfsProfileMode() {
   const config = getProfileIpfsConfig();
+
+  // A profile that no longer uses the managed node has nothing to serve from
+  // Freedom's store.
+  if (!canServeFromCache(config)) await stopCacheNode();
 
   if (isDisabledIpfsConfig(config)) {
     if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
@@ -831,6 +994,8 @@ async function doSyncIpfsProfileMode() {
 }
 
 async function doStopIpfs() {
+  // Also the quit path: the cache-only node goes down with everything else.
+  await stopCacheNode();
   if (currentState === STATUS.STOPPED && !activeNode) {
     publishStoppedIpfsMode();
     return;
@@ -861,7 +1026,9 @@ function startIpfs() {
   return enqueueOp(doStartIpfs);
 }
 
-function stopIpfs() {
+// `final` is the quit path: after it, no request starts the cache-only node.
+function stopIpfs({ final = false } = {}) {
+  if (final) cacheAdmissionClosed = true;
   return enqueueOp(doStopIpfs);
 }
 
@@ -1003,8 +1170,11 @@ async function serveExternalGatewayRequest({ path: gatewayPath, method, headers,
   } catch (err) {
     releaseHandle();
     if (err?.name === 'AbortError') throw err;
+    // The code only: an error's text can name the URL or path asked for.
+    const code = errorCodeForLog(err);
     log.warn(
-      `[IPFS] External gateway request failed for ${redactForLog(gatewayPath)}: ${err?.message || err}`
+      `[IPFS] External gateway request failed for ${redactForLog(gatewayPath)}` +
+        (code ? ` (${code})` : '')
     );
     return new Response(
       JSON.stringify({ code: 502, message: 'external IPFS gateway request failed' }),
@@ -1019,6 +1189,27 @@ async function serveExternalGatewayRequest({ path: gatewayPath, method, headers,
 async function serveNativeGatewayRequest({ path: gatewayPath, method, headers, signal }) {
   if (currentMode === MODE.EXTERNAL) {
     return serveExternalGatewayRequest({ path: gatewayPath, method, headers, signal });
+  }
+
+  if (currentState === STATUS.STOPPED && !activeNode) {
+    const cached = await serveFromCache({ path: gatewayPath, method, headers, signal });
+    if (cached) return cached;
+    // The renderer let this load through because IPFS is off with saved pages
+    // to serve (`cacheOnly`), so its own "IPFS unavailable" page never shows.
+    // The cache-only node couldn't answer (start failed, back-off, unhealthy):
+    // mark the 503 so ipfs-protocol.js shows a page that says so.
+    if (!cacheAdmissionClosed && canServeFromCache()) {
+      return new Response(
+        JSON.stringify({ code: 503, message: 'freedom-ipfs node is not running' }),
+        {
+          status: 503,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            [CACHE_ONLY_HEADER]: CACHE_UNAVAILABLE,
+          },
+        }
+      );
+    }
   }
 
   if (!activeNode || currentState !== STATUS.RUNNING || !checkHealth()) {
@@ -1109,7 +1300,13 @@ function registerIpfsIpc() {
   });
 
   ipcMain.handle(IPC.IPFS_CHECK_BINARY, () => {
-    return { available: checkBinary() };
+    if (checkBinary()) {
+      clearGlibcTooOld();
+      return { available: true };
+    }
+    const glibc = publishGlibcTooOld();
+    if (glibc) return { available: false, reason: 'glibc', hostGlibc: glibc.host };
+    return { available: false };
   });
 }
 
@@ -1125,9 +1322,12 @@ module.exports = {
   hasInjectedIdentity,
   serveNativeGatewayRequest,
   getNativeDiagnostics,
+  getStatus,
   checkHealth,
   isExternalIpfsConfig,
   normalizeExternalGatewayUrl,
   probeExternalGateway,
   STATUS,
+  CACHE_ONLY_HEADER,
+  CACHE_UNAVAILABLE,
 };

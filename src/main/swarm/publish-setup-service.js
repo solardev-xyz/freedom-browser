@@ -34,6 +34,7 @@ const { ipcMain } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const antStorageApi = require('./ant-storage-api');
+const { usableBytesForDepth } = require('./batch-sizes');
 const {
   parseWalletScan,
   isWalletScanFinished,
@@ -56,27 +57,28 @@ function hasRoom(batch) {
 
 const GNOSIS_CHAIN_ID = 100;
 
-// AntDrive's tiers (nodes/ant examples/ios-drive, DriveModels.swift). Each
-// depth is the smallest whose Swarm effective volume (unencrypted) covers the
-// advertised size: d20 ≈ 688 MB, d21 ≈ 2.60 GB, d22 ≈ 7.73 GB.
+// AntDrive's tiers (nodes/ant examples/ios-drive, DriveModels.swift), sized
+// by Swarm's own effective volume for each depth (batch-sizes.js, #1257)
+// rather than AntDrive's rounder 100 MB / 1 GB / 5 GB.
+const definePlan = (id, title, depth, days) =>
+  Object.freeze({ id, title, depth, days, usableBytes: usableBytesForDepth(depth) });
 const PLANS = Object.freeze([
-  Object.freeze({
-    id: 'starter',
-    title: 'Starter',
-    depth: 20,
-    days: 30,
-    safeLimitBytes: 100_000_000,
-  }),
-  Object.freeze({
-    id: 'advanced',
-    title: 'Advanced',
-    depth: 21,
-    days: 180,
-    safeLimitBytes: 1_000_000_000,
-  }),
-  Object.freeze({ id: 'plus', title: 'Plus', depth: 22, days: 365, safeLimitBytes: 5_000_000_000 }),
+  definePlan('starter', 'Starter', 20, 30),
+  definePlan('advanced', 'Advanced', 21, 180),
+  definePlan('plus', 'Plus', 22, 365),
 ]);
 const EXTEND_DAYS = Object.freeze([30, 90, 180, 365]);
+// The sizes a batch can be bought at or grown to outside the plans (#1257):
+// depth 19 (about 112 MB) to 28 (about 1 TB). Below 19 a batch holds a few
+// megabytes at most; each step up doubles the price.
+const MIN_SIZE_DEPTH = 19;
+const MAX_SIZE_DEPTH = 28;
+const SIZES = Object.freeze(
+  Array.from({ length: MAX_SIZE_DEPTH - MIN_SIZE_DEPTH + 1 }, (_, i) => {
+    const depth = MIN_SIZE_DEPTH + i;
+    return Object.freeze({ depth, usableBytes: usableBytesForDepth(depth) });
+  })
+);
 
 const REQUOTE_MS = 6_000;
 const WATCH_REFRESH_MS = 15_000;
@@ -94,7 +96,8 @@ const FUNDING_TX_TIMEOUT_MS = 15 * 60_000;
 // antd's chain init has no timeout of its own. After this long the setup
 // screen suggests checking the Gnosis RPC or restarting the node.
 const CHAIN_INIT_SLOW_MS = 3 * 60_000;
-const MAX_EXTEND_DAYS = 3650;
+// The longest a purchase or an extension may run, in days.
+const MAX_STORAGE_DAYS = 3650;
 // Ant's background batch rediscovery (#510, ant-wallet-scan.js): while it
 // runs, an empty `/stamps` does not mean the wallet owns no storage. A node
 // that reports `/health.walletScan` (Ant v0.5.59+) is held until it says
@@ -133,6 +136,106 @@ const UNCERTAIN_MESSAGE =
 
 const REJECTED_BATCH_MESSAGE =
   'Your storage was bought, but the Swarm network did not accept it, so it cannot be used to publish. Restarting the node can help; otherwise pick a plan again.';
+
+// A write whose connection to Gnosis Chain dropped before anything that
+// moves value was sent is tried again on its own (#992), up to this often,
+// this long apart.
+const TRANSIENT_RETRY_MS = 15_000;
+const MAX_TRANSIENT_RETRIES = 2;
+
+// antd names the funding step that failed, then why: `<step>: <cause>`
+// (freedom-hq/ant crates/ant-chain/src/funding.rs, and ant-gateway's
+// chainreader.rs for `read batch`). These are the steps each operation runs
+// before anything that moves value is sent, as of Ant v0.5.77: reads, and
+// the approval, which only sets an allowance, so sending it again is
+// harmless. A read can also come after the payment: a deposit reads its
+// chequebook and the swap price again once it has transferred, so neither
+// is listed for it.
+const STEPS_BEFORE_PAYMENT = Object.freeze({
+  buy: ['read xBZZ balance', 'read xDAI balance', 'read swap price', 'authorise payment'],
+  extend: [
+    'read batch',
+    'read xBZZ balance',
+    'read xDAI balance',
+    'read swap price',
+    'authorise payment',
+  ],
+  deposit: [
+    'read xBZZ balance',
+    'read xDAI balance',
+    'verify the chequebook before depositing into it',
+  ],
+});
+// A step antd wraps around steps of its own, `<step>: <inner step>: <cause>`:
+// a deposit's top-up (FundingError::Deposit around chequebook_store.rs's
+// top_up_chequebook) re-reads the chequebook and the wallet, then sends the
+// transfer (`deposit into chequebook: deposit transfer: rpc: http: …`). Its
+// inner steps are classed like the outer ones; these are the inner reads that
+// come before the transfer.
+const WRAPPED_STEPS_BEFORE_PAYMENT = Object.freeze({
+  'deposit into chequebook': ['read chequebook deposit', 'read wallet xBZZ'],
+});
+// The swap and the one-time deployment of its helper. A failed one may
+// still be pending, and antd reads only the mined balance, so trying again
+// at once could swap twice. Its xBZZ stays in the node wallet.
+const SWAP_STEPS = Object.freeze(['prepare swap', 'swap xDAI for xBZZ']);
+
+/**
+ * What a write's `502` (a chain step failed) says about the money (#992):
+ *
+ *   - `retry`: the connection to Gnosis Chain dropped (`http:` for a read,
+ *     `rpc: http:` for a transaction) in a step before anything that moves
+ *     value; trying again is safe.
+ *   - `swap`: the swap, or its setup, lost its connection or was never seen
+ *     mined. It may still go through, so the user waits before trying again.
+ *   - `uncertain`: the connection dropped in the payment, a step after it, or
+ *     a step that cannot be placed. antd had usually sent the transaction
+ *     already (it gives up while waiting for the receipt), so it may still go
+ *     through, and the node does not register a batch it lost track of until
+ *     it restarts.
+ *   - `unmined`: the same steps, but antd sent the transaction and gave up
+ *     waiting for it to be mined; it too may still go through.
+ *   - `failed`: anything else, such as a revert, a refused send (`rpc: rpc:
+ *     insufficient funds`, `nonce too low`) or a receipt without a batch.
+ *     Its reason is shown, as before #992.
+ */
+function classifyChainFailure(res, kind) {
+  if (res?.status !== 502 || typeof res.message !== 'string') return 'failed';
+  const { message } = res;
+  if (/transaction reverted/i.test(message)) return 'failed';
+  const split = message.indexOf(': ');
+  let step = split === -1 ? message : message.slice(0, split);
+  let cause = split === -1 ? '' : message.slice(split + 2);
+  let beforePayment = STEPS_BEFORE_PAYMENT[kind];
+  if (Object.hasOwn(WRAPPED_STEPS_BEFORE_PAYMENT, step)) {
+    beforePayment = WRAPPED_STEPS_BEFORE_PAYMENT[step];
+    const inner = cause.indexOf(': ');
+    step = inner === -1 ? cause : cause.slice(0, inner);
+    cause = inner === -1 ? '' : cause.slice(inner + 2);
+  }
+  const dropped = /^(?:rpc: )?http: /.test(cause);
+  if (beforePayment?.includes(step)) return dropped ? 'retry' : 'failed';
+  const unmined = /^(?:rpc: )?transaction never mined\b/.test(cause);
+  if (!dropped && !unmined) return 'failed';
+  if (SWAP_STEPS.includes(step)) return 'swap';
+  return dropped ? 'uncertain' : 'unmined';
+}
+
+function droppedBeforePaymentMessage(label) {
+  return `${label} failed: the connection to Gnosis Chain dropped. Your funds are still in your node wallet, and trying again only pays for what is still missing.`;
+}
+
+function swapMayLandMessage(label) {
+  return `${label} failed while your Swarm node was swapping xDAI for xBZZ, and the swap may still go through. Its xBZZ stays in your node wallet: wait a minute before you try again, and the node only swaps what is still missing.`;
+}
+
+function droppedAfterPaymentMessage(kind) {
+  const check =
+    kind === 'deposit'
+      ? 'check the chequebook deposit before you top it up again'
+      : 'check your storage before you try again';
+  return `The connection to Gnosis Chain dropped after your Swarm node sent the payment, so it may still go through. Restart the node so it sees the result, then ${check}.`;
+}
 
 const WEI_PER_CENT = 10n ** 16n;
 const PLUR_PER_BZZ = 10n ** 16n;
@@ -445,6 +548,7 @@ function parseDepositAmount(value) {
 function parseRequest(request) {
   const kind = request?.kind;
   if (kind === 'buy') {
+    if (request.planId == null) return parseCustomBuy(request);
     const plan = PLANS.find((p) => p.id === request.planId);
     if (!plan) return { error: 'Unknown storage plan.' };
     return {
@@ -457,7 +561,7 @@ function parseRequest(request) {
     const batchId = normalizeBatchId(request.batchId);
     if (!batchId) return { error: 'Invalid storage batch.' };
     const days = request.days == null ? 0 : request.days;
-    if (!Number.isInteger(days) || days < 0 || days > MAX_EXTEND_DAYS) {
+    if (!Number.isInteger(days) || days < 0 || days > MAX_STORAGE_DAYS) {
       return { error: 'Invalid duration.' };
     }
     const depth = request.depth == null ? null : request.depth;
@@ -484,6 +588,20 @@ function parseRequest(request) {
     };
   }
   return { error: 'Unknown operation.' };
+}
+
+// A size and duration the user picked instead of a plan (#1257).
+function parseCustomBuy(request) {
+  const { depth, days } = request;
+  if (!SIZES.some((size) => size.depth === depth)) return { error: 'Choose a size from the list.' };
+  if (!Number.isInteger(days) || days < 1 || days > MAX_STORAGE_DAYS) {
+    return { error: `Choose a whole number of days from 1 to ${MAX_STORAGE_DAYS}.` };
+  }
+  return {
+    kind: 'buy',
+    request: { kind: 'buy', depth, days },
+    params: { depth, days, immutable: true },
+  };
 }
 
 function createPublishSetupService({
@@ -793,6 +911,8 @@ function createPublishSetupService({
       operation: operation ? publicOperation(operation) : null,
       restart: { ...restart },
       plans: PLANS,
+      sizes: SIZES,
+      maxDays: MAX_STORAGE_DAYS,
     };
   }
 
@@ -1216,6 +1336,8 @@ function createPublishSetupService({
     emit();
 
     const before = current.kind === 'buy' ? await stampIds() : null;
+    // Shutting down while the stamps were read: send nothing.
+    if (disposed || operation !== current) return;
     log.info(`[PublishSetup] ${actionLabel(current.kind)} (${JSON.stringify(current.request)})`);
     const res = await writeOperation(current);
     if (operation !== current) return;
@@ -1261,8 +1383,27 @@ function createPublishSetupService({
       return;
     }
 
-    if (antStorageApi.isUncertainWrite(res)) {
-      log.warn(`[PublishSetup] ${label}: outcome unknown (status ${res.status})`);
+    const chainFailure = classifyChainFailure(res, current.kind);
+    if (chainFailure === 'retry') {
+      log.warn(`[PublishSetup] ${label}: lost Gnosis Chain before paying: ${res.message}`);
+      scheduleTransientRetry(current, label);
+      return;
+    }
+
+    if (chainFailure === 'swap') {
+      log.warn(`[PublishSetup] ${label}: the swap may still be pending: ${res.message}`);
+      failOperation(current, swapMayLandMessage(label));
+      return;
+    }
+
+    if (
+      chainFailure === 'uncertain' ||
+      chainFailure === 'unmined' ||
+      antStorageApi.isUncertainWrite(res)
+    ) {
+      log.warn(
+        `[PublishSetup] ${label}: outcome unknown (status ${res.status}${res.message ? `: ${res.message}` : ''})`
+      );
       if (before) {
         const after = await stampIds();
         if (operation !== current) return;
@@ -1272,12 +1413,65 @@ function createPublishSetupService({
           return;
         }
       }
-      failOperation(current, UNCERTAIN_MESSAGE, { uncertain: true });
+      failOperation(
+        current,
+        chainFailure === 'uncertain' ? droppedAfterPaymentMessage(current.kind) : UNCERTAIN_MESSAGE,
+        { uncertain: true }
+      );
       return;
     }
 
     log.warn(`[PublishSetup] ${label} failed: ${res.status} ${res.message || ''}`);
     failOperation(current, antStorageApi.describeAntError(res, label));
+  }
+
+  function scheduleTransientRetry(current, label) {
+    if (disposed) return;
+    if (current.transientRetries >= MAX_TRANSIENT_RETRIES) {
+      failOperation(current, droppedBeforePaymentMessage(label));
+      return;
+    }
+    // Still `executing`, so the screen keeps saying the purchase is on its
+    // way and nothing can arm or cancel meanwhile. The quote timer carries
+    // the wait: whatever stops quoting (a result, a new arm, dispose) stops
+    // it too.
+    current.transientRetries += 1;
+    current.executed = false;
+    clearQuoteTimer();
+    quoteTimer = setTimeout(() => {
+      quoteTimer = null;
+      if (!disposed && operation === current && current.phase === 'executing') {
+        void retryWrite(current, label);
+      }
+    }, TRANSIENT_RETRY_MS);
+  }
+
+  /**
+   * The write again, after a dropped connection stopped it before paying. A
+   * chosen-amount deposit with no xDAI figure yet is still on its first write,
+   * the one that may spend only the xDAI the deposit screen showed
+   * (requoteAmountDeposit): read the wallet again and hold it to that cap, so
+   * xDAI that arrived during the wait is not swapped unseen.
+   */
+  async function retryWrite(current, label) {
+    if (current.params.amountPlur && current.xdaiNeededWei == null) {
+      const res = await fetchQuote(current);
+      if (disposed || operation !== current || current.phase !== 'executing') return;
+      const wallet = res.ok ? toBigInt(res.data?.walletXdaiWei) : null;
+      if (wallet === null || wallet < 0n) {
+        log.warn(
+          `[PublishSetup] ${label}: could not read the node wallet before trying again: ${res.status ?? ''} ${res.message || ''}`
+        );
+        scheduleTransientRetry(current, label);
+        return;
+      }
+      if (wallet > current.params.walletSpendCapWei) {
+        failOperation(current, WALLET_GREW_MESSAGE);
+        return;
+      }
+      current.walletXdaiWei = wallet;
+    }
+    await execute(current);
   }
 
   async function requote(current) {
@@ -1434,6 +1628,8 @@ function createPublishSetupService({
       result: null,
       fundingTx: null,
       executed: false,
+      // Writes tried again after a dropped connection (classifyChainFailure).
+      transientRetries: 0,
       // An amount deposit's pricing (requoteAmountDeposit).
       amountChecked: false,
       walletAddress: null,
@@ -1609,10 +1805,7 @@ function createPublishSetupService({
     if (!id) return { error: 'Invalid storage batch.', durations: [], sizes: [] };
     const durations = EXTEND_DAYS.map((days) => ({ days }));
     const sizes = Number.isInteger(currentDepth)
-      ? PLANS.filter((p) => p.depth > currentDepth).map((p) => ({
-          depth: p.depth,
-          safeLimitBytes: p.safeLimitBytes,
-        }))
+      ? SIZES.filter((size) => size.depth > currentDepth).map((size) => ({ ...size }))
       : [];
     const results = await Promise.all([
       ...durations.map(({ days }) => api.getStorageQuote({ batchId: id, days })),
@@ -1623,6 +1816,24 @@ function createPublishSetupService({
       durations: durations.map((d, i) => attachQuote(d, results[i], 'extend')),
       sizes: sizes.map((s, i) => attachQuote(s, results[durations.length + i], 'extend')),
     };
+  }
+
+  /**
+   * The price of one buy or extend request, without arming it: the custom
+   * size and duration pickers (#1257) price what the user typed before they
+   * choose it. Validated like arm(), so the price is for exactly what arming
+   * the same request would buy.
+   */
+  async function quote(request) {
+    const parsed = parseRequest(request);
+    if (parsed.error) return { request: null, quote: null, error: parsed.error };
+    if (parsed.kind !== 'buy' && parsed.kind !== 'extend') {
+      return { request: null, quote: null, error: 'Unknown operation.' };
+    }
+    const res = await fetchQuote({ kind: parsed.kind, params: parsed.params });
+    const priced = attachQuote({ request: parsed.request }, res, parsed.kind);
+    emit();
+    return priced;
   }
 
   async function getPublishReadiness() {
@@ -1655,6 +1866,7 @@ function createPublishSetupService({
     restartNode: restartNodeAction,
     getPlans,
     getExtendOptions,
+    quote,
     getPublishReadiness,
     dispose,
   };
@@ -1692,10 +1904,8 @@ function getPublishSetupService() {
       getNodeStatus: antManager.getStatus,
       getRegistryMode: () => getRegistry().ant?.mode,
       getNodeStartedAt: antManager.getSpawnedAt,
-      restartNode: async () => {
-        await antManager.stopAnt();
-        await antManager.startAnt();
-      },
+      // One planned restart, so page calls made meanwhile wait (#988).
+      restartNode: () => antManager.restartAnt(),
       getTransactionStatus,
       getWalletTxCount: async (address) => {
         const chainData = require('../networks/chain-data-router');
@@ -1747,6 +1957,7 @@ function registerPublishSetupIpc() {
   ipcMain.handle(IPC.SWARM_SETUP_GET_EXTEND_OPTIONS, (_event, batchId, depth) =>
     svc.getExtendOptions(batchId, depth)
   );
+  ipcMain.handle(IPC.SWARM_SETUP_QUOTE, (_event, request) => svc.quote(request));
   ipcMain.handle(IPC.SWARM_SETUP_ARM, (_event, request) => svc.arm(request));
   // `{ dismiss: true }`: the screen is leaving a finished result it showed,
   // which another window may still have up (dismiss() above).
@@ -1773,17 +1984,22 @@ module.exports = {
   normalizeSwarmMode,
   parseXdaiShortfall,
   parseDepositAmount,
+  classifyChainFailure,
   getPublishSetupService,
   getPublishReadiness,
   registerPublishSetupIpc,
   PLANS,
   EXTEND_DAYS,
+  SIZES,
+  MAX_STORAGE_DAYS,
   REQUOTE_MS,
   WATCH_REFRESH_MS,
   STARTUP_REFRESH_MS,
   FUNDING_TX_POLL_MS,
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
+  TRANSIENT_RETRY_MS,
+  MAX_TRANSIENT_RETRIES,
   CHAIN_INIT_SLOW_MS,
   REDISCOVERY_MAX_WAIT_MS,
   REDISCOVERY_SLOW_MS,

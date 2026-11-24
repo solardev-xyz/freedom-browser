@@ -94,6 +94,8 @@ const SURFACES = {
     '41-settings-networks-rpc',
     '42-settings-networks-ens',
     '43-settings-nodes-startup',
+    // Secure DNS (#472), numbered after the AI entry points.
+    '57-settings-dns-custom-invalid',
     '44-settings-search',
     '45-settings-shortcut-conflict',
   ],
@@ -106,6 +108,7 @@ const SURFACES = {
   ],
   'private window': ['60-private-window', '61-private-sidebar'],
   'internal page: home': ['49-page-home'],
+  'AI entry points': ['54-settings-ai-off', '55-settings-ai-on', '56-home-ai-invitation'],
 };
 
 const BASELINES = Object.values(SURFACES).flat();

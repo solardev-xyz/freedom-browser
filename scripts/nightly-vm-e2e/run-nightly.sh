@@ -42,9 +42,13 @@ if [ -z "$release" ]; then
 else
   kind=Release
   if [ "$release" = latest ]; then
-    release="$(gh release list --repo "$REPO_SLUG" --exclude-drafts --limit 20 --json tagName,publishedAt \
-      -q '[.[] | select(.tagName != "nightly")] | sort_by(.publishedAt) | last | .tagName')"
-    [ -n "$release" ] || die "no published release besides nightly"
+    # Freedom releases only: `nightly` and the `natives-*` prebuilt-binary
+    # releases (natives.yml) are published here too, so read every page rather
+    # than a fixed-size window of the newest releases.
+    release="$(gh api --paginate "repos/$REPO_SLUG/releases?per_page=100" \
+      -q '.[] | select((.draft | not) and (.tag_name | startswith("v"))) | [.published_at, .tag_name] | @tsv' |
+      sort | tail -1 | cut -f2)"
+    [ -n "$release" ] || die "no published v* release"
   fi
   release_json="$(gh release view "$release" --repo "$REPO_SLUG" --json assets,isDraft)"
   [ "$(jq -r .isDraft <<<"$release_json")" = false ] || die "$release is a draft"

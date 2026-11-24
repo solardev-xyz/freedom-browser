@@ -51,13 +51,19 @@ const {
   nameSystemLabelForResult,
   resolveContentName,
 } = require('../content-name-resolver');
-const { serveNativeGatewayRequest } = require('../ipfs-manager');
+const {
+  serveNativeGatewayRequest,
+  CACHE_ONLY_HEADER,
+  CACHE_UNAVAILABLE,
+} = require('../ipfs-manager');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
+const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
   runWithPrivateLogContext,
   redactForLog,
   redactUrlForLog,
   redactedFailure,
+  errorCodeForLog,
 } = require('../private/private-log-context');
 const {
   cidV0ToV1Base32,
@@ -553,6 +559,97 @@ function isDocumentRequest(request) {
   return accept.split(',')[0].trim().toLowerCase() === 'text/html';
 }
 
+// IPFS off (#30) leaves a cache-only node serving `ipfs://`. A page it can't
+// serve from the store gets a page that says so, instead of the gateway's
+// bare "502 Bad Gateway". Plain markup under the content's own origin: no
+// script, no external resources, nothing the page could read.
+//
+// Its scheme follows Settings > Appearance, decided here: a guest's
+// prefers-color-scheme doesn't follow nativeTheme.themeSource on every
+// platform (#233), and the page runs no script to read the setting itself.
+function notSavedColorScheme() {
+  try {
+    const { theme } = require('../settings-store').loadSettings();
+    if (theme === 'light' || theme === 'dark') return theme;
+    return require('electron').nativeTheme?.shouldUseDarkColors ? 'dark' : 'light';
+  } catch {
+    return 'light dark';
+  }
+}
+
+const NOT_SAVED_COPY = {
+  title: 'Not saved on this device',
+  text: "IPFS is off, so Freedom only opens IPFS pages you've opened before, and this one isn't among them. Turn IPFS on in the Nodes menu, then reload.",
+};
+// The cache-only node couldn't answer at all (its store didn't open, or it
+// failed and is waiting before the next try).
+const UNAVAILABLE_COPY = {
+  title: 'Saved pages are unavailable',
+  text: "IPFS is off, and Freedom couldn't open the pages saved on this device just now. Reload in a few seconds, or turn IPFS on in the Nodes menu.",
+};
+
+const notSavedPage = (scheme, { title, text } = NOT_SAVED_COPY) => `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="${scheme}">
+<title>${title}</title>
+<style>
+:root { color-scheme: ${scheme}; }
+body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
+main { max-width: 34rem; margin: 18vh auto 0; padding: 0 24px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
+p { margin: 0; opacity: 0.75; }
+</style>
+</head>
+<body>
+<main>
+<h1>${title}</h1>
+<p>${text}</p>
+</main>
+</body>
+</html>
+`;
+
+// Which cache-only answers mean "not in the store": a missing block (502, or
+// 504 should a lookup ever wait) or a name never resolved before (404 under
+// /ipns/). A 404 under /ipfs/ is a path the stored content itself doesn't
+// have, which online IPFS would answer the same way, so it stays as it is.
+function isCacheMiss(status, gatewayPath) {
+  if (status === 502 || status === 504) return true;
+  return status === 404 && gatewayPath.startsWith('/ipns/');
+}
+
+function cacheOnlyResponse(response, gatewayPath, method, request) {
+  if (!response.headers.has(CACHE_ONLY_HEADER)) return response;
+  const unavailable = response.headers.get(CACHE_ONLY_HEADER) === CACHE_UNAVAILABLE;
+  if (
+    method === 'GET' &&
+    isDocumentRequest(request) &&
+    (unavailable || isCacheMiss(response.status, gatewayPath))
+  ) {
+    response.body?.cancel().catch(() => {});
+    const copy = unavailable ? UNAVAILABLE_COPY : NOT_SAVED_COPY;
+    return new Response(notSavedPage(notSavedColorScheme(), copy), {
+      status: 503,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
+      },
+    });
+  }
+  // The marker is for this handler, not for the page.
+  const headers = new Headers(response.headers);
+  headers.delete(CACHE_ONLY_HEADER);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 // A bare UnixFS file has no filename from which the native gateway can
 // infer MIME. Render small UTF-8 text files as text, including ENS's gateway
 // checker fixture, without promoting any response to executable HTML.
@@ -663,6 +760,19 @@ async function handleRequest(
     return jsonErrorResponse(405, 'freedom-ipfs native gateway supports GET and HEAD');
   }
 
+  // Chromium keeps `%2F`, `%5C` and escapes inside a segment, so
+  // `ipfs://<cid>/..%2f..%2fipns/<name>` reaches the node or gateway as
+  // written; one that decodes before it resolves dot segments would serve
+  // another root, or its own API, under this CID's origin. Refused before
+  // the gateway-form redirect and any name resolution (see
+  // `lib/gateway-path.js`).
+  if (!isContainedRequestUrl(request.url)) {
+    log.info(
+      `[${namespace}-protocol] 400 for ${redactUrlForLog(request.url)}: path leaves its content root`
+    );
+    return jsonErrorResponse(400, `invalid ${namespace} path`);
+  }
+
   // O-3: never serve a gateway-form URL under the gateway host's origin.
   // A redirect is followed by Chromium for navigations (top-level and
   // iframe) and for sub-resources alike, and moves the document onto the
@@ -701,6 +811,14 @@ async function handleRequest(
     );
     return jsonErrorResponse(built.status, built.message);
   }
+  // The target as it will be sent, whatever supplied its path (a name's
+  // record can carry one), stays beneath `/ipfs/<cid>/` or `/ipns/<name>/`.
+  if (!isContainedTarget(built.url, ['ipfs', 'ipns'])) {
+    log.info(
+      `[${namespace}-protocol] 502 for ${redactUrlForLog(request.url)}: target leaves its content root`
+    );
+    return jsonErrorResponse(502, `${namespace} target leaves its content root`);
+  }
 
   const headers = sanitizeRequestHeaders(request.headers);
 
@@ -716,10 +834,17 @@ async function handleRequest(
         headers,
         signal: request.signal,
       });
-      return await renderSmallTextResponse(response, method, request);
+      return await renderSmallTextResponse(
+        cacheOnlyResponse(response, gatewayPath, method, request),
+        method,
+        request
+      );
     } catch (err) {
+      // The code only: an error's text can name the path asked for.
+      const code = errorCodeForLog(err);
       log.warn(
-        `[${namespace}-protocol] native request failed for ${redactForLog(gatewayPath)}: ${err?.message || err}`
+        `[${namespace}-protocol] native request failed for ${redactForLog(gatewayPath)}` +
+          (code ? ` (${code})` : '')
       );
       return jsonErrorResponse(502, err?.message || 'freedom-ipfs native gateway error');
     }
@@ -755,10 +880,10 @@ async function handleRequest(
       );
       return jsonErrorResponse(504, 'freedom-ipfs gateway timeout');
     }
-    const code = err?.cause?.code || err?.code || '';
+    const code = errorCodeForLog(err);
     const isConnRefused = code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND';
     log.warn(
-      `[${namespace}-protocol] fetch failed for ${redactUrlForLog(built.url)}: ${err?.message || err}` +
+      `[${namespace}-protocol] fetch failed for ${redactUrlForLog(built.url)}` +
         (code ? ` (${code})` : '')
     );
     return jsonErrorResponse(
@@ -769,6 +894,17 @@ async function handleRequest(
     clearTimeout(timer);
     if (upstream) upstream.removeEventListener('abort', relayAbort);
   }
+}
+
+function isContainedRequestUrl(sourceUrl) {
+  let pathname;
+  try {
+    ({ pathname } = new URL(sourceUrl));
+  } catch {
+    // Malformed: buildGatewayUrl answers it with its own 400.
+    return true;
+  }
+  return isContainedPath(pathname);
 }
 
 function gatewayPathFromUrl(gatewayUrl) {

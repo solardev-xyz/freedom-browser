@@ -216,6 +216,185 @@ describe('quick-unlock', () => {
     });
   });
 
+  // K-3: the credential is read, written, refreshed and removed through the
+  // identity directory's handle, so a link planted at its name after the
+  // startup repair is never followed.
+  describe('never through a link at the credential name (K-3)', () => {
+    const posixTest = originalPlatform.value === 'win32' ? test.skip : test;
+    const modeOf = (target) => fs.statSync(target).mode & 0o777;
+
+    function setUp() {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      // A file a link could point at, holding what would pass for a legacy
+      // credential if it were followed.
+      const outside = path.join(userDataDir, 'outside.dat');
+      fs.writeFileSync(outside, 'encrypted:planted');
+      fs.chmodSync(outside, 0o644);
+      const plantLink = () => {
+        fs.rmSync(credentialPath, { force: true });
+        fs.symlinkSync(outside, credentialPath);
+      };
+      const outsideUntouched = () => {
+        expect(fs.readFileSync(outside, 'utf8')).toBe('encrypted:planted');
+        expect(modeOf(outside)).toBe(0o644);
+      };
+      const ctx = loadQuickUnlock({ activeProfile: makeProfile('default', userDataDir), userDataDir });
+      return { ...ctx, credentialPath, plantLink, outsideUntouched };
+    }
+
+    const expectOwnCredential = (mod, credentialPath) => {
+      expect(fs.lstatSync(credentialPath).isSymbolicLink()).toBe(false);
+      expect(modeOf(credentialPath)).toBe(0o600);
+      expect(JSON.parse(fs.readFileSync(credentialPath, 'utf8')).version).toBe(
+        mod.CREDENTIAL_VERSION
+      );
+    };
+
+    beforeEach(() => {
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    posixTest('reading refuses a planted link; disabling removes the link only', async () => {
+      const { mod, credentialPath, plantLink, outsideUntouched, systemPreferences, identityManager } =
+        setUp();
+      plantLink();
+
+      expect(mod.isQuickUnlockEnabled()).toBe(false);
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock not enabled',
+      });
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+
+      expect(mod.disableQuickUnlock()).toEqual({ success: true });
+      expect(fs.lstatSync(credentialPath, { throwIfNoEntry: false })).toBeUndefined();
+      outsideUntouched();
+    });
+
+    posixTest('enabling replaces a planted link, its target untouched', async () => {
+      const { mod, credentialPath, plantLink, outsideUntouched } = setUp();
+      plantLink();
+
+      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+      expectOwnCredential(mod, credentialPath);
+      outsideUntouched();
+      expect(mod.isQuickUnlockEnabled()).toBe(true);
+    });
+
+    posixTest('a legacy refresh replaces a link planted during the Touch ID prompt', async () => {
+      const { mod, credentialPath, plantLink, outsideUntouched, systemPreferences, identityManager } =
+        setUp();
+      fs.writeFileSync(credentialPath, Buffer.from('encrypted:legacy'));
+      systemPreferences.promptTouchID.mockImplementation(async () => plantLink());
+
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(identityManager.unlockVault).toHaveBeenCalledWith('legacy');
+      expectOwnCredential(mod, credentialPath);
+      outsideUntouched();
+    });
+
+    posixTest('an older 0644 credential is replaced owner-only, never rewritten in place', async () => {
+      const { mod, credentialPath } = setUp();
+      fs.writeFileSync(credentialPath, Buffer.from('encrypted:legacy'));
+      fs.chmodSync(credentialPath, 0o644);
+      // A second name for the old file: what an open reader would still see.
+      const oldInode = `${credentialPath}.old`;
+      fs.linkSync(credentialPath, oldInode);
+
+      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+      expectOwnCredential(mod, credentialPath);
+      expect(fs.readFileSync(oldInode, 'utf8')).toBe('encrypted:legacy');
+      fs.rmSync(oldInode);
+    });
+  });
+
+  // K-4: the wrong-password back-off covers the typed enrolment password,
+  // not the password Touch ID reads back from secure storage.
+  describe('wrong-password back-off', () => {
+    function setup(verifyPassword) {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      fs.writeFileSync(path.join(identityDir, 'quick-unlock.dat'), Buffer.from('encrypted:right'));
+      return loadQuickUnlock({
+        activeProfile: makeProfile('default', userDataDir),
+        userDataDir,
+        verifyPasswordImpl: verifyPassword,
+      });
+    }
+
+    const byPassword = () =>
+      jest.fn(async (_dir, password) => {
+        if (password !== 'right') throw new Error('Incorrect password');
+      });
+
+    test('a lock-out from wrong typed passwords refuses enrolment but not Touch ID', async () => {
+      const verifyPassword = byPassword();
+      const { mod, systemPreferences } = setup(verifyPassword);
+      for (let i = 0; i < 3; i += 1) {
+        await expect(mod.enableQuickUnlock('wrong')).resolves.toEqual({
+          success: false,
+          error: 'Incorrect password',
+        });
+      }
+      expect(verifyPassword).toHaveBeenCalledTimes(3);
+
+      // Enrolment is locked out: no check, no Touch ID prompt.
+      const enrol = await mod.enableQuickUnlock('right');
+      expect(enrol.success).toBe(false);
+      expect(enrol.error).toMatch(/Too many wrong passwords/);
+      expect(verifyPassword).toHaveBeenCalledTimes(3);
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+
+      // Touch ID still unlocks, checking the stored password.
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(verifyPassword).toHaveBeenCalledTimes(4);
+      expect(verifyPassword).toHaveBeenLastCalledWith(expect.any(String), 'right');
+    });
+
+    test('a stale stored credential does not count toward the lock-out', async () => {
+      const verifyPassword = byPassword();
+      const { mod } = setup(verifyPassword);
+      for (let i = 0; i < 2; i += 1) await mod.enableQuickUnlock('wrong');
+
+      // The vault password changed since enrolment: Touch ID's check fails.
+      verifyPassword.mockRejectedValueOnce(new Error('Incorrect password'));
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Incorrect password',
+      });
+
+      // Still the third typed failure, so still checked, not locked out.
+      await expect(mod.enableQuickUnlock('wrong')).resolves.toEqual({
+        success: false,
+        error: 'Incorrect password',
+      });
+    });
+
+    test('a Touch ID unlock resets the count like a right typed password', async () => {
+      const verifyPassword = byPassword();
+      const { mod } = setup(verifyPassword);
+      for (let i = 0; i < 3; i += 1) await mod.enableQuickUnlock('wrong');
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+
+      // Count and lock-out are cleared: three wrong typed passwords are
+      // free again (each is checked, none refused) before any lock-out.
+      for (let i = 0; i < 3; i += 1) {
+        await expect(mod.enableQuickUnlock('wrong')).resolves.toEqual({
+          success: false,
+          error: 'Incorrect password',
+        });
+      }
+      expect(verifyPassword).toHaveBeenCalledTimes(7);
+      const locked = await mod.enableQuickUnlock('right');
+      expect(locked.error).toMatch(/Too many wrong passwords/);
+    });
+  });
+
   // Security audit O-8: after Touch ID, main finishes the job itself and
   // the stored vault password never crosses IPC to any renderer.
   describe('never returns the vault password', () => {

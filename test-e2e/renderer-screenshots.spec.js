@@ -86,6 +86,7 @@
 // scrollbar — is masked instead; see `guestScrollbarMask`.
 
 const path = require('path');
+const fs = require('fs');
 
 const { test, expect } = require('./fixtures');
 
@@ -321,10 +322,16 @@ function surfaceGroup(theme, group) {
  * the whole diff artifact.
  */
 async function snap(surfaces, page, name, { mask = [], extra = [] } = {}) {
-  await expect.soft(page).toHaveScreenshot(surfaces.declared(name), {
-    ...COMPARE,
-    mask: [...maskFor(page, extra), ...mask],
-  });
+  const file = surfaces.declared(name);
+  const masks = [...maskFor(page, extra), ...mask];
+  await expect.soft(page).toHaveScreenshot(file, { ...COMPARE, mask: masks });
+  // Optional review artifacts, including surfaces whose dark-theme drift falls
+  // below the comparison threshold. Never overwrite a committed reference.
+  if (process.env.FREEDOM_CAPTURE_RENDERER_BASELINES === '1') {
+    const candidate = test.info().outputPath('baseline-candidates', file);
+    fs.mkdirSync(path.dirname(candidate), { recursive: true });
+    await page.screenshot({ path: candidate, mask: masks, animations: 'disabled', caret: 'hide' });
+  }
 }
 
 test.describe('renderer screenshots', () => {
@@ -539,6 +546,30 @@ test.describe('renderer screenshots', () => {
           await page.waitForTimeout(1_500);
           await shot(`${40 + i}-settings-${route.replace('/', '-')}`);
         }
+        // Secure DNS (#472) at its defaults is already on screen in
+        // `40-settings-privacy-permissions`, the last panels of the same
+        // page. What only this panel has is Custom with an address it refuses:
+        // the address row, the error line and the field's danger border.
+        // Nothing is saved in that state, so choosing Quad9 again leaves the
+        // walk as it was.
+        await page.evaluate(() => {
+          location.hash = 'privacy/dns';
+        });
+        await page.waitForTimeout(1_500);
+        await page.selectOption('#secure-dns-provider', 'custom');
+        // Set the value and fire the field's own change event: typed keys go
+        // to whichever frame has focus. Blurred after, so no focus ring
+        // depends on which frame that is.
+        await page.evaluate(() => {
+          const input = document.getElementById('secure-dns-custom');
+          input.value = 'http://dns.example/dns-query';
+          input.dispatchEvent(new Event('change'));
+          input.blur();
+        });
+        await page.waitForTimeout(1_500);
+        await shot('57-settings-dns-custom-invalid');
+        await page.selectOption('#secure-dns-provider', 'quad9');
+        await page.waitForTimeout(300);
         // The page-wide search (#281): the sidebar field with a query, and
         // the result list that stands in for whichever section was open. The
         // query is deliberately one only static rows answer — the `[data-tor]`
@@ -618,6 +649,33 @@ test.describe('renderer screenshots', () => {
         await priv.waitForTimeout(500);
         await snap(surfaces, priv, `${theme}-61-private-sidebar`, {
           mask: [priv.locator('webview')],
+        });
+        surfaces.tookEverySurface();
+      });
+
+      test(`AI entry points (${theme})`, async ({ electronApp, window }) => {
+        test.setTimeout(120_000);
+        const surfaces = surfaceGroup(theme, 'AI entry points');
+        await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
+        const page = await recipes.settings({ app: electronApp, win: window }, 'ai');
+        const scrollbar = await guestScrollbarMask(window);
+        await expect(page.locator('#enable-ai')).not.toBeChecked();
+        await snap(surfaces, window, `${theme}-54-settings-ai-off`, { mask: scrollbar });
+        await page.locator('#enable-ai').check();
+        // With no model yet the switch stays on the AI page and offers
+        // "Connect a model" (#836).
+        await expect(page.locator('#ai-settings-links')).toBeVisible();
+        await expect(page.locator('#ai-connect-model')).toBeVisible();
+        await expect(page).toHaveURL(/#ai$/);
+        await expect(page.locator('#ai-settings-status')).toBeEmpty({ timeout: 30_000 });
+        await snap(surfaces, window, `${theme}-55-settings-ai-on`, { mask: scrollbar });
+        await page.locator('#enable-ai').uncheck();
+        await go(window, 'freedom://home', 1_800);
+        const home = await pageFor(electronApp, '/pages/home.html');
+        await expect(home.locator('#ai-invitation')).toBeVisible();
+        await expect.soft(home).toHaveScreenshot(surfaces.declared(`${theme}-56-home-ai-invitation`), {
+          ...COMPARE,
+          clip: { x: 0, y: 0, width: 720, height: 320 },
         });
         surfaces.tookEverySurface();
       });

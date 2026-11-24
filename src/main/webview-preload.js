@@ -8,6 +8,16 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// CSP connect-src does not cover WebRTC/TURN. Apply this in the main world
+// before page scripts, including inherited blank/srcdoc preview frames.
+let isolatedPreview = globalThis.location?.protocol === 'freedom-preview:';
+try { isolatedPreview ||= globalThis.window?.top?.location?.protocol === 'freedom-preview:'; } catch { /* Cross-origin frames do not inherit a preview's authority. */ }
+if (isolatedPreview) contextBridge.executeInMainWorld({ func: () => {
+  for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection']) {
+    Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false });
+  }
+} });
+
 // ============================================
 // Ad blocking — scriptlets (document start, main world)
 // ============================================
@@ -635,6 +645,8 @@ function mintUuidV4() {
 const IS_PRIVATE_WINDOW = WEBVIEW_BOOT
   ? WEBVIEW_BOOT.isPrivate
   : ipcRenderer.sendSync('private:is-private') === true;
+const IS_ISOLATED_PREVIEW = location.protocol === 'freedom-preview:';
+const PROVIDERS_ENABLED = !IS_PRIVATE_WINDOW && !IS_ISOLATED_PREVIEW;
 
 // The webview preload runs in a sandbox — require() is restricted to a small
 // whitelist (electron, events, timers, url), so we cannot read provider
@@ -651,7 +663,7 @@ function ethereumInjectSource() {
   );
   return `window.__FREEDOM_PROVIDER_CONFIG__ = ${info};\n${WEBVIEW_BOOT.ethereum.source}`;
 }
-const ETHEREUM_INJECT_SOURCE = IS_PRIVATE_WINDOW ? '' : ethereumInjectSource();
+const ETHEREUM_INJECT_SOURCE = PROVIDERS_ENABLED ? ethereumInjectSource() : '';
 
 // Internal pages list — canonical source is src/shared/internal-pages.json,
 // handed over with the boot switch (sync IPC as the fallback) so preloads
@@ -677,6 +689,11 @@ const isSettingsPage = () => {
   const settingsFile = internalPages.routable?.settings || 'settings.html';
   return pathname.endsWith(`/pages/${settingsFile}`);
 };
+
+const isAgentLauncherPage = () => isSettingsPage() || (
+  globalThis.location?.protocol === 'file:' &&
+  (globalThis.location.pathname || '').endsWith(`/pages/${internalPages.routable.home}`)
+);
 
 const isProfilesPage = () => {
   const location = globalThis.location;
@@ -709,6 +726,15 @@ const guardSettingsPage =
       const url = globalThis.location?.href || 'unknown';
       console.warn(`[freedomAPI] blocked settings-only "${name}" on page: ${url}`);
       return Promise.reject(new Error('freedomAPI profile changes are only available on settings'));
+    }
+    return fn(...args);
+  };
+
+const guardAgentLauncherPage =
+  (name, fn) =>
+  (...args) => {
+    if (!isAgentLauncherPage()) {
+      return Promise.reject(new Error('Open Agent from the start page or Settings'));
     }
     return fn(...args);
   };
@@ -1103,6 +1129,46 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
   relaunchApp: guardInternal('relaunchApp', () => ipcRenderer.send('app:relaunch')),
 
+  // Model connections are managed only by the trusted Settings page.
+  getAgentProviderStatus: guardSettingsPage('getAgentProviderStatus', () => ipcRenderer.invoke('agent:provider:get-status')),
+  getWebMcpLaunchState: guardSettingsPage('getWebMcpLaunchState', () => ipcRenderer.invoke('agent:webmcp:launch-state')),
+  getAgentDictationState: guardSettingsPage('getAgentDictationState', () => ipcRenderer.invoke('agent:dictation:state')),
+  chooseAgentDictation: guardSettingsPage('chooseAgentDictation', choice => ipcRenderer.invoke('agent:dictation:choose', choice)),
+  installAgentDictation: guardSettingsPage('installAgentDictation', () => ipcRenderer.invoke('agent:dictation:install')),
+  cancelAgentDictation: guardSettingsPage('cancelAgentDictation', () => ipcRenderer.invoke('agent:dictation:cancel')),
+  onAgentDictationEvent: guardSettingsPage('onAgentDictationEvent',
+    guardInternalSubscription('onAgentDictationEvent', 'agent:dictation:event')),
+  getAgentProviderCatalog: guardSettingsPage('getAgentProviderCatalog', () => ipcRenderer.invoke('agent:provider:get-catalog')),
+  refreshAgentProviderModels: guardSettingsPage('refreshAgentProviderModels', (providerId, apiKey) =>
+    ipcRenderer.invoke('agent:provider:refresh-models', { providerId, apiKey })),
+  setAgentProviderPreferences: guardSettingsPage('setAgentProviderPreferences', (providerId, preferences) =>
+    ipcRenderer.invoke('agent:provider:set-preferences', { providerId, ...preferences })),
+  testAgentProviderConnection: guardSettingsPage('testAgentProviderConnection', (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:test-connection', { providerId, modelId })),
+  configureHostedAgentProvider: guardSettingsPage('configureHostedAgentProvider', (providerId, modelId, apiKey, privacyPolicy) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { providerId, modelId, apiKey,
+      ...(privacyPolicy !== undefined && { privacyPolicy }) })),
+  configureCompatibleAgentProvider: guardSettingsPage('configureCompatibleAgentProvider', (connection) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { ...connection, kind: 'compatible' })),
+  configureOllamaAgentProvider: guardSettingsPage('configureOllamaAgentProvider', (modelId, baseUrl) =>
+    ipcRenderer.invoke('agent:provider:configure-ollama', { modelId, baseUrl })),
+  loginSubscriptionAgentProvider: guardSettingsPage('loginSubscriptionAgentProvider', (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:login-subscription', { providerId, modelId })),
+  cancelAgentProviderLogin: guardSettingsPage('cancelAgentProviderLogin', () => ipcRenderer.invoke('agent:provider:cancel-login')),
+  submitAgentProviderLogin: guardSettingsPage('submitAgentProviderLogin', (requestId, callbackUrl) => ipcRenderer.invoke('agent:provider:submit-login', { requestId, callbackUrl })),
+  selectAgentModel: guardSettingsPage('selectAgentModel', (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId })),
+  removeAgentProvider: guardSettingsPage('removeAgentProvider', (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId })),
+  clearAgentProvider: guardSettingsPage('clearAgentProvider', () => ipcRenderer.invoke('agent:provider:clear')),
+  openAgent: guardAgentLauncherPage('openAgent', (options) =>
+    options?.freshPage === true ? ipcRenderer.invoke('agent:open', { freshPage: true }) : ipcRenderer.invoke('agent:open')),
+  getAgentSetupState: guardAgentLauncherPage('getAgentSetupState', () => ipcRenderer.invoke('agent:setup-state')),
+  onAgentProviderAuthEvent: guardSettingsPage('onAgentProviderAuthEvent',
+    guardInternalSubscription('onAgentProviderAuthEvent', 'agent:provider:auth-event')),
+  // Carries no payload; the start page re-reads its setup state on it.
+  onAgentProviderChanged: guardAgentLauncherPage('onAgentProviderChanged',
+    guardInternalSubscription('onAgentProviderChanged', 'agent:provider:changed')),
+
   // Ad blocking (settings page)
   adblockGetStatus: guardInternal('adblockGetStatus', () =>
     ipcRenderer.invoke('adblock:get-status')
@@ -1358,12 +1424,20 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
 
   // Radicle
-  seedRadicle: guardInternal('seedRadicle', (rid) => ipcRenderer.invoke('radicle:seed', rid)),
+  // PRIVATE MODE GUARD (R-9): no seeding policy or fetched repository may
+  // outlive a private window; main refuses these too.
+  seedRadicle: guardInternal('seedRadicle', (rid) =>
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:seed', rid)
+  ),
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
-    ipcRenderer.invoke('radicle:syncRepo', rid)
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:syncRepo', rid)
   ),
   getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
     ipcRenderer.invoke('radicle:getSeedStatus', rid)
@@ -1408,6 +1482,23 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 // ============================================
 // Context Menu Handler (works on all pages)
 // ============================================
+
+// The URL a <video>/<audio> context menu addresses: the source the element is
+// actually playing (`currentSrc`, what Chrome's "Copy video address" uses),
+// so a multi-<source> element whose browser picked a later source copies that
+// one, not the first listed. Before resource selection has run (preload="none",
+// still loading) currentSrc is '', so fall back to the `src` attribute, then
+// the first <source> child that names a URL — skipping a src-less one rather
+// than stopping at it. '' when nothing is addressable (a `srcObject` stream).
+const getMediaElementSrc = (element) => {
+  if (element.currentSrc) return element.currentSrc;
+  if (element.src) return element.src;
+  const sources = element.querySelectorAll ? element.querySelectorAll('source') : [];
+  for (const source of sources) {
+    if (source.src) return source.src;
+  }
+  return '';
+};
 
 // The elements a `contextmenu` really passed through, innermost first, up to
 // (but not including) `document.body` — the same bound the plain ancestor walk
@@ -1520,21 +1611,13 @@ window.addEventListener(
       // Check for video
       if (element.tagName === 'VIDEO') {
         context.mediaType = 'video';
-        if (element.src) {
-          context.mediaSrc = element.src;
-        } else if (element.querySelector('source')) {
-          context.mediaSrc = element.querySelector('source').src;
-        }
+        context.mediaSrc = getMediaElementSrc(element);
       }
 
       // Check for audio
       if (element.tagName === 'AUDIO') {
         context.mediaType = 'audio';
-        if (element.src) {
-          context.mediaSrc = element.src;
-        } else if (element.querySelector('source')) {
-          context.mediaSrc = element.querySelector('source').src;
-        }
+        context.mediaSrc = getMediaElementSrc(element);
       }
 
       // Check if element is editable
@@ -1682,7 +1765,7 @@ function injectPageProvider(name, source) {
 //
 // PRIVATE MODE GUARD (providers): skipped entirely in private windows —
 // no injection, no bridges. Nothing announces via EIP-6963.
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   injectPageProvider('ethereum', ETHEREUM_INJECT_SOURCE);
 
   // Bridge postMessage from page to IPC
@@ -1761,10 +1844,14 @@ const SWARM_INJECT_SOURCE = `
             method === 'swarm_writeFeedEntry' ||
             method === 'swarm_writeSingleOwnerChunk' ||
             method === 'swarm_getSigningIdentity' ||
+            method === 'swarm_getEncryptionKey' ||
+            method === 'swarm_deriveSharedSecrets' ||
             method === 'swarm_getMessagingIdentity' ||
             method === 'swarm_subscribe' ||
             // A blob of up to 5 MiB joined from the network can outlast 60s.
-            method === 'swarm_readData';
+            method === 'swarm_readData' ||
+            // Waits on the ACT prompt, then on the node's ACT lookup.
+            method === 'swarm_openAct';
           const timeout = longRunning ? 300000 : 60000;
           setTimeout(() => {
             if (pendingRequests.has(id)) {
@@ -1788,16 +1875,20 @@ const SWARM_INJECT_SOURCE = `
       readFeedEntry(params) { return this.request({ method: 'swarm_readFeedEntry', params: params }); },
       listFeeds() { return this.request({ method: 'swarm_listFeeds' }); },
       publishChunk(params) { return this.request({ method: 'swarm_publishChunk', params: params }); },
+      publishSingleOwnerChunk(params) { return this.request({ method: 'swarm_publishSingleOwnerChunk', params: params }); },
       readChunk(params) { return this.request({ method: 'swarm_readChunk', params: params }); },
       readData(params) { return this.request({ method: 'swarm_readData', params: params }); },
       writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
       readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
       getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
+      getEncryptionKey() { return this.request({ method: 'swarm_getEncryptionKey' }); },
+      deriveSharedSecrets(params) { return this.request({ method: 'swarm_deriveSharedSecrets', params: params }); },
       getMessagingIdentity() { return this.request({ method: 'swarm_getMessagingIdentity' }); },
       subscribe(params) { return this.request({ method: 'swarm_subscribe', params: params }); },
       unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
       sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
       sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
+      openAct(params) { return this.request({ method: 'swarm_openAct', params: params }); },
 
       on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
       removeListener(event, handler) {
@@ -1841,11 +1932,11 @@ const SWARM_INJECT_SOURCE = `
 // private windows — same policy as window.ethereum above.
 // Internal pages don't get it either: they talk to main through freedomAPI
 // and have no use for it (#432).
-if (!IS_PRIVATE_WINDOW && !isInternalPage()) {
+if (PROVIDERS_ENABLED && !isInternalPage()) {
   injectPageProvider('swarm', SWARM_INJECT_SOURCE);
 }
 
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   // Bridge postMessage from page to IPC (Swarm)
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -1992,11 +2083,11 @@ const RADICLE_INJECT_SOURCE = `
 // PRIVATE MODE GUARD (providers): window.radicle is not injected in
 // private windows — same policy as window.ethereum / window.swarm above.
 // Skipped on internal pages for the same reason as window.swarm (#432).
-if (!IS_PRIVATE_WINDOW && !isInternalPage()) {
+if (PROVIDERS_ENABLED && !isInternalPage()) {
   injectPageProvider('radicle', RADICLE_INJECT_SOURCE);
 }
 
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   // Bridge postMessage from page to IPC (Radicle)
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -2225,5 +2316,7 @@ if (!IS_PRIVATE_WINDOW) {
 console.log(
   IS_PRIVATE_WINDOW
     ? '[webview-preload] Loaded (freedomAPI + context menu — private window, providers disabled)'
-    : '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
+    : IS_ISOLATED_PREVIEW
+      ? '[webview-preload] Loaded (context menu — isolated preview, providers disabled)'
+      : '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
 );

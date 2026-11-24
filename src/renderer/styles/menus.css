@@ -445,3 +445,6 @@
   width: 14px;
   height: 14px;
 }
+
+/* Author display rules must not resurrect items excluded by their owner. */
+.context-menu-item[hidden] { display: none; }

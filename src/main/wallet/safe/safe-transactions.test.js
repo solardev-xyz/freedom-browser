@@ -14,6 +14,8 @@ jest.mock('electron', () => ({
   app: { getPath: () => mockTmpDir },
 }));
 
+// Records as vault-meta stores them: `deployed` holds the stored marks,
+// which the record seam filters as identity-manager's does (#1066).
 const mockWalletRecords = {
   0: { index: 0, name: 'Main Wallet', address: OWNERS[0], type: 'mnemonic' },
   2: { index: 2, name: 'My Stax', address: OWNERS[1], type: 'ledger' },
@@ -26,7 +28,7 @@ const mockWalletRecords = {
     owners: [0, 2, 4],
     threshold: 2,
     saltNonce: '7508',
-    deployed: { 100: true },
+    deployed: { 100: { verified: true } },
   },
   6: {
     index: 6,
@@ -38,13 +40,33 @@ const mockWalletRecords = {
     saltNonce: '9',
     deployed: {},
   },
+  // Marked deployed by a release before #1066, on one endpoint's answer.
+  7: {
+    index: 7,
+    name: 'Old mark',
+    address: SAFE_ADDRESS.replace('41', '43'),
+    type: 'safe',
+    owners: [0, 2],
+    threshold: 1,
+    saltNonce: '11',
+    deployed: { 100: true },
+  },
 };
 const mockIsVaultUnlocked = jest.fn(async () => true);
-jest.mock('../../identity-manager', () => ({
-  getWalletRecord: (index) => mockWalletRecords[index] || null,
-  isVaultUnlocked: (...args) => mockIsVaultUnlocked(...args),
-  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
-}));
+jest.mock('../../identity-manager', () => {
+  const { verifiedDeployments } = jest.requireActual('./deployed-mark');
+  return {
+    getWalletRecord: (index) => {
+      const record = mockWalletRecords[index];
+      if (!record) return null;
+      return record.type === 'safe'
+        ? { ...record, deployed: verifiedDeployments(record.deployed) }
+        : record;
+    },
+    isVaultUnlocked: (...args) => mockIsVaultUnlocked(...args),
+    WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
+  };
+});
 
 const builtResult = {
   safeAddress: SAFE_ADDRESS,
@@ -86,7 +108,7 @@ const {
   getAllSafeSendStates,
   cancelSafeSend,
 } = require('./safe-transactions');
-const { getPending, clearPending } = require('./pending-store');
+const { getPending, setPending, clearPending } = require('./pending-store');
 
 const DISPLAY = {
   toAddress: OWNERS[2],
@@ -106,7 +128,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockIsVaultUnlocked.mockResolvedValue(true);
   mockRpcRequest.mockResolvedValue('0x3');
-  for (const index of [5, 6]) clearPending(index);
+  for (const index of [5, 6, 7]) clearPending(index);
 });
 
 afterEach(() => {
@@ -120,7 +142,7 @@ describe('startSafeSend', () => {
     expect(mockBuildSafeTransaction).toHaveBeenCalledWith({
       chainId: 100,
       // owners resolved to ADDRESSES for the executor layer
-      safe: { ...mockWalletRecords[5], owners: OWNERS },
+      safe: { ...mockWalletRecords[5], deployed: { 100: true }, owners: OWNERS },
       tx: TX,
     });
     // only the free (mnemonic) owner was asked — devices are never cold-called
@@ -168,6 +190,13 @@ describe('startSafeSend', () => {
   test('refuses safes not yet deployed and non-safe accounts', async () => {
     await expect(start(6)).rejects.toThrow(/activate/i);
     await expect(start(0)).rejects.toThrow(/not a Safe/i);
+  });
+
+  test('refuses a Safe whose deployed mark no verified check wrote (#1066)', async () => {
+    // Pending until getSafeStatus's verified read marks it again.
+    await expect(start(7)).rejects.toThrow(/activate/i);
+    expect(mockBuildSafeTransaction).not.toHaveBeenCalled();
+    expect(getPending(7)).toBeNull();
   });
 
   test('refuses a send composed on a chain the Safe does not live on', async () => {
@@ -254,6 +283,33 @@ describe('executeSafePending', () => {
     await start();
     await signSafePending(5, 2);
   }
+
+  test('refuses a SafeTx of a Safe whose deployed mark no verified check wrote (#1066)', async () => {
+    // Saved while a release before #1066 trusted the old mark, fully signed.
+    setPending(7, {
+      chainId: 100,
+      safeAddress: mockWalletRecords[7].address,
+      safeTxData: { ...builtResult.safeTxData, nonce: 3 },
+      safeTxHash: SAFE_TX_HASH,
+      typedData: builtResult.typedData,
+      threshold: 1,
+      display: DISPLAY,
+      signatures: [signatureOf(0)],
+      createdAt: Date.now(),
+    });
+
+    await expect(executeSafePending(7)).rejects.toThrow(/activate/i);
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    // Nothing is lost: it executes once a verified check marks the Safe.
+    expect(getPending(7).signatures).toEqual([signatureOf(0)]);
+    mockWalletRecords[7].deployed = { 100: { verified: true } };
+    try {
+      await expect(executeSafePending(7)).resolves.toMatchObject({ status: 'executed' });
+      expect(mockExecTransaction).toHaveBeenCalledTimes(1);
+    } finally {
+      mockWalletRecords[7].deployed = { 100: true };
+    }
+  });
 
   test('executes at threshold with recording, clears pending, returns the result', async () => {
     await readyPending();

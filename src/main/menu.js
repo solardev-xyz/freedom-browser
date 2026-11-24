@@ -61,7 +61,7 @@ const aliasMenuItems = (id, label, channel, platform = process.platform) =>
 onSettingsChanged((merged, previous) => {
   const before = JSON.stringify(previous?.shortcutOverrides || {});
   const after = JSON.stringify(merged?.shortcutOverrides || {});
-  if (before !== after) {
+  if (before !== after || merged?.enableAi !== previous?.enableAi) {
     setupApplicationMenu();
   }
 });
@@ -536,6 +536,23 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
         const win = getTargetWindow();
         if (win) {
           win.webContents.send('bookmarks:toggle-bar');
+        }
+      },
+    },
+    // Agent floats over the page, so its chord has to reach the chrome while
+    // the page holds the keyboard: the renderer's own keydown only sees it
+    // when focus is already in the chrome. With AI off there is no Agent to
+    // show, so the item is gone rather than greyed out, and its chord is not
+    // reserved; the menu is rebuilt when the setting changes.
+    {
+      id: 'toggle-agent',
+      label: 'Show Agent',
+      accelerator: loadSettings()?.enableAi === true ? acc('view.toggleAgent') : undefined,
+      visible: loadSettings()?.enableAi === true,
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          win.webContents.send('agent:toggle');
         }
       },
     },
@@ -1187,7 +1204,7 @@ function applyTabState(state) {
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
 
-  const { tabCount, activeIndex, hasClosedTabs, canGoBack, canGoForward } = state;
+  const { tabCount, activeIndex, hasClosedTabs, canGoBack, canGoForward, canReload } = state;
   const hasMultipleTabs = tabCount > 1;
   const hasTabs = tabCount > 0;
 
@@ -1196,7 +1213,9 @@ function applyTabState(state) {
     if (item) item.enabled = enabled;
   };
 
-  setEnabled('reload', hasTabs);
+  // `canReload` is false while the active tab is in Agent custody; an older
+  // renderer that never sends it keeps the old tab-count rule.
+  setEnabled('reload', hasTabs && canReload !== false);
   setEnabled('next-tab', hasMultipleTabs);
   setEnabled('prev-tab', hasMultipleTabs);
   setEnabled('move-tab-right', hasMultipleTabs && activeIndex < tabCount - 1);

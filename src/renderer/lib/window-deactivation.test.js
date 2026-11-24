@@ -146,6 +146,7 @@ describe('the playbook rule holds for every backdrop-raising surface', () => {
       'autocomplete.js',
       'bookmarks-ui.js',
       'chrome-input-context-menu.js',
+      'dictation-menu.js',
       'menus.js',
       'page-context-menu.js',
       'tabs.js',

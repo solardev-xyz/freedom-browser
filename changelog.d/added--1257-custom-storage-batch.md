@@ -1,0 +1,5 @@
+- Storage can be bought at any size and for any number of days, not just the three plans ([#1257](https://github.com/solardev-xyz/freedom-browser/issues/1257))
+  - Under the plans, **Custom size and duration** offers sizes from about 112 MB to about 994 GB and 1 to 3,650 days, with a live price
+  - **Keep Longer** takes any number of days, and **Make Bigger** offers every larger size up to about 994 GB
+  - Plans and the storage list now show Swarm's own estimate of what a batch holds, so Starter reads up to 688 MB, Advanced 2.6 GB and Plus 7.7 GB
+  - **Buy More Storage** on the storage screen now opens the plans, instead of a "Ready to publish" page that only led back to the storage screen

@@ -1,0 +1,37 @@
+--- planted files still beside the helpers
+fwpuclnt.dll 521785C235440D23A8344519D0E437564A98D86BA97264DF5D5FB1675D41AF9F
+netapi32.dll 9CE42366BFFB66BBE86253640882768789626D7BBA2592839F3BF5A4E16205DA
+--- direct elevated launch of the installed setup helper (no request; expect exit 1)
+
+Mandatory Label\High Mandatory Level                          Label            S-1-16-12288       
+                                                         
+exit code: 1
+--- markers.log after setup x2, qualification x6, S8 and the direct launch
+exists: False
+--- positive-control.log (kept from the control run)
+2026-10-23T16:46:22Z planted=fwpuclnt.dll loaded pid=4392 elevated=0 user=freedomstd self=C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\fwpuclnt.dll exe=C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\plant-control.exe
+2026-10-23T16:46:22Z planted=netapi32.dll loaded pid=4392 elevated=0 user=freedomstd self=C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\NETAPI32.dll exe=C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\plant-control.exe
+2026-10-23T16:46:27Z planted=fwpuclnt.dll loaded pid=8280 elevated=1 user=tester self=C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\fwpuclnt.dll exe=C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\plant-control.exe
+2026-10-23T16:46:27Z planted=netapi32.dll loaded pid=8280 elevated=1 user=tester self=C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\NETAPI32.dll exe=C:\Users\freedomstd\AppData\Local\Programs\freedom-browser\resources\windows-workspace\plant-control.exe
+--- sandbox accounts and firewall rules created by setup
+
+Name              Enabled
+----              -------
+FreedomSbxOffline    True
+FreedomSbxOnline     True
+
+
+
+firewall rules named 'Freedom Sandbox*': 0
+
+Name            
+----            
+.sandbox        
+.sandbox-bin    
+.sandbox-secrets
+cap_sid         
+
+
+
+
+

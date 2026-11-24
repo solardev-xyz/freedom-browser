@@ -1,0 +1,2 @@
+- A public server can no longer forge an ENS, WNS or GNS address or primary name that shows as verified ([#1076](https://github.com/solardev-xyz/freedom-browser/issues/1076)):
+  - Proof check no longer answers name lookups; several servers, and the local node if it is enabled, take its place in the order

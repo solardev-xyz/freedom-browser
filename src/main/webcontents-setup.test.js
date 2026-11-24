@@ -146,12 +146,10 @@ describe('webcontents-setup', () => {
     ctx.app.emit('web-contents-created', {}, contents);
 
     contents.emit('dom-ready');
-    expect(contents.insertCSS).toHaveBeenCalledWith(
-      'html, body { background-color: #fff; color: #000; color-scheme: light; }',
-      {
-        cssOrigin: 'user',
-      }
-    );
+    expect(contents.insertCSS).toHaveBeenCalledTimes(1);
+    expect(contents.insertCSS).toHaveBeenCalledWith('html { color-scheme: light; }', {
+      cssOrigin: 'user',
+    });
 
     contents.emit('destroyed');
     expect(ctx.state.activeBzzBases.has(contents.id)).toBe(false);
@@ -177,8 +175,45 @@ describe('webcontents-setup', () => {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       nodeIntegrationInSubFrames: true,
+      transparent: false,
       additionalArguments: [expect.stringMatching(/^--freedom-webview-boot=/)],
     });
+  });
+
+  // #923: the page-defaults CSS must not paint a background. A user-origin
+  // `background-color` on <html> keeps a <body>-only dark background (x.com)
+  // off the canvas, so the window shows white around the page's columns; one
+  // on <body> paints over the page's own <html> background the same way. The
+  // CSS may only pin the colour scheme, and the guest must be opaque so an
+  // unstyled page gets a white canvas rather than the chrome behind it.
+  test('page defaults pin a light colour scheme without painting a background (#923)', () => {
+    const ctx = loadWebContentsSetupModule();
+    const contents = createContentsMock({ id: 15, type: 'webview', url: 'https://x.com/home' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+    contents.emit('dom-ready');
+
+    const [[css, options]] = contents.insertCSS.mock.calls;
+    expect(options).toEqual({ cssOrigin: 'user' });
+    expect(css).toMatch(/^html\s*\{[^}]*color-scheme:\s*light;?[^}]*\}$/);
+    expect(css).not.toMatch(/body/);
+    expect(css).not.toMatch(/background/);
+    expect(css).not.toMatch(/(^|[\s;{])color\s*:/);
+  });
+
+  test('tab webviews are opaque even when the embedder asks for transparency (#923)', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 4, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    const asked = { transparent: true };
+    host.emit('will-attach-webview', {}, asked, {});
+    expect(asked.transparent).toBe(false);
+
+    const unset = {};
+    host.emit('will-attach-webview', {}, unset, {});
+    expect(unset.transparent).toBe(false);
   });
 
   // Security audit (docs/security-audit-electron.md, E-3): the guest's
@@ -213,6 +248,7 @@ describe('webcontents-setup', () => {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       nodeIntegrationInSubFrames: true,
+      transparent: false,
       additionalArguments: [expect.stringMatching(/^--freedom-webview-boot=/)],
     });
     expect(ctx.mod.WEBVIEW_PRELOAD_PATH).toMatch(/[\\/]src[\\/]main[\\/]webview-preload\.js$/);
@@ -261,6 +297,16 @@ describe('webcontents-setup', () => {
     const boot = bootOf(webPreferences);
     expect(boot.isPrivate).toBe(true);
     expect(boot).not.toHaveProperty('ethereum');
+  });
+
+  test('preview sessions are forced by main without replacing a private partition', () => {
+    const src = `freedom-preview://${'a'.repeat(40)}/index.html`;
+    const normal = attach(loadWebContentsSetupModule(), { src }, { preload: '/app/webview-preload.js', partition: 'persist:untrusted' });
+    expect(normal.webPreferences.partition).toBe('freedom-workspace-preview');
+    const privateContext = loadWebContentsSetupModule({ isPrivatePartition: value => value === 'private-abc' });
+    const isolated = attach(privateContext, { src }, { preload: '/app/webview-preload.js', partition: 'private-abc' });
+    expect(isolated.webPreferences.partition).toBe('private-abc');
+    expect(bootOf(isolated.webPreferences).isPrivate).toBe(true);
   });
 
   test("a private window's webview is private whatever its partition says", () => {
@@ -324,6 +370,35 @@ describe('webcontents-setup', () => {
     guest.emit('will-navigate', nav, 'https://example.org/next');
     guest.emit('will-redirect', nav, 'https://example.org/next');
     expect(nav.preventDefault).not.toHaveBeenCalled();
+  });
+
+  test('only explicitly adopted sandboxed pages without a preload may navigate as windows', () => {
+    const ctx = loadWebContentsSetupModule();
+    const page = createContentsMock({ type: 'window' });
+    const safe = { sandbox: true, contextIsolation: true, nodeIntegration: false };
+    page.getLastWebPreferences = jest.fn(() => safe);
+    let owned = false;
+    ctx.mod.registerWebContentsHandlers({ isManagedPage: contents => contents === page && owned });
+    ctx.app.emit('web-contents-created', {}, page);
+    const navigate = event => {
+      const nav = { preventDefault: jest.fn() };
+      page.emit(event, nav, 'https://example.org/next');
+      return nav.preventDefault;
+    };
+    expect(navigate('will-navigate')).toHaveBeenCalled();
+    owned = true;
+    expect(navigate('will-navigate')).not.toHaveBeenCalled();
+    expect(navigate('will-redirect')).not.toHaveBeenCalled();
+    // Popup authority still belongs to the manager's separate explicit handler.
+    expect(page.windowOpenHandler({ url: 'https://example.org/' })).toEqual({ action: 'deny' });
+    for (const unsafe of [{ preload: '/app/preload.js' }, { preloadURL: 'file:///app/preload.js' },
+      { sandbox: false }, { contextIsolation: false }, { nodeIntegration: true },
+      { nodeIntegrationInSubFrames: true }, { nodeIntegrationInWorker: true }, { webviewTag: true }, { webSecurity: false }]) {
+      page.getLastWebPreferences.mockReturnValue({ ...safe, ...unsafe });
+      expect(navigate('will-navigate')).toHaveBeenCalled();
+    }
+    page.getLastWebPreferences.mockImplementation(() => { throw new Error('destroyed'); });
+    expect(navigate('will-redirect')).toHaveBeenCalled();
   });
 
   test('skips css injection for internal file pages and intercepts external window opens', () => {
@@ -516,7 +591,7 @@ describe('webcontents-setup', () => {
     expect(event.preventDefault).toHaveBeenCalled();
     expect(parentWindow.webContents.send).toHaveBeenCalledWith(
       'navigate-to-url',
-      'bzz://0123456789abcdef'
+      'bzz://0123456789abcdef', contents.id
     );
     expect(ctx.log.info).toHaveBeenCalledWith(
       expect.stringContaining('intercepted custom protocol navigation')
@@ -529,7 +604,7 @@ describe('webcontents-setup', () => {
     expect(ethEvent.preventDefault).toHaveBeenCalled();
     expect(parentWindow.webContents.send).toHaveBeenCalledWith(
       'navigate-to-url',
-      'ethereum:vitalik.eth@1?value=1e16'
+      'ethereum:vitalik.eth@1?value=1e16', contents.id
     );
 
     const httpEvent = {
@@ -589,7 +664,38 @@ describe('webcontents-setup', () => {
     contents.emit('will-navigate', event, target);
 
     expect(event.preventDefault).toHaveBeenCalled();
-    expect(parentWindow.webContents.send).toHaveBeenCalledWith('navigate-to-url', target);
+    expect(parentWindow.webContents.send).toHaveBeenCalledWith('navigate-to-url', target, contents.id);
+  });
+
+  test('confines isolated preview pages to their exact origin and denies popups', () => {
+    const parentWindow = { webContents: { id: 2, send: jest.fn() } };
+    const ctx = loadWebContentsSetupModule({ windows: [parentWindow] });
+    const token = 'a'.repeat(40);
+    const contents = createContentsMock({
+      id: 34,
+      type: 'webview',
+      url: `freedom-preview://${token}/index.html`,
+    });
+
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+
+    expect(
+      contents.windowOpenHandler({ url: 'https://example.com/', frameName: '_blank' })
+    ).toEqual({ action: 'deny' });
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+
+    const sameOrigin = { preventDefault: jest.fn() };
+    contents.emit('will-navigate', sameOrigin, `freedom-preview://${token}/about.html`);
+    expect(sameOrigin.preventDefault).not.toHaveBeenCalled();
+
+    for (const url of ['https://example.com/', `freedom-preview://${'b'.repeat(40)}/index.html`]) {
+      const event = { preventDefault: jest.fn() };
+      contents.emit('will-navigate', event, url);
+      expect(event.preventDefault).toHaveBeenCalled();
+    }
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+    expect(ctx.log.info.mock.calls.flat().join(' ')).not.toContain(token);
   });
 
   // PRIVATE MODE GUARD (navigation logging): log.info is written to the
@@ -626,7 +732,7 @@ describe('webcontents-setup', () => {
     // The navigation itself still works.
     expect(parentWindow.webContents.send).toHaveBeenCalledWith(
       'navigate-to-url',
-      'rad:zSECRETRIDXYZZY'
+      'rad:zSECRETRIDXYZZY', contents.id
     );
   });
 
@@ -650,7 +756,7 @@ describe('webcontents-setup', () => {
         url: options.url || 'https://site.example/page',
         hostWebContents: host,
       });
-      ctx.mod.registerWebContentsHandlers();
+      ctx.mod.registerWebContentsHandlers(options.handlers);
       ctx.app.emit('web-contents-created', {}, contents);
       const opened = () =>
         parentWindow.webContents.send.mock.calls.filter(([ch]) => ch === 'tab:new-with-url');
@@ -686,6 +792,31 @@ describe('webcontents-setup', () => {
       gesture(contents);
       open('https://site.example/third');
       expect(opened()).toHaveLength(2);
+    });
+
+    test('a popup from a page in Agent custody opens in Agent custody, never as a user tab', async () => {
+      const openAgentPopup = jest.fn(async () => true);
+      const { contents, opened, open } = setup({ handlers: { openAgentPopup } });
+      const { setAgentPageCustody } = require('./wallet/agent-tab-custody');
+      setAgentPageCustody(contents, true);
+      gesture(contents);
+      expect(open('https://site.example/pay', { disposition: 'new-window' })).toEqual({ action: 'deny' });
+      await Promise.resolve();
+      expect(openAgentPopup).toHaveBeenCalledWith(contents, 'https://site.example/pay');
+      expect(opened()).toHaveLength(0);
+
+      // Without an Agent service to hold it, nothing opens at all.
+      const { contents: orphan, opened: orphanOpened, open: orphanOpen } = setup();
+      require('./wallet/agent-tab-custody').setAgentPageCustody(orphan, true);
+      gesture(orphan);
+      expect(orphanOpen('https://site.example/pay')).toEqual({ action: 'deny' });
+      expect(orphanOpened()).toHaveLength(0);
+
+      // The popup blocker still applies first.
+      openAgentPopup.mockClear();
+      open('https://site.example/again');
+      await Promise.resolve();
+      expect(openAgentPopup).not.toHaveBeenCalled();
     });
 
     test('no gesture: nothing opens and the blocked popup is reported to the tab window', () => {
@@ -856,7 +987,7 @@ describe('webcontents-setup', () => {
       expect(() =>
         contents.emit('will-navigate', { preventDefault: jest.fn() }, 'freedom://settings')
       ).not.toThrow();
-      expect(live.webContents.send).toHaveBeenCalledWith('navigate-to-url', 'freedom://settings');
+      expect(live.webContents.send).toHaveBeenCalledWith('navigate-to-url', 'freedom://settings', contents.id);
     });
 
     test('skips a window whose webContents is destroyed, and routes to a live one', () => {
@@ -977,7 +1108,7 @@ describe('webcontents-setup', () => {
 
       expect(otherWindow.webContents.send).toHaveBeenCalledWith(
         'navigate-to-url',
-        'freedom://settings'
+        'freedom://settings', contents.id
       );
     });
 

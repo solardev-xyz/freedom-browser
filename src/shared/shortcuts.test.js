@@ -80,9 +80,9 @@ describe('shortcut registry', () => {
         .join(' ');
 
     // Entries whose Settings label legitimately keeps an inner capital (a
-    // product or protocol name). Empty today — every label is plain prose —
-    // and an entry only belongs here with a proper noun to point at.
-    const PROPER_NOUNS = new Set();
+    // product or protocol name), and only with a proper noun to point at:
+    // Agent is the product name of Freedom Agent, not a generic noun.
+    const PROPER_NOUNS = new Set(['view.toggleAgent']);
 
     const settingsLabelOf = (entry) => entry.settingsLabel || entry.description;
 
@@ -792,6 +792,27 @@ describe('findConflict', () => {
     expect(findConflict('tab.close', 'Cmd+T', {}, 'darwin')?.id).toBe('tab.new');
     expect(findConflict('tab.close', 'Ctrl+T', {}, 'win32')?.id).toBe('tab.new');
     expect(findConflict('tab.close', 'Ctrl+T', {}, 'darwin')).toBeNull();
+  });
+
+  test('AI shortcuts claim no chord while AI is off', () => {
+    const { sanitizeOverrides, isShortcutActive } = require('./shortcuts');
+    expect(SHORTCUTS.filter((entry) => entry.requiresAi).map((entry) => entry.id)).toEqual([
+      'view.toggleAgent',
+      'agent.startDictation',
+    ]);
+    expect(isShortcutActive('view.toggleAgent', { aiEnabled: false })).toBe(false);
+    expect(isShortcutActive('view.toggleAgent')).toBe(true);
+    expect(isShortcutActive('tab.new', { aiEnabled: false })).toBe(true);
+
+    expect(findConflict('tab.new', 'Ctrl+K', {}, 'linux')?.id).toBe('view.toggleAgent');
+    expect(findConflict('tab.new', 'Ctrl+K', {}, 'linux', { aiEnabled: false })).toBeNull();
+    expect(findConflict('tab.new', 'Ctrl+Enter', {}, 'linux', { aiEnabled: false })).toBeNull();
+
+    // Off: both survive, the AI remap untouched for when AI is back.
+    const both = { 'tab.new': 'Ctrl+Shift+Y', 'view.toggleAgent': 'Ctrl+Shift+Y' };
+    expect(sanitizeOverrides(both, 'linux', { aiEnabled: false })).toEqual(both);
+    // On: the same pair cannot both fire on one press.
+    expect(sanitizeOverrides(both, 'linux')).toEqual({ 'view.toggleAgent': 'Ctrl+Shift+Y' });
   });
 });
 

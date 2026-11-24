@@ -1,0 +1,11 @@
+LIBRARY fwpuclnt
+EXPORTS
+  FwpmSubLayerAdd0
+  FwpmTransactionAbort0
+  FwpmEngineClose0
+  FwpmTransactionCommit0
+  FwpmProviderAdd0
+  FwpmTransactionBegin0
+  FwpmFilterDeleteByKey0
+  FwpmFilterAdd0
+  FwpmEngineOpen0

@@ -1,0 +1,2 @@
+- Adding a Ledger account now checks its address on the Ledger itself, and only checked Ledger accounts can own a new Safe ([#1065](https://github.com/solardev-xyz/freedom-browser/issues/1065))
+  - Ledger accounts added earlier are checked the next time a Ledger is connected; one it doesn't hold is kept and marked, and a Safe it already owns warns before you add funds

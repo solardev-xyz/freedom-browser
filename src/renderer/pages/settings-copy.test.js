@@ -110,7 +110,7 @@ describe('settings.html section headings match their nav label (#276)', () => {
   test('every nav entry carries exactly one page heading, and it is the nav label', () => {
     const titles = entryTitles();
     const items = navItems();
-    expect(items.length).toBe(10);
+    expect(items.length).toBe(11);
     // One `<h2>` per entry however many panels it owns (#268) — a second
     // would put two page headings on one route.
     const mismatches = items
@@ -402,6 +402,21 @@ describe('settings.html names each network source once (#269)', () => {
     expect(copy.quorum.help).toBe('');
     expect(SOURCE).toContain('return help ? `<p class="row-help">${esc(help)}</p>` : \'\';');
   });
+
+  // The resolver skips Colibri for names (#1076), so Name Resolution's row
+  // must not call it verified. A chain's detail page keeps the shared copy:
+  // chain data still uses Colibri's proofs.
+  test("Name Resolution's proof-check row says it is skipped for names (#1076)", () => {
+    expect(SOURCE).toContain("setBadge('colibri', 'Not used for names', 'warning');");
+    expect(SOURCE).not.toMatch(/hasProver \? 'Verified'/);
+    const help = SOURCE.match(/const COLIBRI_NAMES_HELP = "([^"]+)";/);
+    expect(help).not.toBeNull();
+    expect(help[1]).toMatch(/^Skipped for names/);
+    expect(help[1]).not.toMatch(/quorum|prover|\bRPC\b|Colibri|verif/i);
+    expect(SOURCE).toContain(
+      "${id === 'colibri' ? `<p class=\"row-help\">${esc(COLIBRI_NAMES_HELP)}</p>` : networkSourceHelp(id)}"
+    );
+  });
 });
 
 describe('settings.html keeps jargon out of the visible layer (#270)', () => {
@@ -479,5 +494,18 @@ describe('settings.html keeps jargon out of the visible layer (#270)', () => {
       'Signed transactions go out through ${named[0]} first, with ${named[1]} as the fallback.'
     );
     expect(section('ens')).toContain('choose which servers Freedom');
+  });
+});
+
+describe('settings.html AI heading (#838)', () => {
+  test('the AI section heading carries no Beta pill', () => {
+    const ai = section('ai');
+    expect(ai).toMatch(/^\s*<h2 class="section-title">AI<\/h2>/);
+    expect(ai.slice(0, ai.indexOf('section-description'))).not.toContain('resolver-badge');
+  });
+
+  test('the start-page banner keeps its Beta tag', () => {
+    const home = fs.readFileSync(path.join(__dirname, 'home.html'), 'utf8');
+    expect(home).toContain('<span class="setup-banner-tag">Beta</span>');
   });
 });

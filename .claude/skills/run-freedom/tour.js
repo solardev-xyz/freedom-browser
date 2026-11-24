@@ -122,6 +122,9 @@ async function tour(theme, failures) {
       await r.swarmApproval(ctx, kind);
       await snap(19 + i, `swarm-${kind}`);
     }
+    // Numbered 22b so the shots after it keep their numbers.
+    await r.swarmApproval(ctx, 'act');
+    await snap('22b', 'swarm-act');
   });
   // The last Swarm prompt still owns the sidebar; dismissing it is what makes
   // #sidebar-close reachable again (and keeps it out of every later shot).

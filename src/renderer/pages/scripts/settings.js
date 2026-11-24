@@ -499,7 +499,11 @@ const showSection = (route) => {
   const [section, sub] = String(route).split('/');
   for (const id of PANELS) {
     const el = document.getElementById(id);
-    if (el) el.classList.toggle('hidden', PANEL_NAV[id] !== section);
+    if (el)
+      el.classList.toggle(
+        'hidden',
+        PANEL_NAV[id] !== section || (section === 'ai' && id !== (sub || 'ai'))
+      );
   }
   navItems.forEach((item) => item.classList.toggle('active', item.dataset.target === section));
   setProfileRefreshActive(section === 'profile' || section === 'nodes');
@@ -508,7 +512,7 @@ const showSection = (route) => {
   // stale scroll offset from a taller prior section.
   stopPanelScroll();
   contentScroller.scrollTo({ top: 0 });
-  if (sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
+  if (section !== 'ai' && sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
   focusScrollerIfIdle();
 };
 
@@ -544,7 +548,9 @@ const LEGACY_ROUTES = {
 // The canonical route for a hash: `<entry>`, or `<entry>/<panel>` for a
 // panel of that entry. Under Networks any other sub-route is a chain detail
 // (`#networks/1`) — whether that chain exists is the Chains controller's
-// call, since only it has the registry. Anything else is dropped back to the
+// call, since only it has the registry. AI also has individual provider pages;
+// its controller validates provider IDs against the loaded catalogue. Anything
+// else is dropped back to the
 // entry, and a hash naming no entry at all to the first one.
 const resolveRoute = (hash) => {
   const raw = (hash || '').replace(/^#/, '').toLowerCase();
@@ -556,7 +562,11 @@ const resolveRoute = (hash) => {
   }
   if (!SECTIONS.includes(head)) return DEFAULT_SECTION;
   if (!sub) return head;
-  if (PANEL_NAV[sub] === head || head === 'networks') return `${head}/${sub}`;
+  if (
+    PANEL_NAV[sub] === head ||
+    head === 'networks' ||
+    (head === 'ai' && /^(providers|voice)\/[a-z0-9-]+$/.test(sub))
+  ) return `${head}/${sub}`;
   return head;
 };
 
@@ -613,6 +623,8 @@ const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').
 // marker covers the whole subtree under it, so one on a wrapper takes
 // a view out of the index entirely.
 const SETTINGS_SEARCH_SKIP = 'settings-search-skip';
+// A wrapper around a section's intro copy (see buildSettingsSearchIndex).
+const SETTINGS_SEARCH_INTRO = 'settings-search-intro';
 
 // Every element under `el` carrying one of `names` (a class, or a list
 // of them), not descending into a match. Stopping at a match is what
@@ -681,7 +693,7 @@ const settingsSearchAllRows = (el, out = []) => {
     if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
     const isRow = SETTINGS_SEARCH_ROWS.some((name) => child.classList?.contains(name));
     if (isRow) {
-      if (settingsSearchHidden(child)) continue;
+      if (settingsSearchHidden(child) && child.getAttribute('data-search-only') !== 'true') continue;
       out.push(child);
     }
     settingsSearchAllRows(child, out);
@@ -702,7 +714,9 @@ const settingsSearchRows = (section) =>
       row,
       label: settingsSearchText(settingsSearchOwn(row, SETTINGS_SEARCH_LABELS)[0]),
     }))
-    .filter((entry) => entry.label);
+    .filter((entry) => entry.label)
+    .filter((entry, _index, entries) => entry.row.getAttribute('data-search-only') !== 'true' ||
+      !entries.some(other => other.label === entry.label && other.row.getAttribute('data-search-only') !== 'true'));
 
 // One entry per section plus one per labelled row, in document order.
 // `sectionLabels` maps a section id to its nav label, the fallback for
@@ -726,15 +740,29 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, sk
   for (const section of Array.from(content?.children || [])) {
     if (section.tagName !== 'SECTION' || !section.classList?.contains('section')) continue;
     if (!section.id || skip.includes(section.id)) continue;
+    // A panel switched off through the `hidden` attribute is a feature the
+    // user does not have right now — AI's Models & providers and Voice
+    // dictation pages while AI is off — so neither it nor its rows answer
+    // a search. (The routed panels the nav is not showing carry the
+    // `.hidden` class instead and stay searchable.)
+    if (section.hidden) continue;
+    // A routed detail page can keep a stable catalogue label for search.
     const title =
+      section.getAttribute?.('data-search-title') ||
       settingsSearchText(settingsSearchFirst(section, ['section-title', 'panel-title'])) ||
       sectionLabels[section.id] ||
       section.id;
     const group = groups[section.id];
     const sectionLabel = group && group !== title ? `${group} › ${title}` : title;
     // A section's own intro paragraph is a direct child, outside every
-    // card, so it describes the section rather than any one row.
+    // card, so it describes the section rather than any one row. An intro
+    // that needs a wrapper of its own (AI's "AI is off" note sits in an
+    // `aria-live` region so revealing it is announced) marks that wrapper
+    // `.settings-search-intro`, and its `.row-help` children count too.
     const intro = Array.from(section.children)
+      .flatMap((child) =>
+        child.classList?.contains(SETTINGS_SEARCH_INTRO) ? Array.from(child.children) : [child]
+      )
       .filter((child) => child.classList?.contains('row-help'))
       .map(settingsSearchText)
       .join(' ');
@@ -748,12 +776,14 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, sk
     const seen = new Map();
     for (const { row, label } of settingsSearchRows(section)) {
       const labelIndex = seen.get(label) || 0;
+      const settingsRoute = row.getAttribute?.('data-settings-route');
       seen.set(label, labelIndex + 1);
       index.push({
         sectionId: section.id,
         section: sectionLabel,
         label,
         labelIndex,
+        ...(settingsRoute ? { route: settingsRoute } : {}),
         help: settingsSearchOwn(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
         element: row,
       });
@@ -928,7 +958,7 @@ const settingsSearchResets = [];
     const section = document.getElementById(result.sectionId);
     if (!section) return null;
     if (result.element === section) return section;
-    const matches = settingsSearchRows(section).filter((entry) => entry.label === result.label);
+    const matches = settingsSearchRows(section).filter((entry) => entry.label === result.label && entry.row.getAttribute('data-search-only') !== 'true');
     return (matches[result.labelIndex || 0] || matches[0])?.row || null;
   };
 
@@ -985,6 +1015,23 @@ const settingsSearchResets = [];
     closeResults({ restoreSection: false });
     revealToken += 1;
     const route = resolveRoute(location.hash);
+    // AI pages replace each other rather than sharing one scroll. A control
+    // on a service detail returns to that detail, even from another section.
+    if (entry === 'ai') {
+      const fallback = panelId === 'ai' ? 'ai' : `ai/${panelId}`;
+      const target =
+        result.route?.startsWith('ai/') && resolveRoute(result.route) === result.route
+          ? result.route
+          : fallback;
+      if (route === target) {
+        showSection(target);
+        revealResult(result, revealToken);
+      } else {
+        pending = { result, token: revealToken };
+        location.hash = target;
+      }
+      return;
+    }
     if (route.split('/')[0] === entry) {
       showSection(route);
       if (document.getElementById(panelId)?.getClientRects().length) {
@@ -3588,6 +3635,13 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     { id: 'direct', link: '#networks/1', linkLabel: 'Configure' },
   ].map((method) => ({ ...method, ...NETWORK_SOURCE_COPY[method.id] }));
   const METHOD_IDS = new Set(METHODS.map((method) => method.id));
+  // Colibri answers no name lookup (#1076): its proofs don't cover the
+  // contract code a lookup runs. The resolver doesn't drop its slot: it
+  // puts the quorum there, and Myotis too when this list enables it
+  // (`colibriNameSubstitute` in ens-resolver.js), each answering with its
+  // own label. One already earlier in the order keeps its earlier place.
+  // So the row says it is substituted instead of offering verified answers.
+  const COLIBRI_NAMES_HELP = "Skipped for names: its proofs don't cover them yet. Several servers, and the local node if it's enabled here, take its place unless they come earlier.";
 
   let config = { networks: {}, sources: [] };
   let enabledOrder = ['myotis', 'colibri', 'quorum'];
@@ -3670,12 +3724,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       setBadge('myotis', 'Syncing…', 'warning');
     }
 
-    const hasProver = activeSources('prover').length > 0;
-    setBadge(
-      'colibri',
-      hasProver ? 'Verified' : 'No proof server',
-      hasProver ? 'verified' : 'warning'
-    );
+    setBadge('colibri', 'Not used for names', 'warning');
     setBadge(
       'quorum',
       `${currentQuorum.m} of ${currentQuorum.k}`,
@@ -3755,7 +3804,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <p class="row-label">${esc(method.label)}</p>
                 <span class="resolver-badge" data-method-status="${id}">Loading…</span>
               </div>
-              ${networkSourceHelp(id)}
+              ${id === 'colibri' ? `<p class="row-help">${esc(COLIBRI_NAMES_HELP)}</p>` : networkSourceHelp(id)}
               ${link}
               ${networkSourceAdvanced(id, { open: openAdvanced.has(id), extra: configRow })}
             </div>

@@ -1,0 +1,51 @@
+name: Prepare the Linux Agent workspace sandbox
+description: >-
+  Give a source-tree harness run on an Ubuntu runner what an installed .deb
+  gives a user: Bubblewrap, the Linux workspace owner helper, and an AppArmor
+  profile allowing the Electron binary to create user namespaces.
+
+# The Agent's "real sandbox" E2E specs (agent-sidebar.spec.js) run Bubblewrap
+# through the native owner helper in out/linux-workspace-owner/x64, and
+# automation-runtime.spec.js / freedom-cli.spec.js spawn Electron directly,
+# without the `--no-sandbox` Playwright's own launcher adds. Ubuntu 24.04
+# restricts unprivileged user namespaces through AppArmor
+# (kernel.apparmor_restrict_unprivileged_userns=1), so without a profile the
+# helper fails at `uid_map` (EPERM) and Chromium aborts on the unconfigured
+# SUID chrome-sandbox. The .deb installs exactly this profile shape for
+# /opt/Freedom/freedom (app-builder-lib's templates/linux/apparmor-profile.tpl);
+# here it names the checkout's Electron binary instead. The runner's userns
+# restriction itself stays on, as it is for users. (#815)
+runs:
+  using: composite
+  steps:
+    - name: Install Bubblewrap
+      shell: bash
+      run: |
+        "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install bubblewrap
+
+    - name: Build the Linux workspace owner helper
+      shell: bash
+      run: npm run build:linux-workspace-supervisor
+
+    - name: Allow the checkout's Electron to create user namespaces
+      shell: bash
+      run: |
+        set -euo pipefail
+        electron="$(realpath "$(node -p "require('electron')")")"
+        printf 'Electron binary: %s\n' "$electron"
+        sudo tee /etc/apparmor.d/freedom-e2e >/dev/null <<EOF
+        abi <abi/4.0>,
+        include <tunables/global>
+
+        profile freedom-e2e "$electron" flags=(unconfined) {
+          userns,
+        }
+        EOF
+        sudo apparmor_parser -r /etc/apparmor.d/freedom-e2e
+        label="$(ELECTRON_RUN_AS_NODE=1 "$electron" -e \
+          "process.stdout.write(require('fs').readFileSync('/proc/self/attr/current','utf8'))")"
+        printf 'Electron AppArmor label: %s\n' "$label"
+        case "$label" in
+          freedom-e2e*) ;;
+          *) echo 'The checkout Electron did not enter the freedom-e2e profile.' >&2; exit 1 ;;
+        esac

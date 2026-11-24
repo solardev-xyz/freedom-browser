@@ -266,6 +266,73 @@ function loadAntManagerModule(options = {}) {
     mkdirSync: jest.fn(),
     readFileSync: jest.fn(() => options.configContents || ''),
     writeFileSync: jest.fn(),
+    lstatSync: jest.fn((target, opts) => {
+      if (fsMock.existsSync(target)) return { isSymbolicLink: () => false };
+      if (opts?.throwIfNoEntry === false) return undefined;
+      throw Object.assign(new Error(`ENOENT: ${target}`), { code: 'ENOENT' });
+    }),
+    readdirSync: jest.fn(() => []),
+    rmSync: jest.fn(),
+  };
+  // private-files.js over the same fake fs: directory handles whose reads
+  // and writes land on fsMock, with repairs recorded. `unsafeKeysDir`
+  // makes opening keys/ refuse, as a keys/ that is a link would.
+  const handles = [];
+  const fakeDir = (dir) => {
+    const handle = {
+      path: dir,
+      read: jest.fn((name) => {
+        const target = path.join(dir, name);
+        return fsMock.existsSync(target)
+          ? Buffer.from(String(fsMock.readFileSync(target, 'utf-8')))
+          : null;
+      }),
+      write: jest.fn((name, data) =>
+        fsMock.writeFileSync(path.join(dir, name), data, { mode: 0o600 })
+      ),
+      repair: jest.fn(() => true),
+      remove: jest.fn((name) => fsMock.rmSync(path.join(dir, name), { force: true })),
+      verify: jest.fn(),
+      entry: (name) => path.join(dir, name),
+      bound: false,
+      openDir: jest.fn((name) => {
+        if (options.unsafeKeysDir) {
+          const err = new Error(`Refusing ${path.join(dir, name)}: it is a symbolic link`);
+          err.code = 'UNSAFE_PRIVATE_PATH';
+          throw err;
+        }
+        return fakeDir(path.join(dir, name));
+      }),
+      close: jest.fn(),
+    };
+    handles.push(handle);
+    return handle;
+  };
+  const privateFiles = {
+    openPrivateDir: jest.fn((dir) => fakeDir(dir)),
+    withPrivateDir: jest.fn((dir, use) => {
+      const handle = fakeDir(dir);
+      let result;
+      try {
+        result = use(handle);
+      } catch (err) {
+        handle.close();
+        throw err;
+      }
+      if (result && typeof result.then === 'function') return result.finally(() => handle.close());
+      handle.close();
+      return result;
+    }),
+    // profile-paths creates the data directory through this.
+    ensurePrivateDir: jest.fn((dir) => {
+      // A data directory that is a symbolic link: private-files' refusal
+      // (its real wording is pinned in profile-paths.test.js).
+      if (options.linkedDataDirError && dir === dataDir) throw options.linkedDataDirError;
+      if (!fsMock.existsSync(dir)) fsMock.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      return dir;
+    }),
+    handleFor: (dir) => handles.find((handle) => handle.path === dir),
+    handlesFor: (dir) => handles.filter((handle) => handle.path === dir),
   };
   const httpGet = createHttpGetMock(options.httpResponse);
   const noteAntApiUrl = jest.fn();
@@ -298,9 +365,12 @@ function loadAntManagerModule(options = {}) {
         saveSettings,
       }),
       crypto: () => ({
+        // Hashing as it is (the keystore pin's digest); random bytes chosen.
+        ...jest.requireActual('crypto'),
         randomBytes,
       }),
       fs: () => fsMock,
+      [require.resolve('./private-files')]: () => privateFiles,
       http: () => ({
         get: httpGet,
       }),
@@ -317,6 +387,10 @@ function loadAntManagerModule(options = {}) {
         isBeeDataMigrationPending: options.isBeeDataMigrationPending || jest.fn(() => false),
       }),
       [require.resolve('./networks/network-registry')]: () => registry,
+      // Always registered: a doMock outlives resetModules, so a test's own
+      // keystore mock would otherwise leak into the next test.
+      [require.resolve('./swarm/ant-keystore-password')]: () =>
+        options.keystorePassword || jest.requireActual('./swarm/ant-keystore-password'),
       [require.resolve('./profile-resolver')]: () => ({
         getActiveProfile: jest.fn(() => options.activeProfile || null),
         getReservedProfilePorts: jest.fn(() => new Set(options.reservedPorts || [])),
@@ -361,6 +435,7 @@ function loadAntManagerModule(options = {}) {
     dataDir,
     execSync,
     fsMock,
+    privateFiles,
     registry,
     httpGet,
     ipcMain,
@@ -527,6 +602,228 @@ describe('ant-manager', () => {
     await stopPromise;
     expect(jest.getTimerCount()).toBe(0);
     expect(ctx.mod.getSpawnedAt()).toBeNull();
+  });
+
+  test('narrows keys an older build left readable to other users (K-3)', async () => {
+    jest.useFakeTimers();
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const keysDir = path.join(dataDir, 'keys');
+    const swarmKeyPath = path.join(keysDir, 'swarm.key');
+    const configPath = path.join(dataDir, 'config.yaml');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const ctx = loadAntManagerModule({
+      existsSync: (target) =>
+        target === antBinPath || target === swarmKeyPath || target === configPath,
+      configContents: 'api-addr: 127.0.0.1:1633\npassword: injected-keystore-password\n',
+      portSequence: [false],
+      httpResponse: (url) =>
+        url === 'http://127.0.0.1:1633/health'
+          ? { statusCode: 200, body: { version: '2.1.0' } }
+          : { statusCode: 500, body: '' },
+    });
+
+    ctx.mod.setUseInjectedIdentity(true);
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    // The data directory and its keys/ are opened as handles; the keys an
+    // older build left are repaired, and the config is read and written
+    // through the data directory's handle, which is closed after.
+    expect(ctx.privateFiles.openPrivateDir).toHaveBeenCalledWith(dataDir);
+    const data = ctx.privateFiles.handleFor(dataDir);
+    expect(data.openDir).toHaveBeenCalledWith('keys', { create: false });
+    expect(
+      ctx.privateFiles
+        .handlesFor(keysDir)
+        .some((keys) => keys.repair.mock.calls.some(([name]) => name === 'swarm.key'))
+    ).toBe(true);
+    expect(data.read).toHaveBeenCalledWith('config.yaml');
+    expect(data.write).toHaveBeenCalledWith('config.yaml', expect.any(String));
+    expect(data.close).toHaveBeenCalled();
+    expect(ctx.fsMock.writeFileSync).toHaveBeenCalledWith(configPath, expect.any(String), {
+      mode: 0o600,
+    });
+
+    const stopPromise = ctx.mod.stopAnt();
+    await jest.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await stopPromise;
+  });
+
+  test('hands a sealed keystore password to antd as a file it removes once up (K-3)', async () => {
+    jest.useFakeTimers();
+    const real = jest.requireActual('./swarm/ant-keystore-password');
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
+    const configPath = path.join(dataDir, 'config.yaml');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const remove = jest.fn();
+    const keystorePassword = {
+      ...real,
+      hasSealedPassword: jest.fn(() => false),
+      unsealPassword: jest.fn(() => null),
+      // An older build's password in config.yaml moves into the keychain.
+      sealPassword: jest.fn(() => true),
+      forgetSealedPassword: jest.fn(),
+      writePasswordFile: jest.fn(() => ({ path: '/tmp/freedom-ant-test/password', remove })),
+    };
+    const ctx = loadAntManagerModule({
+      existsSync: (target) =>
+        target === antBinPath || target === swarmKeyPath || target === configPath,
+      configContents: 'api-addr: 127.0.0.1:1633\npassword: legacy-keystore-password\n',
+      keystorePassword,
+      portSequence: [false],
+      httpResponse: (url) =>
+        url === 'http://127.0.0.1:1633/health'
+          ? { statusCode: 200, body: { version: '2.1.0' } }
+          : { statusCode: 500, body: '' },
+    });
+
+    ctx.mod.setUseInjectedIdentity(true);
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    // Through the data directory's held handle.
+    expect(keystorePassword.sealPassword).toHaveBeenCalledWith(
+      expect.objectContaining({ path: dataDir }),
+      'legacy-keystore-password',
+      // The password must open the pinned keystore before it is sealed.
+      { verifyKeystore: true, pin: expect.objectContaining({ expected: expect.any(String) }) }
+    );
+    const config = ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === configPath)[1];
+    expect(config).not.toMatch(/^password:/m);
+    // In the profile's own handoff directory, never the shared temp dir.
+    expect(keystorePassword.writePasswordFile).toHaveBeenCalledWith(
+      'legacy-keystore-password',
+      DEFAULT_USER_DATA_DIR
+    );
+    expect(ctx.spawnedProcesses[0].args).toContain('--password-file=/tmp/freedom-ant-test/password');
+    expect(ctx.log.info.mock.calls.flat().join(' ')).not.toContain('legacy-keystore-password');
+    expect(remove).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(ctx.mod.getStatus()).toEqual({ status: 'running', error: null });
+    expect(remove).toHaveBeenCalled();
+
+    const stopPromise = ctx.mod.stopAnt();
+    await jest.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await stopPromise;
+  });
+
+  test('a sealed password that will not decrypt stops the start for re-injection (K-3)', async () => {
+    const real = jest.requireActual('./swarm/ant-keystore-password');
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const keystorePassword = {
+      ...real,
+      hasSealedPassword: jest.fn(() => true),
+      unsealPassword: jest.fn(() => {
+        throw new real.KeystorePasswordUnavailableError(new Error('keychain reset'));
+      }),
+      sealPassword: jest.fn(() => true),
+      forgetSealedPassword: jest.fn(),
+      writePasswordFile: jest.fn(),
+    };
+    const ctx = loadAntManagerModule({
+      existsSync: (target) => target === antBinPath || target === swarmKeyPath,
+      keystorePassword,
+      portSequence: [false],
+      httpResponse: () => ({ statusCode: 500, body: '' }),
+    });
+    // identity-manager subscribes, so an unlocked vault recovers at once.
+    const reinjectionNeeded = jest.fn(() => {
+      expect(ctx.mod.getStatus()).toEqual({ status: 'error', error: real.REINJECT_MESSAGE });
+    });
+    ctx.mod.createAntLifecycle().onKeyReinjectionNeeded(reinjectionNeeded);
+
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.fsMock.writeFileSync).not.toHaveBeenCalled();
+    expect(ctx.randomBytes).not.toHaveBeenCalled();
+    expect(keystorePassword.forgetSealedPassword).not.toHaveBeenCalled();
+    expect(ctx.mod.getStatus()).toEqual({ status: 'error', error: real.REINJECT_MESSAGE });
+    expect(ctx.mod.createAntLifecycle().needsKeyReinjection()).toBe(true);
+    expect(reinjectionNeeded).toHaveBeenCalledTimes(1);
+  });
+
+  test('a keys/ that is a link stops the start before anything is written (K-3)', async () => {
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const ctx = loadAntManagerModule({
+      unsafeKeysDir: true,
+      portSequence: [false],
+    });
+    const reinjectionNeeded = jest.fn();
+    ctx.mod.createAntLifecycle().onKeyReinjectionNeeded(reinjectionNeeded);
+
+    await ctx.mod.startAnt();
+
+    const data = ctx.privateFiles.handleFor(dataDir);
+    expect(data.openDir).toHaveBeenCalledWith('keys', { create: false });
+    expect(data.write).not.toHaveBeenCalled();
+    expect(data.close).toHaveBeenCalled();
+    expect(ctx.fsMock.writeFileSync).not.toHaveBeenCalled();
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.mod.getStatus()).toEqual({
+      status: 'error',
+      error: expect.stringContaining('symbolic link'),
+    });
+    // A refusal to show, never a reason to re-inject the key.
+    expect(ctx.mod.createAntLifecycle().needsKeyReinjection()).toBe(false);
+    expect(reinjectionNeeded).not.toHaveBeenCalled();
+  });
+
+  describe('an ant-data that is a symbolic link (K-3)', () => {
+    const linkedDataDirError = () => {
+      const dir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+      const err = new Error(
+        `Freedom will not use ${dir} because it is a symbolic link. Move the folder the link points to back to ${dir} in place of the link, then try again.`
+      );
+      err.name = 'UnsafePrivatePathError';
+      err.code = 'UNSAFE_PRIVATE_PATH';
+      return err;
+    };
+
+    test('ends the start in the error state with the refusal, not stuck starting', async () => {
+      const err = linkedDataDirError();
+      const ctx = loadAntManagerModule({ linkedDataDirError: err, portSequence: [false] });
+
+      await ctx.mod.startAnt();
+
+      expect(ctx.mod.getStatus()).toEqual({ status: 'error', error: err.message });
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
+      expect(ctx.privateFiles.openPrivateDir).not.toHaveBeenCalled();
+      expect(ctx.spawn).not.toHaveBeenCalled();
+      expect(ctx.mod.hasInjectedKeys()).toBe(false);
+    });
+
+    test('Settings gets the cache view with the refusal as its reason, not a throw', async () => {
+      const err = linkedDataDirError();
+      const ctx = loadAntManagerModule({ linkedDataDirError: err });
+      ctx.mod.registerAntIpc();
+
+      await expect(ctx.ipcMain.invoke(IPC.ANT_CACHE_GET_SETTINGS)).resolves.toMatchObject({
+        managed: false,
+        reason: err.message,
+        clearReason: err.message,
+      });
+      // A size change is refused with the same message rather than saved.
+      await expect(ctx.ipcMain.invoke(IPC.ANT_CACHE_SET_SIZE, 2 * 1024 ** 3)).resolves.toEqual({
+        ok: false,
+        error: err.message,
+      });
+      expect(ctx.saveSettings).not.toHaveBeenCalled();
+    });
   });
 
   test('reuses an existing daemon and clears the health-check interval on stop', async () => {
@@ -1024,6 +1321,33 @@ describe('ant-manager', () => {
     expect(ctx.clearService).toHaveBeenCalledWith('ant');
   });
 
+  test('refuses a saved .onion external API without dialling it (#360)', async () => {
+    const setIntervalSpy = jest.spyOn(global, 'setInterval').mockReturnValue(456);
+    const ctx = loadAntManagerModule({
+      activeProfile: {
+        metadata: {
+          nodes: {
+            bee: { mode: 'external', externalApi: 'http://abcdefghijklmnop.onion:1633' },
+          },
+        },
+      },
+      portResolver: () => true,
+    });
+
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    // The probe would hand the onion name to the system resolver.
+    expect(ctx.httpGet).not.toHaveBeenCalled();
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.updateService).not.toHaveBeenCalledWith(
+      'ant',
+      expect.objectContaining({ api: expect.any(String) })
+    );
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'External .onion node not supported');
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
+
   test('marks a disabled profile Swarm node without probing or spawning', async () => {
     const checkedPorts = [];
     const ctx = loadAntManagerModule({
@@ -1104,7 +1428,11 @@ describe('ant-manager', () => {
     await jest.advanceTimersByTimeAsync(1000);
     await flushMicrotasks();
 
-    expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true });
+    expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true, mode: 0o700 });
+    // config.yaml holds the keystore password: written owner-only (K-3).
+    expect(ctx.fsMock.writeFileSync).toHaveBeenCalledWith(ctx.configPath, expect.any(String), {
+      mode: 0o600,
+    });
     expect(ctx.randomBytes).toHaveBeenCalledWith(32);
     // antd self-initializes its identity; Freedom no longer runs an init step.
     expect(ctx.execSync).not.toHaveBeenCalled();
@@ -1272,6 +1600,281 @@ describe('ant-manager', () => {
     });
   });
 
+  // Page calls wait for a node Freedom is bringing back instead of failing
+  // with node-stopped (#988).
+  describe('planned restarts and waitForNodeSettled (#988)', () => {
+    const spawnCtx = () =>
+      loadAntManagerModule({
+        existsSync: (target) => /[\\/]antd(\.exe)?$/.test(target),
+        portSequence: [false],
+        httpResponse: () => ({ statusCode: 500, body: '' }),
+      });
+
+    test('a stopped node with no restart under way is settled at once', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      expect(ctx.mod.isNodeSettled()).toBe(true);
+      await expect(ctx.mod.waitForNodeSettled(10)).resolves.toBe(true);
+    });
+
+    test('waits through STARTING, and answers false if the node is still starting', async () => {
+      jest.useFakeTimers();
+      const ctx = spawnCtx();
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(500).then((settled) => (answer = settled));
+      await jest.advanceTimersByTimeAsync(499);
+      expect(answer).toBeUndefined();
+      await jest.advanceTimersByTimeAsync(1);
+      await wait;
+      expect(answer).toBe(false);
+
+      const stop = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await stop;
+    });
+
+    test('answers true once a starting node settles, even as stopped', async () => {
+      const ctx = spawnCtx();
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+
+      const wait = ctx.mod.waitForNodeSettled(60_000);
+      ctx.spawnedProcesses[0].emit('close', 1);
+      await expect(wait).resolves.toBe(true);
+      expect(ctx.mod.getStatus().status).toBe('stopped');
+    });
+
+    test('a planned restart holds callers while the node is stopped, until it ends', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      const end = ctx.mod.beginPlannedRestart();
+      expect(ctx.mod.getStatus().status).toBe('stopped');
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(60_000).then((settled) => (answer = settled));
+      await flushMicrotasks();
+      expect(answer).toBeUndefined();
+
+      end();
+      await wait;
+      expect(answer).toBe(true);
+      // Ending it twice is harmless.
+      end();
+      expect(ctx.mod.isNodeSettled()).toBe(true);
+    });
+
+    test('a planned restart nobody ends lapses after 30 s', () => {
+      jest.useFakeTimers();
+      const ctx = loadAntManagerModule({ binExists: false });
+      ctx.mod.beginPlannedRestart();
+      jest.advanceTimersByTime(29_999);
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+      jest.advanceTimersByTime(1);
+      expect(ctx.mod.isNodeSettled()).toBe(true);
+    });
+
+    test('a restart begun in the same tick as a status change keeps callers waiting', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      const endFirst = ctx.mod.beginPlannedRestart();
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(60_000).then((settled) => (answer = settled));
+
+      endFirst();
+      const endSecond = ctx.mod.beginPlannedRestart();
+      await flushMicrotasks();
+      expect(answer).toBeUndefined();
+
+      endSecond();
+      await wait;
+      expect(answer).toBe(true);
+    });
+
+    test('a start that stops for keystore recovery keeps callers waiting until the recovery ends (K-3)', async () => {
+      const real = jest.requireActual('./swarm/ant-keystore-password');
+      const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+      const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
+      const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+      const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+      const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+      const ctx = loadAntManagerModule({
+        existsSync: (target) => target === antBinPath || target === swarmKeyPath,
+        keystorePassword: {
+          ...real,
+          hasSealedPassword: jest.fn(() => true),
+          unsealPassword: jest.fn(() => {
+            throw new real.KeystorePasswordUnavailableError(new Error('keychain reset'));
+          }),
+          sealPassword: jest.fn(() => true),
+          forgetSealedPassword: jest.fn(),
+          writePasswordFile: jest.fn(),
+        },
+        portSequence: [false],
+        httpResponse: () => ({ statusCode: 500, body: '' }),
+      });
+      // As identity-manager does with an unlocked vault: the listener starts
+      // the recovery, which marks a planned restart until it ends.
+      const lifecycle = ctx.mod.createAntLifecycle();
+      let finishRecovery;
+      const recovery = new Promise((resolve) => (finishRecovery = resolve));
+      lifecycle.onKeyReinjectionNeeded(() => lifecycle.restartingUntil(recovery));
+
+      const starting = ctx.mod.startAnt();
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(60_000).then((settled) => (answer = settled));
+      await starting;
+      await flushMicrotasks();
+      // ERROR for re-injection is not where callers resume.
+      expect(ctx.mod.getStatus().status).toBe('error');
+      expect(answer).toBeUndefined();
+
+      finishRecovery();
+      await wait;
+      expect(answer).toBe(true);
+    });
+
+    test('a start queued during a stop keeps callers waiting until it runs', async () => {
+      jest.useFakeTimers();
+      const ctx = loadAntManagerModule({
+        existsSync: (target) => /[\\/]antd(\.exe)?$/.test(target),
+        portSequence: [false, false],
+        httpResponse: () => ({ statusCode: 500, body: '' }),
+        processOptions: { autoCloseOnKill: false },
+      });
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      const stopping = ctx.mod.stopAnt();
+      expect(ctx.mod.getStatus().status).toBe('stopping');
+      await ctx.mod.startAnt(); // queued behind the stop
+
+      let answer;
+      const wait = ctx.mod.waitForNodeSettled(60_000).then((settled) => (answer = settled));
+      ctx.spawnedProcesses[0].emit('close', 0);
+      await stopping;
+      await flushMicrotasks();
+      // Stopped, but the queued start has not run yet.
+      expect(ctx.mod.getStatus().status).toBe('stopped');
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+      expect(answer).toBeUndefined();
+
+      await jest.advanceTimersByTimeAsync(100);
+      expect(ctx.mod.getStatus().status).toBe('starting');
+      expect(answer).toBeUndefined();
+
+      const stop = ctx.mod.stopAnt();
+      ctx.spawnedProcesses[1]?.emit('close', 0);
+      await jest.advanceTimersByTimeAsync(0);
+      await stop;
+      await wait;
+      expect(answer).toBe(true);
+    });
+
+    test('restartAnt holds callers from the stop until the start has run', async () => {
+      const ctx = loadAntManagerModule({ binExists: false });
+      const restart = ctx.mod.restartAnt();
+      expect(ctx.mod.isNodeSettled()).toBe(false);
+      const wait = ctx.mod.waitForNodeSettled(60_000);
+
+      await restart;
+      // No binary: the start ends in ERROR, and callers are told at once.
+      expect(ctx.mod.getStatus()).toEqual({
+        status: 'error',
+        error: expect.stringContaining('Ant binary not found'),
+      });
+      await expect(wait).resolves.toBe(true);
+      expect(ctx.mod.isNodeSettled()).toBe(true);
+    });
+
+    describe('identity injection lifecycle', () => {
+      const lifecycleFor = (ctx, overrides = {}) =>
+        ctx.mod.createAntLifecycle({
+          getStatus: () => ({ status: 'running', error: null }),
+          hasLiveProcess: () => true,
+          stopAnt: jest.fn().mockResolvedValue(undefined),
+          startAnt: jest.fn().mockResolvedValue(undefined),
+          setUseInjectedIdentity: jest.fn(),
+          ...overrides,
+        });
+
+      test('stopping a running node for injection is a planned restart until start()', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx);
+
+        await expect(lifecycle.stop()).resolves.toBe(true);
+        // The key is written meanwhile; callers keep waiting.
+        expect(ctx.mod.isNodeSettled()).toBe(false);
+
+        await lifecycle.start();
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+
+      test('a start that fails still ends the restart', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx, {
+          startAnt: jest.fn().mockRejectedValue(new Error('no start')),
+        });
+
+        await lifecycle.stop();
+        await expect(lifecycle.start()).rejects.toThrow('no start');
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+
+      test('a stop that fails ends the restart, since no start follows', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx, {
+          stopAnt: jest.fn().mockRejectedValue(new Error('no stop')),
+        });
+
+        await expect(lifecycle.stop()).rejects.toThrow('no stop');
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+
+      test('abandonRestart ends the restart when no start will follow', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const startAnt = jest.fn();
+        const lifecycle = lifecycleFor(ctx, { startAnt });
+
+        await lifecycle.stop();
+        expect(ctx.mod.isNodeSettled()).toBe(false);
+        lifecycle.abandonRestart();
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+        expect(startAnt).not.toHaveBeenCalled();
+      });
+
+      test('a node that was not running is not restarted, so nothing is held', async () => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx, {
+          getStatus: () => ({ status: 'stopped', error: null }),
+          hasLiveProcess: () => false,
+        });
+
+        await expect(lifecycle.stop()).resolves.toBe(false);
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+
+      test.each([
+        ['resolves', () => Promise.resolve(true)],
+        ['rejects', () => Promise.reject(new Error('vault locked'))],
+      ])('keystore recovery holds callers until it %s', async (_how, settle) => {
+        const ctx = loadAntManagerModule({ binExists: false });
+        const lifecycle = lifecycleFor(ctx);
+        let finish;
+        const recovery = new Promise((resolve) => (finish = resolve)).then(settle);
+        recovery.catch(() => {});
+
+        lifecycle.restartingUntil(recovery);
+        expect(ctx.mod.isNodeSettled()).toBe(false);
+
+        finish();
+        await recovery.catch(() => {});
+        await flushMicrotasks();
+        expect(ctx.mod.isNodeSettled()).toBe(true);
+      });
+    });
+  });
+
   test('tells main-process listeners about every status change', async () => {
     const ctx = loadAntManagerModule({ binExists: false });
     const listener = jest.fn();
@@ -1364,11 +1967,17 @@ describe('ant-manager', () => {
     expect(ctx.spawn).not.toHaveBeenCalled();
     expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.fsMock.writeFileSync).not.toHaveBeenCalled();
-    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
-    expect(ctx.log.error).toHaveBeenCalledWith(
-      '[Ant] Failed to prepare config:',
-      expect.stringContaining('refusing to generate a new password')
+    // The node says what is needed, and the next vault unlock re-injects the
+    // key (K-3); a new password, and with it a new identity, is never minted.
+    expect(ctx.mod.getStatus()).toEqual({
+      status: 'error',
+      error: 'Swarm key needs re-injecting: unlock your vault',
+    });
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith(
+      'ant',
+      'Swarm key needs re-injecting: unlock your vault'
     );
+    expect(ctx.mod.createAntLifecycle().needsKeyReinjection()).toBe(true);
   });
 
   // Browsing must not depend on a Gnosis RPC: without one the bridge still

@@ -21,6 +21,12 @@ import {
   isSafeAccount,
 } from './wallet-utils.js';
 import { isSafeSigningBoardOpen } from './safe-signing.js';
+import {
+  registerDappPrompt,
+  assertNoDappPromptShowing,
+  isDappPromptShowing,
+  requestPendingError,
+} from './dapp-prompt-guard.js';
 
 // DOM references
 let dappSignScreen;
@@ -66,6 +72,10 @@ export function initDappSign() {
 
   // Register screen hider
   registerScreenHider(() => dappSignScreen?.classList.add('hidden'));
+  // Showing an undecided message: newcomers wait (dapp-prompt-guard.js).
+  registerDappPrompt(
+    () => dappSignPending !== null && Boolean(dappSignScreen) && !dappSignScreen.classList.contains('hidden')
+  );
 
   setupDappSignScreen();
 }
@@ -128,6 +138,7 @@ function setupDappSignScreen() {
  */
 export async function showDappSignApproval(webview, permissionKey, method, params) {
   assertNoSignatureInFlight();
+  assertNoDappPromptShowing();
 
   const permission = await window.dappPermissions.getPermission(permissionKey);
   if (!permission) {
@@ -138,19 +149,34 @@ export async function showDappSignApproval(webview, permissionKey, method, param
     // Re-checked after the awaits above: the screen must still be free at
     // the moment we take it over.
     assertNoSignatureInFlight();
+    assertNoDappPromptShowing();
     const request = { permissionKey, walletIndex: permission.walletIndex, method, params, resolve, reject, webview };
+    // A request still being prepared gives way and is answered now; one
+    // that is signing (a Safe ceremony) carries on with its own reference.
+    const previous = dappSignPending;
     dappSignPending = request;
+    if (previous && !previous.signing) previous.reject({ code: 4001, message: 'Replaced by a newer request' });
     if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
     setDappSignCancelEnabled(true);
+    // A Safe request parked on its board leaves its "Signing…" label and
+    // error behind; this request starts clean.
+    if (dappSignApproveBtn) dappSignApproveBtn.textContent = 'Sign';
+    hideDappSignError();
 
     if (dappSignSite) {
       dappSignSite.textContent = permissionKey;
     }
 
-    if (method === 'personal_sign') {
-      displayPersonalSignMessage(params);
-    } else if (method === 'eth_signTypedData_v4') {
-      displayTypedDataMessage(params);
+    try {
+      if (method === 'personal_sign') {
+        displayPersonalSignMessage(params);
+      } else if (method === 'eth_signTypedData_v4') {
+        displayTypedDataMessage(params);
+      }
+    } catch (err) {
+      // A message that can't be displayed is never shown, so never signed.
+      if (dappSignPending === request) dappSignPending = null;
+      throw err;
     }
 
     // Multi-owner accounts sign as a smart contract — be upfront that
@@ -159,7 +185,9 @@ export async function showDappSignApproval(webview, permissionKey, method, param
       .getElementById('dapp-sign-safe-note')
       ?.classList.toggle('hidden', !isSafeAccount(permission.walletIndex));
 
-    checkDappSignUnlockStatus().then(() => {
+    checkDappSignUnlockStatus(request).then(() => {
+      // Replaced while it was being prepared: answered then, never shown.
+      if (dappSignPending !== request) return;
       // Another surface may have started a device signature while we were
       // checking vault status (the user could still click Pay on an x402
       // card, say). It owns the sidebar now — refuse rather than paint
@@ -169,11 +197,20 @@ export async function showDappSignApproval(webview, permissionKey, method, param
         reject(signatureInFlightError());
         return;
       }
+      // Another prompt was shown meanwhile: it keeps the screen.
+      if (isDappPromptShowing()) {
+        dappSignPending = null;
+        reject(requestPendingError());
+        return;
+      }
       hideAllSubscreens();
       walletState.identityView?.classList.add('hidden');
       dappSignScreen?.classList.remove('hidden');
 
       openSidebarPanel();
+    }).catch((err) => {
+      if (dappSignPending === request) dappSignPending = null;
+      reject(err);
     });
   });
 }
@@ -252,16 +289,18 @@ function formatTypedDataForDisplay(typedData) {
   return lines.join('\n');
 }
 
-async function checkDappSignUnlockStatus() {
+// Writes the unlock UI only while `request` is still the pending one.
+async function checkDappSignUnlockStatus(request) {
   try {
     if (
-      bypassUnlockGateForDevice(dappSignPending?.walletIndex, dappSignUnlock, dappSignApproveBtn) ||
-      bypassUnlockGateForSafe(dappSignPending?.walletIndex, dappSignUnlock, dappSignApproveBtn)
+      bypassUnlockGateForDevice(request?.walletIndex, dappSignUnlock, dappSignApproveBtn) ||
+      bypassUnlockGateForSafe(request?.walletIndex, dappSignUnlock, dappSignApproveBtn)
     ) {
       return;
     }
 
     const status = await window.identity.getStatus();
+    if (dappSignPending !== request) return;
 
     if (status.isUnlocked) {
       dappSignUnlock?.classList.add('hidden');
@@ -273,10 +312,13 @@ async function checkDappSignUnlockStatus() {
     if (dappSignApproveBtn) dappSignApproveBtn.disabled = true;
 
     const canUseTouchId = await window.quickUnlock.canUseTouchId();
+    if (dappSignPending !== request) return;
     const touchIdEnabled = await window.quickUnlock.isEnabled();
+    if (dappSignPending !== request) return;
     const hasTouchId = canUseTouchId && touchIdEnabled;
 
     const vaultMeta = await window.identity.getVaultMeta();
+    if (dappSignPending !== request) return;
     const userKnowsPassword = vaultMeta?.userKnowsPassword ?? true;
 
     if (dappSignTouchIdBtn) {
@@ -295,6 +337,8 @@ async function checkDappSignUnlockStatus() {
     }
   } catch (err) {
     console.error('[WalletUI] Failed to check vault status:', err);
+    // A replaced request's failure paints nothing on its successor.
+    if (dappSignPending !== request) return;
     dappSignUnlock?.classList.remove('hidden');
     dappSignTouchIdBtn?.classList.add('hidden');
     dappSignPasswordLink?.classList.add('hidden');
@@ -377,11 +421,18 @@ async function approveDappSign() {
   } catch (err) {
     if (err?.code === 4001) {
       // The user closed the Safe signing board — that IS the rejection.
-      rejectDappSign();
-      closeDappSign();
+      // Answer this request, not whichever one holds the screen now.
+      request.reject({ code: 4001, message: 'User rejected the request' });
+      if (dappSignPending === request) closeDappSign();
       return;
     }
     console.error('[WalletUI] dApp signing failed:', err);
+    // A newer request took the screen while the Safe board was parked: this
+    // one is no longer on screen to retry, so answer it with the failure.
+    if (dappSignPending !== request) {
+      request.reject(err);
+      return;
+    }
     showDappSignError(err.message || 'Signing failed');
     if (dappSignApproveBtn) {
       dappSignApproveBtn.disabled = false;

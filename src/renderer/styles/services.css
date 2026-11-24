@@ -89,6 +89,55 @@
   color: var(--muted);
 }
 
+/* ACT public key row (#1188): a shortened key in the menu's monospace style
+   for keys, the full key in the title and on the clipboard. */
+.bee-act-key-row {
+  align-items: center;
+}
+
+.bee-act-key-row .bee-info-label {
+  white-space: nowrap;
+}
+
+.bee-act-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The sidebar's inline copy button, narrowed so the key still ends on the
+   value column the rows above it end on. */
+.bee-act-key-copy.node-copy-btn-inline {
+  width: 16px;
+  height: 16px;
+  margin-right: -2px;
+}
+
+.bee-act-key-text {
+  font-family: inherit;
+  white-space: nowrap;
+  /* --text, not the panel's --muted: the panel's grey is a recorded #261
+     contrast gap in light (3.85:1), and theme-parity holds a new readout to
+     4.5:1. This is also the one value in the panel a user acts on. */
+  color: var(--text);
+}
+
+.bee-act-key-text.has-key {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+}
+
+.bee-act-key-copy:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bee-act-key-copy:disabled:hover {
+  color: var(--muted);
+  background: transparent;
+}
+
 /* Divider between Swarm and IPFS */
 .nodes-divider {
   height: 1px;
@@ -247,6 +296,16 @@
   background: var(--border);
 }
 
+/* The greyed IPFS switch explains itself on hover: on a Linux system too old
+   for the add-on (#350) its tooltip is the menu's only explanation. The
+   button's `disabled` attribute and the click guard keep it inert. Scoped to
+   the IPFS button by id: the two Myotis toggles reuse `.ipfs-toggle` and stay
+   fully pointer-inert when disabled. */
+#ipfs-toggle-btn.disabled {
+  pointer-events: auto;
+  cursor: default;
+}
+
 /* External node toggle states (reused existing daemon) */
 .bee-toggle.external .bee-toggle-switch,
 .ipfs-toggle.external .ipfs-toggle-switch {
@@ -271,6 +330,20 @@
 }
 
 .ipfs-info:not(.visible) {
+  display: none;
+}
+
+/* IPFS off, saved content still served (#30): the same muted 12px as the
+   info rows it stands in for. */
+.ipfs-cache-note {
+  margin: 0;
+  padding: 0 14px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.ipfs-cache-note[hidden] {
   display: none;
 }
 

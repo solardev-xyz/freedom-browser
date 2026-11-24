@@ -4,12 +4,15 @@
  * Manages user-configured RPC provider API keys. The provider catalog and
  * resolved RPC URLs come from the network registry; user API keys are
  * stored in <userData>/rpc-api-keys.json.
+ *
+ * The file holds the user's provider API keys in plain JSON; it is read and
+ * written only through rpc-api-key-store.js (owner-only, atomic, never
+ * through a link; K-5).
  */
 
-const { app, ipcMain } = require('electron');
-const path = require('path');
-const fs = require('fs');
+const { ipcMain } = require('electron');
 const registry = require('../networks/network-registry');
+const { readRpcApiKeys, writeRpcApiKeys } = require('./rpc-api-key-store');
 
 // Lazy-loaded to avoid circular dependencies
 let providerManager = null;
@@ -20,13 +23,14 @@ function getProviderManager() {
   return providerManager;
 }
 
-const API_KEYS_FILE = 'rpc-api-keys.json';
-
 let apiKeysCache = null;
-
-function getApiKeysPath() {
-  return path.join(app.getPath('userData'), API_KEYS_FILE);
-}
+// Why the stored file could not be read, when it couldn't. A save would
+// replace it with only what is in memory (an empty cache plus the one
+// change), so every stored key would be lost; saves refuse instead until a
+// read succeeds. The one exception is a symbolic link at the name: the
+// rename replaces the link itself and the file it points to keeps its
+// content, so nothing stored is lost by replacing it (K-5 review).
+let apiKeysReadError = null;
 
 // The keyed-provider catalog (Alchemy/Infura/DRPC) from the network
 // registry, keyed by id. Each entry: { id, role, keyed, name, website,
@@ -45,24 +49,40 @@ function loadApiKeys() {
   }
 
   try {
-    const filePath = getApiKeysPath();
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, 'utf-8');
-      apiKeysCache = JSON.parse(data);
-    } else {
-      apiKeysCache = {};
-    }
+    apiKeysCache = readRpcApiKeys();
+    apiKeysReadError = null;
   } catch (err) {
     console.error('[RpcManager] Failed to load API keys:', err);
     apiKeysCache = {};
+    apiKeysReadError = err;
   }
 
   return apiKeysCache;
 }
 
+// Before a change that will be saved: re-read a file that failed to read
+// (it may have been fixed since), and say why it can't be overwritten if it
+// still can't be read.
+function loadApiKeysForChange() {
+  if (apiKeysReadError) apiKeysCache = null;
+  const apiKeys = loadApiKeys();
+  const err = apiKeysReadError;
+  if (err && !(err.code === 'UNSAFE_PRIVATE_PATH' && err.link)) {
+    return {
+      error:
+        `Your saved API keys could not be read (${err.message}), so they were not ` +
+        'overwritten. Fix or remove rpc-api-keys.json in the Freedom data folder, then try again.',
+    };
+  }
+  return { apiKeys };
+}
+
+// Owner-only temp file, fsync, rename (rpc-api-key-store.js): a crash or a
+// full disk never leaves a truncated key file.
 function saveApiKeys() {
   try {
-    fs.writeFileSync(getApiKeysPath(), JSON.stringify(apiKeysCache, null, 2), 'utf-8');
+    writeRpcApiKeys(apiKeysCache);
+    apiKeysReadError = null;
     return true;
   } catch (err) {
     console.error('[RpcManager] Failed to save API keys:', err);
@@ -78,7 +98,8 @@ function setApiKey(providerId, apiKey) {
     return { success: false, error: `Unknown provider: ${providerId}` };
   }
 
-  const apiKeys = loadApiKeys();
+  const { apiKeys, error } = loadApiKeysForChange();
+  if (error) return { success: false, error };
   apiKeys[providerId] = { apiKey, enabled: true, addedAt: Date.now() };
   apiKeysCache = apiKeys;
 
@@ -95,7 +116,8 @@ function setApiKey(providerId, apiKey) {
  * Remove the API key for a keyed provider.
  */
 function removeApiKey(providerId) {
-  const apiKeys = loadApiKeys();
+  const { apiKeys, error } = loadApiKeysForChange();
+  if (error) return { success: false, error };
   if (!apiKeys[providerId]) {
     return { success: false, error: `No API key found for provider: ${providerId}` };
   }

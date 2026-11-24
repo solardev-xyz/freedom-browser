@@ -89,12 +89,13 @@ if (dist && process.env.FREEDOM_ALLOW_INTERIM_BRIDGE !== '1') {
 
 // Chromium's third-party notices have to be present before packaging starts.
 // Electron's dist carries LICENSES.chromium.html next to the executable, which
-// is the copy Linux and Windows packages ship. electron-builder deletes it on
-// the macOS path (`unlinkIfExists(path.join(appOutDir, "LICENSES.chromium.html"))`
-// in app-builder-lib/out/electron/electronMac.js) and the .dmg/.zip only ever
-// carry Freedom.app, so `build.mac.extraResources` copies it out of the same
-// dist into Contents/Resources instead. NOTICES points users at that file; a
-// missing one would ship Chromium with a dangling attribution reference.
+// is the copy Linux and Windows packages ship. The .dmg/.zip only ever carry
+// Freedom.app, so `build.mac.extraResources` copies it out of the same dist
+// into Contents/Resources. electron-builder before 26.18 deleted the copy
+// beside the executable on the macOS path; 26.18 moves it into the bundle
+// itself, and the explicit copy keeps that from hinging on its internals.
+// NOTICES points users at that file; a missing one would ship Chromium with a
+// dangling attribution reference.
 //
 // The dist is populated by electron's postinstall (`node install.js`), which
 // npm on the CI runners no longer runs for dependencies unless approved, and

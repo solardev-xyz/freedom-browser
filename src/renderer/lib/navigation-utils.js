@@ -294,12 +294,29 @@ export const buildTrustRows = ({
     trustRows.push({ label: 'Resolved by', display: 'Your configured RPC', copy: '' });
     trustRows.push({ label: 'Evidence', display: 'Trusted endpoint response', copy: '' });
   } else if (level === 'unverified') {
-    trustRows.push({ label: 'Resolved by', display: 'A single public RPC', copy: '' });
-    trustRows.push({
-      label: 'Evidence',
-      display: 'Single response (not independently verified)',
-      copy: '',
-    });
+    // Unverified is not always one endpoint: an agreement among fewer RPCs
+    // than the configured quorum M (a reduced second wave, or a first wave
+    // smaller than M) is labelled unverified too. Say how many answered so
+    // the summary matches the numbered RPC rows listed below it.
+    if (agreed.length > 1) {
+      trustRows.push({
+        label: 'Resolved by',
+        display: `${agreed.length} public RPCs`,
+        copy: '',
+      });
+      trustRows.push({
+        label: 'Evidence',
+        display: 'Matching responses, below quorum (not verified)',
+        copy: '',
+      });
+    } else {
+      trustRows.push({ label: 'Resolved by', display: 'A single public RPC', copy: '' });
+      trustRows.push({
+        label: 'Evidence',
+        display: 'Single response (not independently verified)',
+        copy: '',
+      });
+    }
   } else if (level === 'conflict') {
     const rpcNoun = queried.length === 1 ? 'public RPC' : 'public RPCs';
     trustRows.push({
@@ -375,6 +392,9 @@ export const resolveProtocolIconType = ({
   // is disabled) so the address bar always carries some leading mark
   // and never reuses the trust shield from a previous ENS page.
   if (normalizedValue.startsWith('freedom://')) return 'http';
+  if (normalizedValue.startsWith('freedom-preview://') || normalizedValue === 'workspace preview') {
+    return 'http';
+  }
 
   // Bare ENS / legacy `ens://` falls back to the cached resolved protocol.
   const ensName = extractEnsName(normalizedValue);
@@ -506,6 +526,7 @@ export const deriveDisplayAddress = ({
   radicleApiPrefix = null,
   knownEnsNames = new Map(),
 } = {}) => {
+  if (url.startsWith('freedom-preview://')) return 'Workspace preview';
   // A new-tab page derives to an empty address bar. `deriveDisplayValue`
   // already does that for the home page (it compares against
   // `homeUrlNormalized`), but the private window's start page is an internal

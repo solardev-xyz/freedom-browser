@@ -44,8 +44,10 @@ module.exports = {
   // `vm.SourceTextModule.prototype.hasAsyncGraph` — which needs *both*
   // node >= v24.9 and `--experimental-vm-modules`. The `jest` scripts in
   // package.json pass neither, so this transform is load-bearing on every
-  // toolchain we run, CI's node 24 included.
+  // toolchain we run, CI's node 24 included. The optional `.*/node_modules/`
+  // also covers a package's own nested copy, such as the @noble/hashes that
+  // @ledgerhq/evm-tools keeps under its node_modules.
   transformIgnorePatterns: [
-    '/node_modules/(?!(@scure|@noble|micro-key-producer|micro-packed|@openlv|websocket-mqtt|ts-pattern|aedes)/)',
+    '/node_modules/(?!(.*/node_modules/)?(@scure|@noble|micro-key-producer|micro-packed|@openlv|websocket-mqtt|ts-pattern|aedes)/)',
   ],
 };

@@ -3,8 +3,10 @@
 **Spec version:** `1.0` (the `specVersion` returned by `swarm_getCapabilities`)
 
 `window.swarm` lets a web page publish to Swarm, read and write chunks and
-feeds, sign with a publisher identity, and send and receive PSS/GSOC
-messages, all through the user's own Swarm node, with per-origin consent.
+feeds, sign with a publisher identity, agree keys with the site's own
+encryption key, send and receive PSS/GSOC messages, and open content shared
+with the user's node through ACT, all through the user's own Swarm node, with
+per-origin consent.
 
 It is the only way a page reaches the node. Requests from web content to the
 node's local HTTP API (`localhost:1633` and the port Freedom actually runs it
@@ -77,9 +79,11 @@ The shim rejects a request that has had no answer with
 
 - **300 s** for `swarm_publish*`, `swarm_send*`, `swarm_createFeed`,
   `swarm_updateFeed`, `swarm_writeFeedEntry`, `swarm_writeSingleOwnerChunk`,
-  `swarm_getSigningIdentity`, `swarm_getMessagingIdentity` and
-  `swarm_subscribe` (these may wait on a consent prompt or a node write),
-  and `swarm_readData` (a blob of several MiB fetched from the network);
+  `swarm_getSigningIdentity`, `swarm_getEncryptionKey`,
+  `swarm_deriveSharedSecrets`, `swarm_getMessagingIdentity`,
+  `swarm_subscribe` and `swarm_openAct` (these may wait on a consent prompt
+  or a node write), and `swarm_readData` (a blob of several MiB fetched from
+  the network);
 - **60 s** for everything else, including `swarm_requestAccess` and any
   other call that has to wait on a consent prompt: the connect prompt, or
   the [permission manifest](#permission-manifests) sheet, which any
@@ -131,6 +135,10 @@ validation and node failures, `data`:
 | `feed_not_granted`       | A feeds/signing method without the feed grant                                                |
 | `messaging_not_granted`  | A messaging method without the messaging grant                                               |
 | `tag_ownership_mismatch` | `swarm_getUploadStatus` for a tag this origin did not create, or one already reported `done` |
+| `shared_identity`        | `swarm_writeSingleOwnerChunk` while the origin's active identity is shared with other sites  |
+| `freedom_identity`       | `swarm_publishSingleOwnerChunk` with an `owner` that is the Ant wallet or a wallet account   |
+| `act_not_granted`        | `swarm_openAct` answered by no prompt and no "always allow" rule for this publisher          |
+| `private_window`         | `swarm_openAct` from a private window (which has no `window.swarm` anyway)                   |
 
 A `4100` raised by the chrome before the request reaches the main process
 carries the message `Origin not authorized. Call swarm_requestAccess first.`
@@ -140,7 +148,7 @@ and no `data`.
 
 | Reason                                | Raised when                                                                                                                                                                 |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node-stopped`                        | The node is not running or does not answer (reads probe `/node` with a 5 s timeout)                                                                                         |
+| `node-stopped`                        | The node is off or failed, or does not answer (reads probe `/node` with a 5 s timeout)                                                                                      |
 | `node-not-ready`                      | The node is still connecting to Gnosis Chain or to peers, is still looking for the wallet's existing storage, or a batch bought moments ago is not yet known to the network |
 | `ultra-light-mode`                    | The node runs in ultra-light mode (no Gnosis Chain connection) and cannot publish                                                                                           |
 | `no-usable-stamps`                    | No postage batch with room for the write                                                                                                                                    |
@@ -150,9 +158,16 @@ and no `data`.
 
 The four setup reasons (`node-stopped`, `node-not-ready`, `ultra-light-mode`,
 `no-usable-stamps`) on a write method also open Freedom's publish setup screen
-for the user. Reads only ever report `node-stopped`. A `4900` without `data`
+for the user. Reads report only `node-stopped` and `node-not-ready`. A `4900` without `data`
 means the provider is disabled, or (message "Could not refresh this app’s
 permission manifest", with a typographic apostrophe U+2019) the app's permission manifest could not be fetched.
+
+A call made while Freedom starts, stops or restarts the node (at launch, when
+the identity is set up or its keystore is recovered after an unlock, or from
+the Restart button) waits for the node, for up to 30 s, instead of failing. A
+node still starting after that is `node-not-ready`, so `node-stopped` means a
+node that is off, failed or not answering. `swarm_getCapabilities` does not
+wait: it reports `node-not-ready` until the node is back.
 
 **`-32602`**
 
@@ -160,23 +175,29 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `invalid_params`                                                                                                | Any (generic shape error)                                                                                                |
 | `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`                                                                   |
-| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes; `swarm_writeFeedEntry` (neither `limit` nor `actual`)                                 |
-| `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`                                                                                                         |
+| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk, feed-entry and message writes, `swarm_deriveSharedSecrets` (an empty feed entry has neither field)       |
+| `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`, `swarm_readFeedEntry` (`actual` only when the node declared the size)                                  |
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
 | `empty_files`, `too_many_files`, `invalid_path`, `duplicate_path`, `invalid_index_document`                     | `swarm_publishFiles`                                                                                                     |
 | `invalid_reference`, `invalid_span`, `invalid_identifier`, `invalid_owner`                                      | Chunk methods, `swarm_readData`, `swarm_updateFeed`, feed reads                                                          |
+| `invalid_signature`                                                                                             | `swarm_publishSingleOwnerChunk`: malformed, or does not recover to `owner` for this identifier and chunk                 |
 | `chunk_not_found`, `chunk_type_mismatch`                                                                        | Chunk reads, `swarm_readData`                                                                                            |
 | `invalid_feed_name`, `invalid_topic`, `feed_not_found`, `feed_empty`, `entry_not_found`, `index_already_exists` | Feed methods                                                                                                             |
 | `invalid_topic`, `invalid_recipient`, `invalid_target`, `invalid_payload`, `invalid_address`, `invalid_kind`    | Messaging methods                                                                                                        |
+| `invalid_public_key` (+ `index` when one key of the list is at fault)                                           | `swarm_deriveSharedSecrets`                                                                                              |
 | `subscription_not_found`                                                                                        | `swarm_unsubscribe`                                                                                                      |
 | `too_many_subscriptions` (+ `limit`)                                                                            | `swarm_subscribe`                                                                                                        |
 | `rate_limited`                                                                                                  | Permission-free reads (+ `windowMs`, `maxRequests`, `maxBytes`), new GSOC topics (+ `limit`, `windowMs`, `retryAfterMs`) |
+| `invalid_publisher`, `invalid_history_address`, `invalid_timestamp`, `act_not_found`, `content_not_found`       | `swarm_openAct` (also `invalid_reference`, `invalid_path`, `data_too_large`, `rate_limited`)                             |
 
 **`-32603`** carries a `data.reason` only for `gsoc_mining_timeout` and
-`gsoc_mining_failed` (deriving a GSOC topic's signer failed or ran past 15 s).
+`gsoc_mining_failed` (deriving a GSOC topic's signer failed or ran past 15 s),
+and for `vault_locked` from `swarm_publishSingleOwnerChunk` (a wallet
+account's address is not known until the vault is unlocked, so the owner
+cannot be checked against it).
 Bee 5xx responses and network errors are `-32603`, with two exceptions where
 the node reports a missing entry as a 500: feed reads (and the next-index
-lookup behind feed writes) treat any Bee 500 like a 404, so a node-internal
+lookup behind feed writes without an `index`) treat any Bee 500 like a 404, so a node-internal
 500 surfaces as `-32602 feed_empty` / `entry_not_found`; chunk reads map a
 500 whose body is exactly `read chunk failed` to `-32602 chunk_not_found`.
 So a `-32602` "not found" on a feed read means "not found, or the node
@@ -205,16 +226,19 @@ an ENS name.
 | **Public**     | `swarm_getCapabilities`, `swarm_readChunk`, `swarm_readData`, `swarm_readSingleOwnerChunk`, `swarm_readFeedEntry`, `swarm_listFeeds` | none                         | never                                                                                                                              |
 | **Connection** | `swarm_requestAccess`                                                                                                                | —                            | once per origin                                                                                                                    |
 |                | `swarm_getUploadStatus`                                                                                                              | connection                   | never                                                                                                                              |
-| **Publish**    | `swarm_publishData`, `swarm_publishFiles`, `swarm_publishChunk`                                                                      | connection                   | every call, unless "always allow" (`autoApprove.publish`)                                                                          |
+| **Publish**    | `swarm_publishData`, `swarm_publishFiles`, `swarm_publishChunk`, `swarm_publishSingleOwnerChunk`                                     | connection                   | every call, unless "always allow" (`autoApprove.publish`)                                                                          |
 | **Feeds**      | `swarm_createFeed`, `swarm_updateFeed`, `swarm_writeFeedEntry`                                                                       | connection + feed grant      | the first call grants the tier and picks the identity; later calls prompt unless `autoApprove.feeds`                               |
-| **Signing**    | `swarm_getSigningIdentity`, `swarm_writeSingleOwnerChunk`                                                                            | connection + feed grant      | as Feeds, with `autoApprove.signing`                                                                                               |
+| **Signing**    | `swarm_getSigningIdentity`, `swarm_writeSingleOwnerChunk`, `swarm_getEncryptionKey`, `swarm_deriveSharedSecrets`                     | connection + feed grant      | as Feeds, with `autoApprove.signing`                                                                                               |
 | **Messaging**  | `swarm_getMessagingIdentity`, `swarm_subscribe`, `swarm_sendPss`, `swarm_sendGsoc`                                                   | connection + messaging grant | the first call grants the tier; sends prompt every time unless `autoApprove.messaging`; identity and subscribe do not prompt again |
 |                | `swarm_unsubscribe`                                                                                                                  | connection                   | never                                                                                                                              |
+| **ACT**        | `swarm_openAct`                                                                                                                      | connection                   | every call, unless "always allow" for **this publisher** (stored per site and publisher)                                           |
 
 Notes:
 
 - Feeds and Signing share **one** feed grant; they differ only in which
-  auto-approve flag skips the per-call prompt.
+  auto-approve flag skips the per-call prompt. The encryption key methods are
+  in the Signing tier: `autoApprove.signing` covers them too, and their
+  prompt names the encryption key instead of the publisher identity.
 - If the feed grant exists but the identity vault is locked, the user is asked
   to unlock it; the unlock prompt (which names the site) takes the place of
   the per-call approval for that call.
@@ -222,9 +246,15 @@ Notes:
   approves.
 - The main process re-checks every grant; the chrome's prompts are UX, not the
   security boundary.
+- ACT consent is per **(site, publisher)** pair, never per site: the node's
+  ACT key is one identity for every site, so one "always allow" for a whole
+  site would open everything ever shared with the user. Each allowed
+  publisher is listed, with its own Remove, on the site's Swarm permissions
+  screen (the connection banner's manage link). A private window stores no
+  ACT rule.
 - The user can revoke everything for an origin from the connection banner or
   Settings. **Disconnecting revokes the connection, the feed grant, the
-  messaging grant and all auto-approvals**, closes the origin's live
+  messaging grant, all auto-approvals and every ACT publisher rule**, closes the origin's live
   subscriptions and emits `disconnect`. It keeps the origin's publisher
   identities and feed records (see [Identity model](#identity-model)), so a
   reconnected origin signs with the same key and sees its old feeds.
@@ -232,11 +262,12 @@ Notes:
 ### Permission manifests
 
 A `bzz://` site can declare the capabilities it needs up front in a
-`freedom-manifest.json` at its root (at most 8 KiB, no unknown fields):
+`swarm-manifest.json` at its root (at most 8 KiB, no unknown fields), the
+name the Swarm provider SWIP uses:
 
 ```json
 {
-  "schema": "freedom-manifest/1",
+  "schema": "swarm-manifest/1",
   "name": "My App",
   "description": "Optional, up to 160 characters",
   "capabilities": {
@@ -249,6 +280,14 @@ A `bzz://` site can declare the capabilities it needs up front in a
   }
 }
 ```
+
+Freedom also reads the older name, `freedom-manifest.json` with
+`"schema": "freedom-manifest/1"`. Each file needs its own schema value, and
+the first valid one wins, `swarm-manifest.json` first. An invalid
+`swarm-manifest.json` lets the old file answer (a site with an error document
+serves that document for the missing new file), but a fetch that fails (a
+network error or a 5xx) stops the lookup there. A site that moves from the old
+file to the new one with the same capabilities is not asked again.
 
 `name` is at most 32 characters; at least one capability is required. Freedom
 fetches the manifest when the page calls `swarm_requestAccess`, and checks it
@@ -316,11 +355,54 @@ change in Settings. Three kinds exist (`identityMode`):
   active identity changes later. `swarm_getSigningIdentity` and
   `swarm_writeSingleOwnerChunk` use the _active_ identity.
 - Signing needs the identity vault to be unlocked.
+- `swarm_writeSingleOwnerChunk` needs an identity **only this origin uses**:
+  an `app-scoped` one whose key index no other origin holds. Under
+  `bee-wallet`, `ethereum-wallet` or a shared index it fails with `4100`
+  `shared_identity`, and the signing prompt says so. A raw SOC's identifier
+  is the page's to choose, so under an owner other sites also sign with, a
+  page could write another site's feed entries (`keccak256(topic || index)`).
+  Feeds and `swarm_getSigningIdentity` work under every identity, since feed
+  topics are namespaced by origin.
+- `swarm_publishSingleOwnerChunk` uses no identity: the page signs the chunk
+  with a key it holds, and Freedom only checks the signature and stamps it.
+  For the same reason as above it refuses an `owner` that is the Ant wallet
+  or any wallet account (device accounts included) with `4100`
+  `freedom_identity`: a wallet's `personal_sign` of 32 bytes is exactly a SOC
+  signature, so a page that got one could otherwise write raw SOCs as that
+  shared owner. An `app-scoped` key signs nothing but Freedom's own writes,
+  so under one a page can only publish a chunk already signed for the
+  network.
 
 Messaging is different: PSS decrypts with the **node's** key, so
 `swarm_getMessagingIdentity` always reports `identityMode: 'bee-wallet'`, and
 the PSS public key is the same for every origin. GSOC writes are signed with a
 key mined from the topic, not with any user identity.
+
+### Site encryption key
+
+Each site also has an **encryption key** of its own: a secp256k1 key used
+only for key agreement (`swarm_getEncryptionKey`,
+`swarm_deriveSharedSecrets`), never for signing.
+
+- It is the same whatever publisher identity the site signs with, and **no
+  other site has it**, also when sites share a `bee-wallet` or
+  `ethereum-wallet` identity. Key agreement on a shared identity would let
+  any site with signing access read what was encrypted to another, so those
+  keys are never used for it.
+- It is derived from the vault's recovery phrase at
+  `m/44'/73407'/{a}'/{b}'/{c}'`, where `a`, `b` and `c` are the first three
+  big-endian 32-bit words of
+  `SHA-256("swarm-provider/encryption-key/v1\n" + permissionKey)`,
+  each with its top bit cleared. Restoring the recovery phrase restores the
+  key on any device, with nothing else to back up. The label is
+  vendor-neutral so that the recipe can be standardised with the Swarm
+  provider API, and other browsers derive the same key from the same phrase.
+- It follows the **permission key**. A `bzz://<ref>` origin changes with every
+  redeploy, and so does its key: serve an app that encrypts under an ENS name
+  or a feed manifest, or it cannot read what was encrypted to it before.
+- Disconnecting does not change it, and nothing can rotate it. Rotate group
+  keys with envelope encryption on top of it.
+- Using it needs the identity vault to be unlocked.
 
 ## Origin isolation guarantees
 
@@ -352,23 +434,25 @@ tag_ownership_mismatch`, so a page cannot watch another site's uploads. The
 
 Reported by `swarm_getCapabilities` under `limits`:
 
-| Limit                  | Value           | Applies to                                          |
-| ---------------------- | --------------- | --------------------------------------------------- |
-| `maxDataBytes`         | 10 MiB          | `swarm_publishData`                                 |
-| `maxFilesBytes`        | 50 MiB (total)  | `swarm_publishFiles`                                |
-| `maxFileCount`         | 100             | `swarm_publishFiles`                                |
-| `maxPathBytes`         | 100 UTF-8 bytes | each `swarm_publishFiles` path                      |
-| `maxChunkPayloadBytes` | 4096            | `swarm_publishChunk`, `swarm_writeSingleOwnerChunk` |
-| `maxMessageBytes`      | 4000            | `swarm_sendPss`, `swarm_sendGsoc`                   |
-| `maxTargetDepth`       | 3 bytes         | `swarm_sendPss` `targets`                           |
-| `maxSubscriptions`     | 32 per origin   | `swarm_subscribe`                                   |
+| Limit                  | Value           | Applies to                                                                           |
+| ---------------------- | --------------- | ------------------------------------------------------------------------------------ |
+| `maxDataBytes`         | 10 MiB          | `swarm_publishData`, `swarm_writeFeedEntry`                                          |
+| `maxFilesBytes`        | 50 MiB (total)  | `swarm_publishFiles`                                                                 |
+| `maxFileCount`         | 100             | `swarm_publishFiles`                                                                 |
+| `maxPathBytes`         | 100 UTF-8 bytes | each `swarm_publishFiles` path                                                       |
+| `maxChunkPayloadBytes` | 4096            | `swarm_publishChunk`, `swarm_writeSingleOwnerChunk`, `swarm_publishSingleOwnerChunk` |
+| `maxMessageBytes`      | 4000            | `swarm_sendPss`, `swarm_sendGsoc`                                                    |
+| `maxTargetDepth`       | 3 bytes         | `swarm_sendPss` `targets`                                                            |
+| `maxSubscriptions`     | 32 per origin   | `swarm_subscribe`                                                                    |
+| `maxSharedSecretKeys`  | 256 per call    | `swarm_deriveSharedSecrets` `publicKeys`                                             |
 
 Not reported there:
 
 - **Permission-free read budget**, per origin over a fixed 60 s window that
   starts at the first read and resets 60 s later (not a rolling window),
   shared by `swarm_readChunk`, `swarm_readData`, `swarm_readSingleOwnerChunk`,
-  `swarm_readFeedEntry` and `swarm_listFeeds`: 600 requests / 5 MiB when the
+  `swarm_readFeedEntry`, `swarm_listFeeds` and `swarm_openAct` (which needs
+  the connection, so it always has the larger budget): 600 requests / 5 MiB when the
   origin is connected, 120 requests / 512 KiB when it is not. Exceeding it is
   `-32602 rate_limited`; a read that crosses the byte budget is refused after
   the fact, so its data is not returned. `swarm_readData` is one request
@@ -384,6 +468,13 @@ Not reported there:
   in flight at once, but never starts more than one window's worth per
   window. A blob larger than
   the whole byte budget is `data_too_large` instead (see the method).
+  `swarm_readFeedEntry` is one request too, and its bytes are paid for
+  before they are held, in the same way: the entry's single-owner chunk is
+  charged once read, and a larger entry's size, from the span of the chunk
+  it wraps, is reserved before the node joins it. The latest entry is read
+  the same way, at the index the node names; when the node can't name one,
+  the update chunks read to find it are charged too. An entry that does not
+  fit is refused there and the rest of it is never downloaded.
 - **New GSOC topics**: 16 per origin per 60 s (only topics that have to be
   mined count; cached topics are free). Exceeding it is `-32602 rate_limited`
   with `retryAfterMs`.
@@ -429,16 +520,23 @@ it serves a [permission manifest](#permission-manifests):
   reason: null | 'not-connected' | 'node-stopped' | 'node-not-ready'
              | 'ultra-light-mode' | 'no-usable-stamps',
   publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
-  features: ['messaging'],
-  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true },
+  features: ['messaging', 'encryption-key'],
+  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true,
+                encryptionKey: true, pageSignedSingleOwnerChunks: true,
+                actShares: true },
   limits: { maxDataBytes, maxFilesBytes, maxFileCount, maxPathBytes,
             maxChunkPayloadBytes, maxMessageBytes, maxTargetDepth,
-            maxSubscriptions }
+            maxSubscriptions, maxSharedSecretKeys }
 }
 ```
 
 `reason` is `not-connected` whenever the origin is not connected, regardless
 of node state.
+
+`features` names the extensions a page can rely on, as the Swarm provider
+SWIP does: `messaging` (PSS and GSOC) and `encryption-key` (the
+[site encryption key](#site-encryption-key)). Detect extensions there;
+`extensions` holds flags specific to Freedom.
 
 ### Publishing
 
@@ -517,7 +615,39 @@ page shim allows it 300 s (see [Timeouts](#timeouts)).
 
 Signs a single-owner chunk with the origin's active publisher identity and
 uploads it. `identifier` is 32 bytes of hex. `data` is 1–4096 bytes. `owner`
-is the checksummed `0x` signer address; `reference` is the SOC address.
+is the checksummed `0x` signer address; `reference` is the SOC address. The
+active identity must be one no other origin uses (an `app-scoped` identity
+of its own); otherwise `4100` with `data.reason: 'shared_identity'`.
+
+#### `swarm_publishSingleOwnerChunk { owner, identifier, signature, data, span?, options? }` → `{ reference, owner, identifier }` (publish tier)
+
+Publishes a single-owner chunk the page signed itself, stamped with the
+node's batch. Freedom signs nothing, so no feed/signing grant is needed: the
+call takes the connection grant and the publish prompt (or the site's "always
+allow" publish rule), like `swarm_publishChunk`. This is how an app that keeps
+its own key (one it also uses in other browsers and clients) continues a feed
+it owns from a Freedom page.
+
+- `owner`: 40 hex, optional `0x`. `identifier`: 32 bytes of hex, no `0x`.
+  `signature`: 65 bytes of hex, optional `0x`, `r ‖ s ‖ v` with `v` 27 or 28.
+  `data`: 1–4096 bytes. `span` as for `swarm_publishChunk`.
+- The signature must recover to `owner` over the SOC digest: an EIP-191
+  (`personal_sign`) signature of the 32 bytes keccak256(`identifier` ‖ the
+  address of the content-addressed chunk built from `span` and `data`). That
+  is what bee-js's `makeSingleOwnerChunk` and Bee's `POST /soc` use. If it
+  does not, the call fails with `invalid_signature` before a batch is chosen
+  or anything is uploaded.
+- `reference` is the SOC address, keccak256(`identifier` ‖ `owner`); `owner`
+  comes back checksummed with `0x`.
+- `owner` must not be one of Freedom's own signing addresses (the Ant wallet,
+  any wallet account): `4100` `freedom_identity`. See
+  [Identity model](#identity-model).
+- Errors: `invalid_owner`, `invalid_identifier`, `invalid_signature`,
+  `invalid_span`, `payload_too_large`, `unsupported_option`, the publish
+  setup `4900` reasons, and `-32603` `vault_locked`.
+
+Feature-detect it with `extensions.pageSignedSingleOwnerChunks` from
+`swarm_getCapabilities`.
 
 #### `swarm_readSingleOwnerChunk { address } | { owner, identifier }, options?` → SOC (public)
 
@@ -548,18 +678,26 @@ written.
 
 #### `swarm_updateFeed { feedId, reference }` → `{ feedId, reference, bzzUrl, index }` (feeds tier)
 
-Points the feed at a Swarm `reference` by writing the next entry. Signed with
-the identity that created the feed. Errors: `invalid_reference`,
+Points the feed at a Swarm `reference` by writing the next entry: the Unix
+time in seconds (8 bytes, big-endian), then the reference, the layout Bee
+resolves for `bzz://` feed manifests. Signed with the identity that created
+the feed. Errors: `invalid_reference`,
 `feed_not_found`.
 
 #### `swarm_writeFeedEntry { name, data, index? }` → `{ index }` (feeds tier)
 
 Writes an arbitrary payload as a feed entry. Without `index`, it is written at
 the next free index; with an explicit `index`, an existing entry is never
-overwritten (`index_already_exists`). The feed must exist (`feed_not_found`:
+overwritten (`index_already_exists`). Only the node's 404 for that entry
+means the index is free: any other answer (a 500, a timeout, a chunk that is
+not the entry, whatever its error text) refuses the write with `-32603`, and
+it can be retried. The feed must exist (`feed_not_found`:
 call `swarm_createFeed` first). Payloads larger than one chunk are uploaded and
-wrapped by the node; one too large for that is `payload_too_large`. Writes to
-one feed are serialized, so concurrent writes get distinct indexes.
+wrapped by the node; if the node refuses the upload, that is the node's error
+(`-32603`). `data` is at most `maxDataBytes`, as for `swarm_publishData`: a
+larger one is `payload_too_large` (+ `limit`, `actual`). An empty `data` is
+`payload_too_large` too: an entry carries at least one byte. Writes to one
+feed are serialized, so concurrent writes get distinct indexes.
 
 #### `swarm_readFeedEntry { name | topic, owner?, index? }` → `{ data, encoding: 'base64', index, nextIndex }` (public)
 
@@ -570,14 +708,25 @@ Pass exactly one of:
   if there is none).
 - `topic` (64 hex) and `owner` (required): any feed on Swarm.
 
+`data` is the bytes the entry holds, the same whether it is read as the
+latest entry or at its `index`. An entry that points the feed at a
+reference, as `swarm_updateFeed` and bee-js's `uploadReference` write them,
+is 40 bytes: the Unix time in seconds (8 bytes, big-endian), then the
+32-byte reference. Read the content it points to with `swarm_readData`.
+
 Without `index`, returns the latest entry, and `nextIndex` is the index the
-next write would use as reported by the node, or `null` if the node did not
-report one. With `index`, `nextIndex` is always `index + 1`, whether or not
+next write would use. A feed whose latest entry points at content that is no
+longer on Swarm still returns that entry. With `index`, `nextIndex` is always `index + 1`, whether or not
 that slot is taken; it is **not** the next free index (reading index 0 of a
-ten-entry feed returns `nextIndex: 1`). To append, use `swarm_writeFeedEntry`
-without `index`, or read without `index` first. Errors: `feed_empty` (no entries),
+ten-entry feed returns `nextIndex: 1`). `nextIndex` is `null` where it would
+pass `Number.MAX_SAFE_INTEGER`. To append, use `swarm_writeFeedEntry`
+without `index`, or read without `index` first. The read is charged to the
+permission-free read budget before the entry is downloaded
+([Limits](#limits)): an entry larger than the origin's byte budget is
+`data_too_large`, and one that does not fit what is left of the window is
+`rate_limited`. Errors: `feed_empty` (no entries),
 `entry_not_found` (no entry at `index`), `invalid_topic`, `invalid_owner`,
-`invalid_feed_name`, `rate_limited`.
+`invalid_feed_name`, `data_too_large`, `rate_limited`.
 
 #### `swarm_listFeeds` → `[{ name, topic, owner, manifestReference, bzzUrl, createdAt, lastUpdated, lastReference }]` (public)
 
@@ -593,6 +742,131 @@ The address (`owner`, checksummed with `0x`) that `swarm_writeSingleOwnerChunk`
 and newly created feeds will be signed with, and its kind. Does not need the
 node to be running. This is the way to obtain the signing grant before the
 first write.
+
+### Encryption key
+
+Key agreement with the site's [encryption key](#site-encryption-key). Pages
+encrypt and decrypt themselves (for example HKDF and AES-GCM with WebCrypto);
+the private key never leaves Freedom.
+
+#### `swarm_getEncryptionKey` → `{ publicKey, curve: 'secp256k1' }` (signing tier)
+
+The site's compressed public key (66 hex). Publish it, for example in one of
+the site's feeds, so others can encrypt to it. Does not need the node to be
+running.
+
+#### `swarm_deriveSharedSecrets { publicKeys, options? }` → `{ sharedSecrets }` (signing tier)
+
+ECDH between the site's key and each of 1–256 public keys (compressed, 66
+hex, or uncompressed, 130 hex starting `04`; `0x` optional). Returns, in the
+same order, each shared point's x coordinate as 64 hex: the same value the
+other side gets from its private key and the site's public key. One call is
+one prompt, so wrap a group key for every member in one call.
+
+Use it as key material, not as a key: derive keys from it with a KDF and a
+context of your own. A key that is not a point on secp256k1 is
+`invalid_public_key` with its `index`. The whole list is checked before the
+prompt: a request that would be refused (no keys, more than 256, a malformed
+or off-curve key) gets its `-32602` without one.
+
+It also lets a page use Swarm's access control (ACT) with the site's key,
+building and reading the grantee data itself with the chunk methods. Bee and
+Ant derive ACT keys as `keccak256(x ‖ nonce)` (nonce `0x00` for the lookup
+key, `0x01` for the access-key decryption key), where `x` is this value
+**with its leading zero bytes removed**, as Go's `big.Int.Bytes()` encodes it
+(about one key in 256 has one). Ant's `crates/ant-crypto/src/act.rs` documents
+the full scheme.
+
+For example, one AES key per member from one prompt (`hexToBytes` is a
+helper of your own):
+
+```javascript
+const { sharedSecrets } = await window.swarm.deriveSharedSecrets({ publicKeys: memberKeys });
+const memberAesKeys = await Promise.all(
+  sharedSecrets.map(async (secret) => {
+    const material = await crypto.subtle.importKey('raw', hexToBytes(secret), 'HKDF', false, [
+      'deriveKey',
+    ]);
+    return crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new Uint8Array(32),
+        info: new TextEncoder().encode('my-app/member-key/v1'),
+      },
+      material,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  })
+);
+```
+
+### Access control (ACT)
+
+Content can be shared with a Swarm node through ACT, Swarm's access control:
+the publisher uploads it with an encrypted reference and adds the node's
+public key to the share's grantee list (bee-js `actPublisher`,
+`actHistoryAddress`, `actTimestamp`). Only the node can open it, with its own
+key. Freedom never forwards `Swarm-Act-*` headers from `bzz://` pages (see
+[#429](https://github.com/solardev-xyz/freedom-browser/issues/429)), so this
+method is the only way a page can open such a share.
+
+#### `swarm_openAct { reference, publisher, historyAddress, timestamp?, path?, options? }` → `{ data, encoding: 'base64', contentType }` (ACT tier)
+
+The node finds its grantee entry under `publisher` in the history, unwraps
+the access key with its own key, decrypts `reference` and returns the content
+it points at. The node's key never leaves the node.
+
+- `reference`: the ACT reference the publisher handed out, 64 hex (or 128
+  for content uploaded encrypted), no `0x`.
+- `publisher`: the publisher's secp256k1 public key, compressed (66 hex,
+  `02`/`03`) or uncompressed (130 hex, `04`), optional `0x`, any case.
+  Freedom normalises it to the compressed form, which the prompt shows and
+  the "always allow" rule stores, so every spelling of one key is one
+  publisher.
+- `historyAddress`: the ACT history reference, 64 hex, no `0x`.
+- `timestamp`: unix seconds; which version of the grantee list to use. The
+  node uses "now" when it is absent.
+- `path`: absent for a blob uploaded as data (bee-js `downloadData`, the
+  node's `/bytes`). A string for a file in an uploaded manifest (bee-js
+  `downloadFile`, the node's `/bzz`): `''` for the manifest's index, or a
+  relative path such as `docs/a.pdf` (no leading `/`, no `\`, no empty, `.`
+  or `..` segments, no lone UTF-16 surrogates, at most 1024 UTF-8 bytes).
+- `contentType` is the node's `Content-Type` for the content, or `null`.
+
+Each call asks the user, in a prompt that names the site and the publisher
+(key and address), unless the user ticked "Always allow this site to open
+what this publisher shares with you" before. That rule covers this publisher
+only; a share from any other publisher asks again. Rejecting is `4001`. An
+origin without a connection grant gets `4100` `not_connected` first. A tab
+the Agent is driving is always asked.
+
+The bytes are charged to the origin's read budget ([Limits](#limits), 5 MiB
+per 60 s for a connected origin): the length the node declares is reserved
+before the body is read (a body without one is held to the budget as it
+streams), and content larger than 5 MiB is `data_too_large`. For a bigger
+file, share a manifest and open it one path at a time.
+
+Errors: `invalid_reference`, `invalid_publisher`, `invalid_history_address`,
+`invalid_timestamp`, `invalid_path`, `unsupported_option`, `act_not_found`
+(the node holds no grantee entry under that publisher, or no history entry
+at that time: the share is not for this node), `content_not_found`,
+`data_too_large`, `rate_limited`, `4100` `act_not_granted` and
+`private_window`, and `4900` `node-stopped`. The node's other failures are
+`-32603` with its message.
+
+Feature-detect it with `extensions.actShares` from `swarm_getCapabilities`.
+
+To share with a Freedom user, a publisher needs the user's node public key.
+On Freedom's bundled node (Ant) that is the same key as the `pssPublicKey`
+`swarm_getMessagingIdentity` returns (as of Ant v0.5.78, whose `/addresses`
+reports one key for both). An external Bee node keeps a separate PSS key.
+The user can copy their node's key from the Nodes menu's Swarm section
+("ACT Public Key", the node's `/addresses` `publicKey`) for either node. No
+provider method returns it: a stable node key identifies the user across
+sites ([#1188](https://github.com/solardev-xyz/freedom-browser/issues/1188)).
 
 ### Messaging
 

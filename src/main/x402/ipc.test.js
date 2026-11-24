@@ -547,6 +547,8 @@ describe('x402:approve', () => {
       createdAt: 1, expiresAt: 9999999999,
     });
     mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+    // A cap answers only for a live user tab main can attribute the 402 to.
+    webContents.fromId.mockReturnValue({ hostWebContents: { send: jest.fn() } });
 
     intercept.detectPaymentRequiredHandler({
       webContentsId: 42,
@@ -614,6 +616,8 @@ describe('x402:approve', () => {
       createdAt: 1, expiresAt: 9999999999,
     });
     mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+    // A cap answers only for a live user tab main can attribute the 402 to.
+    webContents.fromId.mockReturnValue({ hostWebContents: { send: jest.fn() } });
     intercept.detectPaymentRequiredHandler({
       webContentsId: 42, url: urlA,
       statusLine: 'HTTP/1.1 402 Payment Required',

@@ -17,6 +17,14 @@ const REMOTE_ERROR_CODES = {
   BAD_RESPONSE: 'REMOTE_BAD_RESPONSE',
   NO_UI: 'REMOTE_NO_UI',
   UNSUPPORTED: 'REMOTE_UNSUPPORTED',
+  // Adding an account (#1078): the phone answered main's check from
+  // another account, or gave no answer that proves it holds the account.
+  ADDRESS_MISMATCH: 'REMOTE_ADDRESS_MISMATCH',
+  ADDRESS_UNPROVEN: 'REMOTE_ADDRESS_UNPROVEN',
+  // An account no phone has yet shown to hold. Minted only through
+  // createAccountUncheckedError, which names the account; it has no
+  // generic MESSAGES entry.
+  ACCOUNT_UNCHECKED: 'REMOTE_ACCOUNT_UNCHECKED',
   UNKNOWN: 'REMOTE_UNKNOWN',
 };
 
@@ -29,6 +37,10 @@ const MESSAGES = {
   [REMOTE_ERROR_CODES.BAD_RESPONSE]: 'Your phone sent an invalid response. Try again.',
   [REMOTE_ERROR_CODES.NO_UI]: 'No browser window available to show the signing QR code.',
   [REMOTE_ERROR_CODES.UNSUPPORTED]: 'This request type is not supported by phone accounts.',
+  [REMOTE_ERROR_CODES.ADDRESS_MISMATCH]:
+    "Your phone answered from a different account than the one you picked. The account wasn't added.",
+  [REMOTE_ERROR_CODES.ADDRESS_UNPROVEN]:
+    "Your phone didn't confirm that it holds this account, so it wasn't added. Try again, and sign the check on your phone.",
   [REMOTE_ERROR_CODES.UNKNOWN]: 'Phone signing failed. Try again.',
 };
 
@@ -44,6 +56,27 @@ function createRemoteError(code, message) {
   const err = new Error(message || MESSAGES[code] || MESSAGES[REMOTE_ERROR_CODES.UNKNOWN]);
   err.code = code;
   return err;
+}
+
+/**
+ * Refuse to let a phone account own a Safe until the phone has proven it
+ * holds the account (#1078). The text names the account, so it is built
+ * here rather than kept as a generic MESSAGES entry.
+ *
+ * @param {string} name - The account's display name
+ * @param {{mismatched?: boolean}} [opts] - The phone last answered from
+ *   another account (otherwise: never checked)
+ * @returns {Error & {code: string}}
+ */
+function createAccountUncheckedError(name, { mismatched = false } = {}) {
+  return createRemoteError(
+    REMOTE_ERROR_CODES.ACCOUNT_UNCHECKED,
+    mismatched
+      ? `"${name}" can't own a Safe: your phone last answered from a different account. ` +
+          'Select this account on your phone, check it again from Wallet Settings, then try again.'
+      : `"${name}" can't own a Safe until it has been checked on your phone. ` +
+          'Select it, open Wallet Settings and choose Check on Phone, then try again.'
+  );
 }
 
 // EIP-1193 provider error codes a phone wallet may return.
@@ -69,7 +102,46 @@ function mapRemoteRpcError(rpcError) {
       : undefined;
   // User rejection keeps our neutral message; other failures surface the
   // phone wallet's own text since it names the actual problem.
-  return createRemoteError(code, code === REMOTE_ERROR_CODES.USER_REJECTED ? undefined : phoneMessage);
+  return createRemoteError(
+    code,
+    code === REMOTE_ERROR_CODES.USER_REJECTED ? undefined : phoneMessage
+  );
 }
 
-module.exports = { REMOTE_ERROR_CODES, createRemoteError, mapRemoteRpcError };
+// Refusals that are only ever produced without the phone acting on the
+// request: it never reached a phone (NO_UI), or the phone wallet declined
+// it (EIP-1193 4001/4100/4200). Nothing was broadcast by *that* attempt.
+const UNSENT_CODES = new Set([
+  REMOTE_ERROR_CODES.NO_UI,
+  REMOTE_ERROR_CODES.USER_REJECTED,
+  REMOTE_ERROR_CODES.WRONG_ACCOUNT,
+  REMOTE_ERROR_CODES.UNSUPPORTED,
+]);
+
+/**
+ * Whether a failed eth_sendTransaction provably broadcast nothing: any
+ * bridge failure before the request was delivered to the phone, or a
+ * definitive refusal when no *other* attempt of the same job reached the
+ * phone. A "New code" retry re-sends the request under the same job, so
+ * a refusal on attempt 2 says nothing about attempt 1, which may have
+ * been signed and broadcast with its reply lost. A timeout, cancel, bad
+ * response or unknown error after delivery stays uncertain too. Fails
+ * closed: a refusal without the bridge's explicit
+ * `otherAttemptDelivered === false` is not proof.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isRemoteSendProvablyUnsent(err) {
+  if (!err || typeof err.code !== 'string' || !err.code.startsWith('REMOTE_')) return false;
+  if (err.requestDelivered === false) return true;
+  return UNSENT_CODES.has(err.code) && err.otherAttemptDelivered === false;
+}
+
+module.exports = {
+  REMOTE_ERROR_CODES,
+  createRemoteError,
+  createAccountUncheckedError,
+  mapRemoteRpcError,
+  isRemoteSendProvablyUnsent,
+};

@@ -19,6 +19,7 @@ Radicle is available on macOS, Linux, and Windows (x64 and ARM64). The release w
 - Integrated Ant (Swarm), freedom-ipfs, Radicle, experimental Myotis, and Tor components with per-profile configuration.
 - ENS, WNS, GNS, and Tezos Domains resolution, including `.eth`, `.box`, `.wei`, `.gwei`, and `.tez` names.
 - Tabs, sidebar, bookmarks, history, downloads, find-in-page, shortcuts, themes, permissions, and automatic updates.
+- Freedom Agent for browser research and local project work, with connected models, helpers, and permission controls.
 - Ad blocking with signed list updates and per-site allowlisting.
 - Wallet and dApp flows, x402 payments, hardware-wallet support, and Swarm/Radicle provider APIs.
 - Custom protocol origins so decentralized applications can use relative assets, storage, service workers, and range requests naturally.

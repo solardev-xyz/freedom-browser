@@ -673,3 +673,128 @@ describe('tor-manager .onion routing across sessions', () => {
     }
   }, 15_000);
 });
+
+describe('tor-manager: an apply that completes after a stop or a restart', () => {
+  // A port probe that always finds the port free, so a start never waits on
+  // a real socket under fake timers.
+  class FreePort {
+    constructor() {
+      this.handlers = {};
+    }
+    on(event, handler) {
+      this.handlers[event] = handler;
+      return this;
+    }
+    setTimeout() {
+      return this;
+    }
+    connect() {
+      this.handlers.error(new Error('nothing listens here'));
+      return this;
+    }
+    destroy() {}
+  }
+
+  let userDataDir = null;
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+    if (userDataDir) fs.rmSync(userDataDir, { recursive: true, force: true });
+    userDataDir = null;
+  });
+
+  // Managed Arti whose spawns return `children` in turn.
+  const managedWith = (...children) => {
+    jest.useFakeTimers();
+    const realExistsSync = fs.existsSync;
+    jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+      if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+      return realExistsSync(target);
+    });
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-late-apply-'));
+    const spawn = jest.fn();
+    for (const child of children) spawn.mockReturnValueOnce(child);
+    const { mod } = loadTorManager({
+      userDataDir,
+      enableTorIntegration: true,
+      activeProfile: {
+        source: 'catalog',
+        metadata: { nodes: { tor: { mode: 'managed', socksPort: 19153 } } },
+      },
+      extraMocks: {
+        child_process: () => ({ spawn, execFile: jest.fn() }),
+        net: () => ({ ...jest.requireActual('net'), Socket: FreePort }),
+      },
+    });
+    return mod;
+  };
+  const bootstrap = (child) => child.stdout.on.mock.calls[0][1]('Sufficiently bootstrapped\n');
+  // A session whose first setProxy (run A's PAC) is held until `release()`.
+  const heldFirstApply = () => {
+    const held = {};
+    held.session = {
+      setProxy: jest
+        .fn()
+        .mockImplementationOnce(() => new Promise((resolve) => (held.release = resolve)))
+        .mockResolvedValue(undefined),
+    };
+    return held;
+  };
+  const modes = (targetSession) => targetSession.setProxy.mock.calls.map(([arg]) => arg?.mode);
+
+  test("a late apply after a crash and a restart leaves the restart's .onion routing in force", async () => {
+    const [a, b] = [createArtiProcessMock(), createArtiProcessMock()];
+    const mod = managedWith(a, b);
+    const held = heldFirstApply();
+    const privateSession = { setProxy: jest.fn().mockResolvedValue(undefined) };
+    mod.registerOnionRoutingSession('private-window', privateSession);
+
+    // Run A bootstraps; its PAC is still being applied when Arti crashes.
+    await mod.startTor({ targetSession: held.session });
+    bootstrap(a);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(held.release).toBeDefined();
+    a.emit('close', 1);
+    expect(mod.getStatus().status).toBe('error');
+
+    // Run B starts, bootstraps and routes .onion through its PAC.
+    await mod.startTor({ targetSession: held.session });
+    bootstrap(b);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(mod.getStatus().status).toBe('running');
+
+    // A's apply completes now. It must not hand B's sessions back to DIRECT.
+    held.release();
+    await jest.advanceTimersByTimeAsync(0);
+    for (const targetSession of [held.session, privateSession]) {
+      expect(modes(targetSession)).not.toContain('direct');
+      expect(modes(targetSession).at(-1)).toBe('pac_script');
+    }
+    expect(mod.getStatus().status).toBe('running');
+
+    // A deliberate stop still restores DIRECT.
+    await mod.stopTor();
+    expect(modes(held.session).at(-1)).toBe('direct');
+    expect(modes(privateSession).at(-1)).toBe('direct');
+  });
+
+  test('a late apply after a deliberate stop leaves DIRECT in force', async () => {
+    const child = createArtiProcessMock();
+    const mod = managedWith(child);
+    const held = heldFirstApply();
+
+    await mod.startTor({ targetSession: held.session });
+    bootstrap(child);
+    await jest.advanceTimersByTimeAsync(1000);
+    await mod.stopTor();
+    expect(modes(held.session).at(-1)).toBe('direct');
+
+    held.release();
+    await jest.advanceTimersByTimeAsync(0);
+    // DIRECT is last again, whatever order the held call landed in, and the
+    // stopped run never reports RUNNING.
+    expect(modes(held.session).at(-1)).toBe('direct');
+    expect(mod.getStatus().status).toBe('stopped');
+  });
+});

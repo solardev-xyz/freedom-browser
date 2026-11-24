@@ -1,0 +1,1 @@
+- A `HEAD` request for a file on a `bzz://` page reports `Accept-Ranges: bytes`, matching the byte-range reads its `GET` already supports ([#169](https://github.com/solardev-xyz/freedom-browser/issues/169))

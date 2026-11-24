@@ -133,6 +133,7 @@ const loadGithubBridgeModule = async (options = {}) => {
   };
 
   jest.doMock('./state.js', () => ({ state }));
+  jest.doMock('./private-mode.js', () => ({ isPrivateWindow: () => Boolean(options.privateWindow) }));
 
   const mod = await import('./github-bridge-ui.js');
 
@@ -178,6 +179,20 @@ describe('github-bridge-ui', () => {
     global.document = originalDocument;
     global.navigator = originalNavigator;
     jest.restoreAllMocks();
+  });
+
+  // R-9: an import seeds a repository that outlives the window, so a
+  // private window never offers the bridge, even on a GitHub repo page.
+  test('a private window never shows the bridge button', async () => {
+    const ctx = await loadGithubBridgeModule({ privateWindow: true });
+
+    ctx.mod.initGithubBridgeUi();
+    ctx.elements.bridgeBtn.classList.remove('hidden');
+    await ctx.mod.updateGithubBridgeIcon();
+
+    expect(ctx.elements.bridgeBtn.classList.contains('hidden')).toBe(true);
+    expect(ctx.githubBridge.checkExisting).not.toHaveBeenCalled();
+    expect(ctx.githubBridge.import).not.toHaveBeenCalled();
   });
 
   test('updates icon visibility for GitHub URLs and bridged repositories', async () => {

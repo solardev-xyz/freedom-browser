@@ -62,6 +62,7 @@ const {
 } = require('./permissions/permissions-manager');
 const { getPartitionForWebContents } = require('./private/private-windows');
 const { internalPageFileForUrl } = require('./ipc-sender-policy');
+const { isAgentPage } = require('./wallet/agent-tab-custody');
 
 // Storage key of the per-site allow in the permissions store.
 const POPUPS_PERMISSION_KEY = 'popups';
@@ -162,7 +163,7 @@ function reportBlockedPopup(
   }
 }
 
-function registerPopupBlockerIpc() {
+function registerPopupBlockerIpc({ openAgentPopup } = {}) {
   // webview-preload.js asks before it opens a new tab for a dweb link it
   // intercepted (see the file header). Answers true when it may; when it
   // may not, the blocked popup is reported to the owning window here, so the
@@ -185,7 +186,26 @@ function registerPopupBlockerIpc() {
         : null;
 
     const verdict = claimPopup(contents);
-    if (verdict.allowed) return true;
+    if (verdict.allowed) {
+      // A page in Agent custody cannot hand a site a tab outside it, where
+      // the site's auto-approve rules would answer again. As on the
+      // window-open path (webcontents-setup.js), its dweb-link popup opens
+      // as an Agent-held tab or not at all; the preload is told false so it
+      // opens nothing itself.
+      if (isAgentPage(contents)) {
+        log.info('[popup-blocker] dweb-link popup from a page in Agent custody opens in Agent custody');
+        Promise.resolve()
+          .then(() => openAgentPopup?.(contents, url))
+          .then((opened) => {
+            if (opened !== true) {
+              log.info('[popup-blocker] dweb-link popup from a page in Agent custody was not opened');
+            }
+          })
+          .catch(() => {});
+        return false;
+      }
+      return true;
+    }
     log.info('[popup-blocker] blocked a dweb-link popup opened without a user gesture');
     reportBlockedPopup(contents, {
       url,

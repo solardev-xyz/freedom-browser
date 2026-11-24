@@ -61,6 +61,7 @@ const {
   updateFeedReference,
   getAllFeeds,
   getAllOriginEntries,
+  isIdentitySharedWithOtherOrigins,
   getEthereumWalletIdentityReferences,
   hasIdentityMode,
   hasFeedGrant,
@@ -300,6 +301,36 @@ describe('feed-store', () => {
       const stored = state.identities.find((identity) => identity.id === 'ethereum-wallet:1');
 
       expect(stored).toMatchObject({ unavailable: true });
+    });
+
+    test('reports which identities other sites share (SW-1)', async () => {
+      mockGetDerivedWallets.mockResolvedValue([
+        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
+      ]);
+      setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 4 });
+      setOriginEntry('other.eth', { identityMode: 'app-scoped', publisherKeyIndex: 5 });
+
+      const own = getOriginEntry('myapp.eth').identities['app-scoped:4'];
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', own)).toBe(false);
+      // The Ant wallet and Ethereum wallet accounts are shared by nature.
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', { mode: 'bee-wallet' })).toBe(true);
+      expect(
+        isIdentitySharedWithOtherOrigins('myapp.eth', { mode: 'ethereum-wallet', walletIndex: 0 })
+      ).toBe(true);
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', null)).toBe(true);
+
+      // A publisher key another origin also holds is shared.
+      setOriginEntry('copycat.eth', { identityMode: 'app-scoped', publisherKeyIndex: 4 });
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', own)).toBe(true);
+
+      const state = await getOriginIdentityStateWithOwners('other.eth');
+      const shared = Object.fromEntries(state.identities.map((i) => [i.id, i.shared]));
+      expect(shared).toEqual({
+        'app-scoped:5': false,
+        'bee-wallet': true,
+        'ethereum-wallet:0': true,
+      });
+      await expect(previewAppScopedIdentity('other.eth')).resolves.toMatchObject({ shared: false });
     });
 
     test('getEthereumWalletIdentityReferences lists active and feed-pinned identities', async () => {

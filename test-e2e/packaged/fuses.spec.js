@@ -142,3 +142,11 @@ test('--inspect does not open a main-process inspector', async ({ userDataDir })
     await app.close();
   }
 });
+
+
+test('the app archive excludes build caches and development artifacts', async ({ electronApp }) => {
+  const { resourcesPath } = await electronApp.appFacts();
+  const files = require('@electron/asar').listPackage(path.join(resourcesPath, 'app.asar'));
+  const roots = [...new Set(files.map(file => file.replaceAll('\\', '/').split('/')[1]))].sort();
+  expect(roots).toEqual(['node_modules', 'package.json', 'src']);
+});

@@ -5,9 +5,11 @@ jest.mock('./dapp-provider.js', () => ({
   getPermissionKey: jest.fn(() => 'app.eth'),
 }));
 
+const mockIsTabAgentOwned = jest.fn(() => false);
 jest.mock('./tabs.js', () => ({
   getDisplayUrlForWebview: jest.fn(() => 'bzz://app.eth/'),
   getNavigationKeyForWebview: jest.fn(() => 'tab-1:1'),
+  isTabAgentOwned: (...args) => mockIsTabAgentOwned(...args),
 }));
 
 jest.mock('./wallet-ui.js', () => ({
@@ -16,6 +18,7 @@ jest.mock('./wallet-ui.js', () => ({
   showSwarmPublishApproval: jest.fn(),
   showSwarmFeedApproval: jest.fn(),
   showSwarmMessagingApproval: jest.fn(),
+  showSwarmActApproval: jest.fn(),
   showVaultUnlock: jest.fn(),
   showPermissionManifest: (...args) => mockShowPermissionManifest(...args),
   routeToPublishSetup: (...args) => mockRouteToPublishSetup(...args),
@@ -350,5 +353,381 @@ describe('routing setup failures into the publish setup', () => {
     await flush();
 
     expect(mockRouteToPublishSetup).not.toHaveBeenCalled();
+  });
+});
+
+describe('Agent custody and site auto-approve', () => {
+  let setupSwarmProvider;
+  let showSwarmPublishApproval;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmPublishApproval } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({
+      origin: 'app.eth',
+      autoApprove: { publish: true },
+    });
+    window.swarmProvider.execute.mockResolvedValue({ result: { reference: 'abc' } });
+    showSwarmPublishApproval.mockImplementation((_key, _params, resolve) => resolve());
+  });
+
+  const publish = async (agentOwned) => {
+    mockIsTabAgentOwned.mockImplementation((tabId) => agentOwned && tabId === 3);
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 1, method: 'swarm_publishData', params: { data: 'hi' } });
+    await flush();
+    await flush();
+    return webview;
+  };
+
+  test('an Agent-held tab is prompted and main is told the user approved', async () => {
+    await publish(true);
+    expect(showSwarmPublishApproval).toHaveBeenCalledTimes(1);
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_publishData', { data: 'hi' }, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test("a user tab keeps the site's rule and main is told it answered", async () => {
+    await publish(false);
+    expect(showSwarmPublishApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_publishData', { data: 'hi' }, 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
+  });
+
+  test('a page-signed SOC takes the publish prompt and rule, not the feed grant (#647)', async () => {
+    const params = { owner: 'ab'.repeat(20), identifier: 'cd'.repeat(32), signature: 'ef'.repeat(65), data: 'hi' };
+    window.swarmFeedStore = { hasFeedGrant: jest.fn().mockResolvedValue(false) };
+    const send = async (agentOwned) => {
+      mockIsTabAgentOwned.mockImplementation((tabId) => agentOwned && tabId === 3);
+      const webview = setUp(setupSwarmProvider);
+      webview.dataset = { tabId: '3' };
+      sendRequest(webview, { id: 1, method: 'swarm_publishSingleOwnerChunk', params });
+      await flush();
+      await flush();
+    };
+
+    await send(false);
+    expect(showSwarmPublishApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenLastCalledWith(
+      'swarm_publishSingleOwnerChunk', params, 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
+
+    await send(true);
+    expect(showSwarmPublishApproval).toHaveBeenCalledWith(
+      'app.eth', params, expect.any(Function), expect.any(Function), 'swarm_publishSingleOwnerChunk'
+    );
+    expect(window.swarmProvider.execute).toHaveBeenLastCalledWith(
+      'swarm_publishSingleOwnerChunk', params, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+    expect(window.swarmFeedStore.hasFeedGrant).not.toHaveBeenCalled();
+    delete window.swarmFeedStore;
+  });
+});
+
+describe('feed writes with a locked vault', () => {
+  let setupSwarmProvider;
+  let showSwarmFeedApproval;
+  let showVaultUnlock;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmFeedApproval, showVaultUnlock } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({ origin: 'app.eth', autoApprove: {} });
+    window.swarmPermissions.getAutoApprove = jest.fn().mockResolvedValue(false);
+    window.swarmFeedStore = { hasFeedGrant: jest.fn().mockResolvedValue(true) };
+    window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: false }) };
+    window.swarmProvider.execute.mockResolvedValue({ result: { ok: true } });
+    showSwarmFeedApproval.mockImplementation((_key, _params, resolve) => resolve());
+    showVaultUnlock.mockResolvedValue();
+  });
+
+  afterAll(() => {
+    delete window.swarmFeedStore;
+    delete window.identity;
+  });
+
+  const writeEntry = async ({ agentOwned = false } = {}) => {
+    mockIsTabAgentOwned.mockImplementation((tabId) => agentOwned && tabId === 3);
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 1, method: 'swarm_writeFeedEntry', params: { name: 'blog' } });
+    for (let i = 0; i < 4; i += 1) await flush();
+    return webview;
+  };
+
+  test('without an auto-approve rule, the unlock does not replace the feed approval', async () => {
+    await writeEntry();
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+    expect(showVaultUnlock).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_writeFeedEntry', { name: 'blog' }, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test('an Agent-held tab is prompted per operation even with the site rule on', async () => {
+    window.swarmPermissions.getAutoApprove.mockResolvedValue(true);
+    await writeEntry({ agentOwned: true });
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+    expect(showVaultUnlock).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_writeFeedEntry', { name: 'blog' }, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test('a user tab with the site rule only unlocks, and main is told the rule answered', async () => {
+    window.swarmPermissions.getAutoApprove.mockResolvedValue(true);
+    await writeEntry();
+    expect(showSwarmFeedApproval).not.toHaveBeenCalled();
+    expect(showVaultUnlock).toHaveBeenCalledWith('app.eth');
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_writeFeedEntry', { name: 'blog' }, 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
+  });
+});
+
+describe('swarm_deriveSharedSecrets is checked by main before its prompt', () => {
+  let setupSwarmProvider;
+  let showSwarmFeedApproval;
+  let showVaultUnlock;
+  const KEY = `02${'ab'.repeat(32)}`;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmFeedApproval, showVaultUnlock } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({ origin: 'app.eth', autoApprove: {} });
+    window.swarmPermissions.getAutoApprove = jest.fn().mockResolvedValue(false);
+    window.swarmPermissions.describeSharedSecretsRequest = jest.fn();
+    window.swarmFeedStore = { hasFeedGrant: jest.fn().mockResolvedValue(true) };
+    window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }) };
+    window.swarmProvider.execute.mockResolvedValue({ result: { sharedSecrets: ['x'] } });
+    showSwarmFeedApproval.mockImplementation((_key, _params, resolve) => resolve());
+    showVaultUnlock.mockResolvedValue();
+  });
+
+  afterAll(() => {
+    delete window.swarmFeedStore;
+    delete window.identity;
+    delete window.swarmPermissions.describeSharedSecretsRequest;
+    delete window.swarmPermissions.getAutoApprove;
+  });
+
+  const derive = async (params) => {
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 7, method: 'swarm_deriveSharedSecrets', params });
+    for (let i = 0; i < 6; i += 1) await flush();
+    return webview;
+  };
+
+  test.each([
+    [{ hasFeedAccess: true, autoApprove: false }],
+    [{ hasFeedAccess: true, autoApprove: true }],
+    [{ hasFeedAccess: false, autoApprove: false }],
+  ])('a request main refuses gets its -32602 and no prompt or unlock (%o)', async ({ hasFeedAccess, autoApprove }) => {
+    window.swarmFeedStore.hasFeedGrant.mockResolvedValue(hasFeedAccess);
+    window.swarmPermissions.getAutoApprove.mockResolvedValue(autoApprove);
+    window.identity.getStatus.mockResolvedValue({ isUnlocked: false });
+    window.swarmPermissions.describeSharedSecretsRequest.mockResolvedValue({
+      valid: false,
+      reason: 'payload_too_large',
+      message: 'publicKeys may hold at most 256 keys',
+      data: { limit: 256, actual: 1000 },
+    });
+    const params = { publicKeys: new Array(1000).fill(KEY) };
+
+    const webview = await derive(params);
+
+    expect(window.swarmPermissions.describeSharedSecretsRequest).toHaveBeenCalledWith(params);
+    expect(showSwarmFeedApproval).not.toHaveBeenCalled();
+    expect(showVaultUnlock).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview).at(-1)[1]).toEqual({
+      id: 7,
+      result: null,
+      error: {
+        code: -32602,
+        message: 'publicKeys may hold at most 256 keys',
+        data: { reason: 'payload_too_large', limit: 256, actual: 1000 },
+      },
+    });
+  });
+
+  test('a valid request is prompted with main\'s canonical keys and executed as sent', async () => {
+    window.swarmPermissions.describeSharedSecretsRequest.mockResolvedValue({
+      valid: true,
+      publicKeys: [`0x${KEY}`],
+    });
+    const params = { publicKeys: [KEY.toUpperCase()] };
+
+    const webview = await derive(params);
+
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+    expect(showSwarmFeedApproval.mock.calls[0][1]).toEqual({ publicKeys: [`0x${KEY}`] });
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_deriveSharedSecrets', params, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+    expect(responsesSentTo(webview).at(-1)[1]).toEqual({ id: 7, result: { sharedSecrets: ['x'] }, error: null });
+  });
+
+  test('other signing methods are not sent through the shared-secrets check', async () => {
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 8, method: 'swarm_getEncryptionKey', params: {} });
+    for (let i = 0; i < 6; i += 1) await flush();
+    expect(window.swarmPermissions.describeSharedSecretsRequest).not.toHaveBeenCalled();
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('swarm_openAct (#648)', () => {
+  let setupSwarmProvider;
+  let showSwarmActApproval;
+  const PUBLISHER = `02${'ab'.repeat(32)}`;
+  const OTHER = `03${'cd'.repeat(32)}`;
+  const params = (publisher) => ({ reference: 'AA'.repeat(32), publisher, historyAddress: 'bb'.repeat(32) });
+  // Main's description of a request: its canonical form, and whether a rule
+  // exists for the publisher (one for PUBLISHER only, until `granted` grows).
+  let granted;
+  const describeRequest = jest.fn(async (_origin, p) => {
+    const key = String(p?.publisher).toLowerCase().replace(/^0x/, '');
+    if (key !== PUBLISHER && key !== OTHER) {
+      return { valid: false, reason: 'invalid_publisher', message: 'publisher must be a key' };
+    }
+    return {
+      valid: true,
+      request: { reference: 'aa'.repeat(32), publisher: key, address: '0xA', historyAddress: 'bb'.repeat(32) },
+      publicKey: key,
+      address: '0xA',
+      granted: granted.has(key),
+    };
+  });
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmActApproval } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    granted = new Set([PUBLISHER]);
+    mockIsTabAgentOwned.mockReset().mockReturnValue(false);
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({ origin: 'app.eth', autoApprove: {} });
+    window.swarmPermissions.describeActRequest = describeRequest;
+    window.swarmProvider.execute.mockResolvedValue({ result: { data: '', encoding: 'base64' } });
+    showSwarmActApproval.mockImplementation((_key, _params, _publisher, resolve) => resolve());
+  });
+
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await flush();
+  };
+
+  const open = async (publisher, { agentOwned = false, id = 1, webview } = {}) => {
+    mockIsTabAgentOwned.mockImplementation((tabId) => agentOwned && tabId === 3);
+    const target = webview || setUp(setupSwarmProvider);
+    target.dataset = { tabId: '3' };
+    sendRequest(target, { id, method: 'swarm_openAct', params: params(publisher) });
+    await settle();
+    return target;
+  };
+
+  test("the publisher's rule answers without a prompt and main is told so", async () => {
+    await open(PUBLISHER.toUpperCase());
+    expect(describeRequest).toHaveBeenCalledWith('app.eth', params(PUBLISHER.toUpperCase()));
+    expect(showSwarmActApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_openAct', params(PUBLISHER.toUpperCase()), 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
+  });
+
+  test("another publisher is asked about, showing main's canonical request, not the page's text", async () => {
+    await open(OTHER);
+    expect(showSwarmActApproval).toHaveBeenCalledWith(
+      'app.eth',
+      expect.objectContaining({ reference: 'aa'.repeat(32), publisher: OTHER }),
+      expect.objectContaining({ publicKey: OTHER, granted: false }),
+      expect.any(Function), expect.any(Function)
+    );
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_openAct', params(OTHER), 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test('an Agent-held tab is prompted despite the rule', async () => {
+    await open(PUBLISHER, { agentOwned: true });
+    expect(showSwarmActApproval).toHaveBeenCalledTimes(1);
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_openAct', params(PUBLISHER), 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test('a rejected prompt is 4001 and nothing reaches main', async () => {
+    showSwarmActApproval.mockImplementation((_key, _params, _publisher, _resolve, reject) =>
+      reject({ code: 4001, message: 'User rejected the request' }));
+    const webview = await open(OTHER);
+    expect(window.swarmProvider.execute).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview).at(-1)[1]).toMatchObject({ id: 1, error: { code: 4001 } });
+  });
+
+  test("a request main would refuse gets main's -32602 and no prompt, from any tab", async () => {
+    for (const agentOwned of [false, true]) {
+      const webview = await open('nope', { agentOwned });
+      expect(responsesSentTo(webview).at(-1)[1]).toMatchObject({
+        error: { code: -32602, data: { reason: 'invalid_publisher' } },
+      });
+    }
+    expect(showSwarmActApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).not.toHaveBeenCalled();
+  });
+
+  test('a site that is not connected gets 4100 and no prompt', async () => {
+    window.swarmPermissions.getPermission.mockResolvedValue(null);
+    const webview = await open(OTHER);
+    expect(showSwarmActApproval).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview).at(-1)[1]).toMatchObject({ error: { code: 4100 } });
+  });
+
+  test('concurrent calls are asked about in turn, so "always allow" on the first answers the rest', async () => {
+    // The first prompt stays open until the test answers it.
+    const pending = [];
+    showSwarmActApproval.mockImplementation((_key, _params, _publisher, resolve) => pending.push(resolve));
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    for (const id of [1, 2, 3]) {
+      sendRequest(webview, { id, method: 'swarm_openAct', params: params(OTHER) });
+    }
+    await settle();
+    expect(showSwarmActApproval).toHaveBeenCalledTimes(1);
+    expect(window.swarmProvider.execute).not.toHaveBeenCalled();
+
+    // The user ticks "always allow" and opens: the rule now exists.
+    granted.add(OTHER);
+    pending[0]();
+    await settle();
+    expect(showSwarmActApproval).toHaveBeenCalledTimes(1);
+    const approvals = window.swarmProvider.execute.mock.calls.map(([, , , meta]) => meta.approval);
+    expect(approvals).toEqual(['user', 'auto', 'auto']);
   });
 });

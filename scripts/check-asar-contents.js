@@ -14,6 +14,16 @@ const TEST_FILE = /\.(test|spec)\.js$/;
 // *.test.js (Safe test owners with hardhat keys, Electron probe scripts, JSON
 // fixtures) and nothing at runtime loads them.
 const TEST_DIR = /(^|\/)(__tests__|__fixtures__|__mocks__)\//;
+// Dependency paths build.files leaves out on purpose (#962). npm installs them,
+// so a dropped negation would put them back without anything else failing.
+// The asar header lists unpacked files too, so the Skia `.node` that
+// asarUnpack moves out is caught here as well.
+const EXCLUDED_DEPENDENCY_PATHS = [
+  // Liberation Sans 1.x: GPL-2.0, replaced by src/renderer/assets/pdf-fonts/.
+  'node_modules/pdfjs-dist/standard_fonts/',
+  // pdfjs-dist's optional Skia canvas, which the PDF processor never loads.
+  'node_modules/@napi-rs/',
+];
 
 // The asar header is a pickled JSON string: an 8-byte size pickle, then a
 // 4-byte payload length and a 4-byte string length, then the JSON itself.
@@ -50,9 +60,14 @@ function listAsarFiles(header) {
 function findAsarProblems({ files, prebuilds = [], targets = [] }) {
   const problems = [];
   const strayTopLevel = new Set();
+  const excludedPacked = new Set();
   for (const file of files) {
     const top = file.split('/')[0];
-    if (top === 'node_modules') continue;
+    if (top === 'node_modules') {
+      const excluded = EXCLUDED_DEPENDENCY_PATHS.find((prefix) => file.startsWith(prefix));
+      if (excluded) excludedPacked.add(excluded);
+      continue;
+    }
     if (!ALLOWED_TOP_LEVEL.has(top)) strayTopLevel.add(top);
     else if (TEST_FILE.test(file) || TEST_DIR.test(file)) {
       problems.push(`test file packed: ${file}`);
@@ -60,6 +75,9 @@ function findAsarProblems({ files, prebuilds = [], targets = [] }) {
   }
   for (const top of [...strayTopLevel].sort()) {
     problems.push(`unexpected top-level entry packed: ${top}`);
+  }
+  for (const prefix of EXCLUDED_DEPENDENCY_PATHS.filter((p) => excludedPacked.has(p))) {
+    problems.push(`excluded dependency path packed: ${prefix}`);
   }
   for (const name of prebuilds) {
     if (!targets.includes(name)) problems.push(`foreign better-sqlite3 prebuild packed: ${name}`);

@@ -24,6 +24,9 @@ const {
 jest.mock('./chains', () => ({
   getTxExplorerUrl: (chainId, hash) => `https://explorer.test/${chainId}/${hash}`,
 }));
+// A fake Ledger, for the one test that runs the real Ledger backend.
+const mockLedgerEth = { getAddress: jest.fn(), signTransaction: jest.fn() };
+jest.mock('./ledger/transport', () => ({ withEthApp: (task) => task(mockLedgerEth) }));
 
 // Deterministic test key (not a real wallet)
 const TEST_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
@@ -45,6 +48,32 @@ describe('signAndSendTransaction (signer-based)', () => {
       broadcastedRaw = raw;
       return { result: Transaction.from(raw).hash, source: 'direct' };
     });
+  });
+
+  it('keeps sensitive domain calldata out of transaction errors and logs', async () => {
+    const secret = 'private-registration-preimage-fixture';
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockBroadcastRawTransaction.mockRejectedValue(new Error(secret));
+    try {
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', gasLimit: '21000',
+        maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', chainId: 1, redactErrors: true,
+      }, signer)).rejects.toThrow('saved operation');
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain(secret);
+    } finally { errorLog.mockRestore(); }
+  });
+
+  it('distinguishes a local signing refusal from an uncertain broadcast without retaining its cause', async () => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const refusingSigner = { ...signer, signTransaction: async () => { throw new Error('private-device-error-fixture'); } };
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', gasLimit: '21000',
+        maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', chainId: 1, redactErrors: true,
+      }, refusingSigner)).rejects.toMatchObject({ code: 'DOMAIN_NOT_BROADCAST' });
+      expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain('private-device-error-fixture');
+    } finally { errorLog.mockRestore(); }
   });
 
   it('fetches the nonce for the signer address, signs, and broadcasts', async () => {
@@ -193,6 +222,28 @@ describe('signAndSendTransaction (signer-based)', () => {
     ).rejects.toThrow('Insufficient funds for transaction');
   });
 
+  it.each([
+    ['a phone rejection', { code: 'REMOTE_USER_REJECTED', requestDelivered: true, otherAttemptDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a phone rejection after an earlier attempt reached the phone', { code: 'REMOTE_USER_REJECTED', requestDelivered: true, otherAttemptDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a wrong-account refusal after an earlier attempt reached the phone', { code: 'REMOTE_WRONG_ACCOUNT', requestDelivered: true, otherAttemptDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a phone rejection with no attempt record', { code: 'REMOTE_USER_REJECTED', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['no window for the QR', { code: 'REMOTE_NO_UI', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a timeout before the phone got the request', { code: 'REMOTE_TIMEOUT', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a cancel before the phone got the request', { code: 'REMOTE_USER_CANCELLED', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    ['a timeout after the phone got the request', { code: 'REMOTE_TIMEOUT', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a cancel after the phone got the request', { code: 'REMOTE_USER_CANCELLED', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a bad phone response', { code: 'REMOTE_BAD_RESPONSE', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['an uncoded failure', {}, 'DOMAIN_BROADCAST_UNKNOWN'],
+  ])('classifies %s from a phone wallet', async (_label, fields, expected) => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const phone = { ...signer, sendTransaction: async () => { throw Object.assign(new Error('phone'), fields); } };
+      await expect(signAndSendTransaction({
+        to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', chainId: 1, redactErrors: true,
+      }, phone)).rejects.toMatchObject({ code: expected });
+    } finally { errorLog.mockRestore(); }
+  });
+
   describe('signer sendTransaction capability (device broadcasts itself)', () => {
     // Remote (phone) signers cannot produce a raw signed tx: the phone
     // picks the nonce and broadcasts itself. Only intent fields go over.
@@ -298,6 +349,31 @@ describe('signAndSendTransaction (signer-based)', () => {
         decliningSigner,
       ),
     ).rejects.toThrow(/User rejected on device/);
+  });
+
+  it('broadcasts nothing when a Ledger answers with a signature from another key (#1063)', async () => {
+    // The real Ledger backend over a fake device that holds the account's
+    // address but answers with another key's signature.
+    const { createLedgerBackend } = require('./ledger/signer');
+    const otherKey = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
+    mockLedgerEth.getAddress.mockResolvedValue({ address: testWallet.address });
+    mockLedgerEth.signTransaction.mockImplementation(async (_path, rawHex) => {
+      const { signature } = Transaction.from(await otherKey.signTransaction(Transaction.from('0x' + rawHex)));
+      return { r: signature.r.slice(2), s: signature.s.slice(2), v: signature.yParity.toString(16) };
+    });
+    const ledgerSigner = createLedgerBackend({ index: 1000000, address: testWallet.address, path: "44'/60'/0'/0/0" });
+
+    await expect(
+      signAndSendTransaction(
+        {
+          to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '1', gasLimit: '21000',
+          maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', chainId: 1,
+        },
+        ledgerSigner,
+      ),
+    ).rejects.toMatchObject({ code: 'LEDGER_BAD_SIGNATURE' });
+    expect(mockLedgerEth.signTransaction).toHaveBeenCalledTimes(1);
+    expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
   });
 });
 
@@ -472,6 +548,25 @@ describe('getTransactionStatus', () => {
 
     await getTransactionStatus(HASH, 1);
     expect(mockChainRequest).toHaveBeenCalledWith(1, 'eth_getTransactionReceipt', [HASH], undefined);
+  });
+
+  // #1066: a Safe's deployed mark is written on a receipt only when a
+  // verified source gave it.
+  test('a receipt carries whether the router labelled it verified', async () => {
+    const receipt = { status: '0x1', blockNumber: '0x10', gasUsed: '0x5208' };
+    for (const [answer, verified] of [
+      [{ result: receipt, source: 'quorum', verified: true }, true],
+      [{ result: receipt, source: 'direct', verified: false }, false],
+      [{ result: receipt, source: 'direct' }, false],
+      [{ result: { ...receipt, status: '0x0' }, source: 'colibri', verified: true }, true],
+    ]) {
+      mockChainRequest.mockReset();
+      mockChainRequest.mockResolvedValueOnce(answer);
+      await expect(getTransactionStatus(HASH, 1)).resolves.toMatchObject({
+        status: answer.result.status === '0x1' ? 'confirmed' : 'failed',
+        verified,
+      });
+    }
   });
 });
 

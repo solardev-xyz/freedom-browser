@@ -22,6 +22,11 @@ send any IPC message its process can reach — can make the main process do.
 Line numbers are for the tree this PR produces. For the open items, they are
 for the unchanged files.
 
+The later Freedom Agent audit and its preview-network, wallet-custody and
+internal-page repairs are tracked separately in the [October Agent security
+record](audits/agent-security-audit-triage-2026-10.md). Its open native/review gates
+are not clearance of this document or vice versa.
+
 ## Summary
 
 | ID | Severity | Area | Status |
@@ -79,9 +84,12 @@ preload guards already kept web pages away from these channels.
 - **Custom protocols:** no `bypassCSP` anywhere, and no `file:` interception.
   `web3:` is registered without service workers. Upstream URLs are built from
   a fixed base plus a validated host (hex ref / CID / RID / name regex), so
-  userinfo, ports and `..` in a page URL can't redirect the fetch. Redirects
-  are manual. `rad:` is GET/HEAD-only with a segment decoder that rejects `.`,
-  `..` and encoded separators. `radapi:` and `web3:` are gated by frame
+  userinfo, ports and `..` in a page URL can't redirect the fetch. `bzz:`,
+  `ipfs:` and `ipns:` also refuse a path that climbs out of its content root
+  once `%2E`/`%2F`/`%5C` are decoded, or that holds a `\` (#814,
+  `src/main/lib/gateway-path.js`). Redirects are manual. `rad:` is
+  GET/HEAD-only with a segment decoder that rejects `.`, `..` and encoded
+  separators. `radapi:` and `web3:` are gated by frame
   attribution in `onBeforeRequest`, not by `Origin`/CORS.
 - **`shell.openExternal`** has one call site (`external-protocol.js:273`),
   behind a scheme denylist, a user-gesture check and a per-site prompt.
@@ -190,6 +198,10 @@ same way does the same. Separately, the Safe "View on explorer" link
 - The chrome window denies every `will-navigate`, every `will-redirect` and
   every window open. It never navigates itself; tabs navigate inside their
   webviews, and a reload is not a navigation event.
+- Hidden automation windows are explicitly identified by their main-owned page
+  manager and may navigate only while sandboxed, isolated, without Node access,
+  webview support or a preload. This event-time exemption does not apply to
+  unknown windows or privileged chrome; popup ownership remains with that manager.
 - The Safe explorer link now opens a tab, like the Send screen's link
   already did (`wallet/send.js:242`).
 
@@ -367,6 +379,17 @@ of `/bzz/` with them is unconfirmed.
   through `bzz:` is intended.
 - Allowlist forwarded headers (`Range`, `If-*`, `Accept*`).
 - Reject encoded separators in the path.
+
+**ACT since then.** Ant does implement ACT (freedom-hq/ant#30), and `bzz:`
+still forwards no `Swarm-Act*` header. Pages open ACT shares only through
+`window.swarm.openAct`
+([#648](https://github.com/solardev-xyz/freedom-browser/issues/648)): main
+sends the ACT headers itself (`src/main/swarm/act-service.js`), and only
+after the user approved that call, in a prompt naming the publisher, or an
+"always allow" rule stored for that one site and publisher. Main normalises
+the publisher key and re-checks the rule; a private window's request is
+refused and it can store no rule. The node decrypts with its own key, which
+Freedom never reads.
 
 ### O-3 Gateway-form `ipfs:` URLs share one origin
 

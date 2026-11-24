@@ -156,6 +156,19 @@ describe('profile focus handoff', () => {
     expect(onFocusWindow).toHaveBeenCalledTimes(1);
   });
 
+  test('a windowless runtime refuses focus instead of acknowledging undelivered links', async () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const onFocusWindow = jest.fn();
+    trackWatcher(startProfileFocusRequestWatcher(profile, onFocusWindow, {
+      pollIntervalMs: 10, allowFocus: false, logger: { warn: jest.fn() },
+    }));
+    const result = await requestProfileFocusAsyncAwait(profile, {
+      nonce: 'runtime-cannot-focus', urls: ['https://example.test/'], pollIntervalMs: 10, timeoutMs: 1000,
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('automation runtime') });
+    expect(onFocusWindow).not.toHaveBeenCalled();
+  });
+
   test('async-await focus request reports timedOut when no process responds', async () => {
     const profile = trackProfile(makeTempProfile('work'));
 
@@ -295,6 +308,37 @@ describe('profile focus handoff', () => {
     expect(fs.readdirSync(paths.requestDir)).toEqual([]);
     expect(fs.readdirSync(paths.ackDir)).toEqual([]);
   }, 15000);
+
+  test('collects its own ack even when the shared copy lands between its two reads', () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const paths = getProfileFocusPaths(profile);
+    const ownAck = path.join(paths.ackDir, 'between.json');
+    const ack = JSON.stringify({ nonce: 'between', ok: true, pid: process.pid });
+    const realRead = fs.readFileSync;
+    let raced = false;
+    // The watcher writes the per-request ack, then the shared one, just after
+    // the requester found no per-request ack: the requester's next read is the
+    // shared copy.
+    const spy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...rest) => {
+      if (!raced && file === ownAck) {
+        raced = true;
+        const error = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        fs.mkdirSync(paths.ackDir, { recursive: true });
+        fs.writeFileSync(ownAck, ack);
+        fs.writeFileSync(paths.ackPath, ack);
+        throw error;
+      }
+      return realRead.call(fs, file, ...rest);
+    });
+    try {
+      const result = requestProfileFocusSync(profile, { nonce: 'between', timeoutMs: 1000 });
+      expect(result.ok).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(raced).toBe(true);
+    expect(fs.existsSync(ownAck)).toBe(false);
+  });
 
   test('concurrent in-process requests are all acknowledged', async () => {
     const profile = trackProfile(makeTempProfile('work'));

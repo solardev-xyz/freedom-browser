@@ -1,0 +1,30 @@
+{
+  "tag": "natives-20261029-40834803578",
+  "commit": "146fb3329047e9bef5265eb17d824a623727e087",
+  "components": {
+    "arti": {
+      "key": "951019732f2ab9327f3a26bdab89d5f73e961c4e6e7b0660e6fb068a06afcd45",
+      "assets": {
+        "mac-arm64": "bd140cc4a080951b222063db7a2b3dcf480a38e0abf2080069df8e46f1f0b7c7",
+        "linux-x64": "bdd7abd4193547b7eb84973444be9397f6e874aec92128eb66acbeee21d3789e",
+        "linux-arm64": "03e2467cdf3bf1d21e1b1d5fa542f0e6ebd565d3c5dbd08d49e3efc5a1e46c3c",
+        "win-x64": "f8fe9717ca2d11b5e0ab9ed5fe26d12fb2cb2300f108cef3cec6b55c8fc2d258"
+      }
+    },
+    "dictation": {
+      "key": "bb6ac1dacc8b7191ff9cb0b06ae510f33d8829f2ffbc54aa1a032fee9eb0a921",
+      "assets": {
+        "mac-arm64": "3433d3ee514e77d9541c7882f369c01fd7517a39eaa73120a492d135b3e60538",
+        "linux-x64": "e2f031d161baf0ca259939c2e7473b6fd942326c9fa2007da2d4fd698979ef65",
+        "linux-arm64": "5e69ef00f33f4acc2dbf8b855a28e5adc2607b77ac7f93a716eace9802225212",
+        "win-x64": "ad7881bfc482ab3515124060468c05da0d4208dbc5fae6fb8a013ce1684d7775"
+      }
+    },
+    "windows-workspace": {
+      "key": "567345833c6dd4171c168eea8d63e80c23a76505a1b14d763bb248bc7990e6fe",
+      "assets": {
+        "win-x64": "f84a93230c5afab298eca015be5e403c998e8714f62f70bc0acf199d21e79a6a"
+      }
+    }
+  }
+}

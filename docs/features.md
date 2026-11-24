@@ -53,7 +53,8 @@ explicitly allows multiple bundle instances so profile launching can use
 
 - **Toolbar Toggle**: Click the network icon to access the Nodes panel with independent on/off switches.
 - **Live Statistics**: View connected peers, visible network peers, and the Ant node version in real-time.
-- **Publishing Setup**: One step from browsing to publishing. Pick a storage plan in the wallet sidebar's **Nodes** tab (or from **Settings → Nodes → Swarm publishing**) and send the quoted xDAI to the node, from the Freedom wallet or any wallet by QR code. The node swaps it for xBZZ, buys the storage and funds its chequebook deposit itself. There is no node mode to switch; the storage screen extends or grows a batch the same way. Storage is bought immutable, so a full batch never overwrites earlier uploads. For about a minute after a purchase the batch reads as **Confirming** while the network learns about it; uploads started then wait in the node and finish once it arrives.
+- **ACT Public Key**: The Nodes menu's Swarm section shows the node's public key (its `/addresses` `publicKey`), shortened, with a copy button that copies the whole key. Give it to someone so they can share access-controlled (ACT) content with your node. It works for the bundled node and an external Bee node alike, and reads **Unknown** with the button off while the node can't be asked. Only the browser chrome reads it; no page can, because a stable node key would identify you across sites.
+- **Publishing Setup**: One step from browsing to publishing. Pick a storage plan in the wallet sidebar's **Nodes** tab (or from **Settings → Nodes → Swarm publishing**) and send the quoted xDAI to the node, from the Freedom wallet or any wallet by QR code. The node swaps it for xBZZ, buys the storage and funds its chequebook deposit itself. There is no node mode to switch; the storage screen extends or grows a batch the same way. **Custom size and duration** under the plans buys any size from depth 19 (about 112 MB) to depth 28 (about 994 GB) for 1 to 3,650 days, and **Keep Longer** takes any number of days. Sizes everywhere are Swarm's effective volume for unencrypted uploads, what a batch holds with at most a 1-in-1,000 chance of filling early. Storage is bought immutable, so a full batch never overwrites earlier uploads. For about a minute after a purchase the batch reads as **Confirming** while the network learns about it; uploads started then wait in the node and finish once it arrives.
 - **Browsing Credit**: The **Nodes** tab shows the node's chequebook as credit that pays peers for faster downloads, which smooth Swarm video needs, and for uploads: what is left to spend, what was spent in the last 24 hours and 7 days (counted from when Freedom first sees each peer, and only while Freedom is running: what a node pays while Freedom is closed is left out), and whether the node is paying peers or on the free tier. [Measured in freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126): downloads cost about 0.59 xBZZ per GB when every piece is paid, or roughly 0.16 xBZZ per hour of HD video while the free tier carries most of it (an estimate); uploads cost about 0.22 xBZZ per GB. Spending never goes past what is deposited; when the credit runs out, transfers carry on at the free tier. **Top Up Credit** adds xDAI-paid xBZZ to the deposit through the same pay step as Publishing Setup, without buying storage: on an Ant release with #126 you choose the amount (0.05, 0.1 or 0.5 xBZZ, or your own, 0.001 to 10), and the screen shows the node wallet's xDAI, which the node swaps first (Freedom never lets it swap more than the screen showed before it has a price); an older one only refills up to its own deposit target (0.001 xBZZ by default), and only once peers have cashed what was spent. **Pay peers from the chequebook** is bee's node-wide `swap-enable` switch, for downloads and uploads alike; on an Ant release with #126 it switches the running node at once and is kept for the next start. Older releases say "Not supported by this node version", and an ultra-light node, which cannot pay peers, says so too.
 - **Automatic Configuration**: First-run setup generates keys and config automatically.
 - **Cache**: **Settings → Nodes → Swarm cache size** shows the node's disk cache while that section is open, e.g. `In use: 1.3 GB of 2 GB · 120 MB pinned` (the pinned part only when there is some; pinned and published content doesn't count towards the size). It reads **Counting…** for up to a minute after the node starts while Ant counts an existing cache, and says why when there is no figure: the node isn't running or is still starting, its disk cache couldn't be opened, or it doesn't report one. Figures come from Ant's `GET /v0/cache` in bytes; a node without that route (a reused Bee, an Ant before v0.5.61) is read through `/debugstore`, whose bee-style chunk counts × 4 KB run slightly under the bytes on disk. The same row picks 512 MB, 1 GB, 2 GB (the default), 5 GB, 10 GB or 16 GB; a running node takes the new size at once, without a restart (Ant's `PUT /v0/cache/capacity`), and it is saved for the next start too. A profile whose node already had a cache before this setting existed keeps the 10 GB it was using until a size is picked. On a running node a smaller size removes the oldest cached content straight away. Picked while the node is stopped, the size is only written to its config: Ant doesn't trim the cache when it opens it, only as new content is written, so the space comes back gradually as you browse. A cache made before Ant v0.5.60 may not give the disk space back right away. **Clear cache**, under it, empties the cache after asking ("Swarm pages you've opened will load from the network again. Pinned and published content is kept.") and then says what it freed, e.g. `Freed 1.3 GB.`; it is off, with the reason shown, while the node isn't running or its disk cache is unavailable. Both run through Ant's `/v0/cache` routes ([freedom-hq/ant#149](https://github.com/freedom-hq/ant/issues/149)), called from Freedom's main process only. An external or reused Swarm node keeps its own cache size and cache, managed where it runs.
@@ -61,6 +62,7 @@ explicitly allows multiple bundle instances so profile launching can use
 ## Integrated IPFS Native Node
 
 - **Independent Toggle**: Start and stop IPFS separately from Swarm.
+- **Saved Pages While Off**: With IPFS switched off, `ipfs://` and `ipns://` pages you've opened before still load from the local store, and the Nodes menu says so. A second copy of the node serves them in the add-on's offline routing mode: no routing services, no DHT, no DNS-over-HTTPS, so IPFS itself makes no connection; IPNS and DNSLink names resolve only from records saved earlier. An ENS or Tezos name in the address (`ipfs://name.eth`) still resolves through its usual lookup, as it does whenever such a name is opened, so that needs the network. It starts on the first such request, never at launch, and stops when IPFS is switched on. A page that isn't saved shows _Not saved on this device_ instead of a gateway error. A profile with IPFS disabled, or on an external gateway, serves nothing while off.
 - **Native Transport**: Uses the embedded `freedom-ipfs` native addon instead of a loopback Kubo process.
 - **Content Discovery**: Finds who serves a CID or IPNS name by asking two delegated routing services in parallel, `delegated-ipfs.dev` and `cid.contact`, with the DHT as a fallback. Both services see the CIDs and IPNS names you load; a profile using an external gateway asks neither.
 - **Live Diagnostics**: View native gateway stats and request progress while IPFS/IPNS pages load.
@@ -91,6 +93,7 @@ explicitly allows multiple bundle instances so profile launching can use
 - **Live Statistics**: View connected peers, seeded repos, addon version, and Node ID.
 - **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
 - **Windows**: The embedded node ships in the Windows x64 and ARM64 builds.
+- **No confidentiality between nodes yet**: Radicle 1.x sends node-to-node traffic unencrypted, and its handshake lets a node pass itself off as another Node ID, so anyone on the path can read a repository's traffic and fetch a private repository. Signed refs still stop anyone forging its contents. Tor or a VPN doesn't prevent this. The fix is Radicle 2.0's new transport, which isn't compatible with 1.x ([#694](https://github.com/solardev-xyz/freedom-browser/issues/694)).
 
 ## Universal Address Bar
 
@@ -182,11 +185,62 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+Shift+J` / `Ctrl+Shift+J`: Downloads
   - `Cmd+Shift+B` / `Ctrl+Shift+B`: Toggle bookmark bar
   - `Cmd+Shift+W` / `Ctrl+Shift+W`: Toggle wallet sidebar
+  - `Cmd+K` / `Ctrl+K`: Show Agent (opens the floating Agent composer, returns the keyboard to it from the page, or closes it when it already has focus)
+  - `Cmd+Enter` / `Ctrl+Enter`: Start dictation (only with the Agent composer focused; does not send the prompt). This and Show Agent exist only while AI is on (Settings → AI): with AI off they are not listed in Settings > Shortcuts, do nothing, and leave their keys free for other shortcuts; a remap of either is kept for when AI is turned back on
   - `F11`: Toggle full screen (hides the tab strip, toolbar, bookmarks bar and sidebar so the page fills the screen; leaving restores them as they were; as in Chrome's and Firefox's F11 mode, `Escape` stays the page's and does not leave, and a site's permission prompt brings the toolbar back while it is open)
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
 - **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, closes any open menu or popover (the hamburger and Nodes menus included; an open Profiles flyout closes first, the hamburger on a second press) and returns focus to the control that opened it, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
 - **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
 - **No Keyboard Binding**: Print has no shortcut; use the hamburger menu's Print entry.
+
+## Freedom Agent
+
+AI is off by default for each profile. Enable it in **Settings → AI**
+(`freedom://settings/ai`), then connect your own model provider or a local Ollama
+model there. The start page offers a dismissible invitation to try it. Once
+enabled, open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`, then ask it to research pages, compare sources,
+or work on a project. Conversations appear over the page; Agent-first mode gives
+the conversation the full window.
+
+A new chat offers starting prompts below the composer for a game, personal
+website, source comparison or project review. Choosing one starts that task
+immediately with any attached files. You can also write your own prompt. Publishing
+and purchases keep their normal approval steps.
+
+- **Browser work:** Agent uses conversation-owned tabs and can delegate independent
+  work to helpers. Helper cards show progress, reports, and individual Stop controls.
+- **What's new:** A compact glass list on the built-in start page currently highlights
+  Freedom Agent. The Freedom Agent row shows On/Off and opens Agent when enabled or AI
+  Settings when disabled. Viewing a highlight does not enable AI or start a task.
+- **Project work:** Create a managed workspace or attach an existing folder read-only.
+  Grant editing separately. Drag files into the composer to attach them to a prompt.
+  File, diff, and history viewers open in browser tabs; managed workspaces retain Git history.
+- **AI settings:** Provider connections, model discovery, favourites and the default
+  model for new chats live in Settings → AI. An existing conversation keeps its
+  model. Turning AI off stops Agent work and pending approvals, hides Agent entry
+  points and prevents model requests; it keeps chats, connections, attachments and
+  projects. Already-running preview servers keep running. Dispatched external
+  effects are not undone. Turning it back on restores access.
+- **Connections and permissions:** Manage MCP services from the composer's `+` menu.
+  Permission controls govern consequential actions and command access. The conversation
+  privacy panel reports provider settings and the evidence available for that conversation.
+- **Voice dictation:** The composer microphone shows words or phrases while you
+  speak, with a microphone-driven spectrum. Escape finishes and keeps the text; Return
+  finishes transcription and sends the complete prompt. It starts immediately with a supported connected API
+  service; setup also offers an optional local Whisper download. Change the service and language in Settings → AI
+  or the microphone's options. Audio privacy is separate from chat-model privacy.
+  See [dictation setup and draft limitations](agent-dictation.md).
+- **Domain skills (experimental):** Inspect and quote .eth/.wei/.gwei names, register
+  or renew through wallet approvals, and manage website/address/text records.
+  [Scope, supported contracts and qualification](domain-management.md).
+- **Windows projects:** First use requires administrator setup of restricted execution
+  accounts and network rules. Subsequent commands run without administrator rights.
+  Windows confines writes but allows broader file reads than the macOS and Linux
+  backends. Strictly offline shell commands are unavailable: commands require the
+  existing direct-network approval, once for the exact command and directory or
+  for the conversation if that scope is chosen. Built-in read, write, search and
+  history tools remain available. Commands use PowerShell, including `npm.cmd`
+  and `npx.cmd`. Browser networking is independent of command permissions.
 
 ## Bookmarks
 
@@ -283,7 +337,7 @@ Access built-in browser pages using the `freedom://` protocol:
 
 ## Settings & UI
 
-- **Settings layout**: Ten entries in Chrome's order — Profile, Appearance, Search, Downloads, Shortcuts, Privacy and security (Ad Blocking and Site Permissions), Networks (Chains, RPC Providers and Name Resolution), Nodes (each node's mode and endpoint, saved as you change them with no Save button; Swarm publishing; and Startup) — then, under a rule, Advanced (the Beta features) and About Freedom (Updates, whose status row names the running version). An entry that holds several sections shows them on one page, each under its own heading; `freedom://settings/<entry>/<section>` (e.g. `freedom://settings/networks/rpc`) opens the entry with that section brought up, and `freedom://settings/networks/<chainId>` opens a chain's own page. Addresses from before this layout (`freedom://settings/rpc`, `/ens`, `/chains/1`, `/startup`, `/experimental`, `/updates`, `/adblock`, `/permissions`) still open the section they named, and the address bar is rewritten to the new name.
+- **Settings layout**: Ten entries in Chrome's order — Profile, Appearance, Search, Downloads, Shortcuts, Privacy and security (Ad Blocking, Site Permissions and Secure DNS), Networks (Chains, RPC Providers and Name Resolution), Nodes (each node's mode and endpoint, saved as you change them with no Save button; Swarm publishing; and Startup) — then, under a rule, Advanced (the Beta features) and About Freedom (Updates, whose status row names the running version). An entry that holds several sections shows them on one page, each under its own heading; `freedom://settings/<entry>/<section>` (e.g. `freedom://settings/networks/rpc`) opens the entry with that section brought up, and `freedom://settings/networks/<chainId>` opens a chain's own page. Addresses from before this layout (`freedom://settings/rpc`, `/ens`, `/chains/1`, `/startup`, `/experimental`, `/updates`, `/adblock`, `/permissions`) still open the section they named, and the address bar is rewritten to the new name.
 - **Search settings**: A search field in the Settings sidebar covers the whole page. Typing filters every section by control label, description and helper line (case-insensitive substring, no fuzzy matching) — including the collapsed **Advanced** text under each network source, so a source is still found by its technical name ("Colibri", "RPC quorum") — and lists each match with the entry and section it lives in (e.g. "Networks › RPC Providers") — so a setting is findable without knowing where it is (a chain's API keys are under RPC Providers, how an Ethereum name is looked up under Name Resolution). Enter, or clicking a result, opens that entry and marks the row it found, opening the Advanced disclosure around it if the match is inside one; Esc clears the field and puts the section you were on back. The Shortcuts section keeps its own search field, which filters only that list. The index is read from what each section has on the page at that moment, so a chain is findable by its own name from the Chains list — but not while that list is replaced by a single chain's own page or by the add-chain form; leaving Chains puts the list, and those rows, back.
 - **Theme**: Light, Dark, or System (follows OS preference).
 - **Tabs in Title Bar** (Linux only): Use the tab strip as the window title bar. Takes effect after restart.
@@ -293,6 +347,7 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Pop-up blocker**: A site can open a new tab (`window.open`, a `target="_blank"` link) only right after you click or press a key on the page, and each click opens at most one; Freedom's own pages are exempt. A blocked pop-up shows an icon in the address bar listing what was blocked, with **Open** for each and **Always allow pop-ups on this site**. That allow is a site permission: it shows in the site permissions indicator and in Settings → Privacy and security → Site Permissions, where it is removed, and in a private window it lasts only as long as the window.
 - **Links to other apps**: A link a page offers to another application — `magnet:`, `mailto:`, `tel:`, `zoommtg:` and the like — raises the same prompt ("… wants to open magnet: links in <app>"), decided per site and per link type, so allowing `magnet:` never allows anything else. Only a click on the page can raise it, and not from an embedded frame of another site; schemes the browser handles itself, local ones (`file:`), and system handlers with a history of abuse (such as `ms-msdt:`) are never handed to the operating system. Typing such a link into the address bar opens it directly when the system has an app for it.
 - **Ad Blocking** (Settings → Privacy and security): Choose filter categories, automatic list updates, and per-host exemptions.
+- **Secure DNS** (Settings → Privacy and security → Secure DNS): Looks up the sites you visit over DNS over HTTPS, so your network provider can't see which ones they are. **Automatic** (the default) falls back to your network's DNS when the provider can't be reached, so Wi-Fi sign-in pages keep working; **Strict** never falls back, so sites don't load while the provider is unreachable, and names only your local network's DNS knows (an intranet site, a router or NAS name such as `router.lan`, an external IPFS gateway set up by one) don't load at all; **Off** uses your network's DNS. The provider is Quad9 (the default), Cloudflare, Mullvad, or a custom `https://` DNS-over-HTTPS address; the custom one takes effect once a valid address is entered, and until then the previous provider stays in use. A change applies at once. It covers pages in every window (private ones too), internal pages, downloads, favicons and updates, and Freedom's requests to an external IPFS gateway and to ENS CCIP-Read gateways (offchain names). It does not cover the other requests Freedom's main process makes itself, which use your system's DNS: Ethereum and Gnosis RPC providers (ENS lookups included), the chain list, Freedom Agent's AI providers and the GitHub bridge; nor the bundled Swarm, IPFS, Radicle and Myotis nodes, which resolve names themselves. While Tor is running, `.onion` names are never looked up locally: Tor resolves them (and if Tor fails to start they fail rather than being looked up). With Tor off, a `.onion` name is looked up like any other name, through the Secure DNS provider (or your network's DNS in Off mode, or when Automatic falls back), and fails. Even in Strict mode, the provider's own hostname (e.g. `dns.quad9.net`) is looked up through the system's DNS, as Chromium has to find the provider before it can use it. And if Chromium's network service crashes, its replacement starts on Electron's defaults: Freedom hands Secure DNS to it straight away, but a lookup made in that instant can still go through the system's DNS. Secure DNS hides which names you look up, not which IP addresses you connect to, and the site's hostname still shows in the TLS handshake unless the site supports Encrypted Client Hello.
 - **Shortcuts**: Search and remap browser commands with conflict detection and per-command reset.
 - **Networks**: Configure chain endpoints (Chains), keyed providers (RPC Providers), and ENS verification behavior (Name Resolution).
 - **Advanced**: Enable Identity & Wallet (Beta) and Enable Tor (.onion access) (Beta) — the experiments, and nothing else. The rows that used to sit beside them live with their subject: Show IPFS load progress in the status bar under Appearance, Swarm publishing (whether this profile's node can publish, with a button into the publishing setup) under Nodes, and Start Tor when Freedom opens with the other startup toggles under Nodes → Startup. The Tor rows are hidden on builds that bundle no Arti binary — a source build that skipped `npm run tor:download`, or a Windows release cut before Windows Arti bundling landed (see the Tor section above). Radicle is no longer experimental — it is configured under **Settings → Nodes**, including its Startup toggle.
@@ -306,3 +361,23 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Profile-Aware Radicle Errors**: Opening `rad://` while Radicle is disabled for the profile shows "Radicle Disabled for This Profile" and points to **Settings → Nodes**; opening it while the node is stopped shows "Cannot Connect to Radicle Node" and points to the Nodes menu.
 - **Retry on Reload**: Pressing reload on an error page retries the original request.
 - **Graceful Degradation**: Navigation errors don't crash the browser.
+
+
+### Experimental Claude subscription connection
+
+The Agent's Anthropic setup also offers an installed Claude Code connection for
+personal Pro/Max subscriptions. It uses the CLI's existing login and Freedom's
+normal tools, approvals, helpers, codemode and conversation UI. Managed installations
+are not supported. See [setup and qualification](agent-claude-subscription.md).
+
+### Experimental custom AI connections
+
+**Settings → AI → Add provider → OpenAI-compatible** connects a custom Chat Completions
+endpoint using an optional API key. Models can be discovered or entered manually;
+multiple connections appear independently in the model picker. Saved keys are
+encrypted, and model limits/capabilities can be configured in connection settings.
+After connecting, an optional compatibility check tests streaming chat and a
+synthetic tool round trip for the selected model. It discloses possible token
+charges and allows retrying or continuing despite failure. Privacy guarantees
+remain unknown unless independently established. See
+[setup and qualification](agent-openai-compatible-spike.md).

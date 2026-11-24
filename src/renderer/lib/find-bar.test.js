@@ -426,6 +426,21 @@ describe('find-bar', () => {
     expect(ctx.webview.focus).toHaveBeenCalled();
   });
 
+  test('closing lets the host restore focus without handing keys to a controlled page', async () => {
+    const webview = createFakeWebview();
+    const restoreFocus = jest.fn();
+    const ctx = await loadFindBarModule({ webview, initOptions: {
+      getActiveWebview: () => webview, restoreFocus,
+    } });
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+    ctx.mod.closeFindBar();
+    expect(restoreFocus).toHaveBeenCalledWith(webview);
+    expect(webview.focus).not.toHaveBeenCalled();
+    expect(webview.stopFindInPage).toHaveBeenLastCalledWith('clearSelection');
+  });
+
   test('closing within the debounce window cancels the queued find-as-you-type', async () => {
     const ctx = await loadFindBarModule();
     ctx.mod.openFindBar();

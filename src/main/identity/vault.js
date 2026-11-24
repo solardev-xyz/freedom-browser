@@ -8,6 +8,7 @@
  */
 
 const { encrypt, decrypt } = require('@metamask/browser-passworder');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { isValidMnemonic, createMnemonic, deriveUserWallet } = require('./derivation');
@@ -16,6 +17,15 @@ const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 // Vault state
 let unlockedMnemonic = null;
 let autoLockTimer = null;
+
+// Called on every lock (explicit or the inactivity auto-lock), so whatever
+// holds keys derived from the mnemonic drops them at the same moment.
+const lockListeners = new Set();
+
+// Moves on with every lock. An unlock whose decryption was still running
+// when the vault was locked (or deleted, which locks it) must not publish
+// its mnemonic afterwards (K-1).
+let lockGeneration = 0;
 
 // Default auto-lock timeout (15 minutes)
 const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
@@ -27,6 +37,244 @@ const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
  */
 function getVaultPath(dataDir) {
   return path.join(dataDir, 'identity-vault.json');
+}
+
+// Owner read/write only. The vault is encrypted, but a world-readable copy
+// lets any local account run an offline password search against it (K-2).
+const VAULT_FILE_MODE = 0o600;
+
+const POSIX = process.platform !== 'win32';
+// Never follow a link planted at the vault's name (POSIX).
+const READ_FLAGS = fs.constants.O_RDONLY | (POSIX ? fs.constants.O_NOFOLLOW : 0);
+
+// Test seam: called at each step of a vault write ('file-synced' once the
+// temp file is fsynced, 'renamed', 'dir-synced'), so the crash tests can
+// stop the process at an exact point.
+let writeObserver = null;
+
+function digestOf(bytes) {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+/**
+ * Read the vault through one descriptor: narrow it to VAULT_FILE_MODE first
+ * (vaults written before K-2 got the umask's mode, usually 0644; a file that
+ * does not parse is narrowed too), then read it from the same descriptor, so
+ * a name swapped meanwhile is never the one read.
+ * @returns {{ bytes: Buffer, digest: string }}
+ */
+function readVaultBytes(vaultPath) {
+  let fd;
+  try {
+    fd = fs.openSync(vaultPath, READ_FLAGS);
+  } catch (err) {
+    throw symlinkedVaultError(vaultPath, err) || err;
+  }
+  try {
+    if (POSIX) {
+      try {
+        if ((fs.fstatSync(fd).mode & 0o777) !== VAULT_FILE_MODE) fs.fchmodSync(fd, VAULT_FILE_MODE);
+      } catch (err) {
+        console.warn('[Vault] Could not restrict the vault file mode:', err.message);
+      }
+    }
+    const bytes = fs.readFileSync(fd);
+    return { bytes, digest: digestOf(bytes) };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * O_NOFOLLOW refuses a symbolic link at the vault's name with a bare ELOOP
+ * (EMLINK on some BSDs). Say what is actually wrong instead.
+ * @returns {Error|null}
+ */
+function symlinkedVaultError(vaultPath, err) {
+  if (!POSIX || (err.code !== 'ELOOP' && err.code !== 'EMLINK')) return null;
+  try {
+    if (!fs.lstatSync(vaultPath).isSymbolicLink()) return null;
+  } catch {
+    return null;
+  }
+  const error = new Error(
+    `The vault file ${vaultPath} is a symbolic link. Freedom only opens the vault ` +
+      'as a regular file: replace the link with the file it points to.',
+    { cause: err }
+  );
+  error.code = err.code;
+  return error;
+}
+
+/**
+ * The digest of the vault file as it is now, or null when there is none.
+ * A write refuses to replace a file that is not the one it started from.
+ */
+function liveVaultDigest(vaultPath) {
+  try {
+    return readVaultBytes(vaultPath).digest;
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/**
+ * Read and parse the vault file (see readVaultBytes).
+ * @param {string} dataDir
+ * @returns {{version: number, encrypted: string, createdAt?: string}}
+ */
+function readVaultData(dataDir) {
+  return readVaultFile(dataDir).vaultData;
+}
+
+function readVaultFile(dataDir) {
+  const { bytes, digest } = readVaultBytes(getVaultPath(dataDir));
+  return { vaultData: JSON.parse(bytes.toString('utf-8')), digest };
+}
+
+// Vault mutations (create, import, password change, delete) run one at a
+// time per data directory: a password change that had read the old vault
+// must not land on top of a vault deleted and recreated meanwhile, and two
+// creates must not both hand out a recovery phrase (K-2).
+const mutationChains = new Map();
+
+// Temp files writeVaultFile creates next to the vault (see tempPath there).
+const VAULT_TEMP_RE = /^identity-vault\.json\.\d+\.[0-9a-f]{12}\.tmp$/;
+
+/**
+ * Remove temp files a write left behind when its process died between
+ * creating the temp file and the rename (a hard crash skips the catch that
+ * would remove it). Each is a full encrypted copy of a recovery phrase, so
+ * one surviving a deleteVault would keep the deleted phrase on disk.
+ *
+ * Runs at the start of every vault mutation: mutations are serialized per
+ * data directory (withVaultMutation) and a profile's data directory belongs
+ * to a single running instance, so no live write owns a temp file then.
+ */
+function sweepVaultTempFiles(dataDir) {
+  let names;
+  try {
+    names = fs.readdirSync(dataDir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const name of names) {
+    if (VAULT_TEMP_RE.test(name)) fs.rmSync(path.join(dataDir, name), { force: true });
+  }
+}
+
+function withVaultMutation(dataDir, fn) {
+  const key = path.resolve(dataDir);
+  const run = (mutationChains.get(key) || Promise.resolve()).then(() => {
+    sweepVaultTempFiles(dataDir);
+    return fn();
+  });
+  const tail = run.catch(() => {});
+  mutationChains.set(key, tail);
+  tail.then(() => {
+    if (mutationChains.get(key) === tail) mutationChains.delete(key);
+  });
+  return run;
+}
+
+/**
+ * Decrypt the vault with `password`, without touching the lock state.
+ * @returns {Promise<string>} the mnemonic
+ */
+async function decryptVaultMnemonic(vaultData, password) {
+  if (vaultData.version !== 1) {
+    throw new Error(`Unsupported vault version: ${vaultData.version}`);
+  }
+  try {
+    const decrypted = await decrypt(password, vaultData.encrypted);
+    return decrypted.mnemonic;
+  } catch (err) {
+    if (err.message.includes('Incorrect password')) {
+      throw new Error('Incorrect password', { cause: err });
+    }
+    throw err;
+  }
+}
+
+// On Windows, renaming over a file another process holds open (antivirus,
+// the search indexer) fails for a moment with EPERM/EACCES/EBUSY, where the
+// in-place write this replaced never did; graceful-fs retries the same codes.
+// On POSIX these codes are permanent, so they are rethrown at once.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRY_DELAYS_MS = [10, 25, 50, 100, 200, 400, 800];
+
+/**
+ * Rename the temp file over the vault, but only while the vault is still the
+ * one the operation started from (checked again before every attempt).
+ */
+async function renameOverVault(tempPath, vaultPath, expectedDigest) {
+  for (let attempt = 0; ; attempt += 1) {
+    if (liveVaultDigest(vaultPath) !== expectedDigest) {
+      throw new Error('The vault changed while it was being saved; nothing was replaced');
+    }
+    try {
+      fs.renameSync(tempPath, vaultPath);
+      return;
+    } catch (err) {
+      const delay = RENAME_RETRY_DELAYS_MS[attempt];
+      if (POSIX || !RENAME_RETRY_CODES.has(err.code) || delay === undefined) throw err;
+      writeObserver?.('rename-retry', err.code);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+function fsyncDirectory(dir) {
+  // Makes the rename itself durable. Directories cannot be opened for fsync
+  // on Windows, where the rename is already durable enough for this.
+  if (!POSIX) return;
+  let fd;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (err) {
+    console.warn('[Vault] Could not fsync the vault directory:', err.message);
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+/**
+ * Replace the vault file atomically: write a private temp file next to it,
+ * fsync it, check that it decrypts back to `mnemonic` with `password`, and
+ * only then rename it over the vault. A crash, a full disk or a bad write
+ * leaves the previous vault (and its password) in place.
+ *
+ * `expectedDigest` is the live vault the operation started from (null: no
+ * vault). If the file there is no longer that one, nothing is replaced.
+ */
+async function writeVaultFile(vaultPath, vaultData, password, mnemonic, expectedDigest) {
+  const tempPath = `${vaultPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    const fd = fs.openSync(tempPath, 'wx', VAULT_FILE_MODE);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(vaultData, null, 2));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    writeObserver?.('file-synced', tempPath);
+
+    const written = JSON.parse(fs.readFileSync(tempPath, 'utf-8'));
+    if ((await decryptVaultMnemonic(written, password)) !== mnemonic) {
+      throw new Error('The new vault did not decrypt to the same recovery phrase');
+    }
+
+    await renameOverVault(tempPath, vaultPath, expectedDigest);
+    writeObserver?.('renamed', vaultPath);
+  } catch (err) {
+    fs.rmSync(tempPath, { force: true });
+    throw err;
+  }
+  fsyncDirectory(path.dirname(vaultPath));
+  writeObserver?.('dir-synced', vaultPath);
 }
 
 /**
@@ -45,15 +293,17 @@ function vaultExists(dataDir) {
  * @param {number} strength - Mnemonic strength (128=12 words, 256=24 words)
  * @returns {Promise<string>} The generated mnemonic (for backup display)
  */
-async function createVault(dataDir, password, strength = 256) {
-  if (vaultExists(dataDir)) {
-    throw new Error('Vault already exists. Use importVault to replace.');
-  }
+function createVault(dataDir, password, strength = 256) {
+  return withVaultMutation(dataDir, async () => {
+    if (vaultExists(dataDir)) {
+      throw new Error('Vault already exists. Use importVault to replace.');
+    }
 
-  const mnemonic = createMnemonic(strength);
-  await saveVault(dataDir, password, mnemonic);
+    const mnemonic = createMnemonic(strength);
+    await saveVault(dataDir, password, mnemonic, null);
 
-  return mnemonic;
+    return mnemonic;
+  });
 }
 
 /**
@@ -63,23 +313,25 @@ async function createVault(dataDir, password, strength = 256) {
  * @param {string} mnemonic - The mnemonic to import
  * @param {boolean} overwrite - Whether to overwrite existing vault
  */
-async function importVault(dataDir, password, mnemonic, overwrite = false) {
-  if (!isValidMnemonic(mnemonic)) {
-    throw new Error('Invalid mnemonic');
-  }
+function importVault(dataDir, password, mnemonic, overwrite = false) {
+  return withVaultMutation(dataDir, async () => {
+    if (!isValidMnemonic(mnemonic)) {
+      throw new Error('Invalid mnemonic');
+    }
 
-  if (vaultExists(dataDir) && !overwrite) {
-    throw new Error('Vault already exists. Set overwrite=true to replace.');
-  }
+    if (vaultExists(dataDir) && !overwrite) {
+      throw new Error('Vault already exists. Set overwrite=true to replace.');
+    }
 
-  await saveVault(dataDir, password, mnemonic);
+    await saveVault(dataDir, password, mnemonic, liveVaultDigest(getVaultPath(dataDir)));
+  });
 }
 
 /**
  * Save mnemonic to vault file
  * @private
  */
-async function saveVault(dataDir, password, mnemonic) {
+async function saveVault(dataDir, password, mnemonic, expectedDigest) {
   if (!password || password.length < 8) {
     throw new Error('Password must be at least 8 characters');
   }
@@ -100,7 +352,7 @@ async function saveVault(dataDir, password, mnemonic) {
     createdAt: new Date().toISOString(),
   };
 
-  fs.writeFileSync(vaultPath, JSON.stringify(vaultData, null, 2));
+  await writeVaultFile(vaultPath, vaultData, password, mnemonic, expectedDigest);
 }
 
 /**
@@ -114,45 +366,54 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found. Create one first.');
   }
+  const generation = lockGeneration;
 
-  const vaultPath = getVaultPath(dataDir);
-  const vaultData = JSON.parse(fs.readFileSync(vaultPath, 'utf-8'));
-
-  if (vaultData.version !== 1) {
-    throw new Error(`Unsupported vault version: ${vaultData.version}`);
+  const mnemonic = await decryptVaultMnemonic(readVaultData(dataDir), password);
+  // The vault was locked (or deleted, which locks it) while the decryption
+  // ran: that lock wins, so the mnemonic is never published after it (K-1).
+  if (generation !== lockGeneration) {
+    throw new Error('The vault was locked while it was being unlocked');
   }
 
-  try {
-    const decrypted = await decrypt(password, vaultData.encrypted);
-    unlockedMnemonic = decrypted.mnemonic;
+  // Validate decrypted mnemonic
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('Decrypted data is not a valid mnemonic');
+  }
+  unlockedMnemonic = mnemonic;
 
-    // Validate decrypted mnemonic
-    if (!isValidMnemonic(unlockedMnemonic)) {
-      unlockedMnemonic = null;
-      throw new Error('Decrypted data is not a valid mnemonic');
-    }
-
-    // Set up auto-lock timer
-    if (autoLockMs > 0) {
-      resetAutoLockTimer(autoLockMs);
-    }
-  } catch (err) {
-    if (err.message.includes('Incorrect password')) {
-      throw new Error('Incorrect password', { cause: err });
-    }
-    throw err;
+  // Set up auto-lock timer
+  if (autoLockMs > 0) {
+    resetAutoLockTimer(autoLockMs);
   }
 }
 
 /**
- * Lock the vault (clear mnemonic from memory)
+ * Lock the vault (clear mnemonic from memory) and tell every lock listener.
  */
 function lockVault() {
+  lockGeneration += 1;
   unlockedMnemonic = null;
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
     autoLockTimer = null;
   }
+  for (const listener of lockListeners) {
+    try {
+      listener();
+    } catch (err) {
+      console.error('[Vault] Lock listener failed:', err.message);
+    }
+  }
+}
+
+/**
+ * Run `listener` whenever the vault locks, including the auto-lock.
+ * @param {() => void} listener
+ * @returns {() => void} removes the listener
+ */
+function onLock(listener) {
+  lockListeners.add(listener);
+  return () => lockListeners.delete(listener);
 }
 
 /**
@@ -199,16 +460,24 @@ function resetAutoLockTimer(autoLockMs = DEFAULT_AUTO_LOCK_MS) {
  * @param {string} currentPassword - Current password
  * @param {string} newPassword - New password
  */
-async function changePassword(dataDir, currentPassword, newPassword) {
-  // First verify current password by unlocking
-  await unlockVault(dataDir, currentPassword, 0);
+function changePassword(dataDir, currentPassword, newPassword) {
+  return withVaultMutation(dataDir, async () => {
+    if (!vaultExists(dataDir)) {
+      throw new Error('No vault found');
+    }
+    // Verify the current password by decrypting, without unlocking: a locked
+    // vault stays locked, and an unlocked one keeps its auto-lock timer.
+    const { vaultData, digest } = readVaultFile(dataDir);
+    const mnemonic = await decryptVaultMnemonic(vaultData, currentPassword);
+    if (!isValidMnemonic(mnemonic)) {
+      throw new Error('Decrypted data is not a valid mnemonic');
+    }
 
-  if (!unlockedMnemonic) {
-    throw new Error('Failed to unlock vault');
-  }
-
-  // Re-encrypt with new password
-  await saveVault(dataDir, newPassword, unlockedMnemonic);
+    // Re-encrypt with the new password. saveVault replaces the file only
+    // once the new copy decrypts with it, and only if the vault is still the
+    // one read above, so a failure keeps the old vault and the old password.
+    await saveVault(dataDir, newPassword, mnemonic, digest);
+  });
 }
 
 /**
@@ -216,16 +485,36 @@ async function changePassword(dataDir, currentPassword, newPassword) {
  * @param {string} dataDir - App data directory
  * @param {string} password - Password to confirm
  */
-async function deleteVault(dataDir, password) {
-  // Verify password first
-  await unlockVault(dataDir, password, 0);
-  lockVault();
+function deleteVault(dataDir, password) {
+  return withVaultMutation(dataDir, async () => {
+    if (!vaultExists(dataDir)) {
+      throw new Error('No vault found. Create one first.');
+    }
+    // Verify the password against the vault as read here, and remember which
+    // file that was: the check takes hundreds of milliseconds of PBKDF2.
+    const { vaultData, digest } = readVaultFile(dataDir);
+    const mnemonic = await decryptVaultMnemonic(vaultData, password);
+    if (!isValidMnemonic(mnemonic)) {
+      throw new Error('Decrypted data is not a valid mnemonic');
+    }
 
-  // Delete vault file
-  const vaultPath = getVaultPath(dataDir);
-  if (fs.existsSync(vaultPath)) {
-    fs.unlinkSync(vaultPath);
-  }
+    // Like every replace (renameOverVault), only remove the file whose
+    // password was just checked: a vault put there from outside meanwhile
+    // was never verified and is left alone.
+    const vaultPath = getVaultPath(dataDir);
+    const live = liveVaultDigest(vaultPath);
+    if (live !== null && live !== digest) {
+      throw new Error('The vault changed while it was being deleted; nothing was removed');
+    }
+    lockVault();
+    if (live !== null) {
+      fs.rmSync(vaultPath, { force: true });
+    }
+    // withVaultMutation swept leftover temp copies before the password check;
+    // nothing can have written one since, but sweep again so the phrase is
+    // gone from the directory however this ran.
+    sweepVaultTempFiles(dataDir);
+  });
 }
 
 /**
@@ -239,16 +528,7 @@ async function verifyPassword(dataDir, password) {
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found');
   }
-  const vaultPath = getVaultPath(dataDir);
-  const vaultData = JSON.parse(fs.readFileSync(vaultPath, 'utf-8'));
-  try {
-    await decrypt(password, vaultData.encrypted);
-  } catch (err) {
-    if (err.message.includes('Incorrect password')) {
-      throw new Error('Incorrect password', { cause: err });
-    }
-    throw err;
-  }
+  await decryptVaultMnemonic(readVaultData(dataDir), password);
 }
 
 /**
@@ -278,12 +558,16 @@ function exportPrivateKey(accountIndex = 0) {
 }
 
 module.exports = {
+  _setVaultWriteObserver: (observer) => {
+    writeObserver = observer;
+  },
   getVaultPath,
   vaultExists,
   createVault,
   importVault,
   unlockVault,
   lockVault,
+  onLock,
   isUnlocked,
   getMnemonic,
   resetAutoLockTimer,

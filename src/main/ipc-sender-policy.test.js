@@ -30,6 +30,36 @@ const web = (url = 'https://evil.example/', extra = {}) =>
   makeEvent({ type: 'webview', url, ...extra });
 
 describe('isSenderAllowed', () => {
+  test('opening Agent is limited to home and Settings without granting provider authority', () => {
+    for (const file of ['home.html', 'settings.html']) {
+      expect(isSenderAllowed('agent:open', page(file))).toBe(true);
+      expect(isSenderAllowed('agent:open', page(file, { subFrame: true }))).toBe(false);
+    }
+    for (const file of ['history.html', 'private.html', 'error.html']) {
+      expect(isSenderAllowed('agent:open', page(file))).toBe(false);
+    }
+    expect(isSenderAllowed('agent:open', web())).toBe(false);
+    expect(isSenderAllowed('agent:open', makeEvent({ url: fileUrl('/tmp/pages/home.html') }))).toBe(false);
+    for (const file of ['home.html', 'settings.html']) {
+      expect(isSenderAllowed('agent:setup-state', page(file))).toBe(true);
+    }
+    expect(isSenderAllowed('agent:setup-state', page('history.html'))).toBe(false);
+    expect(isSenderAllowed('agent:setup-state', web())).toBe(false);
+    expect(isSenderAllowed('agent:provider:get-status', page('home.html'))).toBe(false);
+    expect(isSenderAllowed('agent:provider:get-catalog', page('home.html'))).toBe(false);
+    expect(isSenderAllowed('agent:start', page('home.html'))).toBe(false);
+  });
+  test('the PDF worker can return results without granting tabs or other windows access', () => {
+    const channel = 'agent:pdf-processor:result';
+    const url = fileUrl(path.join(PAGES_DIR, 'pdf-processor.html'));
+    expect(isSenderAllowed(channel, makeEvent({ type: 'window', url }))).toBe(true);
+    expect(isSenderAllowed(channel, makeEvent({ type: 'window', url, subFrame: true }))).toBe(false);
+    expect(isSenderAllowed(channel, makeEvent({ type: 'webview', url }))).toBe(false);
+    expect(isSenderAllowed(channel, web())).toBe(false);
+    expect(isSenderAllowed(channel, makeEvent({ type: 'window', url: fileUrl('/tmp/pdf-processor.html') }))).toBe(false);
+    expect(isSenderAllowed('wallet:send-transaction', makeEvent({ type: 'window', url }))).toBe(false);
+  });
+
   test('the chrome renderer may call any channel, including chrome-only ones', () => {
     for (const channel of [
       'wallet:send-transaction',
@@ -114,6 +144,40 @@ describe('isSenderAllowed', () => {
     expect(isSenderAllowed('profile:delete', page('profiles.html'))).toBe(true);
     expect(isSenderAllowed('profile:delete', page('settings.html'))).toBe(true);
     expect(isSenderAllowed('profile:delete', page('downloads.html'))).toBe(false);
+  });
+
+  test('only Settings or the chrome may write the AI master switch over settings:save', () => {
+    const { refusedSettingsKeys } = policy;
+    expect(refusedSettingsKeys(page('settings.html'), { enableAi: true })).toEqual([]);
+    expect(refusedSettingsKeys(chrome(), { enableAi: true })).toEqual([]);
+    for (const file of ['home.html', 'history.html', 'private.html', 'error.html']) {
+      expect(refusedSettingsKeys(page(file), { enableAi: true, theme: 'dark' })).toEqual(['enableAi']);
+      expect(refusedSettingsKeys(page(file), { theme: 'dark' })).toEqual([]);
+    }
+    expect(refusedSettingsKeys(page('home.html'), { aiInvitationDismissed: 'enable' })).toEqual([]);
+    expect(refusedSettingsKeys(page('settings.html', { subFrame: true }), { enableAi: true })).toEqual(['enableAi']);
+    expect(refusedSettingsKeys(makeEvent({ url: fileUrl('/tmp/pages/settings.html') }), { enableAi: true })).toEqual(['enableAi']);
+    expect(refusedSettingsKeys(web(), { enableAi: true })).toEqual(['enableAi']);
+  });
+
+  // #472: another internal page must not switch Secure DNS off or send every
+  // lookup to a resolver it picked.
+  test('only Settings or the chrome may write Secure DNS over settings:save', () => {
+    const { refusedSettingsKeys } = policy;
+    const dns = {
+      secureDnsMode: 'off',
+      secureDnsProvider: 'custom',
+      secureDnsCustomTemplate: 'https://doh.attacker.example/dns-query',
+    };
+    expect(refusedSettingsKeys(page('settings.html'), dns)).toEqual([]);
+    expect(refusedSettingsKeys(chrome(), dns)).toEqual([]);
+    for (const file of ['home.html', 'history.html', 'private.html', 'error.html']) {
+      expect(refusedSettingsKeys(page(file), { ...dns, theme: 'dark' })).toEqual(Object.keys(dns));
+    }
+    expect(refusedSettingsKeys(page('settings.html', { subFrame: true }), dns)).toEqual(
+      Object.keys(dns)
+    );
+    expect(refusedSettingsKeys(web(), { secureDnsMode: 'off' })).toEqual(['secureDnsMode']);
   });
 
   test('a chrome sender must be the top frame of our index.html in a window', () => {
@@ -224,6 +288,7 @@ describe('webview tiers mirror webview-preload.js', () => {
     guardInternal: TIER.INTERNAL,
     guardSettingsPage: TIER.SETTINGS,
     guardProfileManagerPage: TIER.PROFILE_MANAGER,
+    guardAgentLauncherPage: TIER.AGENT_LAUNCHER,
   };
 
   function preloadTiers() {
@@ -244,7 +309,7 @@ describe('webview tiers mirror webview-preload.js', () => {
     // Inside freedomAPI: attribute each call to the guard that opened the
     // chunk it sits in.
     const api = source.slice(start, end);
-    const chunks = api.split(/\b(guard(?:Internal|SettingsPage|ProfileManagerPage))\(/);
+    const chunks = api.split(/\b(guard(?:Internal|SettingsPage|ProfileManagerPage|AgentLauncherPage))\(/);
     for (let i = 1; i < chunks.length; i += 2) {
       const tier = GUARD_TIERS[chunks[i]];
       for (const match of chunks[i + 1].matchAll(CALL)) add(match[2], tier);

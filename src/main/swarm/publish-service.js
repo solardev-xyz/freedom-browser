@@ -9,13 +9,12 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
+const { File } = require('buffer');
 const { ipcMain, dialog, BrowserWindow } = require('electron');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError, isNoUsableBatchError } = require('./batch-errors');
 const { addEntry, updateEntry } = require('./publish-history');
 const { isPrivateWebContents } = require('../private/private-windows');
-const { createProfileTempDir } = require('../profile-paths');
-const fsOffload = require('../fs-offload');
 const log = require('electron-log');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { createPickTokenStore } = require('./publish-pick-tokens');
@@ -83,14 +82,25 @@ function normalizeTag(tag) {
 
   return {
     tagUid: tag.uid,
+    // 128 hex is an encrypted reference (a private draft link).
+    ...(/^[a-f0-9]{64}(?:[a-f0-9]{64})?$/i.test(tag.address || '') && { reference: tag.address.toLowerCase() }),
     split,
     seen,
     stored,
     sent,
     synced,
     progress: Math.round(progressRatio * 100),
-    done: split > 0 && sent >= split,
+    // Dispatched chunks are not necessarily acknowledged. Already-seen chunks
+    // need no new receipt; newly sent chunks must be synced.
+    done: split > 0 && synced + seen >= split,
   };
+}
+
+// `encrypt: true` sends `Swarm-Encrypt: true`: the node encrypts every chunk
+// and returns a 128-hex reference that carries the decryption key. Used only
+// for the Agent's private draft links; it is never set implicitly.
+function encryptOption(options) {
+  return options.encrypt === true ? { encrypt: true } : {};
 }
 
 /**
@@ -99,7 +109,7 @@ function normalizeTag(tag) {
 async function publishData(data, options = {}) {
   const bee = getBee();
   const sizeEstimate = Buffer.byteLength(data);
-  const batchId = options.batchId || await selectBestBatch(sizeEstimate);
+  const batchId = options.batchId || (await selectBestBatch(sizeEstimate, { requireCapacity: true }));
 
   if (!batchId) {
     throw noUsableBatchError();
@@ -111,6 +121,7 @@ async function publishData(data, options = {}) {
     deferred: false,
     contentType: options.contentType || 'text/plain',
     ...options.uploadOptions,
+    ...encryptOption(options),
   });
 
   return normalizeUploadResult(result, batchId, sizeEstimate);
@@ -122,14 +133,14 @@ async function publishData(data, options = {}) {
 async function publishFile(filePath, options = {}) {
   const bee = getBee();
   const stat = fs.statSync(filePath);
-  const batchId = options.batchId || await selectBestBatch(stat.size);
+  const batchId = options.batchId || (await selectBestBatch(stat.size, { requireCapacity: true }));
 
   if (!batchId) {
     throw noUsableBatchError();
   }
 
   const stream = fs.createReadStream(filePath);
-  const name = path.basename(filePath);
+  const name = options.name || path.basename(filePath);
   const contentType = options.contentType || undefined;
 
   const result = await bee.file.upload(batchId, stream, name, {
@@ -153,14 +164,15 @@ async function publishDirectory(dirPath, options = {}) {
   // Estimate total size (async to avoid blocking the event loop)
   const totalSize = await estimateDirSize(dirPath);
 
-  const batchId = options.batchId || await selectBestBatch(totalSize);
+  const batchId = options.batchId || (await selectBestBatch(totalSize, { requireCapacity: true }));
 
   if (!batchId) {
     throw noUsableBatchError();
   }
 
   // Use explicit indexDocument if provided, otherwise auto-detect index.html
-  const indexDocument = options.indexDocument ||
+  const indexDocument =
+    options.indexDocument ||
     (fs.existsSync(path.join(dirPath, 'index.html')) ? 'index.html' : undefined);
 
   const result = await bee.collection.uploadFromDirectory(batchId, dirPath, {
@@ -174,37 +186,69 @@ async function publishDirectory(dirPath, options = {}) {
 }
 
 /**
- * Publish a collection of in-memory files as a Swarm directory manifest.
- * Writes files to a temp directory, delegates to publishDirectory, cleans up.
+ * Publish an explicitly assembled collection without exposing filesystem paths
+ * to bee-js or writing a staging directory.
+ *
+ * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files
+ * @param {{ indexDocument?: string }} options
+ */
+async function publishCollection(files, options = {}) {
+  const bee = getBee();
+  const totalSize = files.reduce((total, item) => total + item.bytes.byteLength, 0);
+  const batchId = options.batchId || (await selectBestBatch(totalSize, { requireCapacity: true }));
+
+  if (!batchId) {
+    throw new Error('No usable postage batch available. Purchase stamps first.');
+  }
+
+  const indexDocument =
+    options.indexDocument ||
+    (files.some((item) => item.path === 'index.html') ? 'index.html' : undefined);
+  const collection = files.map((item) => ({
+    path: item.path,
+    size: item.bytes.byteLength,
+    file: new File([item.bytes], path.posix.basename(item.path), {
+      ...(item.contentType && { type: item.contentType }),
+    }),
+  }));
+  const result = await bee.collection.upload(batchId, collection, {
+    pin: true,
+    deferred: true,
+    indexDocument,
+    ...options.uploadOptions,
+    ...encryptOption(options),
+  });
+
+  return normalizeUploadResult(result, batchId, totalSize);
+}
+
+/**
+ * Publish a collection of in-memory files (window.swarm's publishFiles) as a
+ * Swarm directory manifest, through publishCollection: each tar entry is
+ * named by the page's own `/`-separated path, on every platform, and nothing
+ * is written to disk. Written under a temp directory instead, the files were
+ * named by bee-js with the platform's path.join, so on Windows a nested
+ * `assets/app.js` reached the node as `assets\app.js` and a nested
+ * indexDocument matched nothing (#1052).
+ *
+ * The batch is chosen here, so that having none reads as noUsableBatchError,
+ * as for the other page uploads.
  *
  * Note: per-file contentType is accepted in the file objects but not currently
- * applied — bee-js collection.uploadFromDirectory infers MIME types from
- * extensions.
+ * applied — the node infers MIME types from extensions.
  * Files with non-standard names should use appropriate extensions.
  *
  * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files
  * @param {{ indexDocument?: string }} options
  */
 async function publishFilesFromContent(files, options = {}) {
-  const tempDir = createProfileTempDir('swarm-publish');
-
-  try {
-    for (const file of files) {
-      const filePath = path.join(tempDir, file.path);
-      await fsp.mkdir(path.dirname(filePath), { recursive: true });
-      await fsp.writeFile(filePath, file.bytes);
-    }
-
-    return await publishDirectory(tempDir, {
-      indexDocument: options.indexDocument,
-    });
-  } finally {
-    try {
-      await fsOffload.removePath(tempDir, { recursive: true, force: true });
-    } catch (err) {
-      log.error('[PublishService] Failed to clean up temp dir:', err.message);
-    }
+  const totalSize = files.reduce((total, file) => total + file.bytes.byteLength, 0);
+  const batchId = await selectBestBatch(totalSize, { requireCapacity: true });
+  if (!batchId) {
+    throw noUsableBatchError();
   }
+
+  return publishCollection(files, { batchId, indexDocument: options.indexDocument });
 }
 
 /**
@@ -230,7 +274,7 @@ async function estimateDirSize(dirPath) {
  */
 async function getUploadStatus(tagUid) {
   const bee = getBee();
-  const tag = await bee.tag.get(tagUid);
+  const tag = await bee.tag.get(tagUid, { timeout: 10_000 });
   return normalizeTag(tag);
 }
 
@@ -312,7 +356,12 @@ function registerPublishIpc() {
     try {
       const result = await publishData(data);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
+      return {
+        success: true,
+        reference: result.reference,
+        bzzUrl: result.bzzUrl,
+        tagUid: result.tagUid,
+      };
     } catch (err) {
       log.error('[PublishService] Failed to publish data:', err.message);
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
@@ -338,7 +387,12 @@ function registerPublishIpc() {
     try {
       const result = await publishFile(filePath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
+      return {
+        success: true,
+        reference: result.reference,
+        bzzUrl: result.bzzUrl,
+        tagUid: result.tagUid,
+      };
     } catch (err) {
       log.error('[PublishService] Failed to publish file:', err.message);
       const message = describePickedPathError(err, filePath);
@@ -373,7 +427,12 @@ function registerPublishIpc() {
     try {
       const result = await publishDirectory(dirPath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
+      return {
+        success: true,
+        reference: result.reference,
+        bzzUrl: result.bzzUrl,
+        tagUid: result.tagUid,
+      };
     } catch (err) {
       log.error('[PublishService] Failed to publish directory:', err.message);
       const message = describePickedPathError(err, dirPath);
@@ -433,6 +492,7 @@ module.exports = {
   publishData,
   publishFile,
   publishDirectory,
+  publishCollection,
   publishFilesFromContent,
   getUploadStatus,
   registerPublishIpc,

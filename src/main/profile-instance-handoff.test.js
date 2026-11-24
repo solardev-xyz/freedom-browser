@@ -164,6 +164,13 @@ describe('profile instance hand-off (Linux single-instance lock, #142)', () => {
         expect(app.requestSingleInstanceLock).not.toHaveBeenCalled();
       }
     });
+
+    test('a windowless automation runtime never advertises a GUI handoff', () => {
+      const app = makeApp();
+      expect(listenForProfileRelaunches(app, { platform: 'linux', runtimeMode: true })).toBe(false);
+      expect(app.requestSingleInstanceLock).not.toHaveBeenCalled();
+      expect(app.listenerCount('second-instance')).toBe(0);
+    });
   });
 
   describe('listenForProfileRelaunches', () => {

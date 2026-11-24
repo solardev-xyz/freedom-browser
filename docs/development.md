@@ -56,9 +56,57 @@ Linux, or an **x64 MSVC developer shell** on Windows. No compiler is downloaded
 by the helper build. `npm run build` and `npm run dist` build it before binary
 checks, including each requested macOS architecture. Foreign targets require
 helpers built on the target host and placed in `myotis-bin/<os>-<arch>/`.
-Windows helper compilation/runtime remains unqualified for this candidate;
-missing tooling is a build blocker, not authorization to omit the helper.
+The standalone Windows Node-only supervisor checks passed at `fa14433f`;
+that is not Electron or packaged-app qualification for this merged branch.
+Missing tooling is a build blocker, not authorization to omit the helper.
+On the Agent branch, macOS `npm start` prepares both native supervisors through
+`scripts/prepare-native-supervisors.js`; Linux/Windows development retains the
+explicit Myotis build command. The same hook prepares both packaging inputs,
+and `scripts/sign-native-supervisors.js` composes workspace manifest sealing
+with the Myotis helper's restricted entitlements.
 See [Myotis isolation and qualification](myotis-process-isolation.md).
+
+### Experimental Windows Agent workspace backend
+
+On the Agent Windows branch, build the native workspace helpers on Windows with
+`npm run build:windows-workspace`. This requires an installed MSVC C++ toolchain
+and Rust 1.95 (the pinned source's toolchain); `FREEDOM_CARGO` can select an existing
+Cargo executable. The build downloads checksum-pinned Codex sandbox source and
+uses its locked dependencies. It builds only the sandbox adapter/setup/runner,
+not the Codex agent CLI. Packaging runs this build hook automatically; this
+experimental hook currently requires a native Windows host.
+
+First use requires one-time administrator provisioning of Freedom's restricted
+accounts and network rules. Workloads subsequently run without administrator
+rights. Windows confines writes but permits broad reads. Strictly offline shell
+commands are unavailable: ordinary commands require the existing direct-network
+grant, exact command/directory for allow-once or broader conversation scope when
+selected. Fixed built-in file operations use a separate internal helper path and
+do not acquire an implicit network grant. The workspace approval explains these
+differences from macOS/Linux. Missing helpers
+or incomplete setup fail closed. MXC is not currently selected.
+
+After setup, use a standard-user desktop session (or an existing interactive task
+for that user) for the synthetic qualification scripts:
+
+```powershell
+node scripts/qualify-windows-workspace.js --root C:\freedom-test\qualification
+$env:ELECTRON_RUN_AS_NODE = '1'
+$env:NODE_ENV = 'test'
+& .\node_modules\electron\dist\electron.exe scripts/qualify-windows-controller.js --root C:\freedom-test\qualification
+```
+
+To qualify an installed build instead of the development helpers in
+`out/windows-workspace`, add `--runtime <install>\resources\windows-workspace`
+to `qualify-windows-workspace.js` (for a per-user install, `<install>` is
+`%LOCALAPPDATA%\Programs\freedom-browser`). Add `--home <dir>` if setup
+provisioned a sandbox home other than the default
+`%LOCALAPPDATA%\FreedomBrowser\Sandbox`. Both apply to every check, including
+the opened-handle reads. `qualify-windows-controller.js` takes no `--runtime`; run
+from a checkout, it uses `out/`.
+
+The scripts retain their fixtures and JSONL results. This does not replace the
+packaged-app, first-use UI and installer checks recorded in the Agent roadmap.
 
 ## Repository layout
 
@@ -126,6 +174,8 @@ Playwright has four projects:
 `npm run test:e2e:packaged` runs both packaged projects. They need `FREEDOM_E2E_EXECUTABLE` pointing at that binary and refuse to run without it; add `FREEDOM_E2E_NO_SANDBOX=1` on a headless machine. After `npm run build -- --linux --x64`, that is `FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged`; to run only the slow half, call Playwright directly with `npx playwright test --project packaged-live` (adding `--project` to the npm script would union with the two projects it already names). `packaged-live` uses the same per-test scratch data directories as `live`, and skips its Tor check (with the reason) on builds that bundle no Arti binary. Packaged builds ship with the `EnableNodeCliInspectArguments` fuse off, so both projects start the binary themselves with `--remote-debugging-port=0` and attach Playwright over CDP (`test-e2e/packaged-launch.js`) instead of through `_electron.launch`, which needs `--inspect`. Two consequences for packaged specs: there is no `electronApp.evaluate()` in the main process — read main-process facts through the harness's fixed `electronApp.appFacts()` / `electronApp.testOp()` operations instead — and the app only honours `--remote-debugging-port` when `FREEDOM_TEST_USER_DATA` names a scratch profile (`src/main/remote-debugging-gate.js`), which both fixture files always set. The harness itself (`FREEDOM_TEST_MODE=1`, `fixtures.js` only) is honoured by a packaged build only when that same launch also kept `--remote-debugging-port` — a valid port on a scratch `FREEDOM_TEST_USER_DATA` profile, exactly what the launcher passes; set on its own, the variable is ignored by a shipped build (`src/main/test-mode.js`, which also argues why this grants nothing the open debugging port does not already give). The release workflow runs both suites against every artifact it just built — the macOS `.dmg` and `-mac.zip`, the Linux x64/arm64 `.deb` and AppImage, the Windows installer and portable zip (see `agent-playbooks/release-process.md` §6).
 
 All four suites use a temporary Electron `userData` directory and run sequentially. No fixture hides the Electron window by default, because a hidden window starves Playwright's click/check actionability waits of animation frames and lets a click on chrome that has just appeared over a page land on the page instead (#479, #536). `FREEDOM_TEST_HIDE_WINDOW=1` still hides it, and every fixture that doesn't pin it passes the caller's environment through — the harness and `live` fixtures (`test-e2e/fixtures.js`, which the packaged specs share, and `test-e2e/live-fixtures.js`) and the profiles and Radicle fixtures (`test-e2e/profiles-fixtures.js`, `test-e2e/radicle-fixtures.js`) — so a run with it set is hidden in all of them: CI's Myotis resolver step (`.github/workflows/ci.yml`) exports it for `test-e2e/live/myotis-ens.spec.js`, which drives no clicks or checks. If a spec run under that variable starts flaking on actionability waits, unset it first. The onboarding, Safe, Safe-phone and remote-signing fixtures pin it to `0`, so an inherited value can't hide their windows. On Linux, run the suites under `xvfb-run -a` so the window lands on a virtual display. The full CI matrix covers the operating-system-specific and native-node checks that most contributors cannot reproduce locally.
+
+**Agent specs on Linux.** Playwright's Electron launcher adds `--password-store=basic` to every launch (and `--use-mock-keychain` on macOS). On Linux that leaves safeStorage on its hard-coded-key `basic_text` backend, which the app refuses for credentials, so the harness installs a mock credential store for exactly that case (`installLinuxMockCredentialStore` in `src/main/test-harness.js`), the Linux counterpart of the macOS mock keychain. The real-sandbox specs in `agent-sidebar.spec.js`, and `automation-runtime.spec.js` / `freedom-cli.spec.js`, which spawn Electron without `--no-sandbox`, additionally need what the `.deb` installs for users: `bwrap` (`sudo apt-get install bubblewrap`), the Linux workspace owner helper (`npm run build:linux-workspace-supervisor`, needs `/usr/bin/gcc`), and on Ubuntu 24.04 and later an AppArmor profile that lets the checkout's Electron binary create user namespaces. `.github/actions/linux-agent-sandbox/action.yml` sets up all three for the `e2e-agent-linux` and nightly `e2e-full` jobs; its profile step is the one to copy for a local run. Without them these specs fail with `The Bubblewrap executable is unavailable`, `Linux x64 workspace owner requires installed matching helper…`, or a Chromium SUID-sandbox abort.
 
 `npm run test:e2e:startup-smoke` (`test-e2e/live/startup-responsiveness.spec.js`) is the check for a main-process freeze like #495: it starts the app with real nodes on a fresh profile (`npm run ant:download` first; `xvfb-run -a` on headless Linux), times back-to-back main-process round trips for 90 s, and fails if any exceeds 1 s or the watchdog logged a stall. `FREEDOM_STARTUP_SMOKE_SECONDS` and `FREEDOM_STARTUP_SMOKE_MAX_RTT_MS` override both numbers; the report and the run's `main.log` land in `test-results/`. It is opt-in: the spec skips unless `FREEDOM_STARTUP_SMOKE=1` (the npm script sets it), so a plain `npm run test:e2e:live` doesn't spend 90 s on it. It needs the network, so it runs nightly (`.github/workflows/startup-smoke.yml`, also dispatchable by hand), not on pull requests.
 
@@ -199,3 +249,14 @@ ENABLE_DEV_UPDATER=https://updates.example.org/test-feed /Applications/Freedom.a
 ```
 
 Surrounding whitespace in the value is ignored. `0`, `false`, `no`, `off` (any case) or an empty value read the same as leaving the variable unset: the dev updater stays off. Any other value (a URL without `http://`/`https://`, one that doesn't parse) logs a warning, shown in the terminal and the log file, and falls back to `http://localhost:8765`.
+
+### Local dictation runtime
+
+Development startup and packaging build the offline whisper.cpp CLI from pinned
+source. Install CMake 3.16+ and a C++ toolchain (Xcode command-line tools on macOS,
+MSVC Build Tools on Windows, or a C++ compiler and Make on Linux). Run
+`npm run build:dictation` to prepare it explicitly; set `CMAKE` to an executable
+path if needed. The cached artifact is checked before requiring the compiler.
+Users of packaged Freedom download only the optional speech model, and need none
+of these tools. See [local dictation](agent-dictation.md#on-this-device) for pins,
+privacy boundaries, and qualification.

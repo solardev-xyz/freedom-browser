@@ -14,6 +14,7 @@ const { isExternalProtocolUrl, trackUserGestures } = require('./external-protoco
 const { requestOpenExternal } = require('./permissions/permissions-manager');
 const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
 const { attachTabSwitchKeys } = require('./tab-switch-keys');
+const { isAgentPage } = require('./wallet/agent-tab-custody');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -27,7 +28,8 @@ const sanitizeUrlForLog = (rawUrl) => {
       parsed.protocol === 'ipfs:' ||
       parsed.protocol === 'ipns:' ||
       parsed.protocol === 'web3:' ||
-      parsed.protocol === 'freedom:'
+      parsed.protocol === 'freedom:' ||
+      parsed.protocol === 'freedom-preview:'
     ) {
       return `${parsed.protocol}//<redacted>`;
     }
@@ -38,7 +40,8 @@ const sanitizeUrlForLog = (rawUrl) => {
       rawUrl.startsWith('ipfs://') ||
       rawUrl.startsWith('ipns://') ||
       rawUrl.startsWith('web3://') ||
-      rawUrl.startsWith('freedom://')
+      rawUrl.startsWith('freedom://') ||
+      rawUrl.startsWith('freedom-preview://')
     ) {
       return `${rawUrl.split('://')[0]}://<redacted>`;
     }
@@ -120,6 +123,10 @@ function ownerWindowOf(contents) {
   }
 }
 
+// Injected into every non-internal page at user origin; see the dom-ready
+// handler below (#923).
+const PAGE_DEFAULTS_CSS = 'html { color-scheme: light; }';
+
 // The only preload a tab <webview> may run. tabs.js asks for it through
 // `internal:get-webview-preload-path`, which answers this same path.
 const WEBVIEW_PRELOAD_PATH = path.join(__dirname, 'webview-preload.js');
@@ -180,8 +187,18 @@ function attachWebviewBoot(embedder, webPreferences, params) {
 // load that content with `window.electronAPI` et al. attached. It never
 // navigates itself (tabs navigate inside their webviews) and never opens
 // windows of its own.
-function lockChromeWindow(contents, tag) {
+function lockChromeWindow(contents, tag, isManagedPage) {
   const block = (event, url) => {
+    // Hidden automation BrowserWindows are page hosts, not chrome. Only the
+    // main-owned manager can identify them, and they must carry no preload.
+    // Check at navigation time: adoption happens after web-contents-created.
+    try {
+      const preferences = contents.getLastWebPreferences?.();
+      if (isManagedPage?.(contents) === true && preferences?.sandbox === true &&
+          preferences.contextIsolation === true && preferences.nodeIntegration === false &&
+          !preferences.nodeIntegrationInSubFrames && !preferences.nodeIntegrationInWorker && !preferences.webviewTag &&
+          !preferences.preload && !preferences.preloadURL && preferences.webSecurity !== false) return;
+    } catch { /* Unknown ownership/preferences keep the chrome lock. */ }
     log.warn(`${tag} blocked chrome-window navigation: ${navUrlForLog(contents, url)}`);
     event.preventDefault();
   };
@@ -193,8 +210,19 @@ function lockChromeWindow(contents, tag) {
   });
 }
 
-function registerWebContentsHandlers() {
+function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
   app.on('web-contents-created', (_event, contents) => {
+    let previousRtcPolicy;
+    contents.on('did-start-navigation', (_event, url, _inPlace, isMainFrame) => {
+      if (!isMainFrame) return;
+      if (url.startsWith('freedom-preview://')) {
+        previousRtcPolicy ??= contents.getWebRTCIPHandlingPolicy?.() || 'default';
+        contents.setWebRTCIPHandlingPolicy?.('disable_non_proxied_udp');
+      } else if (previousRtcPolicy !== undefined) {
+        contents.setWebRTCIPHandlingPolicy?.(previousRtcPolicy);
+        previousRtcPolicy = undefined;
+      }
+    });
     contents.once('destroyed', () => {
       activeBzzBases.delete(contents.id);
       cleanupX402WebContents(contents.id);
@@ -221,12 +249,23 @@ function registerWebContentsHandlers() {
     // inject into every frame too (uBlock Origin's `all_frames`, Brave).
     contents.on('will-attach-webview', (_event, webPreferences, params) => {
       hardenWebviewPreferences(webPreferences);
+      if (params?.src?.startsWith('freedom-preview://') && !isPrivateWebContents(contents) &&
+          !isPrivatePartition(webPreferences.partition ?? params?.partition)) webPreferences.partition = 'freedom-workspace-preview';
       webPreferences.nodeIntegrationInSubFrames = true;
+      // Paint the guest's own canvas instead of letting the chrome show
+      // through it, the way a Chrome tab does. Electron makes a <webview>
+      // guest transparent by default, so a page that sets no background of
+      // its own showed the toolbar colour behind it (dark grey with Freedom
+      // in dark theme, under the page's unchanged black text). Opaque, an
+      // unstyled page gets Chromium's white canvas, and a page whose dark
+      // background sits on <body> only (x.com) still fills the window, since
+      // nothing paints <html> over it (#923).
+      webPreferences.transparent = false;
       if (webPreferences.preload) attachWebviewBoot(contents, webPreferences, params);
     });
 
     if (type === 'window') {
-      lockChromeWindow(contents, tag);
+      lockChromeWindow(contents, tag, isManagedPage);
     }
 
     // Next/Previous Tab are claimed here, before the chrome or the page sees
@@ -242,17 +281,23 @@ function registerWebContentsHandlers() {
       // bit, so the guest's input stream stands in for it (#406).
       trackUserGestures(contents);
 
-      // Electron applies dark system colors (Canvas, CanvasText) to ALL pages when
-      // nativeTheme is dark, even pages that don't opt in via color-scheme. This
-      // makes pages without dark mode support unreadable (dark bg + unchanged text).
-      // Inject light defaults at user-origin so pages with their own author-origin
-      // CSS (including @media prefers-color-scheme: dark) override this naturally.
+      // Keep pages without dark-mode support on light system colours
+      // (Canvas, CanvasText, form controls, scrollbars) whatever the app or
+      // OS theme. `color-scheme` only, at user origin: a page's own
+      // `color-scheme` property and colours (author origin, including
+      // @media (prefers-color-scheme: dark)) still win — a bare
+      // <meta name="color-scheme"> does not, as before — and no background is
+      // set on <html> or <body> — a user-origin `background-color` on <html>
+      // stopped a <body>-only dark background (x.com) from covering the
+      // window and left it white around the page's columns (#923). The
+      // white canvas for unstyled pages comes from the guest being opaque
+      // (`transparent = false` in will-attach-webview above).
       contents.on('dom-ready', () => {
         const url = contents.getURL();
         const isInternal = url.startsWith('file:') && url.includes('/pages/');
         if (!isInternal) {
           contents
-            .insertCSS('html, body { background-color: #fff; color: #000; color-scheme: light; }', {
+            .insertCSS(PAGE_DEFAULTS_CSS, {
               cssOrigin: 'user',
             })
             .catch(() => {});
@@ -260,6 +305,10 @@ function registerWebContentsHandlers() {
       });
 
       contents.setWindowOpenHandler(({ url, frameName, disposition, referrer }) => {
+        if (contents.getURL().startsWith('freedom-preview://')) {
+          log.info(`${tag} blocked an isolated preview window request`);
+          return { action: 'deny' };
+        }
         log.info(
           `${tag} intercepted new window request: ${navUrlForLog(contents, url)} ` +
             `(target: ${frameName || 'none'}, disposition: ${disposition || 'default'})`
@@ -310,6 +359,20 @@ function registerWebContentsHandlers() {
           });
           return { action: 'deny' };
         }
+        // A page in Agent custody cannot hand a site a tab outside it, where
+        // the site's auto-approve rules would answer again (audit M1). Its
+        // popup opens as an Agent-held tab (agent service openCustodyPopup)
+        // or not at all.
+        if (isAgentPage(contents)) {
+          log.info(`${tag} popup from a page in Agent custody opens in Agent custody`);
+          Promise.resolve()
+            .then(() => openAgentPopup?.(contents, url))
+            .then((opened) => {
+              if (opened !== true) log.info(`${tag} popup from a page in Agent custody was not opened`);
+            })
+            .catch(() => {});
+          return { action: 'deny' };
+        }
         // Send message to the owning BrowserWindow to open URL in new tab
         const parentWindow = ownerWindowOf(contents);
         if (parentWindow) {
@@ -339,6 +402,23 @@ function registerWebContentsHandlers() {
       // of failing as an unknown scheme — bookmarks created before the
       // transport-aware migration still carry the legacy prefix.
       contents.on('will-navigate', (event, url) => {
+        const currentUrl = contents.getURL();
+        if (currentUrl.startsWith('freedom-preview://')) {
+          let samePreviewOrigin;
+          try {
+            const current = new URL(currentUrl);
+            const destination = new URL(url);
+            samePreviewOrigin =
+              current.protocol === destination.protocol && current.host === destination.host;
+          } catch {
+            samePreviewOrigin = false;
+          }
+          if (!samePreviewOrigin) {
+            log.info(`${tag} blocked isolated preview navigation`);
+            event.preventDefault();
+          }
+          return;
+        }
         // A CSP sandbox is the primary boundary for contract-hosted HTML. This
         // main-process guard is defence in depth: scripted location changes
         // cannot replace the isolated app with a mutable web origin. Genuine
@@ -360,10 +440,12 @@ function registerWebContentsHandlers() {
         ) {
           log.info(`${tag} intercepted custom protocol navigation: ${navUrlForLog(contents, url)}`);
           event.preventDefault();
-          // Send to the owning window to handle via the browser's navigation system
+          // Send to the owning window to handle via the browser's navigation
+          // system, naming the guest that asked: the window loads it into that
+          // guest's tab, never into whichever tab happens to be active (#969).
           const parentWindow = ownerWindowOf(contents);
           if (parentWindow) {
-            parentWindow.webContents.send('navigate-to-url', url);
+            parentWindow.webContents.send('navigate-to-url', url, contents.id);
           }
         }
       });

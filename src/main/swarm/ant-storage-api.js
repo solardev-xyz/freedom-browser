@@ -67,6 +67,17 @@ function isConnectFailure(err) {
   return causes.some((e) => CONNECT_FAILURE_CODES.has(e?.code));
 }
 
+// antd's chain errors quote the RPC URL a request failed on ("error sending
+// request for url (…)"), and the URL Freedom gives antd is the chain
+// bridge's per-start capability, `/ant-chain/<64 hex>` (ant-chain-bridge.js).
+// The bridge redacts it from antd's log output; this keeps it out of the
+// answers that reach the setup screen and main's log.
+const CHAIN_BRIDGE_CAPABILITY = /\/ant-chain\/[0-9a-f]{64}/gi;
+
+function redactChainBridgeCapability(text) {
+  return text.replace(CHAIN_BRIDGE_CAPABILITY, '/ant-chain/[redacted]');
+}
+
 async function antRequest(
   method,
   endpoint,
@@ -108,7 +119,11 @@ async function antRequest(
   } catch {
     data = null;
   }
-  const message = typeof data?.message === 'string' && data.message ? data.message : null;
+  const message =
+    typeof data?.message === 'string' && data.message
+      ? redactChainBridgeCapability(data.message)
+      : null;
+  if (message) data.message = message;
   return { ok: response.ok, status: response.status, data, message };
 }
 
