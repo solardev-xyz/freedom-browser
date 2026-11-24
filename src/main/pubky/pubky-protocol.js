@@ -31,11 +31,11 @@
  *    body fetch has already decoded.
  *  - Each request gets FETCH_TIMEOUT_MS (30s, as ipfs-protocol.js's
  *    ATTEMPT_TIMEOUT_MS) for the homeserver's response headers, and its
- *    dials are aborted when the page cancels the request (tab closed,
- *    navigated away). A homeserver that accepts the connection and never
- *    answers gets a 504 instead of a tab that spins until the socket gives
- *    up. Once headers are in, the body streams with no deadline but stays
- *    linked to the page's cancellation.
+ *    dials are linked to `request.signal`, as in bzz-/ipfs-protocol.js, so
+ *    the page cancelling the request aborts them. A homeserver that accepts
+ *    the connection and never answers gets a 504 instead of a tab that
+ *    spins until the socket gives up. Once headers are in, the body streams
+ *    with no deadline but stays linked to `request.signal`.
  *  - Error responses carry fixed text, never SDK/WASM error messages.
  */
 

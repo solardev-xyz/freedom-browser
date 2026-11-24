@@ -9,6 +9,7 @@ Freedom opens public files stored on [Pubky](https://pubky.org) homeservers. A P
 | `pubky://<public-key>/pub/<path>`             | The file at `/pub/<path>`                                       |
 | `pubky<public-key>/pub/<path>`                | The same file. This is the Pubky SDK's display form.            |
 | `pubky://<public-key>` or `pubky<public-key>` | `pubky://<public-key>/pub/`, the list of the key's public files |
+| `pubky://<public-key>/pub`                    | `pubky://<public-key>/pub/`, the same list                      |
 
 `<public-key>` is 52 z-base-32 characters. The address bar always shows the `pubky://` form, and Pubky addresses are never sent to the search provider. These forms follow [Pubky Chromium's identifier grammar](https://github.com/pubky/pubky-chromium/blob/pubky/pubky/IDENTIFIERS.md).
 
@@ -31,5 +32,6 @@ Loading the SDK replaces Node's global `fetch` with a cookie-storing wrapper. Th
 - Only `GET` and `HEAD` under `/pub/` are served. Other methods return `405`, and other paths return `400`.
 - Freedom never signs in to a homeserver, so it can't write files or read private data.
 - If the homeserver can't be resolved or reached, or a check above refuses it, the handler returns `502` with a fixed message. SDK error text never reaches the page.
+- A homeserver that hasn't sent its response headers within 30 seconds gets the page a `504`, and the request to it is aborted. The same happens, without a response, when the page cancels the request. Once the headers have arrived the body has no deadline.
 - The handler doesn't log request URLs, because they name the key being read.
 - Site permissions (notifications, camera, microphone and the like) aren't offered to `pubky://` pages. Such a request is denied without a prompt, because the permission store has no key form for a `pubky://` origin yet.

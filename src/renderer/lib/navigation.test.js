@@ -2597,6 +2597,7 @@ describe('navigation', () => {
       ['pubky://KEY/pub/app/index.html', 'pubky://KEY/pub/app/index.html'],
       ['pubkyKEY/pub/a.txt', 'pubky://KEY/pub/a.txt'],
       ['pubky://KEY', 'pubky://KEY/pub/'],
+      ['pubky://KEY/', 'pubky://KEY/pub/'],
       ['pubky://KEY/pub', 'pubky://KEY/pub/'],
       ['pubkyKEY/pub', 'pubky://KEY/pub/'],
       ['pubky://KEY/pub?sort=name', 'pubky://KEY/pub/?sort=name'],
@@ -2605,6 +2606,16 @@ describe('navigation', () => {
     ])('Pubky: %s loads %s', async (input, expected) => {
       const key = 'gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo';
       const ctx = await loadNavigationModule();
+      // Like the real url-utils, which hands any parseable URL back as its
+      // own target: the pubky branch must claim the input first.
+      ctx.urlUtilsMocks.formatBzzUrl.mockImplementation((raw) => {
+        try {
+          const url = new URL(raw);
+          return { targetUrl: url.toString(), displayValue: url.toString(), baseUrl: null };
+        } catch {
+          return null;
+        }
+      });
       await ctx.mod.initNavigation();
 
       ctx.mod.loadTarget(input.replace('KEY', key.toUpperCase()));

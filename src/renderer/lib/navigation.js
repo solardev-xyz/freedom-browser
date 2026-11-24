@@ -2230,6 +2230,29 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     syncTargetBzzBase(null);
   };
 
+  // Pubky: `pubky://<key>/pub/...`, or the SDK's display form
+  // `pubky<key>/pub/...`. The main-process handler validates the address.
+  // Ahead of the Swarm branch: `formatBzzUrl` claims any parseable URL
+  // (`pubky://…` included) and would load it unnormalized.
+  const pubkyMatch = value.trim().match(/^pubky(?::\/\/)?([a-z0-9]{52})(\/\S*)?$/i);
+  if (pubkyMatch) {
+    // A bare key, or `/pub` without its slash, opens the listing of the
+    // key's public files (the handler serves only paths under `/pub/`).
+    const pubkyPath =
+      !pubkyMatch[2] || pubkyMatch[2] === '/'
+        ? '/pub/'
+        : pubkyMatch[2].replace(/^\/pub(?=$|[?#])/, '/pub/');
+    const pubkyUrl = `pubky://${pubkyMatch[1].toLowerCase()}${pubkyPath}`;
+    setAddressDisplayForTab(displayOverride || pubkyUrl, targetTabId);
+    pushDebug(`[AddressBar] Loading Pubky target: ${pubkyUrl}`);
+    navState.pendingTitleForUrl = pubkyUrl;
+    navState.pendingNavigationUrl = pubkyUrl;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(pubkyUrl);
+    syncTargetBzzBase(null);
+    return;
+  }
+
   // Try Swarm/bzz
   const target = formatBzzUrl(value, state.bzzRoutePrefix);
   if (target) {
@@ -2287,27 +2310,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.pendingNavigationUrl = value;
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(value);
-    syncTargetBzzBase(null);
-    return;
-  }
-
-  // Pubky: `pubky://<key>/pub/...`, or the SDK's display form
-  // `pubky<key>/pub/...`. The main-process handler validates the address.
-  const pubkyMatch = value.trim().match(/^pubky(?::\/\/)?([a-z0-9]{52})(\/\S*)?$/i);
-  if (pubkyMatch) {
-    // A bare key, or `/pub` without its slash, opens the listing of the
-    // key's public files (the handler serves only paths under `/pub/`).
-    const pubkyPath =
-      !pubkyMatch[2] || pubkyMatch[2] === '/'
-        ? '/pub/'
-        : pubkyMatch[2].replace(/^\/pub(?=$|[?#])/, '/pub/');
-    const pubkyUrl = `pubky://${pubkyMatch[1].toLowerCase()}${pubkyPath}`;
-    setAddressDisplayForTab(displayOverride || pubkyUrl, targetTabId);
-    pushDebug(`[AddressBar] Loading Pubky target: ${pubkyUrl}`);
-    navState.pendingTitleForUrl = pubkyUrl;
-    navState.pendingNavigationUrl = pubkyUrl;
-    navState.hasNavigatedDuringCurrentLoad = false;
-    webview.loadURL(pubkyUrl);
     syncTargetBzzBase(null);
     return;
   }
