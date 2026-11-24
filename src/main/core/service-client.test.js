@@ -7,7 +7,8 @@
  * Then what a service's owner may take over (freedom-core design 0014),
  * against a fake freedom-colibrid (`test/helpers/fake-colibrid.js`): events
  * read after the exit until the pipe closes, restarts (`restart: false`),
- * a step after each spawn, and the end of a process it no longer trusts.
+ * a step after each spawn, the end of a process it no longer trusts, and
+ * the wait for one that exits by itself (`awaitExit`).
  */
 
 const { EventEmitter } = require('events');
@@ -821,6 +822,123 @@ describe("what a service's owner takes over (design 0014)", () => {
     expect(client.current.ending).toBe(false);
     await client.stop();
   });
+
+  test('awaitExit: a process that exits by itself is waited for and sent nothing more; its exit is a stop main asked for (no warn, no restart, stopped)', async () => {
+    const { client, children, timers, log } = colibriClient();
+    const served = jest.fn(() => ({}));
+    client.handle('shell.colibri_fetch', served);
+    await client.start();
+    const gen = client.current;
+    const exits = [];
+    client.on('exit', (exit) => exits.push(exit));
+
+    const done = client.awaitExit({ graceMs: 5_000 });
+    expect(client.state).toBe('stopping');
+    // Nothing more goes to it: main's requests fail, its own aren't served.
+    expect(client.serves(gen)).toBe(false);
+    await expect(client.requestTo(gen, 'colibri.stats')).rejects.toMatchObject({
+      code: 'colibri_unavailable',
+    });
+    await expect(client.request('colibri.stats')).rejects.toMatchObject({
+      code: 'colibri_unavailable',
+    });
+    children[0].fetch(1, { type: 'prover' });
+    await tick();
+    expect(served).not.toHaveBeenCalled();
+    expect(timers.filter((t) => !t.cleared && t.ms === 5_000)).toHaveLength(1);
+
+    children[0].exit(0);
+    await expect(done).resolves.toBeUndefined();
+    expect(exits).toEqual([{ code: 0, signal: null, cause: null }]);
+    expect(client.state).toBe('stopped');
+    expect(children[0].sent('colibri.shutdown')).toEqual([]);
+    expect(children[0].stdinClosed).toBe(false);
+    expect(log.warn).not.toHaveBeenCalled();
+    // No restart (the client restarts by default), no crash counted, and
+    // the grace given up.
+    expect(client.crashTimes).toEqual([]);
+    expect(timers.filter((t) => !t.cleared)).toEqual([]);
+    expect(children).toHaveLength(1);
+  });
+
+  test("awaitExit: one that doesn't exit is stopped after the grace, and killed after the service's own", async () => {
+    const { client, children, timers } = colibriClient({ restart: false });
+    await client.start();
+    // It ignores the shutdown and its stdin's end: only a kill ends it.
+    const exit = children[0].exit.bind(children[0]);
+    children[0].exit = (code, signal) => {
+      if (signal) exit(code, signal);
+    };
+    const exits = [];
+    client.on('exit', (e) => exits.push(e));
+    let gone = false;
+    const done = client.awaitExit({ graceMs: 5_000 }).then(() => (gone = true));
+
+    timers.find((t) => !t.cleared && t.ms === 5_000).fn();
+    await tick();
+    expect(children[0].sent('colibri.shutdown')).toHaveLength(1);
+    expect(children[0].stdinClosed).toBe(true);
+    expect(gone).toBe(false);
+
+    timers.find((t) => !t.cleared && t.ms === 3_000).fn();
+    await done;
+    expect(children[0].killedWith).toBe('SIGKILL');
+    expect(exits).toEqual([{ code: null, signal: 'SIGKILL', cause: 'shutdown' }]);
+    expect(client.state).toBe('stopped');
+  });
+
+  test('awaitExit with no process resolves at once, as a stop; its grace must be one', async () => {
+    const { client, children } = colibriClient();
+    await expect(client.awaitExit({ graceMs: 5_000 })).resolves.toBeUndefined();
+    expect(client.state).toBe('stopped');
+    expect(children).toEqual([]);
+    for (const graceMs of [undefined, -1, 1.5, '5000']) {
+      await expect(client.awaitExit({ graceMs })).rejects.toBeInstanceOf(TypeError);
+    }
+  });
+
+  test('awaitExit and a stop() meanwhile, either way round: both settle, once, when the process is gone', async () => {
+    for (const order of ['await first', 'stop first']) {
+      const { client, children, timers } = colibriClient({ restart: false });
+      await client.start();
+      const settled = [];
+      const calls =
+        order === 'await first'
+          ? [client.awaitExit({ graceMs: 5_000 }), client.stop()]
+          : [client.stop(), client.awaitExit({ graceMs: 5_000 })];
+      calls.forEach((call, index) => call.then(() => settled.push(index)));
+      await Promise.all(calls);
+      await tick();
+      expect([order, settled.sort()]).toEqual([order, [0, 1]]);
+      // The stop's one shutdown, and no grace left armed.
+      expect(children[0].sent('colibri.shutdown')).toHaveLength(1);
+      expect(timers.filter((t) => !t.cleared && t.ms === 5_000)).toEqual([]);
+      expect(client.state).toBe('stopped');
+    }
+  });
+
+  test.each([
+    ['exit 70', 70, null],
+    ['exit 75 (one that fails the client unasked)', 75, null],
+    ['SIGSEGV', null, 'SIGSEGV'],
+  ])(
+    'awaitExit: a death (%s) is reported as the exit it was, and is an asked-for stop as stop() has it: no warn, no failure, stopped',
+    async (_name, code, signal) => {
+      const { client, children, log } = colibriClient({ restart: false });
+      await client.start();
+      const exits = [];
+      const failed = jest.fn();
+      client.on('exit', (e) => exits.push(e));
+      client.on('failed', failed);
+      const done = client.awaitExit({ graceMs: 5_000 });
+      children[0].exit(code, signal);
+      await done;
+      expect(exits).toEqual([{ code, signal, cause: null }]);
+      expect(failed).not.toHaveBeenCalled();
+      expect(client.state).toBe('stopped');
+      expect(log.warn).not.toHaveBeenCalled();
+    }
+  );
 
   test("a duplex's kinds must take streams both ways", () => {
     expect(() =>

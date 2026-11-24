@@ -1,5 +1,7 @@
 // Checkpoint recovery belongs to the node service. Each verification attempt has
-// its own JS/WASM worker and store, independent of the ENS verifier's global cache.
+// its own verifier and store, independent of the ENS verifier's global cache:
+// a JS/WASM worker by default, or a one-shot freedom-colibrid process behind
+// the development switch (colibri-backend.js; checkpoint-colibrid.js).
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 
@@ -124,7 +126,19 @@ function validateCheckpoint(value, chainId, { now = Date.now(), fresh = true } =
   };
 }
 
-function acquireCheckpoint(chainId, { signal, onDiagnostic } = {}) {
+// The checkpoint for `chainId`, verified by the backend the development switch
+// picks (colibri-backend.js: the WASM worker by default, always in a packaged
+// build; freedom-colibrid with FREEDOM_COLIBRI_BACKEND=service), with the same
+// interface and results either way. Required lazily: the worker thread loads
+// this module too, and neither Electron nor the service client belongs there.
+function acquireCheckpoint(chainId, options = {}) {
+  if (require('../ens/colibri-backend').colibriBackendKind() === 'service') {
+    return require('./checkpoint-colibrid').acquireColibridCheckpoint(chainId, options);
+  }
+  return acquireWorkerCheckpoint(chainId, options);
+}
+
+function acquireWorkerCheckpoint(chainId, { signal, onDiagnostic } = {}) {
   return new Promise((resolve, reject) => {
     try {
       networkFor(chainId);
@@ -226,7 +240,8 @@ function acquireCheckpoint(chainId, { signal, onDiagnostic } = {}) {
   });
 }
 
-// Worker diagnostics cross a trust boundary too. Never forward response bodies,
+// Diagnostics cross a trust boundary too (the worker's messages; the native
+// path's quorum, checkpoint-colibrid.js). Never forward response bodies,
 // arbitrary URLs/messages or fields into main-process logs or renderer status.
 function validateDiagnostic(value, chainId) {
   if (!value || !networkFor(chainId).sources.includes(value.source) ||
@@ -246,6 +261,7 @@ function validateDiagnostic(value, chainId) {
 module.exports = {
   acquireCheckpoint,
   validateCheckpoint,
+  validateDiagnostic,
   CHECKPOINT_NETWORKS,
   checkpointError,
   networkFor,

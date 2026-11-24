@@ -2,6 +2,12 @@ const { EventEmitter } = require('node:events');
 const { Worker } = require('node:worker_threads');
 
 jest.mock('node:worker_threads', () => ({ Worker: jest.fn() }));
+// The development switch, held at its default (the WASM worker) unless a
+// test says otherwise, whatever the environment running the tests says.
+jest.mock('../ens/colibri-backend', () => ({ colibriBackendKind: jest.fn(() => 'wasm') }));
+jest.mock('./checkpoint-colibrid', () => ({ acquireColibridCheckpoint: jest.fn() }));
+const { colibriBackendKind } = require('../ens/colibri-backend');
+const { acquireColibridCheckpoint } = require('./checkpoint-colibrid');
 const {
   acquireCheckpoint,
   validateCheckpoint,
@@ -271,6 +277,38 @@ describe('checkpoint worker lifecycle', () => {
     worker.emit('message', { ok: true, checkpoint: checkpoint() });
     await second;
     expect(Worker).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the verifier the development switch picks', () => {
+  beforeEach(() => Worker.mockReset());
+  afterEach(() => {
+    colibriBackendKind.mockReset();
+    colibriBackendKind.mockImplementation(() => 'wasm');
+    acquireColibridCheckpoint.mockReset();
+    Worker.mockReset();
+  });
+
+  test("the service: freedom-colibrid's one-shot process, with the caller's options, and no worker", async () => {
+    colibriBackendKind.mockReturnValue('service');
+    const options = { signal: new AbortController().signal, onDiagnostic: () => {} };
+    acquireColibridCheckpoint.mockResolvedValue(checkpoint(100));
+    await expect(acquireCheckpoint(100, options)).resolves.toEqual(checkpoint(100));
+    expect(acquireColibridCheckpoint).toHaveBeenCalledWith(100, options);
+    expect(Worker).not.toHaveBeenCalled();
+  });
+
+  test('the WASM default (and every packaged build): the worker, never the process', async () => {
+    Worker.mockImplementation(() => {
+      const worker = new EventEmitter();
+      worker.terminate = jest.fn(() => Promise.resolve(1));
+      return worker;
+    });
+    const promise = acquireCheckpoint(1);
+    expect(Worker).toHaveBeenCalledTimes(1);
+    expect(acquireColibridCheckpoint).not.toHaveBeenCalled();
+    Worker.mock.results[0].value.emit('message', { ok: false, error: { code: 'CHECKPOINT_STALE' } });
+    await expect(promise).rejects.toMatchObject({ code: 'CHECKPOINT_STALE' });
   });
 });
 
