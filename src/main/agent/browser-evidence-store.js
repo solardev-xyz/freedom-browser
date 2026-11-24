@@ -6,6 +6,7 @@ const RECALL_TOOL = 'browser_recall_evidence';
 const RETAINED = new Set([
   OPERATIONS.SNAPSHOT,
   OPERATIONS.READ_FRAME,
+  OPERATIONS.READ_MARKDOWN,
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
@@ -26,6 +27,10 @@ const OMITTED_KEYS = new Set([
 const MAX_BYTES = 512 * 1024;
 const MAX_ENTRIES = 32;
 const MAX_TEXT = 64000;
+// A Markdown read returns up to 64,000 characters of text; JSON escaping
+// (newlines, quotes) plus the result's own fields would clip its tail under
+// MAX_TEXT, so retain the whole serialized result. MAX_BYTES still bounds it.
+const MAX_MARKDOWN_TEXT = 128000;
 const CHUNK = 8000;
 
 // Conversation tool-session memory only. It is not a live observation, a disk
@@ -39,18 +44,24 @@ class BrowserEvidenceStore {
 
   record(operation, envelope) {
     if (!RETAINED.has(operation) || envelope?.ok !== true) return null;
+    // An unavailable Markdown read holds nothing to recall (it points at browser_snapshot).
+    if (operation === OPERATIONS.READ_MARKDOWN && envelope.result?.available !== true) return null;
     try {
       const serialized = JSON.stringify(envelope.result, (key, value) =>
         OMITTED_KEYS.has(key) ? undefined : value
       );
       if (typeof serialized !== 'string') return null;
-      const text = serialized.slice(0, MAX_TEXT);
+      const text = serialized.slice(
+        0,
+        operation === OPERATIONS.READ_MARKDOWN ? MAX_MARKDOWN_TEXT : MAX_TEXT
+      );
+      // Markdown results carry no title; list them by the page they describe.
+      const title = envelope.result?.title ?? envelope.result?.pageUrl;
       const entry = {
         id: `evidence_${crypto.randomUUID()}`,
         operation,
         capturedAt: new Date().toISOString(),
-        title:
-          typeof envelope.result?.title === 'string' ? envelope.result.title.slice(0, 240) : '',
+        title: typeof title === 'string' ? title.slice(0, 240) : '',
         text,
         truncated: serialized.length > text.length,
         bytes: Buffer.byteLength(text),
@@ -76,7 +87,7 @@ class BrowserEvidenceStore {
       query.length > 200 ||
       !Number.isSafeInteger(offset) ||
       offset < 0 ||
-      offset > MAX_TEXT
+      offset > MAX_MARKDOWN_TEXT
     )
       throw new TypeError(
         'Use a literal query of at most 200 characters and a non-negative offset'

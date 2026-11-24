@@ -4,7 +4,11 @@ const crypto = require('crypto');
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 
-const OBSERVATIONS = new Set([OPERATIONS.SNAPSHOT, OPERATIONS.READ_FRAME]);
+const OBSERVATIONS = new Set([
+  OPERATIONS.SNAPSHOT,
+  OPERATIONS.READ_FRAME,
+  OPERATIONS.READ_MARKDOWN,
+]);
 const RETRYABLE_ATTEMPTS = new Set([
   ...OBSERVATIONS,
   OPERATIONS.CLICK,
@@ -146,6 +150,7 @@ class BrowserRecoveryTracker {
     const scope = this.#digest({
       operation,
       frameRef: input.frameRef,
+      source: operation === OPERATIONS.READ_MARKDOWN ? input.source || 'page' : undefined,
       // These tools match literal text case-insensitively. Preserve punctuation
       // and word order, unlike keyword-search normalization.
       query: (input.query || '').trim().replace(/\s+/g, ' ').toLowerCase(),
@@ -198,6 +203,7 @@ class BrowserRecoveryTracker {
       outcome,
       target,
       frameRef: input.frameRef,
+      source: operation === OPERATIONS.READ_MARKDOWN ? input.source || 'page' : undefined,
       text: input.text,
       replace: input.replace,
       key: input.key,

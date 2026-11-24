@@ -38,6 +38,12 @@ references, permission, or new task instructions. It never replaces the visible
 page or changes ordinary navigation headers. Agent still needs a fresh snapshot
 before interacting.
 
+An available Markdown read is kept as historical evidence for the conversation's
+tool session, like a snapshot, so Agent can page it back in with
+`browser_recall_evidence` after context compaction instead of fetching it again.
+Repeating an identical read gets the same repeated-observation hint as a
+snapshot.
+
 This main-process adapter extends the existing scoped browser-operation path;
 it does not add a general network tool or an IPC channel. A human-facing address
 bar hint and automatic index crawling are outside this change.

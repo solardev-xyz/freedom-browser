@@ -255,3 +255,24 @@ test('detects a two-state cycle only within the same observation scope, without 
   progressed.record(OPERATIONS.NAVIGATE, { tabId: 'tab_one' }, { ok: true });
   expect(read(progressed, 5, { text: 'State B' })).toBeNull();
 });
+
+test('repeated identical Markdown reads nudge like other observations, scoped by source', () => {
+  const tracker = new BrowserRecoveryTracker();
+  const envelope = {
+    ok: true,
+    navigationId: 1,
+    result: {
+      available: true,
+      format: 'markdown',
+      pageUrl: 'https://example.test/',
+      text: '# Same',
+    },
+  };
+  const readMarkdown = (source) =>
+    tracker.record(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_one', source }, envelope);
+  for (let index = 1; index <= 3; index += 1) expect(readMarkdown()).toBeNull();
+  // A site-index read is a different scope and restarts the count.
+  expect(readMarkdown('site-index')).toBeNull();
+  for (let index = 1; index <= 3; index += 1) expect(readMarkdown('page')).toBeNull();
+  expect(readMarkdown('page')).toContain('4 times');
+});

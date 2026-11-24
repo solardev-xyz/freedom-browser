@@ -61,3 +61,38 @@ test('validates retrieval input and does not retain failures or arbitrary operat
   ])
     expect(() => store.recall(input)).toThrow();
 });
+
+test('retains a full-length Markdown read for recall after compaction, but not an unavailable one', () => {
+  const store = new BrowserEvidenceStore();
+  // 64,000 characters is the adapter's cap; newlines and quotes grow under JSON escaping.
+  const markdown = `# Docs\n${'line "quoted"\n'.repeat(4570)}END-MARKER`;
+  const id = store.record(OPERATIONS.READ_MARKDOWN, {
+    ok: true,
+    result: {
+      available: true,
+      format: 'markdown',
+      source: 'site-provided-markdown',
+      url: 'https://example.test/docs.md',
+      pageUrl: 'https://example.test/docs',
+      text: markdown,
+      truncated: false,
+    },
+  });
+  expect(id).toMatch(/^evidence_/);
+  expect(store.recall({ query: 'read_markdown' }).entries).toEqual([
+    expect.objectContaining({ id, title: 'https://example.test/docs', truncated: false }),
+  ]);
+  let text = '';
+  for (let offset = 0; offset !== null;) {
+    const chunk = store.recall({ id, offset });
+    text += chunk.text;
+    offset = chunk.nextOffset;
+  }
+  expect(JSON.parse(text).text).toBe(markdown);
+  expect(
+    store.record(OPERATIONS.READ_MARKDOWN, {
+      ok: true,
+      result: { available: false, reason: 'markdown_not_offered', fallback: 'browser_snapshot' },
+    })
+  ).toBeNull();
+});
