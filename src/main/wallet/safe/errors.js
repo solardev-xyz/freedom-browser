@@ -18,6 +18,8 @@ const CODES = {
   SAFE_DISCARDED: 'SAFE_DISCARDED',
   /** Nothing local can pay gas — render the fund-the-executor state. */
   SAFE_NEEDS_FUNDS: 'SAFE_NEEDS_FUNDS',
+  /** safe-pending.json exists but cannot be read; nothing was changed. */
+  SAFE_PENDING_UNREADABLE: 'SAFE_PENDING_UNREADABLE',
 };
 
 function codedError(message, code) {

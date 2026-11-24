@@ -55,8 +55,9 @@ async function chainSafeNonce(safeAddress) {
 }
 
 /**
- * The board's render model. Pure — never touches the chain, never
- * throws for a render call. Null when nothing is pending.
+ * The board's render model. Pure — never touches the chain. Null when
+ * nothing is pending; throws SAFE_PENDING_UNREADABLE only when the store
+ * file itself cannot be read (see pending-store).
  *
  * @returns {{safeIndex: number, chainId: number, safeTxHash: string,
  *   threshold: number, collected: number,
@@ -253,7 +254,13 @@ async function executeSafePending(safeIndex) {
     }
 
     const state = getSafeSendState(safeIndex);
-    clearPending(safeIndex);
+    try {
+      clearPending(safeIndex);
+    } catch (err) {
+      // The transaction landed: report it as executed. The leftover entry
+      // turns 'superseded' via the nonce guard on the next execute.
+      console.error('[SafeSend] executed, but clearing the pending entry failed:', err);
+    }
     return { ...state, status: 'executed', executed: { hash: result.hash, explorerUrl: result.explorerUrl } };
   } finally {
     release(safeIndex);
