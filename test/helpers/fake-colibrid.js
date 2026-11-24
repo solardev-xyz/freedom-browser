@@ -21,7 +21,9 @@
  * - `forget`: `{}`; `stats`: `statsResult()`; `shutdown`: `{}`, then exit 0.
  *
  * A handler gets the message and the child, and answers through it:
- * - `child.result(id, result)`, `child.error(id, code, message)`;
+ * - `child.result(id, result)`, `child.error(id, code, message, data)`
+ *   (`data` as fc-protocol's ErrorBody carries it: the recycling
+ *   refusal's `{ recycling: true }`);
  * - `child.step(request)`, `child.stepped(request)`: the step marker's
  *   events (design 0014, The step marker), and `child.serve(message,
  *   { steps, result, reply })`: that many steps, then the reply;
@@ -32,6 +34,12 @@
  *   service's bodies end with);
  * - `child.event(name, data)`, `child.writeRaw(bytes)`, `child.exit(code,
  *   signal)`; nothing, to hang.
+ *
+ * A handler runs inside main's write of the request, and what it writes
+ * reaches main at once, before main's write returns: before the request's
+ * `onSent`, which a real pipe never comes ahead of. A handler that writes a
+ * step marker for the request it answers runs later (`setImmediate`), as
+ * colibrid-client.test.js's do.
  *
  * **Main's cancel** of one of its requests: before the request's first
  * marker, which claims its commit point, the connection answers
@@ -130,9 +138,11 @@ const CONFINEMENT = Object.freeze({
   resolution: null,
 });
 
-/** freedom-colibrid's hello (`service.rs`), as colibrid-v0.1.0 answers it. */
+/** freedom-colibrid's hello (`service.rs`), as colibrid-v0.1.1 answers it:
+ * its own release first (`service_version`), then the C core's. */
 const HELLO = Object.freeze({
   protocol: 1,
+  service_version: '0.1.1',
   colibri_version: '3.0.3',
   client_version: 196611,
   chain_id: 1,
@@ -534,11 +544,9 @@ class FakeColibridChild extends EventEmitter {
     return queued;
   }
 
-  error(id, code, message = code) {
-    const queued = this.duplex.sender.reply(
-      id,
-      json({ type: 'response', id, error: { code, message } })
-    );
+  error(id, code, message = code, data = undefined) {
+    const error = data === undefined ? { code, message } : { code, message, data };
+    const queued = this.duplex.sender.reply(id, json({ type: 'response', id, error }));
     this.pump();
     return queued;
   }
