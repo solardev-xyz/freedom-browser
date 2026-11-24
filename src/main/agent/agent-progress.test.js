@@ -1698,3 +1698,10 @@ test('a browser helper\'s declined action reads as declined, not as an uncertain
   const [kept] = normalizeSubagentReceipt(helper([{ ...submit, status: 'succeeded', approval: 'approved' }]).subagent).browserActions;
   expect(kept.approval).toBeUndefined();
 });
+
+test('Markdown activity is an observation and names the source origin', () => {
+  const progress = activityProgress(OPERATIONS.READ_MARKDOWN, { status: 'succeeded', origin: 'https://docs.example.test' });
+  expect(progress).toMatchObject({ effect: 'observed' });
+  expect(JSON.stringify(progress)).toContain('Markdown');
+  expect(JSON.stringify(progress)).toContain('docs.example.test');
+});

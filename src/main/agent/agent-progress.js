@@ -91,6 +91,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Closing a page',
     completed: 'Closed a page',
   },
+  [OPERATIONS.READ_MARKDOWN]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Reading a site-provided Markdown source',
+    completed: 'Read a site-provided Markdown source',
+  },
   [OPERATIONS.SNAPSHOT]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Reading the current page',
@@ -1047,6 +1052,7 @@ function activityProgress(operation, receipt = {}) {
       [OPERATIONS.GET_TAB]: ['Checking', 'Checked'],
       [OPERATIONS.FOCUS_TAB]: ['Switching to', 'Switched to'],
       [OPERATIONS.CLOSE_TAB]: ['Closing', 'Closed'],
+      [OPERATIONS.READ_MARKDOWN]: ['Reading Markdown from', 'Read Markdown from'],
       [OPERATIONS.SNAPSHOT]: ['Reading', 'Read'],
       [OPERATIONS.SCREENSHOT]: ['Looking at', 'Looked at'],
       [OPERATIONS.NAVIGATE]: ['Navigating to', 'Navigated to'],

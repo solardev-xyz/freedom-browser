@@ -1953,3 +1953,15 @@ describe('fresh observations across turns and handoffs', () => {
     expect((await root.execute(OPERATIONS.NAVIGATE, { tabId: 'tab_assigned', url: 'file:///private/file' })).error.code).toBe('POLICY_DENIED');
   });
 });
+
+test('Markdown reads cannot select an unshared tab and stop after custody release', async () => {
+  const controller = createController();
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned' });
+  expect(await scoped.execute(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_unrelated' })).toMatchObject({ ok: false });
+  expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.READ_MARKDOWN)).toBe(false);
+  expect(await scoped.execute(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_assigned' })).toMatchObject({ ok: true });
+  scoped.releaseTab('tab_assigned');
+  controller.execute.mockClear();
+  expect(await scoped.execute(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_assigned' })).toMatchObject({ ok: false });
+  expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.READ_MARKDOWN)).toBe(false);
+});

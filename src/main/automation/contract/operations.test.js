@@ -552,3 +552,10 @@ test('dialog responses require an exact handle and explicit boolean; caller auth
   for (const input of [{ accept: 'true' }, { dialogRef: 'current' }, { accept: false, promptText: 'secret' }, { promptText: 'x'.repeat(121) }, { promptText: '\n' }])
     expect(() => validateOperationInput(OPERATIONS.HANDLE_DIALOG, { ...base, ...input })).toThrow();
 });
+
+test('Markdown reads accept only a fixed source choice, never a caller-supplied URL', () => {
+  expect(validateOperationInput(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_1', url: 'https://evil.test' }))
+    .toEqual({ tabId: 'tab_1', source: 'page' });
+  expect(validateOperationInput(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_1', source: 'site-index' }).source).toBe('site-index');
+  expect(() => validateOperationInput(OPERATIONS.READ_MARKDOWN, { tabId: 'tab_1', source: 'file' })).toThrow();
+});

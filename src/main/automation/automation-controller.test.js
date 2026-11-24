@@ -84,6 +84,20 @@ describe('AutomationController', () => {
     expect(adapter.readFrame).not.toHaveBeenCalled();
   });
 
+  test('Markdown reads retain policy authorization and the trusted cancellation signal', async () => {
+    const { controller, authorize } = createController();
+    const adapter = new FakePageAdapter();
+    adapter.readMarkdown = jest.fn(async () => ({ available: true, text: '# Fixture' }));
+    const tabId = controller.registerPage(adapter);
+    const signal = new AbortController().signal;
+    expect(await controller.execute(OPERATIONS.READ_MARKDOWN, { tabId, source: 'site-index' }, { signal })).toMatchObject({ ok: true });
+    expect(adapter.readMarkdown).toHaveBeenCalledWith({ source: 'site-index', signal });
+    authorize.mockResolvedValue({ allowed: false });
+    adapter.readMarkdown.mockClear();
+    expect(await controller.execute(OPERATIONS.READ_MARKDOWN, { tabId })).toMatchObject({ ok: false });
+    expect(adapter.readMarkdown).not.toHaveBeenCalled();
+  });
+
   test('passes validated snapshot windows through the existing policy boundary', async () => {
     const { controller, authorize } = createController();
     const adapter = new FakePageAdapter();

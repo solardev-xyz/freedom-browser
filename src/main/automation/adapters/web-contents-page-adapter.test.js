@@ -585,3 +585,20 @@ describe('WebContentsPageAdapter', () => {
     await expect(pending).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
   });
 });
+
+test('Markdown observations use the registered guest session and refuse a document change during discovery', async () => {
+  const page = new FakeWebContents();
+  page.session = { fetch: jest.fn(async () => new Response('# Fixture', { headers: { 'content-type': 'text/markdown' } })) };
+  const adapter = new WebContentsPageAdapter(page);
+  page.executeJavaScriptInIsolatedWorld.mockResolvedValue({ alternate: ['/fixture.md'] });
+  expect(await adapter.readMarkdown()).toMatchObject({ available: true, url: 'https://example.test/fixture.md' });
+  expect(page.session.fetch).toHaveBeenCalledTimes(1);
+  page.session.fetch.mockClear();
+  page.executeJavaScriptInIsolatedWorld.mockImplementation(async () => {
+    page.emit('did-start-navigation', {}, 'https://elsewhere.test/', false, true);
+    return { alternate: ['/secret.md'] };
+  });
+  await expect(adapter.readMarkdown()).rejects.toMatchObject({ code: ERROR_CODES.STALE_ELEMENT_REFERENCE });
+  expect(page.session.fetch).not.toHaveBeenCalled();
+  adapter.dispose();
+});

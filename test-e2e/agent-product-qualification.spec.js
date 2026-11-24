@@ -45,6 +45,7 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_list_frames',
   'browser_list_page_tools',
   'browser_read_frame',
+  'browser_read_markdown',
   'browser_recall_evidence',
   'browser_scroll',
   'edit',

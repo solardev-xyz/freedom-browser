@@ -61,6 +61,7 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.GET_TAB,
       OPERATIONS.FOCUS_TAB,
       OPERATIONS.CLOSE_TAB,
+      OPERATIONS.READ_MARKDOWN,
       OPERATIONS.SNAPSHOT,
       OPERATIONS.LIST_FRAMES,
       OPERATIONS.READ_FRAME,
@@ -846,6 +847,22 @@ describe('Pi browser tool adapter', () => {
     await execute(OPERATIONS.CLICK, { ref: 'ref_owner' });
     expect(onToolOutcome.mock.calls.map(([receipt]) => [receipt.pageTitle, receipt.origin])).toEqual([
       ['Owner', 'https://owner.test'], ['Child', 'https://child.test'], ['Owner', 'https://owner.test'],
+    ]);
+  });
+
+  test('a Markdown read keeps the page title; its source file URL is not the page URL', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = { execute: jest.fn()
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://docs.test/guide', title: 'Guide' }))
+      .mockResolvedValueOnce(successEnvelope({ available: true, url: 'https://docs.test/guide.md', pageUrl: 'https://docs.test/guide' }))
+      .mockResolvedValueOnce(successEnvelope({})) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const execute = (operation, input) => tools.find((tool) => tool.name === operation).execute(operation, input);
+    await execute(OPERATIONS.SNAPSHOT, {});
+    await execute(OPERATIONS.READ_MARKDOWN, {});
+    await execute(OPERATIONS.SCROLL, { direction: 'down' });
+    expect(onToolOutcome.mock.calls.map(([receipt]) => [receipt.operation, receipt.pageTitle])).toEqual([
+      [OPERATIONS.SNAPSHOT, 'Guide'], [OPERATIONS.READ_MARKDOWN, 'Guide'], [OPERATIONS.SCROLL, 'Guide'],
     ]);
   });
 
