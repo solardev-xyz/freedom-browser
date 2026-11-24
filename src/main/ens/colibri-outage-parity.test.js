@@ -1,29 +1,31 @@
 /**
- * A prover outage on both Colibri backends (freedom-core design 0014, A
- * failed remote proof; COL-5's acceptance): an HTTP error and a transport
- * error give byte-identical adapter outcomes (name, code, message, data) on
- * the WASM verifier with #1081 and on freedom-colibrid, the transport
- * error's URL apart (deviation `fetch-error-text`), including the vectors'
- * cases whose completed message crosses the 2,000-unit cut. Each backend
- * asks the configured prover once, and nothing else.
+ * A prover outage on freedom-colibrid (freedom-core design 0014, A failed
+ * remote proof): an HTTP error and a transport error give the reference's
+ * adapter outcomes (name, code, message, data) byte for byte, the transport
+ * error's URL apart (deviation `fetch-error-text`), including the cases
+ * whose completed message crosses the 2,000-unit cut. The reference is the
+ * WASM verifier with #1081, which COL-6 removed: its outcomes for this
+ * suite's table were recorded before it went
+ * (test/fixtures/colibri/reference-outages.json), and freedom-core's vectors
+ * record its F-9 cases. The service asks the configured prover once, with
+ * the reference's request, and nothing else.
  *
- * test/helpers/colibri-prover-outage.js runs the reads: the real WASM path
- * in a child, the real binary through colibri-service.js on a scripted hop.
- * The service's parts are skipped without the binary, and fail without it
- * under FREEDOM_COLIBRID_REQUIRED=1 (test/helpers/colibri-backends.js); the
- * vectors' part is skipped without freedom-core's vectors, and fails without
- * them when FREEDOM_CORE_COLIBRI_VECTORS names the file.
+ * test/helpers/colibri-prover-outage.js runs the reads: the real binary
+ * through colibri-service.js on a scripted hop. They are skipped without the
+ * binary, and fail without it under FREEDOM_COLIBRID_REQUIRED=1
+ * (test/helpers/colibri-service-harness.js); the vectors' part is skipped
+ * without freedom-core's vectors, and fails without them when
+ * FREEDOM_CORE_COLIBRI_VECTORS names the file.
  */
 
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }));
 
 const {
-  backendOf,
   cut,
   deviation,
   outcomeOf,
   serviceTest,
-} = require('../../../test/helpers/colibri-backends');
+} = require('../../../test/helpers/colibri-service-harness');
 const {
   ACCOUNT,
   HTTP_503,
@@ -31,45 +33,20 @@ const {
   TRANSPORT,
   f9Cases,
   proverOutage,
-  wasmOutages,
+  proverOutageError,
 } = require('../../../test/helpers/colibri-prover-outage');
 const { colibriVectors, colibriVectorsRequired } = require('../../../test/helpers/colibri-vectors');
+const RECORDED = require('../../../test/fixtures/colibri/reference-outages.json');
 
-const WASM = backendOf('wasm');
-const SERVICE = backendOf('service');
-
-/** What `fetch-error-text` makes of the WASM path's error for the service:
- * URLs as `<url>` in the whole text, then the 2,000-unit cut. */
-function asService(wasm, raw, prover) {
-  return { ...outcomeOf(wasm), message: cut(raw.split(prover).join('<url>')) };
-}
-
-/**
- * Both backends' outcomes for one read, compared: identical, or for a
- * transport failure the WASM text with its prover URL as `<url>` and cut
- * after. Each asked the prover once, with the same request.
- */
-function expectParity(wasm, service, read) {
-  expect(wasm.error).not.toBeNull();
-  expect(service.error).not.toBeNull();
-  expect(outcomeOf(wasm.error).message).toBe(cut(wasm.raw));
-  const transport = Boolean(read.failure.transport);
-  expect(outcomeOf(service.error)).toEqual(
-    transport
-      ? deviation('fetch-error-text', SERVICE, {
-          wasm: outcomeOf(wasm.error),
-          service: asService(wasm.error, wasm.raw, read.prover),
-        })
-      : outcomeOf(wasm.error)
-  );
-  expect(wasm.fetched.map(({ url, method }) => [url, method])).toEqual([[read.prover, 'POST']]);
+/** The service asked the prover once, with `body`. */
+function expectOneProverRequest(service, prover, body) {
   expect(service.fetched.map(({ url, method }) => [url.replace(/\/$/, ''), method])).toEqual([
-    [read.prover, 'POST'],
+    [prover, 'POST'],
   ]);
-  expect(service.fetched[0].body).toBe(wasm.fetched[0].body);
+  expect(service.fetched[0].body).toBe(body);
 }
 
-describe('a prover outage on both backends', () => {
+describe('a prover outage', () => {
   const STORAGE = '0x0000000000000000000000000000000000000000000000000000000000000000';
   const BLOCK = `0x${'89'.repeat(32)}`;
   /** Each proofable method the service serves, and params that carry the
@@ -96,27 +73,47 @@ describe('a prover outage on both backends', () => {
       { method, params, failure, prover: PROVER },
     ])
   );
-  let wasm;
 
-  beforeAll(async () => {
-    wasm = await wasmOutages(ROWS.map(([, read]) => read));
-  }, 120_000);
-
-  test('the WASM path ends each with the prover\'s error, cut where the worker cuts', () => {
-    ROWS.forEach(([, read], at) => {
-      const { error, raw } = wasm[at];
-      expect(error).toMatchObject({ name: 'ProviderRpcError' });
-      expect(raw).toContain(': remote proof failed (no local proving): ');
-      expect(error.message).toBe(cut(raw));
-      expect(error.code).toBe(read.failure.transport ? -32603 : 4900);
-    });
+  test("the recording has every row, the reference's failed remote proof, cut where its worker cut", () => {
+    expect(Object.keys(RECORDED).sort()).toEqual(ROWS.map(([name]) => name).sort());
+    for (const [name, read] of ROWS) {
+      const { outcome, reference, deviation: tag } = RECORDED[name];
+      const transport = Boolean(read.failure.transport);
+      expect(outcome).toMatchObject({
+        name: 'ProviderRpcError',
+        code: transport ? -32603 : 4900,
+        message: expect.stringContaining(' : remote proof failed (no local proving): '),
+      });
+      expect(outcome.message.length).toBeLessThanOrEqual(2_000);
+      if (transport) {
+        // The reference named the prover's URL; the service writes `<url>`.
+        expect(tag).toBe('fetch-error-text');
+        expect(deviation(tag)).toEqual(expect.any(String));
+        expect(reference.message).toContain(PROVER);
+        expect(outcome.message).not.toContain(PROVER);
+      } else {
+        expect(tag).toBeUndefined();
+        expect(reference).toBeUndefined();
+      }
+    }
   });
 
   serviceTest.each(ROWS)(
-    '%s: the same outcome on freedom-colibrid',
-    async (_name, read) => {
-      const at = ROWS.findIndex(([, row]) => row === read);
-      expectParity(wasm[at], await proverOutage(SERVICE.kind, read), read);
+    "%s: the reference's recorded outcome",
+    async (name, read) => {
+      const service = await proverOutage(read);
+      expect(service.error).not.toBeNull();
+      expect(outcomeOf(service.error)).toEqual({ data: undefined, ...RECORDED[name].outcome });
+      expectOneProverRequest(service, read.prover, RECORDED[name].prover_body);
+    },
+    30_000
+  );
+
+  serviceTest(
+    "proverOutageError() is the binary's outcome for an HTTP 503",
+    async () => {
+      const service = await proverOutage({ failure: HTTP_503 });
+      expect(outcomeOf(service.error)).toEqual(outcomeOf(proverOutageError()));
     },
     30_000
   );
@@ -131,11 +128,6 @@ describe('a prover outage on both backends', () => {
 
 (colibriVectors ? describe : describe.skip)("the vectors' F-9 cases (COL-1)", () => {
   const cases = colibriVectors ? f9Cases(colibriVectors) : [];
-  let wasm;
-
-  beforeAll(async () => {
-    wasm = await wasmOutages(cases.map(({ read }) => read));
-  }, 120_000);
 
   test('cover every outage, both chains, and the cut', () => {
     const ids = cases.map(({ id }) => id);
@@ -154,27 +146,28 @@ describe('a prover outage on both backends', () => {
   });
 
   test.each(cases.map((entry) => [entry.id, entry]))(
-    '%s: the WASM path gives the recorded outcome',
+    "%s: the design's outcome is the reference's, but its URL",
     (_id, entry) => {
-      const { error, fetched } = wasm[cases.indexOf(entry)];
-      expect(outcomeOf(error)).toEqual({ data: undefined, ...entry.outcome });
-      expect(fetched.map(({ url }) => url)).toEqual([entry.read.prover]);
+      if (!entry.deviation) {
+        expect(entry.design).toEqual(entry.outcome);
+        return;
+      }
+      // fetch-error-text: URLs as `<url>` in the whole text, then the cut.
+      expect(entry.deviation).toBe('fetch-error-text');
+      expect(entry.design).toMatchObject({ name: entry.outcome.name, code: entry.outcome.code });
+      expect(entry.design.message).toBe(cut(entry.design.message));
+      expect(entry.outcome.message).toContain(entry.read.prover.replace(/\/$/, ''));
+      expect(entry.design.message).not.toContain(entry.read.prover.replace(/\/$/, ''));
     }
   );
 
   serviceTest.each(cases.map((entry) => [entry.id, entry]))(
-    '%s: freedom-colibrid gives the design\'s outcome, the WASM one but its URL',
+    "%s: freedom-colibrid gives the design's outcome, asking the prover once, as recorded",
     async (_id, entry) => {
-      const service = await proverOutage(SERVICE.kind, entry.read);
+      const service = await proverOutage(entry.read);
       expect(outcomeOf(service.error)).toEqual({ data: undefined, ...entry.design });
-      if (entry.deviation) expect(entry.deviation).toBe('fetch-error-text');
-      expectParity(wasm[cases.indexOf(entry)], service, entry.read);
+      expectOneProverRequest(service, entry.read.prover.replace(/\/$/, ''), entry.body);
     },
     30_000
   );
-});
-
-// The WASM backend is the reference: it deviates from nothing.
-test('the WASM backend is its own reference', () => {
-  expect(deviation('fetch-error-text', WASM, { wasm: 'raw', service: '<url>' })).toBe('raw');
 });

@@ -92,8 +92,8 @@ const COLIBRI_FAULT_PATTERN =
   /memory access out of bounds|(?:^|: )unreachable(?: executed)?$|retired after a trap|Colibri worker replaced/i;
 
 /** Main's router's `isColibriFault`: the verifier itself faulted. A request
- * the worker host failed only because another one trapped or overran on
- * its worker (`colibriBystander`, colibri-worker-host.js) didn't. */
+ * failed only because another one faulted on its process (`colibriBystander`,
+ * colibri-outcome.js's ColibriWorkerError) didn't. */
 function isColibriFault(err) {
   if (err?.colibriBystander) return false;
   return err?.name === 'RuntimeError' || COLIBRI_FAULT_PATTERN.test(String(err?.message || ''));

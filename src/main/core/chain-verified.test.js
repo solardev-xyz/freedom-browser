@@ -2,11 +2,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// The WASM backend's workers, recorded (test/helpers/colibri-backends.js).
-jest.mock('node:worker_threads', () =>
-  require('../../../test/helpers/colibri-backends').workerThreads()
-);
-
 const { ShellError } = require('./core-client');
 const {
   registerChainVerified,
@@ -20,11 +15,10 @@ const { BroadcastRecords } = require('./chain-broadcasts');
 const { MAX_MESSAGE } = require('./frame');
 const {
   PROVER_DOWN,
-  describeBackends,
-  deviation,
+  describeService,
   proverWorld,
-  startBackend,
-} = require('../../../test/helpers/colibri-backends');
+  startService,
+} = require('../../../test/helpers/colibri-service-harness');
 const {
   HTTP_503,
   TRANSPORT,
@@ -563,12 +557,11 @@ describe('Colibri', () => {
   });
 });
 
-// COL-5 (freedom-core design 0014): the executor's answers for what each
-// Colibri backend throws, from the backend itself (test/helpers/
-// colibri-backends.js): the real WASM workers and the real freedom-colibrid,
-// against a scripted prover on loopback. An answer that differs by design
-// names its deviation.
-describeBackends('Colibri errors from each backend', (backend) => {
+// Freedom-core design 0014: the executor's answers for what freedom-colibrid
+// throws, from the real binary (test/helpers/colibri-service-harness.js),
+// against a scripted prover on loopback. An answer that differs from the
+// reference's (the WASM workers COL-6 removed) names its deviation.
+describeService('Colibri errors from freedom-colibrid', () => {
   const FAULTS = { capabilities: ['fragments', 'colibri_faults'] };
   let userData;
   let world;
@@ -577,7 +570,7 @@ describeBackends('Colibri errors from each backend', (backend) => {
   beforeEach(async () => {
     userData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-chain-verified-colibri-'));
     world = await proverWorld();
-    started = await startBackend(backend, { userData });
+    started = await startService({ userData });
   });
 
   afterEach(async () => {
@@ -587,7 +580,7 @@ describeBackends('Colibri errors from each backend', (backend) => {
     fs.rmSync(userData, { recursive: true, force: true });
   });
 
-  /** A balance read through the executor, on a client of the backend. */
+  /** A balance read through the executor, on a client of the service. */
   const read = ({ chainId = 1, deadline_ms = 20_000 } = {}) =>
     setUp(
       {
@@ -612,7 +605,6 @@ describeBackends('Colibri errors from each backend', (backend) => {
       params: [ADDRESS, 'latest'],
       deadline_ms: 5000,
     });
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   // #1059: Colibri no longer proves a read itself when its prover is down,
   // so the prover's error is its whole answer. It is a plain failure, with
@@ -622,7 +614,7 @@ describeBackends('Colibri errors from each backend', (backend) => {
     ['an HTTP error', HTTP_503, 4900],
     ['a transport error', TRANSPORT, -32603],
   ])('a failed remote proof by %s is a plain failure', async (_name, failure, code) => {
-    const { error } = await proverOutage(backend.kind, { failure });
+    const { error } = await proverOutage({ failure });
     expect(error).toMatchObject({
       name: 'ProviderRpcError',
       code,
@@ -641,15 +633,10 @@ describeBackends('Colibri errors from each backend', (backend) => {
     await world.until(1);
     world.answer = PROVER_DOWN;
     started.spawned[0].kill();
-    expect(await reply).toEqual(
-      deviation('colibri-culprit', backend, {
-        // The worker's exit fails the read as its fault.
-        wasm: { failure: 'error', fault: true },
-        // Outside a step, the death names nobody: the read is sent once
-        // more, and fails as the prover does.
-        service: { failure: 'error' },
-      })
-    );
+    // Outside a step, the death names nobody: the read is sent once more,
+    // and fails as the prover does. (The reference's worker exit failed it
+    // as its fault.)
+    expect(await reply).toEqual({ failure: 'error' });
   }, 15_000);
 
   test('a read whose prover never answers by its deadline [deviation colibri-deadline]', async () => {
@@ -660,14 +647,11 @@ describeBackends('Colibri errors from each backend', (backend) => {
       return answer;
     });
     await world.until(1);
-    // The service ends it, no fault; the WASM worker still waits past it.
-    if (backend.kind === 'service') await reply;
-    else await sleep(300 + 1_500);
-    expect(replied).toEqual(
-      deviation('colibri-deadline', backend, { wasm: null, service: { failure: 'error' } })
-    );
+    // The service ends it at its deadline, no fault. (The reference's worker
+    // waited past it.)
+    await reply;
+    expect(replied).toEqual({ failure: 'error' });
     world.release();
-    expect(await reply).toEqual({ failure: 'error' });
   }, 15_000);
 
   test('a read while three other chains are busy [deviation colibri-processes]', async () => {
@@ -679,12 +663,10 @@ describeBackends('Colibri errors from each backend', (backend) => {
       replied = answer;
       return answer;
     });
-    if (backend.kind === 'wasm') await world.until(4);
-    else await reply;
-    // The service's `Colibri service busy`: neither a fault nor capacity.
-    expect(replied).toEqual(
-      deviation('colibri-processes', backend, { wasm: null, service: { failure: 'error' } })
-    );
+    await reply;
+    // `Colibri service busy`: neither a fault nor capacity. (The reference
+    // started a fourth worker.)
+    expect(replied).toEqual({ failure: 'error' });
     world.release();
     expect(await Promise.all([...busy, reply])).toEqual(new Array(4).fill({ failure: 'error' }));
   }, 15_000);

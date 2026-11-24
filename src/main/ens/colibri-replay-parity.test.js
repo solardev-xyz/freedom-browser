@@ -1,25 +1,24 @@
 /**
- * Successful reads replayed on both Colibri backends (freedom-core design
- * 0014, COL-5), from freedom-core's recordings (COL-1): for each case, a
- * scripted prover, beacon and checkpoint world answers every fetch with the
- * body the live servers gave at capture, at the case's recorded clock. The
- * WASM verifier and freedom-colibrid must each give the recorded outcome,
- * the same result, through the recorded fetches (URL, verb, headers and
- * body), leaving the recorded store. Where the design says the service's
- * outcome differs, the case is marked with its deviation, and the service
- * must give the design's.
+ * Successful reads replayed on freedom-colibrid (freedom-core design 0014),
+ * from freedom-core's recordings of the reference (COL-1, the WASM verifier
+ * COL-6 removed): for each case, a scripted prover, beacon and checkpoint
+ * world answers every fetch with the body the live servers gave at capture,
+ * at the case's recorded clock. The service must give the recorded outcome
+ * through the recorded fetches (URL, verb, headers and body), leaving the
+ * recorded store. Where the design says the service's outcome differs, the
+ * case is marked with its deviation, and the service must give the
+ * design's, with no fetch.
  *
- * test/helpers/colibri-replay.js runs the cases: the real WASM path in a
- * child, the real binary through colibri-service.js on a scripted hop. A
- * released binary's C core reads the system clock, and only for its
- * transaction cache; the cases that depend on it (`cCoreClock`) run on
- * a binary built with the `testhooks` feature, which fixes it
- * (FREEDOM_COLIBRID_TESTHOOKS_PATH), and are skipped on the released one.
- * With that binary every case runs on it too, as freedom-core's own replay
- * does.
+ * test/helpers/colibri-replay.js runs the cases on the real binary through
+ * colibri-service.js on a scripted hop. A released binary's C core reads the
+ * system clock, and only for its transaction cache; the cases that depend on
+ * it (`cCoreClock`) run on a binary built with the `testhooks` feature,
+ * which fixes it (FREEDOM_COLIBRID_TESTHOOKS_PATH), and are skipped on the
+ * released one. With that binary every case runs on it too, as
+ * freedom-core's own replay does.
  *
- * The service's parts are skipped without the binary, and fail without it
- * under FREEDOM_COLIBRID_REQUIRED=1 (test/helpers/colibri-backends.js). The
+ * The cases are skipped without the binary, and fail without it under
+ * FREEDOM_COLIBRID_REQUIRED=1 (test/helpers/colibri-service-harness.js). The
  * suite is skipped without freedom-core's vectors and their fixtures
  * (`vectors/fixtures/colibri/` beside the file), and fails without them when
  * FREEDOM_CORE_COLIBRI_VECTORS names the file.
@@ -34,10 +33,9 @@ jest.mock('../logger', () => ({
 
 const {
   COLIBRID_TESTHOOKS,
-  backendOf,
   deviation,
   serviceTest,
-} = require('../../../test/helpers/colibri-backends');
+} = require('../../../test/helpers/colibri-service-harness');
 const {
   colibriFixturesDir,
   colibriVectors,
@@ -46,7 +44,6 @@ const {
 const replay = require('../../../test/helpers/colibri-replay');
 const { COLIBRI_SERVED_METHODS } = require('./colibri-served');
 
-const SERVICE = backendOf('service');
 /** The released binary (or FREEDOM_COLIBRID_PATH): its C core on the
  * system clock. */
 const RELEASED = Object.freeze({ label: 'service' });
@@ -83,31 +80,29 @@ function expectRecorded(outcomes, recorded) {
   });
 }
 
-/** The recorded outcomes (`ok` and result, or the error's fields), as both
- * backends' runs give them. */
+/** The recorded outcomes (`ok` and result, or the error's fields), as a
+ * run gives them. */
 const asOutcomes = (outcomes) =>
   outcomes.map(({ ok, error, ...rest }) => (ok ? { ok, ...rest } : { ok, error }));
 
 /**
- * The service's run against the WASM path's and the recording: the same
- * result through the same fetches, leaving the same store; or, for a case
- * marked with a deviation, the design's outcome with no fetch.
+ * The service's run against the recording: the recorded result through the
+ * recorded fetches, leaving the recorded store; or, for a case marked with a
+ * deviation, the design's outcome with no fetch.
  */
-function expectService(service, wasm, entry) {
+function expectService(service, entry) {
   expect(service.unscripted).toEqual([]);
   if (entry.deviation) {
-    expect(asOutcomes(service.outcomes)).toEqual(
-      deviation(entry.deviation, SERVICE, {
-        wasm: asOutcomes(entry.outcomes),
-        service: asOutcomes(entry.design),
-      })
-    );
+    // A deviation design 0014 names, and the design's outcome, not the
+    // reference's.
+    expect(deviation(entry.deviation)).toEqual(expect.any(String));
+    expect(asOutcomes(service.outcomes)).toEqual(asOutcomes(entry.design));
+    expect(asOutcomes(service.outcomes)).not.toEqual(asOutcomes(entry.outcomes));
     expect(service.fetched).toEqual([]);
     if (entry.storeAfter) expect(service.store).toEqual(entry.seed);
     return;
   }
   expectRecorded(service.outcomes, entry.outcomes);
-  expect(service.outcomes).toEqual(wasm.outcomes);
   expect(replay.madeFetches(service.fetched)).toEqual(replay.recordedFetches(entry));
   if (entry.storeAfter) expect(service.store).toEqual(entry.storeAfter);
   // A private session's process has no directory: nothing reaches the disk.
@@ -124,7 +119,7 @@ function expectService(service, wasm, entry) {
 const READY = Boolean(colibriVectors && colibriFixturesDir);
 
 (READY ? describe : describe.skip)(
-  "successful reads replayed on both backends (COL-1's recordings)",
+  "successful reads replayed on freedom-colibrid (COL-1's recordings)",
   () => {
     const cases = READY ? replay.replayCases(colibriVectors) : [];
     const byId = new Map(cases.map((entry) => [entry.id, entry]));
@@ -153,45 +148,31 @@ const READY = Boolean(colibriVectors && colibriFixturesDir);
       }
     });
 
-    test.each(rows)(
-      '%s: the WASM path gives the recorded outcome',
-      async (_title, entry) => {
-        const wasm = await replay.wasmReplay(entry, byId, colibriFixturesDir);
-        expect(wasm.unscripted).toEqual([]);
-        expectRecorded(wasm.outcomes, entry.outcomes);
-        expect(replay.madeFetches(wasm.fetched)).toEqual(replay.recordedFetches(entry));
-        if (entry.storeAfter) expect(wasm.store).toEqual(entry.storeAfter);
-      },
-      TIMEOUT_MS
-    );
-
     // On the released binary, the cases whose fetches depend on the C core's
     // clock can't be replayed.
     for (const [name, entry] of rows.filter(([, entry]) => entry.cCoreClock)) {
       test.skip(
-        `${name}: freedom-colibrid gives the WASM path's outcome: the C core's clock is the ` +
+        `${name}: freedom-colibrid gives the recorded outcome: the C core's clock is the ` +
           "system's (a testhooks build fixes it)",
         () => entry
       );
     }
 
     serviceTest.each(rows.filter(([, entry]) => !entry.cCoreClock))(
-      "%s: freedom-colibrid gives the WASM path's outcome",
+      '%s: freedom-colibrid gives the recorded outcome',
       async (_title, entry) => {
         const service = await replay.serviceReplay(entry, byId, colibriFixturesDir, RELEASED);
-        const wasm = await replay.wasmReplay(entry, byId, colibriFixturesDir);
-        expectService(service, wasm, entry);
+        expectService(service, entry);
       },
       TIMEOUT_MS
     );
 
     for (const [name, entry] of rows) {
       testhooksTest(
-        `${name}: freedom-colibrid with its C core at the recorded clock gives the WASM path's outcome`,
+        `${name}: freedom-colibrid with its C core at the recorded clock gives the recorded outcome`,
         async () => {
           const service = await replay.serviceReplay(entry, byId, colibriFixturesDir, TESTHOOKS);
-          const wasm = await replay.wasmReplay(entry, byId, colibriFixturesDir);
-          expectService(service, wasm, entry);
+          expectService(service, entry);
         },
         TIMEOUT_MS
       );

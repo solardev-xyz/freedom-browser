@@ -45,11 +45,11 @@
  *   kill the process.
  * - **Outcomes:** a reply's result as the service wrote it (colibri-outcome.js
  *   builds the adapter's from it), or a `ColibriWorkerError`
- *   (colibri-worker-host.js's class) with main's own text, never cut:
+ *   (colibri-outcome.js) with main's own text, never cut:
  *   - a death: `Colibri worker replaced: <reason>` for the request it names
  *     (`colibri-markers.js`), which the core's `isColibriFault` reads as a
  *     fault; for every other open request the same text marked
- *     `colibriBystander`, as the WASM host marks one, which its owner may
+ *     `colibriBystander`, as the WASM host marked one, which its owner may
  *     send once more to another process;
  *   - the recycling refusal (`busy` with `data.recycling`): `Colibri service
  *     busy` marked `colibriRecycling`, for the owner to send to the
@@ -93,7 +93,7 @@ const {
   validConfinement,
 } = require('../core/service-client');
 const { JSON_KINDS } = require('../core/frame');
-const { ColibriWorkerError } = require('./colibri-worker-host');
+const { ColibriWorkerError } = require('./colibri-outcome');
 const { COLIBRI_CLIENT_VERSION } = require('./colibri-fetch-contract');
 const { colibriFetchHandler } = require('./colibri-fetch');
 const { ColibriMarkers, deathRecord } = require('./colibri-markers');
@@ -107,7 +107,7 @@ const KINDS = new Set(['persistent', 'private', 'checkpoint']);
 const CONTEXT = Object.freeze({ caller: 'shell' });
 const UNAVAILABLE_CODE = 'colibri_unavailable';
 
-/** A request with no caller deadline gets the WASM host's 60 s. */
+/** A request with no caller deadline gets 60 s, as the WASM host gave it. */
 const DEFAULT_DEADLINE_MS = 60_000;
 /** What main adds to a deadline the service owns before calling it hung. */
 const HANG_GRACE_MS = 15_000;

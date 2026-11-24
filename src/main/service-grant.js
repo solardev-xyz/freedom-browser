@@ -777,8 +777,8 @@ function ipfsGrantRefusal(dataDir, options = {}) {
  * `dataDir`, its chain's directory (`<userData>/colibri/<chainId>`), or
  * null (design 0014, Confinement; design 0010, step 7). That one directory
  * is its own: the rest of `colibri/` (the other chains' directories, the
- * flat files the WASM verifier left before COL-6) stays protected, as does every other
- * profile's `colibri/`, before it exists too.
+ * flat files the WASM verifier left before COL-6) stays protected, as does
+ * every other profile's `colibri/`, before it exists too.
  */
 function colibriGrantRefusal(dataDir, { chainId, ...options } = {}) {
   if (!Number.isSafeInteger(chainId) || chainId <= 0) {

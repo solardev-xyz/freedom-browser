@@ -36,7 +36,7 @@ const {
   SHUTDOWN_GRACE_MS,
 } = require('./colibrid-client');
 const { OVERRUN_MS } = require('./colibri-markers');
-const { ColibriWorkerError } = require('./colibri-worker-host');
+const { ColibriWorkerError } = require('./colibri-outcome');
 const { ColibriFetchPool } = require('./colibri-fetch-pool');
 const { makeHop } = require('../core/naming-shell');
 const { isColibriFault } = require('../core/chain-verified');

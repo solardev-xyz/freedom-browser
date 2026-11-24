@@ -1,0 +1,272 @@
+{
+ "eth_getBalance(0x0000000000…) with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getBalance[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_getBalance(0x0000000000…) with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getBalance[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_getBalance(0x0000000000…) with a transport error": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getBalance[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getBalance[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  }
+ },
+ "eth_getTransactionCount(0x0000000000…) with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getTransactionCount[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_getTransactionCount(0x0000000000…) with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getTransactionCount[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_getTransactionCount(0x0000000000…) with a transport error": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getTransactionCount[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getTransactionCount[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[],\"latest\"],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  }
+ },
+ "eth_getStorageAt(0x0000000000…) with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[\"0x0000000000000000000000000000000000000000000000000000000000000000\"],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getStorageAt[\"0x00000000000000000000000000000000000000aa\",\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"latest\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_getStorageAt(0x0000000000…) with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[\"0x0000000000000000000000000000000000000000000000000000000000000000\"],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getStorageAt[\"0x00000000000000000000000000000000000000aa\",\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"latest\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_getStorageAt(0x0000000000…) with a transport error": {
+  "prover_body": "{\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[\"0x0000000000000000000000000000000000000000000000000000000000000000\"],\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getStorageAt[\"0x00000000000000000000000000000000000000aa\",\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"latest\"] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[\"0x0000000000000000000000000000000000000000000000000000000000000000\"],\"latest\"],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getStorageAt[\"0x00000000000000000000000000000000000000aa\",\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"latest\"] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_getProof\",\"params\":[\"0x00000000000000000000000000000000000000aa\",[\"0x0000000000000000000000000000000000000000000000000000000000000000\"],\"latest\"],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  }
+ },
+ "eth_getCode(0x0000000000…) with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_getCode\",\"params\":[\"0x00000000000000000000000000000000000000aa\",\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getCode[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_getCode(0x0000000000…) with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_getCode\",\"params\":[\"0x00000000000000000000000000000000000000aa\",\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getCode[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_getCode(0x0000000000…) with a transport error": {
+  "prover_body": "{\"method\":\"eth_getCode\",\"params\":[\"0x00000000000000000000000000000000000000aa\",\"latest\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getCode[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_getCode\",\"params\":[\"0x00000000000000000000000000000000000000aa\",\"latest\"],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getCode[\"0x00000000000000000000000000000000000000aa\",\"latest\"] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_getCode\",\"params\":[\"0x00000000000000000000000000000000000000aa\",\"latest\"],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  }
+ },
+ "eth_blockNumber() with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_blockNumber\",\"params\":[],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_blockNumber[] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_blockNumber() with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_blockNumber\",\"params\":[],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_blockNumber[] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_blockNumber() with a transport error": {
+  "prover_body": "{\"method\":\"eth_blockNumber\",\"params\":[],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_blockNumber[] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_blockNumber\",\"params\":[],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_blockNumber[] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_blockNumber\",\"params\":[],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  }
+ },
+ "eth_getBlockByNumber(latest…) with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getBlockByNumber[\"latest\",false] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_getBlockByNumber(latest…) with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getBlockByNumber[\"latest\",false] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_getBlockByNumber(latest…) with a transport error": {
+  "prover_body": "{\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getBlockByNumber[\"latest\",false] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getBlockByNumber[\"latest\",false] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  }
+ },
+ "eth_getBlockByHash(0x8989898989…) with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_getBlockByHash\",\"params\":[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getBlockByHash[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_getBlockByHash(0x8989898989…) with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_getBlockByHash\",\"params\":[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_getBlockByHash[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_getBlockByHash(0x8989898989…) with a transport error": {
+  "prover_body": "{\"method\":\"eth_getBlockByHash\",\"params\":[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getBlockByHash[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_getBlockByHash\",\"params\":[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_getBlockByHash[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_getBlockByHash\",\"params\":[\"0x8989898989898989898989898989898989898989898989898989898989898989\",false],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  }
+ },
+ "eth_maxPriorityFeePerGas() with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_maxPriorityFeePerGas\",\"params\":[],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_maxPriorityFeePerGas[] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_maxPriorityFeePerGas() with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_maxPriorityFeePerGas\",\"params\":[],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_maxPriorityFeePerGas[] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_maxPriorityFeePerGas() with a transport error": {
+  "prover_body": "{\"method\":\"eth_maxPriorityFeePerGas\",\"params\":[],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_maxPriorityFeePerGas[] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_maxPriorityFeePerGas\",\"params\":[],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_maxPriorityFeePerGas[] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_maxPriorityFeePerGas\",\"params\":[],\"version\":196611,\"zk_proof\":true} failed: fetch failed"
+  }
+ },
+ "eth_blockNumber(0xababababab…) with an HTTP error": {
+  "prover_body": "{\"method\":\"eth_blockNumber\",\"params\":[\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_blockNumber[\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: prover down"
+  }
+ },
+ "eth_blockNumber(0xababababab…) with an HTTP error past 2,000 units": {
+  "prover_body": "{\"method\":\"eth_blockNumber\",\"params\":[\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": 4900,
+   "message": "Error in rpc call eth_blockNumber[\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\"] : remote proof failed (no local proving): HTTP error! Status: 503, Details: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  }
+ },
+ "eth_blockNumber(0xababababab…) with a transport error": {
+  "prover_body": "{\"method\":\"eth_blockNumber\",\"params\":[\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\"],\"version\":196611,\"zk_proof\":true}",
+  "outcome": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_blockNumber[\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\"] : remote proof failed (no local proving): Request to <url> with payload {\"method\":\"eth_blockNumber\",\"params\":[\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababa"
+  },
+  "deviation": "fetch-error-text",
+  "reference": {
+   "name": "ProviderRpcError",
+   "code": -32603,
+   "message": "Error in rpc call eth_blockNumber[\"0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\"] : remote proof failed (no local proving): Request to https://prover.invalid with payload {\"method\":\"eth_blockNumber\",\"params\":[\"0xababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+  }
+ }
+}

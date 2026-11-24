@@ -1,9 +1,9 @@
 // PRIVATE MODE GUARD (Colibri store, #1058), end to end inside main: the
 // real resolver and private-window registry over the real freedom-colibrid
-// (test/helpers/colibri-backends.js, freedom-core design 0014). With no
-// proof to be had (a scripted prover that is down), what a private session
-// must not leave behind is anything at all under <userData>: no file and no
-// directory. Its processes end with it, and a read for an ended session
+// (test/helpers/colibri-service-harness.js, freedom-core design 0014). With
+// no proof to be had (a scripted prover that is down), what a private
+// session must not leave behind is anything at all under <userData>: no file
+// and no directory. Its processes end with it, and a read for an ended session
 // starts none. Colibri's store names every contract a read touched
 // (`call_<chain>_<address>`), so a private window's reads run on a process
 // whose store is in memory only.
@@ -60,12 +60,11 @@ const resolver = require('./colibri-resolver');
 const privateWindows = require('../private/private-windows');
 const { runWithPrivateLogContext } = require('../private/private-log-context');
 const {
-  backendOf,
-  describeBackends,
+  describeService,
   outcomeOf,
   proverWorld,
-  startBackend,
-} = require('../../../test/helpers/colibri-backends');
+  startService,
+} = require('../../../test/helpers/colibri-service-harness');
 
 const inPrivate = (fn) => runWithPrivateLogContext(true, fn);
 const CONTRACT = '0x00000000000000000000000000000000000000c1';
@@ -94,9 +93,7 @@ function entriesUnder(dir) {
   return fs.readdirSync(dir, { recursive: true }).sort();
 }
 
-describeBackends(
-  'a private session (#1058)',
-  (backend) => {
+describeService('a private session (#1058)', () => {
   const failed = (address, method = 'eth_getBalance') => ({
     name: 'ProviderRpcError',
     code: 4900,
@@ -112,7 +109,7 @@ describeBackends(
   beforeEach(async () => {
     world = await proverWorld();
     mockProverUrl = world.url;
-    started = await startBackend(backend, { userData: mockUserData });
+    started = await startService({ userData: mockUserData });
   });
 
   afterEach(async () => {
@@ -281,7 +278,11 @@ describeBackends(
         generations: { lifecycle: 0 },
       });
       privateWindows.createPrivateWindow();
-      for (const extra of [{ private: true, privateSession: openSession() }, { private: false }, {}]) {
+      for (const extra of [
+        { private: true, privateSession: openSession() },
+        { private: false },
+        {},
+      ]) {
         await expect(
           Promise.resolve().then(() =>
             naming[0](
@@ -295,6 +296,4 @@ describeBackends(
       expect(entriesUnder(mockUserData)).toEqual([]);
     });
   });
-},
-  { backends: [backendOf('service')] }
-);
+});

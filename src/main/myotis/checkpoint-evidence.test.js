@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const {
   checkCheckpointAge,
   checkpointQuorum,
@@ -18,7 +17,9 @@ const { CHECKPOINT_NETWORKS, MAX_AGE_MS, checkpointError } = require('./checkpoi
 
 const CAPTURES = path.resolve(__dirname, '../../../docs/audits/evidence/colibri-v3-2026-09/captures');
 // The checkpoint headers inside the captures' proof.ssz, as Colibri 3's
-// decode_proof returns them (the last suite re-decodes the proofs to check).
+// decode_proof returned them on the WASM path (re-decoded there until COL-6
+// removed it; the captures verify through the real binary in
+// checkpoint-colibrid.test.js).
 const CAPTURED_HEADERS = {
   mainnet: {
     slot: '0xe88f40',
@@ -568,37 +569,4 @@ describe('verifyFailure', () => {
   ])('%p without a lookup failure is %s', (message, code) => {
     expect(verifyFailure(message, null)).toMatchObject({ code });
   });
-});
-
-// The real pinned WASM in a fresh process, as checkpoint-verifier-worker.test.js
-// runs it: decode each capture's proof.ssz and judge it at the capture's clock.
-describe("the captures' decoded proofs with the real Colibri WASM", () => {
-  test.each(['mainnet', 'gnosis'])('%s', (network) => {
-    const dir = path.join(CAPTURES, network);
-    const script = `
-      const fs = require('node:fs');
-      const path = require('node:path');
-      const { decode_proof } = require(${JSON.stringify(path.resolve(__dirname, '../ens/colibri-runtime.js'))});
-      const { decodedCheckpoint, verifiedCheckpoint } = require(${JSON.stringify(path.join(__dirname, 'checkpoint-evidence.js'))});
-      const { networkFor } = require(${JSON.stringify(path.join(__dirname, 'checkpoint-verifier.js'))});
-      const dir = ${JSON.stringify(dir)};
-      const original = JSON.parse(fs.readFileSync(path.join(dir, 'verified-checkpoint.json')));
-      const observation = { slot: original.slot, root: original.root, finalizedEpoch: original.finalizedEpoch, sources: original.sources };
-      (async () => {
-        const decoded = await decode_proof(fs.readFileSync(path.join(dir, 'proof.ssz')));
-        const header = decoded.sync_data.checkpoint.header;
-        const result = verifiedCheckpoint(original.chainId, networkFor(original.chainId), decoded, [observation], () => original.verifiedAt);
-        console.log(JSON.stringify({ header, checkpoint: decodedCheckpoint(decoded), result }));
-      })().catch(e => { console.error(e); process.exitCode = 1; });
-    `;
-    const output = JSON.parse(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 30_000 })
-      .trim().split('\n').at(-1));
-    const original = capture(network).checkpoint;
-    expect(output.header).toEqual(CAPTURED_HEADERS[network]);
-    expect(output.checkpoint).toEqual({ slot: original.slot, root: original.root });
-    const { schemaVersion, chainId, root, slot, verifiedAt, sources, finalizedEpoch } = original;
-    expect(output.result).toEqual({
-      schemaVersion, chainId, network, root, slot, verifiedAt, sources, finalizedEpoch,
-    });
-  }, 40_000);
 });
