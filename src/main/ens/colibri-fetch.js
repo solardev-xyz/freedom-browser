@@ -27,9 +27,9 @@
  * - **The servers,** in turn, through `makeHop()` over `netGatewayFetch`
  *   (the session's proxy and Tor PAC, the onion gate, no cookies and no
  *   cache, `redirect: 'manual'`), the endpoint policy (`validateRpcUrl`) on
- *   every hop. The default hop dials on the default session; which session
- *   a private window's process uses is the service's to choose (COL-5 PR 7),
- *   through `hop`. The request is the contract's: the joined URL, its verb,
+ *   every hop. The default hop dials on the default session, for a private
+ *   window's process too, as the core's `shell.rpc` does for a private
+ *   read (colibri-service.js passes no other `hop`). The request is the contract's: the joined URL, its verb,
  *   `Accept`, `Content-Type` only with a payload, `Cache-Control: max-age`
  *   only where the variant has one. Every attempt is bounded by the
  *   handler's signal (the service's cancel) and the operation's deadline;

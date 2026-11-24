@@ -58,4 +58,9 @@ describe('wind-down stop-leg join', () => {
   test("Radicle's leg is the bounded quit stop", () => {
     expect(windDownJoin()).toContain("['Radicle', stopRadicleAtQuit]");
   });
+
+  // freedom-core design 0014: every freedom-colibrid process stops on quit.
+  test('Colibri has a leg: its processes are stopped too', () => {
+    expect(windDownJoin()).toContain("['Colibri', () => require('./ens/colibri-resolver').stopColibri()]");
+  });
 });

@@ -3,6 +3,8 @@ const mockLogWarn = jest.fn();
 jest.mock('../logger', () => ({
   info: (...args) => mockLogInfo(...args),
   warn: (...args) => mockLogWarn(...args),
+  error: jest.fn(),
+  debug: jest.fn(),
 }));
 
 // Colibri runs in a worker thread (colibri-worker-host / colibri-worker); this
@@ -18,6 +20,8 @@ const mockRequest = jest.fn();
 const mockEndPrivateSession = jest.fn();
 const mockClientInstances = [];
 jest.mock('./colibri-worker-host', () => ({
+  // The host's class: the native backend's errors are its instances.
+  ColibriWorkerError: jest.requireActual('./colibri-worker-host').ColibriWorkerError,
   ensureWorker: (...args) => mockEnsureWorker(...args),
   endPrivateSession: (...args) => mockEndPrivateSession(...args),
   createClient: (config) => {
@@ -31,6 +35,45 @@ jest.mock('./colibri-worker-host', () => ({
     return client;
   },
 }));
+
+// The native backend (colibri-service.js), behind the development switch:
+// the same interface, its own fake clients, answering '0xservice'; or, once
+// a test sets `real`, the module itself.
+const mockService = {
+  createClient: jest.fn(),
+  ensureWorker: jest.fn(() => Promise.resolve()),
+  endPrivateSession: jest.fn(),
+  stopAll: jest.fn(() => Promise.resolve()),
+  instances: [],
+  // How many times a module registry has loaded it.
+  loads: 0,
+  real: null,
+};
+jest.mock('./colibri-service', () => {
+  mockService.loads += 1;
+  const fake = {
+    ensureWorker: (...args) => mockService.ensureWorker(...args),
+    endPrivateSession: (...args) => mockService.endPrivateSession(...args),
+    stopAll: (...args) => mockService.stopAll(...args),
+    createClient: (config) => {
+      mockService.createClient(config);
+      const client = { config, destroy: jest.fn() };
+      client.request = jest.fn(() => Promise.resolve('0xservice'));
+      mockService.instances.push(client);
+      return client;
+    },
+  };
+  const backend = () => mockService.real ?? fake;
+  return {
+    ensureWorker: (...args) => backend().ensureWorker(...args),
+    endPrivateSession: (...args) => backend().endPrivateSession(...args),
+    stopAll: (...args) => backend().stopAll(...args),
+    createClient: (config) => backend().createClient(config),
+  };
+});
+// colibri-backend.js reads whether the build is packaged from here.
+const mockApp = { isPackaged: false };
+jest.mock('electron', () => ({ app: mockApp }));
 
 // The registry is mocked; tests still pump a legacy-shaped object via
 // mockLoadSettings and the mock translates the two fields this module
@@ -88,6 +131,7 @@ test('offers chain-data requests only, with no name-resolution adapter', () => {
     'endPrivateColibriSession',
     'registerColibriPrivateCleanup',
     'requestViaColibri',
+    'stopColibri',
   ]);
 });
 
@@ -110,18 +154,32 @@ describe('the Colibri client', () => {
     });
   });
 
-  test('waits for the chain worker before creating the first client', async () => {
-    await requestViaColibri(1, ...BLOCK);
+  // The client first, so the backend knows the lane's settings when it
+  // readies the lane (a native lane stopped under other ones starts again).
+  test('creates the first client, then uses it only once the chain worker is ready', async () => {
+    let releaseWorker;
+    mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
+    const pending = requestViaColibri(1, ...BLOCK);
+    await Promise.resolve();
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
     expect(mockEnsureWorker).toHaveBeenCalledWith(1);
-    expect(mockEnsureWorker.mock.invocationCallOrder[0])
-      .toBeLessThan(mockCreateClient.mock.invocationCallOrder[0]);
+    expect(mockCreateClient.mock.invocationCallOrder[0])
+      .toBeLessThan(mockEnsureWorker.mock.invocationCallOrder[0]);
+    expect(mockRequest).not.toHaveBeenCalled();
+    releaseWorker();
+    await expect(pending).resolves.toBe('0x2a');
+    expect(mockRequest).toHaveBeenCalledWith(...asked(mockClientInstances[0]));
   });
 
-  test('fails the request when the chain worker cannot start', async () => {
+  test('fails the request when the chain worker cannot start, destroying the client', async () => {
     mockEnsureWorker.mockRejectedValueOnce(new Error('Colibri worker failed to start: boom'));
     await expect(requestViaColibri(1, ...BLOCK)).rejects.toThrow(/failed to start/);
-    expect(mockCreateClient).not.toHaveBeenCalled();
+    expect(mockClientInstances).toHaveLength(1);
+    expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
+    expect(mockClientInstances[0].request).not.toHaveBeenCalled();
     await expect(requestViaColibri(1, ...BLOCK)).resolves.toBe('0x2a');
+    expect(mockClientInstances).toHaveLength(2);
+    expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
   });
 
   test('reuses the singleton across calls when settings are unchanged', async () => {
@@ -491,5 +549,197 @@ describe('private windows', () => {
     open = 0;
     hook('private-b');
     expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The development switch (colibri-backend.js, freedom-core design 0014,
+// COL-5): the WASM workers by default and in every packaged build; the
+// freedom-colibrid processes when a development build names them. The
+// backend is one of a client's settings, so a switch rebuilds it.
+describe('the backend switch', () => {
+  const ENV = 'FREEDOM_COLIBRI_BACKEND';
+  const CONFIG = { chainId: 1, proverUrl: 'https://test-prover.example', zkProof: true };
+  let saved;
+
+  beforeEach(() => {
+    saved = process.env[ENV];
+    delete process.env[ENV];
+    mockApp.isPackaged = false;
+    mockService.instances.length = 0;
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV];
+    else process.env[ENV] = saved;
+    mockApp.isPackaged = false;
+  });
+
+  test('WASM by default: the worker host serves, and the service is never loaded', async () => {
+    let fresh;
+    const loads = mockService.loads;
+    jest.isolateModules(() => {
+      fresh = require('./colibri-resolver');
+    });
+    await expect(fresh.requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
+    expect(mockCreateClient).toHaveBeenCalledWith(CONFIG);
+    fresh.endPrivateColibriSession();
+    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+    await expect(fresh.stopColibri()).resolves.toBeUndefined();
+    expect(mockService.loads).toBe(loads);
+    expect(mockService.stopAll).not.toHaveBeenCalled();
+    expect(mockService.endPrivateSession).not.toHaveBeenCalled();
+  });
+
+  test('the service when a development build names it', async () => {
+    process.env[ENV] = 'service';
+    await expect(requestViaColibri(1, 'eth_blockNumber', [], { deadlineMs: 2000 })).resolves.toBe(
+      '0xservice'
+    );
+    expect(mockService.ensureWorker).toHaveBeenCalledWith(1);
+    expect(mockService.createClient).toHaveBeenCalledWith(CONFIG);
+    expect(mockService.instances[0].request).toHaveBeenCalledWith(
+      { method: 'eth_blockNumber', params: [] },
+      { deadlineMs: 2000 }
+    );
+    expect(mockCreateClient).not.toHaveBeenCalled();
+    expect(mockEnsureWorker).not.toHaveBeenCalled();
+    expect(mockLogInfo).toHaveBeenCalledWith(
+      '[colibri] chain 1 client ready (prover=test-prover.example, zk=true, service)'
+    );
+  });
+
+  test('WASM in a packaged build, whatever the variable says', async () => {
+    process.env[ENV] = 'service';
+    mockApp.isPackaged = true;
+    await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
+    expect(mockCreateClient).toHaveBeenCalledWith(CONFIG);
+    expect(mockService.createClient).not.toHaveBeenCalled();
+  });
+
+  test('a switch rebuilds the client on the other backend', async () => {
+    await requestViaColibri(1, 'eth_blockNumber');
+    const [wasm] = mockClientInstances;
+    process.env[ENV] = 'service';
+    await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0xservice');
+    expect(wasm.destroy).toHaveBeenCalledTimes(1);
+    delete process.env[ENV];
+    await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
+    expect(mockService.instances[0].destroy).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
+  });
+
+  test("the service's private lane, the session's end and the quit", async () => {
+    process.env[ENV] = 'service';
+    openPrivateSession();
+    try {
+      await runWithPrivateLogContext(true, () => requestViaColibri(1, 'eth_blockNumber'));
+      expect(mockService.ensureWorker).toHaveBeenCalledWith(1, { private: true });
+      expect(mockService.createClient).toHaveBeenCalledWith({ ...CONFIG, private: true });
+    } finally {
+      endPrivateSession();
+    }
+    endPrivateColibriSession();
+    expect(mockService.endPrivateSession).toHaveBeenCalledTimes(1);
+    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+    expect(mockService.instances[0].destroy).toHaveBeenCalledTimes(1);
+    await colibriResolver.stopColibri();
+    expect(mockService.stopAll).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The resolver over the native backend itself (colibri-service.js) and fake
+// freedom-colibrid children (test/helpers/fake-colibrid.js): a lane the
+// service stopped starts again once a build brings other settings, and
+// stays stopped under the same ones.
+describe('over the native backend', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { fakeColibrid } = require('../../../test/helpers/fake-colibrid');
+  const ENV = 'FREEDOM_COLIBRI_BACKEND';
+  const UNAVAILABLE = 'Colibri service unavailable';
+  let saved;
+  let tmp;
+  let fake;
+  let priority;
+
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  async function untilWarned(text) {
+    for (let i = 0; i < 2000; i += 1) {
+      if (mockLogWarn.mock.calls.some(([line]) => String(line).includes(text))) return;
+      await tick();
+    }
+    throw new Error(`timed out waiting for "${text}"`);
+  }
+
+  beforeEach(async () => {
+    saved = process.env[ENV];
+    process.env[ENV] = 'service';
+    mockApp.isPackaged = false;
+    // Never a real process's: the fake children's PIDs may be anyone's.
+    priority = jest.spyOn(os, 'setPriority').mockImplementation(() => {});
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-colibri-resolver-'));
+    fake = fakeColibrid({
+      request: (message, child) => setImmediate(() => child.serve(message, { result: '0x10' })),
+    });
+    mockService.real = jest.requireActual('./colibri-service');
+    await mockService.real.resetForTest({
+      storageDir: path.join(tmp, 'colibri'),
+      spawn: fake.spawn,
+      command: '/bin/freedom-colibrid',
+      lockDir: path.join(tmp, 'locks'),
+      serviceVersion: '0.1.1',
+      parentPid: 4242,
+      shellVersion: '9.9.9',
+      checkGrant: () => null,
+    });
+  });
+
+  afterEach(async () => {
+    clearColibriClientForTest();
+    await mockService.real.resetForTest();
+    mockService.real = null;
+    priority.mockRestore();
+    fs.rmSync(tmp, { recursive: true, force: true });
+    if (saved === undefined) delete process.env[ENV];
+    else process.env[ENV] = saved;
+  });
+
+  const read = () => requestViaColibri(1, 'eth_blockNumber');
+
+  test('a lane stopped by a terminal exit starts again on a build under another prover or ZK', async () => {
+    await expect(read()).resolves.toBe('0x10');
+    expect(fake.children).toHaveLength(1);
+
+    // Exit 64 stops the lane. Under the same settings it stays stopped:
+    // the cached client, and a build of its own.
+    fake.children[0].exit(64);
+    await untilWarned('chain 1 stopped (exit 64)');
+    await expect(read()).rejects.toThrow(UNAVAILABLE);
+    clearColibriClientForTest();
+    await expect(read()).rejects.toThrow(UNAVAILABLE);
+    expect(fake.children).toHaveLength(1);
+
+    // Another prover: the next build starts the lane again.
+    mockLoadSettings.mockReturnValue({
+      ...DEFAULTS,
+      ensColibriProverUrl: 'https://other-prover.example',
+    });
+    await expect(read()).resolves.toBe('0x10');
+    expect(fake.children).toHaveLength(2);
+
+    // Stopped again (exit 74), and ZK turned off: started again.
+    fake.children[1].exit(74);
+    await untilWarned('chain 1 stopped (exit 74)');
+    await expect(read()).rejects.toThrow(UNAVAILABLE);
+    expect(fake.children).toHaveLength(2);
+    mockLoadSettings.mockReturnValue({
+      ...DEFAULTS,
+      ensColibriProverUrl: 'https://other-prover.example',
+      ensColibriZkProof: false,
+    });
+    await expect(read()).resolves.toBe('0x10');
+    expect(fake.children).toHaveLength(3);
+    expect(fake.children[2].sent('colibri.request')[0].params.zk).toBe(false);
   });
 });

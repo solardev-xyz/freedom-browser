@@ -73,8 +73,10 @@
  * stdout and emits `close`. After `child.holdOutput()`, what the child
  * writes stays in its pipe until it exits, and is read after the `exit`
  * and before the `close`: a marker written just before a death, which a
- * real pipe still holds when main sees the exit. `child.kill()` exits
- * with the signal, as a killed process does.
+ * real pipe still holds when main sees the exit. After `child.holdExit()`,
+ * neither `colibri.shutdown` nor stdin's EOF ends the child: it exits when
+ * the test says, or main kills it. `child.kill()` exits with the signal,
+ * as a killed process does.
  *
  * Each child records `requests` (main's, in order), `cancels` (main's),
  * `fetches` (its own), `events`, `terminals` (how main's bodies ended), the
@@ -403,6 +405,8 @@ class FakeColibridChild extends EventEmitter {
     this.stdinClosed = false;
     // Output kept in the pipe until the exit (`holdOutput`), or null.
     this.held = null;
+    // Set by `holdExit`: main's shutdown doesn't end the child.
+    this.exitHeld = false;
     // Main's requests past their commit point: a marker was written.
     this.committed = new Set();
     // The service's own requests, by its ID, until they settle.
@@ -431,7 +435,7 @@ class FakeColibridChild extends EventEmitter {
         this.stdinClosed = true;
         // fc-service: stdin's EOF ends the connection, and the process
         // exits 0.
-        setImmediate(() => this.exit(0));
+        if (!this.exitHeld) setImmediate(() => this.exit(0));
         callback();
       },
     });
@@ -531,7 +535,7 @@ class FakeColibridChild extends EventEmitter {
         break;
       case 'shutdown':
         this.result(message.id, {});
-        setImmediate(() => this.exit(0));
+        if (!this.exitHeld) setImmediate(() => this.exit(0));
         break;
       default:
         this.error(message.id, 'unknown_method', 'unknown method');
@@ -641,6 +645,12 @@ class FakeColibridChild extends EventEmitter {
   /** From now on, what the child writes stays in its pipe until it exits. */
   holdOutput() {
     this.held ??= [];
+  }
+
+  /** From now on, main's shutdown (`colibri.shutdown`, stdin's EOF) doesn't
+   * end the child: `exit`, or main's kill, does. */
+  holdExit() {
+    this.exitHeld = true;
   }
 
   write(bytes) {
