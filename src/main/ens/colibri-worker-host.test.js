@@ -277,25 +277,15 @@ describeBackends('the Colibri backend contract', (backend) => {
     } else {
       // Two answers race at the deadline: main's cancel (`cancelled`), and
       // the service's own bound on its fetch, whose error the C core gets
-      // as the remote proof's and ends the read with. Either is no fault
-      // and ends nothing else.
-      // TODO(design 0014 amendment, the deadline's outcome): main decides,
-      // so any reply but a result read at or after the deadline is
-      // `Colibri request cancelled at its deadline`. Accept only that once
-      // colibrid-client.js's fix is merged forward.
-      expect([
-        {
-          name: 'ColibriWorkerError',
-          code: undefined,
-          message: 'Colibri request cancelled at its deadline',
-          data: undefined,
-        },
-        {
-          ...outage(BALANCE),
-          code: -32603,
-          message: failedProof(BALANCE, 'Colibri fetch deadline passed'),
-        },
-      ]).toContainEqual(outcomeOf(state.value));
+      // as the remote proof's and ends the read with. Main decides (design
+      // 0014's one outcome at the deadline): any reply but a result read at
+      // or after the deadline is the cancel's, no fault, ending nothing else.
+      expect(outcomeOf(state.value)).toEqual({
+        name: 'ColibriWorkerError',
+        code: undefined,
+        message: 'Colibri request cancelled at its deadline',
+        data: undefined,
+      });
       expect(state.value.colibriBystander).toBeUndefined();
       expect(isColibriFault(state.value)).toBe(false);
     }
