@@ -14,6 +14,7 @@ const {
   clearService,
 } = require('./service-registry');
 const { FreedomIpfsNativeNode } = require('./ipfs/freedom-ipfs-native-node');
+const { describeGlibcTooOld } = require('./ipfs/freedom-ipfs-native-binding');
 const {
   IPFS_GATEWAY_PROBE_PATH,
   isIpfsGatewayProbeResponse,
@@ -567,6 +568,47 @@ function checkBinary() {
   return FreedomIpfsNativeNode.isAvailable();
 }
 
+let glibcTooOldPublished = false;
+
+// A glibc older than the add-on's build (#350) is the one load failure no
+// restart fixes. The registry carries it as a fact about this machine (a
+// reset between runs keeps it), so the error page can point to an external
+// node instead of the Nodes menu. Returns `{ host }` or null.
+function publishGlibcTooOld(err = FreedomIpfsNativeNode.loadError()) {
+  const glibc = describeGlibcTooOld(err);
+  if (glibc) {
+    updateService('ipfs', { unavailableReason: 'glibc', hostGlibc: glibc.host });
+    glibcTooOldPublished = true;
+  }
+  return glibc;
+}
+
+// The add-on loads after all (a dev rebuilt it mid-session, say).
+function clearGlibcTooOld() {
+  if (!glibcTooOldPublished) return;
+  updateService('ipfs', { unavailableReason: null, hostGlibc: null });
+  glibcTooOldPublished = false;
+}
+
+// The native add-on can't load: log why (isAvailable() keeps the error to
+// itself) and say so in the Nodes menu.
+function reportNativeAddonUnavailable() {
+  const err = FreedomIpfsNativeNode.loadError();
+  const glibc = publishGlibcTooOld(err);
+  if (glibc) {
+    log.error(
+      `[IPFS] freedom-ipfs native addon needs a newer glibc than this system's (${glibc.host || 'unknown'}):`,
+      err.message
+    );
+    updateState(STATUS.ERROR, 'freedom-ipfs native addon needs a newer glibc');
+    setStatusMessage('ipfs', 'Needs a newer Linux');
+    return;
+  }
+  if (err) log.error('[IPFS] freedom-ipfs native addon failed to load:', err.message);
+  updateState(STATUS.ERROR, 'freedom-ipfs native addon not built');
+  setStatusMessage('ipfs', 'Native node unavailable');
+}
+
 function startDisabledIpfs() {
   // Reachable from a soft-ERROR external node or from a standby one, both of
   // which still have their health check running (both deliberately keep probing
@@ -819,10 +861,10 @@ async function doStartIpfs() {
   clearExternalGatewayState();
 
   if (!checkBinary()) {
-    updateState(STATUS.ERROR, 'freedom-ipfs native addon not built');
-    setStatusMessage('ipfs', 'Native node unavailable');
+    reportNativeAddonUnavailable();
     return;
   }
+  clearGlibcTooOld();
 
   const dataDir = getIpfsDataPath();
   const node = new FreedomIpfsNativeNode({
@@ -1258,7 +1300,13 @@ function registerIpfsIpc() {
   });
 
   ipcMain.handle(IPC.IPFS_CHECK_BINARY, () => {
-    return { available: checkBinary() };
+    if (checkBinary()) {
+      clearGlibcTooOld();
+      return { available: true };
+    }
+    const glibc = publishGlibcTooOld();
+    if (glibc) return { available: false, reason: 'glibc', hostGlibc: glibc.host };
+    return { available: false };
   });
 }
 

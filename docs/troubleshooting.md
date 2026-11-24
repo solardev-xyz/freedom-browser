@@ -11,6 +11,7 @@
 
 - IPFS uses the embedded `freedom-ipfs` native addon and does not open a loopback API or gateway port.
 - For source builds, rerun `npm run ipfs:download` and confirm the addon target matches the current OS and architecture.
+- On Linux, the addon needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system the IPFS switch in the Nodes panel is greyed out, and IPFS pages explain why. Use your own IPFS node instead: choose **Use external node** for IPFS under **Settings → Nodes** ([#350](https://github.com/solardev-xyz/freedom-browser/issues/350)).
 - Check the Nodes panel and application log for native startup diagnostics.
 
 ## Radicle fails to start
