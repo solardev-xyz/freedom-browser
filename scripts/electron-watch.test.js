@@ -394,10 +394,11 @@ describe('bump', () => {
       'node_modules/electron'
     ].version;
 
-  /** Stands in for `npm install --package-lock-only --save-dev electron@<v>`. */
+  /** The bytes of the two files npm rewrites, to compare before and after a refused bump. */
   const snapshotNpmFiles = () =>
     ['package.json', 'package-lock.json'].map((f) => fs.readFileSync(path.join(root, f), 'utf8'));
 
+  /** Stands in for `npm install --package-lock-only --save-dev electron@<v>`. */
   function fakeNpm(calls) {
     return (cmd, args, opts) => {
       calls.push([cmd, ...args]);
