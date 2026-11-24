@@ -9,7 +9,7 @@ const MAX_REDIRECTS = 5;
 // default session (see registerSchemesAsPrivileged in main/index.js). These
 // can't go through Node's http stack — session.fetch dispatches them to the
 // same handlers that serve page loads.
-const SESSION_FETCH_PREFIXES = ['bzz://', 'ipfs://', 'ipns://'];
+const SESSION_FETCH_PREFIXES = ['bzz://', 'ipfs://', 'ipns://', 'pubky://'];
 
 function isSessionFetchUrl(url) {
   return SESSION_FETCH_PREFIXES.some((prefix) => url.startsWith(prefix));

@@ -1,7 +1,7 @@
 /**
  * Tests for http-fetch dweb-scheme support.
  *
- * bzz:// / ipfs:// / ipns:// URLs can't go through Node's http stack —
+ * bzz:// / ipfs:// / ipns:// / pubky:// URLs can't go through Node's http stack —
  * they must be dispatched to the custom protocol handlers registered on
  * the default session via session.fetch. The http/https paths hit real
  * sockets and are not covered here.
@@ -50,21 +50,24 @@ describe('http-fetch dweb schemes', () => {
     expect(session.defaultSession.fetch).not.toHaveBeenCalled();
   });
 
-  test.each(['bzz', 'ipfs', 'ipns'])(
-    'fetchBuffer routes %s:// through session.defaultSession.fetch',
-    async (scheme) => {
-      const url = `${scheme}://example.eth/images/pic.png`;
-      session.defaultSession.fetch.mockResolvedValue(okResponse('image-bytes'));
+  test.each([
+    ['bzz', 'example.eth'],
+    ['ipfs', 'example.eth'],
+    ['ipns', 'example.eth'],
+    // Context-menu Save Image / Copy Image on a pubky:// page.
+    ['pubky', 'o4dksfbqk85ogzdb5osziw6befigbuxmuxkuxq8434q89uj56uyy'],
+  ])('fetchBuffer routes %s:// through session.defaultSession.fetch', async (scheme, host) => {
+    const url = `${scheme}://${host}/pub/images/pic.png`;
+    session.defaultSession.fetch.mockResolvedValue(okResponse('image-bytes'));
 
-      const result = await fetchBuffer(url);
+    const result = await fetchBuffer(url);
 
-      expect(session.defaultSession.fetch).toHaveBeenCalledWith(
-        url,
-        expect.objectContaining({ signal: expect.any(AbortSignal) })
-      );
-      expect(result).toEqual(Buffer.from('image-bytes'));
-    }
-  );
+    expect(session.defaultSession.fetch).toHaveBeenCalledWith(
+      url,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(result).toEqual(Buffer.from('image-bytes'));
+  });
 
   test('fetchBuffer rejects on non-OK dweb response', async () => {
     session.defaultSession.fetch.mockResolvedValue({ ok: false, status: 404 });

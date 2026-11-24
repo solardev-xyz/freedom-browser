@@ -12,9 +12,16 @@ const {
 } = require('../../../test/helpers/main-process-test-utils');
 
 class FakeDownloadItem extends EventEmitter {
-  constructor({ url, filename, mimeType = 'application/octet-stream', totalBytes = 0 } = {}) {
+  constructor({
+    url,
+    urlChain = null,
+    filename,
+    mimeType = 'application/octet-stream',
+    totalBytes = 0,
+  } = {}) {
     super();
     this.url = url;
+    this.urlChain = urlChain;
     this.filename = filename;
     this.mimeType = mimeType;
     this.totalBytes = totalBytes;
@@ -35,6 +42,9 @@ class FakeDownloadItem extends EventEmitter {
 
   getURL() {
     return this.url;
+  }
+  getURLChain() {
+    return this.urlChain || [this.url];
   }
   getFilename() {
     return this.filename;
@@ -328,6 +338,51 @@ describe('downloads-manager', () => {
     await expect(mod.runControlledDownload({ pageAdapter: { webContents: source }, conversationId: 'conversation_download',
       expectedUrl: 'https://files.example/report', trigger: async () => session.emit('will-download', {}, item, source),
     })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+    expect(item.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test('records a pubky:// download source origin as its public key', async () => {
+    const mod = loadManager();
+    const key = 'o4dksfbqk85ogzdb5osziw6befigbuxmuxkuxq8434q89uj56uyy';
+    const item = new FakeDownloadItem({
+      url: `pubky://${key}/pub/report.pdf`,
+      filename: 'report.pdf',
+    });
+    const source = { hostWebContents: { id: 42 }, isDestroyed: () => false };
+    const result = await mod.runControlledDownload({
+      pageAdapter: { webContents: source },
+      conversationId: 'conversation_download',
+      expectedUrl: `pubky://${key}/pub/report.pdf`,
+      trigger: async () => {
+        session.emit('will-download', {}, item, source);
+        fs.writeFileSync(item.getSavePath(), 'hello');
+        item.receivedBytes = 5;
+        item.emit('done', {}, 'completed');
+      },
+    });
+    expect(result.artifact.sourceOrigin).toBe(`pubky://${key}`);
+  });
+
+  test('refuses a pubky:// download that lands on a different key than the approved one', async () => {
+    const mod = loadManager();
+    const keyA = 'o4dksfbqk85ogzdb5osziw6befigbuxmuxkuxq8434q89uj56uyy';
+    const keyB = '8pinxxgqs41n4aididenw5apqp1urfmzdztr8jt4abrkdn435ewo';
+    const source = { hostWebContents: { id: 42 }, isDestroyed: () => false };
+    // The approved URL is in the redirect chain, but the file is served from
+    // another key; only the origin comparison tells the two apart.
+    const item = new FakeDownloadItem({
+      url: `pubky://${keyB}/pub/report.pdf`,
+      urlChain: [`pubky://${keyA}/pub/report.pdf`, `pubky://${keyB}/pub/report.pdf`],
+      filename: 'report.pdf',
+    });
+    await expect(
+      mod.runControlledDownload({
+        pageAdapter: { webContents: source },
+        conversationId: 'conversation_download',
+        expectedUrl: `pubky://${keyA}/pub/report.pdf`,
+        trigger: async () => session.emit('will-download', {}, item, source),
+      })
+    ).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
     expect(item.cancel).toHaveBeenCalledTimes(1);
   });
 
