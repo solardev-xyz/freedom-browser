@@ -252,6 +252,52 @@ describe('freedom-radicled build inputs', () => {
   });
 });
 
+describe('freedom-colibrid build inputs', () => {
+  test.each([
+    ['mac', 'x64'],
+    ['mac', 'arm64'],
+    ['linux', 'x64'],
+    ['linux', 'arm64'],
+    ['win', 'x64'],
+    ['win', 'arm64'],
+  ])('requires the Colibri service binary and its notices for %s-%s', (os, arch) => {
+    fs.existsSync.mockImplementation((target) => !target.includes('freedom-colibrid-bin'));
+    expect(checkBinaries([{ os, arch }])).toEqual([
+      expect.stringContaining(`freedom-colibrid binary for ${os}-${arch}`),
+      expect.stringContaining(`freedom-colibrid THIRD-PARTY-NOTICES for ${os}-${arch}`),
+      expect.stringContaining(
+        `freedom-colibrid THIRD-PARTY-NOTICES-rust-std.html for ${os}-${arch}`
+      ),
+    ]);
+    expect(fs.existsSync).toHaveBeenCalledWith(
+      path.join(
+        __dirname,
+        '..',
+        'freedom-colibrid-bin',
+        `${os}-${arch}`,
+        `freedom-colibrid${os === 'win' ? '.exe' : ''}`
+      )
+    );
+  });
+
+  test('packages the executable with its notices and explicitly signs it on macOS', () => {
+    expect(packageJson.build.extraResources.find(({ to }) => to === 'freedom-colibrid')).toEqual({
+      from: 'freedom-colibrid-bin/${os}-${arch}/',
+      to: 'freedom-colibrid',
+      filter: [
+        'freedom-colibrid',
+        'freedom-colibrid.exe',
+        'THIRD-PARTY-NOTICES',
+        'THIRD-PARTY-NOTICES-rust-std.html',
+      ],
+    });
+    expect(packageJson.build.mac.binaries).toContain(
+      'Contents/Resources/freedom-colibrid/freedom-colibrid'
+    );
+    expect(packageJson.scripts['colibrid:download']).toBe('node scripts/fetch-freedom-colibrid.js');
+  });
+});
+
 // Arti is optional everywhere (it is compiled, not downloaded), but every
 // target we ship packages it the same way — including Windows since #337.
 describe('Arti (Tor) build inputs', () => {

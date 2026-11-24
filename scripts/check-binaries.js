@@ -7,6 +7,7 @@ const ANT_BIN_DIR = path.join(__dirname, '..', 'ant-bin');
 const CORE_BIN_DIR = path.join(__dirname, '..', 'freedom-cored-bin');
 const IPFSD_BIN_DIR = path.join(__dirname, '..', 'freedom-ipfsd-bin');
 const RADICLED_BIN_DIR = path.join(__dirname, '..', 'freedom-radicled-bin');
+const COLIBRID_BIN_DIR = path.join(__dirname, '..', 'freedom-colibrid-bin');
 const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
   __dirname,
   '..',
@@ -120,6 +121,7 @@ function checkBinaries(platforms) {
       [CORE_BIN_DIR, 'freedom-cored'],
       [IPFSD_BIN_DIR, 'freedom-ipfsd'],
       [RADICLED_BIN_DIR, 'freedom-radicled'],
+      [COLIBRID_BIN_DIR, 'freedom-colibrid'],
     ]) {
       const binPath = path.join(binDir, platformDir, `${binary}${antExt}`);
       if (!fs.existsSync(binPath)) {
@@ -227,6 +229,7 @@ function main() {
     console.error('  npm run core:download');
     console.error('  npm run ipfsd:download');
     console.error('  npm run radicled:download');
+    console.error('  npm run colibrid:download');
     console.error('  npm run ipfs:download');
     for (const { os, arch } of platforms) {
       console.error(`  npm run radicle:download -- --${os} --${arch}`);

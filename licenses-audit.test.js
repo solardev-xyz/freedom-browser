@@ -81,6 +81,13 @@ const EXTRA_RESOURCES = {
     noticeMatch: /^freedom-radicled \(Radicle service\)$/m,
     pin: { file: 'scripts/fetch-freedom-radicled.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
   },
+  'freedom-colibrid-bin/${os}-${arch}/': {
+    thirdParty: true,
+    label: 'freedom-colibrid',
+    auditName: 'freedom-colibrid',
+    noticeMatch: /^freedom-colibrid \(Colibri service\)$/m,
+    pin: { file: 'scripts/fetch-freedom-colibrid.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
+  },
   'out/dictation-runtime/${os}-${arch}/': {
     thirdParty: true, label: 'whisper.cpp', auditName: 'whisper.cpp',
     noticeMatch: /^whisper\.cpp$/m,
@@ -721,6 +728,10 @@ describe('copyleft', () => {
       'radicled-v0.1.2': [['colored', '2.2.0']],
       'radicled-v0.1.3': [['colored', '2.2.0']],
       'radicled-v0.1.4': [['colored', '2.2.0']],
+    },
+    // None: every crate colibrid-v0.1.1's notices list is permissive.
+    'freedom-colibrid-bin/${os}-${arch}/': {
+      'colibrid-v0.1.1': [],
     },
   };
 

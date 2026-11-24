@@ -1416,6 +1416,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # Nothing runs freedom-colibrid yet (freedom-core design 0014, COL-5):
+      # this is the one per-PR run of its real fetch on all three OSes,
+      # Windows' ZIP path included, with the pinned digest and build
+      # provenance checked as release.yml checks them.
+      - name: Download freedom-colibrid binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Download IPFS native addon
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npm run ipfs:download

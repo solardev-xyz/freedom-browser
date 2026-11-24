@@ -5,11 +5,11 @@
  * fetch, as every fetch in CI does (scripts/lib/freedom-core-release.js): for
  * a bump, run it on the new release before pinning it.
  *
- *   GH_TOKEN=$(gh auth token) node scripts/ci/verify-core-provenance.js cored|ipfsd|radicled
+ *   GH_TOKEN=$(gh auth token) node scripts/ci/verify-core-provenance.js cored|ipfsd|radicled|colibrid
  *
  * The release is the one the fetch script names (scripts/fetch-freedom-cored.js,
- * scripts/fetch-freedom-ipfsd.js or scripts/fetch-freedom-radicled.js: its
- * pinned tag, or its override). The
+ * scripts/fetch-freedom-ipfsd.js, scripts/fetch-freedom-radicled.js or
+ * scripts/fetch-freedom-colibrid.js: its pinned tag, or its override). The
  * fetch runs into a temporary directory with provenance verification on, so
  * `SHA256SUMS` and every archive are checked as CI checks them, and the
  * directory is then removed. Any failure exits 1.
@@ -23,12 +23,13 @@ const FETCHERS = {
   cored: '../fetch-freedom-cored',
   ipfsd: '../fetch-freedom-ipfsd',
   radicled: '../fetch-freedom-radicled',
+  colibrid: '../fetch-freedom-colibrid',
 };
 
 async function main(argv = process.argv.slice(2), { workDir = os.tmpdir() } = {}) {
   const module = Object.hasOwn(FETCHERS, argv[0]) ? FETCHERS[argv[0]] : null;
   if (!module || argv.length !== 1) {
-    console.error('Usage: node scripts/ci/verify-core-provenance.js cored|ipfsd|radicled');
+    console.error('Usage: node scripts/ci/verify-core-provenance.js cored|ipfsd|radicled|colibrid');
     process.exitCode = 1;
     return;
   }

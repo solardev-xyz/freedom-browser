@@ -20,6 +20,7 @@ const envKeys = [
   'GITHUB_ACTIONS',
   'FREEDOM_IPFSD_RELEASE_TAG',
   'FREEDOM_RADICLED_RELEASE_TAG',
+  'FREEDOM_COLIBRID_RELEASE_TAG',
   'FREEDOM_CORE_RELEASE_TAG',
   'FREEDOM_CORE_REPO',
   'GITHUB_TOKEN',
@@ -82,7 +83,7 @@ const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
 function releaseFixture(tag = TEST_TAG, binary = 'freedom-ipfsd') {
   const downloads = fetcher.TARGETS.map((target) => {
-    const version = tag.replace(/^(?:ipfsd|radicled)-/, '');
+    const version = tag.replace(/^(?:ipfsd|radicled|colibrid)-/, '');
     const name = `${binary}-${version}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
     return {
       name,
@@ -152,6 +153,7 @@ describe('in CI, a fetch verifies the build provenance of what it installs', () 
     expect(require('../fetch-freedom-cored').provenanceWorkflow).toBe('release.yml');
     expect(fetcher.provenanceWorkflow).toBe('release-ipfsd.yml');
     expect(require('../fetch-freedom-radicled').provenanceWorkflow).toBe('release-radicled.yml');
+    expect(require('../fetch-freedom-colibrid').provenanceWorkflow).toBe('release-colibrid.yml');
   });
 
   test('SHA256SUMS and each archive are verified, each before anything is extracted', async () => {
@@ -314,6 +316,31 @@ describe('verify-core-provenance, for a bump', () => {
         'solardev-xyz/freedom-core/.github/workflows/release-radicled.yml',
         '--source-ref',
         'refs/tags/radicled-v0.1.0-test',
+        '--deny-self-hosted-runners',
+      ]);
+    }
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  test('checks a colibrid-v release against the Colibri service workflow', async () => {
+    process.env.GH_TOKEN = 'test-token';
+    process.env.FREEDOM_COLIBRID_RELEASE_TAG = 'colibrid-v0.1.0-test';
+    const fixture = releaseFixture('colibrid-v0.1.0-test', 'freedom-colibrid');
+    serve(fixture);
+    await require('./verify-core-provenance').main(['colibrid'], { workDir: dir });
+    expect(process.exitCode).toBeUndefined();
+    expect(commands()).toEqual([
+      'gh SHA256SUMS',
+      ...fixture.downloads.flatMap((a) => [`gh ${a.name}`, `extract ${a.name}`]),
+    ]);
+    for (const [args] of gh.mock.calls) {
+      expect(args.slice(3)).toEqual([
+        '--repo',
+        'solardev-xyz/freedom-core',
+        '--signer-workflow',
+        'solardev-xyz/freedom-core/.github/workflows/release-colibrid.yml',
+        '--source-ref',
+        'refs/tags/colibrid-v0.1.0-test',
         '--deny-self-hosted-runners',
       ]);
     }

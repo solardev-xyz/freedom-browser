@@ -10,6 +10,7 @@ const RESTRICTED_HELPERS = {
   'Contents/Resources/freedom-cored/freedom-cored': '../config/entitlements.myotis-supervisor.plist',
   'Contents/Resources/freedom-ipfsd/freedom-ipfsd': '../config/entitlements.myotis-supervisor.plist',
   'Contents/Resources/freedom-radicled/freedom-radicled': '../config/entitlements.myotis-supervisor.plist',
+  'Contents/Resources/freedom-colibrid/freedom-colibrid': '../config/entitlements.myotis-supervisor.plist',
   'Contents/Resources/dictation-runtime/whisper-cli': '../config/entitlements.dictation-runtime.plist',
 };
 

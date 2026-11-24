@@ -44,6 +44,9 @@ test('restricts native helpers and preserves all other signing options', async (
   expect(
     forwarded.optionsForFile(`${app}/Contents/Resources/freedom-radicled/freedom-radicled`)
   ).toEqual(helperOptions);
+  expect(
+    forwarded.optionsForFile(`${app}/Contents/Resources/freedom-colibrid/freedom-colibrid`)
+  ).toEqual(helperOptions);
   for (const file of [
     app,
     `${app}/Contents/MacOS/Freedom`,
@@ -53,6 +56,7 @@ test('restricts native helpers and preserves all other signing options', async (
     `${app}/Contents/Resources/other/freedom-cored`,
     `${app}/Contents/Resources/other/freedom-ipfsd`,
     `${app}/Contents/Resources/other/freedom-radicled`,
+    `${app}/Contents/Resources/other/freedom-colibrid`,
   ]) {
     expect(forwarded.optionsForFile(file)).toBe(original);
   }

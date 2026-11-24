@@ -436,6 +436,7 @@ describe('verified installation', () => {
     'cored-v0.6.0',
     'v0.6.0',
     'ipfsd-v0.4.0',
+    'colibrid-v0.1.0',
     'radicled-0.1.0',
     'radicled-radicled-v0.1.0',
     'radicled-v0.1',
