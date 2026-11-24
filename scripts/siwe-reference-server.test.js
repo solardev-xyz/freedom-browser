@@ -85,3 +85,32 @@ test('a signature by another account is refused', async () => {
   expect(res.status).toBe(401);
   expect(await res.text()).toContain('bad signature');
 });
+
+test('issuing a nonce drops the expired ones', async () => {
+  server.nonces.clear();
+  server.nonces.set('stale-a', { expiresAt: Date.now() - 1 });
+  server.nonces.set('stale-b', { expiresAt: Date.now() - 1 });
+  expect((await fetch(`${base}/members`)).status).toBe(401);
+  expect(server.nonces.has('stale-a')).toBe(false);
+  expect(server.nonces.has('stale-b')).toBe(false);
+  expect(server.nonces.size).toBe(1);
+});
+
+test('outstanding nonces are capped, oldest dropped first', async () => {
+  const small = createSiweReferenceServer({ maxNonces: 3 });
+  await new Promise((resolve) => small.listen(0, '127.0.0.1', resolve));
+  try {
+    const url = `http://localhost:${small.address().port}/members`;
+    const issued = [];
+    for (let i = 0; i < 5; i += 1) {
+      const res = await fetch(url);
+      issued.push(
+        findSiweChallenge({ 'WWW-Authenticate': [res.headers.get('www-authenticate')] }).params
+          .nonce
+      );
+    }
+    expect([...small.nonces.keys()]).toEqual(issued.slice(2));
+  } finally {
+    await new Promise((resolve) => small.close(resolve));
+  }
+});

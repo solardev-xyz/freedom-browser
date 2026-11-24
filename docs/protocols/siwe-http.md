@@ -125,7 +125,8 @@ Tor keeps the cookie private on the way regardless.
   that reload is under way (at most a minute); a redirect does not carry it
   on, and if the reload fails it is dropped.
 - Freedom remembers which account signed in to each origin, for the
-  preselection only (`siwe-accounts.json` in the profile).
+  preselection only (`siwe-accounts.json` in the profile). Clearing all
+  browsing history clears this list too.
 
 The code is in `src/main/siwe-auth/` (challenge parsing, message, request
 interception) and `src/renderer/lib/wallet/siwe-signin.js` (the card).

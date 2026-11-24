@@ -157,4 +157,12 @@ test("a site's SIWE challenge signs in through the card, and Reject leaves the 4
   await win.click('#siwe-signin-cancel');
   await expect(card).toBeHidden();
   await expect.poll(() => pageText(win)).toContain('Sign in required');
+
+  // Clearing all history forgets which account signed in here.
+  await win.evaluate(() => window.electronAPI.clearHistory());
+  await go(win, `${siteOrigin}/members`);
+  await expect(card).toBeVisible({ timeout: 20_000 });
+  await expect(win.locator('#siwe-signin-remembered')).toBeHidden();
+  await win.click('#siwe-signin-cancel');
+  await expect(card).toBeHidden();
 });

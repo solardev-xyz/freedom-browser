@@ -376,7 +376,31 @@ describe('prepare and complete', () => {
     tab.hostWebContents.send.mockClear();
     siwe.detectHandler(response({ id: 400 }));
     expect(sentChallenge(tab).rememberedAddress).toBe(signer.address);
-    expect(siwe.forgetOrigin('https://club.example')).toBe(true);
+    expect(fs.existsSync(path.join(mockUserData, 'siwe-accounts.json'))).toBe(true);
+  });
+
+  test('forgets every remembered account, on disk too', async () => {
+    const { id, message } = await prepared();
+    await siwe.complete({ id, walletIndex: 0, signature: await signer.signMessage(message) });
+    siwe.forgetAllAccounts();
+    expect(fs.existsSync(path.join(mockUserData, 'siwe-accounts.json'))).toBe(false);
+    tab.hostWebContents.send.mockClear();
+    siwe.detectHandler(response({ id: 401 }));
+    expect(sentChallenge(tab).rememberedAddress).toBeNull();
+    // Not cached either: a fresh read of the store finds nothing.
+    siwe._resetForTests();
+    siwe.detectHandler(response({ id: 402 }));
+    expect(sentChallenge(tab).rememberedAddress).toBeNull();
+  });
+
+  test('forgetting accounts never throws when the file cannot be removed', () => {
+    const file = path.join(mockUserData, 'siwe-accounts.json');
+    fs.mkdirSync(file); // rmSync without `recursive` refuses a directory
+    try {
+      expect(() => siwe.forgetAllAccounts()).not.toThrow();
+    } finally {
+      fs.rmSync(file, { recursive: true, force: true });
+    }
   });
 
   test('refuses a signature from another account', async () => {

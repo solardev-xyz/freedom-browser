@@ -122,13 +122,19 @@ function rememberAccount(origin, address) {
   }
 }
 
-/** Forget the account remembered for a site (for "forget this site"). */
-function forgetOrigin(origin) {
-  const store = loadStore();
-  if (!store.origins[origin]) return false;
-  delete store.origins[origin];
-  saveStore();
-  return true;
+/**
+ * Forget every remembered account: this list says which sites you signed in
+ * to, so it goes with your browsing history (history.js calls this when the
+ * user clears history). Never throws: a failed save is logged, and the
+ * in-memory list is empty either way.
+ */
+function forgetAllAccounts() {
+  storeCache = { version: 1, origins: {} };
+  try {
+    fs.rmSync(storePath(), { force: true });
+  } catch (err) {
+    log.warn(`[SIWE] could not delete the remembered sign-in accounts: ${err.message}`);
+  }
 }
 
 // --- Host window ----------------------------------------------------------
@@ -517,6 +523,6 @@ module.exports = {
   complete,
   cancel,
   getChallenge,
-  forgetOrigin,
+  forgetAllAccounts,
   _resetForTests,
 };

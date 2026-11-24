@@ -310,7 +310,11 @@ const { installAdblockUpdater } = require('./adblock/update-scheduler');
 const { attachWebRequestDispatcher } = require('./webrequest-dispatcher');
 const { installAntApiGuard } = require('./swarm/ant-api-guard');
 const { installX402Interception } = require('./x402/intercept');
-const { installSiweInterception, registerSiweIpc } = require('./siwe-auth/intercept');
+const {
+  installSiweInterception,
+  registerSiweIpc,
+  forgetAllAccounts: forgetSiweAccounts,
+} = require('./siwe-auth/intercept');
 const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
 const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs/ipfs-protocol');
@@ -382,7 +386,7 @@ protocol.registerSchemesAsPrivileged([
 const { registerSettingsIpc, loadSettings } = require('./settings-store');
 const { registerShortcutsIpc } = require('./shortcuts-ipc');
 const { registerBookmarksIpc } = require('./bookmarks-store');
-const { registerHistoryIpc, closeDb: closeHistoryDb } = require('./history');
+const { registerHistoryIpc, onHistoryCleared, closeDb: closeHistoryDb } = require('./history');
 const {
   registerDownloadsIpc,
   attachDownloadsManager,
@@ -659,6 +663,8 @@ async function bootstrap() {
   });
   registerX402Ipc();
   registerSiweIpc();
+  // Which account signed in to which site goes with the browsing history.
+  onHistoryCleared(forgetSiweAccounts);
   registerOnchainProvenanceIpc();
   paymentHistory.registerPaymentHistoryIpc();
   registerSwarmIpc();

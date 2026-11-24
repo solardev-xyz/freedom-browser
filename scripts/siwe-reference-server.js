@@ -27,6 +27,10 @@ const crypto = require('crypto');
 const { verifyMessage, getAddress } = require('ethers');
 
 const NONCE_TTL_MS = 5 * 60 * 1000;
+// Every unauthenticated GET /members issues a nonce, so a real server must
+// bound them: expired ones are dropped as new ones are issued, and past this
+// many outstanding the oldest go first (that sign-in just asks again).
+const MAX_NONCES = 10_000;
 const CHAIN_ID = 1;
 
 /** Parse an ERC-4361 message into its fields, or null. */
@@ -93,19 +97,27 @@ ${body}`;
 }
 
 /**
- * @param {{ statement?: string, chainId?: number }} [options]
+ * @param {{ statement?: string, chainId?: number, maxNonces?: number }} [options]
  * @returns {http.Server & { sessions: Map, nonces: Map }}
  */
 function createSiweReferenceServer({
   statement = 'Sign in to the Freedom SIWE reference server',
   chainId = CHAIN_ID,
+  maxNonces = MAX_NONCES,
 } = {}) {
   const nonces = new Map(); // nonce → { expiresAt, issuedFor }
   const sessions = new Map(); // session id → address
 
   function challenge(res, host, origin, reason) {
     const nonce = crypto.randomBytes(16).toString('hex'); // 128 bits, as the doc asks
-    const expiresAt = Date.now() + NONCE_TTL_MS;
+    const now = Date.now();
+    // Issued with one fixed lifetime, so the Map's insertion order is
+    // expiry order: the expired ones are at the front.
+    for (const [old, { expiresAt }] of nonces) {
+      if (expiresAt > now && nonces.size < maxNonces) break;
+      nonces.delete(old);
+    }
+    const expiresAt = now + NONCE_TTL_MS;
     nonces.set(nonce, { expiresAt });
     const params = [
       `realm="${host}"`,
