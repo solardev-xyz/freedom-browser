@@ -8,7 +8,7 @@
 const path = require('path');
 const { COLIBRI_PACKAGE_SERVERS, colibriServers } = require('./colibri-servers');
 const { CHECKPOINT_NETWORKS } = require('../myotis/checkpoint-verifier');
-const { colibriVectors } = require('../../../test/helpers/colibri-vectors');
+const { colibriVectors, colibriVectorsRequired } = require('../../../test/helpers/colibri-vectors');
 
 // The package exports only its entry points; its generated chain table is
 // read from its file.
@@ -85,6 +85,14 @@ describe('the servers by type', () => {
     );
   });
 });
+
+// Named outright (CI does): they must be there, so these suites can't skip.
+(colibriVectorsRequired ? test : test.skip)(
+  'the vectors FREEDOM_CORE_COLIBRI_VECTORS names are there',
+  () => {
+    expect(colibriVectors).not.toBeNull();
+  }
+);
 
 (colibriVectors ? describe : describe.skip)("the COL-1 recording's servers", () => {
   test('main gives each type the servers the recording used, eth_rpc none', () => {

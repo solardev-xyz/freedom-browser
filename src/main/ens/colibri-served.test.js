@@ -17,7 +17,7 @@ const {
   colibriLatestAppended,
   colibriServiceRefusal: check,
 } = require('./colibri-served');
-const { colibriVectors } = require('../../../test/helpers/colibri-vectors');
+const { colibriVectors, colibriVectorsRequired } = require('../../../test/helpers/colibri-vectors');
 
 const AS_SENT = { kind: 'as-sent' };
 const LATEST_APPENDED = { kind: 'latest-appended' };
@@ -229,6 +229,14 @@ describe("the service's check (freedom-colibrid served.rs)", () => {
     expect(check('eth_getBlockByNumber', '[]')).toBeNull();
   });
 });
+
+// Named outright (CI does): they must be there, so these suites can't skip.
+(colibriVectorsRequired ? test : test.skip)(
+  'the vectors FREEDOM_CORE_COLIBRI_VECTORS names are there',
+  () => {
+    expect(colibriVectors).not.toBeNull();
+  }
+);
 
 (colibriVectors ? describe : describe.skip)("the COL-1 recording's refusal texts", () => {
   const refusals = (colibriVectors?.cases ?? []).filter((entry) => entry.design?.refused);

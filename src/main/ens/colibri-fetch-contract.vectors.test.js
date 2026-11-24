@@ -32,6 +32,7 @@ const {
   recordedOperations,
 } = require('../../../test/helpers/colibri-vectors');
 
+// Named outright (CI does): they must be there, so these suites can't skip.
 (colibriVectorsRequired ? test : test.skip)(
   'the vectors FREEDOM_CORE_COLIBRI_VECTORS names are there',
   () => {
