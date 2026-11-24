@@ -18,20 +18,25 @@ const PACKAGE = '@corpus-core/colibri-stateless';
 /**
  * Where `source` names the package: as a module (`require`,
  * `require.resolve`, `import … from`, `import()`), or as a quoted path or
- * path part (`'@corpus-core'`, `'colibri-stateless'`, `'…/c4w.wasm'`).
- * Prose in comments, which names it without quotes, doesn't count.
+ * path part (`'@corpus-core'`, `'colibri-stateless'`), or, unless
+ * `fileNames` is false, one of its files (`'…/c4w.wasm'`). Prose in
+ * comments, which names it without quotes, doesn't count.
  */
-function packageReferences(source) {
+function packageReferences(source, { fileNames = true } = {}) {
   const patterns = [
     /require(?:\.resolve)?\(\s*['"`]@corpus-core\/colibri-stateless(?:\/[^'"`]*)?['"`]/g,
     /\bfrom\s*['"]@corpus-core\/colibri-stateless(?:\/[^'"]*)?['"]/g,
     /\bimport\(\s*['"`]@corpus-core\/colibri-stateless(?:\/[^'"`]*)?['"`]/g,
     /['"]@corpus-core(?:\/[^'"]*)?['"]/g,
     /['"](?:[^'"]*\/)?colibri-stateless(?:\/[^'"]*)?['"]/g,
-    /['"][^'"]*\bc4w\.(?:wasm|js)['"]/g,
+    ...(fileNames ? [/['"][^'"]*\bc4w\.(?:wasm|js)['"]/g] : []),
   ];
   return [...new Set(patterns.flatMap((pattern) => source.match(pattern) ?? []))];
 }
+
+/** Files that name the package's files to refuse them: the packaging check's
+ * test, which feeds it a stale `c4w.wasm` to see the build fail. */
+const NAMES_FILES_TO_REFUSE = new Set(['scripts/check-asar-contents.test.js']);
 
 function* jsFiles(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -64,6 +69,7 @@ test('the detector finds the package however a file names it, and not in prose',
     packageReferences("path.join(root, 'node_modules', '@corpus-core', 'colibri-stateless')")
   ).not.toEqual([]);
   expect(packageReferences("fs.readFileSync(path.join(dir, 'c4w.wasm'))")).not.toEqual([]);
+  expect(packageReferences("'node_modules/stale/c4w.wasm'", { fileNames: false })).toEqual([]);
   expect(packageReferences(`// the ${PACKAGE} package's lists, embedded`)).toEqual([]);
   expect(packageReferences(' * `@corpus-core/colibri-stateless` 3.0.3 (history)')).toEqual([]);
 });
@@ -73,7 +79,13 @@ test('no JavaScript under src/, test/, test-e2e/ or scripts/ reaches the package
   // The trees are there: an empty scan would pass vacuously.
   expect(files.length).toBeGreaterThan(1000);
   const offenders = files
-    .map((file) => [path.relative(ROOT, file), packageReferences(fs.readFileSync(file, 'utf8'))])
+    .map((file) => path.relative(ROOT, file).split(path.sep).join('/'))
+    .map((file) => [
+      file,
+      packageReferences(fs.readFileSync(path.join(ROOT, file), 'utf8'), {
+        fileNames: !NAMES_FILES_TO_REFUSE.has(file),
+      }),
+    ])
     .filter(([, found]) => found.length > 0);
   expect(offenders).toEqual([]);
 });
