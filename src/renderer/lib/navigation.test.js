@@ -2603,6 +2603,11 @@ describe('navigation', () => {
       ['pubky://KEY/pub?sort=name', 'pubky://KEY/pub/?sort=name'],
       ['pubky://KEY/public/x', 'pubky://KEY/public/x'],
       ['pubky://KEY/pub/docs', 'pubky://KEY/pub/docs'],
+      ['pubky://KEY?sort=name', 'pubky://KEY/pub/?sort=name'],
+      ['pubky://KEY#top', 'pubky://KEY/pub/#top'],
+      ['pubky://KEY/?sort=name', 'pubky://KEY/pub/?sort=name'],
+      ['pubky://KEY/#top', 'pubky://KEY/pub/#top'],
+      ['pubkyKEY?sort=name', 'pubky://KEY/pub/?sort=name'],
     ])('Pubky: %s loads %s', async (input, expected) => {
       const key = 'gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo';
       const ctx = await loadNavigationModule();

@@ -2234,14 +2234,16 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // `pubky<key>/pub/...`. The main-process handler validates the address.
   // Ahead of the Swarm branch: `formatBzzUrl` claims any parseable URL
   // (`pubky://…` included) and would load it unnormalized.
-  const pubkyMatch = value.trim().match(/^pubky(?::\/\/)?([a-z0-9]{52})(\/\S*)?$/i);
+  // The key ends at a `/`, `?`, `#` or the end of the input.
+  const pubkyMatch = value.trim().match(/^pubky(?::\/\/)?([a-z0-9]{52})([/?#]\S*)?$/i);
   if (pubkyMatch) {
-    // A bare key, or `/pub` without its slash, opens the listing of the
-    // key's public files (the handler serves only paths under `/pub/`).
-    const pubkyPath =
-      !pubkyMatch[2] || pubkyMatch[2] === '/'
-        ? '/pub/'
-        : pubkyMatch[2].replace(/^\/pub(?=$|[?#])/, '/pub/');
+    // A bare key (with or without a trailing `/`, a query or a fragment),
+    // or `/pub` without its slash, opens the listing of the key's public
+    // files (the handler serves only paths under `/pub/`).
+    const rest = pubkyMatch[2] || '';
+    const pubkyPath = /^\/?(?=$|[?#])/.test(rest)
+      ? `/pub/${rest.replace(/^\//, '')}`
+      : rest.replace(/^\/pub(?=$|[?#])/, '/pub/');
     const pubkyUrl = `pubky://${pubkyMatch[1].toLowerCase()}${pubkyPath}`;
     setAddressDisplayForTab(displayOverride || pubkyUrl, targetTabId);
     pushDebug(`[AddressBar] Loading Pubky target: ${pubkyUrl}`);
