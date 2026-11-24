@@ -249,7 +249,7 @@ describe('the process', () => {
       expect(fake.spawned[0].args).toEqual(
         colibridArgs(kind, { chain: 100, parentPid: 4242, ...dirs })
       );
-      expect(Object.keys(fake.spawned[0].options.env)).not.toContain('FREEDOM_COLIBRI_BACKEND');
+      expect(Object.keys(fake.spawned[0].options.env)).not.toContain('FREEDOM_COLIBRID_PATH');
     }
   });
 

@@ -87,7 +87,8 @@ freedom-radicled (Radicle service)
 freedom-colibrid (Colibri service)
   https://github.com/solardev-xyz/freedom-core
   License: not chosen yet (pending the maintainer's decision).
-  Ships in every packaged build; nothing runs it yet.
+  Ships in every packaged build, and runs Colibri's verification of chain
+  reads and Myotis's checkpoint check.
   Statically links third-party Rust crates, among them colibri-stateless's
   (MIT); the C and C++ libraries it bundles: Colibri 3.0.3's C core and
   trezor-crypto (MIT), Mbed TLS's RIPEMD-160 (Apache-2.0), blst 0.3.13,

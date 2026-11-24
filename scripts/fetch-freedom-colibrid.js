@@ -5,8 +5,8 @@ const { createReleaseFetcher } = require('./lib/freedom-core-release');
 // design 0014), into `freedom-colibrid-bin/<os>-<arch>/`. freedom-core
 // releases it beside the core, on tags of its own, with the same archive
 // layout and SHA256SUMS; scripts/lib/freedom-core-release.js fetches and
-// verifies all four. Nothing runs it yet: Colibri stays on the WASM workers
-// until the service's client lands behind a development switch (COL-5).
+// verifies all four. It is Colibri's verifier, for chain reads and Myotis's
+// checkpoint check.
 // The known-good release this app version is built and CI-tested against.
 // Bump deliberately (with a CI run); never float on `latest`. Override with
 // FREEDOM_COLIBRID_RELEASE_TAG for local testing.

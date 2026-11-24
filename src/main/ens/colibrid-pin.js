@@ -8,15 +8,15 @@
  *   reports it, so a binary replaced under a running app can be refused, as
  *   `ipfs.hello`'s must be `PINNED_IPFSD_VERSION`.
  * - `COLIBRI_VERSION`: the Colibri release its C core is built from
- *   (`hello`'s `colibri_version`), the `@corpus-core/colibri-stateless`
- *   version the WASM workers run.
+ *   (`hello`'s `colibri_version`, which colibrid-client.js requires).
  * - `CLIENT_VERSION`: that release's version number, `major << 16 |
  *   minor << 8 | patch` (`hello`'s `client_version`), which the C core
  *   sends to provers.
  *
  * `scripts/fetch-freedom-colibrid.js` pins the release itself, with its
  * SHA256SUMS digest (scripts aren't packaged). A bump changes both; a drift
- * guard (`colibrid-pin.test.js`) fails when they differ.
+ * guard (`colibrid-pin.test.js`) fails when they differ, or when the
+ * binary's hello reports another Colibri.
  */
 
 const PINNED_COLIBRID_VERSION = '0.1.1';

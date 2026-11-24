@@ -25,6 +25,8 @@
 >
 > **integration/rust-core, freedom-colibrid (2026-11-24):** freedom-colibrid `colibrid-v0.1.1`, the Colibri service (freedom-core design 0014), joins the shipped binaries, though nothing runs it yet: Colibri stays on the WASM workers (_freedom-colibrid_ below). Its license is freedom-core's, still to be chosen. Its `THIRD-PARTY-NOTICES` lists only permissive crates (no MPL-2.0, GPL or LGPL one) and the C and C++ libraries Colibri's verifier-only build compiles: Colibri 3.0.3's C core and trezor-crypto (MIT), Mbed TLS's `ripemd160.c`, blst 0.3.13, evmone 0.23.0 with EVMC and intx 0.15.0 (Apache-2.0, none of them with a `NOTICE` file). Its Linux binaries carry glibc's startup objects under glibc's linking exception, as freedom-ipfsd's and freedom-radicled's do, and Zig's LLVM libc++, libc++abi and libunwind (Apache-2.0 WITH LLVM-exception) for evmone's C++.
 >
+> **integration/rust-core, Colibri on freedom-colibrid alone (2026-11-24):** COL-6 (freedom-core design 0014) makes freedom-colibrid Colibri's only verifier and removes the WASM path, so `@corpus-core/colibri-stateless` 3.0.3 (MIT) is no longer a dependency: its `c4w.wasm` (1.37 MB, in `app.asar`) and its five platforms' native add-ons (7.2 MiB in `app.asar.unpacked`, which the app never loaded) leave the package. It had no dependencies of its own, so the production walk loses that one entry: from 360 to 359 (MIT 233 to 232). freedom-colibrid's own entry is unchanged: the crate of the same name it statically links is the Rust binding, listed in its `THIRD-PARTY-NOTICES`.
+>
 > **2026-10-25 update (v0.1.18):** Myotis is now pinned to v0.1.18. `LICENSE` and `NOTICE` are byte-identical to v0.1.16 (`git diff v0.1.16 v0.1.18 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.16 to 0.1.18) and gives `myotis-engine` a direct dependency on `libc`, already in the lock; no crate is added or removed.
 >
 > **2026-10-16 update (v0.1.16):** Myotis is now pinned to v0.1.16. `LICENSE` and `NOTICE` are byte-identical to v0.1.15 (`git diff v0.1.15 v0.1.16 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.15 to 0.1.16); no crate is added or removed.
@@ -54,7 +56,7 @@ Whisper Base model (MIT), with the same notices. No npm dependency was added.
 
 | Category                                                                                        | Count       | Status                                                                                                                                            |
 | ----------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Production npm packages (unique name@version)                                                   | 360         | See distribution below                                                                                                                            |
+| Production npm packages (unique name@version)                                                   | 359         | See distribution below                                                                                                                            |
 | Dev npm dependencies                                                                            | not bundled | Do not affect the distributed product                                                                                                             |
 | External binaries / native addons shipped in `resources/`                                       | 11          | Ant, freedom-ipfs, libradicle, Myotis, Arti, freedom-cored, freedom-ipfsd, freedom-radicled, freedom-colibrid, Codex Windows sandbox, whisper.cpp |
 | Vendored renderer bundles in `src/renderer/vendor/`                                             | 4           | OpenLV, highlight.js, marked, DOMPurify                                                                                                           |
@@ -98,7 +100,7 @@ Freedom Browser is distributed as:
   - `freedom-cored` (Rust identity core) — its license is pending; see below
   - `freedom-ipfsd` (IPFS service) — packaged builds' IPFS node; its license is pending; see below
   - `freedom-radicled` (Radicle service) — packaged builds' Radicle node; its license is pending; see below
-  - `freedom-colibrid` (Colibri service) — shipped, not yet run; its license is pending; see below
+  - `freedom-colibrid` (Colibri service) — Colibri's verifier; its license is pending; see below
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 - **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
@@ -161,7 +163,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### freedom-colibrid (Colibri Service) — license pending
 
 - **Pin:** `colibrid-v0.1.1` (an immutable release) in `scripts/fetch-freedom-colibrid.js`, together with the sha256 of its `SHA256SUMS` (`PINNED_SHA256SUMS_DIGEST`).
-- **Integration:** a separate binary under `resources/freedom-colibrid/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation. Nothing runs it yet: Colibri still runs in the app's WASM workers (`@corpus-core/colibri-stateless`, below) until the service's client lands behind a development switch (freedom-core design 0014, COL-5), and the service replaces them in COL-6.
+- **Integration:** a separate binary under `resources/freedom-colibrid/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation. It is Colibri's verifier: since COL-6 (freedom-core design 0014) the app runs no other, and the npm package whose WASM build it replaced is no longer a dependency.
 - **License:** freedom-core's, which is not chosen yet; that is the maintainer's decision. No license is inferred from Freedom Browser's license.
 - **Linking (Linux):** the Linux binaries (x86_64 and aarch64) are dynamically linked against the system's GNU C Library, needing at most `GLIBC_2.17` (`libc`, `libpthread`, `libdl` and the dynamic loader, and nothing else), and built with cargo-zigbuild, as freedom-ipfsd's are. Zig links its own copies of LLVM's libc++ and libc++abi for evmone's and intx's C++, and LLVM's libunwind. glibc itself is the user's system library and is not distributed.
 - **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, colibri-stateless's among them; the C and C++ libraries it builds; and the Rust toolchain runtime, with glibc's startup objects and LLVM's libunwind, libc++ and libc++abi on Linux) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). `scripts/fetch-freedom-colibrid.js` installs both next to the binary, `package.json` ships them in `resources/freedom-colibrid/`, and `scripts/check-binaries.js` requires them.
@@ -318,7 +320,7 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 
 | License                           | Count   |
 | --------------------------------- | ------- |
-| MIT                               | 233     |
+| MIT                               | 232     |
 | Apache-2.0                        | 58      |
 | ISC                               | 22      |
 | BSD-3-Clause                      | 17      |
@@ -335,7 +337,7 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 | BSD-2-Clause                      | 1       |
 | Python-2.0                        | 1       |
 | Unlicense                         | 1       |
-| **Total**                         | **360** |
+| **Total**                         | **359** |
 
 ---
 
