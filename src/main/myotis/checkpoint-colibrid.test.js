@@ -2,11 +2,11 @@
  * The checkpoint check through freedom-colibrid's one-shot process
  * (`checkpoint-colibrid.js`, freedom-core design 0014, COL-5):
  * - the protocol paths, against test/helpers/fake-colibrid.js: the process
- *   and its one call, main's fetches for it (the proof once, HTTP 200 only;
- *   the roots from the quorum, memoized per slot, at most 8; everything
- *   else refused, nothing sent), every outcome's class, the bound of two
- *   checks, the 90 s deadline, an abort that settles once the process has
- *   exited, the diagnostics;
+ *   and its one call, main's fetches for it (the proof once, HTTP 200 only,
+ *   each attempt 20 s at most; the roots from the quorum, memoized per slot,
+ *   at most 8; everything else refused, nothing sent), every outcome's
+ *   class, the bound of two checks, the 90 s deadline, an abort that
+ *   settles once the process has exited, the diagnostics;
  * - the captured proofs (docs/audits/evidence/colibri-v3-2026-09/captures)
  *   through the real binary at each capture's clock, when there is one
  *   (`FREEDOM_COLIBRID_PATH`, or `npm run colibrid:download`'s
@@ -186,6 +186,42 @@ describe('the one-shot process and its call', () => {
       expect(f.runtime.decode_proof).not.toHaveBeenCalled();
     }
   );
+
+  test('a prover that never answers: the attempt is cut at 20 s, and the check settles unavailable long before its 90 s', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    const tick = () => new Promise((resolve) => setImmediate(resolve));
+    try {
+      const f = checkpointFixture();
+      f.fetch.mockImplementation(
+        (url, init) =>
+          new Promise((_resolve, reject) =>
+            init.signal.addEventListener('abort', () => reject(new Error('aborted')), {
+              once: true,
+            })
+          )
+      );
+      const started = Date.now();
+      const { promise, fake } = start(f);
+      let outcome = null;
+      promise.then(
+        () => (outcome = 'resolved'),
+        (error) => (outcome = error.code)
+      );
+      for (let i = 0; i < 2000 && f.fetch.mock.calls.length === 0; i++) await tick();
+      expect(f.fetch.mock.calls.map(([url]) => url)).toEqual([f.config.prover]);
+
+      await jest.advanceTimersByTimeAsync(20_000);
+      for (let i = 0; i < 2000 && outcome === null; i++) await tick();
+
+      expect(outcome).toBe('CHECKPOINT_UNAVAILABLE');
+      expect(Date.now() - started).toBeLessThan(21_000);
+      const [proof] = fake.children[0].fetches;
+      expect(proof.outcome.error).toMatch(/^Request to <url> with payload .* failed: fetch failed$/);
+      expect(fake.children[0].exited).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 
   test('a proof over 4 MiB is never read whole: unavailable', async () => {
     const f = checkpointFixture();

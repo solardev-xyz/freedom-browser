@@ -444,17 +444,13 @@ class ColibridClient extends ServiceClient {
    * one `colibri.checkpoint`, then exits 0): resolves once it is gone.
    * Nothing more is written to it, and its exit is the end main expects, no
    * news (no warn, as for a stop); if it hasn't gone within the shutdown
-   * grace, it is stopped (`stop()`).
+   * grace, it is stopped (ServiceClient's `awaitExit`).
    */
   checkpointDone() {
     if (this.kind !== 'checkpoint') {
       return Promise.reject(new TypeError('checkpointDone is the checkpoint process’s'));
     }
-    if (!this.current) return this.stop();
-    this.stopRequested = true;
-    const gone = new Promise((resolve) => this.stopWaiters.push(resolve));
-    const timer = this.setTimer(() => this.stop(), SHUTDOWN_GRACE_MS);
-    return gone.finally(() => this.clearTimer(timer));
+    return this.awaitExit({ graceMs: SHUTDOWN_GRACE_MS });
   }
 
   /** `colibri.forget { client }`: the service drops what it keeps for one

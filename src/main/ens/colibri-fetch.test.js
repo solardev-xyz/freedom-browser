@@ -22,7 +22,8 @@
  *   POST's, another 3xx);
  * - a checkpoint's fetches: its roots answered from main's quorum, never
  *   fetched (pool, cancel, deadline, at most 8, refusals told to the
- *   check), its proof once and on HTTP 200 alone.
+ *   check), its proof once, on HTTP 200 alone, each attempt 20 s at most,
+ *   its body included (fake timers).
  *
  * The session itself (its proxy, Tor's PAC, Chromium's decoding) is
  * checked from a real Electron process in
@@ -44,6 +45,7 @@ const {
   errorText,
 } = require('./colibri-fetch');
 const { COLIBRI_FETCH_POOL_BYTES, ColibriFetchPool } = require('./colibri-fetch-pool');
+const { CHECKPOINT_PROOF_PAYLOAD } = require('./colibri-fetch-contract');
 const { COLIBRI_PACKAGE_SERVERS } = require('./colibri-servers');
 
 const KIB = 1024;
@@ -603,6 +605,135 @@ describe("a checkpoint's fetches", () => {
       type: 'checkpoint_proof',
       rule: 'count',
     });
+  });
+});
+
+describe("a checkpoint proof's attempt: 20 s at most, its body included, within the deadline", () => {
+  const ATTEMPT_MS = 20_000;
+  // The executor's text for an attempt that timed out, as for one the hop
+  // timed out: a transport failure.
+  const TIMED_OUT = `Request to <url> with payload ${CHECKPOINT_PROOF_PAYLOAD} failed: fetch failed`;
+
+  /** Settles on the transport's abort, as a session request does. */
+  const onAbort = (signal, reject) => {
+    const cut = () => reject(signal.reason ?? new Error('aborted'));
+    if (signal.aborted) cut();
+    else signal.addEventListener('abort', cut, { once: true });
+  };
+  const transports = {
+    'never answers': (url, init) => new Promise((_resolve, reject) => onAbort(init.signal, reject)),
+    'sends its headers, then stalls its body': async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(16));
+          },
+        })
+      ),
+    'trickles its body, a byte a second': async () =>
+      new Response(
+        new ReadableStream({
+          async pull(controller) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            controller.enqueue(new Uint8Array(1));
+          },
+        })
+      ),
+  };
+
+  /**
+   * One checkpoint_proof fetch through `transport` under fake timers: its
+   * outcome before `ATTEMPT_MS`, its outcome, and when it settled (ms).
+   */
+  async function attempt(transport, { deadlineMs = 60_000 } = {}) {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    try {
+      const bounded = colibriFetchHandler({
+        operations,
+        pool,
+        hop: makeHop({ fetch: transport }),
+        log,
+      });
+      const started = Date.now();
+      const op = { kind: 'checkpoint', id: nextId++, chain: 1, deadlineAt: started + deadlineMs };
+      operations.set(op.id, op);
+      let outcome = null;
+      let settledAt = null;
+      const params = {
+        request: op.id,
+        type: 'checkpoint_proof',
+        method: 'post',
+        path: '',
+        accept: 'ssz',
+        exclude_mask: 0,
+      };
+      const pending = bounded(params, { signal: new AbortController().signal, generation: 1 }).then(
+        (value) => {
+          outcome = { value };
+          settledAt = Date.now() - started;
+        },
+        (error) => {
+          outcome = { error };
+          settledAt = Date.now() - started;
+        }
+      );
+      await jest.advanceTimersByTimeAsync(Math.min(deadlineMs, ATTEMPT_MS) - 1);
+      const early = outcome;
+      await jest.advanceTimersByTimeAsync(1);
+      await pending;
+      return { early, outcome, settledAt };
+    } finally {
+      jest.useRealTimers();
+    }
+  }
+
+  test.each(Object.keys(transports))(
+    'a prover that %s fails at 20 s, as a transport failure: the service is told, the pool given back',
+    async (name) => {
+      const { early, outcome, settledAt } = await attempt(transports[name]);
+      expect(early).toBeNull();
+      expect(outcome).toEqual({ value: { error: TIMED_OUT } });
+      expect(settledAt).toBe(ATTEMPT_MS);
+      expect(pool.held).toBe(0);
+    }
+  );
+
+  test("a deadline under 20 s still cuts first: the request's timeout, as before", async () => {
+    const { early, outcome, settledAt } = await attempt(transports['never answers'], {
+      deadlineMs: 5_000,
+    });
+    expect(early).toBeNull();
+    expect(outcome.error).toMatchObject({ code: 'timeout' });
+    expect(settledAt).toBe(5_000);
+    expect(pool.held).toBe(0);
+  });
+
+  test('only the proof has the bound: another variant waits for its deadline', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    try {
+      const unbounded = colibriFetchHandler({
+        operations,
+        pool,
+        hop: makeHop({ fetch: transports['never answers'] }),
+        log,
+      });
+      const op = blockNumberOp({ deadlineMs: 60_000 });
+      let outcome = null;
+      const pending = unbounded(blockNumber(op), {
+        signal: new AbortController().signal,
+        generation: 1,
+      }).then(
+        (value) => (outcome = { value }),
+        (error) => (outcome = { error })
+      );
+      await jest.advanceTimersByTimeAsync(ATTEMPT_MS + 1_000);
+      expect(outcome).toBeNull();
+      await jest.advanceTimersByTimeAsync(60_000);
+      await pending;
+      expect(outcome.error).toMatchObject({ code: 'timeout' });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

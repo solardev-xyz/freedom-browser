@@ -26,9 +26,12 @@
  *   logged with the rule `local`. Each fetch refused for an operation
  *   that asks (`onRefused`) is told to it, with the rule and the type.
  * - **A checkpoint's proof** (`checkpoint_proof`), main's own request to
- *   the chain's prover, succeeds on HTTP 200 alone, as the WASM path's
- *   checkpoint worker reads it (`fetchBytes`); any other status fails as an
- *   error status does.
+ *   the chain's prover, as the WASM path's checkpoint worker makes it
+ *   (`fetchBytes`): it succeeds on HTTP 200 alone, any other status failing
+ *   as an error status does; and each attempt, its body included, has 20 s
+ *   at most (`REQUEST_MS`) within the request's deadline. Past them the
+ *   attempt fails as a transport failure does (`… failed: fetch failed`),
+ *   and the next server is tried (the proof has one).
  * - **The pool:** before the first send, the variant's body maximum is
  *   reserved from main's Colibri fetch pool (`colibri-fetch-pool.js`); with
  *   no room, nothing is sent and the answer is `Colibri fetch pool full`.
@@ -79,6 +82,7 @@ const { isOk, makeHop, unlessAborted, withDeadline } = require('../core/naming-s
 const { validateRpcUrl } = require('../networks/network-registry');
 const { admit, joinPath, sameVariant } = require('./colibri-fetch-contract');
 const { colibriFetchPool } = require('./colibri-fetch-pool');
+const { REQUEST_MS } = require('../myotis/checkpoint-evidence');
 
 /** What main answers the service, besides a server's own error. */
 const COLIBRI_FETCH_TEXTS = Object.freeze({
@@ -107,6 +111,10 @@ const LOCAL_VARIANTS = new Set(['checkpoint_root']);
 /** The variants that succeed on HTTP 200 alone: the checkpoint's proof, as
  * the WASM path's worker takes it. */
 const EXACTLY_200 = new Set(['checkpoint_proof']);
+/** The longest one attempt of a variant may take, its body included, within
+ * the request's deadline: the checkpoint's proof, as the WASM path's worker
+ * bounds the whole fetch (`fetchBytes`' `REQUEST_MS`). */
+const ATTEMPT_MS = Object.freeze({ checkpoint_proof: REQUEST_MS });
 /** A root as main's quorum gives it. */
 const ROOT = /^0x[0-9a-f]{64}$/;
 /** Refusals one process generation logs one by one in a rolling minute. */
@@ -184,10 +192,16 @@ function redirectTarget(location, { server, current, op, params, fetch }) {
  * One server: its body, or the error `fetch_from_servers` would record for
  * it (`{ body }` or `{ error }`). A cancel or the deadline throws.
  */
+/** One attempt's failure as `fetch_from_servers` records it: `Request to
+ * <url>[ with payload <JSON>] failed: <reason>`. */
+function attemptFailure(server, fetch, reason) {
+  const payload = fetch.payload === null ? '' : ` with payload ${fetch.payload}`;
+  return { error: `Request to ${joinPath(server, fetch.path)}${payload} failed: ${reason}` };
+}
+
 async function fromServer(server, { fetch, params, op, hop, signal }) {
   const first = joinPath(server, fetch.path);
-  const payload = fetch.payload === null ? '' : ` with payload ${fetch.payload}`;
-  const failed = (reason) => ({ error: `Request to ${first}${payload} failed: ${reason}` });
+  const failed = (reason) => attemptFailure(server, fetch, reason);
   const headers = requestHeaders(fetch);
   const ok = EXACTLY_200.has(fetch.variant) ? (status) => status === 200 : isOk;
   let url = first;
@@ -231,10 +245,35 @@ async function fromServer(server, { fetch, params, op, hop, signal }) {
 }
 
 /** The servers in turn: the first body and its node, or the last error. */
+/**
+ * One server, within the variant's bound for an attempt (`ATTEMPT_MS`), if
+ * it has one: past it, the attempt is a transport failure, as an attempt the
+ * hop timed out is. The request's own cancel and deadline still throw.
+ */
+async function boundedFromServer(server, context) {
+  const ms = ATTEMPT_MS[context.fetch.variant];
+  if (ms === undefined) return fromServer(server, context);
+  const cut = new AbortController();
+  const timer = setTimeout(() => cut.abort(), ms);
+  try {
+    return await fromServer(server, {
+      ...context,
+      signal: AbortSignal.any([context.signal, cut.signal]),
+    });
+  } catch (err) {
+    if (cut.signal.aborted && !context.signal.aborted) {
+      return attemptFailure(server, context.fetch, TRANSPORT_REASON);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fromServers(context) {
   let last = COLIBRI_FETCH_TEXTS.allFailed;
   for (const { url, node } of context.fetch.attempts) {
-    const outcome = await fromServer(url, context);
+    const outcome = await boundedFromServer(url, context);
     if (outcome.body) return { body: outcome.body, node };
     last = outcome.error;
   }
