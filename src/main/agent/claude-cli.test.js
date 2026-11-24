@@ -276,10 +276,15 @@ test('discovery reports unsupported bridge status as a CLI compatibility issue',
 
 test.each([
   // The CLI keeps answering "pending": slow bridge, not an organization policy.
-  ['a bridge that stays pending', true, 'AGENT_CLAUDE_BRIDGE_TIMEOUT'],
+  ['a bridge that stays pending', true, 0, 'AGENT_CLAUDE_BRIDGE_TIMEOUT'],
   // The CLI silently drops the unknown mcp_status request: a version problem.
-  ['a CLI that never answers mcp_status', false, 'AGENT_CLAUDE_VERSION'],
-])('discovery cannot save an alias-only connection with %s', async (_label, answersStatus, code) => {
+  ['a CLI that never answers mcp_status', false, 0, 'AGENT_CLAUDE_VERSION'],
+  // Slow initialize hooks leave mcp_status no time to answer before the
+  // shared budget ends: slowness (retryable), not an outdated CLI.
+  ['mcp_status sent just before the deadline', false, 14900, 'AGENT_CLAUDE_BRIDGE_TIMEOUT'],
+  // Unanswered for the whole grace window is still the version signal.
+  ['mcp_status ignored after a slow initialize', false, 9000, 'AGENT_CLAUDE_VERSION'],
+])('discovery cannot save an alias-only connection with %s', async (_label, answersStatus, initializeDelay, code) => {
   jest.useFakeTimers();
   try {
     const { discoverClaudeModels } = require('./claude-cli');
@@ -287,9 +292,11 @@ test.each([
     const pending = discoverClaudeModels({ findExecutable: async () => '/native/claude', startProcess: async options => ({ close,
       write(message) {
         if (message.request.subtype !== 'initialize' && !answersStatus) return;
-        options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
+        const answer = () => options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
           response: message.request.subtype === 'initialize' ? { models: [{ value: 'sonnet', displayName: 'Sonnet' }] }
             : { mcpServers: [{ name: 'freedom', status: 'pending' }] } } });
+        if (message.request.subtype === 'initialize' && initializeDelay) setTimeout(answer, initializeDelay);
+        else answer();
       },
     }) });
     const assertion = expect(pending).rejects.toMatchObject({ code });

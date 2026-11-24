@@ -146,13 +146,18 @@ function normalizeClaudeModels(entries) {
   return models;
 }
 
+// A CLI that supports mcp_status answers it locally and at once; one that has
+// left it unanswered this long is ignoring it. Shorter than that, the request
+// was simply sent too late in the discovery budget to blame the version.
+const STATUS_ANSWER_GRACE_MS = 5000;
+
 async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
   findExecutable = findClaudeExecutable } = {}) {
   const controller = new AbortController();
   const ownedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   const requestId = randomUUID();
   const statusRequestId = randomUUID();
-  let child, resolve, reject, models, statusTimer, statusAnswered = false;
+  let child, resolve, reject, models, statusTimer, statusGraceTimer, statusAnswered = false, statusOverdue = false;
   const result = new Promise((yes, no) => { resolve = yes; reject = no; });
   // Attach immediately: abort/startup may reject before the process is ready.
   result.catch(() => {});
@@ -161,8 +166,10 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
   const timer = setTimeout(() => {
     // A bridge that never connects must not turn into a successful alias-only
     // connection. Only an explicit status answer can blame configuration: a CLI
-    // that ignores mcp_status is a version problem, a pending bridge is slow.
-    if (models) reject(statusAnswered ? bridgeTimeoutError() : versionError());
+    // that ignores mcp_status for the whole grace window is a version problem;
+    // a pending bridge, or a status request sent too late to have been
+    // answered (slow initialize hooks), is slowness and stays retryable.
+    if (models) reject(!statusAnswered && statusOverdue ? versionError() : bridgeTimeoutError());
     controller.abort();
   }, 15000);
   try {
@@ -189,8 +196,10 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
           // an inference prompt or giving discovery any executable tools.
           const check = () => { void Promise.resolve(child.write({ type: 'control_request', request_id: statusRequestId,
             request: { subtype: 'mcp_status' } })).catch(reject); };
-          if (event.response.request_id === requestId) check();
-          else statusTimer = setTimeout(check, 100);
+          if (event.response.request_id === requestId) {
+            statusGraceTimer = setTimeout(() => { statusOverdue = true; }, STATUS_ANSWER_GRACE_MS);
+            check();
+          } else statusTimer = setTimeout(check, 100);
         } catch (error) { reject(error); }
       },
       onClose(error) { reject(error || cliError('Claude closed before returning its model catalogue.')); },
@@ -200,6 +209,7 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
   } finally {
     clearTimeout(timer);
     clearTimeout(statusTimer);
+    clearTimeout(statusGraceTimer);
     ownedSignal.removeEventListener('abort', abort);
     controller.abort();
     await child?.close();
