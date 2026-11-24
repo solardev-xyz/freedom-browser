@@ -21,11 +21,13 @@ jest.mock('electron-log', () => ({
 
 const mockGetDerivedKeys = jest.fn();
 const mockGetPublisherKey = jest.fn();
+const mockGetSitePublisherKey = jest.fn();
 const mockGetDerivedWallets = jest.fn();
 
 jest.mock('../identity-manager', () => ({
   getDerivedKeys: (...args) => mockGetDerivedKeys(...args),
   getPublisherKey: (...args) => mockGetPublisherKey(...args),
+  getSitePublisherKey: (...args) => mockGetSitePublisherKey(...args),
   getDerivedWallets: (...args) => mockGetDerivedWallets(...args),
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
 }));
@@ -52,6 +54,7 @@ const {
   getOriginIdentityState,
   getOriginIdentityStateWithOwners,
   previewAppScopedIdentity,
+  getAppScopedKey,
   createAppScopedIdentity,
   ensureAntWalletIdentity,
   ensureEthereumWalletIdentity,
@@ -83,6 +86,10 @@ beforeEach(() => {
   mockGetPublisherKey.mockImplementation(async (index) => ({
     address: `0xPublisher${index}`,
     privateKey: `0xpublisher${index}`,
+  }));
+  mockGetSitePublisherKey.mockImplementation(async (site, index) => ({
+    address: `0xSite:${site}:${index}`,
+    privateKey: `0xsite:${site}:${index}`,
   }));
   mockGetDerivedWallets.mockResolvedValue([
     { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000' },
@@ -199,19 +206,47 @@ describe('feed-store', () => {
       });
     });
 
-    test('createAppScopedIdentity adds and activates a new identity without dropping old identities', () => {
+    test('createAppScopedIdentity adds and activates a site-derived identity, keeping older ones (#1155)', () => {
       setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
 
       const entry = createAppScopedIdentity('myapp.eth', { label: '  Testing identity  ' });
 
-      expect(entry.activeIdentityId).toBe('app-scoped:1');
-      expect(entry.identities['app-scoped:0']).toBeDefined();
-      expect(entry.identities['app-scoped:1']).toMatchObject({
+      expect(entry.activeIdentityId).toBe('app-scoped:site:0');
+      expect(entry.identities['app-scoped:0']).toMatchObject({ publisherKeyIndex: 0 });
+      expect(entry.identities['app-scoped:site:0']).toMatchObject({
         mode: 'app-scoped',
-        publisherKeyIndex: 1,
+        publisherKeyIndex: null,
+        siteKey: { site: 'myapp.eth', index: 0 },
         label: 'Testing identity',
       });
-      expect(allocatePublisherKeyIndex()).toBe(2);
+      expect(entry.siteKey).toEqual({ site: 'myapp.eth', index: 0 });
+      // The counter is for identities created before #1155 only.
+      expect(allocatePublisherKeyIndex()).toBe(1);
+
+      const next = createAppScopedIdentity('myapp.eth');
+      expect(next.activeIdentityId).toBe('app-scoped:site:1');
+      expect(next.identities['app-scoped:site:1']).toMatchObject({
+        siteKey: { site: 'myapp.eth', index: 1 },
+        label: 'App-scoped identity 2',
+      });
+    });
+
+    test('site-derived identities are numbered per site and keyed by the normalized site', () => {
+      createAppScopedIdentity('MyApp.ETH');
+      createAppScopedIdentity('other.eth');
+      expect(getOriginEntry('myapp.eth').identities['app-scoped:site:0'].siteKey).toEqual({ site: 'myapp.eth', index: 0 });
+      expect(getOriginEntry('other.eth').identities['app-scoped:site:0'].siteKey).toEqual({ site: 'other.eth', index: 0 });
+    });
+
+    test('getAppScopedKey derives either kind of app-scoped key', async () => {
+      await expect(getAppScopedKey({ mode: 'app-scoped', publisherKeyIndex: 3 }))
+        .resolves.toMatchObject({ address: '0xPublisher3' });
+      await expect(getAppScopedKey({ mode: 'app-scoped', publisherKeyIndex: null, siteKey: { site: 'myapp.eth', index: 1 } }))
+        .resolves.toMatchObject({ address: '0xSite:myapp.eth:1' });
+      await expect(getAppScopedKey({ mode: 'app-scoped', publisherKeyIndex: null }))
+        .rejects.toThrow('missing a publisher key index');
+      await expect(getAppScopedKey({ mode: 'app-scoped', siteKey: { site: '', index: 0 } }))
+        .rejects.toThrow('missing a publisher key index');
     });
 
     test('ensureAntWalletIdentity can add Bee wallet without activating it', () => {
@@ -331,6 +366,50 @@ describe('feed-store', () => {
         'ethereum-wallet:0': true,
       });
       await expect(previewAppScopedIdentity('other.eth')).resolves.toMatchObject({ shared: false });
+    });
+
+    test('a site-derived identity is its own site\'s, unless another origin holds the same key (#1155)', async () => {
+      const own = getOriginEntry('myapp.eth') || createAppScopedIdentity('myapp.eth');
+      const identity = own.identities['app-scoped:site:0'];
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', identity)).toBe(false);
+
+      const state = await getOriginIdentityStateWithOwners('myapp.eth');
+      expect(state.identities.find((i) => i.id === 'app-scoped:site:0').shared).toBe(false);
+
+      // Another site's own key with the same number is a different key.
+      createAppScopedIdentity('other.eth');
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', identity)).toBe(false);
+
+      // The same key held by a second origin (a hand-edited or merged store)
+      // is shared.
+      const file = path.join(tmpDir, 'swarm-feeds.json');
+      const stored = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      stored.origins['copycat.eth'] = {
+        ...stored.origins['myapp.eth'],
+        identities: { [identity.id]: { ...identity } },
+        activeIdentityId: identity.id,
+      };
+      fs.writeFileSync(file, JSON.stringify(stored));
+      _resetCache();
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', identity)).toBe(true);
+    });
+
+    test('a record with both key fields is judged by the counter key it signs with', async () => {
+      setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 7 });
+      setOriginEntry('other.eth', { identityMode: 'app-scoped', publisherKeyIndex: 7 });
+      const mixed = { mode: 'app-scoped', publisherKeyIndex: 7, siteKey: { site: 'myapp.eth', index: 0 } };
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', mixed)).toBe(true);
+      await expect(getAppScopedKey(mixed)).resolves.toMatchObject({ address: '0xPublisher7' });
+
+      // And another origin's mixed record signs with its counter key, so it
+      // doesn't hold this site's key.
+      const siteOnly = { mode: 'app-scoped', publisherKeyIndex: null, siteKey: { site: 'myapp.eth', index: 0 } };
+      const file = path.join(tmpDir, 'swarm-feeds.json');
+      const stored = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      stored.origins['other.eth'].identities['app-scoped:7'].siteKey = { site: 'myapp.eth', index: 0 };
+      fs.writeFileSync(file, JSON.stringify(stored));
+      _resetCache();
+      expect(isIdentitySharedWithOtherOrigins('myapp.eth', siteOnly)).toBe(false);
     });
 
     test('getEthereumWalletIdentityReferences lists active and feed-pinned identities', async () => {
@@ -811,15 +890,17 @@ describe('feed-store', () => {
       _resetCache();
       const result = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-test.eth', 'app-scoped');
       expect(result.identityMode).toBe('app-scoped');
-      expect(result.publisherKeyIndex).toEqual(expect.any(Number));
+      expect(result.activeIdentityId).toBe('app-scoped:site:0');
+      expect(result.siteKey).toEqual({ site: 'ipc-test.eth', index: 0 });
+      expect(result.publisherKeyIndex).toBeNull();
     });
 
     test('set-feed-identity is idempotent — does not allocate new key index', async () => {
       _resetCache();
       const first = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-idem.eth', 'app-scoped');
-      const firstIndex = first.publisherKeyIndex;
       const second = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-idem.eth', 'app-scoped');
-      expect(second.publisherKeyIndex).toBe(firstIndex);
+      expect(second.activeIdentityId).toBe(first.activeIdentityId);
+      expect(Object.keys(second.identities)).toEqual(Object.keys(first.identities));
     });
 
     test('set-feed-identity ignores different mode on re-grant', async () => {
@@ -881,22 +962,22 @@ describe('feed-store', () => {
       const withNewIdentity = await ipcHandlers[IPC.SWARM_CREATE_APP_SCOPED_IDENTITY]({}, 'ipc-manage.eth', {
         label: 'Second identity',
       });
-      expect(withNewIdentity.activeIdentityId).toBe('app-scoped:1');
-      expect(withNewIdentity.identities.find((identity) => identity.id === 'app-scoped:1')).toMatchObject({
+      expect(withNewIdentity.activeIdentityId).toBe('app-scoped:site:1');
+      expect(withNewIdentity.identities.find((identity) => identity.id === 'app-scoped:site:1')).toMatchObject({
         label: 'Second identity',
-        owner: '0xPublisher1',
+        owner: '0xSite:ipc-manage.eth:1',
         stored: true,
       });
 
       const withBeeIdentity = await ipcHandlers[IPC.SWARM_ENSURE_ANT_WALLET_IDENTITY]({}, 'ipc-manage.eth');
-      expect(withBeeIdentity.activeIdentityId).toBe('app-scoped:1');
+      expect(withBeeIdentity.activeIdentityId).toBe('app-scoped:site:1');
       expect(withBeeIdentity.identities.find((identity) => identity.id === 'bee-wallet')).toMatchObject({
         owner: '0xBee0000000000000000000000000000000000000',
         stored: true,
       });
 
       const withWalletIdentity = await ipcHandlers[IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY]({}, 'ipc-manage.eth', 2);
-      expect(withWalletIdentity.activeIdentityId).toBe('app-scoped:1');
+      expect(withWalletIdentity.activeIdentityId).toBe('app-scoped:site:1');
       expect(withWalletIdentity.identities.find((identity) => identity.id === 'ethereum-wallet:2')).toMatchObject({
         label: 'Trading Wallet',
         owner: '0xWallet222222222222222222222222222222222222',
@@ -911,8 +992,8 @@ describe('feed-store', () => {
       const state = await ipcHandlers[IPC.SWARM_GET_ORIGIN_IDENTITIES]({}, 'ipc-manage.eth');
       expect(state.activeIdentityId).toBe('ethereum-wallet:2');
       expect(state.identities.map((identity) => identity.id)).toEqual([
-        'app-scoped:0',
-        'app-scoped:1',
+        'app-scoped:site:0',
+        'app-scoped:site:1',
         'bee-wallet',
         'ethereum-wallet:2',
         'ethereum-wallet:0',
@@ -925,15 +1006,23 @@ describe('feed-store', () => {
       const preview = await previewAppScopedIdentity('preview.eth');
 
       expect(preview).toMatchObject({
-        id: 'app-scoped:0',
+        id: 'app-scoped:site:0',
         mode: 'app-scoped',
-        publisherKeyIndex: 0,
-        owner: '0xPublisher0',
+        publisherKeyIndex: null,
+        siteKey: { site: 'preview.eth', index: 0 },
+        owner: '0xSite:preview.eth:0',
         stored: false,
         preview: true,
       });
       expect(getOriginEntry('preview.eth')).toBeNull();
       expect(allocatePublisherKeyIndex()).toBe(0);
+
+      // The preview names the key the site would get next.
+      createAppScopedIdentity('preview.eth');
+      await expect(previewAppScopedIdentity('preview.eth')).resolves.toMatchObject({
+        id: 'app-scoped:site:1',
+        owner: '0xSite:preview.eth:1',
+      });
     });
 
     test('get-origin-identities includes Bee wallet as an available identity', async () => {
