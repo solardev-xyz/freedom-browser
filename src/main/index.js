@@ -224,10 +224,11 @@ if (
   exitProfileLocked();
 }
 // How long main's lock is tried below (profile-lock.js), read before the
-// move, which takes the lock itself: a lock that read fresh is a profile
-// already open (an older build's, or a new build's replacing its gate's
-// holder) and is handed over to at once; otherwise a holder is a launch
-// starting at the same moment, settling the move, that lets go in a moment.
+// move, which takes the lock itself: a lock that read fresh with no gate
+// held (an older build's, a new build's still starting or replacing its
+// gate's holder, a crashed process's) gets one try, as before; otherwise a
+// holder is a launch starting at the same moment, settling the move, that
+// lets go in a moment.
 const profileLockWaitMs = startLockWaitMs(profileLaunch, activeProfile);
 // PRF-9's move (0013, "The move"): a profile in the root layout that is idle
 // has its Freedom-owned entries moved into `<userData>/freedom/` (a new

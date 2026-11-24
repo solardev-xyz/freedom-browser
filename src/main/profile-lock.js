@@ -92,10 +92,11 @@ function hasStaleProfileLock(profile, options = {}) {
 /**
  * The wait for a start's own lock: PROFILE_LOCK_START_WAIT_MS, or none when
  * the lock read fresh before the start's move. A fresh lock whose gate
- * isn't held is a profile already open: an older build's, which takes no
- * gate, or a new build's whose gate holder is being replaced (it keeps its
- * lock while the new holder retries the gate). It is handed over to at
- * once, as before. `report` is `profile open`'s
+ * isn't held gets one try, and is handed over to or reported busy at once,
+ * as before: for example an older build's, which takes no gate, a new
+ * build's still starting or replacing its gate's holder (it keeps its lock
+ * while the new holder retries the gate), or a crashed process's, fresh for
+ * up to 30 s. `report` is `profile open`'s
  * (`lockFresh`); where it didn't run (Windows's JS path), the lock is read
  * now, so this is called before the move, which takes the lock itself.
  */
