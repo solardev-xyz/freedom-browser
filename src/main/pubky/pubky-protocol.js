@@ -29,6 +29,13 @@
  *    `Set-Cookie`/`Service-Worker-Allowed` headers (as for bzz:/ipfs:,
  *    O-12) nor its encoding/length/hop-by-hop headers, which describe a
  *    body fetch has already decoded.
+ *  - Each request gets FETCH_TIMEOUT_MS (30s, as ipfs-protocol.js's
+ *    ATTEMPT_TIMEOUT_MS) for the homeserver's response headers, and its
+ *    dials are aborted when the page cancels the request (tab closed,
+ *    navigated away). A homeserver that accepts the connection and never
+ *    answers gets a 504 instead of a tab that spins until the socket gives
+ *    up. Once headers are in, the body streams with no deadline but stays
+ *    linked to the page's cancellation.
  *  - Error responses carry fixed text, never SDK/WASM error messages.
  */
 
@@ -43,6 +50,8 @@ const { stripPageStateHeaders } = require('../lib/gateway-response-headers');
 const PUBLIC_KEY_RE = /^[ybndrfg8ejkmcpqxot1uwisza345h769]{51}[yo]$/;
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 const HOMESERVER_UNREACHABLE = 'Could not reach the homeserver for this key';
+const HOMESERVER_TIMEOUT = 'The homeserver for this key did not answer in time';
+const FETCH_TIMEOUT_MS = 30_000;
 
 // Addresses a pubky:// page must never reach through the homeserver dial.
 // IPv4-mapped IPv6 (`::ffff:127.0.0.1`) is matched against the IPv4 rules.
@@ -215,6 +224,33 @@ const loadSdk = () => {
   return sdk;
 };
 
+// Settles with `promise`, or rejects as soon as `signal` aborts. A response
+// that arrives after the abort has its body cancelled.
+function settleOrAbort(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      promise.then(
+        (late) => late?.body?.cancel().catch(() => {}),
+        () => {}
+      );
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    if (signal.aborted) return onAbort();
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
 /**
  * Fetches `url` with the SDK client, every dial guarded by `policy`.
  * Rejects with PubkyDialRefused when a dial is refused or the response
@@ -226,7 +262,14 @@ function guardedSdkFetch(url, init, policy = DEFAULT_POLICY) {
   const state = newGuardState(policy);
   return sdkContext.run(state, async () => {
     const { client } = loadSdk();
-    const response = await client.fetch(url, { ...init, redirect: 'manual' });
+    init?.signal?.throwIfAborted();
+    // The SDK passes `init.signal` on to the file dial; the race also frees
+    // the caller if an abort lands while the SDK is still resolving the
+    // homeserver (relay dials it may not hand the signal to).
+    const response = await settleOrAbort(
+      client.fetch(url, { ...init, redirect: 'manual' }),
+      init?.signal
+    );
     const status = response.status;
     if (
       response.redirected ||
@@ -288,7 +331,7 @@ function toPubkyAddress(rawUrl) {
   return `pubky${url.hostname}${url.pathname}${url.search}`;
 }
 
-async function handlePubkyRequest(request) {
+async function handlePubkyRequest(request, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
   const method = (request.method || 'GET').toUpperCase();
   if (!ALLOWED_METHODS.has(method)) return textResponse(405, 'Method not allowed');
 
@@ -297,18 +340,43 @@ async function handlePubkyRequest(request) {
     return textResponse(400, 'Expected pubky://<public-key>/pub/<path>');
   }
 
+  // Linked to the page's own cancellation for the whole response, body
+  // included; the deadline covers only the wait for response headers.
+  const controller = new AbortController();
+  const pageSignal = request.signal;
+  if (pageSignal) {
+    if (pageSignal.aborted) controller.abort(pageSignal.reason);
+    else
+      pageSignal.addEventListener('abort', () => controller.abort(pageSignal.reason), {
+        once: true,
+      });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
   try {
     const { resolvePubky } = loadSdk();
-    return toPageResponse(await guardedSdkFetch(resolvePubky(address), { method }));
+    return toPageResponse(
+      await guardedSdkFetch(resolvePubky(address), { method, signal: controller.signal })
+    );
   } catch (err) {
+    if (timedOut && !pageSignal?.aborted) {
+      log.warn(`[pubky-protocol] request timed out after ${timeoutMs}ms`);
+      return textResponse(504, HOMESERVER_TIMEOUT);
+    }
     log.warn(`[pubky-protocol] request failed: ${err?.name || 'Error'}`);
     return textResponse(502, HOMESERVER_UNREACHABLE);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 function registerPubkyProtocol(targetSession) {
   try {
-    targetSession.protocol.handle('pubky', handlePubkyRequest);
+    targetSession.protocol.handle('pubky', (request) => handlePubkyRequest(request));
     log.info('[pubky-protocol] handler registered');
   } catch (err) {
     log.error('[pubky-protocol] failed to register handler:', err);
@@ -318,6 +386,7 @@ function registerPubkyProtocol(targetSession) {
 module.exports = {
   registerPubkyProtocol,
   handlePubkyRequest,
+  FETCH_TIMEOUT_MS,
   toPubkyAddress,
   isPublicAddress,
   // Exported for pubky-sdk-guard.test.js, which drives the real SDK

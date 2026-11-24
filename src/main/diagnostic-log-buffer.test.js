@@ -12,6 +12,16 @@ describe('DiagnosticLogBuffer', () => {
     expect(buffer.read().entries[0].text).toBe('[History] https://example.test/[path redacted]');
   });
 
+  test('redacts the key and path of a pubky:// URL', () => {
+    const buffer = new DiagnosticLogBuffer();
+    const key = 'gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo';
+    buffer.capture({ data: [`[pubky] loading pubky://${key}/pub/notes/diary.txt`] });
+    const { text } = buffer.read().entries[0];
+    expect(text).not.toContain(key);
+    expect(text).not.toContain('diary');
+    expect(text).toBe('[pubky] loading pubky:/[path redacted]');
+  });
+
   test('captures raw node and Freedom lines with trusted source classification', () => {
     const buffer = new DiagnosticLogBuffer({ maxEntries: 10 });
     buffer.capture({

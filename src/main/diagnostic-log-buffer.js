@@ -96,7 +96,7 @@ class DiagnosticLogBuffer {
           level,
           source,
           ...(service && { service }),
-          text: truncateUtf8(rawLine.replace(/\b(?:https?|wss?|bzz|ipfs|ipns|rad|web3):\/\/[^\s"'<>]+/gi, value => {
+          text: truncateUtf8(rawLine.replace(/\b(?:https?|wss?|bzz|ipfs|ipns|pubky|rad|web3):\/\/[^\s"'<>]+/gi, value => {
             try { const url = new URL(value); return (url.origin === 'null' ? url.protocol : url.origin) + '/[path redacted]'; }
             catch { return '[URL redacted]'; }
           }), MAX_CAPTURE_LINE_BYTES),

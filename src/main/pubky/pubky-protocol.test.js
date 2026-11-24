@@ -156,3 +156,104 @@ describe('handlePubkyRequest', () => {
     expect(body).not.toMatch(/internal|relay/);
   });
 });
+
+describe('handlePubkyRequest deadline and cancellation', () => {
+  const fileUrl = `https://93.184.215.14/storage/pubky${KEY}/pub/x`;
+  // A homeserver that accepted the connection and never answers: the dial
+  // settles only when its signal aborts.
+  const hangUntilAborted = (request) =>
+    new Promise((resolve, reject) => {
+      request.signal.addEventListener('abort', () => reject(request.signal.reason), {
+        once: true,
+      });
+    });
+
+  test('the default deadline is 30s, as ipfs-protocol.js', () => {
+    expect(require('./pubky-protocol').FETCH_TIMEOUT_MS).toBe(30_000);
+  });
+
+  test('a homeserver that never answers gets a 504 and its dial aborted', async () => {
+    let dial;
+    upstream.mockImplementation((request) => {
+      dial = request;
+      return hangUntilAborted(request);
+    });
+    const res = await handlePubkyRequest(
+      { url: `pubky://${KEY}/pub/x`, method: 'GET' },
+      { timeoutMs: 30 }
+    );
+    expect(res.status).toBe(504);
+    expect(await res.text()).toBe('The homeserver for this key did not answer in time');
+    expect(dial.signal.aborted).toBe(true);
+  });
+
+  test('the deadline still answers when the SDK never settles', async () => {
+    // Stands in for a hang the signal does not reach (e.g. a relay dial).
+    const { client } = loadSdk();
+    const sdkFetch = client.fetch;
+    client.fetch = () => new Promise(() => {});
+    try {
+      const res = await handlePubkyRequest(
+        { url: `pubky://${KEY}/pub/x`, method: 'GET' },
+        { timeoutMs: 30 }
+      );
+      expect(res.status).toBe(504);
+    } finally {
+      client.fetch = sdkFetch;
+    }
+  });
+
+  test('the page cancelling the request aborts the dial', async () => {
+    const page = new AbortController();
+    let dial;
+    upstream.mockImplementation((request) => {
+      dial = request;
+      setTimeout(() => page.abort(), 10);
+      return hangUntilAborted(request);
+    });
+    const res = await handlePubkyRequest({
+      url: `pubky://${KEY}/pub/x`,
+      method: 'GET',
+      signal: page.signal,
+    });
+    expect(dial.signal.aborted).toBe(true);
+    // Not reported as a homeserver timeout: nobody is waiting for it.
+    expect(res.status).toBe(502);
+  });
+
+  test('a request the page already cancelled never dials', async () => {
+    const page = new AbortController();
+    page.abort();
+    const res = await handlePubkyRequest({
+      url: `pubky://${KEY}/pub/x`,
+      method: 'GET',
+      signal: page.signal,
+    });
+    expect(res.status).toBe(502);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  test('the deadline stops once headers arrive; the body streams past it', async () => {
+    let dial;
+    let push;
+    upstream.mockImplementation((request) => {
+      dial = request;
+      const body = new ReadableStream({
+        start(controller) {
+          push = controller;
+        },
+      });
+      return Promise.resolve(withUrl(new Response(body, { status: 200 }), fileUrl));
+    });
+    const res = await handlePubkyRequest(
+      { url: `pubky://${KEY}/pub/x`, method: 'GET' },
+      { timeoutMs: 20 }
+    );
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(dial.signal.aborted).toBe(false);
+    push.enqueue(new TextEncoder().encode('late body'));
+    push.close();
+    expect(await res.text()).toBe('late body');
+  });
+});

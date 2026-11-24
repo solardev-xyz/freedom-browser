@@ -130,6 +130,23 @@ describe('guardedSdkFetch', () => {
     expect(second.reason.name).toBe('PubkyDialRefused');
   });
 
+  test('an abort reaches the real SDK dial and closes the connection', async () => {
+    // A homeserver that accepts the connection and never answers.
+    let closed;
+    const closedP = new Promise((r) => (closed = r));
+    const { base, hits } = await startFixture((req) => req.socket.on('close', closed));
+    const controller = new AbortController();
+    const pending = pubky.guardedSdkFetch(
+      `${base}/pub/hang`,
+      { method: 'GET', signal: controller.signal },
+      PUBLIC_FOR_TEST
+    );
+    while (!hits.length) await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    await closedP;
+  });
+
   test('passes a homeserver 404 through', async () => {
     const { base } = await startFixture((req, res) => {
       res.statusCode = 404;
