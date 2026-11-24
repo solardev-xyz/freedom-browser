@@ -48,20 +48,27 @@
  *   `Request to <url> failed: response over <n> bytes`; the next one is
  *   tried under the same reservation.
  * - **Error texts** as `fetch_from_servers` writes them: `HTTP error!
- *   Status: <n>, Details: <body>` (the first 8 KiB of the error body),
- *   `Request to <url>[ with payload <JSON>] failed: fetch failed` (the
- *   reason is Node's, whatever the session's stack said), `All nodes
- *   failed`; URLs replaced by `<url>` (deviation `fetch-error-text`), then
- *   cut to 2,000 UTF-16 units, never inside a character. The service gets
- *   them as the head's `error`, which the C core gets as the fetch's error.
+ *   Status: <n>, Details: <body>` (the body decoded as `response.text()`
+ *   decodes it: UTF-8, a BOM dropped, a broken or unfinished sequence
+ *   U+FFFD), `Request to <url>[ with payload <JSON>] failed: fetch failed`
+ *   (the reason is Node's, whatever the session's stack said), `All nodes
+ *   failed`; then URLs replaced by `<url>` (deviation `fetch-error-text`),
+ *   then cut to 2,000 UTF-16 units, never inside a character. The service
+ *   gets them as the head's `error`, which the C core gets as the fetch's
+ *   error. An error body is read up to 1 MiB, or the variant's maximum if
+ *   that is less, under the fetch's reservation, then the rest is torn
+ *   down: the text is the reference's unless a URL runs past that bound,
+ *   where the reference would hide it to its end and go on.
  * - **Success:** the reservation shrinks to the body's length, and the
  *   answer is the head `{ node, bytes }` with the body on the service's
  *   stream (`StreamedReply`; the service client adds `body: true`). The
- *   reservation is given back as the service's credit takes the bytes, or
- *   whole when the stream ends or is cancelled.
+ *   body is kept as pieces of at most 64 KiB, each its own allocation;
+ *   each piece's bytes go back to the reservation once the service's
+ *   credit has taken it whole and main has let go of it, the rest when the
+ *   stream ends or is cancelled. So what the pool no longer counts, main
+ *   no longer holds.
  */
 
-const { StringDecoder } = require('string_decoder');
 const defaultLog = require('../logger');
 const { MAX_DATA } = require('../core/frame');
 const { ShellError, StreamedReply } = require('../core/service-client');
@@ -83,8 +90,9 @@ const TRANSPORT_REASON = 'fetch failed';
 /** The redirects a GET follows, and how many. */
 const FOLLOWED = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 3;
-/** How much of an error body main reads for its details. */
-const ERROR_DETAIL_BYTES = 8 * 1024;
+/** The most of an error body main reads for its details (and never more
+ * than the variant's maximum, which the fetch has reserved). */
+const ERROR_DETAIL_BYTES = 1024 * 1024;
 /** The longest text the service gets, in UTF-16 units. */
 const MAX_ERROR_UNITS = 2000;
 /** As `colibri-resolver.js` hides URLs in its logs. */
@@ -120,10 +128,10 @@ function errorText(text) {
   return cutUnits(text.replace(URLS, '<url>'), MAX_ERROR_UNITS);
 }
 
-/** An error body's details, as `response.text()` decodes it; a character
- * the excerpt cut short is left out. */
+/** An error body's details, as `response.text()` decodes it: UTF-8, its
+ * BOM dropped, a broken or unfinished sequence U+FFFD. */
 function details(body) {
-  return new StringDecoder('utf8').write(body);
+  return new TextDecoder('utf-8').decode(body);
 }
 
 /** The request headers the contract allows (`fetch_from_servers`'). */
@@ -186,7 +194,7 @@ async function fromServer(server, { fetch, params, op, hop, signal }) {
         signal,
         max: fetch.maxBody,
         read: isOk,
-        excerpt: (status) => (isRedirect(status) ? 0 : ERROR_DETAIL_BYTES),
+        excerpt: (status) => (isRedirect(status) ? 0 : Math.min(ERROR_DETAIL_BYTES, fetch.maxBody)),
       });
     } catch (err) {
       if (signal.aborted) throw err;
@@ -213,51 +221,75 @@ async function fromServer(server, { fetch, params, op, hop, signal }) {
   }
 }
 
-/** The servers in turn: the first body and its node, or the last error. */
+/** The servers in turn: the first body and its node, or the last error,
+ * as the service gets it. */
 async function fromServers(context) {
   let last = COLIBRI_FETCH_TEXTS.allFailed;
   for (const { url, node } of context.fetch.attempts) {
     const outcome = await fromServer(url, context);
     if (outcome.body) return { body: outcome.body, node };
-    last = outcome.error;
+    last = errorText(outcome.error);
   }
-  return { error: errorText(last) };
+  return { error: last };
+}
+
+/**
+ * A body as pieces of at most 64 KiB, each copied into an allocation of its
+ * own: no piece is a view of the response's buffer, so once every piece is
+ * made the response's buffer can go.
+ */
+function ownedPieces(body) {
+  const pieces = [];
+  for (let at = 0; at < body.length; at += MAX_DATA) {
+    const end = Math.min(at + MAX_DATA, body.length);
+    const piece = new Uint8Array(end - at);
+    piece.set(body.subarray(at, end));
+    pieces.push(piece);
+  }
+  return pieces;
 }
 
 /**
  * The body as the service client reads it: a byte stream of at most 64 KiB
- * a read, each read given back to the reservation as it is taken, the rest
- * when the stream ends or is cancelled.
+ * a read, from `pieces`, which it empties as it goes. A piece read whole is
+ * let go of, then its bytes go back to the reservation; the rest goes back
+ * when the stream ends or is cancelled. So the pieces left hold no more
+ * than the reservation counts.
  */
-function bodyStream(bytes, reservation) {
-  let rest = bytes;
+function bodyStream(pieces, reservation) {
+  // Bytes of the first piece already read.
+  let offset = 0;
   const done = () => {
-    rest = null;
+    pieces.length = 0;
     reservation.close();
   };
   return new ReadableStream(
     {
       type: 'bytes',
       start(controller) {
-        if (rest.length === 0) {
+        if (pieces.length === 0) {
           controller.close();
           done();
         }
       },
       pull(controller) {
-        if (!rest) return;
+        if (pieces.length === 0) return;
         const request = controller.byobRequest;
-        const n = Math.min(request ? request.view.byteLength : MAX_DATA, MAX_DATA, rest.length);
+        const piece = pieces[0];
+        const n = Math.min(request ? request.view.byteLength : MAX_DATA, piece.length - offset);
+        const part = piece.subarray(offset, offset + n);
         if (request) {
-          request.view.set(rest.subarray(0, n));
+          request.view.set(part);
           request.respond(n);
         } else {
-          // Copied: enqueueing a view gives its buffer away.
-          controller.enqueue(new Uint8Array(rest.subarray(0, n)));
+          // A copy: enqueueing a view gives its buffer away.
+          controller.enqueue(part.slice());
         }
-        reservation.release(n);
-        rest = rest.subarray(n);
-        if (rest.length === 0) {
+        offset += n;
+        if (offset < piece.length) return;
+        offset = 0;
+        reservation.release(pieces.shift().length);
+        if (pieces.length === 0) {
           controller.close();
           done();
         }
@@ -362,10 +394,11 @@ function colibriFetchHandler({
         fromServers({ fetch, params, op, hop, signal: within })
       );
       if (outcome.error !== undefined) return { error: outcome.error };
-      reservation.shrink(outcome.body.length);
+      const { length } = outcome.body;
+      reservation.shrink(length);
       reply = new StreamedReply(
-        { node: outcome.node, bytes: outcome.body.length },
-        bodyStream(outcome.body, reservation)
+        { node: outcome.node, bytes: length },
+        bodyStream(ownedPieces(outcome.body), reservation)
       );
       return reply;
     } finally {
@@ -380,7 +413,9 @@ module.exports = {
   MAX_ERROR_UNITS,
   MAX_REDIRECTS,
   REFUSALS_LOGGED,
+  bodyStream,
   colibriFetchHandler,
   cutUnits,
   errorText,
+  ownedPieces,
 };
