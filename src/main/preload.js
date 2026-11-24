@@ -1055,6 +1055,8 @@ contextBridge.exposeInMainWorld('swarmPermissions', {
   getActGrants: (origin) => ipcRenderer.invoke('swarm:get-act-grants', origin),
   describeActRequest: (origin, params) =>
     ipcRenderer.invoke('swarm:describe-act-request', origin, params),
+  describeSharedSecretsRequest: (params) =>
+    ipcRenderer.invoke('swarm:describe-shared-secrets-request', params),
 });
 
 contextBridge.exposeInMainWorld('swarmManifest', {

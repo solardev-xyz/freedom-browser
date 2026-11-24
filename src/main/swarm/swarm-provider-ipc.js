@@ -35,6 +35,7 @@ const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPermission, hasMessagingGrant, hasActGrant, onRevoke } = require('./swarm-permissions');
 const { validateActRequest } = require('./act-request');
+const { validateSharedSecretsRequest, MAX_SHARED_SECRET_KEYS } = require('./shared-secrets-request');
 const { openActShare } = require('./act-service');
 // Required on first use: private-windows.js pulls in the app logger and
 // BrowserWindow, which most of this module's callers (and tests) never need.
@@ -44,6 +45,7 @@ function isPrivateSender(event) {
 const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
+const { SigningKey } = require('ethers');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const { currentVaultEpoch } = require('../identity/vault-epoch');
 const {
@@ -75,6 +77,7 @@ const { isNoUsableBatchError } = require('./batch-errors');
 const {
   getDerivedKeys,
   getPublisherKey,
+  getSiteEncryptionKey,
   getUserWalletKey,
   getFreedomSigningAddresses,
 } = require('../identity-manager');
@@ -97,6 +100,8 @@ const LIMITS = {
   defaultTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   minTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   maxSubscriptions: 32,
+  // Public keys per swarm_deriveSharedSecrets call (shared-secrets-request.js).
+  maxSharedSecretKeys: MAX_SHARED_SECRET_KEYS,
 };
 
 const SPEC_VERSION = '1.0';
@@ -179,6 +184,8 @@ const KNOWN_METHODS = [
   'swarm_publishSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_getEncryptionKey',
+  'swarm_deriveSharedSecrets',
   'swarm_getMessagingIdentity',
   'swarm_subscribe',
   'swarm_unsubscribe',
@@ -238,6 +245,8 @@ const AUTO_APPROVABLE_METHODS = new Set([
   'swarm_writeFeedEntry',
   'swarm_writeSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_getEncryptionKey',
+  'swarm_deriveSharedSecrets',
   'swarm_sendPss',
   'swarm_sendGsoc',
   // Its "always allow" is per publisher (#648), but it is still a rule
@@ -546,6 +555,18 @@ async function executeSwarmMethod(method, params, origin, meta, context = {}) {
       return result;
     }
 
+    if (method === 'swarm_getEncryptionKey') {
+      const result = await handleGetEncryptionKey(normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
+    if (method === 'swarm_deriveSharedSecrets') {
+      const result = await handleDeriveSharedSecrets(params, normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
     // Messaging extension — no vault-timer reset: PSS/GSOC use node/mined
     // keys, never vault-derived signing keys.
     if (method === 'swarm_getMessagingIdentity') {
@@ -600,10 +621,13 @@ async function handleGetCapabilities(origin) {
       canPublish: isConnected && preFlight.ok,
       reason: !isConnected ? 'not-connected' : (preFlight.ok ? null : preFlight.reason),
       publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
-      features: ['messaging'],
+      // Extensions a page can detect, named as in the Swarm provider SWIP's
+      // companion drafts (messaging, encryption key).
+      features: ['messaging', 'encryption-key'],
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
+        encryptionKey: true,
         // swarm_publishSingleOwnerChunk: a SOC the page signed (#647).
         pageSignedSingleOwnerChunks: true,
         // swarm_openAct: content shared with this node through ACT (#648).
@@ -618,6 +642,7 @@ async function handleGetCapabilities(origin) {
         maxMessageBytes: LIMITS.maxMessageBytes,
         maxTargetDepth: LIMITS.maxTargetDepth,
         maxSubscriptions: LIMITS.maxSubscriptions,
+        maxSharedSecretKeys: LIMITS.maxSharedSecretKeys,
       },
     },
   };
@@ -1534,6 +1559,76 @@ async function handleGetSigningIdentity(origin) {
   } catch (err) {
     return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
+}
+
+/**
+ * Handle swarm_getEncryptionKey: the site's encryption public key, after
+ * connection + feed/signing grant.
+ *
+ * The key (identity/derivation.js deriveSiteEncryptionKey) is one per
+ * permission key, the same whatever publisher identity the site signs with,
+ * and never shared with another site. That last point is why key agreement
+ * uses it and not the publisher identity: a bee-wallet or ethereum-wallet
+ * identity is shared across sites, so ECDH on it would let any site with
+ * signing access read what was encrypted to another.
+ */
+async function handleGetEncryptionKey(origin) {
+  if (!hasFeedGrant(origin)) {
+    return feedNotGranted();
+  }
+
+  try {
+    const key = await getSiteEncryptionKey(origin);
+    return {
+      result: {
+        publicKey: SigningKey.computePublicKey(key.privateKey, true).replace(/^0x/, ''),
+        curve: 'secp256k1',
+      },
+    };
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+/**
+ * Handle swarm_deriveSharedSecrets: ECDH between the site's encryption key
+ * and each given public key. Returns each shared point's x coordinate, the
+ * input of Bee's and Ant's ACT session keys, so a page can do ACT itself.
+ * The request is checked by shared-secrets-request.js, the same check the
+ * consent prompt is gated on.
+ */
+async function handleDeriveSharedSecrets(params, origin) {
+  const checked = validateSharedSecretsRequest(params);
+  if (!checked.ok) {
+    return invalidParams(checked.message, checked.reason, checked.data);
+  }
+  const parsed = checked.value.publicKeys;
+
+  if (!hasFeedGrant(origin)) {
+    return feedNotGranted();
+  }
+
+  let signingKey;
+  try {
+    const key = await getSiteEncryptionKey(origin);
+    signingKey = new SigningKey(key.privateKey);
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+
+  const sharedSecrets = [];
+  for (let index = 0; index < parsed.length; index += 1) {
+    let point;
+    try {
+      // 0x04 ‖ x ‖ y. Throws for a key that is not a point on the curve.
+      point = signingKey.computeSharedSecret(parsed[index]);
+    } catch {
+      return invalidParams('public key is not a point on secp256k1', 'invalid_public_key', { index });
+    }
+    sharedSecrets.push(point.slice(4, 68));
+  }
+
+  return { result: { sharedSecrets } };
 }
 
 /**
