@@ -781,6 +781,10 @@ describe("what a service's owner takes over (design 0014)", () => {
     const exited = exitOf(client);
     expect(client.abandon('marker', { generation: gen.number })).toBe(true);
     expect(children[0].killedWith).toBe('SIGKILL');
+    // Ending already, before its exit arrives: a second abandon ends
+    // nothing, and the first cause stands.
+    expect(client.abandon('overrun', { generation: gen.number })).toBe(false);
+    expect(client.abandon('overrun')).toBe(false);
     // Nothing more goes to it.
     expect(client.serves(gen)).toBe(false);
     await expect(client.requestTo(gen, 'colibri.stats')).rejects.toMatchObject({
@@ -790,9 +794,22 @@ describe("what a service's owner takes over (design 0014)", () => {
     await expect(exited).resolves.toEqual({ code: null, signal: 'SIGKILL', cause: 'marker' });
     expect(await pending).toMatchObject({ code: 'colibri_unavailable' });
     expect(log.warn).toHaveBeenCalledWith('[Colibri] abandoned', { cause: 'marker' });
+    expect(
+      log.warn.mock.calls.filter(([message]) => message === '[Colibri] abandoned')
+    ).toHaveLength(1);
     expect(client.state).toBe('stopped');
     // Nothing running: nothing to abandon.
     expect(client.abandon('overrun')).toBe(false);
+  });
+
+  test('abandon leaves a stop under way alone', async () => {
+    const { client, children, log } = colibriClient();
+    await client.start();
+    const stopped = client.stop();
+    expect(client.abandon('marker')).toBe(false);
+    expect(children[0].killedWith).toBeUndefined();
+    await stopped;
+    expect(log.warn).not.toHaveBeenCalledWith('[Colibri] abandoned', expect.anything());
   });
 
   test('abandon takes only a fixed cause', async () => {

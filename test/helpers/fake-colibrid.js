@@ -257,7 +257,9 @@ class FakeFetch {
       }
       this.declared = bytes;
     }
-    const node = head?.node ?? 0;
+    // As freedom-colibrid's `Head`: `node` (a u16) defaults when absent,
+    // and a present null doesn't parse; `error` (an Option) takes null.
+    const node = isObject(head) && Object.hasOwn(head, 'node') ? head.node : 0;
     const error = head?.error ?? null;
     const parses =
       isObject(head) &&

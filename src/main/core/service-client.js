@@ -979,9 +979,10 @@ class ServiceClient extends EventEmitter {
    * a crash, or with `restart: false` a stop.
    *
    * With `generation` (the number `onSent` reported), only that process:
-   * a later one is left alone. Returns whether a process was ended: not
-   * when none is running, it has exited already, or it isn't
-   * `generation`.
+   * a later one is left alone. Returns whether this call ended a process:
+   * not when none is running, it has exited already, it is ending already
+   * (an earlier abandon's kill, or a `stop()` under way: that cause
+   * stands), or it isn't `generation`.
    * @param {string} cause - a fixed name (lower case, digits and `_`),
    *   safe to log
    * @param {object} [options]
@@ -993,7 +994,7 @@ class ServiceClient extends EventEmitter {
       throw new TypeError('abandon needs a fixed cause');
     }
     const gen = this.current;
-    if (!gen || gen.exited || gen.retired) return false;
+    if (!gen || gen.exited || gen.retired || gen.ending) return false;
     if (generation !== null && gen.number !== generation) return false;
     this.log.warn(`${this.label} abandoned`, { cause });
     this.end(gen, cause);

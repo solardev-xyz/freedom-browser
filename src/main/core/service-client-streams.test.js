@@ -518,6 +518,20 @@ describe('a two-way service (design 0014, COL-3)', () => {
     expect(child.protocolError).toBeNull();
   });
 
+  test("a head's node: absent is node 0, as freedom-colibrid reads it; a present null doesn't parse", async () => {
+    const answers = [
+      () => new StreamedReply({ bytes: 100 }, whole(body(15, 0, 100))),
+      () => new StreamedReply({ node: null, bytes: 100 }, whole(body(15, 0, 100))),
+    ];
+    const child = await serving(() => answers.shift()());
+
+    await expect(child.fetch(16).done).resolves.toEqual({ bytes: body(15, 0, 100), node: 0 });
+    await expect(child.fetch(16).done).resolves.toEqual({
+      error: "Colibri fetch head doesn't parse",
+    });
+    expect(child.protocolError).toBeNull();
+  });
+
   test("main's answers without a body: a ShellError, a result that names an error, and a head that opens none", async () => {
     const child = await serving((params) => {
       if (params.path === 'refused') throw new ShellError('refused');
