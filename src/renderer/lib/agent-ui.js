@@ -1441,14 +1441,17 @@ function setWorkspaceSidebarOpen(nextOpen) {
 function observeComposerHeight() {
   composerResizeObserver?.disconnect();
   const update = () => {
-    const height = elements.composerWrap.getBoundingClientRect().height;
+    // Layout heights, not getBoundingClientRect(): the open animation scales
+    // the sheet, and a transform fires no ResizeObserver callback, so a
+    // mid-animation reading would stick (the page hints then sat ~3px low).
+    const height = elements.composerWrap.offsetHeight || 0;
     if (height > 0) {
       elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
       setBodyStyleProperty('--agent-floating-composer-height', `${height}px`);
     }
     // A narrow window shows the conversation as a bottom sheet: page hints
     // sit above the whole sheet, not just its composer (#874).
-    const panelHeight = panelInner?.getBoundingClientRect?.().height || 0;
+    const panelHeight = panelInner?.offsetHeight || 0;
     if (panelHeight > 0) setBodyStyleProperty('--agent-floating-panel-height', `${panelHeight}px`);
     // A short window with Find and downloads open can leave the sheet less
     // room than its header and composer need: the composer then scrolls
