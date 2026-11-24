@@ -587,6 +587,7 @@ class Generation {
     this.retired = false; // stdio closed; nothing more is accepted
     this.ending = false; // we killed it or asked it to stop
     this.stopping = false; // stop() closed stdin and armed the grace kill
+    this.exitAwaited = false; // awaitExit: it exits by itself; nothing more is written
     this.killing = false; // inside child.kill (it can emit 'error' synchronously)
     this.killAttempts = 0;
     this.distrusted = false; // a protocol fault: its output is ignored
@@ -912,7 +913,8 @@ class ServiceClient extends EventEmitter {
   }
 
   /** Whether `gen` is the process requests go to now: the current one,
-   * past its handshake, and neither exited, ending nor retired. */
+   * past its handshake, and neither exited, ending, retired nor awaited to
+   * exit (`awaitExit`). */
   serves(gen) {
     return Boolean(
       gen?.ready &&
@@ -920,6 +922,7 @@ class ServiceClient extends EventEmitter {
       !gen.exited &&
       !gen.retired &&
       !gen.ending &&
+      !gen.exitAwaited &&
       !gen.stdinEnded
     );
   }
@@ -966,6 +969,38 @@ class ServiceClient extends EventEmitter {
       this.timer(gen, () => this.kill(gen), this.service.shutdownGraceMs ?? SHUTDOWN_GRACE_MS);
     }
     return stopped;
+  }
+
+  /**
+   * Waits for the process to exit by itself, as one that has done its one
+   * job does (design 0014, Spawn: the checkpoint process serves one
+   * `colibri.checkpoint`, then exits 0). Nothing more is written to it:
+   * main's requests fail unavailable, and its own are served no more. Its
+   * exit is a stop main asked for: no warn, no restart, nothing that fails
+   * the client, which is left stopped; the `exit` event reports it as it
+   * was (its code, signal and cause). Resolves once the process is gone, as
+   * `stop()` does, and with any `stop()` called meanwhile. One still running
+   * after `graceMs` is stopped (`stop()`: the shutdown method, stdin closed,
+   * killed after the service's grace). Without a process past its
+   * handshake, it is `stop()`.
+   * @param {object} options
+   * @param {number} options.graceMs - how long the process has to exit
+   * @returns {Promise<void>}
+   */
+  awaitExit({ graceMs } = {}) {
+    if (!Number.isSafeInteger(graceMs) || graceMs < 0) {
+      return Promise.reject(new TypeError('awaitExit needs its grace (graceMs)'));
+    }
+    const gen = this.current;
+    if (!gen?.ready || gen.retired || this.stopRequested) return this.stop();
+    this.stopRequested = true;
+    this.state = STATE.STOPPING;
+    gen.exitAwaited = true;
+    // Its own requests are served no more, and no reply goes for them.
+    this.fence(gen);
+    const gone = new Promise((resolve) => this.stopWaiters.push(resolve));
+    if (!gen.exited) this.timer(gen, () => this.stop(), graceMs);
+    return gone;
   }
 
   /**
@@ -1475,7 +1510,13 @@ class ServiceClient extends EventEmitter {
       onReply({ error });
       return null;
     };
-    if (!gen || gen.retired || gen.exited || gen.stdinEnded || (gen.ending && !control)) {
+    if (
+      !gen ||
+      gen.retired ||
+      gen.exited ||
+      gen.stdinEnded ||
+      ((gen.ending || gen.exitAwaited) && !control)
+    ) {
       return refuse(this.unavailable());
     }
     if (signal?.aborted) return refuse(cancelled());
@@ -1918,7 +1959,14 @@ class ServiceClient extends EventEmitter {
 
   /** Whether `gen` still serves the process's requests. */
   serving(gen) {
-    return gen === this.current && !gen.ending && !gen.exited && !gen.retired && !gen.distrusted;
+    return (
+      gen === this.current &&
+      !gen.ending &&
+      !gen.exitAwaited &&
+      !gen.exited &&
+      !gen.retired &&
+      !gen.distrusted
+    );
   }
 
   /** The generation stops serving the process's requests: their handlers

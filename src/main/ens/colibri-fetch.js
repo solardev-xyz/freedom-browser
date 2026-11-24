@@ -17,8 +17,21 @@
  *   warn a minute counts those it didn't log (written with the next
  *   refusal a minute after the first one held back).
  * - **A checkpoint's roots** (`checkpoint_root`) are never fetched: main
- *   answers them from its quorum, which the checkpoint path (COL-5 PR 9)
- *   brings. Until then they are refused, logged with the rule `local`.
+ *   answers them from its quorum, through the operation's `answerRoot`
+ *   (checkpoint-colibrid.js gives it to `colibri.checkpoint`), as the one
+ *   checkpointz server the process has (node 0): `{"data":{"root":"0x…"}}`,
+ *   under the pool, the cancel and the deadline as a fetch. A quorum that
+ *   gives no root is `Colibri checkpoint root unavailable`, its reason
+ *   kept by the check. An operation without `answerRoot` has them refused,
+ *   logged with the rule `local`. Each fetch refused for an operation
+ *   that asks (`onRefused`) is told to it, with the rule and the type.
+ * - **A checkpoint's proof** (`checkpoint_proof`), main's own request to
+ *   the chain's prover, as the WASM path's checkpoint worker makes it
+ *   (`fetchBytes`): it succeeds on HTTP 200 alone, any other status failing
+ *   as an error status does; and each attempt, its body included, has 20 s
+ *   at most (`REQUEST_MS`) within the request's deadline. Past them the
+ *   attempt fails as a transport failure does (`… failed: fetch failed`),
+ *   and the next server is tried (the proof has one).
  * - **The pool:** before the first send, the variant's body maximum is
  *   reserved from main's Colibri fetch pool (`colibri-fetch-pool.js`); with
  *   no room, nothing is sent and the answer is `Colibri fetch pool full`.
@@ -72,16 +85,18 @@
 const defaultLog = require('../logger');
 const { MAX_DATA } = require('../core/frame');
 const { ShellError, StreamedReply } = require('../core/service-client');
-const { isOk, makeHop, withDeadline } = require('../core/naming-shell');
+const { isOk, makeHop, unlessAborted, withDeadline } = require('../core/naming-shell');
 const { validateRpcUrl } = require('../networks/network-registry');
 const { admit, joinPath, sameVariant } = require('./colibri-fetch-contract');
 const { colibriFetchPool } = require('./colibri-fetch-pool');
+const { REQUEST_MS } = require('../myotis/checkpoint-evidence');
 
 /** What main answers the service, besides a server's own error. */
 const COLIBRI_FETCH_TEXTS = Object.freeze({
   refused: 'Colibri fetch refused',
   poolFull: 'Colibri fetch pool full',
   allFailed: 'All nodes failed',
+  rootUnavailable: 'Colibri checkpoint root unavailable',
 });
 
 /** A transport failure's reason: Node's `fetch` text, which
@@ -101,6 +116,15 @@ const URLS = /https?:\/\/[^\s"'<>]+/gi;
  * checkpoint's roots come from main's quorum (design 0014, the
  * `colibri.checkpoint` row), which the checkpoint path supplies. */
 const LOCAL_VARIANTS = new Set(['checkpoint_root']);
+/** The variants that succeed on HTTP 200 alone: the checkpoint's proof, as
+ * the WASM path's worker takes it. */
+const EXACTLY_200 = new Set(['checkpoint_proof']);
+/** The longest one attempt of a variant may take, its body included, within
+ * the request's deadline: the checkpoint's proof, as the WASM path's worker
+ * bounds the whole fetch (`fetchBytes`' `REQUEST_MS`). */
+const ATTEMPT_MS = Object.freeze({ checkpoint_proof: REQUEST_MS });
+/** A root as main's quorum gives it. */
+const ROOT = /^0x[0-9a-f]{64}$/;
 /** Refusals one process generation logs one by one in a rolling minute. */
 const REFUSALS_LOGGED = 10;
 const MINUTE_MS = 60_000;
@@ -176,11 +200,18 @@ function redirectTarget(location, { server, current, op, params, fetch }) {
  * One server: its body, or the error `fetch_from_servers` would record for
  * it (`{ body }` or `{ error }`). A cancel or the deadline throws.
  */
+/** One attempt's failure as `fetch_from_servers` records it: `Request to
+ * <url>[ with payload <JSON>] failed: <reason>`. */
+function attemptFailure(server, fetch, reason) {
+  const payload = fetch.payload === null ? '' : ` with payload ${fetch.payload}`;
+  return { error: `Request to ${joinPath(server, fetch.path)}${payload} failed: ${reason}` };
+}
+
 async function fromServer(server, { fetch, params, op, hop, signal }) {
   const first = joinPath(server, fetch.path);
-  const payload = fetch.payload === null ? '' : ` with payload ${fetch.payload}`;
-  const failed = (reason) => ({ error: `Request to ${first}${payload} failed: ${reason}` });
+  const failed = (reason) => attemptFailure(server, fetch, reason);
   const headers = requestHeaders(fetch);
+  const ok = EXACTLY_200.has(fetch.variant) ? (status) => status === 200 : isOk;
   let url = first;
   for (let hops = 0; ; hops += 1) {
     if (signal.aborted) throw signal.reason;
@@ -193,7 +224,7 @@ async function fromServer(server, { fetch, params, op, hop, signal }) {
         body: fetch.payload ?? undefined,
         signal,
         max: fetch.maxBody,
-        read: isOk,
+        read: ok,
         excerpt: (status) => (isRedirect(status) ? 0 : Math.min(ERROR_DETAIL_BYTES, fetch.maxBody)),
       });
     } catch (err) {
@@ -214,10 +245,35 @@ async function fromServer(server, { fetch, params, op, hop, signal }) {
       url = next;
       continue;
     }
-    if (!isOk(status)) {
+    if (!ok(status)) {
       return { error: `HTTP error! Status: ${status}, Details: ${details(response.body)}` };
     }
     return { body: response.body };
+  }
+}
+
+/**
+ * One server, within the variant's bound for an attempt (`ATTEMPT_MS`), if
+ * it has one: past it, the attempt is a transport failure, as an attempt the
+ * hop timed out is. The request's own cancel and deadline still throw.
+ */
+async function boundedFromServer(server, context) {
+  const ms = ATTEMPT_MS[context.fetch.variant];
+  if (ms === undefined) return fromServer(server, context);
+  const cut = new AbortController();
+  const timer = setTimeout(() => cut.abort(), ms);
+  try {
+    return await fromServer(server, {
+      ...context,
+      signal: AbortSignal.any([context.signal, cut.signal]),
+    });
+  } catch (err) {
+    if (cut.signal.aborted && !context.signal.aborted) {
+      return attemptFailure(server, context.fetch, TRANSPORT_REASON);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -226,7 +282,7 @@ async function fromServer(server, { fetch, params, op, hop, signal }) {
 async function fromServers(context) {
   let last = COLIBRI_FETCH_TEXTS.allFailed;
   for (const { url, node } of context.fetch.attempts) {
-    const outcome = await fromServer(url, context);
+    const outcome = await boundedFromServer(url, context);
     if (outcome.body) return { body: outcome.body, node };
     last = errorText(outcome.error);
   }
@@ -247,6 +303,44 @@ function ownedPieces(body) {
     pieces.push(piece);
   }
   return pieces;
+}
+
+/**
+ * A checkpoint's root from main's quorum (`op.answerRoot`), answered as the
+ * checkpointz server `node` would: `{"data":{"root"}}`, under the pool,
+ * the cancel and the deadline as a fetch. A cancel or the deadline throws;
+ * a quorum that gives no root is `rootUnavailable`.
+ */
+async function rootAnswer(op, fetch, { node, pool, signal, now }) {
+  const reservation = pool.reserve(fetch.maxBody);
+  if (!reservation) return { error: COLIBRI_FETCH_TEXTS.poolFull };
+  let reply = null;
+  try {
+    const deadline = { deadline_ms: Math.max(0, Math.ceil(op.deadlineAt - now())) };
+    const root = await withDeadline(deadline, signal, async (within) => {
+      try {
+        const asked = Promise.resolve().then(() =>
+          op.answerRoot(fetch.fields.slot, { signal: within })
+        );
+        return await unlessAborted(asked, within);
+      } catch (err) {
+        if (within.aborted) throw err;
+        return null;
+      }
+    });
+    if (typeof root !== 'string' || !ROOT.test(root)) {
+      return { error: COLIBRI_FETCH_TEXTS.rootUnavailable };
+    }
+    const body = Buffer.from(JSON.stringify({ data: { root } }));
+    reservation.shrink(body.length);
+    reply = new StreamedReply(
+      { node, bytes: body.length },
+      bodyStream(ownedPieces(body), reservation)
+    );
+    return reply;
+  } finally {
+    if (!reply) reservation.close();
+  }
 }
 
 /**
@@ -354,7 +448,9 @@ function openOperation(operations, request, generation, now) {
  *   the process's open operations by main's request ID (a Map will do):
  *   each as `admit` takes it (`colibri-fetch-contract.js`), with
  *   `deadlineAt`, the time (`now()`) its deadline passes, and the same
- *   object for its life: each admitted fetch is counted in its `taken`
+ *   object for its life: each admitted fetch is counted in its `taken`. A
+ *   checkpoint's may have `answerRoot(slot, { signal })`, main's quorum
+ *   for its roots, and `onRefused(rule, type)`, told of each refusal
  * @param {import('./colibri-fetch-pool').ColibriFetchPool} [options.pool] - the browser's by default
  * @param {Function} [options.hop] - `makeHop()` over the session by default
  * @param {object} [options.log]
@@ -375,16 +471,28 @@ function colibriFetchHandler({
   const refuse = (generation, op, params, rule) => {
     const type = LOGGED_TYPES.has(params?.type) ? params.type : 'other';
     logRefusal(generation, { chain: op?.chain ?? null, type, rule });
+    // The open operation hears of it, if it asks (a checkpoint's check).
+    if (op && !op.ended && typeof op.onRefused === 'function') {
+      try {
+        op.onRefused(rule, type);
+      } catch (err) {
+        log.warn('[Colibri] refusal hook failed', { code: err?.code || err?.name || 'error' });
+      }
+    }
     return { error: COLIBRI_FETCH_TEXTS.refused };
   };
   return async (params, { signal = new AbortController().signal, generation = null } = {}) => {
     const op = openOperation(operations, params?.request, generation, now);
     const fetch = admit(op, params);
     if (fetch.refused) return refuse(generation, op, params, fetch.refused);
-    if (LOCAL_VARIANTS.has(fetch.variant)) return refuse(generation, op, params, 'local');
+    const local = LOCAL_VARIANTS.has(fetch.variant);
+    if (local && typeof op.answerRoot !== 'function') {
+      return refuse(generation, op, params, 'local');
+    }
     op.taken = { ...op.taken, [fetch.variant]: (op.taken?.[fetch.variant] ?? 0) + 1 };
     if (fetch.attempts.length === 0) return { error: COLIBRI_FETCH_TEXTS.allFailed };
     if (signal.aborted) throw new ShellError('cancelled');
+    if (local) return rootAnswer(op, fetch, { node: fetch.attempts[0].node, pool, signal, now });
     const reservation = pool.reserve(fetch.maxBody);
     if (!reservation) return { error: COLIBRI_FETCH_TEXTS.poolFull };
     let reply = null;
