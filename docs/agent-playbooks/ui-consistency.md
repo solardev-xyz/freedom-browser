@@ -128,7 +128,7 @@ a menu inside the window — `html, body { overflow: hidden }` means an
 unbounded one would clip rather than scroll, and before #324 it scrolled the
 toolbar away instead. A new popover joins the mechanism rather than growing its
 own `max-height`; `styles/popovers.test.js` fails a popover that forgets the
-class, and it works out what a popover _is_ from the sheets themselves —
+class, and it works out what a popover *is* from the sheets themselves —
 anything positioned `fixed`/`absolute` at menu tier (z-index ≥ 9999) — so a
 brand-new class name is enrolled without editing the test. A surface at that
 tier that genuinely is not a popover (the backdrop, a corner toast, a tooltip)
@@ -146,11 +146,11 @@ popovers are the two documented exceptions: they raise no backdrop, so the
 guest-focus blur is what closes them on a click into page content. They are not
 the only surfaces that raise no backdrop, though — the GitHub-bridge panel is a
 third, and it dismisses on focus loss not at all, only on a document `click` and
-Escape. All three are reset from the _backdrop_ another surface raises, through
+Escape. All three are reset from the *backdrop* another surface raises, through
 `closeAllOverlays`/`onAnyMenuOpening` in `index.js`, because a press on that
 backdrop released inside the guest dispatches no `click` in this document and
 would otherwise strand them (#67). `onAnyMenuOpening` is chained by every
-backdrop-raising _menu_, the page context menu included — it is raised from
+backdrop-raising *menu*, the page context menu included — it is raised from
 inside the guest rather than from the chrome, which is how it was missed — so
 the autocomplete dropdown is the one raiser that deliberately does not chain
 it: it is the address bar's own surface and sits alongside the three rather
@@ -161,7 +161,7 @@ does not also register `onWindowDeactivated` — six today, including both
 bookmarks menus.
 
 **A surface that raises the backdrop owns the keyboard too.** The backdrop
-makes a menu modal over the page for the _pointer_; `lib/menu-backdrop.js`
+makes a menu modal over the page for the *pointer*; `lib/menu-backdrop.js`
 does the same for the keyboard, through `onGuestTookKeyboard` — the exact
 complement of `onWindowDeactivated`. Without it the guest ack above leaves the
 page holding the keyboard under an open menu, and neither Escape (#306) nor
