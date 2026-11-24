@@ -119,9 +119,6 @@ function classifyLedgerError(err) {
   if (/disconnected/i.test(message)) {
     return LEDGER_ERROR_CODES.DISCONNECTED;
   }
-  if (err instanceof TypeError && /reading ['"]?0['"]?/i.test(message)) {
-    return LEDGER_ERROR_CODES.EMPTY_MESSAGE;
-  }
   return LEDGER_ERROR_CODES.UNKNOWN;
 }
 
