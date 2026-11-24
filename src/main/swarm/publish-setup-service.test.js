@@ -24,8 +24,11 @@ const {
   formatUnits,
   parseXdaiShortfall,
   parseDepositAmount,
+  classifyChainFailure,
   PLANS,
   REQUOTE_MS,
+  TRANSIENT_RETRY_MS,
+  MAX_TRANSIENT_RETRIES,
   WATCH_REFRESH_MS,
   STARTUP_REFRESH_MS,
   FUNDING_TX_POLL_MS,
@@ -1546,6 +1549,449 @@ describe('confirming a bought batch', () => {
   });
 });
 
+describe('a dropped Gnosis Chain connection (#992)', () => {
+  // antd's 502 when its connection to the chain bridge is reset mid-step: a
+  // transaction step wraps the RPC error (`rpc: http: …`), a read does not.
+  const URL_TEXT = 'error sending request for url (http://127.0.0.1:53211/ant-chain/[redacted])';
+  const droppedTx = (step) => fail(502, `${step}: rpc: http: ${URL_TEXT}`);
+  const droppedRead = (step) => fail(502, `${step}: http: ${URL_TEXT}`);
+
+  test.each([
+    ['buy', 'authorise payment: rpc: http: error sending request for url (x)', 'retry'],
+    ['buy', 'read xBZZ balance: http: error sending request for url (x)', 'retry'],
+    ['buy', 'read xDAI balance: http: connection closed', 'retry'],
+    ['buy', 'read swap price: http: error sending request for url (x)', 'retry'],
+    ['buy', 'authorise payment: rpc: rpc: nonce too low', 'failed'],
+    ['buy', 'read xDAI balance: decode: bad hex', 'failed'],
+    ['buy', 'swap xDAI for xBZZ: rpc: http: error sending request for url (x)', 'swap'],
+    ['buy', 'swap xDAI for xBZZ: transaction never mined: 0xab (timeout 60s)', 'swap'],
+    ['buy', 'prepare swap: rpc: http: error sending request for url (x)', 'swap'],
+    ['buy', 'swap xDAI for xBZZ: transaction reverted: 0x0', 'failed'],
+    ['buy', 'buy storage: rpc: http: error sending request for url (x)', 'uncertain'],
+    ['buy', 'buy storage: transaction never mined: 0xab (timeout 60s)', 'unmined'],
+    ['buy', 'buy storage: transaction reverted: 0x0', 'failed'],
+    ['buy', 'batch registration failed: http: error sending request for url (x)', 'uncertain'],
+    // A send the RPC refused, or a failure that is not a lost connection,
+    // shows its own reason: nothing says it may still go through.
+    ['buy', 'buy storage: rpc: rpc: insufficient funds for gas * price + value', 'failed'],
+    ['buy', 'swap xDAI for xBZZ: rpc: rpc: insufficient funds for gas * price + value', 'failed'],
+    ['buy', 'prepare swap: rpc: rpc: nonce too low', 'failed'],
+    ['buy', 'batch registration failed: node loop busy', 'failed'],
+    ['buy', 'storage purchase receipt had no batch', 'failed'],
+    ['buy', 'some new step: rpc: rpc: execution reverted', 'failed'],
+    ['buy', 'some new step: rpc: http: error sending request for url (x)', 'uncertain'],
+    ['extend', 'extend storage: rpc: rpc: nonce too low', 'failed'],
+    ['extend', 'resize storage: transaction never mined: 0xab (timeout 60s)', 'unmined'],
+    ['deposit', 'deposit into chequebook: the wallet holds no xBZZ to deposit', 'failed'],
+    ['extend', 'read batch: http: error sending request for url (x)', 'retry'],
+    ['extend', 'authorise payment: rpc: http: error sending request for url (x)', 'retry'],
+    ['extend', 'extend storage: rpc: http: error sending request for url (x)', 'uncertain'],
+    ['extend', 'resize storage: rpc: http: error sending request for url (x)', 'uncertain'],
+    ['deposit', 'verify the chequebook before depositing into it: http: reset', 'retry'],
+    ['deposit', 'read xBZZ balance: http: error sending request for url (x)', 'retry'],
+    // A deposit reads these again after its transfer.
+    ['deposit', 'read settlement deposit: http: error sending request for url (x)', 'uncertain'],
+    ['deposit', 'read swap price: http: error sending request for url (x)', 'uncertain'],
+    // antd wraps the top-up's own steps (chequebook_store.rs's
+    // top_up_chequebook): its reads come before the transfer, the
+    // transfer is the payment.
+    [
+      'deposit',
+      'deposit into chequebook: read chequebook deposit: http: error sending request for url (x)',
+      'retry',
+    ],
+    ['deposit', 'deposit into chequebook: read wallet xBZZ: http: connection closed', 'retry'],
+    ['deposit', 'deposit into chequebook: read wallet xBZZ: decode: bad hex', 'failed'],
+    [
+      'deposit',
+      'deposit into chequebook: deposit transfer: rpc: http: error sending request for url (x)',
+      'uncertain',
+    ],
+    [
+      'deposit',
+      'deposit into chequebook: deposit transfer: transaction never mined: 0xab (timeout 60s)',
+      'unmined',
+    ],
+    [
+      'deposit',
+      'deposit into chequebook: deposit transfer: rpc: rpc: insufficient funds for gas * price + value',
+      'failed',
+    ],
+    ['deposit', 'deposit into chequebook: deposit transfer: transaction reverted: 0x0', 'failed'],
+    [
+      'deposit',
+      'deposit into chequebook: could not verify the chequebook before depositing into it: factory.deployedContracts eth_call: http: reset',
+      'failed',
+    ],
+  ])('a %s that fails with "%s" is %s', (kind, message, expected) => {
+    expect(classifyChainFailure(fail(502, message), kind)).toBe(expected);
+  });
+
+  test('only a 502 with a message is a chain failure', () => {
+    expect(classifyChainFailure(fail(400, 'authorise payment: rpc: http: x'), 'buy')).toBe(
+      'failed'
+    );
+    expect(classifyChainFailure(fail(502), 'buy')).toBe('failed');
+    expect(classifyChainFailure(null, 'buy')).toBe('failed');
+  });
+
+  test('before paying, it waits and tries again on its own, still on its way, and buys once', async () => {
+    const { service, api } = setup();
+    listBoughtBatchAsUsable(api);
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage
+      .mockResolvedValueOnce(droppedTx('authorise payment'))
+      .mockResolvedValueOnce(ok({ batchID: BATCH_A }, 201));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation).toMatchObject({ phase: 'executing', error: null });
+    expect(service.arm({ kind: 'buy', planId: 'starter' })).toMatchObject({ ok: false });
+    expect(service.cancel()).toMatchObject({ ok: false });
+
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS - 1);
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(api.buyStorage).toHaveBeenCalledTimes(2);
+    expect(api.buyStorage).toHaveBeenLastCalledWith({
+      depth: 20,
+      amountPerChunk: '65676000',
+      immutable: true,
+    });
+    expect(service.getState().operation).toMatchObject({
+      phase: 'done',
+      result: { batchId: BATCH_A },
+    });
+    expect(api.getStorageQuote).toHaveBeenCalledTimes(1);
+  });
+
+  test('when the connection keeps dropping before paying, it stops and says the funds are safe', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage.mockResolvedValue(droppedRead('read xBZZ balance'));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * MAX_TRANSIENT_RETRIES);
+    expect(api.buyStorage).toHaveBeenCalledTimes(MAX_TRANSIENT_RETRIES + 1);
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      uncertain: false,
+      error:
+        'Buying storage failed: the connection to Gnosis Chain dropped. Your funds are still in your node wallet, and trying again only pays for what is still missing.',
+    });
+
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
+    expect(api.buyStorage).toHaveBeenCalledTimes(MAX_TRANSIENT_RETRIES + 1);
+  });
+
+  test('a swap that may still be pending is never retried on its own; the user is told to wait', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage.mockResolvedValue(droppedTx('swap xDAI for xBZZ'));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      uncertain: false,
+      error:
+        'Buying storage failed while your Swarm node was swapping xDAI for xBZZ, and the swap may still go through. Its xBZZ stays in your node wallet: wait a minute before you try again, and the node only swaps what is still missing.',
+    });
+
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  test('a retry that meets a busy node goes back to quoting, then buys', async () => {
+    const { service, api } = setup();
+    listBoughtBatchAsUsable(api);
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage
+      .mockResolvedValueOnce(droppedTx('authorise payment'))
+      .mockResolvedValueOnce(fail(409, 'another on-chain operation is in progress'))
+      .mockResolvedValueOnce(ok({ batchID: BATCH_A }, 201));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS);
+    expect(service.getState().operation.phase).toBe('quoting');
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+    expect(api.buyStorage).toHaveBeenCalledTimes(3);
+    expect(service.getState().operation.phase).toBe('done');
+  });
+
+  test('dispose stops a pending retry', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage.mockResolvedValue(droppedTx('authorise payment'));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    service.dispose();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 3);
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  test('a write that answers after dispose schedules no retry', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    let answer;
+    api.buyStorage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answer = resolve;
+      })
+    );
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    service.dispose();
+    answer(droppedTx('authorise payment'));
+    await settle();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 3);
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  test('a retry whose stamp check is still out at dispose sends nothing', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage.mockResolvedValue(droppedTx('authorise payment'));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    let answerStamps;
+    api.getStamps.mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerStamps = resolve;
+      })
+    );
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS);
+    service.dispose();
+    answerStamps(ok({ stamps: [] }));
+    await settle();
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['buy storage', 'batch registration failed'])(
+    'after "%s" fails, it never buys again on its own and says the payment may have gone through',
+    async (step) => {
+      const { service, api } = setup();
+      api.getStorageQuote.mockResolvedValue(ok(funded()));
+      api.getStamps.mockResolvedValue(ok({ stamps: [] }));
+      api.buyStorage.mockResolvedValue(droppedTx(step));
+
+      service.arm({ kind: 'buy', planId: 'starter' });
+      await settle();
+      expect(service.getState().operation).toMatchObject({
+        phase: 'failed',
+        uncertain: true,
+        error:
+          'The connection to Gnosis Chain dropped after your Swarm node sent the payment, so it may still go through. Restart the node so it sees the result, then check your storage before you try again.',
+      });
+
+      await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
+      expect(api.buyStorage).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('a payment the RPC refused shows its own reason, not a dropped connection', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage.mockResolvedValue(
+      fail(502, 'buy storage: rpc: rpc: insufficient funds for gas * price + value')
+    );
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    const { operation } = service.getState();
+    expect(operation).toMatchObject({ phase: 'failed', uncertain: false });
+    expect(operation.error).toMatch(/insufficient funds for gas/);
+    expect(operation.error).not.toMatch(/connection to Gnosis Chain dropped|may still go through/);
+
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
+    expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  test('a swap the RPC refused shows its own reason, not "may still go through"', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.buyStorage.mockResolvedValue(
+      fail(502, 'swap xDAI for xBZZ: rpc: rpc: insufficient funds for gas * price + value')
+    );
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    const { operation } = service.getState();
+    expect(operation).toMatchObject({ phase: 'failed', uncertain: false });
+    expect(operation.error).toMatch(/insufficient funds for gas/);
+    expect(operation.error).not.toMatch(/may still go through/);
+  });
+
+  test('a payment never seen mined may still go through, without blaming the connection', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.getStamps.mockResolvedValue(ok({ stamps: [] }));
+    api.buyStorage.mockResolvedValue(
+      fail(502, 'buy storage: transaction never mined: 0xab (timeout 60s)')
+    );
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      uncertain: true,
+      error:
+        'Gnosis Chain did not confirm the transaction in time. It may still go through, so check your storage in a minute before you try again.',
+    });
+  });
+
+  test('after the payment step fails, a new batch the node lists is the purchase', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded()));
+    api.getStamps
+      .mockResolvedValueOnce(ok({ stamps: [] }))
+      .mockResolvedValue(ok({ stamps: [{ batchID: BATCH_B, usable: true }] }));
+    api.buyStorage.mockResolvedValue(droppedTx('buy storage'));
+
+    service.arm({ kind: 'buy', planId: 'starter' });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'done',
+      result: { batchId: BATCH_B },
+    });
+  });
+
+  test('an extension or deposit whose payment may have gone through is uncertain too', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded({ settlementDepositPlur: '0' })));
+    api.extendStorage.mockResolvedValue(droppedTx('resize storage'));
+    service.arm({ kind: 'extend', batchId: BATCH_A, days: 0, depth: 22 });
+    await settle();
+    expect(service.getState().operation).toMatchObject({ phase: 'failed', uncertain: true });
+    expect(service.getState().operation.error).toMatch(/check your storage before you try again/);
+
+    // A deposit reads its chequebook again after the transfer: a dropped
+    // read there may follow a deposit that went through.
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ sufficientFunds: true })));
+    api.topUpSettlementDeposit.mockResolvedValue(droppedRead('read settlement deposit'));
+    service.arm({ kind: 'deposit' });
+    await settle();
+    expect(service.getState().operation).toMatchObject({ phase: 'failed', uncertain: true });
+    expect(service.getState().operation.error).toMatch(
+      /check the chequebook deposit before you top it up again\.$/
+    );
+
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
+    expect(api.extendStorage).toHaveBeenCalledTimes(1);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+  });
+
+  test('a deposit whose transfer lost its connection may still go through, and is not sent again', async () => {
+    const { service, api } = setup();
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ sufficientFunds: true })));
+    api.topUpSettlementDeposit.mockResolvedValue(
+      droppedTx('deposit into chequebook: deposit transfer')
+    );
+    service.arm({ kind: 'deposit' });
+    await settle();
+    expect(service.getState().operation).toMatchObject({ phase: 'failed', uncertain: true });
+    expect(service.getState().operation.error).toMatch(
+      /check the chequebook deposit before you top it up again\.$/
+    );
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * 5);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+  });
+
+  test('a deposit whose own re-read before the transfer dropped is tried again on its own', async () => {
+    const { service, api } = setup();
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ sufficientFunds: true })));
+    api.topUpSettlementDeposit.mockResolvedValue(
+      droppedRead('deposit into chequebook: read wallet xBZZ')
+    );
+    service.arm({ kind: 'deposit' });
+    await settle();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * MAX_TRANSIENT_RETRIES);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(MAX_TRANSIENT_RETRIES + 1);
+    expect(service.getState().operation).toMatchObject({ phase: 'failed' });
+    expect(service.getState().operation.uncertain).toBeFalsy();
+    expect(service.getState().operation.error).toMatch(/the connection to Gnosis Chain dropped/);
+  });
+
+  test('a dropped read while extending, before paying, is retried with the extend label', async () => {
+    const { service, api } = setup();
+    api.getStorageQuote.mockResolvedValue(ok(funded({ settlementDepositPlur: '0' })));
+    api.extendStorage.mockResolvedValue(droppedRead('read batch'));
+    service.arm({ kind: 'extend', batchId: BATCH_A, days: 30 });
+    await settle();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * MAX_TRANSIENT_RETRIES);
+    expect(api.extendStorage).toHaveBeenCalledTimes(MAX_TRANSIENT_RETRIES + 1);
+    expect(service.getState().operation.error).toMatch(/^Extending storage failed: the connection/);
+  });
+});
+
+describe('a dropped connection on a deposit of a chosen amount (#992)', () => {
+  const AMOUNT = '1000000000000000'; // 0.1 xBZZ
+  const URL_TEXT = 'error sending request for url (http://127.0.0.1:53211/ant-chain/[redacted])';
+  const droppedRead = (step) => fail(502, `${step}: http: ${URL_TEXT}`);
+  const withSettlement = (api) =>
+    api.getNode.mockResolvedValue(
+      ok({ beeMode: 'light', settlement: { supported: true, swapSwitch: true } })
+    );
+  const wallet = (wei) => ok(depositBody({ needsTopUp: false, walletXdaiWei: wei }));
+
+  test('a wallet that grew during the wait is not swapped on the retry', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(wallet('100000000000000000'));
+    api.topUpSettlementDeposit.mockResolvedValue(droppedRead('read xDAI balance'));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation.phase).toBe('executing');
+
+    api.getSettlementDeposit.mockResolvedValue(wallet('900000000000000000'));
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      error: expect.stringMatching(/more xDAI than when you chose/),
+    });
+  });
+
+  test('a wallet still within what the screen showed is retried and deposits', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(wallet('100000000000000000'));
+    api.topUpSettlementDeposit
+      .mockResolvedValueOnce(droppedRead('read xDAI balance'))
+      .mockResolvedValueOnce(ok(depositBody({ needsTopUp: false })));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(2);
+    expect(service.getState().operation).toMatchObject({
+      phase: 'done',
+      result: { deposit: true },
+    });
+  });
+
+  test('a wallet that cannot be read before the retry spends a retry, never the write', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(wallet('100000000000000000'));
+    api.topUpSettlementDeposit.mockResolvedValue(droppedRead('read xDAI balance'));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+
+    api.getSettlementDeposit.mockResolvedValue(fail(502, `read xDAI balance: http: ${URL_TEXT}`));
+    await jest.advanceTimersByTimeAsync(TRANSIENT_RETRY_MS * MAX_TRANSIENT_RETRIES);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation).toMatchObject({ phase: 'failed' });
+    expect(service.getState().operation.error).toMatch(/the connection to Gnosis Chain dropped/);
+  });
+});
+
 describe('extend and deposit', () => {
   test('extends by days, and resizes with a depth, passing the quoted amount', async () => {
     const { service, api } = setup();
@@ -2001,8 +2447,7 @@ describe('registerPublishSetupIpc', () => {
   const antManager = {
     getStatus: jest.fn(() => ({ status: 'stopped', error: null })),
     onStatusChange: jest.fn((listener) => statusListeners.push(listener)),
-    stopAnt: jest.fn().mockResolvedValue(),
-    startAnt: jest.fn().mockResolvedValue(),
+    restartAnt: jest.fn().mockResolvedValue(),
   };
 
   // One app instance for the block, as in main: the service is a lazy
@@ -2047,9 +2492,9 @@ describe('registerPublishSetupIpc', () => {
     await expect(mockIpcHandlers.get('swarm:setup-get-state')()).resolves.toMatchObject({
       readiness: { key: 'stopped' },
     });
+    // One planned restart, so page calls made meanwhile wait (#988).
     await mockIpcHandlers.get('swarm:setup-restart-node')();
-    expect(antManager.stopAnt).toHaveBeenCalledTimes(1);
-    expect(antManager.startAnt).toHaveBeenCalledTimes(1);
+    expect(antManager.restartAnt).toHaveBeenCalledTimes(1);
   });
 
   test('pushes state to the chrome and internal pages, never to a web page', () => {

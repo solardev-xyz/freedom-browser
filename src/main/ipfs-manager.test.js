@@ -224,6 +224,7 @@ describe('ipfs-manager', () => {
       gateway: null,
       mode: 'bundled',
       backend: 'freedom-ipfs',
+      cacheOnly: false,
     });
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node: freedom-ipfs 0.4.1');
     expect(window.webContents.send).toHaveBeenCalledWith(IPC.IPFS_STATUS_UPDATE, {
@@ -260,15 +261,8 @@ describe('ipfs-manager', () => {
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node disabled for this profile');
   });
 
-  test('serves native gateway requests only while running', async () => {
+  test('serves native gateway requests from the running node', async () => {
     const ctx = loadIpfsManagerModule();
-
-    const stoppedResponse = await ctx.mod.serveNativeGatewayRequest({
-      path: '/ipfs/bafy',
-      method: 'GET',
-      headers: new Headers(),
-    });
-    expect(stoppedResponse.status).toBe(503);
 
     await ctx.mod.startIpfs();
     const response = await ctx.mod.serveNativeGatewayRequest({
@@ -279,11 +273,248 @@ describe('ipfs-manager', () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('native-body');
+    expect(response.headers.has(ctx.mod.CACHE_ONLY_HEADER)).toBe(false);
     expect(ctx.nativeInstances[0].request).toHaveBeenCalledWith({
       method: 'GET',
       path: '/ipfs/bafy',
       headers: expect.any(Headers),
       signal: undefined,
+    });
+  });
+
+  describe('IPFS off serves saved content (#30)', () => {
+    const request = (ctx) =>
+      ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+
+    test('a request while stopped starts a cache-only node on the same store and marks its answers', async () => {
+      const ctx = loadIpfsManagerModule();
+
+      const response = await request(ctx);
+
+      expect(ctx.nativeInstances).toHaveLength(1);
+      expect(ctx.nativeInstances[0].config).toEqual({
+        dataDir: NATIVE_IPFS_DATA_DIR,
+        cacheOnly: true,
+        onFailure: expect.any(Function),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('native-body');
+      expect(response.headers.get(ctx.mod.CACHE_ONLY_HEADER)).toBe('1');
+      // Off stays off: the status the switch and automation read doesn't move.
+      expect(ctx.mod.getStatus().status).toBe('stopped');
+
+      await request(ctx);
+      expect(ctx.nativeInstances).toHaveLength(1);
+      expect(ctx.nativeInstances[0].start).toHaveBeenCalledTimes(1);
+    });
+
+    test('switching IPFS on stops the cache-only node before the managed one opens the store', async () => {
+      const ctx = loadIpfsManagerModule();
+      await request(ctx);
+      const [cacheNode] = ctx.nativeInstances;
+
+      await ctx.mod.startIpfs();
+
+      expect(ctx.nativeInstances).toHaveLength(2);
+      const managed = ctx.nativeInstances[1];
+      expect(managed.config.cacheOnly).toBeUndefined();
+      expect(cacheNode.stop).toHaveBeenCalledTimes(1);
+      expect(cacheNode.stop.mock.invocationCallOrder[0]).toBeLessThan(
+        managed.start.mock.invocationCallOrder[0]
+      );
+      await request(ctx);
+      expect(managed.request).toHaveBeenCalledTimes(1);
+      expect(cacheNode.request).toHaveBeenCalledTimes(1);
+    });
+
+    test('stopping (also at quit) takes the cache-only node down', async () => {
+      const ctx = loadIpfsManagerModule();
+      await request(ctx);
+
+      await ctx.mod.stopIpfs();
+
+      expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('after the final stop at quit, a late request does not reopen the store', async () => {
+      const ctx = loadIpfsManagerModule();
+      await request(ctx);
+
+      await ctx.mod.stopIpfs({ final: true });
+      const late = await request(ctx);
+
+      expect(late.status).toBe(503);
+      expect(ctx.nativeInstances).toHaveLength(1);
+    });
+
+    test('a request cancelled while it waited starts no cache-only node', async () => {
+      const ctx = loadIpfsManagerModule();
+      const aborted = new AbortController();
+      aborted.abort();
+
+      const response = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+        signal: aborted.signal,
+      });
+
+      expect(response.status).toBe(503);
+      expect(ctx.nativeInstances).toHaveLength(0);
+    });
+
+    test('a request cancelled while queued behind another op starts no cache-only node', async () => {
+      const ctx = loadIpfsManagerModule();
+      const controller = new AbortController();
+      // Held in the op queue behind a stop, then cancelled before its turn.
+      const stopping = ctx.mod.stopIpfs();
+      const pending = ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+        signal: controller.signal,
+      });
+      controller.abort();
+      await stopping;
+
+      expect((await pending).status).toBe(503);
+      expect(ctx.nativeInstances).toHaveLength(0);
+    });
+
+    test('a stop publishes that saved content is still served', async () => {
+      const ctx = loadIpfsManagerModule();
+      await ctx.mod.startIpfs();
+      ctx.updateService.mockClear();
+
+      await ctx.mod.stopIpfs();
+
+      expect(ctx.clearService).toHaveBeenCalledWith('ipfs');
+      expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', { cacheOnly: true });
+    });
+
+    test('a profile that never starts IPFS publishes it at launch too', async () => {
+      const ctx = loadIpfsManagerModule();
+
+      await ctx.mod.syncProfileMode();
+
+      expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', { cacheOnly: true });
+      expect(ctx.nativeInstances).toHaveLength(0);
+    });
+
+    test.each([
+      ['IPFS is disabled for the profile', { mode: 'disabled', backend: 'freedom-ipfs' }, {}],
+      [
+        'the profile uses an external gateway',
+        { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+        {},
+      ],
+      ['the add-on does not load', null, { nativeAvailable: false }],
+    ])('nothing is served from the store when %s', async (_label, ipfsConfig, options) => {
+      const ctx = loadIpfsManagerModule({
+        ...options,
+        activeProfile: ipfsConfig ? { metadata: { nodes: { ipfs: ipfsConfig } } } : null,
+      });
+      await ctx.mod.syncProfileMode();
+
+      const response = await request(ctx);
+
+      expect(response.status).toBe(503);
+      expect(ctx.nativeInstances).toHaveLength(0);
+      expect(ctx.updateService).not.toHaveBeenCalledWith('ipfs', { cacheOnly: true });
+    });
+
+    test('a profile switched to disabled stops the cache-only node', async () => {
+      const profile = { metadata: { nodes: { ipfs: { mode: 'managed' } } } };
+      const ctx = loadIpfsManagerModule({ activeProfile: profile });
+      await request(ctx);
+
+      profile.metadata.nodes.ipfs = { mode: 'disabled', backend: 'freedom-ipfs' };
+      await ctx.mod.syncProfileMode();
+
+      expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
+      expect((await request(ctx)).status).toBe(503);
+    });
+
+    test('a cache-only node that fails to start answers 503 and is not retried on every request', async () => {
+      const ctx = loadIpfsManagerModule({ startOk: false });
+
+      const first = await request(ctx);
+      const second = await request(ctx);
+
+      expect(first.status).toBe(503);
+      expect(second.status).toBe(503);
+      expect(ctx.nativeInstances).toHaveLength(1);
+      // Marked, so ipfs-protocol.js shows a page instead of the raw JSON: the
+      // renderer let the load through, so its own "unavailable" page didn't.
+      expect(first.headers.get(ctx.mod.CACHE_ONLY_HEADER)).toBe(ctx.mod.CACHE_UNAVAILABLE);
+      expect(second.headers.get(ctx.mod.CACHE_ONLY_HEADER)).toBe(ctx.mod.CACHE_UNAVAILABLE);
+    });
+
+    test('a 503 is not marked once quit closed admission, or for a disabled profile', async () => {
+      const closed = loadIpfsManagerModule();
+      await closed.mod.stopIpfs({ final: true });
+      const afterQuit = await request(closed);
+      expect(afterQuit.status).toBe(503);
+      expect(afterQuit.headers.has(closed.mod.CACHE_ONLY_HEADER)).toBe(false);
+
+      const disabled = loadIpfsManagerModule({
+        activeProfile: {
+          metadata: { nodes: { ipfs: { mode: 'disabled', backend: 'freedom-ipfs' } } },
+        },
+      });
+      const off = await request(disabled);
+      expect(off.status).toBe(503);
+      expect(off.headers.has(disabled.mod.CACHE_ONLY_HEADER)).toBe(false);
+    });
+
+    test('a cache-only node that fails later is dropped, and the next request starts a fresh one', async () => {
+      const ctx = loadIpfsManagerModule();
+      await request(ctx);
+      const [failed] = ctx.nativeInstances;
+      const now = performance.now();
+      const clock = jest.spyOn(performance, 'now').mockReturnValue(now);
+
+      try {
+        failed.config.onFailure('dispatcher exited', failed);
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(failed.stop).toHaveBeenCalledTimes(1);
+        expect((await request(ctx)).status).toBe(503);
+
+        clock.mockReturnValue(now + 10_001);
+        expect((await request(ctx)).status).toBe(200);
+        expect(ctx.nativeInstances).toHaveLength(2);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    test('the retry back-off runs on a monotonic clock: a wall clock stepped back does not stretch it', async () => {
+      const ctx = loadIpfsManagerModule();
+      await request(ctx);
+      const [failed] = ctx.nativeInstances;
+      const mono = performance.now();
+      const monoClock = jest.spyOn(performance, 'now').mockReturnValue(mono);
+      const wall = Date.now();
+      const wallClock = jest.spyOn(Date, 'now').mockReturnValue(wall);
+
+      try {
+        failed.config.onFailure('dispatcher exited', failed);
+        await new Promise((resolve) => setImmediate(resolve));
+
+        // The wall clock steps back an hour; 10 s of real time pass.
+        wallClock.mockReturnValue(wall - 3_600_000);
+        monoClock.mockReturnValue(mono + 10_001);
+
+        expect((await request(ctx)).status).toBe(200);
+        expect(ctx.nativeInstances).toHaveLength(2);
+      } finally {
+        monoClock.mockRestore();
+        wallClock.mockRestore();
+      }
     });
   });
 
@@ -509,6 +740,7 @@ describe('ipfs-manager', () => {
         externalGateway: 'http://127.0.0.1:8080',
         mode: 'external',
         backend: 'external-gateway',
+        cacheOnly: false,
       });
       expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node: 127.0.0.1:8080');
       expect(window.webContents.send).toHaveBeenLastCalledWith(IPC.IPFS_STATUS_UPDATE, {
@@ -812,6 +1044,7 @@ describe('ipfs-manager', () => {
         externalGateway: 'http://127.0.0.1:8080',
         mode: 'external',
         backend: 'external-gateway',
+        cacheOnly: false,
       });
       expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'External node stopped');
     } finally {
@@ -874,6 +1107,7 @@ describe('ipfs-manager', () => {
         externalGateway: 'http://127.0.0.1:8080',
         mode: 'external',
         backend: 'external-gateway',
+        cacheOnly: false,
       });
 
       // The user starts their gateway and hits the toggle again — no relaunch.
@@ -890,6 +1124,7 @@ describe('ipfs-manager', () => {
         externalGateway: 'http://127.0.0.1:8080',
         mode: 'external',
         backend: 'external-gateway',
+        cacheOnly: false,
       });
     } finally {
       global.fetch = realFetch;
@@ -916,6 +1151,7 @@ describe('ipfs-manager', () => {
       externalGateway: null,
       mode: 'external',
       backend: 'external-gateway',
+      cacheOnly: false,
     });
   });
 
@@ -944,6 +1180,7 @@ describe('ipfs-manager', () => {
       externalGateway: 'http://127.0.0.1:8080',
       mode: 'external',
       backend: 'external-gateway',
+      cacheOnly: false,
     });
     expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'External node stopped');
     // The failure recorded against the old config no longer describes this one.
@@ -1215,6 +1452,7 @@ describe('ipfs-manager', () => {
           externalGateway: GATEWAY,
           mode: 'external',
           backend: 'external-gateway',
+          cacheOnly: false,
         });
         expect(ctx.mod.getNativeDiagnostics().externalGateway).toBeUndefined();
         const beforeRecovery = await ctx.mod.serveNativeGatewayRequest({
@@ -1249,6 +1487,7 @@ describe('ipfs-manager', () => {
           externalGateway: GATEWAY,
           mode: 'external',
           backend: 'external-gateway',
+          cacheOnly: false,
         });
         const served = await ctx.mod.serveNativeGatewayRequest({
           path: '/ipfs/bafy',
@@ -2786,6 +3025,7 @@ describe('external gateway transport', () => {
           externalGateway: ONION_GATEWAY,
           mode: 'external',
           backend: 'external-gateway',
+          cacheOnly: false,
         });
         // The retry notice carries the hint: the error state overlays the
         // status message, so a bare "Retrying…" would hide the one line saying
@@ -2822,6 +3062,7 @@ describe('external gateway transport', () => {
           externalGateway: ONION_GATEWAY,
           mode: 'external',
           backend: 'external-gateway',
+          cacheOnly: false,
         });
 
         // And it really serves: before the fix this 503'd until the user
@@ -2883,6 +3124,7 @@ describe('external gateway transport', () => {
         externalGateway: LOOPBACK_GATEWAY,
         mode: 'external',
         backend: 'external-gateway',
+        cacheOnly: false,
       });
       const response = await ctx.mod.serveNativeGatewayRequest({
         path: '/ipfs/bafy',

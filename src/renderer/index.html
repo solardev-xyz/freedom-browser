@@ -943,6 +943,11 @@
               </span>
             </span>
           </button>
+          <!-- IPFS off still opens what is saved (#30): shown while the switch
+               is off and main can serve from the local store. -->
+          <p class="ipfs-cache-note" id="ipfs-cache-note" hidden>
+            Pages you've opened before still load.
+          </p>
           <div class="ipfs-info">
             <!-- Managed freedom-ipfs node: its own gateway counters. -->
             <div class="ipfs-info-row ipfs-managed-stat">

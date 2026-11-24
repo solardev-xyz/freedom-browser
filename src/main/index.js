@@ -1128,7 +1128,7 @@ async function windDown() {
   const LEGS = [
     ['Myotis', () => myotisStopped],
     ['Ant', stopAnt],
-    ['IPFS', stopIpfs],
+    ['IPFS', () => stopIpfs({ final: true })],
     ['Radicle', stopRadicle],
     ['Tor', stopTor],
   ];

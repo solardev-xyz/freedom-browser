@@ -23,6 +23,7 @@ const loadIpfsModule = async (options = {}) => {
       ipfs: {
         api: 'http://ipfs.test',
         mode: options.mode || 'none',
+        cacheOnly: options.cacheOnly ?? false,
         statusMessage: options.statusMessage ?? null,
         tempMessage: options.tempMessage ?? null,
       },
@@ -48,6 +49,8 @@ const loadIpfsModule = async (options = {}) => {
   const ipfsStatusRow = createElement('div');
   const ipfsStatusLabel = createElement('span');
   const ipfsStatusValue = createElement('span');
+  const ipfsCacheNote = createElement('p');
+  ipfsCacheNote.hidden = true;
   const body = createElement('body');
   body.appendChild(ipfsInfoPanel);
   const document = createDocument({
@@ -63,6 +66,7 @@ const loadIpfsModule = async (options = {}) => {
       'ipfs-status-row': ipfsStatusRow,
       'ipfs-status-label': ipfsStatusLabel,
       'ipfs-status-value': ipfsStatusValue,
+      'ipfs-cache-note': ipfsCacheNote,
     },
   });
   let statusHandler = null;
@@ -148,6 +152,7 @@ const loadIpfsModule = async (options = {}) => {
       ipfsStatusRow,
       ipfsStatusLabel,
       ipfsStatusValue,
+      ipfsCacheNote,
     },
   };
 };
@@ -304,6 +309,29 @@ describe('ipfs-ui', () => {
 
     expect(ctx.ipfsApi.stop).toHaveBeenCalled();
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('User toggled IPFS Off');
+  });
+
+  test('says saved pages still load while IPFS is off and main serves them (#30)', async () => {
+    const ctx = await loadIpfsModule({ currentIpfsStatus: 'stopped', cacheOnly: true });
+    ctx.mod.initIpfsUi();
+    await flushMicrotasks();
+
+    ctx.mod.updateIpfsToggleState();
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(false);
+
+    // Switching on hides it at once, before the node reports back.
+    ctx.elements.ipfsToggleBtn.dispatch('click');
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(true);
+    await flushMicrotasks();
+    ctx.mod.updateIpfsUi('running');
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(true);
+
+    // Main stops publishing it (disabled profile, external gateway, no add-on).
+    ctx.mod.updateIpfsUi('stopped');
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(false);
+    ctx.state.registry.ipfs.cacheOnly = false;
+    ctx.mod.updateIpfsToggleState();
+    expect(ctx.elements.ipfsCacheNote.hidden).toBe(true);
   });
 
   // #350: on a host where the native addon can't load, an external gateway is

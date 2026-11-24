@@ -148,7 +148,7 @@ and no `data`.
 
 | Reason                                | Raised when                                                                                                                                                                 |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node-stopped`                        | The node is not running or does not answer (reads probe `/node` with a 5 s timeout)                                                                                         |
+| `node-stopped`                        | The node is off or failed, or does not answer (reads probe `/node` with a 5 s timeout)                                                                                      |
 | `node-not-ready`                      | The node is still connecting to Gnosis Chain or to peers, is still looking for the wallet's existing storage, or a batch bought moments ago is not yet known to the network |
 | `ultra-light-mode`                    | The node runs in ultra-light mode (no Gnosis Chain connection) and cannot publish                                                                                           |
 | `no-usable-stamps`                    | No postage batch with room for the write                                                                                                                                    |
@@ -158,9 +158,16 @@ and no `data`.
 
 The four setup reasons (`node-stopped`, `node-not-ready`, `ultra-light-mode`,
 `no-usable-stamps`) on a write method also open Freedom's publish setup screen
-for the user. Reads only ever report `node-stopped`. A `4900` without `data`
+for the user. Reads report only `node-stopped` and `node-not-ready`. A `4900` without `data`
 means the provider is disabled, or (message "Could not refresh this app’s
 permission manifest", with a typographic apostrophe U+2019) the app's permission manifest could not be fetched.
+
+A call made while Freedom starts, stops or restarts the node (at launch, when
+the identity is set up or its keystore is recovered after an unlock, or from
+the Restart button) waits for the node, for up to 30 s, instead of failing. A
+node still starting after that is `node-not-ready`, so `node-stopped` means a
+node that is off, failed or not answering. `swarm_getCapabilities` does not
+wait: it reports `node-not-ready` until the node is back.
 
 **`-32602`**
 
@@ -168,7 +175,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `invalid_params`                                                                                                | Any (generic shape error)                                                                                                |
 | `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`                                                                   |
-| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes, `swarm_deriveSharedSecrets`; `swarm_writeFeedEntry` (neither `limit` nor `actual`)    |
+| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk, feed-entry and message writes, `swarm_deriveSharedSecrets` (an empty feed entry has neither field)       |
 | `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`, `swarm_readFeedEntry` (`actual` only when the node declared the size)                                  |
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
 | `empty_files`, `too_many_files`, `invalid_path`, `duplicate_path`, `invalid_index_document`                     | `swarm_publishFiles`                                                                                                     |
@@ -420,7 +427,7 @@ Reported by `swarm_getCapabilities` under `limits`:
 
 | Limit                  | Value           | Applies to                                                                           |
 | ---------------------- | --------------- | ------------------------------------------------------------------------------------ |
-| `maxDataBytes`         | 10 MiB          | `swarm_publishData`                                                                  |
+| `maxDataBytes`         | 10 MiB          | `swarm_publishData`, `swarm_writeFeedEntry`                                          |
 | `maxFilesBytes`        | 50 MiB (total)  | `swarm_publishFiles`                                                                 |
 | `maxFileCount`         | 100             | `swarm_publishFiles`                                                                 |
 | `maxPathBytes`         | 100 UTF-8 bytes | each `swarm_publishFiles` path                                                       |
@@ -676,9 +683,10 @@ not the entry, whatever its error text) refuses the write with `-32603`, and
 it can be retried. The feed must exist (`feed_not_found`:
 call `swarm_createFeed` first). Payloads larger than one chunk are uploaded and
 wrapped by the node; if the node refuses the upload, that is the node's error
-(`-32603`). An empty `data` is `payload_too_large`: an entry carries at least
-one byte. Writes to one feed are serialized, so concurrent writes get distinct
-indexes.
+(`-32603`). `data` is at most `maxDataBytes`, as for `swarm_publishData`: a
+larger one is `payload_too_large` (+ `limit`, `actual`). An empty `data` is
+`payload_too_large` too: an entry carries at least one byte. Writes to one
+feed are serialized, so concurrent writes get distinct indexes.
 
 #### `swarm_readFeedEntry { name | topic, owner?, index? }` → `{ data, encoding: 'base64', index, nextIndex }` (public)
 

@@ -71,6 +71,15 @@ jest.mock('./publish-setup-service', () => ({
   getPublishReadiness: (...args) => mockGetPublishReadiness(...args),
 }));
 
+// Whether the node is past a start, stop or planned restart (#988), tested
+// in ant-manager.test.js. Settled unless a test says otherwise.
+const mockWaitForNodeSettled = jest.fn();
+const mockIsNodeSettled = jest.fn();
+jest.mock('../ant-manager', () => ({
+  waitForNodeSettled: (...args) => mockWaitForNodeSettled(...args),
+  isNodeSettled: (...args) => mockIsNodeSettled(...args),
+}));
+
 const mockPublishData = jest.fn();
 const mockPublishFilesFromContent = jest.fn();
 const mockGetUploadStatus = jest.fn();
@@ -234,6 +243,8 @@ describe('swarm-provider-ipc', () => {
     jest.clearAllMocks();
     clearPermissionFreeReadBudgets();
     mockGetPublishReadiness.mockReset().mockResolvedValue({ ok: false, reason: 'node-stopped' });
+    mockWaitForNodeSettled.mockReset().mockResolvedValue(true);
+    mockIsNodeSettled.mockReset().mockReturnValue(true);
   });
 
   test('registers swarm:provider-execute handler', () => {
@@ -323,6 +334,18 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_getCapabilities', {}, 'myapp.eth');
       expect(result.result.canPublish).toBe(false);
       expect(result.result.reason).toBe('node-stopped');
+    });
+
+    test('answers node-not-ready at once while the node restarts (#988)', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockIsNodeSettled.mockReturnValue(false);
+
+      const result = await invokeProvider('swarm_getCapabilities', {}, 'myapp.eth');
+      expect(result.result.canPublish).toBe(false);
+      expect(result.result.reason).toBe('node-not-ready');
+      // A status read does not wait for the node, nor ask publish setup.
+      expect(mockWaitForNodeSettled).not.toHaveBeenCalled();
+      expect(mockGetPublishReadiness).not.toHaveBeenCalled();
     });
 
     test('returns canPublish false in ultra-light mode', async () => {
@@ -1877,6 +1900,26 @@ describe('swarm-provider-ipc', () => {
       mockGetPublishReadiness.mockRejectedValueOnce(new Error('boom'));
       await expect(checkSwarmPreFlight()).resolves.toEqual({ ok: false, reason: 'node-stopped' });
     });
+
+    test('waits for a node Freedom is restarting, then asks publish setup (#988)', async () => {
+      let settle;
+      mockWaitForNodeSettled.mockReturnValueOnce(new Promise((resolve) => (settle = resolve)));
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true, reason: null, message: 'Ready' });
+
+      const preFlight = checkSwarmPreFlight();
+      await Promise.resolve();
+      expect(mockWaitForNodeSettled).toHaveBeenCalledWith(30_000);
+      expect(mockGetPublishReadiness).not.toHaveBeenCalled();
+
+      settle(true);
+      await expect(preFlight).resolves.toEqual({ ok: true });
+    });
+
+    test('reports node-not-ready, not node-stopped, for a node still restarting (#988)', async () => {
+      mockWaitForNodeSettled.mockResolvedValueOnce(false);
+      await expect(checkSwarmPreFlight()).resolves.toEqual({ ok: false, reason: 'node-not-ready' });
+      expect(mockGetPublishReadiness).not.toHaveBeenCalled();
+    });
   });
 
   describe('validateFeedName', () => {
@@ -2440,6 +2483,42 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result).toEqual({ index: 0 });
     });
+
+    // publishData's limit applies to feed entries too (#1053), counted in
+    // bytes: 'é' is two UTF-8 bytes.
+    test.each([
+      ['a string', 'x'.repeat(LIMITS.maxDataBytes - 1) + 'é'],
+      ['binary data', new Uint8Array(LIMITS.maxDataBytes + 1)],
+    ])('refuses %s one byte over maxDataBytes before anything is written', async (_label, data) => {
+      mockFeedCapability('myapp.eth');
+      mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
+
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data }, 'myapp.eth');
+
+      expect(result.error.code).toBe(-32602);
+      expect(result.error.message).toBe(`Payload exceeds maximum size of ${LIMITS.maxDataBytes} bytes`);
+      expect(result.error.data).toEqual({
+        reason: 'payload_too_large',
+        limit: LIMITS.maxDataBytes,
+        actual: LIMITS.maxDataBytes + 1,
+      });
+      expect(mockGetPublisherKey).not.toHaveBeenCalled();
+      expect(mockWriteFeedPayload).not.toHaveBeenCalled();
+    });
+
+    test('writes a payload of exactly maxDataBytes', async () => {
+      mockFeedCapability('myapp.eth');
+      mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
+      mockPreFlightOk();
+      mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
+      mockWriteFeedPayload.mockResolvedValue({ index: 0 });
+
+      const data = new Uint8Array(LIMITS.maxDataBytes);
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data }, 'myapp.eth');
+
+      expect(result.result).toEqual({ index: 0 });
+      expect(mockWriteFeedPayload).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('swarm_readFeedEntry', () => {
@@ -2741,6 +2820,24 @@ describe('swarm-provider-ipc', () => {
       // fetch should only have been called once (/node)
       expect(global.fetch).toHaveBeenCalledTimes(1);
     });
+
+    test('a read made during a restart is answered once the node is back (#988)', async () => {
+      let settle;
+      mockWaitForNodeSettled.mockReturnValueOnce(new Promise((resolve) => (settle = resolve)));
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+      mockReadFeedPayload.mockResolvedValue({ payload: Buffer.from('data'), index: 0, nextIndex: 1 });
+
+      const read = invokeProvider('swarm_readFeedEntry', { topic: VALID_TOPIC, owner: VALID_OWNER }, 'myapp.eth');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockReadFeedPayload).not.toHaveBeenCalled();
+
+      settle(true);
+      const result = await read;
+      expect(result.error).toBeUndefined();
+      expect(mockReadFeedPayload).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('checkBeeReachable', () => {
@@ -2780,6 +2877,29 @@ describe('swarm-provider-ipc', () => {
 
       const result = await checkBeeReachable();
       expect(result).toEqual({ ok: false, reason: 'node-stopped' });
+    });
+
+    test('waits for a node Freedom is restarting before probing it (#988)', async () => {
+      let settle;
+      mockWaitForNodeSettled.mockReturnValueOnce(new Promise((resolve) => (settle = resolve)));
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+
+      const reachable = checkBeeReachable();
+      await Promise.resolve();
+      expect(mockWaitForNodeSettled).toHaveBeenCalledWith(30_000);
+      expect(global.fetch).not.toHaveBeenCalled();
+
+      settle(true);
+      await expect(reachable).resolves.toEqual({ ok: true });
+    });
+
+    test('reports node-not-ready for a node still restarting after the wait (#988)', async () => {
+      mockWaitForNodeSettled.mockResolvedValueOnce(false);
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+
+      await expect(checkBeeReachable()).resolves.toEqual({ ok: false, reason: 'node-not-ready' });
+      expect(global.fetch).not.toHaveBeenCalled();
     });
   });
 

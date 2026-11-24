@@ -323,6 +323,20 @@
   display: none;
 }
 
+/* IPFS off, saved content still served (#30): the same muted 12px as the
+   info rows it stands in for. */
+.ipfs-cache-note {
+  margin: 0;
+  padding: 0 14px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.ipfs-cache-note[hidden] {
+  display: none;
+}
+
 .ipfs-info-row {
   display: flex;
   justify-content: space-between;

@@ -109,6 +109,10 @@ const MAX_U64 = (1n << 64n) - 1n;
 // A read's reachability probe: a node that stopped answering must not hang
 // the page's request.
 const REACHABLE_TIMEOUT_MS = 5_000;
+// How long a call waits for a node Freedom is starting, stopping or
+// restarting on purpose (#988). Under the 60 s the page's shim gives a short
+// call, so the call itself still has time once the node is up.
+const NODE_SETTLE_WAIT_MS = 30_000;
 
 const READ_BUDGETS = {
   connected: {
@@ -608,7 +612,8 @@ async function handleGetCapabilities(origin) {
   const permission = getPermission(origin);
   const isConnected = !!permission;
 
-  const preFlight = await checkSwarmPreFlight();
+  // A status read: answers at once, `node-not-ready` while the node restarts.
+  const preFlight = await checkSwarmPreFlight({ waitForNode: false });
 
   return {
     result: {
@@ -1815,11 +1820,25 @@ async function handleWriteFeedEntry(params, origin) {
 
   // Accept string or binary
   let payload = data;
-  if (typeof payload !== 'string') {
+  const isString = typeof payload === 'string';
+  if (!isString) {
     payload = normalizeBytes(payload);
     if (!payload) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'data must be a string, Uint8Array, or ArrayBuffer', data: { reason: 'invalid_params' } } };
     }
+  }
+
+  // publishData's limit: a payload over one chunk goes up through /bytes, so
+  // without it a feed entry would upload any amount past that limit (#1053).
+  const size = isString ? Buffer.byteLength(payload, 'utf-8') : payload.length;
+  if (size > LIMITS.maxDataBytes) {
+    return {
+      error: {
+        ...ERRORS.INVALID_PARAMS,
+        message: `Payload exceeds maximum size of ${LIMITS.maxDataBytes} bytes`,
+        data: { reason: 'payload_too_large', limit: LIMITS.maxDataBytes, actual: size },
+      },
+    };
   }
 
   if (index !== undefined && index !== null) {
@@ -2534,12 +2553,27 @@ function handleUnsubscribe(params, origin) {
 }
 
 /**
+ * Whether the node is past any start, stop or planned restart (#988). With
+ * `wait`, waits up to NODE_SETTLE_WAIT_MS for it, so a node Freedom is
+ * bringing back answers the call instead of failing it. Ant's manager is
+ * required here, not at load, as publish-setup-service does.
+ * @returns {Promise<boolean>}
+ */
+async function nodeSettled({ wait = true } = {}) {
+  const antManager = require('../ant-manager');
+  return wait ? antManager.waitForNodeSettled(NODE_SETTLE_WAIT_MS) : antManager.isNodeSettled();
+}
+
+/**
  * Read-only pre-flight: is the Bee HTTP API reachable?
  * Intentionally separate from checkSwarmPreFlight — reads don't need
- * mode, readiness, or stamp checks.
+ * mode, readiness, or stamp checks. A node still starting or restarting
+ * after the wait is `node-not-ready`, which pages retry; `node-stopped` is
+ * for a node that is off, failed or does not answer.
  * @returns {{ ok: boolean, reason?: string }}
  */
 async function checkBeeReachable() {
+  if (!(await nodeSettled())) return { ok: false, reason: 'node-not-ready' };
   // Global `fetch` (undici), which never sees `session.setProxy` — so an
   // external Ant API on a `.onion` host is handed to the system resolver
   // instead of Tor, the shape #355 fixed for the external IPFS gateway.
@@ -2567,10 +2601,13 @@ async function checkBeeReachable() {
  * setup service, the one place that reads the node's chain init, mode, peer
  * readiness and usable stamps (publish-setup-service.js). `reason` is one of
  * `node-stopped`, `node-not-ready`, `ultra-light-mode`, `no-usable-stamps`.
+ * Waits first for a node Freedom is starting, stopping or restarting, as
+ * checkBeeReachable does; `waitForNode: false` answers at once instead.
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
-async function checkSwarmPreFlight() {
+async function checkSwarmPreFlight({ waitForNode = true } = {}) {
   try {
+    if (!(await nodeSettled({ wait: waitForNode }))) return { ok: false, reason: 'node-not-ready' };
     const readiness = await getPublishReadiness();
     return readiness.ok ? { ok: true } : { ok: false, reason: readiness.reason };
   } catch (err) {

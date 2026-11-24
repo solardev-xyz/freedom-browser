@@ -35,6 +35,11 @@ jest.mock('./messaging-service', () => ({
   MAX_TARGET_DEPTH: 3,
   DEFAULT_TARGET_DEPTH: 2,
 }));
+// Ant's lifecycle (#988): the node is settled, as in pss-send.http.test.js.
+jest.mock('../ant-manager', () => ({
+  waitForNodeSettled: async () => true,
+  isNodeSettled: () => true,
+}));
 jest.mock('./subscription-registry', () => ({ configure: jest.fn(), cancelByOrigin: jest.fn() }));
 jest.mock('./publish-setup-service', () => ({ getPublishReadiness: jest.fn() }));
 jest.mock('./publish-service', () => ({}));
