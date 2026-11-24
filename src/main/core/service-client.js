@@ -83,6 +83,25 @@
  * main owes, its cancels and the sender's frames are written in that
  * order, one write in flight.
  *
+ * **A two-way service** (freedom-core design 0014, COL-3: a service
+ * connection that takes main's bodies, freedom-colibrid's) has the same
+ * duplex, with its own kinds and codes (`SERVICE_DUPLEX`): its decoder
+ * takes all four stream frames and no fragments (`serviceKinds('both')`),
+ * and the bodies it sends main end with a service's codes, 0007's five.
+ * The service's requests to a `streams: true` handler are answered as the
+ * core's are (`shell.colibri_fetch`: a head, then main's body under the
+ * service's credit). A one-way service is as before: credit from it is a
+ * protocol error, and a `StreamedReply` is an internal error.
+ *
+ * **What a service's owner may take over** (design 0014, Spawn, The step
+ * marker, Crashes): events read after the process's exit, until its pipe
+ * closes (`service.eventsUntilClose`), so a marker written just before a
+ * death still reaches the owner, ahead of the client's `exit`; restarts
+ * (`restart: false`: an exit leaves the client stopped, with nothing
+ * armed, and the owner decides when to start it again); a step after each
+ * spawn (`afterSpawn`, its scheduling priority); and the end of a process
+ * it no longer trusts (`abandon`).
+ *
  * **Order on the wire.** A frame main writes outside the stream writer (a
  * request, a reply, a fragment, the bulk credit) goes after every stream
  * control frame main made before it: what waits for the stream writer's
@@ -122,7 +141,9 @@ const {
   StreamDuplex,
   StreamOutbox,
   StreamReceiver,
+  CORE_BODY_ABORT_CODES,
   CORE_STREAM_KINDS,
+  SERVICE_ABORT_CODES,
   KIND_ABORT,
   KIND_DATA,
   KIND_END,
@@ -151,6 +172,16 @@ const PIECE_ABORTS = Object.freeze({
   stalled: 'The body stalled',
   body_stream_error: 'The body failed',
 });
+// A two-way service's duplex (design 0014, COL-3), for its `service` to
+// spread beside `duplex(hello)`: all four stream frames both ways and no
+// fragments, and its own bodies' codes a service's. The core's are the
+// defaults (`CORE_STREAM_KINDS`, `CORE_BODY_ABORT_CODES`).
+const SERVICE_DUPLEX = Object.freeze({
+  duplexKinds: serviceKinds('both'),
+  duplexTakes: SERVICE_ABORT_CODES,
+});
+// Why an owner abandons its process (`abandon`): a fixed name, safe to log.
+const ABANDON_CAUSE = /^[a-z][a-z0-9_]{0,31}$/;
 
 const MAX_ID = Number.MAX_SAFE_INTEGER; // 2^53 - 1: exact in JS
 const HELLO_TIMEOUT_MS = 10_000;
@@ -315,7 +346,8 @@ class JsonText {
 /**
  * A handler's answer with a body (design 0009, `shell.dweb_get` with
  * `stream: true`), for a handler registered with `streams: true`, on the
- * core's connection at protocol 2: `result`, the head's result, goes with
+ * core's connection at protocol 2 or a two-way service's (design 0014,
+ * `shell.colibri_fetch`): `result`, the head's result, goes with
  * `body: true`, then `body`, a ReadableStream of its bytes. The body is read
  * only as the core's credit allows, at most 64 KiB ahead: a byte stream
  * (`type: "bytes"`) through a BYOB reader, asked for at most that and the
@@ -520,9 +552,10 @@ class Generation {
     this.outbox = null;
     this.outboxWriting = false;
     this.bodies = new Map();
-    // The core's connection at protocol 2 (design 0009): both directions'
-    // streams, and the bodies main sends (`StreamedReply`), by the core's
-    // request ID, with the pool charges of the replies its sender holds.
+    // The core's connection at protocol 2 (design 0009), or a two-way
+    // service's (design 0014): both directions' streams, and the bodies
+    // main sends (`StreamedReply`), by the process's request ID, with the
+    // pool charges of the replies its sender holds.
     this.duplex = null;
     this.pieces = new Map(); // id -> { id, reader, byob, pending, eof, reading, claimed }
     this.pieceCharges = new Map(); // id -> release
@@ -581,7 +614,14 @@ class ServiceClient extends EventEmitter {
    *   `stream`), `initialKinds` (the frame kinds before it: `JSON_KINDS`;
    *   the core's are `CORE_KINDS`) and `maxPending` (512); for the core at
    *   protocol 2, `duplex(hello)` (whether the connection carries streams
-   *   both ways, design 0009)
+   *   both ways, design 0009); for a two-way service (design 0014, COL-3)
+   *   also `duplexKinds` (the frame kinds from the hello on; the core's
+   *   `CORE_STREAM_KINDS` by default, which must take streams both ways)
+   *   and `duplexTakes` (the abort codes the process's bodies may end
+   *   with; the core's `CORE_BODY_ABORT_CODES` by default): a service
+   *   spreads `SERVICE_DUPLEX`. `eventsUntilClose`: the process's events
+   *   are delivered after its exit too, until its pipe closes (design
+   *   0014, The step marker), not only while it lives
    * @param {Function} options.spawn - child_process.spawn (injectable)
    * @param {string} options.command - path to the binary
    * @param {string[]} options.args - e.g. ['serve', '--data-dir', …]
@@ -603,17 +643,34 @@ class ServiceClient extends EventEmitter {
    * @param {Function} [options.env] - () => the process's environment, for
    *   each spawn; the scrubbed one (`scrubbedEnv`) by default. It may
    *   throw, which fails that spawn as a spawn error.
+   * @param {boolean} [options.restart] - false: the owner restarts the
+   *   process itself (design 0014, Crashes: its own lazy back-off). An exit
+   *   the client would restart after leaves it `stopped` instead, with no
+   *   timer armed and no crash counted, and fails whoever waits for it to
+   *   be ready; `start()` spawns again. The exits that fail the client
+   *   (a protocol mismatch, a start step's error, the exit codes that
+   *   mean "don't retry") still fail it. True by default.
+   * @param {Function} [options.afterSpawn] - (child) => anything, once
+   *   each process is spawned, before its handshake is sent (design 0014,
+   *   Spawn: its scheduling priority). Only for a child that has a PID:
+   *   `os.setPriority` without one would set main's own. A throw is logged,
+   *   and the process goes on.
    */
   constructor(options) {
     super();
     this.service = options.service;
     this.label = options.service.label;
+    if (options.service.duplexKinds && options.service.duplexKinds.streams !== 'both') {
+      throw new TypeError('A duplex takes stream frames both ways');
+    }
     // Requests outstanding per process: the core's 256; a stream service's
     // 512, retiring ones included (design 0007, Bounds).
     this.maxPending = options.service.maxPending ?? MAX_PENDING;
     this.spawnFn = options.spawn;
     this.beforeSpawn = options.beforeSpawn ?? null;
     this.deferSpawn = options.deferSpawn ?? null;
+    this.afterSpawn = options.afterSpawn ?? null;
+    this.restart = options.restart ?? true;
     this.env = options.env ?? scrubbedEnv;
     this.command = options.command;
     this.args = options.args;
@@ -663,8 +720,9 @@ class ServiceClient extends EventEmitter {
    * before the one registered without, which takes the rest.
    *
    * With `streams: true`, on the core's connection at protocol 2 (design
-   * 0009), the handler may answer with a `StreamedReply`, and is called
-   * with `streams: true` there; its requests' replies, cancels and bodies
+   * 0009) or a two-way service's (design 0014, `SERVICE_DUPLEX`), the
+   * handler may answer with a `StreamedReply`, and is called with
+   * `streams: true` there; its requests' replies, cancels and bodies
    * go through the duplex. Elsewhere `streams` is false, and a
    * `StreamedReply` is an internal error.
    *
@@ -910,6 +968,39 @@ class ServiceClient extends EventEmitter {
     return stopped;
   }
 
+  /**
+   * Ends the process because its owner no longer trusts it (design 0014,
+   * The step marker: a forged or out-of-order marker; Cancel and
+   * deadlines: a step past its request's deadline): `cause` is recorded,
+   * as the `exit` event's, and the process is killed. Nothing more is
+   * sent to it, and its own requests are dropped; what it wrote before
+   * the kill is still read, its replies (and with `eventsUntilClose` its
+   * events) until its pipe closes. Its exit is then judged as any other:
+   * a crash, or with `restart: false` a stop.
+   *
+   * With `generation` (the number `onSent` reported), only that process:
+   * a later one is left alone. Returns whether this call ended a process:
+   * not when none is running, it has exited already, it is ending already
+   * (an earlier abandon's kill, or a `stop()` under way: that cause
+   * stands), or it isn't `generation`.
+   * @param {string} cause - a fixed name (lower case, digits and `_`),
+   *   safe to log
+   * @param {object} [options]
+   * @param {number|null} [options.generation]
+   * @returns {boolean}
+   */
+  abandon(cause, { generation = null } = {}) {
+    if (typeof cause !== 'string' || !ABANDON_CAUSE.test(cause)) {
+      throw new TypeError('abandon needs a fixed cause');
+    }
+    const gen = this.current;
+    if (!gen || gen.exited || gen.retired || gen.ending) return false;
+    if (generation !== null && gen.number !== generation) return false;
+    this.log.warn(`${this.label} abandoned`, { cause });
+    this.end(gen, cause);
+    return true;
+  }
+
   whenReady() {
     if (this.state === STATE.READY) return Promise.resolve(this.hello);
     if (this.state !== STATE.STARTING) return Promise.reject(this.unavailable());
@@ -973,6 +1064,7 @@ class ServiceClient extends EventEmitter {
     child.on('error', () => this.onChildError(gen));
     child.on('exit', (code, signal) => this.onChildExit(gen, code, signal));
     child.on('close', () => this.retire(gen));
+    this.runAfterSpawn(child);
 
     gen.helloTimer = this.timer(
       gen,
@@ -990,6 +1082,21 @@ class ServiceClient extends EventEmitter {
       { caller: 'shell' },
       { control: true, onReply: (outcome) => this.onHelloReply(gen, outcome) }
     );
+  }
+
+  /**
+   * The owner's step once a process is spawned (`afterSpawn`), for a child
+   * with a PID only: a spawn that failed has none, and `os.setPriority`
+   * given none would lower main's own priority. A throw is logged, with no
+   * text of its own, and the process goes on.
+   */
+  runAfterSpawn(child) {
+    if (!this.afterSpawn || !Number.isSafeInteger(child.pid) || child.pid < 1) return;
+    try {
+      this.afterSpawn(child);
+    } catch {
+      this.log.warn(`${this.label} the step after the spawn failed`);
+    }
   }
 
   /**
@@ -1062,14 +1169,17 @@ class ServiceClient extends EventEmitter {
     // the handshake grants main its credit.
     gen.fragments = this.service.fragments(hello);
     gen.credit = gen.fragments;
-    // The core at protocol 2 (design 0009): stream frames both ways from
-    // here on. A process whose handshake granted `stream` (design 0007):
-    // its stream frames are taken from here on.
+    // The core at protocol 2 (design 0009), or a two-way service (design
+    // 0014, COL-3: its own kinds and codes, `SERVICE_DUPLEX`): stream frames
+    // both ways from here on. A process whose handshake granted `stream`
+    // (design 0007): its stream frames are taken from here on.
     if (this.service.duplex?.(hello)) {
-      gen.duplex = new StreamDuplex();
+      gen.duplex = new StreamDuplex({
+        takes: this.service.duplexTakes ?? CORE_BODY_ABORT_CODES,
+      });
       gen.streams = gen.duplex.receiver;
       gen.outbox = gen.duplex.outbox;
-      gen.decoder.setKinds(CORE_STREAM_KINDS);
+      gen.decoder.setKinds(this.service.duplexKinds ?? CORE_STREAM_KINDS);
     } else if (this.service.streams?.(hello)) {
       gen.streams = new StreamReceiver();
       gen.outbox = new StreamOutbox();
@@ -1157,6 +1267,27 @@ class ServiceClient extends EventEmitter {
     this.current = null;
     this.hello = null;
     const code = gen.exitCode;
+    // Why the exit fails the client, if it does.
+    let failure = null;
+    if (gen.cause === 'mismatch') {
+      failure = 'protocol mismatch';
+    } else if (gen.stepFailed && code === 0) {
+      // The end a start step's error announced (0008, Errors): main read
+      // the error, and the process exited as it said it would.
+      failure = 'start step failed';
+    } else if (code !== null && NO_RESTART_EXIT_CODES.has(code)) {
+      failure = `exit code ${code}`;
+    }
+    // The owner restarts it (`restart: false`): an exit the client would
+    // restart after leaves it stopped, before the owner hears of it, so the
+    // owner's listener may start it again at once; and whoever waited for
+    // the process that is gone is failed, not left waiting for one that
+    // won't come.
+    const ownerRestarts = !this.restart && !this.stopRequested && failure === null;
+    if (ownerRestarts) {
+      this.state = STATE.STOPPED;
+      this.rejectReadyWaiters(`The ${this.service.noun} exited`);
+    }
     this.emit('exit', { code, signal: gen.exitSignal, cause: gen.cause });
 
     if (this.stopRequested) {
@@ -1164,18 +1295,13 @@ class ServiceClient extends EventEmitter {
       for (const resolve of this.stopWaiters.splice(0)) resolve();
       return;
     }
-    if (gen.cause === 'mismatch') {
-      this.fail('protocol mismatch');
+    if (failure !== null) {
+      this.fail(failure);
       return;
     }
-    // The end a start step's error announced (0008, Errors): main read the
-    // error, and the process exited as it said it would.
-    if (gen.stepFailed && code === 0) {
-      this.fail('start step failed');
-      return;
-    }
-    if (code !== null && NO_RESTART_EXIT_CODES.has(code)) {
-      this.fail(`exit code ${code}`);
+    if (ownerRestarts) {
+      // Nothing armed, and no crash counted: the back-off is the owner's.
+      this.log.warn(`${this.label} exited`, { code, signal: gen.exitSignal, cause: gen.cause });
       return;
     }
     const delay = this.recordCrash();
@@ -1697,10 +1823,11 @@ class ServiceClient extends EventEmitter {
       return undefined;
     }
     // One that may answer with a body, on the core's connection at protocol
-    // 2: its reply and its cancel go through the duplex's sender. Only these
-    // are the sender's (the core's IDs increase, so these do too): credit
-    // naming another of the core's requests is late below the highest of
-    // them and a protocol error above it, as for one never sent.
+    // 2 or a two-way service's: its reply and its cancel go through the
+    // duplex's sender. Only these are the sender's (the process's IDs
+    // increase, so these do too): credit naming another of the process's
+    // requests is late below the highest of them and a protocol error
+    // above it, as for one never sent.
     const streams = Boolean(gen.duplex) && this.streamHandlers.has(handler);
     if (streams) {
       try {
@@ -1875,8 +2002,8 @@ class ServiceClient extends EventEmitter {
    */
   respond(gen, id, controller, outcome, lease = null) {
     if (outcome.result instanceof StreamedReply) {
-      // Only a streams handler, on the core's connection at protocol 2, may
-      // send a body.
+      // Only a streams handler, on the core's connection at protocol 2 or
+      // a two-way service's, may send a body.
       outcome.result.discard();
       outcome = { error: shellError('internal') };
     }
@@ -2691,8 +2818,13 @@ class ServiceClient extends EventEmitter {
     }
     const hasData = Object.prototype.hasOwnProperty.call(message, 'data');
     if (hasData && !isObject(message.data)) return this.protocolFault(gen, 'bad_event');
-    // Only a live, ready, current generation speaks for the process.
-    if (gen.exited || !gen.ready || gen !== this.current) return undefined;
+    // Only a live, ready, current generation speaks for the process; for a
+    // service that reads its events to the pipe's end (`eventsUntilClose`,
+    // design 0014's step marker), one that has exited too, until its pipe
+    // closes and it retires, so an event it wrote just before its death
+    // reaches the owner ahead of the client's `exit`.
+    const speaks = !gen.exited || (this.service.eventsUntilClose === true && !gen.retired);
+    if (!speaks || !gen.ready || gen !== this.current) return undefined;
     this.emit('event', message.event, hasData ? message.data : {});
     return undefined;
   }
@@ -2752,6 +2884,7 @@ module.exports = {
   JsonText,
   ShellError,
   StreamedReply,
+  SERVICE_DUPLEX,
   SHELL_ERRORS,
   MAX_INCOMING,
   scrubbedEnv,

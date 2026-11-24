@@ -6,12 +6,30 @@
  * bounded; cancels before the head, mid-body and after `end`; an abort; a
  * protocol error that ends the generation; and a restart while a stream is
  * open.
+ *
+ * Then a two-way service (freedom-core design 0014, COL-3) against
+ * `test/helpers/fake-colibrid.js`: the service's `shell.colibri_fetch` to
+ * a `streams: true` handler, answered with a head and main's body under
+ * the service's credit; a paused service holding main to its window; the
+ * service's cancel mid-body, a head it can't reserve and a body that
+ * breaks its length, each failing alone; main's error answers; the codes
+ * the service's own bodies end with, and no fragments. A one-way service
+ * is as before: its credit is a protocol error, and a body main would
+ * send is an internal error.
  */
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { ServiceClient, CoreError } = require('./service-client');
-const { JSON_KINDS, WINDOW } = require('./frame');
+const { ServiceClient, CoreError, ShellError, StreamedReply } = require('./service-client');
+const {
+  encodeAbort,
+  encodeBegin,
+  encodeStreamCredit,
+  JSON_KINDS,
+  MAX_DATA,
+  WINDOW,
+} = require('./frame');
+const { fakeColibrid, testService } = require('../../../test/helpers/fake-colibrid');
 
 const SCRIPT = path.join(__dirname, '..', '..', '..', 'test', 'helpers', 'fake-stream-service.js');
 
@@ -69,28 +87,28 @@ async function readAll(reader) {
 let client;
 let log;
 
-beforeEach(async () => {
-  log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
-  client = new ServiceClient({
-    service: FAKE_SERVICE,
-    spawn,
-    command: process.execPath,
-    args: [SCRIPT],
-    log,
-    shellVersion: 'test',
-  });
-  await client.start();
-});
-
-afterEach(async () => {
-  await client.stop();
-});
-
 /** The ID the next request will take. */
 const nextId = () => client.current.nextId;
 const stats = () => client.request('fake.stats');
 
 describe('ServiceClient streams', () => {
+  beforeEach(async () => {
+    log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    client = new ServiceClient({
+      service: FAKE_SERVICE,
+      spawn,
+      command: process.execPath,
+      args: [SCRIPT],
+      log,
+      shellVersion: 'test',
+    });
+    await client.start();
+  });
+
+  afterEach(async () => {
+    await client.stop();
+  });
+
   test('a head, then its body pulled to the end; everything is freed', async () => {
     const id = nextId();
     const { result, body: stream } = await client.callStream('fake.body', { length: 300_000 });
@@ -303,5 +321,296 @@ describe('ServiceClient streams', () => {
     expect(client.streamStats().outstanding).toBe(3);
     for (const err of await Promise.all(pending)) expect(err.code).toBe('cancelled');
     await waitFor(() => client.streamStats().outstanding === 0, 'the cancelled replies');
+  });
+});
+
+// ---- a two-way service (design 0014, COL-3) --------------------------------
+
+const tick = () => new Promise(setImmediate);
+
+async function until(predicate, what) {
+  for (let i = 0; i < 2000; i++) {
+    if (predicate()) return;
+    await tick();
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+/** A body of `length` bytes of `body(id, …)` in `chunk`-byte reads, as a
+ * default stream that counts what has been read from it, and whether it
+ * was cancelled. */
+function source(id, length, chunk = MAX_DATA) {
+  const state = { read: 0, cancelled: false };
+  state.stream = new ReadableStream(
+    {
+      pull(controller) {
+        if (state.read >= length) {
+          controller.close();
+          return;
+        }
+        const n = Math.min(chunk, length - state.read);
+        controller.enqueue(new Uint8Array(body(id, state.read, n)));
+        state.read += n;
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    },
+    { highWaterMark: 0 }
+  );
+  return state;
+}
+
+/** `bytes` whole, as a byte stream: what main has read before a head. */
+function whole(bytes) {
+  return new ReadableStream(
+    {
+      type: 'bytes',
+      pull(controller) {
+        controller.enqueue(new Uint8Array(bytes));
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 }
+  );
+}
+
+describe('a two-way service (design 0014, COL-3)', () => {
+  let twoWay;
+  let fake;
+
+  /** A started client of `service` to a fake freedom-colibrid, whose
+   * `shell.colibri_fetch` goes to `handler` (registered `streams: true`). */
+  async function serving(handler, { service = testService(), script = {} } = {}) {
+    fake = fakeColibrid(script);
+    log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    twoWay = new ServiceClient({
+      service,
+      spawn: fake.spawn,
+      command: '/bin/freedom-colibrid',
+      args: ['serve', '--chain', '100', '--parent-pid', '1'],
+      log,
+      shellVersion: 'test',
+    });
+    if (handler) twoWay.handle('shell.colibri_fetch', handler, { streams: true });
+    await twoWay.start();
+    return fake.children[0];
+  }
+
+  afterEach(async () => {
+    await twoWay?.stop();
+    twoWay = null;
+  });
+
+  test("a streams handler answers the service's fetch with a head and its body, under the service's credit; everything is freed", async () => {
+    const bytes = body(1, 0, 300_000);
+    const calls = [];
+    const child = await serving((params, context) => {
+      calls.push({ params, streams: context.streams, generation: context.generation });
+      return new StreamedReply({ node: 1, bytes: bytes.length }, whole(bytes));
+    });
+    const fetch = child.fetch(3, { type: 'beacon_api', path: 'eth/v1/beacon/headers/head' });
+
+    await expect(fetch.done).resolves.toEqual({ bytes, node: 1 });
+    expect(calls).toEqual([
+      {
+        params: {
+          request: 3,
+          type: 'beacon_api',
+          method: 'get',
+          path: 'eth/v1/beacon/headers/head',
+          accept: 'json',
+          exclude_mask: 0,
+        },
+        streams: true,
+        generation: 1,
+      },
+    ]);
+    // The head says `body: true`, as fc-service's asks need.
+    expect(fetch.head).toEqual({ node: 1, bytes: 300_000, body: true });
+    expect(child.terminals).toEqual([{ id: fetch.id, type: 'end' }]);
+    await until(() => twoWay.streamStats().sending === 0, 'the request done');
+    expect(twoWay.streamStats()).toMatchObject({
+      outstanding: 0,
+      pieces: 0,
+      sending: 0,
+      held: 0,
+      pending: 0,
+    });
+    expect(child.protocolError).toBeNull();
+  });
+
+  test('credit flows: a paused service holds main to its window, and main reads no further than one read past it', async () => {
+    const length = 1024 * 1024;
+    const src = source(2, length);
+    const child = await serving(() => new StreamedReply({ node: 0, bytes: length }, src.stream));
+    const fetch = child.fetch(4, {}, { paused: true });
+
+    await until(() => fetch.arrived === WINDOW, 'the first window');
+    for (let i = 0; i < 20; i++) await tick();
+    expect(fetch.arrived).toBe(WINDOW);
+    expect(src.read).toBeLessThanOrEqual(WINDOW + MAX_DATA);
+
+    fetch.resume();
+    await expect(fetch.done).resolves.toEqual({ bytes: body(2, 0, length), node: 0 });
+    expect(src.read).toBe(length);
+    expect(child.protocolError).toBeNull();
+    await until(() => twoWay.streamStats().sending === 0, 'the request done');
+    expect(twoWay.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
+  });
+
+  test("the service's cancel mid-body: main aborts the body cancelled, lets go of its source, and the connection goes on", async () => {
+    const sources = [];
+    const signals = [];
+    const child = await serving((params, { signal }) => {
+      const src = source(5, 1024 * 1024);
+      sources.push(src);
+      signals.push(signal);
+      return new StreamedReply({ node: 0, bytes: 1024 * 1024 }, src.stream);
+    });
+    const fetch = child.fetch(6, {}, { paused: true });
+    await until(() => fetch.arrived === WINDOW, 'the first window');
+    fetch.cancel();
+
+    await expect(fetch.done).resolves.toEqual({ cancelled: true, received: 0 });
+    await until(() => sources[0].cancelled, 'the source let go of');
+    expect(signals[0].aborted).toBe(true);
+    await until(() => child.terminals.length === 1, "main's terminal");
+    expect(child.terminals).toEqual([{ id: fetch.id, type: 'abort', code: 'cancelled' }]);
+    expect(child.duplex.receiver.outstanding()).toBe(0);
+    await until(() => twoWay.streamStats().sending === 0, 'the request done');
+    expect(twoWay.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
+
+    // Its other streams and its control frames go on.
+    await expect(twoWay.request('colibri.stats')).resolves.toMatchObject({ open_requests: 0 });
+    const again = await child.fetch(6).done;
+    expect(again).toEqual({ bytes: body(5, 0, 1024 * 1024), node: 0 });
+    expect(child.protocolError).toBeNull();
+  });
+
+  test("a head the service can't reserve: it cancels at once, main lets go of the body, and the fetch fails busy", async () => {
+    const src = source(7, 2 * 1024 * 1024);
+    const child = await serving(
+      () => new StreamedReply({ node: 0, bytes: 2 * 1024 * 1024 }, src.stream)
+    );
+    const fetch = child.fetch(8, {}, { reserve: false });
+
+    await expect(fetch.done).resolves.toEqual({ error: 'Colibri fetch busy' });
+    await until(() => src.cancelled, 'the source let go of');
+    await until(() => child.terminals.length === 1, "main's terminal");
+    expect(child.terminals).toEqual([{ id: fetch.id, type: 'abort', code: 'cancelled' }]);
+    expect(fetch.received).toBe(0);
+    await until(() => twoWay.streamStats().sending === 0, 'the request done');
+    expect(child.protocolError).toBeNull();
+  });
+
+  test("a body that breaks its head's length fails that fetch alone: longer with a cancel, shorter at its end", async () => {
+    const answers = [
+      () => new StreamedReply({ node: 0, bytes: 100 }, whole(body(9, 0, 200))),
+      () => new StreamedReply({ node: 0, bytes: 200 }, whole(body(9, 0, 100))),
+      () => new StreamedReply({ node: 2, bytes: 100 }, whole(body(9, 0, 100))),
+    ];
+    const child = await serving(() => answers.shift()());
+
+    await expect(child.fetch(10).done).resolves.toEqual({ error: 'Colibri body length mismatch' });
+    await expect(child.fetch(10).done).resolves.toEqual({ error: 'Colibri body length mismatch' });
+    await expect(child.fetch(10).done).resolves.toEqual({ bytes: body(9, 0, 100), node: 2 });
+    expect(child.protocolError).toBeNull();
+  });
+
+  test("a head's node: absent is node 0, as freedom-colibrid reads it; a present null doesn't parse", async () => {
+    const answers = [
+      () => new StreamedReply({ bytes: 100 }, whole(body(15, 0, 100))),
+      () => new StreamedReply({ node: null, bytes: 100 }, whole(body(15, 0, 100))),
+    ];
+    const child = await serving(() => answers.shift()());
+
+    await expect(child.fetch(16).done).resolves.toEqual({ bytes: body(15, 0, 100), node: 0 });
+    await expect(child.fetch(16).done).resolves.toEqual({
+      error: "Colibri fetch head doesn't parse",
+    });
+    expect(child.protocolError).toBeNull();
+  });
+
+  test("main's answers without a body: a ShellError, a result that names an error, and a head that opens none", async () => {
+    const child = await serving((params) => {
+      if (params.path === 'refused') throw new ShellError('refused');
+      if (params.path === 'full') return { error: 'Colibri fetch pool full' };
+      return { node: 0, bytes: 0 };
+    });
+
+    await expect(child.fetch(11, { path: 'refused' }).done).resolves.toEqual({ error: 'Refused' });
+    await expect(child.fetch(11, { path: 'full' }).done).resolves.toEqual({
+      error: 'Colibri fetch pool full',
+    });
+    await expect(child.fetch(11, { path: 'none' }).done).resolves.toEqual({
+      error: 'Colibri fetch has no body',
+    });
+    await until(() => twoWay.streamStats().sending === 0, 'the requests done');
+    expect(twoWay.streamStats()).toMatchObject({ pieces: 0, held: 0, pending: 0 });
+  });
+
+  test("the service's own bodies end with a service's codes: `internal` errors the body; the core's `verification_failed` is a protocol error", async () => {
+    await serving(null, {
+      script: {
+        stats: (message, child) => {
+          child.head(message.id, { body: true });
+          child.body(message.id, body(12, 0, 200_000), {
+            abort: { at: 100_000, code: 'internal' },
+          });
+        },
+        checkpoint: (message, child) => {
+          child.head(message.id, { body: true });
+          child.writeRaw(encodeAbort(message.id, 'verification_failed', 'not a service code'));
+        },
+      },
+    });
+
+    const { result, body: stream } = await twoWay.callStream('colibri.stats');
+    expect(result).toEqual({ body: true });
+    const { error } = await readAll(stream.getReader());
+    expect(error).toMatchObject({ code: 'internal' });
+
+    const generation = twoWay.current;
+    const second = await twoWay.callStream('colibri.checkpoint');
+    const read = await readAll(second.body.getReader());
+    expect(read.error).toMatchObject({ code: 'colibri_unavailable' });
+    expect(log.error).toHaveBeenCalledWith('[Colibri] protocol error', { category: 'abort_code' });
+    await until(() => generation.retired, 'the generation to end');
+  });
+
+  test("no fragments on a two-way service's connection: a begin is a protocol error", async () => {
+    const child = await serving(null);
+    const generation = twoWay.current;
+    child.writeRaw(encodeBegin(1, 2 * 1024 * 1024));
+
+    await until(() => generation.retired, 'the generation to end');
+    expect(log.error).toHaveBeenCalledWith('[Colibri] protocol error', {
+      category: 'unknown_kind',
+    });
+  });
+
+  test("a one-way service is as before: a streams handler's body is an internal error, and the service's credit a protocol error", async () => {
+    const src = source(13, 1000);
+    const seen = [];
+    const child = await serving(
+      (params, { streams }) => {
+        seen.push(streams);
+        return new StreamedReply({ node: 0, bytes: 1000 }, src.stream);
+      },
+      { service: testService({ duplex: undefined, streams: () => true }) }
+    );
+    expect(twoWay.current.duplex).toBeNull();
+
+    await expect(child.fetch(14).done).resolves.toEqual({ error: 'Internal error' });
+    expect(seen).toEqual([false]);
+    await until(() => src.cancelled, 'the body let go of');
+
+    const generation = twoWay.current;
+    child.writeRaw(encodeStreamCredit(1, 1000));
+    await until(() => generation.retired, 'the generation to end');
+    expect(log.error).toHaveBeenCalledWith('[Colibri] protocol error', {
+      category: 'stream_direction',
+    });
   });
 });
