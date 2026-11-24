@@ -18,6 +18,15 @@ and never edits `CHANGELOG.md`, so branches do not conflict over it and an
 update-branch is a fast-forward rather than a conflict to resolve by hand.
 See `changelog-process.md`.
 
+Since 2026-11 `main` goes through a merge queue that requires `ci-ok`, and a
+pull request's own CI run skips the macOS and Windows end-to-end jobs
+(`e2e-desktop`'s macOS/Windows legs, `e2e-agent`, `e2e-automation`): the queue
+runs them on the merged result instead, so a pull request green on its own run
+can still be evicted from the queue by a macOS- or Windows-only failure. To run
+them before queueing, add the `full-ci` label and push a commit or use
+**Re-run all jobs** on the latest CI run (see `release-process.md`, "The merge
+queue").
+
 ## Procedure
 
 1. Confirm each pull request is reviewed and its checks are green.

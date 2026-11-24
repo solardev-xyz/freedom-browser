@@ -81,7 +81,8 @@ jobs:
   #
   # What that does and does not buy: the filter reads the pull request's whole
   # diff against its base, so it fires only on a pull request that is prose all
-  # the way down. A code pull request still runs everything on every push, an
+  # the way down. A code pull request still runs every Linux suite on every
+  # push (the macOS/Windows ones are `full_matrix`'s call, below), an
   # update-branch commit included — so this job does nothing for a four-PR
   # merge train of code changes; what shortened that is `changelog.d/`
   # fragments no longer manufacturing a conflict per merge. What this job buys
@@ -115,11 +116,43 @@ jobs:
   # green and leave `main` red for the next PR. It is the cheap job anyway
   # (~100s against 10-14 minutes), and `scripts/ci/ci-gate.test.js` pins that
   # it stays ungated for as long as the jest suite reads prose.
+  #
+  # The same job also decides how wide a code pull request's run is, as the
+  # `full_matrix` output. macOS runners are this workflow's bottleneck: the
+  # org gets about five concurrent macOS jobs, a macOS job here takes ~12
+  # minutes, and every run used to queue three of them (`e2e-desktop`'s macOS
+  # leg, `e2e-agent`, `e2e-automation`) on every pull request push *and* again
+  # in the merge queue — measured 20-26 minutes average queue wait, enough
+  # for pull requests and queue entries to time out waiting. So on a
+  # `pull_request` event the macOS and Windows legs of `e2e-desktop`, and the
+  # macOS-only `e2e-agent` and `e2e-automation`, do not run; every Linux job
+  # and the cheap `native-addons` build matrix still do. The merge queue
+  # (`merge_group`), pushes to `main`/release branches and manual dispatches
+  # still run the full matrix, so the queue — which requires `ci-ok` — stays
+  # the gate that catches a macOS- or Windows-only failure before it lands.
+  #
+  # Opt in on a pull request with the `full-ci` label. The label is read live
+  # from the API rather than from the event payload, because a re-run replays
+  # the original payload: add the label, then either push a commit or use
+  # "Re-run all jobs" on the latest CI run (not "Re-run failed jobs", which
+  # reuses this job's earlier answer). `labeled` is deliberately *not* a
+  # `pull_request` trigger type: it fires for every label, shares this
+  # workflow's concurrency group with the push run (same `refs/pull/N/merge`),
+  # so adding any label would cancel the run in flight and start a duplicate.
+  #
+  # Fails open like `code`: only a positive `full_matrix=false` narrows
+  # anything, a gate that never wrote it runs the full matrix, and a label
+  # lookup that errors counts as "labelled".
   code-changed:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # Read the pull request's current labels for the `full-ci` opt-in.
+      pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      full_matrix: ${{ steps.filter.outputs.full_matrix }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,12 +165,26 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ "$EVENT" != "pull_request" ]; then
             echo "not a pull request — running everything"
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "full_matrix=true" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          # The `full-ci` opt-in, read from the pull request as it is now. An
+          # API error fails open to the full matrix rather than failing this
+          # job (which would turn `ci-ok` red for a lookup).
+          if labelled=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" \
+            --jq 'any(.labels[]; .name == "full-ci")'); then
+            :
+          else
+            echo "::warning::could not read the pull request's labels — running the full matrix"
+            labelled=true
           fi
           git fetch --no-tags origin "$BASE"
           changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
@@ -156,6 +203,15 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
+            # Prose only skips the macOS/Windows jobs too, label or not.
+            labelled=false
+          fi
+          if [ "$labelled" = "true" ]; then
+            echo "full-ci label (or lookup failed) — running the macOS/Windows jobs too"
+            echo "full_matrix=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no full-ci label, or prose only — macOS/Windows jobs run in the merge queue"
+            echo "full_matrix=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Lint plus the whole jest suite, doc<->code guards included — which is why
@@ -405,13 +461,18 @@ jobs:
   # The suites that must hold on all three desktop operating systems. The
   # onboarding section downloads Ant and freedom-ipfs and the preview-network
   # qualification makes Linux's chrome-sandbox setuid, so those two go last.
+  #
+  # On a pull request without the `full-ci` label only the Linux leg runs; the
+  # Windows and macOS legs run in the merge queue, on `main`/release pushes
+  # and on dispatch (see `full_matrix` at `code-changed`). Narrowed only on a
+  # positive `'false'`, so a gate that never answered keeps all three.
   e2e-desktop:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.code-changed.outputs.full_matrix == 'false' && '["ubuntu-latest"]' || '["ubuntu-latest", "windows-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
 
@@ -1242,10 +1303,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Native Agent qualification uses macOS's real workspace sandbox.
+  # Native Agent qualification uses macOS's real workspace sandbox. Not on a
+  # pull request without the `full-ci` label: the merge queue runs it (see
+  # `full_matrix` at `code-changed`). `e2e-agent-linux` covers the same area
+  # on every pull request. `full_matrix` is `false` whenever `code` is, so
+  # this one output covers the prose-only skip too.
   e2e-agent:
     needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    if: ${{ !cancelled() && needs.code-changed.outputs.full_matrix != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -1303,9 +1368,11 @@ jobs:
   # macOS-only security suites (formerly the `agent-macos-jest` job) share this
   # runner: they need the same built supervisor, and a macOS runner of their
   # own cost one of the org's five concurrent macOS slots for a minute of jest.
+  # Like `e2e-agent`, it runs in the merge queue rather than on a pull request
+  # without the `full-ci` label — the macOS security suites included.
   e2e-automation:
     needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    if: ${{ !cancelled() && needs.code-changed.outputs.full_matrix != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 40
     permissions:

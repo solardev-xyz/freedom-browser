@@ -27,7 +27,7 @@ Do not add or upgrade dependencies without maintainer approval. Dependencies aff
 - Run `npx prettier --check` on the files you touched (the repo-wide `npm run format:check` currently fails on pre-existing formatting drift) and `git diff --check` before submitting.
 - Never commit secrets, API keys, tokens, private keys, seed phrases, unredacted personal data, or signing credentials.
 
-The cross-platform CI matrix runs additional native and integration checks. If you cannot run one of those locally, state that clearly in the pull request rather than marking it as completed.
+The cross-platform CI matrix runs additional native and integration checks. The macOS and Windows end-to-end jobs run in the merge queue and on `main`, not on a pull request's own CI run; a maintainer can add the `full-ci` label (then push or "Re-run all jobs") to run them on the pull request when a change is likely to behave differently there. If you cannot run one of those locally, state that clearly in the pull request rather than marking it as completed.
 
 ## Commits and pull requests
 
