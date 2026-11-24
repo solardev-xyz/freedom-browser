@@ -93,10 +93,12 @@ const MAX_ABANDONED = 64;
  * its proxy policy and onion gate, no cookies, credentials or cache, and no
  * redirect taken). `read(status)` says whether the body is wanted: one that
  * isn't, as the references discard it, is cancelled unread and answered
- * empty. A body is read up to `max` bytes (a larger declared length is
- * refused unread), each chunk charged as it arrives (`charge(bytes)`, false
- * past main's pool: `busy`); `inactivityMs` of silence ends the attempt as
- * `timeout`. A redirect whose target is hidden (a browser-style opaque
+ * empty, or, when `excerpt(status)` keeps some of it, read to that many
+ * bytes and then cancelled (an error's details, which a reference quotes).
+ * A wanted body is read up to `max` bytes (a larger declared length is
+ * refused unread); each chunk kept is charged as it arrives
+ * (`charge(bytes)`, false past main's pool: `busy`); `inactivityMs` of
+ * silence ends the attempt as `timeout`. A redirect whose target is hidden (a browser-style opaque
  * redirect) can't be checked, so it is refused. Every wait settles as the
  * request is cancelled or times out, even one the transport can't abort
  * (its proxy lookup): that work is abandoned, its late response discarded,
@@ -115,6 +117,7 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
       signal,
       max = ANSWER_BYTES,
       read = () => true,
+      excerpt = () => 0,
       charge = () => true,
     }
   ) => {
@@ -164,11 +167,13 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
         discard();
         throw new ShellError('refused');
       }
-      if (!read(response.status)) {
+      // The bytes of an unwanted body kept (null for a wanted one).
+      const keep = read(response.status) ? null : excerpt(response.status);
+      if (keep !== null && !(keep > 0)) {
         discard();
         return { status: response.status, headers: responseHeaders, body: Buffer.alloc(0) };
       }
-      if (Number(responseHeaders['content-length']) > max) {
+      if (keep === null && Number(responseHeaders['content-length']) > max) {
         discard();
         throw new ShellError('too_large');
       }
@@ -180,19 +185,27 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
           for (;;) {
             // Once cancelled, no further read starts.
             if (combined.aborted) throw combined.reason;
+            if (keep !== null && size >= keep) {
+              reader.cancel().catch(() => {});
+              break;
+            }
             const next = await unlessAborted(reader.read(), combined);
             if (next.done) break;
             touch();
-            size += next.value.byteLength;
-            if (size > max) {
+            const value =
+              keep !== null && size + next.value.byteLength > keep
+                ? next.value.subarray(0, keep - size)
+                : next.value;
+            size += value.byteLength;
+            if (keep === null && size > max) {
               reader.cancel().catch(() => {});
               throw new ShellError('too_large');
             }
-            if (!charge(next.value.byteLength)) {
+            if (!charge(value.byteLength)) {
               reader.cancel().catch(() => {});
               throw new ShellError('busy');
             }
-            chunks.push(next.value);
+            chunks.push(value);
           }
         } catch (err) {
           if (combined.aborted) reader.cancel().catch(() => {});

@@ -421,6 +421,32 @@ describe('a hop', () => {
     }
   });
 
+  test("an excerpt of a body the caller doesn't want: its first bytes, then cancelled, whatever its declared length", async () => {
+    const { stream, state } = endless('x'.repeat(100));
+    const charged = [];
+    const hop = makeHop({
+      fetch: jest.fn(
+        async () => new Response(stream, { status: 500, headers: { 'content-length': '1000000' } })
+      ),
+    });
+    const response = await hop('https://t.example/x', {
+      max: 10,
+      read: (status) => status === 200,
+      excerpt: (status) => (status === 500 ? 30 : 0),
+      charge: (bytes) => charged.push(bytes) > 0,
+    });
+    expect(response.status).toBe(500);
+    expect(response.body.toString()).toBe('x'.repeat(30));
+    expect(charged).toEqual([30]);
+    await tick();
+    expect(state.cancelled).toBe(true);
+
+    // A shorter body is kept whole.
+    const short = makeHop({ fetch: fakeFetch({ status: 503, chunks: ['busy', ' now'] }) });
+    const whole = await short('https://t.example/x', { read: () => false, excerpt: () => 30 });
+    expect(whole.body.toString()).toBe('busy now');
+  });
+
   test('a declared length over the cap is refused unread', async () => {
     const { stream, state } = endless();
     const hop = makeHop({

@@ -2,7 +2,8 @@
 
 `ccip-gateway-test.{crt,key}` is a throwaway self-signed P-256 certificate for
 the HTTPS origin in
-`src/main/__tests__/integration/ccip-proxy-electron-probe.js` (SANs
+`src/main/__tests__/integration/ccip-proxy-electron-probe.js` and
+`colibri-fetch-proxy-electron-probe.js` beside it (SANs
 `ccip.example.test` and `ccipgatewayprobe.onion`, valid for 100 years). It
 guards nothing: the probe trusts it only inside its own Electron process, via
 `setCertificateVerifyProc` for exactly those two names. It lives outside `src/` so
