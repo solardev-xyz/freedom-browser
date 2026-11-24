@@ -512,12 +512,44 @@ describe('bump', () => {
     const audit = fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8');
     await expect(
       watch.applyBump({ version: '44.9.3', root, exec, fetchers: fakeFetchers() })
-    ).rejects.toThrow(/npm dropped 1 package-lock\.json entry .*resolve with the npm CI uses/);
+    ).rejects.toThrow(
+      /npm changed 1 package-lock\.json entry \(\S+ dropped\); resolve with the npm CI uses/
+    );
     expect(fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8')).toBe(audit);
     expect(fs.readdirSync(path.join(root, 'changelog.d')).sort()).toEqual([
       'README.md',
       'fixed--1-something.md',
     ]);
+  });
+
+  test('an npm that rewrites platform fields fails the bump before anything else is written', async () => {
+    // npm 9.2 keeps every key but strips each entry's `libc` (R2-M1).
+    const npm = fakeNpm([]);
+    let stripped = 0;
+    const exec = (cmd, args, opts) => {
+      const out = npm(cmd, args, opts);
+      if (cmd === 'npm' && args[0] === 'install') {
+        const lockPath = path.join(opts.cwd, 'package-lock.json');
+        const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        for (const entry of Object.values(lock.packages)) {
+          if (entry.libc) {
+            delete entry.libc;
+            stripped += 1;
+          }
+        }
+        fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+      }
+      return out;
+    };
+    const audit = fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8');
+    const error = await watch
+      .applyBump({ version: '44.9.3', root, exec, fetchers: fakeFetchers() })
+      .catch((e) => e);
+    expect(stripped).toBeGreaterThan(0);
+    expect(error.message).toMatch(
+      new RegExp(`^npm changed ${stripped} package-lock\\.json entries \\(\\S+ libc,`)
+    );
+    expect(fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8')).toBe(audit);
   });
 
   test('the bump job resolves the lockfile with the Node (and so the npm) CI runs', () => {

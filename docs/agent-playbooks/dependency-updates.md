@@ -81,7 +81,13 @@ Open the description with version tables, before any prose:
 - The npm table lists every direct dependency that moved, plus any transitive
   one moved by an override.
 - The bundled table lists **every** bundled binary, unchanged ones included,
-  so a reader sees each was checked.
+  so a reader sees each was checked. The one exception is the Electron
+  security bump the `electron-watch` workflow opens
+  (`chore(deps): Electron <x.y.z> (security release)`): it touches no bundled
+  binary, so its description has the npm table only
+  ([`release-process.md`](release-process.md), "Security release
+  (Electron)"). Don't add a bundled table to that pull request or flag it as
+  missing.
 - Under the tables: the Electron Chromium/Node versions, the held-back exact
   pins (current, latest, advisory at the pin), then one paragraph per commit,
   the `npm audit` count before and after with what remains, and a Testing

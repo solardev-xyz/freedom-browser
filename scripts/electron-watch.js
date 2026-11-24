@@ -537,6 +537,28 @@ function readText(root, file) {
 }
 
 /**
+ * The lockfile entries an npm other than CI's has dropped or re-resolved:
+ * every entry but the root and Electron's own must survive with the same
+ * platform and dependency-type fields.
+ */
+const LOCK_DRIFT_FIELDS = ['os', 'cpu', 'libc', 'optional', 'dev', 'devOptional', 'peer'];
+function lockDrift(before, after) {
+  const drift = [];
+  for (const [key, entry] of Object.entries(before)) {
+    if (key === '' || key === 'node_modules/electron') continue;
+    if (!Object.hasOwn(after, key)) {
+      drift.push(`${key} dropped`);
+      continue;
+    }
+    const changed = LOCK_DRIFT_FIELDS.filter(
+      (f) => JSON.stringify(entry[f]) !== JSON.stringify(after[key][f])
+    );
+    if (changed.length) drift.push(`${key} ${changed.join('/')}`);
+  }
+  return drift;
+}
+
+/**
  * Edit the tree to Electron `version`. npm resolves the lockfile with
  * `--package-lock-only --ignore-scripts`: no package code runs in the job
  * that holds a write token, and no node_modules is needed.
@@ -560,7 +582,7 @@ async function applyBump({
   if (W.compareVersions(version, pinned) <= 0)
     throw new AlreadyBumped(`electron ${pinned} is already at or past ${version}`);
 
-  const lockedBefore = Object.keys(JSON.parse(readText(root, 'package-lock.json')).packages || {});
+  const lockedBefore = JSON.parse(readText(root, 'package-lock.json')).packages || {};
   exec(
     'npm',
     [
@@ -582,18 +604,18 @@ async function applyBump({
     );
   }
 
-  // An npm other than CI's resolves optional dependencies differently and
-  // drops the entries it would not install on this host, which breaks every
-  // `npm ci` in CI (release-process.md §2). Electron's own dependencies do
-  // not change within a major, so an entry gone is most likely that drift;
-  // stop either way and leave the bump to a maintainer.
-  const lockedAfter = new Set(
-    Object.keys(JSON.parse(readText(root, 'package-lock.json')).packages || {})
-  );
-  const dropped = lockedBefore.filter((key) => !lockedAfter.has(key));
-  if (dropped.length) {
+  // An npm other than CI's resolves optional dependencies differently: it
+  // drops the entries it would not install on this host, or rewrites their
+  // platform fields (npm 9.2 removes every `libc`), which breaks `npm ci` in
+  // CI or churns the lockfile (release-process.md §2). An Electron patch
+  // changes only the root's range and Electron's own entry, so any other
+  // entry lost or with different platform/flag fields is that drift; stop
+  // either way and leave the bump to a maintainer.
+  const lockedAfter = JSON.parse(readText(root, 'package-lock.json')).packages || {};
+  const drift = lockDrift(lockedBefore, lockedAfter);
+  if (drift.length) {
     throw new Error(
-      `npm dropped ${dropped.length} package-lock.json entr${dropped.length === 1 ? 'y' : 'ies'} (${dropped.slice(0, 5).join(', ')}${dropped.length > 5 ? ', …' : ''}); resolve with the npm CI uses`
+      `npm changed ${drift.length} package-lock.json entr${drift.length === 1 ? 'y' : 'ies'} (${drift.slice(0, 5).join(', ')}${drift.length > 5 ? ', …' : ''}); resolve with the npm CI uses`
     );
   }
 
