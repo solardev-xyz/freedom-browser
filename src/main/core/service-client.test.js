@@ -3,12 +3,18 @@
  * core: its handshake, shutdown, texts and log label are the service's,
  * and nothing of the core's leaks in. Everything else is CoreClient's,
  * which core-client.test.js covers whole.
+ *
+ * Then what a service's owner may take over (freedom-core design 0014),
+ * against a fake freedom-colibrid (`test/helpers/fake-colibrid.js`): events
+ * read after the exit until the pipe closes, restarts (`restart: false`),
+ * a step after each spawn, and the end of a process it no longer trusts.
  */
 
 const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
 const { ServiceClient, CoreError, scrubbedEnv } = require('./service-client');
-const { encodeFrame, FrameDecoder, KIND_JSON } = require('./frame');
+const { encodeBegin, encodeFrame, FrameDecoder, KIND_JSON, serviceKinds } = require('./frame');
+const { fakeColibrid, testService } = require('../../../test/helpers/fake-colibrid');
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -543,3 +549,273 @@ describe("exit 0 after a start step's error (endsOnError)", () => {
     await client.stop();
   });
 });
+
+/** A client of fake freedom-colibrid children, its timers recorded and run
+ * by hand, with `extra` options. */
+function colibriClient({ service = testService(), script = {}, ...extra } = {}) {
+  const fake = fakeColibrid(script);
+  const timers = [];
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  const client = new ServiceClient({
+    service,
+    spawn: jest.fn(fake.spawn),
+    command: '/bin/freedom-colibrid',
+    args: ['serve', '--chain', '100', '--parent-pid', '1'],
+    log,
+    shellVersion: '9.9.9',
+    setTimer: (fn, ms) => {
+      const timer = { fn, ms, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => {
+      if (timer) timer.cleared = true;
+    },
+    ...extra,
+  });
+  return { client, children: fake.children, timers, log };
+}
+
+const exitOf = (client) => new Promise((resolve) => client.once('exit', resolve));
+
+describe("what a service's owner takes over (design 0014)", () => {
+  test("events read after the exit, until the pipe closes, reach the owner ahead of the client's exit (eventsUntilClose)", async () => {
+    for (const eventsUntilClose of [true, false]) {
+      const { client } = colibriClient({
+        service: testService({ eventsUntilClose }),
+        restart: false,
+        script: {
+          // A marker still in the pipe when the process dies in its step.
+          request: (message, child) => {
+            child.holdOutput();
+            child.step(message.id);
+            setImmediate(() => child.exit(null, 'SIGSEGV'));
+          },
+        },
+      });
+      const seen = [];
+      client.on('event', (name, data) => seen.push(['event', name, data]));
+      client.on('exit', ({ signal }) => seen.push(['exit', signal]));
+      await client.start();
+      await client.request('colibri.request', {}).catch((err) => seen.push(['rejected', err.code]));
+
+      const marker = ['event', 'colibri.step', { request: 2 }];
+      expect([eventsUntilClose, seen]).toEqual([
+        eventsUntilClose,
+        [
+          ...(eventsUntilClose ? [marker] : []),
+          ['exit', 'SIGSEGV'],
+          ['rejected', 'colibri_unavailable'],
+        ],
+      ]);
+    }
+  });
+
+  test('a process that broke the protocol speaks no more, even until its pipe closes', async () => {
+    const { client, log } = colibriClient({
+      service: testService({ eventsUntilClose: true }),
+      restart: false,
+      script: {
+        request: (message, child) => {
+          child.holdOutput();
+          child.writeRaw(encodeBegin(1, 1024));
+          child.step(message.id);
+          setImmediate(() => child.exit(null, 'SIGSEGV'));
+        },
+      },
+    });
+    const events = [];
+    client.on('event', (name) => events.push(name));
+    await client.start();
+    await expect(client.request('colibri.request', {})).rejects.toMatchObject({
+      code: 'colibri_unavailable',
+    });
+    expect(events).toEqual([]);
+    expect(log.error).toHaveBeenCalledWith('[Colibri] protocol error', {
+      category: 'unknown_kind',
+    });
+  });
+
+  test('restart: false: an exit leaves the client stopped, with nothing armed and no crash counted; start() spawns again', async () => {
+    const { client, children, timers, log } = colibriClient({ restart: false });
+    let stateAtExit = null;
+    client.on('exit', () => {
+      stateAtExit = client.state;
+    });
+    await expect(client.start()).resolves.toEqual({ protocol: 1, chain_id: 100 });
+    const exited = exitOf(client);
+    children[0].exit(1);
+
+    await expect(exited).resolves.toEqual({ code: 1, signal: null, cause: null });
+    // Stopped before the owner heard of it.
+    expect(stateAtExit).toBe('stopped');
+    expect(client.state).toBe('stopped');
+    expect(timers.filter((t) => !t.cleared && t.ms === 500)).toHaveLength(0);
+    expect(client.crashTimes).toEqual([]);
+    expect(log.warn).toHaveBeenCalledWith('[Colibri] exited', {
+      code: 1,
+      signal: null,
+      cause: null,
+    });
+    await expect(client.request('colibri.stats')).rejects.toMatchObject({
+      code: 'colibri_unavailable',
+    });
+
+    await expect(client.start()).resolves.toEqual({ protocol: 1, chain_id: 100 });
+    expect(children).toHaveLength(2);
+    await client.stop();
+    expect(client.state).toBe('stopped');
+  });
+
+  test("restart: false: the owner's start() from its exit listener spawns at once", async () => {
+    const { client, children } = colibriClient({ restart: false });
+    await client.start();
+    let again = null;
+    client.once('exit', () => {
+      again = client.start();
+    });
+    children[0].exit(1);
+
+    await until(() => again !== null, 'the exit');
+    await expect(again).resolves.toEqual({ protocol: 1, chain_id: 100 });
+    expect(children).toHaveLength(2);
+    expect(client.state).toBe('ready');
+    await client.stop();
+  });
+
+  test('restart: false: a death before the handshake fails start(), rather than waiting for a restart', async () => {
+    const { client, children, timers } = colibriClient({
+      restart: false,
+      script: { hello: (message, child) => setImmediate(() => child.exit(70)) },
+    });
+
+    await expect(client.start()).rejects.toMatchObject({
+      code: 'colibri_unavailable',
+      message: 'The colibri service exited',
+    });
+    expect(client.state).toBe('stopped');
+    expect(children).toHaveLength(1);
+    expect(timers.filter((t) => !t.cleared && t.ms === 500)).toHaveLength(0);
+  });
+
+  test('restart: false keeps what fails the client: exit 75 fails it, and a stop stops it', async () => {
+    const { client, children } = colibriClient({ restart: false });
+    await client.start();
+    const failed = new Promise((resolve) => client.once('failed', resolve));
+    children[0].exit(75);
+    await expect(failed).resolves.toBe('exit code 75');
+    expect(client.state).toBe('failed');
+
+    await client.start();
+    await client.stop();
+    expect(client.state).toBe('stopped');
+    expect(children[1].sent('colibri.shutdown')).toHaveLength(1);
+  });
+
+  test('a restart is as before by default: the crash is counted, and 0.5 s armed', async () => {
+    const { client, children, timers } = colibriClient();
+    await client.start();
+    const exited = exitOf(client);
+    children[0].exit(1);
+    await exited;
+    expect(client.state).toBe('starting');
+    expect(client.crashTimes).toHaveLength(1);
+    expect(timers.filter((t) => !t.cleared && t.ms === 500)).toHaveLength(1);
+    await client.stop();
+  });
+
+  test('afterSpawn: once per spawn, with the child, before its handshake is sent; never for a child without a PID; a throw is logged', async () => {
+    const seen = [];
+    const { client, children, log } = colibriClient({
+      restart: false,
+      afterSpawn: (child) => seen.push({ pid: child.pid, sent: child.requests.length }),
+    });
+    await client.start();
+    expect(seen).toEqual([{ pid: 7000, sent: 0 }]);
+    children[0].exit(1);
+    await until(() => client.state === 'stopped', 'the exit');
+    await client.start();
+    expect(seen).toEqual([
+      { pid: 7000, sent: 0 },
+      { pid: 7001, sent: 0 },
+    ]);
+    await client.stop();
+
+    // No PID: os.setPriority would take main's own.
+    const noPid = colibriClient({ afterSpawn: (child) => seen.push(child.pid) });
+    const spawn = noPid.client.spawnFn.getMockImplementation();
+    noPid.client.spawnFn.mockImplementation((...args) => {
+      const child = spawn(...args);
+      child.pid = undefined;
+      return child;
+    });
+    await noPid.client.start();
+    expect(seen).toHaveLength(2);
+    await noPid.client.stop();
+
+    // A throw is logged without its text, and the process goes on.
+    const throwing = colibriClient({
+      afterSpawn: () => {
+        throw new Error('EACCES: secret detail');
+      },
+    });
+    await expect(throwing.client.start()).resolves.toEqual({ protocol: 1, chain_id: 100 });
+    expect(throwing.log.warn).toHaveBeenCalledWith('[Colibri] the step after the spawn failed');
+    expect(JSON.stringify(throwing.log.warn.mock.calls)).not.toContain('secret');
+    await throwing.client.stop();
+    expect(log.warn).not.toHaveBeenCalledWith('[Colibri] the step after the spawn failed');
+  });
+
+  test("abandon: the process is killed with the owner's cause, what it held fails, and only the generation named", async () => {
+    const { client, children, log } = colibriClient({
+      restart: false,
+      script: { request: () => {} },
+    });
+    await client.start();
+    const gen = client.current;
+    const pending = client.request('colibri.request', {}).catch((err) => err);
+    await tick();
+
+    expect(client.abandon('marker', { generation: gen.number + 1 })).toBe(false);
+    expect(children[0].killedWith).toBeUndefined();
+    const exited = exitOf(client);
+    expect(client.abandon('marker', { generation: gen.number })).toBe(true);
+    expect(children[0].killedWith).toBe('SIGKILL');
+    // Nothing more goes to it.
+    expect(client.serves(gen)).toBe(false);
+    await expect(client.requestTo(gen, 'colibri.stats')).rejects.toMatchObject({
+      code: 'colibri_unavailable',
+    });
+
+    await expect(exited).resolves.toEqual({ code: null, signal: 'SIGKILL', cause: 'marker' });
+    expect(await pending).toMatchObject({ code: 'colibri_unavailable' });
+    expect(log.warn).toHaveBeenCalledWith('[Colibri] abandoned', { cause: 'marker' });
+    expect(client.state).toBe('stopped');
+    // Nothing running: nothing to abandon.
+    expect(client.abandon('overrun')).toBe(false);
+  });
+
+  test('abandon takes only a fixed cause', async () => {
+    const { client } = colibriClient();
+    await client.start();
+    for (const cause of ['', 'Marker', 'a cause', 'x'.repeat(33), undefined, 7]) {
+      expect(() => client.abandon(cause)).toThrow(TypeError);
+    }
+    expect(client.current.ending).toBe(false);
+    await client.stop();
+  });
+
+  test("a duplex's kinds must take streams both ways", () => {
+    expect(() =>
+      colibriClient({ service: testService({ duplexKinds: serviceKinds('receiver') }) })
+    ).toThrow('A duplex takes stream frames both ways');
+  });
+});
+
+async function until(predicate, what) {
+  for (let i = 0; i < 2000; i++) {
+    if (predicate()) return;
+    await tick();
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
