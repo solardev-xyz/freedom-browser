@@ -35,6 +35,9 @@ export function initSafePendingList() {
   // Pendings change when a send flow or a signing board closes.
   window.addEventListener('wallet:send-closed', () => refreshSafePendingRow());
   window.addEventListener('wallet:safe-signing-closed', () => refreshSafePendingRow());
+  // Re-read on every open too: an unreadable store (a transient lock at
+  // startup) heals on the next read, and its notice must go with it.
+  document.addEventListener('sidebar-opened', () => refreshSafePendingRow());
 
   refreshSafePendingRow();
 }
