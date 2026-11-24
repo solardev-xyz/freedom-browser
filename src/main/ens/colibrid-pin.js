@@ -1,9 +1,9 @@
 /**
  * The freedom-colibrid release this app version ships and is tested
  * against, and what its `colibri.hello` reports (freedom-core design 0014,
- * "The protocol"). Nothing runs the service yet: Colibri stays on the WASM
- * workers, and the service's client, which will check `hello` against these
- * values, comes behind a development switch (COL-5).
+ * "The protocol"). The service's client checks `hello` against these values
+ * (colibrid-client.js), behind a development switch (COL-5,
+ * colibri-backend.js); Colibri stays on the WASM workers by default.
  *
  * - `PINNED_COLIBRID_VERSION`: the release, as `hello`'s `service_version`
  *   reports it, so a binary replaced under a running app can be refused, as

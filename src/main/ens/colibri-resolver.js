@@ -1,7 +1,15 @@
-// Colibri itself runs in a per-chain worker thread (#495): proof verification
-// is synchronous WASM and must never block Electron's main process. The worker
-// owns the package (via colibri-runtime), its disk storage and trap recovery.
+// Colibri itself runs outside the main thread, on one of two backends with
+// one interface, picked by the development switch (colibri-backend.js,
+// freedom-core design 0014, COL-5): by default a per-chain worker thread
+// (#495, colibri-worker-host.js), whose synchronous WASM verification must
+// never block Electron's main process, and which owns the package (via
+// colibri-runtime), its disk storage and trap recovery; with
+// FREEDOM_COLIBRI_BACKEND=service in a development build, the freedom-colibrid
+// processes (colibri-service.js). Packaged builds always run the WASM one.
+// The backend is part of a client's settings: a switch rebuilds the client
+// on the other one.
 const workerHost = require('./colibri-worker-host');
+const { colibriBackendKind } = require('./colibri-backend');
 const log = require('../logger');
 const registry = require('../networks/network-registry');
 const { isPrivateLogContext, privateSessionLive } = require('../private/private-log-context');
@@ -13,7 +21,8 @@ const { hostOf } = require('../ens-resolver');
 // read here runs on one of two lanes per chain: the normal one, on the
 // chain's disk-backed worker as before, or the private one, on the chain's
 // private worker, whose store is in memory only and ends with the last
-// private window (colibri-worker-host.js, `endPrivateColibriSession`). The
+// private window (colibri-worker-host.js, or the chain's private process in
+// colibri-service.js; `endPrivateColibriSession`). The
 // lane is the async context's (private/private-log-context.js). Every read
 // here is one of chain data's `shell.verified` operations (names don't use
 // Colibri, #1076), and its executor sets that context from whether the
@@ -26,6 +35,15 @@ const { hostOf } = require('../ens-resolver');
 // anything else before reaching here can find its last private window
 // closed: it is refused rather than given a fresh private worker, whose store
 // would then carry its read into the next private session.
+// colibri-service.js, once the switch has asked for it: loaded only then.
+let colibriService = null;
+
+function backendFor(kind) {
+  if (kind !== 'service') return workerHost;
+  colibriService ??= require('./colibri-service');
+  return colibriService;
+}
+
 const clients = new Map();
 const inFlightBuilds = new Map();
 const clientReferences = new Map();
@@ -190,16 +208,17 @@ async function withColibriClientRetry(chainId, operation) {
   }
 }
 
-async function buildClient({ chainId, privateLane, key, proverUrl, zkProof, generation }) {
+async function buildClient({ chainId, privateLane, key, backend, proverUrl, zkProof, generation }) {
   const lane = laneKey(chainId, privateLane);
   // The chain's worker registers the verifier's storage before it reports
   // ready; settings-change rebuilds reuse the same worker and storage. The
   // private lane's is its private worker, with storage in memory only.
+  const host = backendFor(backend);
   const lanePrivate = privateLane ? { private: true } : null;
-  if (lanePrivate) await workerHost.ensureWorker(chainId, lanePrivate);
-  else await workerHost.ensureWorker(chainId);
+  if (lanePrivate) await host.ensureWorker(chainId, lanePrivate);
+  else await host.ensureWorker(chainId);
 
-  const client = workerHost.createClient({ chainId, proverUrl, zkProof, ...lanePrivate });
+  const client = host.createClient({ chainId, proverUrl, zkProof, ...lanePrivate });
 
   if (generation !== buildGenerations.get(lane)) {
     destroyClient(client);
@@ -211,14 +230,14 @@ async function buildClient({ chainId, privateLane, key, proverUrl, zkProof, gene
   retireClient(previousClient);
   log.info(
     `[colibri] chain ${chainId}${privateLane ? ' (private)' : ''} client ready ` +
-    `(prover=${hostOf(proverUrl)}, zk=${zkProof})`
+    `(prover=${hostOf(proverUrl)}, zk=${zkProof}${backend === 'service' ? ', service' : ''})`
   );
   return client;
 }
 
 // Lazy singleton. Cache key is the tuple of settings that materially
-// affect proof state (prover URL + zk_proof flag); a runtime change to
-// either tears down the cached instance and rebuilds. WASM init is paid
+// affect proof state (prover URL + zk_proof flag) and the backend; a runtime
+// change to any tears down the cached instance and rebuilds. WASM init is paid
 // on first use, not module load. `inFlightBuild` collapses concurrent
 // first-call lookups onto a single construction. The generation counter
 // prevents a slower old-settings build from replacing a newer client.
@@ -233,7 +252,8 @@ async function getClient(chainId = 1, privateLane = false) {
     throw new Error(`No Colibri prover configured for chain ${id}`);
   }
   const zkProof = registry.getNetwork(id)?.zkProof !== false;
-  const key = `${proverUrl}|${zkProof}`;
+  const backend = colibriBackendKind();
+  const key = `${backend}|${proverUrl}|${zkProof}`;
   const cached = clients.get(lane);
   const inFlight = inFlightBuilds.get(lane);
   if (cached?.client && cached.key === key) {
@@ -246,7 +266,15 @@ async function getClient(chainId = 1, privateLane = false) {
 
   const generation = (buildGenerations.get(lane) || 0) + 1;
   buildGenerations.set(lane, generation);
-  const promise = buildClient({ chainId: id, privateLane, key, proverUrl, zkProof, generation });
+  const promise = buildClient({
+    chainId: id,
+    privateLane,
+    key,
+    backend,
+    proverUrl,
+    zkProof,
+    generation,
+  });
   inFlightBuilds.set(lane, { key, promise, generation });
   try { return await promise; }
   finally {
@@ -269,7 +297,8 @@ async function requestViaColibri(chainId, method, params = [], { deadlineMs } = 
 // The last private window has closed (#1058): drop every private lane's
 // client, discard a private build still in flight, and end the private
 // session in the worker host, which terminates the private workers and
-// their in-memory stores. Normal lanes are untouched. A private read after
+// their in-memory stores, and in the service once it was loaded, which
+// stops its private processes. Normal lanes are untouched. A private read after
 // this starts a fresh, empty store.
 function endPrivateColibriSession() {
   const privateLanes = new Set(
@@ -284,6 +313,13 @@ function endPrivateColibriSession() {
     if (cached) retireClient(cached.client);
   }
   workerHost.endPrivateSession();
+  colibriService?.endPrivateSession();
+}
+
+// The quit: every freedom-colibrid process stops (the WASM workers don't
+// hold the app open). Resolves once each has exited.
+function stopColibri() {
+  return colibriService ? colibriService.stopAll() : Promise.resolve();
 }
 
 // Registers the end of the private session: once the last private window
@@ -316,5 +352,6 @@ module.exports = {
   requestViaColibri,
   endPrivateColibriSession,
   registerColibriPrivateCleanup,
+  stopColibri,
   clearColibriClientForTest,
 };

@@ -1069,6 +1069,91 @@ describe('hard links whose names are all inside the grants', () => {
 // freedom-radicled's grants (design 0010, step 7, "Radicle"; design 0008,
 // "Spawn and lock"): the Radicle home and the service's own HOME,
 // `<userData>/radicled-home`, checked and walked together.
+describe("freedom-colibrid: one chain's directory (design 0014)", () => {
+  const PACKAGED = { packaged: true };
+  let appRoot;
+  let records;
+  let grant;
+
+  /** What the WASM verifier and other chains' processes left in `dir`. */
+  function populate(dir) {
+    fs.mkdirSync(path.join(dir, '100'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '100', 'states_100'), 'state');
+    fs.writeFileSync(path.join(dir, 'states_1'), 'wasm');
+    fs.writeFileSync(path.join(dir, 'sync_1_1234'), 'wasm');
+  }
+
+  beforeEach(() => {
+    appRoot = path.join(tempRoot, 'Freedom');
+    records = catalog(appRoot, ['default', 'work', 'home'], PACKAGED);
+    grant = loadGrant(activeProfile(appRoot, records.work, PACKAGED));
+  });
+
+  test("this profile's <userData>/colibri/<chain> passes, before and once made", () => {
+    const colibri = path.join(records.work.dir, 'colibri');
+    expect(grant.colibriGrantRefusal(path.join(colibri, '1'), { chainId: 1 })).toBeNull();
+    populate(colibri);
+    fs.mkdirSync(path.join(colibri, '1'));
+    fs.writeFileSync(path.join(colibri, '1', 'states_1'), 'state');
+    expect(grant.colibriGrantRefusal(path.join(colibri, '1'), { chainId: 1 })).toBeNull();
+    // The other services' grants are what they were.
+    expect(
+      grant.ipfsGrantRefusal(path.join(records.work.dir, 'ipfs-data', 'freedom-ipfs'))
+    ).toBeNull();
+    expect(grant.ipfsGrantRefusal(path.join(colibri, '1'))).toBe(
+      "the grant lies inside this profile's data"
+    );
+  });
+
+  test("another chain's directory and the WASM verifier's files stay protected", () => {
+    const colibri = path.join(records.work.dir, 'colibri');
+    populate(colibri);
+    expect(grant.colibriGrantRefusal(path.join(colibri, '100'), { chainId: 1 })).toBe(
+      "the grant is this profile's data"
+    );
+    expect(grant.colibriGrantRefusal(colibri, { chainId: 1 })).toBe(
+      "the grant contains this profile's data"
+    );
+    expect(grant.colibriGrantRefusal(path.join(colibri, '1'), {})).toBe(
+      "the grant names no chain, so it can't be told from another chain's"
+    );
+  });
+
+  test("another profile's colibri/ is refused, before it exists too", () => {
+    expect(grant.colibriGrantRefusal(path.join(appRoot, 'colibri', '1'), { chainId: 1 })).toBe(
+      "the grant lies inside another profile's Colibri store"
+    );
+    expect(
+      grant.colibriGrantRefusal(path.join(records.home.dir, 'colibri', '1'), { chainId: 1 })
+    ).toBe("the grant lies inside another profile's directory");
+  });
+
+  test('a chain directory that is a symlink into a protected root is refused', () => {
+    const colibri = path.join(records.work.dir, 'colibri');
+    fs.mkdirSync(colibri, { recursive: true });
+    fs.mkdirSync(path.join(records.work.dir, 'identity'), { recursive: true });
+    fs.symlinkSync(path.join(records.work.dir, 'identity'), path.join(colibri, '1'));
+    expect(grant.colibriGrantRefusal(path.join(colibri, '1'), { chainId: 1 })).toMatch(
+      /this profile's identity directory/
+    );
+  });
+
+  test('a --profile-dir or test profile: <userData>/colibri/<chain> passes', () => {
+    for (const source of ['profile-dir', 'test-user-data']) {
+      const userDataDir = path.join(tempRoot, source);
+      fs.mkdirSync(path.join(userDataDir, 'Local Storage'), { recursive: true });
+      populate(path.join(userDataDir, 'colibri'));
+      const own = loadGrant({ source, appRoot: userDataDir, userDataDir });
+      expect(
+        own.colibriGrantRefusal(path.join(userDataDir, 'colibri', '1'), { chainId: 1 })
+      ).toBeNull();
+      expect(own.colibriGrantRefusal(path.join(userDataDir, 'Local Storage'), { chainId: 1 })).toBe(
+        "the grant is this profile's browser storage"
+      );
+    }
+  });
+});
+
 describe('freedom-radicled: the Radicle home with its HOME', () => {
   const { execFileSync, spawnSync } = require('child_process');
   const OUTSIDE = 'the grant holds a hard link to a file with a name outside it';

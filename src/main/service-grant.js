@@ -28,7 +28,8 @@
  *   directories (`ipfs-data` for freedom-ipfsd, `freedom/ipfs-data` once
  *   the profile has moved, the rest of `freedom/` staying protected; for
  *   freedom-radicled the Radicle home, `radicle-data` or the short one, and
- *   its `HOME`, `radicled-home`, neither of which moves).
+ *   its `HOME`, `radicled-home`, neither of which moves; for
+ *   freedom-colibrid one chain's directory, `colibri/<chain>`).
  * - **Whatever the profile's source:** this profile's userData directory and
  *   its browser storage are protected for a catalog profile, a
  *   `--profile-dir` one and a test's (`FREEDOM_TEST_USER_DATA`) alike. Only
@@ -99,6 +100,12 @@
  *   data directory (`SERVICE_DIRS`): only freedom-radicled has another
  *   profile's protected before it exists, so freedom-ipfsd's roots are what
  *   they were.
+ * - **freedom-colibrid's grant** (`colibriGrantRefusal`, design 0014) is one
+ *   chain's directory, `<userData>/colibri/<chain>`, for a persistent
+ *   process (a private or checkpoint one has none). Only that directory is
+ *   its own: the rest of `colibri/` (other chains' directories, the WASM
+ *   verifier's flat files) stays protected, and so does another profile's
+ *   `colibri/`, before it exists too (`SERVICE_DIRS`).
  * - **freedom-radicled's import** (design 0010, D5) reads a working copy,
  *   read only, besides those grants: main checks the working copy against
  *   the same roots and the two grants (`radicleSourceRefusal`), and hands
@@ -390,6 +397,11 @@ const FREEDOM_ENTRIES = Object.freeze([...new Set([...ENTRY_NAMES.keys(), ...MOV
  * makes it do. */
 const PROFILE_INNER_ENTRIES = new Map([[FREEDOM_DIR, FREEDOM_ENTRIES]]);
 
+// freedom-colibrid's directories' parent at a profile's root (design 0014,
+// The store): one chain's directory in it is a persistent process's only
+// grant, and the WASM verifier's flat files beside them are a cache.
+const COLIBRI_DIR = 'colibri';
+
 // A service's own directories that are no component's data directory
 // (`getComponentDataDirs`), by the service's name for each in `own`: its
 // entry at a profile's root, and how a refusal names it. freedom-radicled's
@@ -399,6 +411,7 @@ const PROFILE_INNER_ENTRIES = new Map([[FREEDOM_DIR, FREEDOM_ENTRIES]]);
 // profile's entry like any other, so freedom-ipfsd's roots are unchanged.
 const SERVICE_DIRS = Object.freeze({
   radicledHome: [RADICLED_HOME_DIR, 'Radicle service home'],
+  colibri: [COLIBRI_DIR, 'Colibri store'],
 });
 
 /** The service's own directories in `SERVICE_DIRS`, for `own`: each entry
@@ -489,12 +502,14 @@ function componentRoots(dirs, label, except = []) {
  * The service's own directories where the profile `mine` keeps them by
  * default, from `defaults` (`getComponentDataDirs(mine, { slot })`) and
  * `SERVICE_DIRS`: the containers that are split, never protected whole.
+ * `subdirs` narrows one of `SERVICE_DIRS` to a directory inside it
+ * (freedom-colibrid's to one chain's), so the rest of it stays protected.
  */
-function ownDefaults(defaults, own, mine) {
+function ownDefaults(defaults, own, mine, subdirs = {}) {
   const dirs = [];
   for (const component of own) {
     if (SERVICE_DIRS[component]) {
-      dirs.push(path.join(mine, SERVICE_DIRS[component][0]));
+      dirs.push(path.join(mine, SERVICE_DIRS[component][0], ...(subdirs[component] ?? [])));
       continue;
     }
     dirs.push(defaults[component]);
@@ -506,22 +521,23 @@ function ownDefaults(defaults, own, mine) {
 /** This profile, as `protectedRoots` lays it out: its userData directory,
  * whether it is a catalog profile, its components where it keeps them by
  * default, and the service's own default directories among them. */
-function thisProfile(own) {
+function thisProfile(own, subdirs = {}) {
   const active = getActiveProfile();
   const mine = path.resolve(active?.userDataDir || getProfileUserDataDir());
   const catalog = Boolean(active?.source === 'catalog' && active.appRoot);
   const defaults = getComponentDataDirs(mine, {
     slot: catalog ? (active.metadata?.slot ?? null) : null,
   });
-  return { active, mine, catalog, defaults, ownDirs: ownDefaults(defaults, own, mine) };
+  return { active, mine, catalog, defaults, ownDirs: ownDefaults(defaults, own, mine, subdirs) };
 }
 
 /**
  * The roots a service's grant may not touch (see the module's doc), for the
- * service whose own components are `own` (excluded from this profile's).
+ * service whose own components are `own` (excluded from this profile's),
+ * narrowed by `subdirs` (`ownDefaults`).
  */
-function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
-  const { active, mine, catalog, defaults, ownDirs } = thisProfile(own);
+function protectedRoots({ own = [], subdirs = {}, foldCase = FOLD_CASE } = {}) {
+  const { active, mine, catalog, defaults, ownDirs } = thisProfile(own, subdirs);
   const extra = serviceEntries(own);
   const ownKeys = ownDirs.map((dir) => layout(dir, foldCase));
   const mineKey = layout(mine, foldCase);
@@ -716,7 +732,7 @@ function grantContentRefusal(
  */
 function serviceGrantRefusal(
   grants,
-  { own = [], foldCase = FOLD_CASE, win32 = WIN32, walk = {} } = {}
+  { own = [], subdirs = {}, foldCase = FOLD_CASE, win32 = WIN32, walk = {} } = {}
 ) {
   // The overrides as written, the service's own too: profile-paths resolves
   // each from main's directories, so neither a grant nor a root shows a
@@ -729,12 +745,12 @@ function serviceGrantRefusal(
   if (grants.some((grant) => !path.isAbsolute(grant))) {
     return "a grant isn't an absolute path, which a service may resolve from another directory";
   }
-  const roots = protectedRoots({ own, foldCase });
+  const roots = protectedRoots({ own, subdirs, foldCase });
   const refused = grantRefusal(grants, roots, { foldCase, win32 });
   if (refused) return refused;
   const held = grantContentRefusal(grants, walk);
   if (held) return held;
-  for (const dir of thisProfile(own).ownDirs) {
+  for (const dir of thisProfile(own, subdirs).ownDirs) {
     const collision = grantRefusal([dir], roots, { foldCase, win32 });
     if (collision) {
       return `the service's own default directory resolves into a protected root (${collision.replace(
@@ -753,6 +769,25 @@ function serviceGrantRefusal(
  */
 function ipfsGrantRefusal(dataDir, options = {}) {
   return serviceGrantRefusal([dataDir], { ...options, own: ['ipfs'] });
+}
+
+/**
+ * Why freedom-colibrid's persistent process for `chainId` may not be given
+ * `dataDir`, its chain's directory (`<userData>/colibri/<chainId>`), or
+ * null (design 0014, Confinement; design 0010, step 7). That one directory
+ * is its own: the rest of `colibri/` (the other chains' directories, the
+ * WASM verifier's flat files) stays protected, as does every other
+ * profile's `colibri/`, before it exists too.
+ */
+function colibriGrantRefusal(dataDir, { chainId, ...options } = {}) {
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+    return "the grant names no chain, so it can't be told from another chain's";
+  }
+  return serviceGrantRefusal([dataDir], {
+    ...options,
+    own: ['colibri'],
+    subdirs: { colibri: [String(chainId)] },
+  });
 }
 
 // freedom-radicled's own components: its Radicle home and its `HOME`.
@@ -816,6 +851,7 @@ module.exports = {
   serviceGrantRefusal,
   grantContentRefusal,
   ipfsGrantRefusal,
+  colibriGrantRefusal,
   radicleGrantRefusal,
   radicleImportRoots,
   radicleSourceRefusal,

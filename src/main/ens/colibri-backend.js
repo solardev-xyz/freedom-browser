@@ -2,8 +2,8 @@
  * What runs Colibri's verifier (freedom-core design 0014, COL-5): `wasm`,
  * the package's WASM verifier in a worker thread per chain
  * (colibri-worker-host.js), or `service`, the freedom-colibrid process.
- * colibri-resolver.js and the checkpoint path will ask here which one to
- * use; nothing asks yet.
+ * colibri-resolver.js asks here which one to use, and the checkpoint path
+ * will (COL-5 PR 9).
  *
  * Packaged builds always run WASM, whatever FREEDOM_COLIBRI_BACKEND says: the
  * service is a development switch until COL-6 makes it the default (0014,

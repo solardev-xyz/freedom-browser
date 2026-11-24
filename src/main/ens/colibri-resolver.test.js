@@ -32,6 +32,36 @@ jest.mock('./colibri-worker-host', () => ({
   },
 }));
 
+// The native backend (colibri-service.js), behind the development switch:
+// the same interface, its own fake clients, answering '0xservice'.
+const mockService = {
+  createClient: jest.fn(),
+  ensureWorker: jest.fn(() => Promise.resolve()),
+  endPrivateSession: jest.fn(),
+  stopAll: jest.fn(() => Promise.resolve()),
+  instances: [],
+  // How many times a module registry has loaded it.
+  loads: 0,
+};
+jest.mock('./colibri-service', () => {
+  mockService.loads += 1;
+  return {
+    ensureWorker: (...args) => mockService.ensureWorker(...args),
+    endPrivateSession: (...args) => mockService.endPrivateSession(...args),
+    stopAll: (...args) => mockService.stopAll(...args),
+    createClient: (config) => {
+      mockService.createClient(config);
+      const client = { config, destroy: jest.fn() };
+      client.request = jest.fn(() => Promise.resolve('0xservice'));
+      mockService.instances.push(client);
+      return client;
+    },
+  };
+});
+// colibri-backend.js reads whether the build is packaged from here.
+const mockApp = { isPackaged: false };
+jest.mock('electron', () => ({ app: mockApp }));
+
 // The registry is mocked; tests still pump a legacy-shaped object via
 // mockLoadSettings and the mock translates the two fields this module
 // reads (prover URL, zkProof) into the registry shape.
@@ -88,6 +118,7 @@ test('offers chain-data requests only, with no name-resolution adapter', () => {
     'endPrivateColibriSession',
     'registerColibriPrivateCleanup',
     'requestViaColibri',
+    'stopColibri',
   ]);
 });
 
@@ -491,5 +522,100 @@ describe('private windows', () => {
     open = 0;
     hook('private-b');
     expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The development switch (colibri-backend.js, freedom-core design 0014,
+// COL-5): the WASM workers by default and in every packaged build; the
+// freedom-colibrid processes when a development build names them. The
+// backend is one of a client's settings, so a switch rebuilds it.
+describe('the backend switch', () => {
+  const ENV = 'FREEDOM_COLIBRI_BACKEND';
+  const CONFIG = { chainId: 1, proverUrl: 'https://test-prover.example', zkProof: true };
+  let saved;
+
+  beforeEach(() => {
+    saved = process.env[ENV];
+    delete process.env[ENV];
+    mockApp.isPackaged = false;
+    mockService.instances.length = 0;
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV];
+    else process.env[ENV] = saved;
+    mockApp.isPackaged = false;
+  });
+
+  test('WASM by default: the worker host serves, and the service is never loaded', async () => {
+    let fresh;
+    const loads = mockService.loads;
+    jest.isolateModules(() => {
+      fresh = require('./colibri-resolver');
+    });
+    await expect(fresh.requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
+    expect(mockCreateClient).toHaveBeenCalledWith(CONFIG);
+    fresh.endPrivateColibriSession();
+    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+    await expect(fresh.stopColibri()).resolves.toBeUndefined();
+    expect(mockService.loads).toBe(loads);
+    expect(mockService.stopAll).not.toHaveBeenCalled();
+    expect(mockService.endPrivateSession).not.toHaveBeenCalled();
+  });
+
+  test('the service when a development build names it', async () => {
+    process.env[ENV] = 'service';
+    await expect(requestViaColibri(1, 'eth_blockNumber', [], { deadlineMs: 2000 })).resolves.toBe(
+      '0xservice'
+    );
+    expect(mockService.ensureWorker).toHaveBeenCalledWith(1);
+    expect(mockService.createClient).toHaveBeenCalledWith(CONFIG);
+    expect(mockService.instances[0].request).toHaveBeenCalledWith(
+      { method: 'eth_blockNumber', params: [] },
+      { deadlineMs: 2000 }
+    );
+    expect(mockCreateClient).not.toHaveBeenCalled();
+    expect(mockEnsureWorker).not.toHaveBeenCalled();
+    expect(mockLogInfo).toHaveBeenCalledWith(
+      '[colibri] chain 1 client ready (prover=test-prover.example, zk=true, service)'
+    );
+  });
+
+  test('WASM in a packaged build, whatever the variable says', async () => {
+    process.env[ENV] = 'service';
+    mockApp.isPackaged = true;
+    await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
+    expect(mockCreateClient).toHaveBeenCalledWith(CONFIG);
+    expect(mockService.createClient).not.toHaveBeenCalled();
+  });
+
+  test('a switch rebuilds the client on the other backend', async () => {
+    await requestViaColibri(1, 'eth_blockNumber');
+    const [wasm] = mockClientInstances;
+    process.env[ENV] = 'service';
+    await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0xservice');
+    expect(wasm.destroy).toHaveBeenCalledTimes(1);
+    delete process.env[ENV];
+    await expect(requestViaColibri(1, 'eth_blockNumber')).resolves.toBe('0x2a');
+    expect(mockService.instances[0].destroy).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
+  });
+
+  test("the service's private lane, the session's end and the quit", async () => {
+    process.env[ENV] = 'service';
+    openPrivateSession();
+    try {
+      await runWithPrivateLogContext(true, () => requestViaColibri(1, 'eth_blockNumber'));
+      expect(mockService.ensureWorker).toHaveBeenCalledWith(1, { private: true });
+      expect(mockService.createClient).toHaveBeenCalledWith({ ...CONFIG, private: true });
+    } finally {
+      endPrivateSession();
+    }
+    endPrivateColibriSession();
+    expect(mockService.endPrivateSession).toHaveBeenCalledTimes(1);
+    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+    expect(mockService.instances[0].destroy).toHaveBeenCalledTimes(1);
+    await colibriResolver.stopColibri();
+    expect(mockService.stopAll).toHaveBeenCalledTimes(1);
   });
 });

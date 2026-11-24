@@ -994,7 +994,8 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
   registerPrivateCleanup((partition) => closeDwebSession(partition));
   // Colibri's private store (#1058): the private windows share one in-memory
-  // verifier store per chain, dropped once the last of them has closed.
+  // verifier store per chain (a WASM worker's, or a freedom-colibrid private
+  // process's), dropped once the last of them has closed.
   require('./ens/colibri-resolver').registerColibriPrivateCleanup({
     registerPrivateCleanup,
     getPrivateWindowCount,
@@ -1216,9 +1217,11 @@ let shutdownSettled = false;
 // happened (radicle-manager.js stopRadicleAtQuit, freedom-core design 0008:
 // Radicle's 10 s leg equals Tor's); Ant SIGKILLs antd after 5s
 // (ant-manager.js), Myotis waits 5s for its child to exit (myotis-process.js
-// EXIT_WAIT_MS), and the IPFS dispatcher falls back to terminate() after 2s
-// (freedom-ipfs-native-node.js DISPATCHER_STOP_TIMEOUT_MS). Re-derive against
-// those five before trimming this number.
+// EXIT_WAIT_MS), freedom-colibrid is killed 5s after colibri.shutdown
+// (colibrid-client.js SHUTDOWN_GRACE_MS), and the IPFS dispatcher falls back
+// to terminate() after 2s (freedom-ipfs-native-node.js
+// DISPATCHER_STOP_TIMEOUT_MS). Re-derive against those six before trimming
+// this number.
 const SHUTDOWN_WATCHDOG_MS = 20_000;
 
 // Everything that has to happen before the process may go away. Split out of
@@ -1314,6 +1317,9 @@ async function windDown() {
     ['IPFS', stopIpfs],
     ['Radicle', stopRadicleAtQuit],
     ['Tor', stopTor],
+    // freedom-colibrid's processes (freedom-core design 0014), when the
+    // development switch runs them; nothing to stop on the WASM workers.
+    ['Colibri', () => require('./ens/colibri-resolver').stopColibri()],
   ];
   // The async wrapper keeps a *synchronous* throw from a stop function inside
   // the join too: thrown straight into Promise.allSettled's argument array it
