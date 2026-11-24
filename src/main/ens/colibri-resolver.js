@@ -210,15 +210,23 @@ async function withColibriClientRetry(chainId, operation) {
 
 async function buildClient({ chainId, privateLane, key, backend, proverUrl, zkProof, generation }) {
   const lane = laneKey(chainId, privateLane);
+  const host = backendFor(backend);
+  const lanePrivate = privateLane ? { private: true } : null;
+  // The client first: the backend learns the lane's settings from it, and
+  // the native one lets a lane it stopped under other settings start again
+  // (colibri-service.js). It is used only once the lane is ready, and
+  // destroyed if it never gets there.
+  const client = host.createClient({ chainId, proverUrl, zkProof, ...lanePrivate });
   // The chain's worker registers the verifier's storage before it reports
   // ready; settings-change rebuilds reuse the same worker and storage. The
   // private lane's is its private worker, with storage in memory only.
-  const host = backendFor(backend);
-  const lanePrivate = privateLane ? { private: true } : null;
-  if (lanePrivate) await host.ensureWorker(chainId, lanePrivate);
-  else await host.ensureWorker(chainId);
-
-  const client = host.createClient({ chainId, proverUrl, zkProof, ...lanePrivate });
+  try {
+    if (lanePrivate) await host.ensureWorker(chainId, lanePrivate);
+    else await host.ensureWorker(chainId);
+  } catch (err) {
+    destroyClient(client);
+    throw err;
+  }
 
   if (generation !== buildGenerations.get(lane)) {
     destroyClient(client);

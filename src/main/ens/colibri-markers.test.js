@@ -76,12 +76,25 @@ describe('open requests', () => {
     const op = open(2);
     expect(state.operation(2)).toBe(op);
     expect(op.ended).toBe(false);
-    state.closed(2);
+    // The reply stands.
+    expect(state.closed(2)).toBe(true);
     expect(state.operation(2)).toBeUndefined();
     expect(op.ended).toBe(true);
     // A second reply, or one for no request, changes nothing.
-    state.closed(2);
-    state.closed(9);
+    expect(state.closed(2)).toBe(true);
+    expect(state.closed(9)).toBe(true);
+  });
+
+  test('an ended operation stays open to the markers until its reply: a step after a cancel is no error', () => {
+    const { state, abandoned, open } = markers();
+    const op = open(2);
+    // Main's cancel ends its fetches (colibrid-client.js).
+    op.ended = true;
+    expect(state.operation(2)).toBe(op);
+    step(state, 2);
+    stepped(state, 2);
+    expect(state.closed(2)).toBe(true);
+    expect(abandoned).toEqual([]);
   });
 
   test('a death ends every open request and clears every timer', () => {
@@ -167,7 +180,8 @@ describe('the markers', () => {
       "a reply while its request's step is open",
       (s) => {
         step(s, 2);
-        s.closed(2);
+        // Refused: never its request's outcome.
+        expect(s.closed(2)).toBe(false);
       },
       'reply_in_step',
     ],
@@ -211,9 +225,40 @@ describe('the markers', () => {
     step(state, 9);
     expect(abandoned).toEqual([]);
   });
+
+  test('a reply in its step on a process already abandoned stands: nothing is refused twice', () => {
+    const { state, clock, abandoned, open } = markers();
+    open(2, 1_000);
+    open(3);
+    step(state, 2);
+    // Request 2's step overruns its deadline: the process is abandoned first.
+    clock.advance(1_000 + OVERRUN_MS);
+    expect(abandoned).toEqual(['overrun']);
+    expect(state.closed(2)).toBe(true);
+    expect(abandoned).toEqual(['overrun']);
+  });
 });
 
 describe('the death', () => {
+  test('those waiting for it get its record when it is made, or at once after', () => {
+    const { state, open } = markers();
+    open(2);
+    const got = [];
+    state.afterDeath((death) => got.push(['first', death]));
+    state.afterDeath((death) => got.push(['second', death]));
+    expect(got).toEqual([]);
+    const death = died(state);
+    expect(got).toEqual([
+      ['first', death],
+      ['second', death],
+    ]);
+    state.afterDeath((record) => got.push(['late', record]));
+    expect(got[2]).toEqual(['late', death]);
+    // Called once: a second die returns the record and calls nobody.
+    died(state);
+    expect(got).toHaveLength(3);
+  });
+
   test("a death inside a step names that step's request", () => {
     const { state, open } = markers();
     open(2);
