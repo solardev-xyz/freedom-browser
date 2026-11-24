@@ -5,7 +5,7 @@ const fs = require('fs');
 const { loadSettings } = require('../settings-store');
 const { attachAutomationToHostWebContents } = require('../automation/runtime');
 const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
-const { attachFullscreenChromeSync } = require('../browser-fullscreen');
+const { attachFullscreenChromeSync, TRAFFIC_LIGHTS } = require('../browser-fullscreen');
 
 let currentWindowTitle = 'Freedom';
 
@@ -79,7 +79,7 @@ function createMainWindow(initialUrl = null, options = {}) {
     // macOS: use hidden inset title bar with custom traffic light position
     ...(isMac && {
       titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: 14, y: 14 },
+      trafficLightPosition: TRAFFIC_LIGHTS,
     }),
     // Linux: drop the OS frame so the in-app tab strip is the titlebar
     ...(linuxFrameless && { frame: false }),

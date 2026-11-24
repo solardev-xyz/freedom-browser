@@ -546,6 +546,7 @@ describe('preload', () => {
       [exposures.electronAPI, 'minimizeWindow', [], IPC.WINDOW_MINIMIZE, []],
       [exposures.electronAPI, 'maximizeWindow', [], IPC.WINDOW_MAXIMIZE, []],
       [exposures.electronAPI, 'toggleFullscreen', [], IPC.WINDOW_TOGGLE_FULLSCREEN, []],
+      [exposures.electronAPI, 'toggleFreeMode', [], IPC.WINDOW_TOGGLE_FREE_MODE, []],
       [exposures.electronAPI, 'newWindow', [], IPC.WINDOW_NEW, []],
       [
         exposures.electronAPI,

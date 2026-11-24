@@ -117,6 +117,16 @@ module.exports = {
   // main → chrome: the window entered (true) or left (false) full screen;
   // the chrome hides itself while it is (browser-fullscreen.js, #78).
   WINDOW_FULLSCREEN_CHANGED: 'window:fullscreen-changed',
+  WINDOW_TOGGLE_FREE_MODE: 'window:toggle-free-mode',
+  // main → chrome: the window became freeMode (true) or got its chrome back
+  // (false); the chrome hides itself as in full screen (browser-fullscreen.js).
+  WINDOW_FREE_MODE_CHANGED: 'window:free-mode-changed',
+  // chrome → main: the pointer reached the top edge of a Free Mode window.
+  WINDOW_REVEAL_FREE_MODE_BAR: 'window:reveal-free-mode-bar',
+  // main → chrome: show (true) or fold (false) the Free Mode drag bar.
+  WINDOW_FREE_MODE_BAR_CHANGED: 'window:free-mode-bar-changed',
+  // chrome → main: a drag on the Free Mode bar, 'start' | 'move' | 'end'.
+  WINDOW_FREE_MODE_DRAG: 'window:free-mode-drag',
   WINDOW_NEW: 'window:new',
   // Private windows (ephemeral, non-persisted partition per window)
   WINDOW_NEW_PRIVATE: 'window:new-private',

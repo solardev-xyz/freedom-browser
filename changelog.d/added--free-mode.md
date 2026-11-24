@@ -1,0 +1,3 @@
+- Free Mode: hide the browser controls while the page stays in a normal window — for screen recordings and live streams
+  - Toggle it with the window-frame button at the tab strip's top right, View → Toggle Free Mode, or Cmd/Ctrl+Shift+F
+  - Point at the top edge for a thin bar to move the window, with the traffic lights on macOS

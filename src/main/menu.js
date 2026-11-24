@@ -21,6 +21,7 @@ const { getEffectiveAccelerator, getAliasAccelerators } = require('../shared/sho
 const { loadSettings, onSettingsChanged } = require('./settings-store');
 const { getRecentHistory, onHistoryChanged } = require('./history');
 const { getCachedFavicon } = require('./favicons');
+const { toggleFreeMode } = require('./browser-fullscreen');
 
 // Every menu accelerator comes from the shared shortcut registry
 // (src/shared/shortcuts.js) — menu.test.js rejects accelerator literals in
@@ -478,6 +479,15 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
         if (win) {
           win.setFullScreen(!win.isFullScreen());
         }
+      },
+    },
+    {
+      id: 'free-mode',
+      label: 'Toggle Free Mode',
+      accelerator: acc('view.freeMode'),
+      click: () => {
+        const win = getTargetWindow();
+        if (win) toggleFreeMode(win);
       },
     },
     { type: 'separator' },

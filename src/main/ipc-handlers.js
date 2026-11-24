@@ -42,6 +42,7 @@ const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
 const { relaunchArgs } = require('./launch-urls');
+const { toggleFreeMode, revealFreeModeBar, dragFreeModeBar } = require('./browser-fullscreen');
 
 // Bzz content probes, keyed by probe id. Each entry exposes a promise that
 // resolves to the probe outcome. Entries survive until BZZ_AWAIT_PROBE
@@ -833,6 +834,22 @@ function registerBaseIpcHandlers(callbacks = {}) {
     if (win) {
       win.setFullScreen(!win.isFullScreen());
     }
+  });
+
+  ipcMain.on(IPC.WINDOW_TOGGLE_FREE_MODE, (event) => {
+    const win = event.sender.getOwnerBrowserWindow();
+    if (win) toggleFreeMode(win);
+  });
+
+  ipcMain.on(IPC.WINDOW_REVEAL_FREE_MODE_BAR, (event) => {
+    const win = event.sender.getOwnerBrowserWindow();
+    if (win) revealFreeModeBar(win);
+  });
+
+  ipcMain.on(IPC.WINDOW_FREE_MODE_DRAG, (event, phase) => {
+    if (!['start', 'move', 'end'].includes(phase)) return;
+    const win = event.sender.getOwnerBrowserWindow();
+    if (win) dragFreeModeBar(win, phase);
   });
 
   ipcMain.on(IPC.WINDOW_NEW, () => {

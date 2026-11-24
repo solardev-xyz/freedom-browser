@@ -290,6 +290,15 @@ export const SHORTCUTS = [
     editable: true,
   },
   {
+    id: 'view.freeMode',
+    description: 'Toggle Free Mode',
+    settingsLabel: 'Toggle Free Mode',
+    defaultAccelerator: 'CmdOrCtrl+Shift+F',
+    context: 'both',
+    category: 'Window',
+    editable: true,
+  },
+  {
     id: 'view.toggleBookmarksBar',
     description: 'Toggle Bookmarks Bar',
     settingsLabel: 'Toggle bookmarks bar',

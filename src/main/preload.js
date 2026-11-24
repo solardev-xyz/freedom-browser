@@ -38,6 +38,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('window:fullscreen-changed', handler);
     return () => ipcRenderer.removeListener('window:fullscreen-changed', handler);
   },
+  toggleFreeMode: () => ipcRenderer.send('window:toggle-free-mode'),
+  onFreeModeChanged: (callback) => {
+    const handler = (_event, isFreeMode) => callback(isFreeMode === true);
+    ipcRenderer.on('window:free-mode-changed', handler);
+    return () => ipcRenderer.removeListener('window:free-mode-changed', handler);
+  },
+  revealFreeModeBar: () => ipcRenderer.send('window:reveal-free-mode-bar'),
+  dragFreeModeBar: (phase) => ipcRenderer.send('window:free-mode-drag', phase),
+  onFreeModeBarChanged: (callback) => {
+    const handler = (_event, revealed) => callback(revealed === true);
+    ipcRenderer.on('window:free-mode-bar-changed', handler);
+    return () => ipcRenderer.removeListener('window:free-mode-bar-changed', handler);
+  },
   newWindow: () => ipcRenderer.send('window:new'),
   newPrivateWindow: () => ipcRenderer.send('window:new-private'),
   openUrlInNewWindow: (url) => ipcRenderer.send('window:new-with-url', url),

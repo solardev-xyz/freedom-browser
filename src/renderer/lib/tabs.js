@@ -2937,6 +2937,10 @@ export const initTabs = async () => {
       event.preventDefault();
       electronAPI?.toggleFullscreen?.();
     }
+    if (matchesShortcut(event, 'view.freeMode')) {
+      event.preventDefault();
+      electronAPI?.toggleFreeMode?.();
+    }
   });
 
   // Create initial tab - check for initialUrl query parameter (from "open in new window")

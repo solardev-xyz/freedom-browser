@@ -7,13 +7,31 @@
 
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
 
-async function load({ platform = 'linux', overrides = {}, early = [], focused = null } = {}) {
+async function load({
+  platform = 'linux',
+  overrides = {},
+  early = [],
+  earlyFreeMode = [],
+  focused = null,
+} = {}) {
   jest.resetModules();
   jest.useFakeTimers();
 
   const hint = createElement('div');
   hint.hidden = true;
-  const document = createDocument({ elementsById: { 'fullscreen-exit-hint': hint } });
+  const dragSensor = createElement('div');
+  const dragBar = createElement('div');
+  const toggle = createElement('button');
+  const barToggle = createElement('button');
+  const document = createDocument({
+    elementsById: {
+      'fullscreen-exit-hint': hint,
+      'free-mode-sensor': dragSensor,
+      'free-mode-bar': dragBar,
+      'free-mode-toggle': toggle,
+      'free-mode-bar-toggle': barToggle,
+    },
+  });
   global.document = document;
   // A toolbar holding one control, and where the keyboard is.
   const toolbar = createElement('header');
@@ -27,11 +45,23 @@ async function load({ platform = 'linux', overrides = {}, early = [], focused = 
     focused === 'address' ? addressInput : focused === 'other' ? pageControl : document.body;
 
   let onChange = null;
+  let onFreeMode = null;
+  let onBar = null;
   const keydown = [];
   const electronAPI = {
     onFullscreenChanged: jest.fn((cb) => {
       onChange = cb;
     }),
+    onFreeModeChanged: jest.fn((cb) => {
+      onFreeMode = cb;
+    }),
+    onFreeModeBarChanged: jest.fn((cb) => {
+      onBar = cb;
+    }),
+    revealFreeModeBar: jest.fn(),
+    dragFreeModeBar: jest.fn(),
+    maximizeWindow: jest.fn(),
+    toggleFreeMode: jest.fn(),
     toggleFullscreen: jest.fn(),
   };
   global.window = {
@@ -48,6 +78,7 @@ async function load({ platform = 'linux', overrides = {}, early = [], focused = 
   // index.js listens as soon as its script runs, before start-up's awaits.
   mod.listenForFullscreenChanges();
   early.forEach((state) => onChange(state));
+  earlyFreeMode.forEach((state) => onFreeMode(state));
   const setSidebarConcealed = jest.fn();
   const closeMenus = jest.fn();
   mod.initBrowserFullscreen({ setSidebarConcealed, closeMenus, platform });
@@ -71,6 +102,11 @@ async function load({ platform = 'linux', overrides = {}, early = [], focused = 
   return {
     mod,
     hint,
+    dragSensor,
+    dragBar,
+    toggle,
+    barToggle,
+    bar: (state) => onBar(state),
     body: document.body,
     electronAPI,
     setSidebarConcealed,
@@ -78,6 +114,7 @@ async function load({ platform = 'linux', overrides = {}, early = [], focused = 
     addressInput,
     pageControl,
     change: (state) => onChange(state),
+    freeMode: (state) => onFreeMode(state),
     press,
   };
 }
@@ -188,3 +225,128 @@ describe('Escape', () => {
     expect(t.mod.isBrowserFullscreen()).toBe(true);
   });
 });
+
+describe('Free Mode', () => {
+  test('hides the chrome as full screen does, with no hint in the shot', async () => {
+    const t = await load({ platform: 'darwin' });
+    t.freeMode(true);
+    expect(t.body.classList.contains('browser-fullscreen')).toBe(true);
+    expect(t.body.classList.contains('browser-free-mode')).toBe(true);
+    expect(t.mod.isFreeMode()).toBe(true);
+    expect(t.mod.isBrowserFullscreen()).toBe(false);
+    expect(t.setSidebarConcealed).toHaveBeenLastCalledWith(true);
+    expect(t.hint.hidden).toBe(true);
+
+    t.freeMode(false);
+    expect(t.body.classList.contains('browser-fullscreen')).toBe(false);
+    expect(t.body.classList.contains('browser-free-mode')).toBe(false);
+    expect(t.setSidebarConcealed).toHaveBeenLastCalledWith(false);
+  });
+
+  test('full screen on top keeps the chrome hidden on the way back out', async () => {
+    const t = await load();
+    t.freeMode(true);
+    t.change(true);
+    expect(t.body.classList.contains('browser-free-mode')).toBe(false);
+    expect(t.hint.textContent).toBe('Press F11 to exit full screen');
+    t.change(false);
+    expect(t.body.classList.contains('browser-fullscreen')).toBe(true);
+    expect(t.body.classList.contains('browser-free-mode')).toBe(true);
+    expect(t.setSidebarConcealed).toHaveBeenCalledTimes(1);
+  });
+
+  test('a report before init is held', async () => {
+    const t = await load({ earlyFreeMode: [true] });
+    expect(t.body.classList.contains('browser-free-mode')).toBe(true);
+  });
+
+  test('pointing at the top edge asks main for the bar, only in Free Mode', async () => {
+    const t = await load();
+    t.dragSensor.dispatch('mouseenter');
+    expect(t.electronAPI.revealFreeModeBar).not.toHaveBeenCalled();
+    t.freeMode(true);
+    t.dragSensor.dispatch('mouseenter');
+    expect(t.electronAPI.revealFreeModeBar).toHaveBeenCalledTimes(1);
+  });
+
+  test('the bar follows main: shown on reveal, folded the moment main says', async () => {
+    const t = await load();
+    t.freeMode(true);
+    t.bar(true);
+    expect(t.dragBar.classList.contains('revealed')).toBe(true);
+    t.bar(false);
+    expect(t.dragBar.classList.contains('revealed')).toBe(false);
+  });
+
+  test('a late reveal after leaving Free Mode shows nothing', async () => {
+    const t = await load();
+    t.bar(true);
+    expect(t.dragBar.classList.contains('revealed')).toBe(false);
+  });
+
+  test('leaving Free Mode takes the bar down at once', async () => {
+    const t = await load();
+    t.freeMode(true);
+    t.bar(true);
+    t.freeMode(false);
+    expect(t.dragBar.classList.contains('revealed')).toBe(false);
+  });
+
+  test('both toggles, in the tab strip and in the bar, switch Free Mode', async () => {
+    const t = await load();
+    t.toggle.dispatch('click');
+    t.barToggle.dispatch('click');
+    expect(t.electronAPI.toggleFreeMode).toHaveBeenCalledTimes(2);
+  });
+
+  describe('dragging the bar', () => {
+    const page = { closest: () => null };
+    const toggleTarget = { closest: () => ({}) };
+
+    test('reports start, moves and end; the pointer is captured', async () => {
+      const t = await load();
+      t.freeMode(true);
+      t.bar(true);
+      t.dragBar.setPointerCapture = jest.fn();
+      t.dragBar.dispatch('pointermove', { target: page });
+      t.dragBar.dispatch('pointerdown', { button: 0, pointerId: 7, target: page });
+      t.dragBar.dispatch('pointermove', { target: page });
+      t.dragBar.dispatch('pointermove', { target: page });
+      t.dragBar.dispatch('pointerup', { target: page });
+      t.dragBar.dispatch('lostpointercapture', { target: page });
+      expect(t.dragBar.setPointerCapture).toHaveBeenCalledWith(7);
+      expect(t.electronAPI.dragFreeModeBar.mock.calls).toEqual([
+        ['start'],
+        ['move'],
+        ['move'],
+        ['end'],
+      ]);
+    });
+
+    test('not from the toggle or another button', async () => {
+      const t = await load();
+      t.freeMode(true);
+      t.dragBar.dispatch('pointerdown', { button: 0, target: toggleTarget });
+      t.dragBar.dispatch('pointerdown', { button: 2, target: page });
+      expect(t.electronAPI.dragFreeModeBar).not.toHaveBeenCalled();
+    });
+
+    test('ends when the bar folds', async () => {
+      const t = await load();
+      t.freeMode(true);
+      t.bar(true);
+      t.dragBar.dispatch('pointerdown', { button: 0, target: page });
+      t.freeMode(false);
+      t.bar(false);
+      expect(t.electronAPI.dragFreeModeBar).toHaveBeenLastCalledWith('end');
+    });
+
+    test('a double click zooms the window, as on a title bar', async () => {
+      const t = await load();
+      t.dragBar.dispatch('dblclick', { target: page });
+      t.dragBar.dispatch('dblclick', { target: toggleTarget });
+      expect(t.electronAPI.maximizeWindow).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+

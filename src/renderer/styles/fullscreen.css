@@ -31,6 +31,112 @@ body.browser-fullscreen .toolbar:not(:focus-within):not(:has(.permission-prompt:
   pointer-events: none !important;
 }
 
+/* Free Mode: with the tab strip gone there is nothing to drag the window by
+   (macOS draws no title bar of its own, Linux is frameless). An invisible
+   strip the bar's own height senses the pointer and asks main to reveal the
+   bar over it, painted like the tab strip, with macOS's traffic lights back
+   in it. The bar moves the window on a drag itself, so it is not a drag
+   region (src/main/browser-fullscreen.js has why), and main folds it the
+   moment the pointer leaves. Nothing shows until the pointer is in that top
+   strip, so none of it is in a recording.
+
+   It slides rather than cutting in and out: down in 100ms to show, back up
+   in 140ms to fold, so it is seen going to the edge it comes from. Folding,
+   it lets go of the pointer at once, so a pointer coming back lands on the
+   strip under it and the slide turns round; it goes `visibility: hidden`
+   only once it is out of sight, which takes its toggle out of the tab order
+   too. */
+.free-mode-sensor,
+.free-mode-bar {
+  display: none;
+}
+
+body.browser-free-mode .free-mode-sensor {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  z-index: 60;
+  -webkit-app-region: no-drag;
+}
+
+body.browser-free-mode .free-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  padding: 0 10px;
+  z-index: 61;
+  background-color: var(--bg);
+  -webkit-app-region: no-drag;
+  user-select: none;
+  transform: translateY(-100%);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    transform 140ms ease-in,
+    visibility 0s linear 140ms;
+}
+
+body.browser-free-mode .free-mode-bar.revealed {
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    transform 100ms ease-out,
+    visibility 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.browser-free-mode .free-mode-bar,
+  body.browser-free-mode .free-mode-bar.revealed {
+    transition: none;
+  }
+}
+
+/* The Free Mode toggle: a .menu-button like the Nodes and main menu buttons
+   (menus.css paints it, hover and light theme included), sized down to fit
+   the tab strip's top right, level with the traffic lights, and the Free
+   Mode bar's right end, to leave again. */
+.free-mode-toggle {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin: 0;
+  -webkit-app-region: no-drag;
+}
+
+/* The icon sits 14px in from the right edge, as far as the traffic lights
+   sit from the left: the strip's 10px padding plus half of what the button
+   is wider than its icon, less 5px. */
+.title-bar > .free-mode-toggle {
+  align-self: flex-start;
+  margin: 0 -5px 0 8px;
+}
+
+/* Drawn like its neighbours in the strip, the new-tab plus and the tabs'
+   close cross: 12px, with a 1.5px line. */
+.title-bar > .free-mode-toggle svg {
+  width: 12px;
+  height: 12px;
+}
+
+.free-mode-bar .free-mode-toggle {
+  width: 24px;
+  height: 24px;
+}
+
+.free-mode-bar .free-mode-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* "Press F11 to exit full screen", shown for a few seconds on entry. */
 .fullscreen-exit-hint {
   position: fixed;
