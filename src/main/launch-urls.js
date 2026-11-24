@@ -16,6 +16,7 @@ const LAUNCH_URL_PROTOCOLS = new Set([
   'bzz:',
   'ipfs:',
   'ipns:',
+  'pubky:',
   'web3:',
   'ens:',
   'rad:',

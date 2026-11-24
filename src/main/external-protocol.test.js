@@ -54,6 +54,7 @@ describe('external-protocol', () => {
       'bzz://abc',
       'ipfs://bafy',
       'ipns://name',
+      'pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/',
       'web3://0x0000000000000000000000000000000000000001',
       'ens://name.eth',
       'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5',

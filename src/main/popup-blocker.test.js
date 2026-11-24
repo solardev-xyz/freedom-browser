@@ -201,6 +201,11 @@ describe('popup-blocker', () => {
       // None of the refusals spent the gesture, and none was reported.
       expect(blockedReports(wc)).toHaveLength(0);
       expect(await invoke(ctx, IPC.POPUPS_CLAIM, fromGuest(wc), { url: 'ipfs://a/' })).toBe(true);
+      // A routed pubky:// link from a web3: page is claimable like the other dweb schemes.
+      click(wc);
+      expect(
+        await invoke(ctx, IPC.POPUPS_CLAIM, fromGuest(wc), { url: 'pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/' })
+      ).toBe(true);
     });
 
     test('a page in Agent custody gets its dweb-link popup as an Agent-held tab, never a user tab', async () => {

@@ -1815,6 +1815,7 @@ describe('navigation', () => {
 
       ctx.mod.loadTarget('https://example.com/', null, null, { commitsAddressBar: true });
       ctx.mod.loadTarget('about:blank', null, null, { commitsAddressBar: true });
+      ctx.mod.loadTarget('pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/', null, null, { commitsAddressBar: true });
 
       expect(global.window.externalProtocol.openFromAddressBar).not.toHaveBeenCalled();
     });

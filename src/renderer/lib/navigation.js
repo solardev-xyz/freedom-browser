@@ -1428,7 +1428,7 @@ const parseInternalPageTarget = (value) => {
 // itself (main would answer `not-external` for them anyway).
 const EXTERNAL_PROTOCOL_INPUT = /^[a-z][a-z0-9+.-]*:\S+$/i;
 const BROWSER_HANDLED_INPUT =
-  /^(?:https?|bzz|ipfs|ipns|web3|ens|rad|freedom|ethereum|file|about|data|blob|javascript|view-source|chrome|devtools):/i;
+  /^(?:https?|bzz|ipfs|ipns|pubky|web3|ens|rad|freedom|ethereum|file|about|data|blob|javascript|view-source|chrome|devtools):/i;
 
 export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
   if (!targetWebview && !options.pageInitiated && !options.continuesNavigation &&

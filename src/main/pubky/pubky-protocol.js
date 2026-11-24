@@ -4,7 +4,7 @@
  * Serves `pubky://<public-key>/pub/<path>`: a public file on the homeserver
  * the key publishes in its Pkarr record. The Pubky SDK resolves the
  * homeserver through Pkarr relays and fetches the file; the homeserver's
- * response (status, content type, body) goes back to the page unchanged.
+ * status, headers and body go back to the page.
  *
  * `pubky` is a standard scheme (see `registerSchemesAsPrivileged` in
  * index.js), so each key is its own origin. z-base-32 keys are lowercase,
@@ -14,25 +14,214 @@
  *  - GET / HEAD only, and only under `/pub/`. Writes and private data need
  *    a signed-in session, which this handler never has.
  *  - Request URLs are not logged: they name the key being read.
+ *  - Every dial the SDK makes for a pubky:// request (relays, homeserver
+ *    info, the file itself) goes through `guardedFetch`: https only,
+ *    redirects never followed, and only to hosts whose every address is
+ *    public. The key's owner chooses the homeserver address and anything
+ *    it redirects to, so without this a pubky:// page could read loopback
+ *    or LAN services (the local Ant API, a router) as same-origin content.
+ *    Residual: undici resolves the host again when it connects, so a DNS
+ *    answer that changes between our lookup and its dial (rebinding) is
+ *    not caught.
+ *  - Error responses carry fixed text, never SDK/WASM error messages.
  */
 
+const dns = require('node:dns');
+const net = require('node:net');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const log = require('../logger');
 
 // 52 z-base-32 characters; the unused final bits are zero, so the last
 // character is `y` or `o`. Same rule as Pubky Chromium's IDENTIFIERS.md.
 const PUBLIC_KEY_RE = /^[ybndrfg8ejkmcpqxot1uwisza345h769]{51}[yo]$/;
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
+const HOMESERVER_UNREACHABLE = 'Could not reach the homeserver for this key';
+
+// Addresses a pubky:// page must never reach through the homeserver dial.
+// IPv4-mapped IPv6 (`::ffff:127.0.0.1`) is matched against the IPv4 rules.
+const NON_PUBLIC = new net.BlockList();
+for (const [prefix, bits] of [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+]) {
+  NON_PUBLIC.addSubnet(prefix, bits, 'ipv4');
+}
+for (const [prefix, bits] of [
+  ['::', 128],
+  ['::1', 128],
+  ['100::', 64],
+  ['2001:db8::', 32],
+  ['2002::', 16], // 6to4 embeds an IPv4 address, possibly a private one
+  ['64:ff9b:1::', 48],
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['fec0::', 10],
+  ['ff00::', 8],
+]) {
+  NON_PUBLIC.addSubnet(prefix, bits, 'ipv6');
+}
+
+// NAT64 (`64:ff9b::/96`, what DNS64 hands out for IPv4-only hosts) is only
+// as public as the IPv4 address it embeds.
+function embeddedNat64Ipv4(address) {
+  const match = /^64:ff9b::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(address);
+  if (match) {
+    const hi = parseInt(match[1], 16);
+    const lo = parseInt(match[2], 16);
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
+  const dotted = /^64:ff9b::(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
+  return dotted ? dotted[1] : null;
+}
+
+function isPublicAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) return !NON_PUBLIC.check(address, 'ipv4');
+  if (family === 6) {
+    const nat64 = embeddedNat64Ipv4(address);
+    if (nat64) return isPublicAddress(nat64);
+    return !NON_PUBLIC.check(address, 'ipv6');
+  }
+  return false;
+}
+
+const DEFAULT_POLICY = Object.freeze({ protocols: ['https:'], isPublicAddress });
+
+class PubkyDialRefused extends Error {
+  constructor() {
+    super('pubky dial refused');
+    this.name = 'PubkyDialRefused';
+  }
+}
+
+// The SDK's WASM calls the global `fetch`. A dial made while a pubky
+// request is being served (its async context holds a guard state) goes
+// through `guardedFetch`; every other caller in the main process reaches
+// the original `fetch` with the same arguments.
+const sdkContext = new AsyncLocalStorage();
+let originalFetch = null;
+
+function installFetchRouter() {
+  if (originalFetch) return;
+  originalFetch = globalThis.fetch;
+  globalThis.fetch = function fetch(...args) {
+    const state = sdkContext.getStore();
+    if (!state) return Reflect.apply(originalFetch, this, args);
+    return guardedFetch(state, args[0], args[1]);
+  };
+}
+
+const lookupAll = (hostname) =>
+  new Promise((resolve, reject) => {
+    dns.lookup(hostname, { all: true, verbatim: true }, (err, addresses) =>
+      err ? reject(err) : resolve(addresses.map((entry) => entry.address))
+    );
+  });
+
+async function vetDestination(rawUrl, policy) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new PubkyDialRefused();
+  }
+  if (!policy.protocols.includes(url.protocol) || url.username || url.password) {
+    throw new PubkyDialRefused();
+  }
+  const host = url.hostname.replace(/^\[(.*)\]$/, '$1');
+  let addresses;
+  if (net.isIP(host)) {
+    addresses = [host];
+  } else {
+    try {
+      addresses = await lookupAll(host);
+    } catch {
+      throw new PubkyDialRefused();
+    }
+  }
+  if (!addresses.length || !addresses.every((address) => policy.isPublicAddress(address))) {
+    throw new PubkyDialRefused();
+  }
+}
+
+async function guardedFetch(state, input, init) {
+  // `redirect: 'manual'` on every dial: a 3xx comes back as itself and is
+  // refused below instead of being followed to wherever it points.
+  const request = new Request(input, { ...init, redirect: 'manual' });
+  await vetDestination(request.url, state.policy);
+  state.vetted.add(request.url);
+  const response = await originalFetch(request);
+  if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+    response.body?.cancel().catch(() => {});
+    throw new PubkyDialRefused();
+  }
+  return response;
+}
+
+const newGuardState = (policy = DEFAULT_POLICY) => ({ vetted: new Set(), policy });
 
 // ponytail: the SDK loads its WASM on first use, so a profile that never
 // opens a pubky:// address never pays for it.
+//
+// Requiring the package's CJS entry replaces `globalThis.fetch` with a
+// fetch-cookie wrapper (one cookie jar for the whole main process, shared
+// by normal and private windows). Put the original back straight away:
+// public reads need no cookies, and no other main-process caller may
+// inherit a jar.
 let sdk;
 const loadSdk = () => {
   if (!sdk) {
-    const { Pubky, resolvePubky } = require('@synonymdev/pubky');
-    sdk = { client: new Pubky().client, resolvePubky };
+    const before = globalThis.fetch;
+    let mod;
+    try {
+      mod = require('@synonymdev/pubky');
+    } finally {
+      globalThis.fetch = before;
+    }
+    installFetchRouter();
+    // Built inside a guard context, so anything the client starts on its
+    // own is guarded too.
+    const client = sdkContext.run(newGuardState(), () => new mod.Pubky().client);
+    sdk = { client, resolvePubky: mod.resolvePubky };
   }
   return sdk;
 };
+
+/**
+ * Fetches `url` with the SDK client, every dial guarded by `policy`.
+ * Rejects with PubkyDialRefused when a dial is refused or the response
+ * did not come from a dial the guard vetted (fails closed should the
+ * async context ever be lost inside the SDK).
+ */
+function guardedSdkFetch(url, init, policy = DEFAULT_POLICY) {
+  const state = newGuardState(policy);
+  return sdkContext.run(state, async () => {
+    const { client } = loadSdk();
+    const response = await client.fetch(url, { ...init, redirect: 'manual' });
+    const status = response.status;
+    if (
+      response.redirected ||
+      !state.vetted.has(response.url) ||
+      (status >= 300 && status < 400 && status !== 304)
+    ) {
+      response.body?.cancel().catch(() => {});
+      throw new PubkyDialRefused();
+    }
+    return response;
+  });
+}
 
 const textResponse = (status, message) =>
   new Response(message, {
@@ -67,11 +256,11 @@ async function handlePubkyRequest(request) {
   }
 
   try {
-    const { client, resolvePubky } = loadSdk();
-    return await client.fetch(resolvePubky(address), { method });
+    const { resolvePubky } = loadSdk();
+    return await guardedSdkFetch(resolvePubky(address), { method });
   } catch (err) {
     log.warn(`[pubky-protocol] request failed: ${err?.name || 'Error'}`);
-    return textResponse(502, `Could not reach the homeserver: ${err?.message || err}`);
+    return textResponse(502, HOMESERVER_UNREACHABLE);
   }
 }
 
@@ -84,4 +273,13 @@ function registerPubkyProtocol(targetSession) {
   }
 }
 
-module.exports = { registerPubkyProtocol, handlePubkyRequest, toPubkyAddress };
+module.exports = {
+  registerPubkyProtocol,
+  handlePubkyRequest,
+  toPubkyAddress,
+  isPublicAddress,
+  // Exported for pubky-sdk-guard.test.js, which drives the real SDK
+  // against loopback fixtures with a test policy.
+  guardedSdkFetch,
+  loadSdk,
+};

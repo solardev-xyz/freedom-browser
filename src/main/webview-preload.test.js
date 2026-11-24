@@ -1396,6 +1396,42 @@ describe('webview-preload', () => {
     });
   });
 
+  test('routes a pubky:// link out of an onchain app through browser chrome', () => {
+    const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      location: {
+        href: 'web3://0x00000095643cffA7d9faE407A84Dfcb6406456C6.eip155-1/',
+        protocol: 'web3:',
+        pathname: '/',
+      },
+    });
+    const event = {
+      target: {
+        tagName: 'A',
+        hasAttribute: jest.fn(() => false),
+        getAttribute: jest.fn((name) =>
+          name === 'href' ? 'pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/index.html' : ''
+        ),
+        parentElement: global.document.body,
+      },
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      isTrusted: true,
+      preventDefault: jest.fn(),
+    };
+
+    documentCaptureHandlers.click(event);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+      url: 'pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/index.html',
+      disposition: 'currentTab',
+      target: null,
+    });
+  });
+
   test('does not elevate synthetic onchain clicks into browser navigation', () => {
     const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
       location: {
