@@ -74,8 +74,8 @@ slowest kind to retry.
 
 A stack is a chain of pull requests that build on each other: the bottom one
 targets the stack's base, usually `main`, and each one above targets the branch
-below it. GitHub shows
-the chain on a stack page and in each layer's merge box. The first one here is
+below it. GitHub shows the chain on a stack page and in each layer's merge box.
+The first one here is
 [#1149](https://github.com/solardev-xyz/freedom-browser/stack/1149): #1147 at
 the bottom, #1148 on top (2026-11).
 
@@ -95,6 +95,17 @@ Layers merge bottom up. Merging a layer also merges every unmerged layer below
 it, in one all-or-nothing operation, and `main` gets the same history as
 merging each in turn: one `Merge pull request #N` per layer. The procedure above
 changes in four places:
+
+- **`main` merges through a merge queue.** Since 2026-11-19 the ruleset
+  "main merge queue" requires one for `main`, with merge commits and `ci-ok`
+  required; check with `gh api repos/<owner>/<repo>/rulesets`. The queue runs
+  `ci-ok` on the merged result itself (`ci.yml` has a `merge_group:` trigger).
+  The one stack merge so far went through it: #1147, the bottom layer of
+  #1149, was added to the queue from its own merge box (2026-11-23) and merged
+  from there (2026-11-24). Merging a whole stack from the top layer's merge box
+  or with `gh stack merge` has not been tried here since the queue was turned
+  on, so whether that queues every layer, or merges them past the queue, is
+  unknown: watch the first one and record what happens here.
 
 - **Merge from the top layer you want to land.** Use its merge box, or
   `gh stack merge <stack-number> --merge --yes` for the whole stack (a pull
@@ -117,17 +128,35 @@ changes in four places:
   that button, which rebases every layer on the server, or run
   `gh stack rebase` and then `gh stack push` locally. `gh stack push` pushes
   through the git remote, so a layer that touches `.github/workflows/` needs
-  the SSH remote, as in step 3. Either way every layer re-runs CI at the same time, so the stack
-  costs one cycle.
+  the SSH remote, as in step 3. Either way every layer re-runs CI at the same
+  time, so the stack costs one cycle.
 - **A stack is one merge in a batch.** Give it the place its most
   conflict-prone layer would have.
 
-After a partial merge, the layers above stay open, and GitHub rebases the next
-one onto `main`.
+After a partial merge, the layers above stay open, and GitHub only retargets
+the next one to `main`; it does **not** rebase it. When #1147 merged
+(2026-11-24), #1148's timeline got an `automatic_base_change_succeeded` to
+`main`, but its branch stayed on #1147's old tip, 330 commits behind `main`,
+and conflicting (`mergeable_state` `dirty`). Nothing on the server fixes that,
+so bring the next layer up to date yourself straight after a partial merge.
+Check with `gh api repos/<owner>/<repo>/pulls/<n> --jq .mergeable_state` and
+`gh api repos/<owner>/<repo>/compare/main...<head-sha>`. If **Rebase stack**
+is offered and there is no conflict, use it; otherwise rebase the layer's own
+commits onto `main` locally, dropping the merged layer's:
 
-The merge behaviour above comes from GitHub's docs on stacked pull requests,
-read 2026-11-10. No stack has merged here yet, so correct this section after
-the first one does.
+```
+git fetch origin && git checkout -B upd origin/<branch>
+git rebase --onto origin/main <old-tip-of-merged-layer> upd
+git push --force-with-lease=<branch>:origin/<branch> \
+  git@github.com:<owner>/<repo>.git HEAD:<branch>
+```
+
+Pushing over SSH, as in step 3, is needed when the layer touches
+`.github/workflows/` (#1148 does).
+
+The rest of this section comes from GitHub's docs on stacked pull requests,
+read 2026-11-10, and from #1147, the first layer merged here (2026-11-24).
+Correct it as more stacks merge.
 
 ### Opening a stack
 
