@@ -84,6 +84,22 @@ freedom-radicled (Radicle service)
     (sha256 117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c)
   and its repository is https://github.com/mackwic/colored.
 
+freedom-colibrid (Colibri service)
+  https://github.com/solardev-xyz/freedom-core
+  License: not chosen yet (pending the maintainer's decision).
+  Ships in every packaged build; nothing runs it yet.
+  Statically links third-party Rust crates, among them colibri-stateless's
+  (MIT); the C and C++ libraries it bundles: Colibri 3.0.3's C core and
+  trezor-crypto (MIT), Mbed TLS's RIPEMD-160 (Apache-2.0), blst 0.3.13,
+  evmone 0.23.0 with EVMC, and intx 0.15.0 (Apache-2.0); and the Rust
+  toolchain's runtime. On Linux it is dynamically linked against the
+  system's GNU C Library (glibc 2.17 or newer), and statically carries
+  glibc's startup and libc_nonshared objects (LGPL-2.1-or-later, with the
+  GNU C Library's exception for linking) and LLVM's libunwind, libc++ and
+  libc++abi (Apache-2.0 WITH LLVM-exception). Their notices ship beside the
+  binary: resources/freedom-colibrid/THIRD-PARTY-NOTICES and
+  resources/freedom-colibrid/THIRD-PARTY-NOTICES-rust-std.html.
+
 whisper.cpp
   License: MIT; bundled miniaudio: MIT-0; stb_vorbis: MIT
   https://github.com/ggml-org/whisper.cpp

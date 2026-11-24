@@ -38,6 +38,14 @@ links there rather than restating it.
   `scripts/fetch-radicle-addon.js`; pin = `RADICLE_ADDON_VERSION` in
   `src/shared/radicle-addon-version.js` plus `PINNED_SHA256SUMS` in the fetch
   script.
+- **freedom-colibrid** — the Colibri verifier as a service process,
+  released from <https://github.com/solardev-xyz/freedom-core> (design
+  0014). Every build ships it, but nothing runs it yet: Colibri stays on the
+  WASM workers of `@corpus-core/colibri-stateless` until COL-5's development
+  switch and COL-6's default. Fetch script `scripts/fetch-freedom-colibrid.js`
+  (`npm run colibrid:download`); pin `PINNED_RELEASE_TAG` +
+  `PINNED_SHA256SUMS_DIGEST` in that script, and `PINNED_COLIBRID_VERSION`
+  (below).
 - **Arti** — the Tor client, bundled where the build carries one (macOS arm64,
   Linux x64/arm64, Windows x64). Unlike the others it is **compiled from
   crates.io**, host-only, not downloaded. Fetch script `scripts/fetch-arti.js`;
@@ -72,6 +80,7 @@ same shape and is covered by `npm run check-binaries` too.
 | Ant              | `ant-bin/<os>-<arch>/antd` (`antd.exe` on Windows)                                                                                                 | `npm run ant:download`      |
 | freedom-ipfs     | `native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node` (prebuilds cached under `native/freedom-ipfs-node/prebuilds/<platform>-<arch>/`) | `npm run ipfs:download`     |
 | freedom-radicled | `freedom-radicled-bin/<os>-<arch>/freedom-radicled` (`freedom-radicled.exe` on Windows)                                                            | `npm run radicled:download` |
+| freedom-colibrid | `freedom-colibrid-bin/<os>-<arch>/freedom-colibrid` (`freedom-colibrid.exe` on Windows)                                                            | `npm run colibrid:download` |
 | libradicle       | `radicle-bin/<platform>-<arch>/libradicle.node` (the rollback)                                                                                     | `npm run radicle:download`  |
 | Arti             | `arti-bin/<platform>-<arch>/arti` (`arti.exe` on Windows)                                                                                          | `npm run tor:download`      |
 
@@ -363,9 +372,10 @@ All the downloaders share one retry/timeout/redirect policy,
 `scripts/lib/fetch-with-retry.js`; `release-process.md` § Bundled binaries has
 the full policy and the per-binary authoritative-source table.
 
-**freedom-cored, freedom-ipfsd and freedom-radicled** (solardev-xyz/freedom-core's
-releases, `scripts/fetch-freedom-cored.js`, `scripts/fetch-freedom-ipfsd.js` and
-`scripts/fetch-freedom-radicled.js`) pin the
+**freedom-cored, freedom-ipfsd, freedom-radicled and freedom-colibrid**
+(solardev-xyz/freedom-core's releases, `scripts/fetch-freedom-cored.js`,
+`scripts/fetch-freedom-ipfsd.js`, `scripts/fetch-freedom-radicled.js` and
+`scripts/fetch-freedom-colibrid.js`) pin the
 release's `SHA256SUMS` digest as Ant does, and in CI the fetch also verifies
 their build provenance (`scripts/lib/freedom-core-release.js`). With
 `GITHUB_ACTIONS=true`, `SHA256SUMS` (once its digest is checked) and each
@@ -377,9 +387,9 @@ missing `GH_TOKEN`/`GITHUB_TOKEN` or a failed check fails the fetch, and
 nothing turns the check off in CI, so it holds however a workflow runs the
 download: a step, a composite action or a helper script. So a bump must name
 a release with build provenance: `cored-v0.6.0` and later, and every
-`ipfsd-v*` and `radicled-v*`. Check a new release before pinning it with
+`ipfsd-v*`, `radicled-v*` and `colibrid-v*`. Check a new release before pinning it with
 `GH_TOKEN=$(gh auth token) node scripts/ci/verify-core-provenance.js cored`
-(or `ipfsd`, or `radicled`), which runs the same fetch, with verification on, into a
+(or `ipfsd`, `radicled` or `colibrid`), which runs the same fetch, with verification on, into a
 temporary directory. Locally the SHA-256 pins stay the check; the download
 scripts take no Sigstore dependency.
 
@@ -392,6 +402,12 @@ A freedom-radicled bump likewise changes `PINNED_RADICLED_VERSION` in
 `colored` entry of `licenses-audit.test.js`'s `MPL_CRATES`, with `NOTICES`'
 libgit2 and LibXDiff source pointers, once the new release's
 `THIRD-PARTY-NOTICES` has been re-read.
+A freedom-colibrid bump changes `PINNED_COLIBRID_VERSION` in
+`src/main/ens/colibrid-pin.js` (`colibrid-pin.test.js`), and its entry in
+`licenses-audit.test.js`'s `MPL_CRATES` (none so far) once the new release's
+`THIRD-PARTY-NOTICES` has been re-read. Its `COLIBRI_VERSION` and
+`CLIENT_VERSION` move only with a new Colibri, together with the
+`@corpus-core/colibri-stateless` package while the WASM path remains.
 
 ## Prebuilt natives (Arti, whisper.cpp, Windows sandbox)
 
