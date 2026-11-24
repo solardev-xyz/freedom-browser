@@ -60,7 +60,7 @@ function canonical(value, frameIndexes) {
   return result;
 }
 
-function hint(kind, count) {
+function hint(kind, count, operation) {
   if (count !== 4 && count !== 8) return null;
   const lead =
     kind === 'observation'
@@ -68,12 +68,16 @@ function hint(kind, count) {
       : kind === 'scroll'
         ? `Scrolling this target has reported no movement ${count} times.`
         : `The same browser attempt has returned the same retryable error ${count} times.`;
+  // browser_read_markdown takes only a source (page or site-index): no
+  // continuation offsets or query to reach content a repeat read misses.
   const next =
-    kind === 'observation'
-      ? 'Use continuation offsets or a targeted query for missing content, or wait for an expected state.'
-      : kind === 'scroll'
-        ? 'Check the observed viewport or container and its boundaries; scrolling it again may not reveal more content.'
-        : 'Read the current state, check the error, and use a fresh observed reference or another supported approach.';
+    kind === 'observation' && operation === OPERATIONS.READ_MARKDOWN
+      ? 'Reading the same Markdown source again returns the same text. Recall earlier reads with browser_recall_evidence, try the other Markdown source, read the page with browser_snapshot for content the Markdown lacks, or wait for an expected state.'
+      : kind === 'observation'
+        ? 'Use continuation offsets or a targeted query for missing content, or wait for an expected state.'
+        : kind === 'scroll'
+          ? 'Check the observed viewport or container and its boundaries; scrolling it again may not reveal more content.'
+          : 'Read the current state, check the error, and use a fresh observed reference or another supported approach.';
   return `Freedom browser recovery: ${lead} ${next} Check previous action receipts before retrying: unchanged visible content does not establish whether an interaction had side effects.${count === 8 ? ' Change approach; if no supported route remains, explain the observed blocker and any changes already made.' : ''}`;
 }
 
@@ -189,7 +193,7 @@ class BrowserRecoveryTracker {
     }
     lane.recent.push({ scope, observation });
     if (lane.recent.length > 6) lane.recent.shift();
-    const repeated = hint('observation', lane.repeats);
+    const repeated = hint('observation', lane.repeats, operation);
     if (repeated) return repeated;
     const recent = lane.recent;
     if (

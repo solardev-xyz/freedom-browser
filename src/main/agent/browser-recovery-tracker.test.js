@@ -274,7 +274,21 @@ test('repeated identical Markdown reads nudge like other observations, scoped by
   // A site-index read is a different scope and restarts the count.
   expect(readMarkdown('site-index')).toBeNull();
   for (let index = 1; index <= 3; index += 1) expect(readMarkdown('page')).toBeNull();
-  expect(readMarkdown('page')).toContain('4 times');
+  const nudge = readMarkdown('page');
+  expect(nudge).toContain('4 times');
+  // The Markdown tool has no continuation offsets or query, so the hint must
+  // not suggest them; it points at routes the tool set actually offers.
+  expect(nudge).not.toMatch(/continuation offsets|targeted query/);
+  expect(nudge).toContain('browser_recall_evidence');
+  expect(nudge).toContain('other Markdown source');
+});
+
+test('snapshot repeat hints still suggest continuation offsets or a targeted query', () => {
+  const tracker = new BrowserRecoveryTracker();
+  let nudge = null;
+  for (let index = 1; index <= 4; index += 1) nudge = read(tracker, index);
+  expect(nudge).toContain('continuation offsets or a targeted query');
+  expect(nudge).not.toContain('Markdown');
 });
 
 function markdownEnvelope(text = '# Same') {
