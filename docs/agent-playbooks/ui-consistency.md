@@ -128,7 +128,7 @@ a menu inside the window — `html, body { overflow: hidden }` means an
 unbounded one would clip rather than scroll, and before #324 it scrolled the
 toolbar away instead. A new popover joins the mechanism rather than growing its
 own `max-height`; `styles/popovers.test.js` fails a popover that forgets the
-class, and it works out what a popover *is* from the sheets themselves —
+class, and it works out what a popover _is_ from the sheets themselves —
 anything positioned `fixed`/`absolute` at menu tier (z-index ≥ 9999) — so a
 brand-new class name is enrolled without editing the test. A surface at that
 tier that genuinely is not a popover (the backdrop, a corner toast, a tooltip)
@@ -146,11 +146,11 @@ popovers are the two documented exceptions: they raise no backdrop, so the
 guest-focus blur is what closes them on a click into page content. They are not
 the only surfaces that raise no backdrop, though — the GitHub-bridge panel is a
 third, and it dismisses on focus loss not at all, only on a document `click` and
-Escape. All three are reset from the *backdrop* another surface raises, through
+Escape. All three are reset from the _backdrop_ another surface raises, through
 `closeAllOverlays`/`onAnyMenuOpening` in `index.js`, because a press on that
 backdrop released inside the guest dispatches no `click` in this document and
 would otherwise strand them (#67). `onAnyMenuOpening` is chained by every
-backdrop-raising *menu*, the page context menu included — it is raised from
+backdrop-raising _menu_, the page context menu included — it is raised from
 inside the guest rather than from the chrome, which is how it was missed — so
 the autocomplete dropdown is the one raiser that deliberately does not chain
 it: it is the address bar's own surface and sits alongside the three rather
@@ -161,7 +161,7 @@ does not also register `onWindowDeactivated` — six today, including both
 bookmarks menus.
 
 **A surface that raises the backdrop owns the keyboard too.** The backdrop
-makes a menu modal over the page for the *pointer*; `lib/menu-backdrop.js`
+makes a menu modal over the page for the _pointer_; `lib/menu-backdrop.js`
 does the same for the keyboard, through `onGuestTookKeyboard` — the exact
 complement of `onWindowDeactivated`. Without it the guest ack above leaves the
 page holding the keyboard under an open menu, and neither Escape (#306) nor
@@ -248,14 +248,19 @@ as Linux references.
 `gh` cannot upload images, and committing screenshots to this repository
 bloats its history. Pull requests and issues embed images hosted in the public
 [`solardev-xyz/alan-artifacts`](https://github.com/solardev-xyz/alan-artifacts)
-repository instead, as raw links:
+repository instead, as raw links. The steps below need push access to that
+repository; without it (an outside contributor), drag the images into the pull
+request or issue description in the GitHub web editor instead, which hosts them
+for you, and follow the caption and privacy rules below all the same.
 
 1. Clone it once (a shallow clone is enough):
    `gh repo clone solardev-xyz/alan-artifacts <dir> -- --depth 1`.
 2. Copy each image to
-   `solardev-xyz/freedom-browser/pr<N>/<yyyymmdd-hhmmss>-<label>.png` for a
-   pull request, or `.../issue<N>/...` for an issue. Labels say what the image
-   shows and which theme, e.g. `before-dark`, `after-decline-light`.
+   `solardev-xyz/freedom-browser/pr<N>/<yyyymmdd>-<label>.png` for a pull
+   request, or `.../issue<N>/...` for an issue. Add the time
+   (`<yyyymmdd-hhmmss>-<label>.png`) when one item gets images from more than
+   one run. Labels say what the image shows and which theme, e.g.
+   `before-dark`, `after-decline-light`.
 3. Commit all images for one PR or issue together
    (`evidence: solardev-xyz/freedom-browser#<N> <what>`), `git pull --rebase`,
    `git push`.
@@ -276,4 +281,6 @@ mockup leaves out.
 The repository is public: before uploading, look at every image for secrets,
 real wallet addresses or balances, personal data and private URLs, and use
 test-mode fixtures (`FREEDOM_TEST_MODE=1`, `example.test` hosts) instead.
-
+Deleting an image later does not take it back: it stays in the repository's
+git history, and an image uploaded through the GitHub web editor stays
+reachable at its URL.
