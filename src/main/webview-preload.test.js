@@ -1606,13 +1606,16 @@ describe('injected provider request timeouts', () => {
       require.resolve('../renderer/lib/radicle-provider'),
       'utf8'
     );
-    const nodeMatch = radicleProviderSource.match(/const NODE_METHODS = new Set\(\[([\s\S]*?)\]\);/);
-    const signedWriteMatch = radicleProviderSource.match(/const SIGNED_WRITE_METHODS = new Set\(\[([\s\S]*?)\]\);/);
+    const nodeMatch = radicleProviderSource.match(
+      /const NODE_METHODS = new Set\(\[([\s\S]*?)\]\);/
+    );
+    const signedWriteMatch = radicleProviderSource.match(
+      /const SIGNED_WRITE_METHODS = new Set\(\[([\s\S]*?)\]\);/
+    );
     expect(nodeMatch).toBeTruthy();
     expect(signedWriteMatch).toBeTruthy();
 
-    const extractStrings = (raw) =>
-      [...raw.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    const extractStrings = (raw) => [...raw.matchAll(/'([^']+)'/g)].map((m) => m[1]);
 
     const expectedPromptMethods = new Set([
       'radicle_requestAccess',
