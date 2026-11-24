@@ -58,14 +58,21 @@ const DEVIATIONS = Object.freeze({
   'colibri-processes':
     'the service runs at most 3 processes browser-wide, `Colibri service busy` past ' +
     'them; the WASM host starts a worker for every lane',
+  // Not seen at the interface, so no case names it.
   'no-initial-chain-id':
-    'the WASM client answers `eth_chainId` from a local context (its first request on ' +
-    'each client runs one); the service runs no local context',
+    "the WASM client runs a local eth_chainId context on each client's first request; " +
+    'the service runs none',
   'fetch-error-text':
     "main's fetch errors name URLs as `<url>`; the WASM fetch's name them",
   'storage-per-chain':
-    "a service process keeps its chain's store in `<userData>/colibri/<chain>/`; the " +
-    'WASM workers share `<userData>/colibri/`',
+    "a service process keeps its chain's store in `<userData>/colibri/<chain>/`, and a " +
+    'refused or unmakeable chain directory stops the lane (`Colibri service ' +
+    "unavailable`); the WASM workers share `<userData>/colibri/`, and one that can't " +
+    'open it fails its read, the next read spawning another',
+  'colibri-unserved':
+    "methods outside the service's list (eth_getLogs, eth_chainId, writes): the " +
+    'reference asks the prover (eth_chainId: answers from its configuration); the ' +
+    'service refuses them, Method <m> is not supported; neither router asks for them',
 });
 
 /** Where the freedom-colibrid binary is for tests: colibrid-binary.js's

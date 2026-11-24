@@ -179,9 +179,6 @@ describeBackends('the Colibri backend contract', (backend) => {
     expect(isColibriFault(err)).toBe(false);
   });
 
-  // A method only the WASM client serves differs, with no deviation id of
-  // its own: design 0014's "Not served" (`eth_getLogs` among them, which the
-  // WASM client asks its prover for). The routers never send one.
   test('a method neither serves is refused before any fetch', async () => {
     const read = { method: 'eth_unknownMethod', params: [{}] };
     await expect(client().request(read).catch(outcomeOf)).resolves.toEqual({
@@ -193,36 +190,61 @@ describeBackends('the Colibri backend contract', (backend) => {
     expect(world.requests).toEqual([]);
   });
 
-  // Not one of design 0014's deviations: past what is asserted here the two
-  // differ. The WASM host spawns a worker for each read and fails it with
-  // `Colibri worker failed to start: init failed (<the error>)`; the service
-  // stops the lane (colibri-service.js, a directory that can't be made)
-  // and answers `Colibri service unavailable` until a client of another
-  // configuration, or the next launch.
-  test("a store that can't be opened fails the read, as main's own error", async () => {
+  test("a store that can't be opened fails the read, as main's own error [deviation storage-per-chain]", async () => {
     fs.writeFileSync(path.join(userData, 'colibri'), 'not a directory');
+    const errors = [];
     for (let i = 0; i < 2; i += 1) {
       const err = await client().request(BALANCE).catch((caught) => caught);
       expect(err).toBeInstanceOf(started.host.ColibriWorkerError);
       expect(isColibriFault(err)).toBe(false);
+      errors.push(err.message);
     }
     expect(world.requests).toEqual([]);
+    expect({ errors, lanes: lanes() }).toEqual(
+      deviation('storage-per-chain', backend, {
+        // Each read spawns a worker, whose store fails to open.
+        wasm: {
+          errors: new Array(2).fill(
+            expect.stringMatching(/^Colibri worker failed to start: init failed \(EEXIST\b/)
+          ),
+          lanes: ['normal', 'normal'],
+        },
+        // The chain directory can't be made: nothing spawns, and the lane
+        // stops until a client of another configuration or the next launch.
+        service: { errors: new Array(2).fill('Colibri service unavailable'), lanes: [] },
+      })
+    );
     // A private read has no store to open.
     await expect(client({ private: true }).request(BALANCE).catch(outcomeOf)).resolves.toEqual(
       outage(BALANCE)
     );
   });
 
-  // The design's row is the local context the WASM client runs on each
-  // client's first request; an explicit eth_chainId shows the same
-  // difference, which the service refuses as a method it doesn't serve.
-  test('eth_chainId [deviation no-initial-chain-id]', async () => {
+  test('eth_getLogs [deviation colibri-unserved]', async () => {
+    const read = { method: 'eth_getLogs', params: [{}] };
+    await expect(client().request(read).catch(outcomeOf)).resolves.toEqual(
+      deviation('colibri-unserved', backend, {
+        wasm: outage(read),
+        service: {
+          name: 'ProviderRpcError',
+          code: 4200,
+          message: 'Error in rpc call eth_getLogs[{}] : Method eth_getLogs is not supported',
+          data: undefined,
+        },
+      })
+    );
+    expect(world.requests.map(({ body }) => JSON.parse(body).method)).toEqual(
+      deviation('colibri-unserved', backend, { wasm: ['eth_getLogs'], service: [] })
+    );
+  });
+
+  test('eth_chainId [deviation colibri-unserved]', async () => {
     const read = { method: 'eth_chainId', params: [] };
     const answer = await client()
       .request(read)
       .then((result) => ({ result }), outcomeOf);
     expect(answer).toEqual(
-      deviation('no-initial-chain-id', backend, {
+      deviation('colibri-unserved', backend, {
         wasm: { result: '0x1' },
         service: {
           name: 'ProviderRpcError',
@@ -257,6 +279,10 @@ describeBackends('the Colibri backend contract', (backend) => {
       // the service's own bound on its fetch, whose error the C core gets
       // as the remote proof's and ends the read with. Either is no fault
       // and ends nothing else.
+      // TODO(design 0014 amendment, the deadline's outcome): main decides,
+      // so any reply but a result read at or after the deadline is
+      // `Colibri request cancelled at its deadline`. Accept only that once
+      // colibrid-client.js's fix is merged forward.
       expect([
         {
           name: 'ColibriWorkerError',
