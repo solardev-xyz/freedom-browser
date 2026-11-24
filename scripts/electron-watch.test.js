@@ -395,6 +395,9 @@ describe('bump', () => {
     ].version;
 
   /** Stands in for `npm install --package-lock-only --save-dev electron@<v>`. */
+  const snapshotNpmFiles = () =>
+    ['package.json', 'package-lock.json'].map((f) => fs.readFileSync(path.join(root, f), 'utf8'));
+
   function fakeNpm(calls) {
     return (cmd, args, opts) => {
       calls.push([cmd, ...args]);
@@ -495,6 +498,20 @@ describe('bump', () => {
     ).rejects.toThrow(/npm left electron at/);
   });
 
+  test('npm failing part-way leaves package.json and package-lock.json as they were', async () => {
+    const npm = fakeNpm([]);
+    const exec = (cmd, args, opts) => {
+      npm(cmd, args, opts);
+      if (cmd === 'npm' && args[0] === 'install') throw new Error('npm ERR! network');
+      return '';
+    };
+    const npmFiles = snapshotNpmFiles();
+    await expect(
+      watch.applyBump({ version: '44.9.3', root, exec, fetchers: fakeFetchers() })
+    ).rejects.toThrow(/^npm ERR! network; package\.json and package-lock\.json were restored$/);
+    expect(snapshotNpmFiles()).toEqual(npmFiles);
+  });
+
   test('an npm that drops lockfile entries fails the bump before anything else is written', async () => {
     const npm = fakeNpm([]);
     const exec = (cmd, args, opts) => {
@@ -510,16 +527,28 @@ describe('bump', () => {
       return out;
     };
     const audit = fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8');
+    const npmFiles = snapshotNpmFiles();
     await expect(
       watch.applyBump({ version: '44.9.3', root, exec, fetchers: fakeFetchers() })
     ).rejects.toThrow(
-      /npm changed 1 package-lock\.json entry \(\S+ dropped\); resolve with the npm CI uses/
+      /npm changed 1 package-lock\.json entry \(\S+ dropped\); resolve with the npm CI uses; package\.json and package-lock\.json were restored$/
     );
     expect(fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8')).toBe(audit);
     expect(fs.readdirSync(path.join(root, 'changelog.d')).sort()).toEqual([
       'README.md',
       'fixed--1-something.md',
     ]);
+    // npm's rewrite is undone, so a re-run with CI's npm bumps instead of
+    // stopping at AlreadyBumped on the half-applied tree (R3-M1).
+    expect(snapshotNpmFiles()).toEqual(npmFiles);
+    const b = await watch.applyBump({
+      version: '44.9.3',
+      root,
+      exec: fakeNpm([]),
+      fetchers: fakeFetchers(),
+    });
+    expect(b.version).toBe('44.9.3');
+    expect(pinned()).toBe('44.9.3');
   });
 
   test('an npm that rewrites platform fields fails the bump before anything else is written', async () => {
@@ -542,6 +571,7 @@ describe('bump', () => {
       return out;
     };
     const audit = fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8');
+    const npmFiles = snapshotNpmFiles();
     const error = await watch
       .applyBump({ version: '44.9.3', root, exec, fetchers: fakeFetchers() })
       .catch((e) => e);
@@ -550,6 +580,7 @@ describe('bump', () => {
       new RegExp(`^npm changed ${stripped} package-lock\\.json entries \\(\\S+ libc,`)
     );
     expect(fs.readFileSync(path.join(root, 'licenses-audit.json'), 'utf8')).toBe(audit);
+    expect(snapshotNpmFiles()).toEqual(npmFiles);
   });
 
   test('the bump job resolves the lockfile with the Node (and so the npm) CI runs', () => {

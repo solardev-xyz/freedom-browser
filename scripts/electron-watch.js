@@ -559,30 +559,11 @@ function lockDrift(before, after) {
 }
 
 /**
- * Edit the tree to Electron `version`. npm resolves the lockfile with
- * `--package-lock-only --ignore-scripts`: no package code runs in the job
- * that holds a write token, and no node_modules is needed.
+ * Run npm for the bump and check what it wrote: Electron at `version` and
+ * no other lockfile entry dropped or re-resolved. Throws on either.
  */
-async function applyBump({
-  version,
-  root = repoRoot,
-  exec = execFileSync,
-  fetchers = createFetchers(),
-  log = () => {},
-}) {
-  if (!/^\d+\.\d+\.\d+$/.test(version || ''))
-    throw new Error(`--version must be x.y.z, got ${version}`);
-  const lockPath = path.join(root, 'package-lock.json');
-  const pinned = readLockedElectronVersion(lockPath);
-  if (W.majorOf(version) !== W.majorOf(pinned)) {
-    throw new Error(
-      `refusing to bump across majors (${pinned} to ${version}); a major is a release of its own`
-    );
-  }
-  if (W.compareVersions(version, pinned) <= 0)
-    throw new AlreadyBumped(`electron ${pinned} is already at or past ${version}`);
-
-  const lockedBefore = JSON.parse(readText(root, 'package-lock.json')).packages || {};
+function resolveElectron({ version, root, exec, lockPath, lockedBefore }) {
+  const before = lockedBefore.packages || {};
   exec(
     'npm',
     [
@@ -612,11 +593,49 @@ async function applyBump({
   // entry lost or with different platform/flag fields is that drift; stop
   // either way and leave the bump to a maintainer.
   const lockedAfter = JSON.parse(readText(root, 'package-lock.json')).packages || {};
-  const drift = lockDrift(lockedBefore, lockedAfter);
+  const drift = lockDrift(before, lockedAfter);
   if (drift.length) {
     throw new Error(
       `npm changed ${drift.length} package-lock.json entr${drift.length === 1 ? 'y' : 'ies'} (${drift.slice(0, 5).join(', ')}${drift.length > 5 ? ', …' : ''}); resolve with the npm CI uses`
     );
+  }
+}
+
+/**
+ * Edit the tree to Electron `version`. npm resolves the lockfile with
+ * `--package-lock-only --ignore-scripts`: no package code runs in the job
+ * that holds a write token, and no node_modules is needed.
+ */
+async function applyBump({
+  version,
+  root = repoRoot,
+  exec = execFileSync,
+  fetchers = createFetchers(),
+  log = () => {},
+}) {
+  if (!/^\d+\.\d+\.\d+$/.test(version || ''))
+    throw new Error(`--version must be x.y.z, got ${version}`);
+  const lockPath = path.join(root, 'package-lock.json');
+  const pinned = readLockedElectronVersion(lockPath);
+  if (W.majorOf(version) !== W.majorOf(pinned)) {
+    throw new Error(
+      `refusing to bump across majors (${pinned} to ${version}); a major is a release of its own`
+    );
+  }
+  if (W.compareVersions(version, pinned) <= 0)
+    throw new AlreadyBumped(`electron ${pinned} is already at or past ${version}`);
+
+  // npm rewrites package.json and package-lock.json in place. If it fails,
+  // or leaves a tree resolveElectron refuses, put both back so a re-run (or
+  // a maintainer resolving by hand) starts from the pinned tree instead of
+  // hitting AlreadyBumped on the half-applied one.
+  const saved = ['package.json', 'package-lock.json'].map((file) => [file, readText(root, file)]);
+  try {
+    resolveElectron({ version, root, exec, lockPath, lockedBefore: JSON.parse(saved[1][1]) });
+  } catch (error) {
+    for (const [file, text] of saved) fs.writeFileSync(path.join(root, file), text);
+    error.message += '; package.json and package-lock.json were restored';
+    throw error;
   }
 
   fs.writeFileSync(
