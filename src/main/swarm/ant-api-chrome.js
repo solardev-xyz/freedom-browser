@@ -16,6 +16,7 @@
 
 const log = require('../logger');
 const { getAntApiUrl } = require('../service-registry');
+const { isOnionGatewayUrl } = require('../ipfs/gateway-transport');
 
 // `/addresses` is read for its `publicKey` only, the node's ACT key the
 // Nodes menu shows with a copy button (#1188). It stays chrome-only: a stable
@@ -44,6 +45,17 @@ async function antApiGet(endpoint, { fetchImpl = fetch, timeoutMs = REQUEST_TIME
   const base = antApiBase();
   if (!base) {
     return { ok: false, status: 0, data: null, error: 'Ant endpoint is not ready' };
+  }
+  // Node's fetch ignores the session's Tor routing, so an onion host would go
+  // to the system resolver (#360). A profile's endpoint is refused before it
+  // is registered; this covers the ANT_API / BEE_API override.
+  if (isOnionGatewayUrl(base)) {
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      error: 'Ant API on a .onion address is not supported',
+    };
   }
   let response;
   let text;

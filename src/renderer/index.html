@@ -963,6 +963,11 @@
               </span>
             </span>
           </button>
+          <!-- IPFS off still opens what is saved (#30): shown while the switch
+               is off and main can serve from the local store. -->
+          <p class="ipfs-cache-note" id="ipfs-cache-note" hidden>
+            Pages you've opened before still load.
+          </p>
           <div class="ipfs-info">
             <!-- Managed freedom-ipfs node: its own gateway counters. -->
             <div class="ipfs-info-row ipfs-managed-stat">
@@ -4486,6 +4491,44 @@
                   <div class="stamp-presets" id="publish-plan-list">
                     <!-- Plan buttons inserted dynamically -->
                   </div>
+                  <!-- Any size and duration instead of a plan (#1257). The sizes
+                       come from the setup state (batch-sizes.js); publish-setup.js
+                       prices the choice as it changes. -->
+                  <details class="publish-custom" id="publish-custom">
+                    <summary>Custom size and duration</summary>
+                    <div class="send-field">
+                      <label class="send-label" for="publish-custom-size">Size</label>
+                      <select class="send-input" id="publish-custom-size"></select>
+                    </div>
+                    <div class="send-field">
+                      <label class="send-label" for="publish-custom-days">Days</label>
+                      <input
+                        type="text"
+                        class="send-input"
+                        id="publish-custom-days"
+                        inputmode="numeric"
+                        autocomplete="off"
+                        spellcheck="false"
+                        value="30"
+                        aria-describedby="publish-custom-days-error"
+                      />
+                      <div class="send-field-error hidden" id="publish-custom-days-error"></div>
+                    </div>
+                    <p class="publish-custom-note">
+                      Sizes are Swarm's estimates of what a batch holds. Each size up doubles the
+                      price.
+                    </p>
+                    <button
+                      type="button"
+                      class="stamp-preset-btn"
+                      id="publish-custom-choice"
+                      disabled
+                    >
+                      <span class="stamp-preset-label" id="publish-custom-label">Custom</span>
+                      <span class="stamp-preset-desc" id="publish-custom-desc"></span>
+                    </button>
+                    <div class="stamp-purchase-error hidden" id="publish-custom-error"></div>
+                  </details>
                   <div class="stamp-purchase-error hidden" id="publish-plans-error"></div>
                 </div>
 
@@ -5314,7 +5357,7 @@
                     </label>
                   </div>
                   <div class="perms-toggle-row">
-                    <span class="perms-label">Auto-approve publisher signing</span>
+                    <span class="perms-label">Auto-approve signing and encryption</span>
                     <label class="toggle-switch">
                       <input type="checkbox" id="swarm-perms-signing-toggle" />
                       <span class="toggle-slider"></span>

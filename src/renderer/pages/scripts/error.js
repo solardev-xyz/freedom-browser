@@ -126,7 +126,18 @@ async function checkIpfsStatus() {
   // gateway (or bundled node) that stops answering raises `errorState`.
   return {
     running: (ipfs.mode === 'bundled' || Boolean(ipfs.gateway)) && !ipfs.errorState,
+    // The bundled node can't load on this Linux system (#350): starting it
+    // from the Nodes menu won't help, an external node will. Not shown while
+    // the profile uses an external node or has IPFS disabled.
+    glibcTooOld:
+      ipfs.mode !== 'external' && ipfs.mode !== 'disabled' && ipfs.unavailableReason === 'glibc',
+    hostGlibc: ipfs.hostGlibc || null,
   };
+}
+
+function glibcTooOldDescription(hostGlibc) {
+  const library = hostGlibc ? `C library (glibc ${hostGlibc})` : 'C library (glibc)';
+  return `Freedom's built-in IPFS node can't run on this Linux system because its ${library} is too old. To open IPFS pages, use your own IPFS node: in Settings > Nodes, choose "Use external node" for IPFS.`;
 }
 
 // Format a host for display in the generic title (truncate very long
@@ -344,7 +355,9 @@ async function displayError() {
       }
     } else if (protocol === 'ipfs' || protocol === 'ipns') {
       const status = await checkIpfsStatus();
-      if (!status.running) {
+      if (status.glibcTooOld) {
+        descriptionEl.textContent = glibcTooOldDescription(status.hostGlibc);
+      } else if (!status.running) {
         descriptionEl.innerHTML = `The IPFS node is not running. Open the Nodes menu ${NODES_ICON} in the toolbar to start it.`;
       }
     }

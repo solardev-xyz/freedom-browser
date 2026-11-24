@@ -999,6 +999,9 @@ jobs:
       # `swarm-cache.spec.js` (#579) covers Settings → Nodes → Swarm cache: its
       # usage line, Clear cache and the live size change against a fake antd's
       # `/debugstore` and `/v0/cache` routes, and its size picker.
+      # `secure-dns.spec.js` (#472) follows Settings → Privacy and security →
+      # Secure DNS to Chromium's resolver, and reads Chromium's net log to show
+      # Strict sends lookups over DoH only (no internet: a dead loopback server).
       - name: Download adblock filter lists
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npm run adblock:download
@@ -1022,6 +1025,7 @@ jobs:
           test-e2e/page-dark-background.spec.js
           test-e2e/updates.spec.js
           test-e2e/swarm-cache.spec.js
+          test-e2e/secure-dns.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

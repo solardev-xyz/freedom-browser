@@ -111,6 +111,30 @@ describe('NodeLifecycleController', () => {
     expect(startMyotis).toHaveBeenCalledWith(100);
   });
 
+  test('restarts Ant through its own restart, so page calls wait meanwhile (#988)', async () => {
+    const stopAnt = jest.fn();
+    const startAnt = jest.fn();
+    const restartAnt = jest.fn();
+    const controller = new NodeLifecycleController({
+      nodeStatusController: statusController('ant', ['running', 'running']),
+      dependencies: { stopAnt, startAnt, restartAnt },
+      verifyTimeoutMs: 0,
+    });
+
+    await expect(
+      controller.lifecycle(
+        { service: 'ant', action: 'restart' },
+        {
+          classifyEffect: async () => classification(),
+          requestApproval: async () => 'approved',
+        }
+      )
+    ).resolves.toMatchObject({ afterState: 'running', verified: true });
+    expect(restartAnt).toHaveBeenCalledTimes(1);
+    expect(stopAnt).not.toHaveBeenCalled();
+    expect(startAnt).not.toHaveBeenCalled();
+  });
+
   test('never lets a classifier downgrade lifecycle approval', async () => {
     const startIpfs = jest.fn();
     const requestApproval = jest.fn(async () => 'declined');

@@ -909,6 +909,8 @@ contextBridge.exposeInMainWorld('publishSetup', {
   getPlans: () => ipcRenderer.invoke('swarm:setup-get-plans'),
   getExtendOptions: (batchId, depth) =>
     ipcRenderer.invoke('swarm:setup-get-extend-options', batchId, depth),
+  // Price a custom buy or extend request without arming it (#1257).
+  quote: (request) => ipcRenderer.invoke('swarm:setup-quote', request),
   arm: (request) => ipcRenderer.invoke('swarm:setup-arm', request),
   cancel: (opId) => ipcRenderer.invoke('swarm:setup-cancel', opId),
   // Leave a finished result this window showed; another window's screen may
@@ -1053,6 +1055,8 @@ contextBridge.exposeInMainWorld('swarmPermissions', {
   getActGrants: (origin) => ipcRenderer.invoke('swarm:get-act-grants', origin),
   describeActRequest: (origin, params) =>
     ipcRenderer.invoke('swarm:describe-act-request', origin, params),
+  describeSharedSecretsRequest: (params) =>
+    ipcRenderer.invoke('swarm:describe-shared-secrets-request', params),
 });
 
 contextBridge.exposeInMainWorld('swarmManifest', {

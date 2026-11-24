@@ -97,6 +97,11 @@ function feedIndexToNumber(feedIndex) {
   return Number(feedIndex.toBigInt());
 }
 
+/** A feed index as a page gets it: a number, or null past 2^53 - 1. */
+function pageIndex(value) {
+  return value > BigInt(Number.MAX_SAFE_INTEGER) ? null : Number(value);
+}
+
 function normalizeFeedIndex(index) {
   return typeof index === 'number' ? FeedIndex.fromBigInt(BigInt(index)) : index;
 }
@@ -202,7 +207,7 @@ async function readErrorText(body) {
  * without a status for a network error, so callers tell them apart as they
  * do for bee-js's calls.
  */
-async function fetchNode(bee, path) {
+async function fetchNode(bee, path, extraHeaders = {}) {
   const baseUrl = bee.url.endsWith('/') ? bee.url : `${bee.url}/`;
   const url = new URL(path, baseUrl).href;
   let response;
@@ -212,6 +217,7 @@ async function fetchNode(bee, path) {
         accept: 'application/json, text/plain, */*',
         // A compressed body would decode past its Content-Length.
         'accept-encoding': 'identity',
+        ...extraHeaders,
       },
     });
   } catch (err) {
@@ -233,16 +239,6 @@ async function fetchNode(bee, path) {
     throw new BeeResponseError('GET', url, message, data, response.status, response.statusText);
   }
   return response;
-}
-
-/** The body's declared length, or null when it has none it can be held to. */
-function declaredLength(response) {
-  const encoding = response.headers.get('content-encoding');
-  if (encoding && encoding.toLowerCase() !== 'identity') return null;
-  const value = response.headers.get('content-length');
-  if (value === null || !/^\d+$/.test(value.trim())) return null;
-  const length = Number(value.trim());
-  return Number.isSafeInteger(length) ? length : null;
 }
 
 /**
@@ -303,54 +299,44 @@ async function readExactFeedEntry(bee, owner, topic, index, meter) {
 }
 
 /**
- * The latest entry, as the node resolves it (`GET /feeds/<owner>/<topic>`).
- * Its size is known only from the response. A declared Content-Length is
- * checked and reserved before the body is read, and the body is held to it;
- * a body without one is reserved piece by piece as it streams. Either way a
- * body past the meter's maxBytes is data_too_large and one past what is left
- * of the window is refused, and the body is cancelled there.
+ * The latest entry's index, and the index after it, or null for a feed with
+ * no update.
+ *
+ * The node's feed lookup (GET /feeds) names the index. Its body is not the
+ * entry: for a legacy (ts||ref) entry the node serves the content the
+ * reference points to (#989). So the body is asked for as one root chunk
+ * (`Swarm-Only-Root-Chunk`) and never read; the entry itself is then read at
+ * that index (readExactFeedEntry).
+ *
+ * A "not found" from the lookup is checked against the update chunks
+ * (probeFeedHead): Ant also answers 404 for a live feed whose latest legacy
+ * entry points at content that has expired. The probe's chunks are charged
+ * to `meter`, since a page can ask for them.
  */
-async function readLatestFeedEntry(bee, owner, topic, meter) {
-  const response = await fetchNode(bee, `feeds/${owner.toHex()}/${topic.toHex()}`);
-  let feedIndex;
-  let feedIndexNext;
-  let declared;
+async function findLatestFeedIndex(bee, owner, topic, meter) {
+  let response;
   try {
-    // The same headers, and the same errors when they are missing, as bee-js.
-    const indexHeader = response.headers.get('swarm-feed-index');
-    const nextHeader = response.headers.get('swarm-feed-index-next');
-    if (!indexHeader) throw new Error('Response did not contain expected swarm-feed-index!');
-    if (!nextHeader) throw new Error('Response did not contain expected swarm-feed-index-next!');
-    feedIndex = new FeedIndex(indexHeader);
-    feedIndexNext = new FeedIndex(nextHeader);
-
-    declared = declaredLength(response);
-    if (declared !== null) {
-      if (declared > meter.maxBytes) throw entryTooLarge(meter.maxBytes, declared);
-      const refusal = meter.reserve(declared);
-      if (refusal) throw meterRefusal(refusal);
-    }
+    response = await fetchNode(bee, `feeds/${owner.toHex()}/${topic.toHex()}`, {
+      'swarm-only-root-chunk': 'true',
+    });
   } catch (err) {
-    response.body?.cancel().catch(() => {});
-    throw err;
+    if (!isNotFoundError(err)) throw err;
+    const head = await probeFeedHead(bee, owner, topic, meter);
+    return head === null ? null : { index: head, nextIndex: head + 1 };
   }
-
-  const payload = await readBodyAdmitted(response.body, (bytes, total) => {
-    if (declared !== null) {
-      if (total > declared) {
-        throw new Error(`Node sent more than the ${declared} bytes it declared for the feed entry`);
-      }
-      return;
-    }
-    if (total > meter.maxBytes) throw entryTooLarge(meter.maxBytes);
-    const refusal = meter.reserve(bytes);
-    if (refusal) throw meterRefusal(refusal);
-  });
-  if (declared !== null && payload.length !== declared) {
-    throw new Error(`Node sent ${payload.length} of the ${declared} bytes it declared for the feed entry`);
+  response.body?.cancel().catch(() => {});
+  // The same headers, and the same errors when they are missing, as bee-js.
+  const indexHeader = response.headers.get('swarm-feed-index');
+  const nextHeader = response.headers.get('swarm-feed-index-next');
+  if (!indexHeader) throw new Error('Response did not contain expected swarm-feed-index!');
+  if (!nextHeader) throw new Error('Response did not contain expected swarm-feed-index-next!');
+  const index = new FeedIndex(indexHeader).toBigInt();
+  // The entry is read at `index` as a number: one past 2^53 would round to
+  // another entry's index.
+  if (index > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`Feed index ${index} is past the largest index a page can read`);
   }
-
-  return { payload, feedIndex, feedIndexNext };
+  return { index: Number(index), nextIndex: pageIndex(new FeedIndex(nextHeader).toBigInt()) };
 }
 
 /**
@@ -384,15 +370,19 @@ const MAX_PROBED_FEED_INDEX = 2 ** 40;
 // Only a 404 says an update chunk is missing. A 500 ("read chunk failed")
 // can't tell a missing chunk from an unreachable one, so it propagates:
 // reading it as missing would call a live feed empty or under-read its head.
-async function feedUpdateChunkExists(bee, owner, topic, index) {
+// With a `meter` (a page's read), each chunk read is charged to it.
+async function feedUpdateChunkExists(bee, owner, topic, index, meter) {
   const reference = bee.calculateSingleOwnerChunkAddress(makeFeedIdentifier(topic, index), owner);
+  let raw;
   try {
-    await bee.chunk.download(reference);
-    return true;
+    raw = await bee.chunk.download(reference);
   } catch (err) {
     if (err instanceof BeeResponseError && err.status === 404) return false;
     throw err;
   }
+  const refusal = meter?.charge(raw.length);
+  if (refusal) throw meterRefusal(refusal);
+  return true;
 }
 
 /**
@@ -405,32 +395,44 @@ async function feedUpdateChunkExists(bee, owner, topic, index) {
  * expired. The update chunks themselves can still be there, so ask for them
  * by address (GET /chunks): grow then bisect to the last index that exists.
  *
+ * It steps the way the node's own lookup does (Ant's
+ * resolve_sequence_feed_after): from the highest index known to exist, try
+ * 1, 2, 4, ... past it until one is missing, then bisect. So a feed with a
+ * gap reads as the node reads it.
+ *
  * The probe assumes the updates are contiguous from index 0 to the head, as
  * a sequence feed writes them. Two cases break that and it then reads low:
- * - a gap (a missing intermediate update) ends the probe at the gap, so the
- *   head reads as the last index before it;
+ * - a gap (a missing intermediate update) can end the probe below the head,
+ *   where the node's lookup would end too;
  * - a missing index 0 (the first update's batch expired while later ones,
  *   stamped on another batch, survive) reads as "no update", although the
  *   feed is live. Nothing on the network tells that apart from a new feed.
  * So a writer that knows a later index must pass it (updateFeed's minIndex),
  * and should read the feed back after writing (see readFeedState).
  *
+ * @param {{ charge: (bytes: number) => any }} [meter] - Charged for each chunk read
  * @returns {Promise<number|null>} Latest index, or null when the feed has no update
  */
-async function probeFeedHead(bee, owner, topic) {
-  if (!(await feedUpdateChunkExists(bee, owner, topic, 0))) return null;
+async function probeFeedHead(bee, owner, topic, meter) {
+  if (!(await feedUpdateChunkExists(bee, owner, topic, 0, meter))) return null;
   let lo = 0; // known to exist
-  let hi = 1; // first index not yet known to be missing
-  while (hi <= MAX_PROBED_FEED_INDEX && await feedUpdateChunkExists(bee, owner, topic, hi)) {
-    lo = hi;
-    hi *= 2;
-  }
-  if (hi > MAX_PROBED_FEED_INDEX) {
-    throw new Error('Feed head probe exceeded the maximum feed index');
+  let step = 1;
+  let hi; // known to be missing
+  for (;;) {
+    const candidate = lo + step;
+    if (candidate > MAX_PROBED_FEED_INDEX) {
+      throw new Error('Feed head probe exceeded the maximum feed index');
+    }
+    if (!(await feedUpdateChunkExists(bee, owner, topic, candidate, meter))) {
+      hi = candidate;
+      break;
+    }
+    lo = candidate;
+    step *= 2;
   }
   while (hi - lo > 1) {
     const mid = lo + Math.floor((hi - lo) / 2);
-    if (await feedUpdateChunkExists(bee, owner, topic, mid)) lo = mid;
+    if (await feedUpdateChunkExists(bee, owner, topic, mid, meter)) lo = mid;
     else hi = mid;
   }
   return lo;
@@ -627,10 +629,18 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
   return result;
 }
 
+function feedEmptyError() {
+  const error = new Error('Feed is empty — no entries to read');
+  error.reason = 'feed_empty';
+  return error;
+}
+
 /**
  * Read a feed entry at a specific index, or read the latest entry, paid for
  * through `meter` before its bytes are held (see readExactFeedEntry and
- * readLatestFeedEntry). The meter is the caller's read budget:
+ * findLatestFeedIndex). Either way the result is the bytes the entry holds:
+ * a legacy (ts||ref) entry is its 40 bytes, never the content its reference
+ * points to (#989). The meter is the caller's read budget:
  * - `maxBytes`: the most one read may return; a larger entry is refused
  *   with an error whose `reason` is `data_too_large` (`limit`, and `actual`
  *   when the size is known), before its body is read;
@@ -646,6 +656,7 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
  * @param {number} [index] - Specific index to read. If omitted, reads latest.
  * @param {{ maxBytes: number, charge: (bytes: number) => any, reserve: (bytes: number) => any }} meter
  * @returns {Promise<{ payload: Buffer, index: number, nextIndex: number|null }>}
+ *   `nextIndex` is null where it would pass Number.MAX_SAFE_INTEGER.
  */
 async function readFeedPayload(ownerAddress, topic, index, meter) {
   // Every read is metered: a missing meter is the caller's bug, refused here
@@ -661,31 +672,33 @@ async function readFeedPayload(ownerAddress, topic, index, meter) {
   }
   const bee = getBee();
   const owner = new EthAddress(ownerAddress);
+  const explicit = index !== undefined && index !== null;
 
   try {
-    const result = index !== undefined && index !== null
-      ? await readExactFeedEntry(bee, owner, topic, index, meter)
-      : await readLatestFeedEntry(bee, owner, topic, meter);
-
-    const readIndex = feedIndexToNumber(result.feedIndex);
-    const nextIndex = result.feedIndexNext
-      ? feedIndexToNumber(result.feedIndexNext)
-      : null;
-
-    return { payload: result.payload, index: readIndex, nextIndex };
+    let readAt = index;
+    let nextIndex = null;
+    if (!explicit) {
+      const latest = await findLatestFeedIndex(bee, owner, topic, meter);
+      if (latest === null) throw feedEmptyError();
+      ({ index: readAt, nextIndex } = latest);
+    }
+    const result = await readExactFeedEntry(bee, owner, topic, readAt, meter);
+    return {
+      payload: result.payload,
+      index: feedIndexToNumber(result.feedIndex),
+      nextIndex: explicit ? pageIndex(result.feedIndexNext.toBigInt()) : nextIndex,
+    };
   } catch (err) {
     // Only map "not found" errors to semantic reasons.
     // All other errors (network, timeout, parse) propagate as-is.
     if (!isNotFoundError(err)) throw err;
 
-    if (index !== undefined && index !== null) {
+    if (explicit) {
       const error = new Error(`Feed entry not found at index ${index}`);
       error.reason = 'entry_not_found';
       throw error;
     }
-    const error = new Error('Feed is empty — no entries to read');
-    error.reason = 'feed_empty';
-    throw error;
+    throw feedEmptyError();
   }
 }
 

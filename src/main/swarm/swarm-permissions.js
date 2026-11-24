@@ -30,6 +30,7 @@ const { normalizeOrigin } = require('../../shared/origin-utils');
 const { withOriginLock } = require('./origin-mutation-lock');
 const { normalizeActPublisher } = require('./act-publisher');
 const { validateActRequest } = require('./act-request');
+const { validateSharedSecretsRequest } = require('./shared-secrets-request');
 // Required on first use: private-windows.js pulls in the app logger and
 // BrowserWindow, which most of this module's callers (and tests) never need.
 function isPrivateSender(event) {
@@ -390,6 +391,22 @@ function describeActRequest(origin, params) {
 }
 
 /**
+ * Whether a swarm_deriveSharedSecrets request is one main would run
+ * (shared-secrets-request.js, the same check swarm-provider-ipc.js runs
+ * before executing). The chrome asks before it shows the encryption-key
+ * prompt, so a request main would refuse gets main's -32602 and no prompt.
+ * @returns {{ valid: false, reason: string, message: string, data: Object }
+ *   | { valid: true, publicKeys: string[] }}
+ */
+function describeSharedSecretsRequest(params) {
+  const checked = validateSharedSecretsRequest(params);
+  if (!checked.ok) {
+    return { valid: false, reason: checked.reason, message: checked.message, data: checked.data };
+  }
+  return { valid: true, publicKeys: checked.value.publicKeys };
+}
+
+/**
  * Register IPC handlers for Swarm permissions.
  */
 function registerSwarmPermissionsIpc() {
@@ -453,6 +470,10 @@ function registerSwarmPermissionsIpc() {
     return describeActRequest(origin, params);
   });
 
+  ipcMain.handle(IPC.SWARM_DESCRIBE_SHARED_SECRETS_REQUEST, (_event, params) => {
+    return describeSharedSecretsRequest(params);
+  });
+
   console.log('[SwarmPermissions] IPC handlers registered');
 }
 
@@ -477,6 +498,7 @@ module.exports = {
   hasActGrant,
   getActGrants,
   describeActRequest,
+  describeSharedSecretsRequest,
   onRevoke,
   onManifestMutation,
   registerSwarmPermissionsIpc,
