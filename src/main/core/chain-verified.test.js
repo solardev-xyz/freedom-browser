@@ -1,3 +1,12 @@
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+// The WASM backend's workers, recorded (test/helpers/colibri-backends.js).
+jest.mock('node:worker_threads', () =>
+  require('../../../test/helpers/colibri-backends').workerThreads()
+);
+
 const { ShellError } = require('./core-client');
 const {
   registerChainVerified,
@@ -9,7 +18,18 @@ const { registerNamingVerified, MAX_PER_VERIFIER } = require('./naming-verified'
 const { NOT_SENT } = require('./chain-shell');
 const { BroadcastRecords } = require('./chain-broadcasts');
 const { MAX_MESSAGE } = require('./frame');
-const { proverOutageError } = require('../../../test/helpers/colibri-prover-outage');
+const {
+  PROVER_DOWN,
+  describeBackends,
+  deviation,
+  proverWorld,
+  startBackend,
+} = require('../../../test/helpers/colibri-backends');
+const {
+  HTTP_503,
+  TRANSPORT,
+  proverOutage,
+} = require('../../../test/helpers/colibri-prover-outage');
 
 const ADDRESS = '0x' + 'ab'.repeat(20);
 const RAW = '0xf86b80';
@@ -541,20 +561,133 @@ describe('Colibri', () => {
       ).toEqual({ revert: { data: '0x12' } });
     }
   });
+});
+
+// COL-5 (freedom-core design 0014): the executor's answers for what each
+// Colibri backend throws, from the backend itself (test/helpers/
+// colibri-backends.js): the real WASM workers and the real freedom-colibrid,
+// against a scripted prover on loopback. An answer that differs by design
+// names its deviation.
+describeBackends('Colibri errors from each backend', (backend) => {
+  const FAULTS = { capabilities: ['fragments', 'colibri_faults'] };
+  let userData;
+  let world;
+  let started;
+
+  beforeEach(async () => {
+    userData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-chain-verified-colibri-'));
+    world = await proverWorld();
+    started = await startBackend(backend, { userData });
+  });
+
+  afterEach(async () => {
+    world.release();
+    await started.close();
+    await world.close();
+    fs.rmSync(userData, { recursive: true, force: true });
+  });
+
+  /** A balance read through the executor, on a client of the backend. */
+  const read = ({ chainId = 1, deadline_ms = 20_000 } = {}) =>
+    setUp(
+      {
+        colibriRequest: (chain, method, params, options) =>
+          started.host
+            .createClient({ chainId: chain, proverUrl: world.url, zkProof: true })
+            .request({ method, params }, options),
+      },
+      { hello: FAULTS }
+    ).call({
+      chain_id: chainId,
+      colibri: 'request',
+      method: 'eth_getBalance',
+      params: [ADDRESS, 'latest'],
+      deadline_ms,
+    });
+  /** The executor's answer for an adapter that throws `thrown`. */
+  const faulting = (thrown) =>
+    setUp({ colibriRequest: jest.fn(async () => Promise.reject(thrown)) }, { hello: FAULTS }).call({
+      colibri: 'request',
+      method: 'eth_getBalance',
+      params: [ADDRESS, 'latest'],
+      deadline_ms: 5000,
+    });
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   // #1059: Colibri no longer proves a read itself when its prover is down,
-  // so the prover's error is its whole answer. It is a plain failure, with no
-  // fault bit to back Colibri off and no capacity bit, and the core moves on
-  // to its next source.
-  test('a failed remote proof is a plain failure', async () => {
-    const outage = proverOutageError();
-    expect(outage).toMatchObject({
-      code: 4900,
-      message: expect.stringContaining('remote proof failed (no local proving): HTTP error! Status: 503'),
+  // so the prover's error is its whole answer. It is a plain failure, with
+  // no fault bit to back Colibri off and no capacity bit, and the core moves
+  // on to its next source.
+  test.each([
+    ['an HTTP error', HTTP_503, 4900],
+    ['a transport error', TRANSPORT, -32603],
+  ])('a failed remote proof by %s is a plain failure', async (_name, failure, code) => {
+    const { error } = await proverOutage(backend.kind, { failure });
+    expect(error).toMatchObject({
+      name: 'ProviderRpcError',
+      code,
+      message: expect.stringContaining('remote proof failed (no local proving): '),
     });
-    expect(isColibriFault(outage)).toBe(false);
-    expect(await faulting(outage)).toEqual({ failure: 'error' });
+    expect(isColibriFault(error)).toBe(false);
+    expect(await faulting(error)).toEqual({ failure: 'error' });
+
+    world.answer = failure.transport ? 'transport' : failure;
+    expect(await read()).toEqual({ failure: 'error' });
   }, 60_000);
+
+  test('a death under the read [deviation colibri-culprit]', async () => {
+    world.answer = 'hold';
+    const reply = read();
+    await world.until(1);
+    world.answer = PROVER_DOWN;
+    started.spawned[0].kill();
+    expect(await reply).toEqual(
+      deviation('colibri-culprit', backend, {
+        // The worker's exit fails the read as its fault.
+        wasm: { failure: 'error', fault: true },
+        // Outside a step, the death names nobody: the read is sent once
+        // more, and fails as the prover does.
+        service: { failure: 'error' },
+      })
+    );
+  }, 15_000);
+
+  test('a read whose prover never answers by its deadline [deviation colibri-deadline]', async () => {
+    world.answer = 'hold';
+    let replied = null;
+    const reply = read({ deadline_ms: 300 }).then((answer) => {
+      replied = answer;
+      return answer;
+    });
+    await world.until(1);
+    // The service ends it, no fault; the WASM worker still waits past it.
+    if (backend.kind === 'service') await reply;
+    else await sleep(300 + 1_500);
+    expect(replied).toEqual(
+      deviation('colibri-deadline', backend, { wasm: null, service: { failure: 'error' } })
+    );
+    world.release();
+    expect(await reply).toEqual({ failure: 'error' });
+  }, 15_000);
+
+  test('a read while three other chains are busy [deviation colibri-processes]', async () => {
+    world.answer = 'hold';
+    const busy = [100, 11155111, 10200].map((chainId) => read({ chainId }));
+    await world.until(3);
+    let replied = null;
+    const reply = read().then((answer) => {
+      replied = answer;
+      return answer;
+    });
+    if (backend.kind === 'wasm') await world.until(4);
+    else await reply;
+    // The service's `Colibri service busy`: neither a fault nor capacity.
+    expect(replied).toEqual(
+      deviation('colibri-processes', backend, { wasm: null, service: { failure: 'error' } })
+    );
+    world.release();
+    expect(await Promise.all([...busy, reply])).toEqual(new Array(4).fill({ failure: 'error' }));
+  }, 15_000);
 });
 
 describe('every operation', () => {

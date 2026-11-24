@@ -1,11 +1,50 @@
+/**
+ * Colibri's backends (freedom-core design 0014, COL-5) in two parts:
+ *
+ * - **The contract**, once per backend (`test/helpers/colibri-backends.js`):
+ *   colibri-worker-host.js on its real worker threads and the package's
+ *   WASM verifier, and colibri-service.js on the real freedom-colibrid
+ *   binary, against a scripted prover on loopback. What a backend answers
+ *   there, and how its processes come and go, is the interface both keep:
+ *   a chain's lanes, a failed remote proof byte for byte, a refusal, a
+ *   death, the private session, `destroy`. An expectation that differs by
+ *   design names its deviation.
+ * - **The WASM host's own mechanics,** its workers scripted: its worker
+ *   messages, the liveness ping (`STUCK_PROBE_MS`) and the suspects it
+ *   blames, the abandon cap (`ABANDONED_MS`) and traps. The service's own
+ *   are colibri-service.test.js's and colibrid-client.test.js's.
+ */
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { Worker } = require('node:worker_threads');
 
-jest.mock('node:worker_threads', () => ({ Worker: jest.fn() }));
+// The scripted part gives Worker its fakes; the contract part the real
+// worker threads (colibri-backends.js's `realWorker`).
+jest.mock('node:worker_threads', () =>
+  require('../../../test/helpers/colibri-backends').workerThreads()
+);
 const mockLogWarn = jest.fn();
-jest.mock('../logger', () => ({ warn: (...args) => mockLogWarn(...args), info: jest.fn() }));
+jest.mock('../logger', () => ({
+  warn: (...args) => mockLogWarn(...args),
+  info: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+}));
 
 const host = require('./colibri-worker-host');
+const { isColibriFault } = require('../core/chain-verified');
+const {
+  PROVER_DOWN,
+  describeBackends,
+  deviation,
+  outcomeOf,
+  proverWorld,
+  realWorker,
+  startBackend,
+} = require('../../../test/helpers/colibri-backends');
 
 const STORAGE_DIR = '/tmp/freedom-test-userdata/colibri';
 const CONFIG = { chainId: 1, proverUrl: 'https://p.example', zkProof: true };
@@ -37,29 +76,373 @@ async function startRequest(client, args, opts) {
   return { promise, worker, id: sentRequests(worker).at(-1).id };
 }
 
-beforeEach(() => {
-  jest.useFakeTimers();
-  spawned = [];
-  mockLogWarn.mockReset();
-  Worker.mockReset();
-  Worker.mockImplementation(() => {
-    const worker = new EventEmitter();
-    jest.spyOn(worker, 'on');
-    worker.postMessage = jest.fn();
-    worker.terminate = jest.fn(() => Promise.resolve(1));
-    worker.unref = jest.fn();
-    spawned.push(worker);
-    return worker;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** What a promise has come to: its result, its error, or `'open'`. */
+const settledOf = (promise) => {
+  const state = { value: 'open' };
+  promise.then(
+    (result) => {
+      state.value = { result };
+    },
+    (err) => {
+      state.value = err;
+    }
+  );
+  return state;
+};
+
+describeBackends('the Colibri backend contract', (backend) => {
+  const ACCOUNT = '0x00000000000000000000000000000000000000aa';
+  const BALANCE = { method: 'eth_getBalance', params: [ACCOUNT, 'latest'] };
+  const CODE = { method: 'eth_getCode', params: [ACCOUNT, 'latest'] };
+  /** The prover request either backend sends first for BALANCE, with an
+   * empty store: the account's proof, at Colibri's version, with ZK. */
+  const BALANCE_PROOF =
+    `{"method":"eth_getProof","params":["${ACCOUNT}",[],"latest"],` +
+    '"version":196611,"zk_proof":true}';
+  /** createError's message for a failed remote proof (#1059, #1080). */
+  const failedProof = ({ method, params }, text) =>
+    `Error in rpc call ${method}${JSON.stringify(params)} : ` +
+    `remote proof failed (no local proving): ${text}`;
+  const outage = (read, text = 'HTTP error! Status: 503, Details: prover down') => ({
+    name: 'ProviderRpcError',
+    code: 4900,
+    message: failedProof(read, text),
+    data: undefined,
   });
-  host.resetForTest({ storageDir: STORAGE_DIR });
+
+  let userData;
+  let world;
+  let started;
+  const config = (extra) => ({ chainId: 1, proverUrl: world.url, zkProof: true, ...extra });
+  const client = (extra) => started.host.createClient(config(extra));
+  const lanes = () => started.spawned.map((proc) => (proc.private ? 'private' : 'normal'));
+
+  beforeEach(async () => {
+    Worker.mockImplementation(realWorker);
+    userData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-colibri-contract-'));
+    world = await proverWorld();
+    started = await startBackend(backend, { userData });
+  });
+
+  afterEach(async () => {
+    world.release();
+    await started.close();
+    await world.close();
+    fs.rmSync(userData, { recursive: true, force: true });
+  });
+
+  test("a chain's clients share its process; another chain gets its own [deviation storage-per-chain]", async () => {
+    await expect(client().request(BALANCE).catch(outcomeOf)).resolves.toEqual(outage(BALANCE));
+    await expect(client().request(CODE).catch(outcomeOf)).resolves.toEqual(outage(CODE));
+    expect(lanes()).toEqual(['normal']);
+    await expect(client({ chainId: 100 }).request(BALANCE).catch(outcomeOf)).resolves.toEqual(
+      outage(BALANCE)
+    );
+    const store = path.join(userData, 'colibri');
+    expect(started.spawned.map((proc) => proc.storageDir)).toEqual(
+      deviation('storage-per-chain', backend, {
+        wasm: [store, store],
+        service: [path.join(store, '1'), path.join(store, '100')],
+      })
+    );
+    expect(world.requests.map(({ method }) => method)).toEqual(['POST', 'POST', 'POST']);
+  });
+
+  // #1059: the prover's error is the whole answer, never a local proof, and
+  // the adapter's outcome is the same on both, cut at 2,000 units after
+  // createError's prefix.
+  test.each([
+    ['a short body', 'prover down'],
+    ['a body that is not ASCII', 'Überlastet – 稍后再试 🙂'],
+    ['a body that takes the message past 2,000 units', 'x'.repeat(1_900)],
+    ['a body past 2,000 units of its own', 'y'.repeat(2_500)],
+  ])('a failed remote proof with %s reaches the caller byte for byte', async (_label, body) => {
+    world.answer = { status: 503, body };
+    const message = failedProof(BALANCE, `HTTP error! Status: 503, Details: ${body}`);
+    await expect(client().request(BALANCE).catch(outcomeOf)).resolves.toEqual({
+      ...outage(BALANCE),
+      message: message.slice(0, 2_000),
+    });
+    expect(world.requests.map(({ body: sent }) => sent)).toEqual([BALANCE_PROOF]);
+  });
+
+  test('a transport failure is no HTTP error [deviation fetch-error-text]', async () => {
+    world.answer = 'transport';
+    const url = deviation('fetch-error-text', backend, { wasm: world.url, service: '<url>' });
+    const err = await client().request(BALANCE).catch((caught) => caught);
+    expect(outcomeOf(err)).toEqual({
+      ...outage(BALANCE),
+      code: -32603,
+      message: failedProof(BALANCE, `Request to ${url} with payload ${BALANCE_PROOF} failed: fetch failed`),
+    });
+    expect(isColibriFault(err)).toBe(false);
+  });
+
+  // A method only the WASM client serves differs, with no deviation id of
+  // its own: design 0014's "Not served" (`eth_getLogs` among them, which the
+  // WASM client asks its prover for). The routers never send one.
+  test('a method neither serves is refused before any fetch', async () => {
+    const read = { method: 'eth_unknownMethod', params: [{}] };
+    await expect(client().request(read).catch(outcomeOf)).resolves.toEqual({
+      name: 'ProviderRpcError',
+      code: 4200,
+      message: 'Error in rpc call eth_unknownMethod[{}] : Method eth_unknownMethod is not supported',
+      data: undefined,
+    });
+    expect(world.requests).toEqual([]);
+  });
+
+  // Not one of design 0014's deviations: past what is asserted here the two
+  // differ. The WASM host spawns a worker for each read and fails it with
+  // `Colibri worker failed to start: init failed (<the error>)`; the service
+  // stops the lane (colibri-service.js, a directory that can't be made)
+  // and answers `Colibri service unavailable` until a client of another
+  // configuration, or the next launch.
+  test("a store that can't be opened fails the read, as main's own error", async () => {
+    fs.writeFileSync(path.join(userData, 'colibri'), 'not a directory');
+    for (let i = 0; i < 2; i += 1) {
+      const err = await client().request(BALANCE).catch((caught) => caught);
+      expect(err).toBeInstanceOf(started.host.ColibriWorkerError);
+      expect(isColibriFault(err)).toBe(false);
+    }
+    expect(world.requests).toEqual([]);
+    // A private read has no store to open.
+    await expect(client({ private: true }).request(BALANCE).catch(outcomeOf)).resolves.toEqual(
+      outage(BALANCE)
+    );
+  });
+
+  // The design's row is the local context the WASM client runs on each
+  // client's first request; an explicit eth_chainId shows the same
+  // difference, which the service refuses as a method it doesn't serve.
+  test('eth_chainId [deviation no-initial-chain-id]', async () => {
+    const read = { method: 'eth_chainId', params: [] };
+    const answer = await client()
+      .request(read)
+      .then((result) => ({ result }), outcomeOf);
+    expect(answer).toEqual(
+      deviation('no-initial-chain-id', backend, {
+        wasm: { result: '0x1' },
+        service: {
+          name: 'ProviderRpcError',
+          code: 4200,
+          message: 'Error in rpc call eth_chainId[] : Method eth_chainId is not supported',
+          data: undefined,
+        },
+      })
+    );
+    expect(world.requests).toEqual([]);
+  });
+
+  test('a request still waiting on the prover at its deadline [deviation colibri-deadline]', async () => {
+    world.answer = 'hold';
+    const reader = client();
+    const state = settledOf(reader.request(BALANCE, { deadlineMs: 300 }));
+    await world.until(1);
+    const ended = deviation('colibri-deadline', backend, { wasm: false, service: true });
+    if (ended) {
+      while (state.value === 'open') await sleep(5);
+    } else {
+      // The worker answers its ping: it only waits on the network.
+      await sleep(300 + host.STUCK_PROBE_MS + 500);
+    }
+    if (!ended) {
+      expect(state.value).toBe('open');
+      world.release();
+      while (state.value === 'open') await sleep(5);
+      expect(outcomeOf(state.value)).toEqual(outage(BALANCE));
+    } else {
+      // Two answers race at the deadline: main's cancel (`cancelled`), and
+      // the service's own bound on its fetch, whose error the C core gets
+      // as the remote proof's and ends the read with. Either is no fault
+      // and ends nothing else.
+      expect([
+        {
+          name: 'ColibriWorkerError',
+          code: undefined,
+          message: 'Colibri request cancelled at its deadline',
+          data: undefined,
+        },
+        {
+          ...outage(BALANCE),
+          code: -32603,
+          message: failedProof(BALANCE, 'Colibri fetch deadline passed'),
+        },
+      ]).toContainEqual(outcomeOf(state.value));
+      expect(state.value.colibriBystander).toBeUndefined();
+      expect(isColibriFault(state.value)).toBe(false);
+    }
+    // Nothing else ended: the same process serves the next read.
+    world.answer = PROVER_DOWN;
+    await expect(reader.request(CODE).catch(outcomeOf)).resolves.toEqual(outage(CODE));
+    expect(lanes()).toEqual(['normal']);
+  }, 15_000);
+
+  test('a process that dies under open requests [deviation colibri-culprit]', async () => {
+    world.answer = 'hold';
+    const first = settledOf(client().request(BALANCE, { deadlineMs: 20_000 }));
+    const second = settledOf(client().request(CODE, { deadlineMs: 20_000 }));
+    await world.until(2);
+    world.answer = PROVER_DOWN;
+    started.spawned[0].kill();
+    await started.spawned[0].exited;
+    while (first.value === 'open' || second.value === 'open') await sleep(5);
+    const outcomes = deviation('colibri-culprit', backend, {
+      // Each fails as its own fault: the exit names no culprit, and a
+      // fault-pattern error without `colibriBystander` counts as one.
+      wasm: [
+        { name: 'ColibriWorkerError', message: 'Colibri worker replaced: worker exited (1)' },
+        { name: 'ColibriWorkerError', message: 'Colibri worker replaced: worker exited (1)' },
+      ],
+      // Waiting on a fetch, neither was in a step: the death names nobody,
+      // and both go once more to the lane's next process.
+      service: [outage(BALANCE), outage(CODE)],
+    });
+    expect(outcomeOf(first.value)).toMatchObject(outcomes[0]);
+    expect(outcomeOf(second.value)).toMatchObject(outcomes[1]);
+    expect([first.value, second.value].map(isColibriFault)).toEqual(
+      deviation('colibri-culprit', backend, { wasm: [true, true], service: [false, false] })
+    );
+    expect(lanes()).toEqual(
+      deviation('colibri-culprit', backend, { wasm: ['normal'], service: ['normal', 'normal'] })
+    );
+  }, 15_000);
+
+  test('a fourth chain while three are busy [deviation colibri-processes]', async () => {
+    world.answer = 'hold';
+    const busy = [1, 100, 11155111].map((chainId) =>
+      settledOf(client({ chainId }).request(BALANCE, { deadlineMs: 20_000 }))
+    );
+    await world.until(3);
+    const fourth = settledOf(client({ chainId: 10200 }).request(BALANCE, { deadlineMs: 20_000 }));
+    const fourthLane = deviation('colibri-processes', backend, { wasm: 4, service: 3 });
+    if (fourthLane === 4) await world.until(4);
+    else while (fourth.value === 'open') await sleep(5);
+    expect(started.spawned).toHaveLength(fourthLane);
+    if (backend.kind === 'service') {
+      expect(outcomeOf(fourth.value)).toMatchObject({
+        name: 'ColibriWorkerError',
+        message: 'Colibri service busy',
+      });
+      expect(isColibriFault(fourth.value)).toBe(false);
+    }
+    world.release();
+    for (const state of [...busy, fourth]) {
+      while (state.value === 'open') await sleep(5);
+    }
+    for (const state of busy) expect(outcomeOf(state.value)).toEqual(outage(BALANCE));
+    if (backend.kind === 'wasm') expect(outcomeOf(fourth.value)).toEqual(outage(BALANCE));
+  }, 15_000);
+
+  test("a destroyed client's requests are refused", async () => {
+    const reader = client();
+    await expect(reader.request(BALANCE).catch(outcomeOf)).resolves.toEqual(outage(BALANCE));
+    reader.destroy();
+    await expect(reader.request(BALANCE)).rejects.toMatchObject({
+      name: 'ColibriWorkerError',
+      message: 'Colibri client was destroyed',
+    });
+    expect(world.requests).toHaveLength(1);
+  });
+
+  // #1058: Colibri's store names what a read touched, so private windows'
+  // reads run on a process of their own whose store is in memory.
+  describe('private windows', () => {
+    test('a private client runs on the private process, which has no store', async () => {
+      await expect(client().request(BALANCE).catch(outcomeOf)).resolves.toEqual(outage(BALANCE));
+      await expect(client({ private: true }).request(BALANCE).catch(outcomeOf)).resolves.toEqual(
+        outage(BALANCE)
+      );
+      // Every private client of the chain shares it; a normal one keeps the
+      // normal process.
+      await expect(client({ private: true }).request(CODE).catch(outcomeOf)).resolves.toEqual(
+        outage(CODE)
+      );
+      await expect(client().request(CODE).catch(outcomeOf)).resolves.toEqual(outage(CODE));
+      expect(lanes()).toEqual(['normal', 'private']);
+      expect(started.spawned[1].storageDir).toBeNull();
+    });
+
+    test('ensureWorker readies the private process only when asked for it', async () => {
+      await expect(started.host.ensureWorker(1, { private: true })).resolves.toBeUndefined();
+      expect(lanes()).toEqual(['private']);
+      await expect(started.host.ensureWorker(1)).resolves.toBeUndefined();
+      expect(lanes()).toEqual(['private', 'normal']);
+    });
+
+    test('the end of the private session ends the private process only', async () => {
+      world.answer = 'hold';
+      const normal = settledOf(client().request(BALANCE, { deadlineMs: 20_000 }));
+      const privateReader = client({ private: true });
+      const pending = settledOf(privateReader.request(BALANCE, { deadlineMs: 20_000 }));
+      await world.until(2);
+
+      started.host.endPrivateSession();
+      await started.spawned[1].exited;
+      while (pending.value === 'open') await sleep(5);
+      // Nobody's fault: a bystander, which the router's backoff skips.
+      expect(pending.value).toMatchObject({
+        name: 'ColibriWorkerError',
+        message: 'Colibri worker replaced: private session ended',
+        colibriBystander: true,
+      });
+      expect(isColibriFault(pending.value)).toBe(false);
+      expect(normal.value).toBe('open');
+
+      // A client of the ended session is refused, and nothing is spawned.
+      await expect(privateReader.request(CODE)).rejects.toMatchObject({
+        message: 'Colibri private session ended',
+        colibriBystander: true,
+      });
+      expect(lanes()).toEqual(['normal', 'private']);
+
+      world.answer = PROVER_DOWN;
+      world.release();
+      while (normal.value === 'open') await sleep(5);
+      expect(outcomeOf(normal.value)).toEqual(outage(BALANCE));
+      // The next private window's first read starts a new private process.
+      await expect(client({ private: true }).request(BALANCE).catch(outcomeOf)).resolves.toEqual(
+        outage(BALANCE)
+      );
+      expect(lanes()).toEqual(['normal', 'private', 'private']);
+    });
+
+    test('a private process still starting when the session ends fails its waiter as a bystander', async () => {
+      const pending = client({ private: true }).request(BALANCE);
+      started.host.endPrivateSession();
+      await expect(pending).rejects.toMatchObject({
+        message: 'Colibri private session ended',
+        colibriBystander: true,
+      });
+      expect(world.requests).toEqual([]);
+    });
+  });
 });
 
-afterEach(() => {
-  host.resetForTest();
-  jest.useRealTimers();
-});
+describe('the WASM worker host, its workers scripted', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    spawned = [];
+    mockLogWarn.mockReset();
+    Worker.mockReset();
+    Worker.mockImplementation(() => {
+      const worker = new EventEmitter();
+      jest.spyOn(worker, 'on');
+      worker.postMessage = jest.fn();
+      worker.terminate = jest.fn(() => Promise.resolve(1));
+      worker.unref = jest.fn();
+      spawned.push(worker);
+      return worker;
+    });
+    host.resetForTest({ storageDir: STORAGE_DIR });
+  });
 
-describe('colibri worker host', () => {
+  afterEach(() => {
+    host.resetForTest();
+    jest.useRealTimers();
+  });
+
   test('spawns one isolated, unref’d worker per chain with the storage dir', async () => {
     const client = host.createClient(CONFIG);
     const { promise, worker, id } = await startRequest(client, { method: 'eth_blockNumber' });
@@ -436,15 +819,6 @@ describe('colibri worker host', () => {
     expect(Worker).toHaveBeenCalledTimes(1);
   });
 
-  test('a worker replaced with no culprit marks nobody as a bystander', async () => {
-    const client = host.createClient(CONFIG);
-    const a = await startRequest(client, { method: 'eth_call' });
-    const b = await startRequest(client, { method: 'eth_chainId' });
-    a.worker.emit('exit', 1);
-    await expect(a.promise).rejects.not.toHaveProperty('colibriBystander');
-    await expect(b.promise).rejects.not.toHaveProperty('colibriBystander');
-  });
-
   test('after a trap, a request the retired instance refused is retried once on a fresh worker', async () => {
     const client = host.createClient(CONFIG);
     const a = await startRequest(client, { method: 'eth_getTransactionReceipt', params: ['0xunknown'] });
@@ -510,110 +884,11 @@ describe('colibri worker host', () => {
     await expect(client.request({ method: 'eth_chainId' })).rejects.toThrow(/destroyed/);
   });
 
-  // #1058: Colibri's store names each contract called (`call_<chain>_<address>`),
-  // so private windows' reads run on a worker of their own with no storage dir.
+  // #1058: private windows' reads run on a worker of their own with no
+  // storage dir (the contract above); a trap's draining worker is the WASM
+  // host's own.
   describe('private windows', () => {
     const PRIVATE = { ...CONFIG, private: true };
-    const workerData = (worker) => Worker.mock.calls[spawned.indexOf(worker)][1].workerData;
-
-    // Like startRequest, for a request on a worker that is not the last one
-    // spawned (the other lane's may be).
-    async function startOn(client, args, worker, opts) {
-      const promise = client.request(args, opts);
-      promise.catch(() => {});
-      await flush();
-      return { promise, worker, id: sentRequests(worker).at(-1).id };
-    }
-
-    test('a private client runs on its own worker, which gets no storage dir', async () => {
-      const normal = await startRequest(host.createClient(CONFIG), { method: 'eth_blockNumber' });
-      const priv = await startRequest(host.createClient(PRIVATE), { method: 'eth_blockNumber' });
-
-      expect(Worker).toHaveBeenCalledTimes(2);
-      expect(priv.worker).not.toBe(normal.worker);
-      expect(workerData(normal.worker)).toEqual({ storageDir: STORAGE_DIR });
-      expect(workerData(priv.worker)).toEqual({ storageDir: null });
-      // The worker sees the same client config: privacy is the worker's, not
-      // the client's.
-      expect(sentRequests(priv.worker)[0].config).toEqual(CONFIG);
-
-      // Every private client on the chain shares the one private worker, and
-      // a normal one keeps the normal worker.
-      const again = await startOn(host.createClient(PRIVATE), { method: 'eth_chainId' }, priv.worker);
-      const normalAgain = await startOn(host.createClient(CONFIG), { method: 'eth_chainId' }, normal.worker);
-      expect(Worker).toHaveBeenCalledTimes(2);
-      priv.worker.emit('message', { type: 'result', id: again.id, ok: true, result: '0x1' });
-      normal.worker.emit('message', { type: 'result', id: normalAgain.id, ok: true, result: '0x1' });
-      await expect(again.promise).resolves.toBe('0x1');
-      await expect(normalAgain.promise).resolves.toBe('0x1');
-    });
-
-    test('ensureWorker readies the private worker only when asked for it', async () => {
-      const ready = host.ensureWorker(1, { private: true });
-      await flush();
-      expect(Worker).toHaveBeenCalledTimes(1);
-      expect(workerData(lastWorker())).toEqual({ storageDir: null });
-      lastWorker().emit('message', { type: 'ready' });
-      await expect(ready).resolves.toBeUndefined();
-
-      host.ensureWorker(1).catch(() => {});
-      await flush();
-      expect(Worker).toHaveBeenCalledTimes(2);
-      expect(workerData(lastWorker())).toEqual({ storageDir: STORAGE_DIR });
-    });
-
-    test('the end of the private session terminates the private worker only', async () => {
-      const normalClient = host.createClient(CONFIG);
-      const privateClient = host.createClient(PRIVATE);
-      const normal = await startRequest(normalClient, { method: 'eth_getBalance' });
-      const priv = await startRequest(privateClient, { method: 'eth_getBalance' });
-
-      host.endPrivateSession();
-
-      expect(priv.worker.terminate).toHaveBeenCalledTimes(1);
-      expect(normal.worker.terminate).not.toHaveBeenCalled();
-      // What was still pending on it failed as a bystander: the router's
-      // fault backoff must not count it against the method.
-      await expect(priv.promise).rejects.toMatchObject({
-        name: 'ColibriWorkerError',
-        colibriBystander: true,
-      });
-      expect(mockLogWarn).toHaveBeenCalledWith(
-        '[colibri] chain 1 (private) worker replaced (private session ended); 1 request(s) failed'
-      );
-      normal.worker.emit('message', { type: 'result', id: normal.id, ok: true, result: '0x2' });
-      await expect(normal.promise).resolves.toBe('0x2');
-
-      // A client of the ended session is refused, without starting a worker:
-      // a late read from a closed window never seeds the next session's store.
-      await expect(privateClient.request({ method: 'eth_chainId' })).rejects.toMatchObject({
-        message: 'Colibri private session ended',
-        colibriBystander: true,
-      });
-      expect(Worker).toHaveBeenCalledTimes(2);
-
-      // The next private window's first read starts a fresh private worker.
-      const next = await startRequest(host.createClient(PRIVATE), { method: 'eth_chainId' });
-      expect(Worker).toHaveBeenCalledTimes(3);
-      expect(next.worker).not.toBe(priv.worker);
-      expect(workerData(next.worker)).toEqual({ storageDir: null });
-      // Normal clients are not part of it.
-      const later = await startOn(normalClient, { method: 'eth_chainId' }, normal.worker);
-      normal.worker.emit('message', { type: 'result', id: later.id, ok: true, result: '0x1' });
-      await expect(later.promise).resolves.toBe('0x1');
-    });
-
-    test('a private worker still starting when the session ends fails its waiter as a bystander', async () => {
-      const promise = host.createClient(PRIVATE).request({ method: 'eth_chainId' });
-      promise.catch(() => {});
-      await flush();
-      host.endPrivateSession();
-      await expect(promise).rejects.toMatchObject({
-        message: 'Colibri private session ended',
-        colibriBystander: true,
-      });
-      expect(lastWorker().terminate).toHaveBeenCalledTimes(1);
-    });
 
     test('the end of the session reaches a private worker still draining after a trap', async () => {
       const client = host.createClient(PRIVATE);

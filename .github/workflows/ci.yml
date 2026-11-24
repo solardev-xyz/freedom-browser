@@ -247,8 +247,23 @@ jobs:
             vectors/colibri.json
           sparse-checkout-cone-mode: false
 
+      # The Colibri contract suite (freedom-core design 0014, COL-5) runs its
+      # service backend on the real freedom-colibrid: `colibri-worker-host`,
+      # `chain-verified`, `colibri-private-store` and `colibri-outage-parity`
+      # (test/helpers/colibri-backends.js). Downloaded as e2e-desktop does,
+      # with the pinned digest and build provenance checked;
+      # FREEDOM_COLIBRID_REQUIRED below fails those suites without it rather
+      # than skipping them.
+      - name: Download freedom-colibrid binaries
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-colibrid.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run test coverage
         env:
+          FREEDOM_COLIBRID_REQUIRED: '1'
           FREEDOM_CORE_STREAM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/streams.json
           FREEDOM_CORE_RADICLE_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
           FREEDOM_CORE_KEYSTORE_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/keystore.json
@@ -1416,10 +1431,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      # Nothing runs freedom-colibrid yet (freedom-core design 0014, COL-5):
-      # this is the one per-PR run of its real fetch on all three OSes,
-      # Windows' ZIP path included, with the pinned digest and build
-      # provenance checked as release.yml checks them.
+      # freedom-colibrid (freedom-core design 0014, COL-5): the `test` job
+      # runs the Colibri contract suite on it on Linux; this is the per-PR
+      # run of its real fetch on all three OSes, Windows' ZIP path included,
+      # with the pinned digest and build provenance checked as release.yml
+      # checks them.
       - name: Download freedom-colibrid binaries
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         timeout-minutes: 7
