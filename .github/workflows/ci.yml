@@ -80,8 +80,8 @@ jobs:
   # included, and a self-hosted runner must never execute it. The three
   # events on the list only run code that is already trusted: a push needs
   # write access to `main`/`release/**`/`hotfix/**`/a tag, a dispatch needs
-  # write access, and a merge-queue candidate is a pull request a maintainer
-  # has already approved and queued. The expression is an allowlist, so any
+  # write access, and a merge-queue candidate is a pull request someone with
+  # write access has put in the queue. The expression is an allowlist, so any
   # event not named here (a future `pull_request_target`, `schedule`, …)
   # falls back to `ubuntu-latest` rather than onto the self-hosted runners:
   #
@@ -1786,6 +1786,9 @@ jobs:
       # fix the regression or adopt the new pixels with
       # `node scripts/apply-screenshot-baselines.js <unzipped-artifact>`.
       # Locally: `xvfb-run -a npm run test:e2e:screenshots:update`.
+      # A pull request compares on GitHub's ubuntu-latest, the queue and `main`
+      # on the project's own Linux runners (see the top of `jobs:`), so the
+      # baselines must hold on both; a dispatch capture runs on the latter.
       - name: Compare renderer screenshots
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
@@ -1856,9 +1859,9 @@ jobs:
       # `--require-hashes` against the lock file it ships for that version
       # (support/locks/zizmor-<version>.txt), so the integrity guarantee is
       # the action's own SHA pin plus that hash lock. It needs `python3` on
-      # the runner (ubuntu-latest has it). A version the pinned action has no
-      # lock for fails the step, so bump both together (Dependabot bumps the
-      # action).
+      # the runner (ubuntu-latest and the project's own Linux runners have
+      # it). A version the pinned action has no lock for fails the step, so
+      # bump both together (Dependabot bumps the action).
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
