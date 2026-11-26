@@ -647,12 +647,12 @@ describe('the self-hosted Linux runners', () => {
     'packed-asar-contents',
     'renderer-changed',
     'test',
-    'zizmor',
   ];
   const SELF_HOSTED_MATRIX_JOBS = ['myotis-native-e2e', 'native-addons'];
   // The container cannot host these: an AppArmor profile load on the host,
-  // and user namespaces for the preview-network-isolation qualification.
-  const HOSTED_ONLY_JOBS = ['e2e-agent-linux', 'e2e-desktop'];
+  // user namespaces for the preview-network-isolation qualification, and
+  // `pip` for zizmor-action's install.
+  const HOSTED_ONLY_JOBS = ['e2e-agent-linux', 'e2e-desktop', 'zizmor'];
   const TRUSTED = ['merge_group', 'push', 'workflow_dispatch'];
 
   const runsOn = (name) => {
