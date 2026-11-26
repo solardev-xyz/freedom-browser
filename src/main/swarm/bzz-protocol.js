@@ -61,13 +61,15 @@ let abandonedDials = 0;
  * Dials the Ant once.
  *
  * - A loopback Ant, bundled or external, with Node's `fetch` (undici): it
- *   needs no proxy, and the dial stays outside the session's `webRequest`.
+ *   needs no proxy, and the dial stays outside the session's `webRequest`. A
+ *   stream body goes with `duplex: 'half'`, pulled as the socket takes it.
  * - A non-loopback Ant (deviation `transport`, #360) with `net.request` on the
  *   request's session (`ipfs/gateway-transport.js`): manual redirects, the
  *   onion refusal before dialling when the session would resolve the host
- *   DIRECT, credentials omitted and no HTTP cache. That dial passes the
- *   session's `webRequest` with no frame, where `ant-api-guard.js` cancels
- *   anything on the node's origin, so this exact URL is announced to the
+ *   DIRECT, credentials omitted and no HTTP cache, and a stream body written
+ *   as it is pulled. That dial passes the session's `webRequest` with no
+ *   frame, where `ant-api-guard.js` cancels anything on the node's origin, so
+ *   this exact URL and the one method the dial sends are announced to the
  *   guard (`ant-api-main-dials.js`) and released once the dial settles.
  *
  * The remote dial is waited on only while the attempt lives: its header
@@ -77,11 +79,15 @@ let abandonedDials = 0;
  * anything it still brings is discarded, and it is counted until it settles.
  */
 async function dialAnt(url, init, { session, fetchImpl }) {
-  if (isLoopbackGatewayUrl(url)) return fetchImpl(url, init);
-  if (abandonedDials >= MAX_ABANDONED_DIALS) {
-    throw new Error('too many abandoned Ant dials');
+  if (isLoopbackGatewayUrl(url)) {
+    return isStreamBody(init.body) ? dialWithUpload(url, init, fetchImpl) : fetchImpl(url, init);
   }
-  const release = announceMainProcessAntDial(url);
+  if (abandonedDials >= MAX_ABANDONED_DIALS) {
+    const err = new Error('too many abandoned Ant dials');
+    if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
+    throw err;
+  }
+  const release = announceMainProcessAntDial(url, init.method);
   const dialling = Promise.resolve().then(() =>
     netGatewayFetch(url, init, session ? { session } : {})
   );
@@ -105,15 +111,177 @@ async function dialAnt(url, init, { session, fetchImpl }) {
   }
 }
 
+// A web `ReadableStream` request body (an upload streamed from the core).
+function isStreamBody(body) {
+  return typeof body?.getReader === 'function';
+}
+
+/**
+ * The request body `request()` takes: none, bytes, or a `ReadableStream` of
+ * bytes, and none on a GET or HEAD. Refused before any dial or announcement.
+ */
+function checkBody(method, body) {
+  if (body == null) return;
+  if (method === 'GET' || method === 'HEAD') {
+    throw new TypeError(`a ${method} request cannot carry a body`);
+  }
+  if (!(body instanceof Uint8Array) && !isStreamBody(body)) {
+    throw new TypeError('an Ant request body is bytes or a stream');
+  }
+}
+
+function abortError() {
+  return new DOMException('This operation was aborted', 'AbortError');
+}
+
+/**
+ * A stream body for undici, ended with its dial. Once a fetch is cancelled
+ * (an abort, or its reply's body cancelled), Node's fetch keeps reading the
+ * request's stream to its end and drops each chunk unsent (undici's
+ * `processBodyChunk`): an upload from the core would be pulled whole, for
+ * nothing. So the body goes through this stream, pulled one chunk at a time
+ * as undici asks. `end(reason)` cancels the source and fails every later
+ * read, which stops undici's loop; a body already over is left alone.
+ */
+function endableBody(body) {
+  const reader = body.getReader();
+  let over = false;
+  let ended = null;
+  const end = (reason) => {
+    if (over) return;
+    over = true;
+    ended = reason ?? abortError();
+    reader.cancel(ended).catch(() => {});
+  };
+  const stream = new ReadableStream(
+    {
+      async pull(controller) {
+        if (ended) {
+          controller.error(ended);
+          return;
+        }
+        let next;
+        try {
+          next = await reader.read();
+        } catch (err) {
+          over = true;
+          controller.error(err);
+          return;
+        }
+        if (ended) {
+          controller.error(ended);
+          return;
+        }
+        if (next.done) {
+          over = true;
+          controller.close();
+          return;
+        }
+        controller.enqueue(next.value);
+      },
+      cancel(reason) {
+        end(reason);
+      },
+    },
+    { highWaterMark: 0 }
+  );
+  return { stream, end };
+}
+
+/**
+ * `response` with a body that runs `end` once it is over: its end, its
+ * failure (at once, read or not) or its cancel. A reply without a body runs
+ * it at once.
+ */
+function endingWith(response, end) {
+  if (!response.body) {
+    end();
+    return response;
+  }
+  const reader = response.body.getReader();
+  const body = new ReadableStream(
+    {
+      start(controller) {
+        reader.closed.then(
+          () => {},
+          (err) => {
+            end(err);
+            try {
+              controller.error(err);
+            } catch {
+              // Already closed or failed.
+            }
+          }
+        );
+      },
+      async pull(controller) {
+        let next;
+        try {
+          next = await reader.read();
+        } catch (err) {
+          end(err);
+          controller.error(err);
+          return;
+        }
+        if (next.done) {
+          end();
+          controller.close();
+          return;
+        }
+        controller.enqueue(next.value);
+      },
+      cancel(reason) {
+        end(reason);
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 }
+  );
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+/**
+ * A loopback dial with a stream body: undici's half duplex, the body pulled
+ * as the socket takes it, and ended with the dial (`endableBody`): at the
+ * attempt's abort, the dial's failure, or its reply's end, cancel or
+ * failure, so an upload left behind is cancelled, never drained.
+ */
+async function dialWithUpload(url, init, fetchImpl) {
+  const upload = endableBody(init.body);
+  const { signal } = init;
+  const onAbort = () => upload.end(signal.reason);
+  if (signal.aborted) onAbort();
+  else signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const response = await fetchImpl(url, { ...init, body: upload.stream, duplex: 'half' });
+    return endingWith(response, upload.end);
+  } catch (err) {
+    upload.end(err);
+    throw err;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 /**
  * One attempt of the plan's fetch, with its own AbortController: linked to
  * the page's signal, so a cancellation still aborts the dial, and with the
  * plan's per-attempt deadline, so an Ant that accepts the connection and then
  * stalls (crash mid-response, paused worker) can't hang the retry loop.
  * Once the headers are in, the page's signal is unhooked: after that, a
- * cancel of the body is what stops the transfer.
+ * cancel of the body is what stops the transfer. A `headersTimeoutMs` of
+ * null, or none, sets no deadline (main's Swarm calls: `ant-api-call.js`).
  */
-async function fetchOnce(url, { method, headers, signal, headersTimeoutMs }, transport) {
+async function fetchOnce(
+  url,
+  { method = 'GET', headers, body = null, signal, headersTimeoutMs = null },
+  transport
+) {
+  checkBody(method, body);
   const attemptCtl = new AbortController();
   const relayAbort = () => attemptCtl.abort();
   if (signal) {
@@ -131,7 +299,13 @@ async function fetchOnce(url, { method, headers, signal, headersTimeoutMs }, tra
   try {
     return await dialAnt(
       url,
-      { method, headers, signal: attemptCtl.signal, redirect: 'manual' },
+      {
+        method,
+        headers,
+        ...(body !== null && { body }),
+        signal: attemptCtl.signal,
+        redirect: 'manual',
+      },
       transport
     );
   } catch (err) {
@@ -175,6 +349,12 @@ function verifiesExternalAnt() {
  * with both settings off, keep the two-key reference, as does every Ant
  * while the core's verifier isn't attached: the core can't serve a verify
  * plan or know strict mode then.
+ *
+ * `request({ path, method, headers, body, signal, headersTimeoutMs })` is
+ * one dial of `path` on this node, with no retry: the dweb plan's executor
+ * retries around it, and main's Swarm executor never does
+ * (`ant-api-call.js`). `body` is bytes or a `ReadableStream` of bytes (a
+ * POST's; design 0015, The transport), pulled only as the node takes it.
  *
  * @param {object} [transport]
  * @param {Electron.Session} [transport.session] - the request's session

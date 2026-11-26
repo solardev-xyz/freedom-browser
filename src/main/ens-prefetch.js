@@ -136,10 +136,10 @@ function prefetchGatewayUrl(uri) {
     // A remote Ant node is dialled through Chromium (`net.request`), which
     // passes `session.webRequest` with no frame — where `ant-api-guard.js`
     // cancels anything frameless on the node's origin. Announce this exact
-    // URL to the guard for the lifetime of the dial. (A loopback node goes
-    // over Node's `fetch` and never reaches webRequest.)
+    // URL and its GET to the guard for the lifetime of the dial. (A loopback
+    // node goes over Node's `fetch` and never reaches webRequest.)
     const releaseDial =
-      isAntDial && !isLoopbackGatewayUrl(url) ? announceMainProcessAntDial(url) : () => {};
+      isAntDial && !isLoopbackGatewayUrl(url) ? announceMainProcessAntDial(url, 'GET') : () => {};
 
     const done = gatewayFetch(url, { method: 'GET', redirect: 'manual', signal: controller.signal })
       .then(drainResponseBody)

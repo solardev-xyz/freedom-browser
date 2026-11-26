@@ -185,9 +185,9 @@ jobs:
       - name: Run lint
         run: npm run lint
 
-      # Three suites spawn a real Electron (`ipfs-gateway-proxy`, `ens-ccip-proxy`,
-      # `colibri-fetch-proxy`) and electron 44 downloads its binary on the first
-      # `require('electron')`.
+      # Four suites spawn a real Electron (`ipfs-gateway-proxy`, `ens-ccip-proxy`,
+      # `colibri-fetch-proxy`, `swarm-post-proxy`) and electron 44 downloads its
+      # binary on the first `require('electron')`.
       # Left to the tests, parallel jest workers both start that download and
       # one spawns the binary while the other is still writing it
       # (`spawn ETXTBSY`). Pull it once, here, before any worker starts.
@@ -1941,7 +1941,7 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: node -e "require('electron')"
 
-      - name: Run the external gateway, ENS CCIP-Read and Colibri fetch proxy integration tests
+      - name: Run the external gateway, ENS CCIP-Read, Colibri fetch and Swarm POST proxy integration tests
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FREEDOM_ELECTRON_NET_TEST: '1'
@@ -1949,6 +1949,7 @@ jobs:
           npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
           src/main/__tests__/integration/ens-ccip-proxy.test.js
           src/main/__tests__/integration/colibri-fetch-proxy.test.js
+          src/main/__tests__/integration/swarm-post-proxy.test.js
 
       # ── was the `e2e-wallet` job ──
       # Wallet approval surfaces, driven through the real sidebar renderer with the

@@ -61,6 +61,18 @@
  *    would be answered by the harness stub instead of the gateway. undici
  *    never saw those handlers; the option keeps the behaviour identical.
  *
+ * A STREAM BODY IS WRITTEN AS IT IS PULLED
+ *
+ * Main's Swarm executor POSTs uploads to a remote node on this transport
+ * (freedom-core design 0015, The transport), their bodies streamed from the
+ * core. Electron's `ClientRequest` gathers every write into one buffer and
+ * starts the request only at `end()` unless `chunkedEncoding` is set (its
+ * `SlurpStream`), so a stream body is sent chunked, and each chunk is
+ * written only once Chromium has taken the last (the write's callback): a
+ * node that stops reading stops the pulls, and main holds one chunk of the
+ * body meanwhile. An empty stream goes as no body at all, since Electron's
+ * chunked body can't end before its first write.
+ *
  * WHY AN `.onion` GATEWAY IS CHECKED BEFORE IT IS DIALLED
  *
  * Routing through Chromium only helps once the session actually carries the
@@ -296,6 +308,20 @@ function headersFromNetResponse(rawHeaders) {
   return headers;
 }
 
+// A web `ReadableStream` (Node's, a `Response`'s, or the core client's).
+function isStreamBody(body) {
+  return typeof body?.getReader === 'function';
+}
+
+/** A body chunk as `ClientRequest.write` takes it, never copied. */
+function bodyChunk(value) {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  throw new TypeError('a stream body yields bytes only');
+}
+
 function defaultNetRequest(options) {
   const { net } = require('electron');
   const request = typeof net?.request === 'function' ? net.request(options) : null;
@@ -309,12 +335,16 @@ function defaultNetRequest(options) {
 }
 
 /**
- * `fetch`-shaped GET/HEAD over Chromium's network stack, so the request
+ * `fetch`-shaped GET/HEAD/POST over Chromium's network stack, so the request
  * follows the session's proxy configuration.
  *
  * Supports exactly what its callers use: `method`, `headers`, `signal`, a
- * string/Buffer `body` (CCIP-Read POSTs one; never on GET/HEAD), and
- * `redirect: 'manual'` (the IPFS gateway paths) or `redirect: 'error'` (CCIP).
+ * `body` that is a string or bytes (CCIP-Read POSTs one) or a `ReadableStream`
+ * of bytes (main's Swarm uploads, written as it is pulled: see the file
+ * header), never on GET/HEAD, and `redirect: 'manual'` (the IPFS gateway
+ * paths) or `redirect: 'error'` (CCIP). A stream body is cancelled when the
+ * request ends before it does: an abort, a failure, a redirect, or the
+ * node's answer ending first; and the request fails when the stream does.
  * `follow` is rejected outright — on the gateway path it is the SSRF hole
  * `redirect: 'manual'` was added to close (a gateway answering `302 Location:
  * http://127.0.0.1:1633/…` would have Freedom fetch the user's own loopback
@@ -328,7 +358,7 @@ function defaultNetRequest(options) {
  * `fetch(url, { redirect: 'error' })` does.
  *
  * @param {string} url
- * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string, body?: string|Buffer}} init
+ * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string, body?: string|Uint8Array|ReadableStream}} init
  * @param {{requestImpl?: Function, resolveProxy?: Function, session?: Electron.Session}} deps -
  *   test seams for `net.request` and `session.resolveProxy`, and the session to
  *   dial on (the default session when none is given): its proxy policy decides
@@ -342,18 +372,39 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       `gateway transport supports redirect: 'manual' or 'error' only (got '${redirect}')`
     );
   }
+  const streamBody = isStreamBody(requestBody);
   if (requestBody != null) {
     if (method === 'GET' || method === 'HEAD') {
       throw new TypeError(`a ${method} request cannot carry a body`);
     }
-    if (typeof requestBody !== 'string' && !Buffer.isBuffer(requestBody)) {
-      throw new TypeError('gateway transport accepts a string or Buffer body only');
+    if (typeof requestBody !== 'string' && !(requestBody instanceof Uint8Array) && !streamBody) {
+      throw new TypeError('gateway transport accepts a string, bytes or a stream body only');
     }
+    if (streamBody && requestBody.locked) throw new TypeError('the stream body is locked');
   }
-  if (signal?.aborted) throw abortError();
+  // A stream body the dial fails before writing is cancelled all the same,
+  // so its source is never left waiting.
+  let bodyTaken = !streamBody;
+  const dropBody = (err) => {
+    if (bodyTaken) return;
+    bodyTaken = true;
+    requestBody.cancel(err).catch(() => {});
+  };
+  if (signal?.aborted) {
+    const err = abortError();
+    dropBody(err);
+    throw err;
+  }
   // Refused before the request exists, so Chromium is never asked to resolve
   // an onion name the session would send DIRECT (see the file header).
-  if (isOnionGatewayUrl(url)) await assertOnionRoutable(url, deps);
+  if (isOnionGatewayUrl(url)) {
+    try {
+      await assertOnionRoutable(url, deps);
+    } catch (err) {
+      dropBody(err);
+      throw err;
+    }
+  }
   const requestImpl = deps.requestImpl || defaultNetRequest;
 
   return new Promise((resolve, reject) => {
@@ -369,7 +420,9 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     // cancel it — the returned promise would then hang until the network
     // settled it, stalling whoever awaited it.
     if (signal?.aborted) {
-      reject(abortError());
+      const err = abortError();
+      dropBody(err);
+      reject(err);
       return;
     }
 
@@ -408,14 +461,22 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       });
     } catch (err) {
       releaseDial();
+      dropBody(err);
       reject(err);
       return;
     }
 
+    // Settles on the request's every terminal path (each runs `detach`): a
+    // stream body still being written stops there.
+    let markOver;
+    const over = new Promise((resolve) => {
+      markOver = resolve;
+    });
     const detach = () => {
       if (onAbort && signal) signal.removeEventListener('abort', onAbort);
       onAbort = null;
       releaseDial();
+      markOver();
     };
     const abortRequest = () => {
       try {
@@ -426,6 +487,7 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     };
     const fail = (err) => {
       detach();
+      dropBody(err);
       if (!settled) {
         settled = true;
         reject(err);
@@ -562,7 +624,16 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       for (const [name, value] of entries) {
         request.setHeader(name, value);
       }
-      if (requestBody != null) request.write(requestBody);
+      if (streamBody) {
+        bodyTaken = true;
+        writeStreamBody(request, requestBody, over).catch((err) => {
+          abortRequest();
+          fail(err);
+        });
+        return;
+      }
+      if (typeof requestBody === 'string') request.write(requestBody);
+      else if (requestBody != null) request.write(bodyChunk(requestBody));
       request.end();
     } catch (err) {
       // The request exists but was never ended: settle it, or a rejected
@@ -571,6 +642,50 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       fail(err);
     }
   });
+}
+
+const OVER = Symbol('over');
+
+/**
+ * Writes `body` to `request` as it is pulled (see the file header): one
+ * chunk at a time, the next read only once Chromium has taken the last.
+ * Stops, cancelling `body`, once `over` settles (the request has ended).
+ * Rejects when `body` fails or a write is refused: the caller fails the
+ * request with that error.
+ */
+async function writeStreamBody(request, body, over) {
+  const stop = over.then(() => OVER);
+  const reader = body.getReader();
+  let chunked = false;
+  try {
+    for (;;) {
+      const next = await Promise.race([reader.read(), stop]);
+      if (next === OVER) {
+        reader.cancel(abortError()).catch(() => {});
+        return;
+      }
+      if (next.done) {
+        request.end();
+        return;
+      }
+      const chunk = bodyChunk(next.value);
+      if (!chunk.byteLength) continue;
+      if (!chunked) {
+        request.chunkedEncoding = true;
+        chunked = true;
+      }
+      const written = new Promise((resolve, reject) => {
+        request.write(chunk, (err) => (err ? reject(err) : resolve()));
+      });
+      if ((await Promise.race([written, stop])) === OVER) {
+        reader.cancel(abortError()).catch(() => {});
+        return;
+      }
+    }
+  } catch (err) {
+    reader.cancel(err).catch(() => {});
+    throw err;
+  }
 }
 
 /**

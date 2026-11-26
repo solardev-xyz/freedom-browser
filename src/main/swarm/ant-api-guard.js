@@ -29,13 +29,15 @@
  * publishing, probes) goes over Node's fetch and never reaches
  * `session.webRequest`, so it is not affected. The exceptions are dials of a
  * *remote* external node — the bzz: handler's content requests (freedom-core
- * design 0006, deviation `transport`) and the ENS prefetch — which go through
- * Electron's `net.request` (for the session's proxy policy). `net.request`
- * does pass through `session.webRequest`, with no frame and no webContents,
- * exactly like a worker's request. Each such dial announces its exact URL in
- * `ant-api-main-dials.js` for its lifetime, and only a frameless GET/HEAD of
- * that exact URL is let through; the node's origin isn't exempted, and
- * neither is frameless traffic.
+ * design 0006, deviation `transport`), the ENS prefetch, and main's Swarm
+ * executor's node calls (design 0015, The transport), POSTs among them —
+ * which go through Electron's `net.request` (for the session's proxy
+ * policy). `net.request` does pass through `session.webRequest`, with no
+ * frame and no webContents, exactly like a worker's request. Each such dial
+ * announces its exact URL and its one method in `ant-api-main-dials.js` for
+ * its lifetime, and only a frameless request of exactly that method to
+ * exactly that URL is let through; the node's origin isn't exempted, nor is
+ * frameless traffic, nor another method of an announced URL.
  *
  * Which requests count as "to the Ant API":
  *   - any loopback host — `localhost`, `*.localhost`, `127.0.0.0/8`,
@@ -271,12 +273,12 @@ function webContentsType(details) {
 }
 
 function isAnnouncedMainProcessDial(details, method) {
-  if (method !== 'GET' && method !== 'HEAD') return false;
   // A request from a page, a frame or a worker's webContents is never the
   // main process's own dial.
   if (details?.webContentsId !== undefined && details?.webContentsId !== null) return false;
   if (details?.webContents || details?.frame) return false;
-  return isMainProcessAntDial(details.url);
+  // Exactly the method the dial announced, for exactly its URL.
+  return isMainProcessAntDial(details.url, method);
 }
 
 function isAllowedInitiator(details) {

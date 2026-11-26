@@ -172,30 +172,33 @@ describe('prefetchGatewayUrl — a remote Ant dial is announced to the API guard
     prefetchGatewayUrl(`bzz://${HASH}`);
     await flush();
     expect(mockNetRequest).toHaveBeenCalledTimes(1);
-    expect(isMainProcessAntDial(URL_)).toBe(true);
+    expect(isMainProcessAntDial(URL_, 'GET')).toBe(true);
+    // Its one method only: nothing else of that URL is let through.
+    expect(isMainProcessAntDial(URL_, 'HEAD')).toBe(false);
+    expect(isMainProcessAntDial(URL_, 'POST')).toBe(false);
 
     answer(mockNetRequests[0]);
     for (let i = 0; i < 10; i += 1) await flush();
-    expect(isMainProcessAntDial(URL_)).toBe(false);
+    expect(isMainProcessAntDial(URL_, 'GET')).toBe(false);
   });
 
   test('released on abort', async () => {
     getAntApiUrl.mockReturnValue(REMOTE);
     const handle = prefetchGatewayUrl(`bzz://${HASH}`);
     await flush();
-    expect(isMainProcessAntDial(URL_)).toBe(true);
+    expect(isMainProcessAntDial(URL_, 'GET')).toBe(true);
     handle.abort();
     for (let i = 0; i < 10; i += 1) await flush();
-    expect(isMainProcessAntDial(URL_)).toBe(false);
+    expect(isMainProcessAntDial(URL_, 'GET')).toBe(false);
   });
 
   test('a loopback node (Node fetch, never webRequest) and IPFS dials are not announced', async () => {
     prefetchGatewayUrl(`bzz://${HASH}`);
-    expect(isMainProcessAntDial(`http://127.0.0.1:1633/bzz/${HASH}`)).toBe(false);
+    expect(isMainProcessAntDial(`http://127.0.0.1:1633/bzz/${HASH}`, 'GET')).toBe(false);
     getIpfsGatewayUrl.mockReturnValue('http://ipfs.example.test:8080');
     prefetchGatewayUrl(`ipfs://${CID}`);
     await flush();
-    expect(isMainProcessAntDial(`http://ipfs.example.test:8080/ipfs/${CID}`)).toBe(false);
+    expect(isMainProcessAntDial(`http://ipfs.example.test:8080/ipfs/${CID}`, 'GET')).toBe(false);
   });
 });
 

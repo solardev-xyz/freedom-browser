@@ -1,6 +1,8 @@
 const {
   FakeClientRequest,
   FakeIncomingMessage,
+  emitRedirect,
+  emitResponse,
 } = require('../../../test/helpers/fake-electron-net');
 
 const {
@@ -427,10 +429,33 @@ describe('netGatewayFetch', () => {
     expect(request.ended).toBe(true);
   });
 
+  test('writes a bytes body that is no Buffer as it is', () => {
+    const bytes = new Uint8Array([0, 1, 2, 3, 4, 5]).subarray(1, 4);
+    const { request } = startNetFetch(REMOTE, { method: 'POST', body: bytes });
+
+    expect(request.written).toEqual([Buffer.from([1, 2, 3])]);
+    expect(request.chunkedEncoding).toBe(false);
+    expect(request.ended).toBe(true);
+  });
+
   test.each([
     ['a GET with a body', { method: 'GET', body: 'x' }, /GET request cannot carry a body/],
     ['a HEAD with a body', { method: 'HEAD', body: 'x' }, /HEAD request cannot carry a body/],
-    ['a stream body', { method: 'POST', body: new ReadableStream() }, /string or Buffer body/],
+    [
+      'a GET with a stream body',
+      { method: 'GET', body: new ReadableStream() },
+      /GET request cannot carry a body/,
+    ],
+    ['an object body', { method: 'POST', body: { a: 1 } }, /a string, bytes or a stream body/],
+    [
+      'a locked stream body',
+      (() => {
+        const body = new ReadableStream();
+        body.getReader();
+        return { method: 'POST', body };
+      })(),
+      /stream body is locked/,
+    ],
   ])('refuses %s before dialling', async (_label, init, message) => {
     const requestImpl = jest.fn();
     await expect(netGatewayFetch(REMOTE, init, { requestImpl })).rejects.toThrow(message);
@@ -646,6 +671,272 @@ describe('netGatewayFetch', () => {
 // What a `session.webRequest` listener sees for a `net.request` dial: no
 // webContents. adblock and x402-detect skip exactly these (R1-M1/M2 on #462).
 const ownDial = (url) => ({ url, webContentsId: undefined, resourceType: 'other' });
+
+// Design 0015, The transport: main's Swarm executor POSTs an upload streamed
+// from the core to a remote node. Electron gathers a body written without
+// `chunkedEncoding` whole before it starts the request, so a stream goes
+// chunked, each chunk written only once Chromium has taken the last.
+describe('netGatewayFetch with a stream body', () => {
+  const CHUNK = 64 * 1024;
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  // A source the transport pulls: `pulls` counts its reads, each a fresh
+  // 64 KiB chunk of `fill`; `cancelled` is the reason it was cancelled with.
+  function source({ chunks = 4, fill = (i) => i, failAt = null, empty = false } = {}) {
+    const state = { pulls: 0, cancelled: null };
+    state.stream = new ReadableStream(
+      {
+        pull(controller) {
+          if (empty || state.pulls === chunks) {
+            controller.close();
+            return;
+          }
+          if (state.pulls === failAt) {
+            controller.error(new Error('body_stream_error'));
+            return;
+          }
+          state.pulls += 1;
+          controller.enqueue(new Uint8Array(CHUNK).fill(fill(state.pulls)));
+        },
+        cancel(reason) {
+          state.cancelled = reason;
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    return state;
+  }
+
+  function startStreaming(body, init = {}) {
+    let request = null;
+    const requestImpl = jest.fn((options) => {
+      request = new FakeClientRequest(options);
+      request.holdWrites = true;
+      return request;
+    });
+    const promise = netGatewayFetch(
+      REMOTE,
+      { method: 'POST', redirect: 'manual', body, ...init },
+      { requestImpl }
+    );
+    return { promise, request };
+  }
+
+  test('a stopped reader holds one chunk: the next is pulled only once Chromium takes the last', async () => {
+    const body = source({ chunks: 3 });
+    const dial = startStreaming(body.stream);
+    await flush();
+    const { request } = dial;
+    expect(request.chunkedEncoding).toBe(true);
+    // Chromium hasn't taken the first chunk (the node doesn't read): one
+    // chunk pulled, one written, and nothing more however long it waits.
+    for (let i = 0; i < 5; i += 1) await flush();
+    expect(body.pulls).toBe(1);
+    expect(request.written).toHaveLength(1);
+    expect(request.ended).toBe(false);
+
+    request.takeWrite();
+    await flush();
+    expect(body.pulls).toBe(2);
+    expect(request.written).toHaveLength(2);
+    request.takeWrite();
+    await flush();
+    request.takeWrite();
+    await flush();
+    expect(body.pulls).toBe(3);
+    expect(request.written.map((chunk) => [chunk.length, chunk[0]])).toEqual([
+      [CHUNK, 1],
+      [CHUNK, 2],
+      [CHUNK, 3],
+    ]);
+    expect(request.ended).toBe(true);
+
+    emitResponse(request, { status: 201, chunks: ['{"reference":"r"}'] });
+    const response = await dial.promise;
+    expect(response.status).toBe(201);
+    await expect(response.text()).resolves.toBe('{"reference":"r"}');
+    expect(body.cancelled).toBeNull();
+  });
+
+  test('an empty stream goes as no body, unchunked', async () => {
+    const body = source({ empty: true });
+    const dial = startStreaming(body.stream);
+    await flush();
+    expect(dial.request.chunkedEncoding).toBe(false);
+    expect(dial.request.written).toEqual([]);
+    expect(dial.request.ended).toBe(true);
+  });
+
+  test('empty chunks are skipped, never written', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(0));
+        controller.enqueue(Buffer.from('ab'));
+        controller.enqueue(new Uint8Array(0));
+        controller.close();
+      },
+    });
+    const dial = startStreaming(stream);
+    await flush();
+    dial.request.takeWrite();
+    await flush();
+    expect(dial.request.written).toEqual([Buffer.from('ab')]);
+    expect(dial.request.ended).toBe(true);
+  });
+
+  test('a body that fails mid-upload aborts the request with its error', async () => {
+    const body = source({ chunks: 4, failAt: 1 });
+    const dial = startStreaming(body.stream);
+    await flush();
+    dial.request.takeWrite();
+    await expect(dial.promise).rejects.toThrow('body_stream_error');
+    expect(dial.request.aborted).toBe(true);
+    expect(dial.request.ended).toBe(false);
+  });
+
+  test('a chunk that is not bytes fails the request', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue('text');
+        controller.close();
+      },
+    });
+    const dial = startStreaming(stream);
+    await expect(dial.promise).rejects.toThrow('a stream body yields bytes only');
+    expect(dial.request.aborted).toBe(true);
+  });
+
+  test('a body that fails after the answer errors the answer body', async () => {
+    let fail;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(Buffer.from('first'));
+        fail = (err) => controller.error(err);
+      },
+    });
+    const dial = startStreaming(stream);
+    await flush();
+    dial.request.takeWrite();
+    await flush();
+    // The node answers before the body is over (an early 413, say).
+    emitResponse(dial.request, { status: 413, end: false });
+    const response = await dial.promise;
+    const reader = response.body.getReader();
+    const read = reader.read();
+    fail(new Error('body_stream_error'));
+    await expect(read).rejects.toThrow('body_stream_error');
+    expect(dial.request.aborted).toBe(true);
+  });
+
+  test('an abort mid-upload cancels the body and the request', async () => {
+    const body = source({ chunks: 4 });
+    const controller = new AbortController();
+    const dial = startStreaming(body.stream, { signal: controller.signal });
+    await flush();
+    expect(body.pulls).toBe(1);
+    controller.abort();
+    await expect(dial.promise).rejects.toMatchObject({ name: 'AbortError' });
+    await flush();
+    expect(dial.request.aborted).toBe(true);
+    expect(body.cancelled).toMatchObject({ name: 'AbortError' });
+    // Chromium taking the held chunk late pulls nothing more.
+    dial.request.takeWrite();
+    await flush();
+    expect(body.pulls).toBe(1);
+  });
+
+  test('a request that fails while a chunk is held cancels the body', async () => {
+    const body = source({ chunks: 4 });
+    const dial = startStreaming(body.stream);
+    await flush();
+    // The guard's cancel, or the connection's failure.
+    dial.request.emit('error', new Error('net::ERR_BLOCKED_BY_CLIENT'));
+    await expect(dial.promise).rejects.toThrow('net::ERR_BLOCKED_BY_CLIENT');
+    await flush();
+    expect(body.cancelled).toMatchObject({ name: 'AbortError' });
+    expect(body.pulls).toBe(1);
+  });
+
+  test("the node's answer ending before the body cancels what is left of it", async () => {
+    const body = source({ chunks: 4 });
+    const dial = startStreaming(body.stream);
+    await flush();
+    emitResponse(dial.request, { status: 400, chunks: ['{"message":"bad"}'] });
+    const response = await dial.promise;
+    await expect(response.text()).resolves.toBe('{"message":"bad"}');
+    await flush();
+    expect(body.cancelled).toMatchObject({ name: 'AbortError' });
+    expect(body.pulls).toBe(1);
+  });
+
+  test.each([
+    [
+      'the onion gate refuses the dial',
+      () => ({
+        url: 'http://antnode.onion:1633/bytes',
+        deps: { requestImpl: jest.fn(), resolveProxy: async () => 'DIRECT' },
+      }),
+      OnionGateRefusal,
+    ],
+    [
+      'the call was aborted before it',
+      () => {
+        const controller = new AbortController();
+        controller.abort();
+        return { init: { signal: controller.signal }, deps: { requestImpl: jest.fn() } };
+      },
+      /aborted/,
+    ],
+    [
+      'the request cannot be made',
+      () => ({
+        deps: {
+          requestImpl: () => {
+            throw new Error('Electron net.request is unavailable');
+          },
+        },
+      }),
+      /unavailable/,
+    ],
+    [
+      'a header cannot be set',
+      () => ({
+        init: { headers: { 'bad header': 'x' } },
+        deps: {
+          requestImpl: (options) => {
+            const request = new FakeClientRequest(options);
+            request.setHeader = () => {
+              throw new TypeError('Invalid header name');
+            };
+            return request;
+          },
+        },
+      }),
+      /Invalid header name/,
+    ],
+  ])('a body the dial never wrote is cancelled when %s', async (_label, setup, error) => {
+    const body = source({ chunks: 4 });
+    const { url = REMOTE, init = {}, deps } = setup();
+    await expect(
+      netGatewayFetch(url, { method: 'POST', body: body.stream, ...init }, deps)
+    ).rejects.toThrow(error);
+    await flush();
+    expect(body.pulls).toBe(0);
+    expect(body.cancelled).not.toBeNull();
+  });
+
+  test('a redirect ends the upload: the hop is never taken, the body cancelled', async () => {
+    const body = source({ chunks: 4 });
+    const dial = startStreaming(body.stream);
+    await flush();
+    emitRedirect(dial.request, { status: 307, location: 'http://127.0.0.1:1633/bytes' });
+    const response = await dial.promise;
+    expect(response.status).toBe(307);
+    await flush();
+    expect(dial.request.aborted).toBe(true);
+    expect(body.cancelled).toMatchObject({ name: 'AbortError' });
+  });
+});
 
 describe('isGatewayTransportRequest', () => {
   const URL_A = 'https://ccip.example/0xabc/0x1234.json';
