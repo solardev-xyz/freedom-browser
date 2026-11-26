@@ -44,6 +44,10 @@ module.exports = {
   RADICLE_STATUS_UPDATE: 'radicle:statusUpdate',
   RADICLE_CHECK_BINARY: 'radicle:checkBinary',
   RADICLE_SEED: 'radicle:seed',
+  // Whether the asking page's window may seed: a private window only with
+  // Allow seeding from private windows on (freedom-core design 0008,
+  // question 11). The Radicle viewer shows its Seed button by it.
+  RADICLE_GET_SEED_AVAILABILITY: 'radicle:getSeedAvailability',
   RADICLE_GET_CONNECTIONS: 'radicle:getConnections',
   RADICLE_SYNC_REPO: 'radicle:syncRepo',
   RADICLE_GET_SEED_STATUS: 'radicle:getSeedStatus',

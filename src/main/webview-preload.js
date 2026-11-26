@@ -1423,16 +1423,21 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
 
   // Radicle
-  // PRIVATE MODE GUARD (R-9): no seeding policy or fetched repository may
-  // outlive a private window; main refuses these too.
-  seedRadicle: guardInternal('seedRadicle', (rid) =>
-    IS_PRIVATE_WINDOW
-      ? Promise.reject(new Error('Seeding is not available in private windows'))
-      : ipcRenderer.invoke('radicle:seed', rid)
+  // PRIVATE MODE GUARD (R-9; freedom-core design 0008, question 11): main
+  // decides a private window's seed. It refuses one while Allow seeding from
+  // private windows is off, and asks the user first while it is on, so this
+  // preload sends every seed on.
+  seedRadicle: guardInternal('seedRadicle', (rid) => ipcRenderer.invoke('radicle:seed', rid)),
+  // `{ available }`: whether this window may seed, which main answers from
+  // the window and that setting. The viewer shows its Seed button by it.
+  getRadicleSeedAvailability: guardInternal('getRadicleSeedAvailability', () =>
+    ipcRenderer.invoke('radicle:getSeedAvailability')
   ),
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
+  // PRIVATE MODE GUARD (R-9): a sync fetches into storage, which a private
+  // window may never do, whatever that setting says; main refuses it too.
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
     IS_PRIVATE_WINDOW
       ? Promise.reject(new Error('Seeding is not available in private windows'))

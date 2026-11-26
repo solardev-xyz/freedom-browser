@@ -356,6 +356,7 @@ describe('buildSettingsSearchIndex', () => {
     // Experimental, not Startup; #275 moved it, and the result says where.
     expect(attribution('Start Tor when Freedom opens')).toBe('Nodes › Startup');
     expect(attribution('Enable Tor (.onion access) Beta')).toBe('Advanced');
+    expect(attribution('Allow seeding from private windows Beta')).toBe('Advanced');
     expect(attribution('Theme')).toBe('Appearance');
     expect(attribution('Show IPFS load progress in the status bar')).toBe('Appearance');
     expect(attribution('Swarm publishing')).toBe('Nodes');
@@ -745,6 +746,23 @@ describe('matchSettingsSearch', () => {
     );
     expect(matchSettingsSearch(entries, query)).toHaveLength(matching.length);
     expect(matching.length).toBeGreaterThan(30);
+  });
+
+  // Allow seeding from private windows (freedom-core design 0008, question
+  // 11): its label finds it, a word of it ranks it above the help-text hits,
+  // and the result opens Advanced, the entry it is in.
+  test('Allow seeding from private windows is found by its label, under Advanced', () => {
+    const row = (query) =>
+      search(query).find((result) => result.label === 'Allow seeding from private windows Beta');
+    expect(row('allow seeding')).toMatchObject({
+      sectionId: 'experimental',
+      section: 'Advanced',
+      rank: 0,
+    });
+    expect(row('private windows')).toMatchObject({ sectionId: 'experimental', rank: 1 });
+    expect(row('Seeding From Private')).toMatchObject({ sectionId: 'experimental', rank: 1 });
+    // Its help line is searched too: what stays off in private windows.
+    expect(row('importing')).toMatchObject({ sectionId: 'experimental', rank: 2 });
   });
 
   test('a real query that needs the help text: "restart" is in no label', () => {

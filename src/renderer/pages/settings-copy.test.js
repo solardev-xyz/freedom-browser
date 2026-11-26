@@ -324,6 +324,7 @@ describe('settings.html Advanced holds only the experiments (#275)', () => {
       'Enable Tor (.onion access) Beta',
       'Route IPFS through Tor Beta',
       'Route Radicle through Tor Beta',
+      'Allow seeding from private windows Beta',
     ]);
     // A label wrapped in a span of its own (an accessible name, #784)
     // still carries the badge right after it.
@@ -332,12 +333,42 @@ describe('settings.html Advanced holds only the experiments (#275)', () => {
       'Enable Tor \\(\\.onion access\\)',
       'Route IPFS through Tor',
       'Route Radicle through Tor',
+      'Allow seeding from private windows',
     ]) {
       expect(advanced).toMatch(
         new RegExp(`${label}(</span>)?\\s*<span class="resolver-badge">Beta</span>`)
       );
     }
     expect(SOURCE).not.toContain('(Beta)</span>');
+  });
+
+  // Allow seeding from private windows (freedom-core design 0008, question
+  // 11): beside the Radicle Tor row, not hidden with the Tor rows, and its
+  // help says what the label doesn't: the confirmation, what stays after the
+  // window, and what private windows still can't do.
+  test('Allow seeding from private windows sits beside Route Radicle through Tor, and says what it changes', () => {
+    const advanced = section('experimental');
+    const tor = advanced.indexOf('id="route-radicle-through-tor-row"');
+    const seeding = advanced.indexOf('id="allow-private-radicle-seeding-row"');
+    expect(tor).toBeGreaterThan(0);
+    expect(seeding).toBeGreaterThan(tor);
+    expect(advanced.slice(tor, seeding).match(/class="row"/g)).toHaveLength(1);
+    expect(advanced).toMatch(/<div class="row" id="allow-private-radicle-seeding-row">/);
+    const help = advanced.match(
+      /<p class="row-help" id="allow-private-radicle-seeding-help">([\s\S]*?)<\/p>/
+    );
+    expect(textOf(help[1])).toBe(
+      'Freedom asks before each seed. The repository then stays in this profile after the private window closes, and the built-in Radicle node announces it to its peers. Syncing, importing and writing stay off in private windows.'
+    );
+    expect(advanced).toContain('aria-labelledby="allow-private-radicle-seeding-label"');
+    expect(advanced).toContain('aria-describedby="allow-private-radicle-seeding-help"');
+    // Off unless the profile holds `true`, and saved as the form's state.
+    expect(SOURCE).toContain(
+      'fields.allowPrivateRadicleSeeding.checked = settings.allowPrivateRadicleSeeding === true;'
+    );
+    expect(SOURCE).toContain(
+      'allowPrivateRadicleSeeding: fields.allowPrivateRadicleSeeding.checked,'
+    );
   });
 
   test('the three rows that were not experiments moved where they belong', () => {

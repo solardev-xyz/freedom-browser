@@ -404,7 +404,15 @@ describe('refused before anything runs', () => {
     expect(serves()[0].sent('rad.shutdown')).toEqual([]);
   });
 
-  test('a private window: refused, nothing cloned', async () => {
+  // Allow seeding from private windows (freedom-core design 0008, question
+  // 11) lets a private window seed, and import nothing: refused either way.
+  test.each([
+    ['off', false],
+    ['on', true],
+  ])('a private window, with Allow seeding from private windows %s: refused, nothing cloned', async (_label, on) => {
+    const settings = require('../settings-store');
+    expect(settings.saveSettings({ allowPrivateRadicleSeeding: on })).toBe(true);
+    expect(settings.loadSettings().allowPrivateRadicleSeeding).toBe(on);
     await startNode();
     const { result } = await bridgeImport({ sender: { private: true } });
     expect(result).toEqual({

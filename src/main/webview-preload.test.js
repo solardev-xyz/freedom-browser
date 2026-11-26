@@ -284,6 +284,7 @@ describe('webview-preload', () => {
         ['https://example.com'],
       ],
       ['seedRadicle', ['z3abc'], IPC.RADICLE_SEED, ['z3abc']],
+      ['getRadicleSeedAvailability', [], IPC.RADICLE_GET_SEED_AVAILABILITY, []],
       ['getRadicleStatus', [], IPC.RADICLE_GET_STATUS, []],
       ['syncRadicleRepo', ['z3abc'], IPC.RADICLE_SYNC_REPO, ['z3abc']],
     ];
@@ -299,7 +300,11 @@ describe('webview-preload', () => {
     );
   });
 
-  test('the internal Radicle viewer cannot seed or sync from a private window (R-9)', async () => {
+  // R-9, and freedom-core design 0008 question 11: a private window's seed
+  // is main's to decide, refused while Allow seeding from private windows is
+  // off and asked about while it is on, so the preload sends it on. A sync
+  // stays refused here, whatever that setting says.
+  test('the internal Radicle viewer leaves a private window\'s seed to main, and cannot sync there (R-9)', async () => {
     const { exposures, ipcRenderer } = loadWebviewPreloadModule({
       isPrivateWindow: true,
       location: {
@@ -310,13 +315,22 @@ describe('webview-preload', () => {
     });
 
     ipcRenderer.invoke.mockClear();
-    await expect(exposures.freedomAPI.seedRadicle('z3abc')).rejects.toThrow(
-      'Seeding is not available in private windows'
-    );
+    const refused = {
+      success: false,
+      error: { code: 'RADICLE_PRIVATE_WINDOW', message: 'Seeding is not available in private windows' },
+    };
+    ipcRenderer.invoke.mockResolvedValueOnce(refused);
+    await expect(exposures.freedomAPI.seedRadicle('z3abc')).resolves.toEqual(refused);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.RADICLE_SEED, 'z3abc');
+    ipcRenderer.invoke.mockResolvedValueOnce({ available: false });
+    await expect(exposures.freedomAPI.getRadicleSeedAvailability()).resolves.toEqual({
+      available: false,
+    });
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.RADICLE_GET_SEED_AVAILABILITY);
+
     await expect(exposures.freedomAPI.syncRadicleRepo('z3abc')).rejects.toThrow(
       'Seeding is not available in private windows'
     );
-    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.RADICLE_SEED, 'z3abc');
     expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.RADICLE_SYNC_REPO, 'z3abc');
 
     // Reading status stays available.
