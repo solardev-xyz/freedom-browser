@@ -124,9 +124,12 @@ function loadManager(options = {}) {
 
   // The real private-window registry decides who is private (R-9).
   const windowFixture = createPrivateWindowFixture();
+  // Main's prompts (the private-window seed's): Cancel unless a test answers.
+  const dialog = { showMessageBox: jest.fn(async () => ({ response: 0 })), ...options.dialog };
   jest.doMock('electron', () => ({
     app: options.app,
     ipcMain,
+    dialog,
     BrowserWindow: {
       getAllWindows: jest.fn(() => windows),
       fromWebContents: windowFixture.fromWebContents,
@@ -200,6 +203,8 @@ function loadManager(options = {}) {
     lookup: windowFixture.lookup,
     publicSender: windowFixture.publicSender,
     privateSender: () => windowFixture.privateSender(privateWindows),
+    windowOf: windowFixture.fromWebContents,
+    dialog,
   };
 }
 
@@ -760,6 +765,305 @@ test('IPC pushes native seed progress back to the requesting internal page', asy
     expect.objectContaining({ rid, state: 'fetched', progress: { phase: 'done' } })
   );
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+// Allow seeding from private windows (freedom-core design 0008, "Private
+// windows", question 11): off, the default, a private window can't seed; on,
+// a seed the user starts there is asked about in main's prompt, then works as
+// a normal window's, and stays after the window closes. Sync, and so every
+// clone but the seed's own fetch, stays refused in private windows either
+// way. The real private-window registry decides who is private.
+describe('Allow seeding from private windows (0008, question 11)', () => {
+  const IPC = require('../shared/ipc-channels');
+  const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+  const REFUSED = {
+    success: false,
+    error: { code: 'RADICLE_PRIVATE_WINDOW', message: 'Seeding is not available in private windows' },
+  };
+  const ON = { allowPrivateRadicleSeeding: true };
+  // A prompt the user answers with Seed.
+  const seedAnswer = () => ({ showMessageBox: jest.fn(async () => ({ response: 1 })) });
+  const ctxs = [];
+  const flush = async (rounds = 20) => {
+    for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  afterEach(async () => {
+    for (const ctx of ctxs.splice(0)) {
+      await ctx.mod.stopRadicle();
+      fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+    }
+  });
+
+  /** A running add-on node and its IPC, with a page in a private window. */
+  async function running(options = {}) {
+    const ctx = loadManager(options);
+    ctxs.push(ctx);
+    if (options.start !== false) await ctx.mod.startRadicle();
+    ctx.mod.registerRadicleIpc();
+    const host = ctx.privateSender();
+    const guest = { hostWebContents: host, isDestroyed: jest.fn(() => false), send: jest.fn() };
+    return {
+      ...ctx,
+      host,
+      guest,
+      privateWindow: ctx.windowOf(host),
+      seed: (event, rid = RID) => ctx.handlers.get(IPC.RADICLE_SEED)(event, rid),
+      sync: (event, rid = RID) => ctx.handlers.get(IPC.RADICLE_SYNC_REPO)(event, rid),
+      availability: (event) => ctx.handlers.get(IPC.RADICLE_GET_SEED_AVAILABILITY)(event),
+    };
+  }
+
+  test('off, the default: a private window is refused before anything is asked or sent', async () => {
+    for (const settings of [{}, { allowPrivateRadicleSeeding: false }]) {
+      const ctx = await running({ settings });
+      expect(await ctx.seed({ sender: ctx.guest })).toEqual(REFUSED);
+      expect(ctx.availability({ sender: ctx.guest })).toEqual({ available: false });
+      expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
+      expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+      expect(ctx.guest.send).not.toHaveBeenCalled();
+      // A normal window's seed is as it was: no prompt.
+      const sender = ctx.publicSender();
+      expect(ctx.availability({ sender })).toEqual({ available: true });
+      await expect(ctx.seed({ sender })).resolves.toMatchObject({ success: true });
+      expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
+      expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  test("on: main's prompt over the private window, and on its Seed a normal window's seed", async () => {
+    const ctx = await running({ settings: ON, dialog: seedAnswer() });
+    expect(ctx.availability({ sender: ctx.guest })).toEqual({ available: true });
+    const started = await ctx.seed({ sender: ctx.guest }, 'rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5');
+    expect(started).toMatchObject({ success: true, status: { rid: RID, state: 'fetching' } });
+    expect(ctx.dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    expect(ctx.dialog.showMessageBox).toHaveBeenCalledWith(
+      ctx.privateWindow,
+      ctx.mod.privateSeedPrompt(RID)
+    );
+    await started.status.done;
+    await flush();
+    // The seed's own fetch, the one clone a private window may start.
+    expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+    expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledWith(
+      RID,
+      120000,
+      expect.any(Function)
+    );
+    // Its progress reaches the page that asked, as a normal window's does.
+    expect(ctx.guest.send).toHaveBeenCalledWith(
+      IPC.RADICLE_SEED_STATUS_UPDATE,
+      expect.objectContaining({ rid: RID, state: 'fetched' })
+    );
+  });
+
+  test("on: a private window's seed keeps main's private-window log redaction", async () => {
+    const ctx = await running({
+      settings: ON,
+      dialog: seedAnswer(),
+      embedded: {
+        cloneRepoWithProgress: jest.fn(async () => {
+          throw new Error(`no seeds found for ${RID}`);
+        }),
+      },
+    });
+    const log = require('./logger');
+    const failures = () =>
+      log.warn.mock.calls.map((call) => call.join(' ')).filter((line) => line.includes('fetch failed'));
+    const fromPrivate = await ctx.seed({ sender: ctx.guest });
+    await fromPrivate.status.done;
+    await flush();
+    expect(failures()).toEqual(['[seed-status] <private> fetch failed: <private>']);
+    // A normal window's names it, as before.
+    const fromPublic = await ctx.seed({ sender: ctx.publicSender() });
+    await fromPublic.status.done;
+    await flush();
+    expect(failures()[1]).toBe(`[seed-status] ${RID} fetch failed: no seeds found for ${RID}`);
+  });
+
+  test('on: the repository stays after the private window closes, with its fetch still running then', async () => {
+    let finish;
+    const ctx = await running({
+      settings: ON,
+      dialog: seedAnswer(),
+      embedded: {
+        cloneRepoWithProgress: jest.fn(
+          (_rid, _timeout, onProgress) =>
+            new Promise((resolve) => {
+              onProgress({ phase: 'resolving', candidates: 2 });
+              finish = () => {
+                onProgress({ phase: 'done' });
+                resolve({ ok: true });
+              };
+            })
+        ),
+      },
+    });
+    const started = await ctx.seed({ sender: ctx.guest });
+    expect(started).toMatchObject({ success: true, status: { state: 'fetching' } });
+    await flush();
+    expect(ctx.guest.send).toHaveBeenCalledTimes(2);
+
+    // The private window closes: its cleanup runs, and the page is gone.
+    ctx.guest.isDestroyed.mockReturnValue(true);
+    ctx.host.isDestroyed = () => true;
+    ctx.privateWindow.isDestroyed = () => true;
+    ctx.privateWindow.emit('closed');
+    finish();
+    await started.status.done;
+    await flush();
+
+    expect(ctx.embedded.unseedRepo).not.toHaveBeenCalled();
+    expect(ctx.embedded.cancelClone).not.toHaveBeenCalled();
+    // Nothing more went to the page that closed.
+    expect(ctx.guest.send).toHaveBeenCalledTimes(2);
+    // A normal window finds it fetched and in storage.
+    await expect(
+      ctx.handlers.get(IPC.RADICLE_GET_SEED_STATUS)({ sender: ctx.publicSender() }, RID)
+    ).resolves.toMatchObject({ success: true, status: { rid: RID, state: 'fetched', inStorage: true } });
+  });
+
+  test('on: Cancel, a prompt that fails, or the setting turned off meanwhile, starts nothing', async () => {
+    const ctx = await running({ settings: ON });
+    // Cancel (the prompt's default).
+    await expect(ctx.seed({ sender: ctx.guest })).resolves.toEqual({
+      success: false,
+      error: { code: 'RADICLE_SEED_CANCELLED', message: 'Seeding was cancelled' },
+    });
+    // A prompt that fails is no answer.
+    ctx.dialog.showMessageBox.mockRejectedValueOnce(new Error('no dialog'));
+    await expect(ctx.seed({ sender: ctx.guest })).resolves.toMatchObject({
+      success: false,
+      error: { code: 'RADICLE_SEED_CANCELLED' },
+    });
+    expect(require('./logger').warn).toHaveBeenCalledWith(
+      '[Radicle] The private-window seed prompt failed:',
+      'no dialog'
+    );
+    // The setting turned off while the prompt waits: its Seed is refused.
+    ctx.dialog.showMessageBox.mockImplementationOnce(async () => {
+      ctx.changeSettings({ allowPrivateRadicleSeeding: false });
+      return { response: 1 };
+    });
+    await expect(ctx.seed({ sender: ctx.guest })).resolves.toEqual(REFUSED);
+    expect(ctx.dialog.showMessageBox).toHaveBeenCalledTimes(3);
+    expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+    expect(ctx.guest.send).not.toHaveBeenCalled();
+  });
+
+  test('on: nothing is asked for a seed that cannot start, nor where there is no window to ask in', async () => {
+    const ctx = await running({ settings: ON, dialog: seedAnswer() });
+    await expect(ctx.seed({ sender: ctx.guest }, 'rad:z0bad')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'INVALID_RID' },
+    });
+    await expect(ctx.seed({ sender: ctx.guest }, '')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'INVALID_RID', message: 'Missing repository ID' },
+    });
+    // A sender main can't place in a known window counts as private, and
+    // has no window to ask in.
+    for (const event of [
+      { sender: { isDestroyed: () => true } },
+      { sender: { isDestroyed: () => false, hostWebContents: { isDestroyed: () => true } } },
+      { sender: { isDestroyed: () => false } },
+      {},
+      null,
+    ]) {
+      expect(await ctx.seed(event)).toEqual(REFUSED);
+      expect(ctx.availability(event)).toEqual({ available: false });
+    }
+    for (const mode of ['null', 'throw']) {
+      ctx.lookup.mode = mode;
+      expect(await ctx.seed({ sender: ctx.guest })).toEqual(REFUSED);
+      expect(ctx.availability({ sender: ctx.guest })).toEqual({ available: false });
+    }
+    ctx.lookup.mode = 'registry';
+    await ctx.mod.stopRadicle();
+    await expect(ctx.seed({ sender: ctx.guest })).resolves.toMatchObject({
+      success: false,
+      error: { code: 'RADICLE_NOT_RUNNING' },
+    });
+    expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
+    expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+  });
+
+  test('on: a profile with Radicle disabled is refused as before, with nothing asked', async () => {
+    const ctx = await running({
+      settings: ON,
+      dialog: seedAnswer(),
+      start: false,
+      profile: { metadata: { nodes: { radicle: { mode: 'disabled' } } } },
+    });
+    await expect(ctx.seed({ sender: ctx.guest })).resolves.toMatchObject({
+      success: false,
+      error: { code: 'RADICLE_DISABLED' },
+    });
+    expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  test('on: one prompt at a time per private window', async () => {
+    let answer;
+    const ctx = await running({
+      settings: ON,
+      dialog: {
+        showMessageBox: jest.fn(
+          () =>
+            new Promise((resolve) => {
+              answer = resolve;
+            })
+        ),
+      },
+    });
+    const first = ctx.seed({ sender: ctx.guest });
+    await flush();
+    await expect(ctx.seed({ sender: ctx.guest })).resolves.toEqual({
+      success: false,
+      error: {
+        code: 'RADICLE_SEED_PENDING',
+        message: 'A seed in this window is waiting for your answer',
+      },
+    });
+    answer({ response: 1 });
+    await expect(first).resolves.toMatchObject({ success: true });
+    expect(ctx.dialog.showMessageBox).toHaveBeenCalledTimes(1);
+    // Answered, the window may ask again.
+    ctx.dialog.showMessageBox.mockResolvedValueOnce({ response: 0 });
+    await expect(ctx.seed({ sender: ctx.guest })).resolves.toMatchObject({
+      error: { code: 'RADICLE_SEED_CANCELLED' },
+    });
+  });
+
+  test('sync stays refused from a private window, with the setting off and on', async () => {
+    for (const settings of [{ allowPrivateRadicleSeeding: false }, ON]) {
+      const ctx = await running({ settings, dialog: seedAnswer() });
+      expect(await ctx.sync({ sender: ctx.guest })).toEqual(REFUSED);
+      expect(ctx.embedded.listSeededRepos).not.toHaveBeenCalled();
+      expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+      expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
+      expect(ctx.guest.send).not.toHaveBeenCalled();
+    }
+  });
+
+  test('the prompt names the repository, says it stays, and while the node announces what it seeds, that it is announced', () => {
+    const ctx = loadManager();
+    ctxs.push(ctx);
+    expect(ctx.mod.privateSeedPrompt(RID)).toEqual({
+      type: 'question',
+      title: 'Seed from a private window',
+      message: 'Seed this repository from a private window?',
+      detail: `${RID}\n\nIt stays in this profile after the private window closes, and your Radicle node announces it to its peers.`,
+      buttons: ['Cancel', 'Seed'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    // The wording for a node that announces nothing (the inventory
+    // setting, 0008 question 12, a later step).
+    expect(ctx.mod.privateSeedPrompt(RID, { announced: false }).detail).toBe(
+      `${RID}\n\nIt stays in this profile after the private window closes.`
+    );
+  });
 });
 
 describe('re-key critical section (R-8)', () => {
@@ -2440,6 +2744,60 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
         success: true,
       });
       expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+      await ctx.mod.stopRadicle();
+    });
+
+    // Allow seeding from private windows (0008, question 11): on, a private
+    // window's seed, once confirmed, is the service's rad.clone, as a normal
+    // window's is; its sync stays refused before anything is sent.
+    test('with Allow seeding from private windows on, a confirmed private seed goes to the service; sync stays refused', async () => {
+      const ctx = await runningService({
+        settings: { allowPrivateRadicleSeeding: true },
+        dialog: { showMessageBox: jest.fn(async () => ({ response: 1 })) },
+        embedded: {
+          callScoped: scoped({
+            seeders: { seeding: 1 },
+            node_info: { connected_peers: 6, repos_total: 2, repos_error: null },
+          }),
+        },
+      });
+      const IPC = require('../shared/ipc-channels');
+      ctx.mod.registerRadicleIpc();
+      const privateGuest = {
+        hostWebContents: ctx.privateSender(),
+        isDestroyed: () => false,
+        send: jest.fn(),
+      };
+      expect(
+        await ctx.handlers.get(IPC.RADICLE_SYNC_REPO)({ sender: privateGuest }, RID)
+      ).toEqual({
+        success: false,
+        error: {
+          code: 'RADICLE_PRIVATE_WINDOW',
+          message: 'Seeding is not available in private windows',
+        },
+      });
+      expect(ctx.embedded.callScoped).not.toHaveBeenCalledWith(
+        'list_seeded_repos',
+        expect.anything(),
+        expect.anything()
+      );
+      expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
+
+      const started = await ctx.handlers.get(IPC.RADICLE_SEED)({ sender: privateGuest }, RID);
+      expect(started).toMatchObject({ success: true, status: { rid: RID } });
+      expect(ctx.dialog.showMessageBox).toHaveBeenCalledTimes(1);
+      await started.status.done;
+      expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+      expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledWith(
+        RID,
+        120000,
+        expect.any(Function)
+      );
+      expect(privateGuest.send).toHaveBeenCalledWith(
+        IPC.RADICLE_SEED_STATUS_UPDATE,
+        expect.objectContaining({ rid: RID, state: 'fetched' })
+      );
       await ctx.mod.stopRadicle();
     });
   });

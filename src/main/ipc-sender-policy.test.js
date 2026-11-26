@@ -275,6 +275,18 @@ describe('isSenderAllowed', () => {
     expect(refusedSettingsKeys(web(), { enableAi: true, ...off })).toEqual(['enableAi', 'loadOnlyVerifiedContent']);
   });
 
+  test('only Settings or the chrome may write Allow seeding from private windows over settings:save', () => {
+    const { refusedSettingsKeys } = policy;
+    const on = { allowPrivateRadicleSeeding: true };
+    expect(refusedSettingsKeys(page('settings.html'), on)).toEqual([]);
+    expect(refusedSettingsKeys(chrome(), on)).toEqual([]);
+    for (const file of ['rad-browser.html', 'home.html', 'private.html', 'error.html']) {
+      expect(refusedSettingsKeys(page(file), { ...on, theme: 'dark' })).toEqual(['allowPrivateRadicleSeeding']);
+    }
+    expect(refusedSettingsKeys(page('settings.html', { subFrame: true }), on)).toEqual(['allowPrivateRadicleSeeding']);
+    expect(refusedSettingsKeys(web(), on)).toEqual(['allowPrivateRadicleSeeding']);
+  });
+
   test('a chrome sender must be the top frame of our index.html in a window', () => {
     expect(isSenderAllowed('wallet:send-transaction', chrome({ subFrame: true }))).toBe(false);
     expect(isSenderAllowed('wallet:send-transaction', chrome({ noFrame: true }))).toBe(false);

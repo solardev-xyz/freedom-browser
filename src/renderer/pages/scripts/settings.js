@@ -21,6 +21,7 @@ const fields = {
   routeIpfs: $('route-ipfs-through-tor'),
   routeRadicleRow: $('route-radicle-through-tor-row'),
   routeRadicle: $('route-radicle-through-tor'),
+  allowPrivateRadicleSeeding: $('allow-private-radicle-seeding'),
   enableIdentity: $('enable-identity-wallet'),
   showIpfsProgressStatus: $('show-ipfs-progress-status'),
   autoUpdate: $('auto-update'),
@@ -1910,6 +1911,7 @@ const currentFormState = () => ({
   startTorAtLaunch: fields.startTor.checked,
   routeIpfsThroughTor: fields.routeIpfs.checked,
   routeRadicleThroughTor: fields.routeRadicle.checked,
+  allowPrivateRadicleSeeding: fields.allowPrivateRadicleSeeding.checked,
   enableIdentityWallet: fields.enableIdentity.checked,
   showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
   autoUpdate: fields.autoUpdate.checked,
@@ -1938,6 +1940,7 @@ const applyFormState = (settings) => {
   fields.startTor.checked = settings.startTorAtLaunch === true;
   fields.routeIpfs.checked = settings.routeIpfsThroughTor === true;
   fields.routeRadicle.checked = settings.routeRadicleThroughTor === true;
+  fields.allowPrivateRadicleSeeding.checked = settings.allowPrivateRadicleSeeding === true;
   fields.enableIdentity.checked = settings.enableIdentityWallet === true;
   fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
   fields.autoUpdate.checked = settings.autoUpdate !== false;
@@ -2445,6 +2448,9 @@ fields.routeRadicle.addEventListener('change', () => {
   applyRouteRadicleRowState();
   save();
 });
+// Allow seeding from private windows (freedom-core design 0008, question
+// 11): no restart, main reads it at each private window's seed.
+fields.allowPrivateRadicleSeeding.addEventListener('change', save);
 fields.enableIdentity.addEventListener('change', save);
 fields.showIpfsProgressStatus.addEventListener('change', save);
 fields.autoUpdate.addEventListener('change', save);

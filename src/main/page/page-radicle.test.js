@@ -52,6 +52,13 @@ jest.mock('../radicle-manager', () => ({
   STATUS: { STOPPED: 'stopped', STARTING: 'starting', RUNNING: 'running', ERROR: 'error' },
 }));
 jest.mock('../radicle-embedded', () => ({ listSeededRepos: jest.fn(async () => mockNode.seeded) }));
+// The profile's settings, for Allow seeding from private windows (freedom-core
+// design 0008, question 11), which a page's requests never read.
+const mockSettings = { allowPrivateRadicleSeeding: false };
+jest.mock('../settings-store', () => ({
+  loadSettings: () => mockSettings,
+  onSettingsChanged: () => () => {},
+}));
 jest.mock('../radicle/cob-service', () => ({
   getIdentity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
   clearIdentityCache: jest.fn(),
@@ -155,7 +162,7 @@ class Guest extends EventEmitter {
 
 const eventFrom = (guest) => ({ sender: guest, senderFrame: guest.mainFrame });
 
-function setup({ deps = {} } = {}) {
+function setup({ deps = {}, isPrivate = () => false } = {}) {
   const guests = new Map();
   const names = new Map();
   const resolutions = [];
@@ -163,7 +170,7 @@ function setup({ deps = {} } = {}) {
   // next ones, each held until its own `wait` and answering its own `key`.
   const gate = { held: null, queue: [] };
   const documents = createPageDocuments({
-    isPrivateWebContents: () => false,
+    isPrivateWebContents: isPrivate,
     isChromeIndexUrl: (url) => url === CHROME_URL,
     isAgentPage: () => false,
     windowIdOf: (contents) => contents.window,
@@ -347,6 +354,59 @@ describe('the methods main serves (0011 PRQ-8a)', () => {
     expect(manager.getConnections).not.toHaveBeenCalled();
     expect(embedded.listSeededRepos).not.toHaveBeenCalled();
     expect(env.trace.filter((e) => e.kind === 'handle-opened')).toEqual([]);
+  });
+
+  // Allow seeding from private windows (freedom-core design 0008, question
+  // 11) is the Radicle viewer's Seed alone: a private window's page gets no
+  // window.radicle, and main refuses its every request with the setting on
+  // or off, so it can't seed, unseed, sync or write through the provider.
+  test.each([
+    ['off', false],
+    ['on', true],
+  ])('a private window\'s page is refused every method, with Allow seeding from private windows %s', async (_label, on) => {
+    mockSettings.allowPrivateRadicleSeeding = on;
+    const privateGuests = new Set();
+    const env = setup({ isPrivate: (contents) => privateGuests.has(contents) });
+    await connect(KEY_A);
+    await permissions.grantSigning(KEY_A, { page: testPage(KEY_A) });
+    const guest = new Guest();
+    privateGuests.add(guest);
+    env.guests.set(guest.id, guest);
+    env.requests.track(guest);
+    guest.commit(`${KEY_A}/app`);
+    const n = nonce();
+    expect(env.requests.hello(eventFrom(guest), { nonce: n })).toMatchObject({ ok: false, reason: 'private' });
+    const params = {
+      rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5',
+      title: 'An issue',
+      description: 'From a private window',
+      body: 'A comment',
+      issueId: 'a'.repeat(40),
+      patchId: 'b'.repeat(40),
+      state: 'closed',
+    };
+    for (const method of RADICLE_PAGE_METHODS) {
+      const answer = await env.requests.request(eventFrom(guest), { nonce: n, provider: 'radicle', method, params });
+      expect({ method, refused: Boolean(answer?.error) && !('result' in answer) }).toEqual({ method, refused: true });
+    }
+    await flush();
+    for (const fn of [
+      manager.seedRepository,
+      manager.unseedRepository,
+      manager.refetchRepository,
+      manager.getSeedFetchStatus,
+      manager.getConnections,
+      embedded.listSeededRepos,
+      cob.getIdentity,
+    ]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+    expect(env.trace.filter((e) => e.kind === 'refused').map((e) => e.reason)).toEqual(
+      RADICLE_PAGE_METHODS.map(() => 'private')
+    );
+    expect(env.trace.filter((e) => e.kind === 'handle-opened')).toEqual([]);
+    expect(guest.delivered).toEqual([]);
+    mockSettings.allowPrivateRadicleSeeding = false;
   });
 
   test('the node stopped: the capabilities say so, and connecting still works', async () => {

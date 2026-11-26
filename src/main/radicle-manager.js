@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { app, ipcMain, BrowserWindow } = require('electron');
+const { app, ipcMain, BrowserWindow, dialog } = require('electron');
 const log = require('./logger');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
@@ -11,11 +11,12 @@ const embedded = require('./radicle-embedded');
 const { nodeBlockReason } = require('./core/node-identity-guard');
 const { withPrivateDir } = require('./private-files');
 const { isPrivateSender } = require('./private/private-sender');
+const { classifyWebContents } = require('./private/private-windows');
 // PRIVATE MODE GUARD (#1073): window.radicle requests reach the log lines
 // below inside the provider's private log context. The add-on's text can
 // name its storage path, and a RID names the repository, so each goes
 // through redactForLog. The context alone redacts nothing.
-const { redactForLog } = require('./private/private-log-context');
+const { redactForLog, runWithPrivateLogContext } = require('./private/private-log-context');
 const { OUTCOME_UNKNOWN_MESSAGE } = require('./radicle/radicle-service-backend');
 const seedStatus = require('./radicle/seed-status');
 const { QuarantineView } = require('./radicle/radicle-quarantine');
@@ -1162,12 +1163,124 @@ function setNodeAlias(alias) {
 }
 
 // PRIVATE MODE GUARD (R-9): seeding writes a lasting seeding policy and
-// fetches the repository into storage, which a private window must not
-// leave behind. isPrivateSender fails closed: a sender whose window can no
-// longer be read counts as private. The page-facing provider applies the
-// same check (radicle-provider-ipc.js).
+// fetches the repository into storage, which a private window leaves behind
+// only when the user allows it: with Allow seeding from private windows on
+// (freedom-core design 0008, "Private windows", question 11), and once they
+// have confirmed that seed in main's prompt. Off, the default, a private
+// window can't seed. Both checks fail closed: a sender whose window can no
+// longer be read counts as private, and has no window to be asked in, so it
+// is refused either way. Syncing stays refused in private windows whatever
+// the setting says, and so does the page-facing provider, which refuses a
+// private window's every request (radicle-provider-ipc.js, page-documents.js).
 const PRIVATE_SEED_FAILURE = () =>
   failure('RADICLE_PRIVATE_WINDOW', 'Seeding is not available in private windows');
+
+/** Whether the profile allows seeding from private windows: its "Allow
+ * seeding from private windows" setting (settings-store.js), off by default.
+ * A settings read that fails counts as off. */
+function allowsPrivateSeeding() {
+  try {
+    return require('./settings-store').loadSettings().allowPrivateRadicleSeeding === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the node announces the repositories it seeds to its peers (0008,
+ * "Seeding and serving"): always, for now. The inventory setting, "Don't
+ * announce what I seed" (0008, question 12), is a later step. Once it
+ * exists this reads it, and the private-seed prompt below words itself by
+ * the answer. Its key isn't read before then: a value only a hand-edited
+ * file could hold would have the prompt say the node announces nothing
+ * while it still does.
+ */
+function announcesSeeds() {
+  return true;
+}
+
+/**
+ * Whether `event`'s sender may seed: 'public' for a known normal window's;
+ * 'private' for a known private window's while the profile allows seeding
+ * from private windows, a seed the user confirms first; else 'refused',
+ * which also takes a sender main can't place in a known window.
+ */
+function seedAccess(event) {
+  const kind = classifyWebContents(event?.sender);
+  if (kind === 'public') return 'public';
+  return kind === 'private' && allowsPrivateSeeding() ? 'private' : 'refused';
+}
+
+/**
+ * The prompt a private window's seed waits on (0008, question 11): it names
+ * the repository, and says it stays in the profile after the window closes,
+ * and, while the node announces what it seeds, that its peers are told.
+ * `announced` is for the tests of both wordings.
+ */
+function privateSeedPrompt(fullRid, { announced = announcesSeeds() } = {}) {
+  const stays = 'It stays in this profile after the private window closes';
+  return {
+    type: 'question',
+    title: 'Seed from a private window',
+    message: 'Seed this repository from a private window?',
+    detail: `${fullRid}\n\n${
+      announced ? `${stays}, and your Radicle node announces it to its peers.` : `${stays}.`
+    }`,
+    buttons: ['Cancel', 'Seed'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+}
+
+// The private windows with a seed prompt open: one prompt at a time each.
+const seedPromptsOpen = new Set();
+
+/** The window a private seed's prompt is shown over: the one holding the
+ * asking page (a webview's host), or null when there is none to ask in. */
+function promptWindowOf(contents) {
+  try {
+    const host = contents?.hostWebContents || contents;
+    const win = host ? BrowserWindow.fromWebContents(host) : null;
+    return win && !win.isDestroyed() ? win : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A seed from a private window, with Allow seeding from private windows on:
+ * what seedRepository would refuse is refused before the prompt, so the
+ * user is never asked about a seed that can't start. Then main's prompt,
+ * and on its Seed, the seed a normal window's would be, but for main's
+ * private-window log redaction, which its work keeps. The setting is read
+ * again after the answer, as it may have been turned off meanwhile. The
+ * repository then stays after the window closes: nothing of a private
+ * window's cleanup touches Radicle.
+ */
+async function seedFromPrivateWindow(event, rid, onStatus) {
+  const unavailable = requireRunning();
+  if (unavailable) return unavailable;
+  const fullRid = validateAndNormalizeRid(rid);
+  if (!fullRid) return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
+  const win = promptWindowOf(event?.sender);
+  if (!win) return PRIVATE_SEED_FAILURE();
+  if (seedPromptsOpen.has(win.id)) {
+    return failure('RADICLE_SEED_PENDING', 'A seed in this window is waiting for your answer');
+  }
+  seedPromptsOpen.add(win.id);
+  let answer = null;
+  try {
+    answer = await dialog.showMessageBox(win, privateSeedPrompt(fullRid));
+  } catch (err) {
+    log.warn('[Radicle] The private-window seed prompt failed:', err?.message || err);
+  } finally {
+    seedPromptsOpen.delete(win.id);
+  }
+  if (answer?.response !== 1) return failure('RADICLE_SEED_CANCELLED', 'Seeding was cancelled');
+  if (!allowsPrivateSeeding()) return PRIVATE_SEED_FAILURE();
+  return runWithPrivateLogContext(true, () => seedRepository(fullRid, onStatus));
+}
 
 /**
  * Run `work` with the node stopped (R-8): the wipe and key write of an
@@ -1349,13 +1462,18 @@ function registerRadicleIpc() {
   };
 
   ipcMain.handle(IPC.RADICLE_SEED, async (event, rid) => {
-    if (isPrivateSender(event)) return PRIVATE_SEED_FAILURE();
+    const access = seedAccess(event);
+    if (access === 'refused') return PRIVATE_SEED_FAILURE();
     if (isDisabledForProfile()) {
       return failure('RADICLE_DISABLED', 'Radicle is disabled for this profile');
     }
     if (!validateNonEmptyString(rid)) return failure('INVALID_RID', 'Missing repository ID');
+    if (access === 'private') return seedFromPrivateWindow(event, rid, pushStatus(event));
     return seedRepository(rid, pushStatus(event));
   });
+  ipcMain.handle(IPC.RADICLE_GET_SEED_AVAILABILITY, (event) => ({
+    available: seedAccess(event) !== 'refused',
+  }));
   ipcMain.handle(IPC.RADICLE_GET_CONNECTIONS, () => getConnections());
   ipcMain.handle(IPC.RADICLE_SYNC_REPO, (event, rid) =>
     isPrivateSender(event) ? PRIVATE_SEED_FAILURE() : refetchRepository(rid, pushStatus(event))
@@ -1382,6 +1500,8 @@ module.exports = {
   getRadicleRepair,
   removeQuarantinedRepo,
   getConnections,
+  // The private-window seed's prompt, for its tests.
+  privateSeedPrompt,
   // The seed paths' reads, for their tests.
   repoExists,
   getSeederCount,

@@ -2154,6 +2154,34 @@
                 </label>
               </div>
             </div>
+            <!-- Allow seeding from private windows (freedom-core design 0008,
+                 question 11): a power-user control, not a Beta feature, so
+                 no badge, and no data-tor: it doesn't depend on Tor. -->
+            <div class="row" id="allow-private-radicle-seeding-row">
+              <div class="row-body">
+                <p class="row-label">
+                  <span id="allow-private-radicle-seeding-label">
+                    Allow seeding from private windows
+                  </span>
+                </p>
+                <p class="row-help" id="allow-private-radicle-seeding-help">
+                  Freedom asks before each seed. The repository then stays in this profile after the
+                  private window closes, and the built-in Radicle node announces it to its peers.
+                  Syncing, importing and writing stay off in private windows.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    id="allow-private-radicle-seeding"
+                    aria-labelledby="allow-private-radicle-seeding-label"
+                    aria-describedby="allow-private-radicle-seeding-help"
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 

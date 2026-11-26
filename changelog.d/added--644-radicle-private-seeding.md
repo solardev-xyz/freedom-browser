@@ -1,0 +1,4 @@
+- Seeding Radicle repositories from private windows ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644)):
+  - Off by default under Settings > Advanced
+  - Asks before each seed, and the repository stays in the profile after the window closes
+  - Syncing, importing and writing stay off in private windows

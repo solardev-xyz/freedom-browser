@@ -139,6 +139,7 @@ const INTERNAL_CHANNELS = [
   'permissions:get-all',
   'profile:get-active',
   'profile:list',
+  'radicle:getSeedAvailability',
   'radicle:getSeedStatus',
   'radicle:getStatus',
   'radicle:seed',
@@ -360,10 +361,15 @@ function isSenderAllowed(channel, event) {
 // there too, and switching it off would let unverified content from an
 // external node load again, so no other internal page may write it either;
 // the nodes' own "Verify content from this node" goes through the profile
-// IPC, which takes only Settings and the profile manager.
+// IPC, which takes only Settings and the profile manager. Allow seeding from
+// private windows (`allowPrivateRadicleSeeding`, freedom-core design 0008,
+// question 11) is set there alone as well: switched on, a private window's
+// seed outlives the window, so a script in another internal page, the
+// Radicle viewer in a private window among them, must not turn it on.
 const SETTINGS_KEY_WRITERS = new Map([
   ['enableAi', new Set([SETTINGS_FILE])],
   ['loadOnlyVerifiedContent', new Set([SETTINGS_FILE])],
+  ['allowPrivateRadicleSeeding', new Set([SETTINGS_FILE])],
 ]);
 
 /**
