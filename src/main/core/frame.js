@@ -652,6 +652,9 @@ class FrameDecoder {
  *   the request in reassembly is its second response (0001: one each).
  * - **Fragments** append; the last completes the response, which must be
  *   exactly the declared size, and is decoded as a whole message is.
+ * - **Declined** (`admit`): a response the receiver won't hold is taken
+ *   with no buffer. Its fragments are checked and counted as any others,
+ *   never stored, and the last ends it `dropped`, undecoded.
  * - **After an error** it stays failed, and the partial response is dropped.
  */
 class Reassembler {
@@ -667,15 +670,19 @@ class Reassembler {
    * @param {object} frame - one of FrameDecoder's
    * @param {Function} pending - whether an ID is a pending request of the
    *   receiver's; asked only at a begin, once every other check has passed
+   * @param {Function} [admit] - `(id, bytes)`, asked at a begin that passed
+   *   them all, before its buffer is made: false declines the response
+   *   (its receiver can't hold `bytes`), which is then taken with none
    * @returns {object|null} `{ type: 'message', message }` for a whole message,
    *   `{ type: 'response', id, message }` for a completed fragmented response
-   *   to request `id`, `{ type: 'credit' }` when the peer returned this side's
-   *   credit, or null for a begin or fragment taken in
+   *   to request `id`, `{ type: 'dropped', id }` for a declined one,
+   *   `{ type: 'credit' }` when the peer returned this side's credit, or null
+   *   for a begin or fragment taken in
    */
-  push(frame, pending) {
+  push(frame, pending, admit = null) {
     if (this.failed) throw this.failed;
     try {
-      return this.take(frame, pending);
+      return this.take(frame, pending, admit);
     } catch (err) {
       this.failed = err instanceof FrameError ? err : new FrameError('decode');
       this.current = null;
@@ -683,7 +690,7 @@ class Reassembler {
     }
   }
 
-  take(frame, pending) {
+  take(frame, pending, admit) {
     const { kind, payload } = frame;
     if (kind === KIND_JSON) {
       const { message } = frame;
@@ -703,7 +710,8 @@ class Reassembler {
       if (bytes < 1 || bytes > MAX_MESSAGE) throw new FrameError('begin_size');
       if (!pending(id)) throw new FrameError('begin_unknown_id');
       this.peerCredit = false;
-      this.current = { id, buffer: Buffer.alloc(bytes), filled: 0 };
+      const held = admit === null || admit(id, bytes) !== false;
+      this.current = { id, size: bytes, buffer: held ? Buffer.alloc(bytes) : null, filled: 0 };
       return null;
     }
     if (kind === KIND_FRAGMENT || kind === KIND_LAST) {
@@ -711,13 +719,14 @@ class Reassembler {
       if (!current) throw new FrameError('fragment_without_begin');
       if (!payload.length) throw new FrameError('empty_fragment');
       const got = current.filled + payload.length;
-      if (got > current.buffer.length || (kind === KIND_LAST && got !== current.buffer.length)) {
+      if (got > current.size || (kind === KIND_LAST && got !== current.size)) {
         throw new FrameError('fragment_length');
       }
-      payload.copy(current.buffer, current.filled);
+      if (current.buffer) payload.copy(current.buffer, current.filled);
       current.filled = got;
       if (kind === KIND_FRAGMENT) return null;
       this.current = null;
+      if (!current.buffer) return { type: 'dropped', id: current.id };
       return { type: 'response', id: current.id, message: decodeJson(current.buffer) };
     }
     throw new FrameError('unknown_kind');

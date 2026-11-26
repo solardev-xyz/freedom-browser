@@ -18,11 +18,11 @@
  * immediate method. When one fires, the core is hung: the client kills it,
  * which fails its pending requests `core_unavailable`, and restarts it; the
  * callers then reconcile (service-client.js, vault-backend.js). An idle
- * method has no total deadline, so it gets no total watchdog (`null`): the
- * core's idle bounds end it (design 0015, D13). Main sends none yet. The
- * table is kept whole, but `core.hello` and `core.shutdown` are the
- * client's own: its 10 s handshake timeout and 3 s shutdown grace bound
- * them instead.
+ * method has no total deadline, only the core's idle bounds (design 0015,
+ * D13), so it has no total watchdog: its watchdog follows its progress
+ * instead (`idleWatchdogMs`). The table is kept whole, but `core.hello`
+ * and `core.shutdown` are the client's own: its 10 s handshake timeout and
+ * 3 s shutdown grace bound them instead.
  *
  * Main's copy, checked against the core's file when it is found
  * (core-deadlines.test.js). It holds the rows the file marks
@@ -236,6 +236,64 @@ const PROTOCOL_2_METHODS = Object.freeze([
   'swarm.publish',
 ]);
 
+/** The core's own bounds on an idle request's asks of main (design 0015,
+ * D13; fc-swarm-provider's `ask_bound`): 60 s without progress, and 300 s
+ * for a whole node reply, which shows the core no progress while main
+ * reads it, from the ask or from the terminal of the body a call streams. */
+const ASK_IDLE_MS = 60_000;
+const ASK_REPLY_MS = 300_000;
+
+/**
+ * An idle request's watchdog: design 0001's hang watchdog for a request
+ * with no total deadline, the core's bounds above plus the margin, each
+ * counted from the progress that gives it. It is armed with `progress` as
+ * the request is sent (service-client.js, `idleWatchdogMs`), and each later
+ * progress sets its deadline to the later of what it was and now plus its
+ * bound (`ServiceClient#watchdogProgress`). Nothing holds it: a hold would
+ * leave a core that never cancels a stuck POST unbounded.
+ *
+ * - `swarm.body`: `progress`, 75 s, for the core's head, data or terminal
+ *   and main's credit (the client counts those itself), and for main's
+ *   frames and the core's credit on that upload's part (D13's one timer
+ *   for the two). It ends at the body's terminal, not its head.
+ * - `swarm.publish`: `progress`, 75 s, for each of the core's asks naming
+ *   it, a cancel, main's answers, and the frames of a stream open under
+ *   it; `whole_call`, 315 s, for the ask of a whole `shell.swarm_api`
+ *   call; `body_end`, 315 s, for the terminal of the body a streaming call
+ *   sends (its `swarm.body`'s). It ends at its response.
+ */
+const IDLE_WATCHDOGS = Object.freeze({
+  'swarm.body': Object.freeze({ progress: ASK_IDLE_MS + WATCHDOG_MARGIN_MS }),
+  'swarm.publish': Object.freeze({
+    progress: ASK_IDLE_MS + WATCHDOG_MARGIN_MS,
+    whole_call: ASK_REPLY_MS + WATCHDOG_MARGIN_MS,
+    body_end: ASK_REPLY_MS + WATCHDOG_MARGIN_MS,
+  }),
+});
+
+/** Whether `method` is an idle method: no total deadline, only idle
+ * bounds (design 0015, D5), so main sends it only with its idle watchdog. */
+function isIdleMethod(method) {
+  return Object.hasOwn(METHOD_CLASSES, method) && METHOD_CLASSES[method] === IDLE;
+}
+
+/**
+ * An idle request's watchdog bound, in ms, after progress of kind `after`
+ * (IDLE_WATCHDOGS): what main sends it with (`progress`), and what each
+ * later progress of that kind gives it. Throws for a method that isn't
+ * idle, whose watchdog is `watchdogMs`'s, and for a kind of progress the
+ * method doesn't have.
+ * @param {string} method
+ * @param {'progress'|'whole_call'|'body_end'} [after]
+ * @returns {number}
+ */
+function idleWatchdogMs(method, after = 'progress') {
+  const bounds = isIdleMethod(method) ? IDLE_WATCHDOGS[method] : undefined;
+  if (!bounds) throw new Error(`${method} is not an idle method: its watchdog is watchdogMs's`);
+  if (!Object.hasOwn(bounds, after)) throw new Error(`${method} has no ${after} watchdog bound`);
+  return bounds[after];
+}
+
 /** `longest`, or the caller's own `deadline_ms` where it is shorter. */
 function ownDeadline(deadlineMs, longest) {
   const own = Number.isSafeInteger(deadlineMs) && deadlineMs >= 0;
@@ -247,11 +305,9 @@ function ownDeadline(deadlineMs, longest) {
  * refused at once (`unknown_method`), so it gets an immediate one.
  *
  * An idle method (`swarm.body`, `swarm.publish`) has no total deadline,
- * but design 0015's D13 still bounds it by progress, and design 0001 has
- * main catch a core that doesn't enforce its own bound. That needs a
- * watchdog reset by the request's progress, which SWM-5's executor adds
- * with the first caller. Until then main never sends one: asking for its
- * watchdog throws, so no idle request goes out without one.
+ * only design 0015's D13 bounds by progress, so it has no total watchdog:
+ * asking for one throws. Its watchdog follows its progress
+ * (`idleWatchdogMs`), and the client refuses to send it without that.
  * @param {string} method
  * @param {number} [deadlineMs] - a session or Swarm request's own
  *   `deadline_ms`
@@ -269,7 +325,7 @@ function watchdogMs(method, deadlineMs) {
       return ownDeadline(deadlineMs, SWARM_DEADLINE_MS) + WATCHDOG_MARGIN_MS;
     case IDLE:
       throw new Error(
-        `${method} is an idle method: main sends none before SWM-5's progress watchdog (design 0015, D13)`
+        `${method} is an idle method: its watchdog follows its progress (idleWatchdogMs, design 0015, D13)`
       );
     default:
       return IMMEDIATE_WATCHDOG_MS;
@@ -283,7 +339,12 @@ module.exports = {
   SESSION_DEADLINE_MS,
   HEAD_DEADLINE_MS,
   SWARM_DEADLINE_MS,
+  ASK_IDLE_MS,
+  ASK_REPLY_MS,
   METHOD_CLASSES,
   PROTOCOL_2_METHODS,
+  IDLE_WATCHDOGS,
+  isIdleMethod,
+  idleWatchdogMs,
   watchdogMs,
 };
