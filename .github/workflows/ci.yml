@@ -194,10 +194,10 @@ jobs:
       - name: Warm the Electron binary download
         run: node -e "require('electron')"
 
-      # freedom-core's stream vectors (design 0009, amendment 5, and design
-      # 0014's service connections that take main's bodies), which
-      # `stream-vectors.test.js` replays, its method table
-      # (`protocol/schema.json`, with amendment 3's protocol-2 rows), which
+      # freedom-core's stream vectors (design 0009, amendment 5, design
+      # 0014's service connections that take main's bodies, and design
+      # 0015's Swarm streams), which `stream-vectors.test.js` replays, its
+      # method table (`protocol/schema.json`, with the protocol-2 rows), which
       # `core-deadlines.test.js` checks main's deadline table against, and
       # its Radicle vectors (design 0008), which `radicle-vectors.test.js`
       # replays through today's main, its key-store helper's answers
@@ -207,13 +207,13 @@ jobs:
       # reviewed commit: moved on purpose when the protocol's vectors,
       # method table, Radicle vectors, key-store vectors or layout vectors
       # change, never with freedom-core's main. It is the commit
-      # `cored-v0.28.0` was built from (c44ed23e). Each suite fails if a
+      # `cored-v0.29.0` was built from (df54269b). Each suite fails if a
       # file it is pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: c44ed23e6c37495c151d8341bbd3e4db5ea2f4f8
+          ref: df54269bf3879843a11f3ca18ebcf5f793e09c6e
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
@@ -234,10 +234,9 @@ jobs:
       # (`fixtures/colibri/`: each recorded answer's body, by its SHA-256),
       # from which `colibri-replay-parity` replays successful reads on
       # freedom-colibrid. A pin of its own, separate
-      # from the one above: the file landed after c44ed23e, and moving that
-      # pin would change the stream vectors `stream-vectors.test.js` replays
-      # (its service_duplex cases). This is freedom-core's main where the
-      # file is (00141d3b), moved on purpose when the Colibri vectors change.
+      # from the one above and moved on purpose when the Colibri vectors
+      # change: freedom-core's main where the file landed (00141d3b). The
+      # file and its fixtures are unchanged from there to df54269b.
       # The suites fail if the file FREEDOM_CORE_COLIBRI_VECTORS names, or
       # the fixtures beside it, are missing.
       - name: Check out freedom-core's Colibri vectors
@@ -1553,7 +1552,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: c44ed23e6c37495c151d8341bbd3e4db5ea2f4f8
+          ref: df54269bf3879843a11f3ca18ebcf5f793e09c6e
           path: .freedom-core
           persist-credentials: false
 

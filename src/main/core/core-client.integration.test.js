@@ -118,7 +118,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     expect(hello.protocol).toBe(2);
     expect(hello.capabilities).toContain('vault.status');
     expect(hello.capabilities).toContain('streams');
-    // Design 0017: the pinned core (0.28.0) confines itself and reports what
+    // Design 0017: the pinned core (0.29.0) confines itself and reports what
     // it got.
     expect(hello.confinement).not.toBeNull();
     expect(hello.confinement).toMatchObject({
@@ -136,12 +136,22 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
       fingerprint: null,
     });
     await expect(core.request('vault.nope')).rejects.toMatchObject({ code: 'unknown_method' });
+    // Design 0015 (SWM-4): the pinned core serves the Swarm rows main's
+    // table holds (core-deadlines.js), which main sends none of yet. A store
+    // op is `not_moved` until a hello names `swarm_stores`, and the chrome
+    // reaches no SOC.
+    await expect(
+      core.request('swarm.history', { op: 'list' }, { caller: 'chrome' })
+    ).rejects.toMatchObject({ code: 'not_moved', data: { store: 'swarm_stores' } });
+    await expect(core.request('swarm.sign_soc', {}, { caller: 'chrome' })).rejects.toMatchObject({
+      code: 'forbidden',
+    });
     await core.stop();
     expect(core.state).toBe('stopped');
   });
 
   test('protocol 1 is refused: protocol_mismatch naming 2, then exit 76', async () => {
-    // From 0.11.0 (freedom-core #265), so the pinned 0.28.0 too: only protocol 2.
+    // From 0.11.0 (freedom-core #265), so the pinned 0.29.0 too: only protocol 2.
     // CoreClient can't ask for 1, so this is a raw hello, as main's was.
     const child = spawn(binary, rawServeArgs(root), { stdio: ['pipe', 'pipe', 'ignore'] });
     const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
@@ -195,7 +205,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   // Design 0017, C1: the hello must name serve's --grant-root and
   // --user-data-dir, which CoreClient passes from the hello's own values; a
   // raw hello shows what a main whose two disagree would get. The pinned
-  // core (0.28.0) refuses either one given on one side only, too.
+  // core (0.29.0) refuses either one given on one side only, too.
   test.each([
     ['another grant_root', [], (dir) => ({ grant_root: path.join(dir, 'other') })],
     [

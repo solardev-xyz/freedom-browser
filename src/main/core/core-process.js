@@ -219,7 +219,7 @@ async function startCore() {
     shellVersion: app.getVersion(),
     // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
     // `dweb.forget`. It's the client's only protocol, and the only one the
-    // pinned core (0.28.0) takes; a core that answers another is a
+    // pinned core (0.29.0) takes; a core that answers another is a
     // mismatch, not restarted.
     protocol: PROTOCOL_VERSION_STREAMS,
     // The hello's `grant_root` (design 0012, APR-3): where the four
@@ -229,7 +229,9 @@ async function startCore() {
     // The hello's `user_data_dir` (design 0013, PRF-8b-lite): the profile's
     // own directory, where the legacy `x402-receipts.json` is. After 0013's
     // move the core copies it into the Freedom root and imports the copy
-    // (design 0017 C5).
+    // (design 0017 C5); from 0.29.0 it copies the legacy
+    // `publish-history.json` too (design 0015 D10), unimported until the
+    // hello names `swarm_stores`.
     userDataDir: app.getPath('userData'),
   });
   client = made;

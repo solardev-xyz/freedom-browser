@@ -6,8 +6,8 @@
  * built in. CI checks out freedom-core's at a reviewed commit and names
  * it; a file named there that is missing fails the suite rather than
  * skipping it. The check itself runs on files written here as well: one of
- * main's table, with design 0009's `"protocol": 2` rows, and ones that
- * differ from it.
+ * main's table, with design 0009's and design 0015's `"protocol": 2` rows,
+ * and ones that differ from it.
  */
 
 const fs = require('fs');
@@ -17,6 +17,7 @@ const {
   METHOD_CLASSES,
   PROTOCOL_2_METHODS,
   SESSION_DEADLINE_MS,
+  SWARM_DEADLINE_MS,
   VAULT_DEADLINE_MS,
   WATCHDOG_MARGIN_MS,
   watchdogMs,
@@ -99,6 +100,29 @@ describe('core deadlines', () => {
     expect(verifyExecutor.HEAD_DEADLINE_MS).toBe(HEAD_DEADLINE_MS);
   });
 
+  // cored-v0.29.0's (design 0015, D5): the `swarm` kind is a session's
+  // rule at 300 s. An idle method has no total deadline, and its watchdog
+  // must follow its progress (D13), which SWM-5 adds: until then asking
+  // for one throws, so main can't send an idle request unwatched.
+  test("a Swarm request gets 300 s, or the caller's shorter deadline, plus 15 s; an idle one isn't sent yet", () => {
+    for (const method of ['swarm.request', 'swarm.feed', 'swarm.stamps', 'swarm.upload_status']) {
+      expect(watchdogMs(method)).toBe(SWARM_DEADLINE_MS + WATCHDOG_MARGIN_MS);
+      expect(watchdogMs(method, 60_000)).toBe(75_000);
+    }
+    expect(SWARM_DEADLINE_MS).toBe(300_000);
+    expect(watchdogMs('swarm.request', 0)).toBe(15_000);
+    for (const odd of [500_000, -1, 1.5, NaN, '10000', null]) {
+      expect(watchdogMs('swarm.request', odd)).toBe(315_000);
+    }
+    for (const method of ['swarm.body', 'swarm.publish']) {
+      expect(() => watchdogMs(method)).toThrow(/idle method: main sends none before SWM-5/);
+      expect(() => watchdogMs(method, 10_000)).toThrow(/idle method/);
+    }
+    for (const method of ['swarm.identities', 'swarm.history', 'swarm.manifest']) {
+      expect(watchdogMs(method)).toBe(15_000);
+    }
+  });
+
   test('a method the core does not serve is refused at once: 15 s', () => {
     expect(watchdogMs('vault.unknown')).toBe(15_000);
     expect(watchdogMs('toString')).toBe(15_000);
@@ -118,9 +142,10 @@ describe('core deadlines', () => {
  * The check against the core's file: every method, in order, with its
  * class, main's table whole. A row's `protocol`, when it has one, is the
  * number 2, and the rows that carry it are exactly PROTOCOL_2_METHODS, in
- * its order (design 0009, amendment 3). Main asks for protocol 2
- * (core-process.js), so a file without those rows (a core before 0009's
- * protocol 2, as 0.9.1) fails.
+ * its order (design 0009, amendment 3; design 0015, D5). Main asks for
+ * protocol 2 (core-process.js), so a file without those rows (a core
+ * before 0009's protocol 2, as 0.9.1) fails. An idle method's deadline is
+ * written `"idle"`, apart from an immediate one's `null` (design 0015, D5).
  */
 function checkSchema(schema) {
   const classOf = {
@@ -128,6 +153,8 @@ function checkSchema(schema) {
     [VAULT_DEADLINE_MS]: 'vault',
     [SESSION_DEADLINE_MS]: 'session',
     [HEAD_DEADLINE_MS]: 'head',
+    [SWARM_DEADLINE_MS]: 'swarm',
+    idle: 'idle',
   };
   const theirs = schema.methods.map((m) => [m.name, classOf[m.deadline_ms] ?? m.deadline_ms]);
   expect(Object.entries(METHOD_CLASSES)).toEqual(theirs);
@@ -142,6 +169,8 @@ const DEADLINE_OF = {
   vault: VAULT_DEADLINE_MS,
   session: SESSION_DEADLINE_MS,
   head: HEAD_DEADLINE_MS,
+  swarm: SWARM_DEADLINE_MS,
+  idle: 'idle',
 };
 
 /** Main's table as the core writes it: the protocol-2 rows marked. */
@@ -166,11 +195,13 @@ function edited(edit) {
 const at = (methods, name) => methods.findIndex((m) => m.name === name);
 
 describe("the check against the core's file", () => {
-  test('main\'s table, the rows marked "protocol": 2 with it (0009, amendment 3), passes', () => {
+  test('main\'s table, the rows marked "protocol": 2 with it (0009, amendment 3; 0015), passes', () => {
     const written = schemaOf();
     expect(written.methods.filter((m) => m.protocol === 2).map((m) => m.name)).toEqual([
       'dweb.verify',
       'dweb.forget',
+      'swarm.body',
+      'swarm.publish',
     ]);
     expect(() => checkSchema(written)).not.toThrow();
   });
@@ -193,7 +224,7 @@ describe("the check against the core's file", () => {
     }
   });
 
-  test("the marked rows are exactly 0009's two, once each, in order, with their deadlines", () => {
+  test("the marked rows are exactly 0009's two and 0015's two, once each, in order, with their deadlines", () => {
     const fails = [
       // A row unmarked, or another marked.
       (methods) => delete methods[at(methods, 'dweb.verify')].protocol,
@@ -210,9 +241,22 @@ describe("the check against the core's file", () => {
         const i = at(methods, 'dweb.verify');
         methods.splice(i, 2, methods[i + 1], methods[i]);
       },
-      // Another deadline.
+      // 0015's unmarked, or reversed.
+      (methods) => delete methods[at(methods, 'swarm.body')].protocol,
+      (methods) => delete methods[at(methods, 'swarm.publish')].protocol,
+      (methods) => (methods[at(methods, 'swarm.request')].protocol = 2),
+      (methods) => {
+        const body = methods.splice(at(methods, 'swarm.body'), 1)[0];
+        methods.splice(at(methods, 'swarm.publish') + 1, 0, body);
+      },
+      // Another deadline: an idle method's written as an immediate one's,
+      // or a Swarm request's as a session's.
       (methods) => (methods[at(methods, 'dweb.verify')].deadline_ms = SESSION_DEADLINE_MS),
       (methods) => (methods[at(methods, 'dweb.forget')].deadline_ms = VAULT_DEADLINE_MS),
+      (methods) => (methods[at(methods, 'swarm.publish')].deadline_ms = null),
+      (methods) => (methods[at(methods, 'swarm.body')].deadline_ms = SWARM_DEADLINE_MS),
+      (methods) => (methods[at(methods, 'swarm.request')].deadline_ms = SESSION_DEADLINE_MS),
+      (methods) => (methods[at(methods, 'swarm.history')].deadline_ms = 'idle'),
       // A third marked row.
       (methods) =>
         methods.splice(at(methods, 'dweb.forget') + 1, 0, {

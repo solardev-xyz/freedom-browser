@@ -1,10 +1,11 @@
 /**
  * frame.js's stream frames beyond freedom-core's `vectors/streams.json`
  * (`stream-vectors.test.js`, which runs only with a freedom-core checkout):
- * the abort JSON's edges as serde reads them, main's outbox, a failure that
- * sticks, the abort codes by connection and direction (design 0009), the
- * core's connection at protocol 2 (`StreamDuplex`), and the kinds of a
- * service connection that takes main's bodies (design 0014).
+ * the abort JSON's edges as serde reads them (design 0015's `error_code`
+ * among them), main's outbox, a failure that sticks, the abort codes by
+ * connection and direction (design 0009), the core's connection at
+ * protocol 2 (`StreamDuplex`), and the kinds of a service connection that
+ * takes main's bodies (design 0014).
  */
 
 const {
@@ -53,7 +54,8 @@ function decodeAbort(json) {
   const decoder = new FrameDecoder({ kinds: serviceKinds('receiver') });
   try {
     const [frame] = decoder.push(abortFrame(json));
-    return { code: frame.code, message: frame.message };
+    const { code, message, errorCode } = frame;
+    return errorCode === undefined ? { code, message } : { code, message, errorCode };
   } catch (err) {
     if (err instanceof FrameError) return err.category;
     throw err;
@@ -99,6 +101,39 @@ describe("an abort's JSON, as serde reads it", () => {
     ['an unterminated string', '{"code":"busy","message":"m}'],
     ['single quotes', "{'code':'busy','message':'m'}"],
   ])('refuses %s', (_label, json) => {
+    expect(decodeAbort(json)).toBe('abort_payload');
+  });
+
+  // Design 0015: a part's abort may name the errno name its file failed
+  // with, `^[A-Z][A-Z0-9_]{0,31}$`, once; fc-protocol's `is_error_code`.
+  test.each([
+    ['an error code', '{"code":"body_stream_error","message":"m","error_code":"EIO"}', 'EIO'],
+    [
+      'an escaped member name and value',
+      `{"error${BS}u005fcode":"${BS}u0045NOENT","code":"body_stream_error","message":"m"}`,
+      'ENOENT',
+    ],
+    [
+      '32 bytes',
+      `{"code":"cancelled","message":"m","error_code":"E${'_'.repeat(31)}"}`,
+      `E${'_'.repeat(31)}`,
+    ],
+  ])('takes %s', (_label, json, errorCode) => {
+    expect(decodeAbort(json)).toMatchObject({ errorCode });
+  });
+
+  test.each([
+    ['33 bytes', `{"code":"body_stream_error","message":"m","error_code":"E${'X'.repeat(32)}"}`],
+    ['a space in it', '{"code":"body_stream_error","message":"m","error_code":"E IO"}'],
+    [
+      'a non-ASCII letter',
+      `{"code":"body_stream_error","message":"m","error_code":"${String.fromCharCode(0xc9)}IO"}`,
+    ],
+    ['a boolean', '{"code":"body_stream_error","message":"m","error_code":true}'],
+    ['no code', '{"message":"m","error_code":"EIO"}'],
+    ['no message', '{"code":"body_stream_error","error_code":"EIO"}'],
+    ['another member', '{"code":"body_stream_error","message":"m","errno":"EIO"}'],
+  ])('refuses an error code: %s', (_label, json) => {
     expect(decodeAbort(json)).toBe('abort_payload');
   });
 });
@@ -244,6 +279,7 @@ describe('abort codes by connection and direction (design 0009)', () => {
       'malformed',
       'piece_failed',
       'stalled',
+      'too_large',
     ]);
     expect([...SERVICE_ABORT_CODES]).toEqual([
       'cancelled',
@@ -286,6 +322,29 @@ describe('abort codes by connection and direction (design 0009)', () => {
         expect(receiver.failed.category).toBe('abort_code');
       }
     }
+  });
+
+  // Design 0015: only a part main streams the core may name an error code,
+  // and main receives none, so every receiver of main's refuses one, its
+  // stream's own code or not, before the ID.
+  test.each([
+    ["a service's body", undefined, 'internal'],
+    ["the core's verified body", CORE_BODY_ABORT_CODES, 'cancelled'],
+    ["a piece main sends (the core's side)", PIECE_ABORT_CODES, 'body_stream_error'],
+  ])('a receiver of %s takes no abort that names an error code', (_label, codes, code) => {
+    const abort = { kind: KIND_ABORT, id: 1, code, message: 'm', errorCode: 'EIO' };
+    const open = new StreamReceiver(codes && { codes });
+    open.request(1);
+    open.reply(1, true);
+    expect(category(() => open.receive(abort))).toBe('abort_code');
+    const retiring = new StreamReceiver(codes && { codes });
+    retiring.request(1);
+    retiring.cancel(1);
+    retiring.reply(1, true);
+    expect(category(() => retiring.receive(abort))).toBe('abort_code');
+    expect(category(() => new StreamReceiver(codes && { codes }).receive(abort))).toBe(
+      'abort_code'
+    );
   });
 
   test('the code is checked before the ID, as fc-protocol checks it', () => {

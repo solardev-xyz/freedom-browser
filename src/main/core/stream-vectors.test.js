@@ -29,7 +29,24 @@
  *   fragments;
  * - `service_duplex`: the service's side of that connection, through the
  *   same `StreamDuplex` with a service's codes out and a piece's in, and
- *   every `sender` case replayed on it as well (see `Core`).
+ *   every `sender` case replayed on it as well (see `Core`). The cases with
+ *   a sized head (`["sized", id, len]`, freedom-core #466: the service
+ *   holds the body main sends it to the length main's head declared) are
+ *   the service's own check of a body main sends, which main never
+ *   receives, and are listed as to do.
+ *
+ * From cored-v0.29.0 (design 0015, SWM-4) it also has design 0015's codes
+ * and the Swarm thread's streams:
+ * - `too_large` in every code loop: it decodes, and no stream of main's,
+ *   nor of the sides replayed here, takes it;
+ * - an abort's `error_code` (the errno name a `shell.swarm_part` part's
+ *   file failed with), which decodes, and which main's receiver takes from
+ *   no stream (`abort_code`);
+ * - `swarm_duplex`: the core's Swarm thread's side of its connection, with
+ *   per-request codes for the parts and node bodies main streams it, and
+ *   the `swarm.body` uploads it streams main. Main sends and takes none of
+ *   those streams before SWM-5 (main's executor, `core/swarm-shell.js`),
+ *   whose duplex gives each its codes, so its cases are listed as to do.
  *
  * **Which file.** The vectors aren't copied into this repository: the file
  * is read from a freedom-core checkout. 0009's fifth amendment (abort codes
@@ -151,7 +168,9 @@ function frameJson(frame) {
     case KIND_END:
       return ['end', frame.id];
     case KIND_ABORT:
-      return ['abort', frame.id, frame.code, frame.message];
+      return frame.errorCode === undefined
+        ? ['abort', frame.id, frame.code, frame.message]
+        : ['abort', frame.id, frame.code, frame.message, frame.errorCode];
     case KIND_STREAM_CREDIT:
       return ['credit', frame.id, frame.credit];
     default:
@@ -184,6 +203,18 @@ function decode(input, kinds, chunk) {
     }
   }
   return { frames, error: null, truncated: !decoder.isAtBoundary() };
+}
+
+/** Stream `id`'s abort frame naming `errorCode` (design 0015), built here:
+ * main's encoder writes none, since main sends no part yet. */
+function abortNaming(id, code, message, errorCode) {
+  const json = Buffer.from(JSON.stringify({ code, message, error_code: errorCode }), 'utf8');
+  const header = Buffer.alloc(5 + ID_BYTES);
+  header.writeUInt32BE(1 + ID_BYTES + json.length, 0);
+  header[4] = KIND_ABORT;
+  header.writeUInt32BE(Math.floor(id / 2 ** 32), 5);
+  header.writeUInt32BE(id % 2 ** 32, 9);
+  return Buffer.concat([header, json]);
 }
 
 /** Runs `fn`; a FrameError becomes `{ error: category }`. */
@@ -356,7 +387,7 @@ class Main {
     }
   }
 
-  act([action, id, arg]) {
+  act([action, id, arg, errorCode]) {
     const r = this.receiver;
     switch (action) {
       case 'request':
@@ -376,7 +407,11 @@ class Main {
       case 'end':
         return protocol(() => this.delivered(this.feed(encodeEnd(id)), id));
       case 'abort': {
-        const got = protocol(() => this.delivered(this.feed(encodeAbort(id, arg, 'aborted')), id));
+        const frame =
+          errorCode === undefined
+            ? encodeAbort(id, arg, 'aborted')
+            : abortNaming(id, arg, 'aborted', errorCode);
+        const got = protocol(() => this.delivered(this.feed(frame), id));
         return got?.abort === arg ? 'abort' : got;
       }
       case 'pull': {
@@ -735,6 +770,11 @@ describeIfVectors("design 0007's stream vectors through main's frame.js", () => 
       side: 'service_streams',
     };
     for (const entry of vectors?.service_duplex || []) {
+      if (entry.steps.some((step) => step.do?.[0] === 'sized')) {
+        // See the header: the service's check of a body main sends.
+        test.todo(`${entry.id} (a sized head, the service's own check)`);
+        continue;
+      }
       test(entry.id, () => replayDuplex(entry, service));
     }
     // Every `sender` case holds on this side as it is (formats.service_duplex).
@@ -742,6 +782,14 @@ describeIfVectors("design 0007's stream vectors through main's frame.js", () => 
       test(`sender's ${entry.id}`, () =>
         replayDuplex(entry, { ...service, dataCap: entry.config?.data_cap ?? WRITER_DATA_CAP }));
     }
+  });
+
+  describe("freedom-cored's Swarm thread (swarm_duplex, design 0015)", () => {
+    // See the header: main's side of these streams is SWM-5's.
+    for (const entry of vectors?.swarm_duplex || []) {
+      test.todo(`${entry.id} (main's side from SWM-5)`);
+    }
+    if (vectors?.swarm_duplex) test.todo("every sender case on the Swarm thread's side (SWM-5)");
   });
 
   test('every category and refusal the file lists has a case', () => {
