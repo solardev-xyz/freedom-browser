@@ -4,8 +4,11 @@
  * both directions on the one connection. Main's own requests' bodies come
  * from the core and end only with its verified bodies' codes; the bodies
  * main sends in answer to the core's requests (`StreamedReply`) go under
- * the core's credit and end only with a piece's codes. Protocol 2 is the
- * only one CoreClient speaks: the pinned core (0.29.0) refuses 1.
+ * the core's credit and end only with a piece's codes, unless their
+ * handler gives its own (design 0015: a `shell.swarm_api` body's
+ * `too_large`, a part's error code), as main's own requests may give the
+ * codes their bodies take (`swarm.body`'s). Protocol 2 is the only one
+ * CoreClient speaks: the pinned core (0.29.0) refuses 1.
  */
 
 const { EventEmitter } = require('events');
@@ -28,8 +31,11 @@ const {
   encodeStreamCredit,
   CORE_KINDS,
   CORE_STREAM_KINDS,
+  CORE_UPLOAD_ABORT_CODES,
   FrameDecoder,
   JSON_KINDS,
+  SWARM_PART_ABORT_CODES,
+  SWARM_PIECE_ABORT_CODES,
   KIND_ABORT,
   KIND_DATA,
   KIND_END,
@@ -42,6 +48,7 @@ const {
 const { ServiceClient } = require('./service-client');
 const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 const { createFetchAdmission } = require('../dweb/fetch-admission');
+const { idleWatchdogMs } = require('./core-deadlines');
 
 const tick = () => new Promise(setImmediate);
 
@@ -858,6 +865,109 @@ describe('the bodies main sends the core (shell.dweb_get with stream: true)', ()
         gate.open();
         core().release();
       }
+    }
+  );
+});
+
+describe("design 0015's codes, per request, on the core's connection", () => {
+  const failing = (fail) => source(1, 10, MAX_DATA, { fail }).stream;
+  const tooLarge = () => Object.assign(new Error('past max_bytes'), { abortCode: 'too_large' });
+  const unreadable = (errorCode) => Object.assign(new Error('read failed'), { errorCode });
+
+  test("a handler's bodies end with the codes it gives: a node body's too_large, a part's error code; any other is body_stream_error alone", async () => {
+    makeClient(coreAt(2));
+    // Each request's body fails with the error its params name.
+    const fails = {
+      too_large: tooLarge,
+      enoent: () => unreadable('ENOENT'),
+      lower: () => unreadable('enoent'),
+      both: () => Object.assign(tooLarge(), { errorCode: 'EIO' }),
+    };
+    // One handler each: what a handler is registered with is its own.
+    const answer = () => (params) =>
+      new StreamedReply({ status: 200, headers: [] }, failing(fails[params.fails]()));
+    client.handle('shell.swarm_api', answer(), { streams: true, sends: SWARM_PIECE_ABORT_CODES });
+    client.handle('shell.swarm_part', answer(), { streams: true, sends: SWARM_PART_ABORT_CODES });
+    client.handle('shell.dweb_get', answer(), { streams: true });
+    await client.start();
+    const cases = [
+      ['shell.swarm_api', 'too_large', { code: 'too_large' }],
+      ['shell.swarm_api', 'enoent', { code: 'body_stream_error' }],
+      ['shell.swarm_api', 'both', { code: 'too_large' }],
+      ['shell.swarm_part', 'enoent', { code: 'body_stream_error', errorCode: 'ENOENT' }],
+      ['shell.swarm_part', 'lower', { code: 'body_stream_error' }],
+      ['shell.swarm_part', 'too_large', { code: 'body_stream_error' }],
+      ['shell.dweb_get', 'too_large', { code: 'body_stream_error' }],
+      ['shell.dweb_get', 'enoent', { code: 'body_stream_error' }],
+    ];
+    cases.forEach(([method, fails], i) => {
+      core().send({ type: 'request', id: i + 1, method, params: { stream: true, fails } });
+    });
+    for (const [i, [method, fails, want]] of cases.entries()) {
+      const id = i + 1;
+      await until(() => core().framesOf(KIND_ABORT, id).length === 1, `abort ${id}`);
+      const [frame] = core().framesOf(KIND_ABORT, id);
+      const got = { code: frame.code };
+      if (frame.errorCode !== undefined) got.errorCode = frame.errorCode;
+      expect([method, fails, got]).toEqual([method, fails, want]);
+    }
+    expect(log.error).not.toHaveBeenCalled();
+    expect(client.streamStats()).toMatchObject({ pieces: 0, sending: 0, held: 0, pending: 0 });
+  });
+
+  test('only a streams handler takes codes for its bodies', () => {
+    makeClient(coreAt(2));
+    expect(() =>
+      client.handle('shell.swarm_api', () => ({}), { sends: SWARM_PIECE_ABORT_CODES })
+    ).toThrow(TypeError);
+  });
+
+  /** Main's `method` request with `options`, opened by a head. */
+  async function opened(method, options) {
+    const id = client.current.nextId;
+    const answer = client.callStream(method, { for: 1 }, { caller: 'shell' }, options);
+    await until(() => core().messages.some((m) => m.id === id), 'the request');
+    core().send({ type: 'response', id, result: { bytes: 10, body: true } });
+    const { body: stream } = await answer;
+    return { id, stream };
+  }
+
+  test("main's request gives the codes its body takes: an upload's, which a verified body's aren't", async () => {
+    makeClient(coreAt(2));
+    await client.start();
+    for (const code of ['internal', 'body_stream_error', 'cancelled']) {
+      const { id, stream } = await opened('swarm.body', {
+        takes: CORE_UPLOAD_ABORT_CODES,
+        idleWatchdogMs: idleWatchdogMs('swarm.body'),
+      });
+      core().write(encodeData(id, body(id, 0, 10)));
+      core().write(encodeAbort(id, code, 'm'));
+      const { error } = await readAll(stream);
+      expect([code, error.code]).toEqual([code, code]);
+    }
+    expect(log.error).not.toHaveBeenCalled();
+    const { id, stream } = await opened('swarm.body', {
+      takes: CORE_UPLOAD_ABORT_CODES,
+      idleWatchdogMs: idleWatchdogMs('swarm.body'),
+    });
+    core().write(encodeAbort(id, 'verification_failed', 'm'));
+    const { error } = await readAll(stream);
+    expect(error.code).toBe('core_unavailable');
+    expect(log.error).toHaveBeenCalledWith('[Core] protocol error', { category: 'abort_code' });
+  });
+
+  test.each([
+    ['an upload', 'internal', 'stream_unknown'],
+    ['a verified body', 'piece_failed', 'stream_unknown'],
+    ['no stream of the core', 'stalled', 'abort_code'],
+  ])(
+    "an abort with no record, with a code %s of the core's ends with, fails on its ID; any other is abort_code",
+    async (_what, code, category) => {
+      makeClient(coreAt(2));
+      await client.start();
+      core().write(encodeAbort(99, code, 'm'));
+      await until(() => log.error.mock.calls.length > 0, 'the fault');
+      expect(log.error).toHaveBeenCalledWith('[Core] protocol error', { category });
     }
   );
 });

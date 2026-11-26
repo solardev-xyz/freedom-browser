@@ -37,16 +37,24 @@
  *
  * From cored-v0.29.0 (design 0015, SWM-4) it also has design 0015's codes
  * and the Swarm thread's streams:
- * - `too_large` in every code loop: it decodes, and no stream of main's,
- *   nor of the sides replayed here, takes it;
+ * - `too_large` in every code loop: it decodes, and no stream of a
+ *   service's, nor of 0009's, takes it;
  * - an abort's `error_code` (the errno name a `shell.swarm_part` part's
- *   file failed with), which decodes, and which main's receiver takes from
- *   no stream (`abort_code`);
+ *   file failed with), which decodes, and which main's receiver of a
+ *   service's bodies takes from no stream (`abort_code`);
  * - `swarm_duplex`: the core's Swarm thread's side of its connection, with
  *   per-request codes for the parts and node bodies main streams it, and
- *   the `swarm.body` uploads it streams main. Main sends and takes none of
- *   those streams before SWM-5 (main's executor, `core/swarm-shell.js`),
- *   whose duplex gives each its codes, so its cases are listed as to do.
+ *   the `swarm.body` uploads it streams main. It plays through the same
+ *   `StreamDuplex` as `Core` below, made as fc-protocol's `Duplex::swarm`
+ *   is (an upload's codes out, a piece's by default in), each of the core's
+ *   requests given its own codes (`["ask", id, codes]`: `ask(id, takes)`),
+ *   and every `sender` case replayed on it too, each of 0007's codes
+ *   standing for one of an upload's (`onSwarm`). Its `["sized", id, len]`
+ *   heads are the core's hold of a part to the length main's head gave,
+ *   which main keeps for no body it receives; these cases test a part's
+ *   codes, never reaching the length, so a sized head plays as a head that
+ *   opens a body, and a case that reached the length would fail the
+ *   replay rather than pass unheld.
  *
  * **Which file.** The vectors aren't copied into this repository: the file
  * is read from a freedom-core checkout. 0009's fifth amendment (abort codes
@@ -82,8 +90,11 @@ const {
   StreamReceiver,
   ABORT_CODES,
   CORE_BODY_ABORT_CODES,
+  CORE_UPLOAD_ABORT_CODES,
   PIECE_ABORT_CODES,
   SERVICE_ABORT_CODES,
+  SWARM_PART_ABORT_CODES,
+  SWARM_PIECE_ABORT_CODES,
   ID_BYTES,
   KIND_ABORT,
   KIND_DATA,
@@ -205,18 +216,6 @@ function decode(input, kinds, chunk) {
   return { frames, error: null, truncated: !decoder.isAtBoundary() };
 }
 
-/** Stream `id`'s abort frame naming `errorCode` (design 0015), built here:
- * main's encoder writes none, since main sends no part yet. */
-function abortNaming(id, code, message, errorCode) {
-  const json = Buffer.from(JSON.stringify({ code, message, error_code: errorCode }), 'utf8');
-  const header = Buffer.alloc(5 + ID_BYTES);
-  header.writeUInt32BE(1 + ID_BYTES + json.length, 0);
-  header[4] = KIND_ABORT;
-  header.writeUInt32BE(Math.floor(id / 2 ** 32), 5);
-  header.writeUInt32BE(id % 2 ** 32, 9);
-  return Buffer.concat([header, json]);
-}
-
 /** Runs `fn`; a FrameError becomes `{ error: category }`. */
 function protocol(fn) {
   try {
@@ -246,13 +245,21 @@ const replyJson = (id) =>
 /** The service, played against a StreamSender: its producers offer the
  * body bytes of `formats.body_bytes`, and every frame it writes is decoded
  * as main decodes it. `link` is what main's requests, cancels and credit
- * go through (the sender itself, or the StreamDuplex it is part of), and
- * `side` the decoder the other side reads with. */
+ * go through (the sender itself, or the StreamDuplex it is part of), `side`
+ * the decoder the other side reads with, and `mapped` the code a case's
+ * code stands for on that side (as it is, but for `onSwarm`). */
 class Service {
-  constructor({ dataCap = WRITER_DATA_CAP, sender = null, link = null, side = 'receiver' } = {}) {
+  constructor({
+    dataCap = WRITER_DATA_CAP,
+    sender = null,
+    link = null,
+    side = 'receiver',
+    mapped = (code) => code,
+  } = {}) {
     this.sender = sender ?? new StreamSender({ dataCap });
     this.link = link ?? this.sender;
     this.side = side;
+    this.mapped = mapped;
     this.offered = new Map();
     this.written = new Map();
     this.heads = new Map();
@@ -300,7 +307,7 @@ class Service {
       case 'finish':
         return s.finish(id);
       case 'abort':
-        return s.abort(id, arg, 'aborted');
+        return s.abort(id, this.mapped(arg), 'aborted');
       default:
         throw new Error(`action ${action}`);
     }
@@ -339,9 +346,11 @@ class Service {
         expect(frame).toEqual({ kind: KIND_END, id });
         expect([at, this.written.get(id) ?? 0]).toEqual([at, this.offered.get(id) ?? 0]);
         break;
-      case 'abort':
-        expect([at, next.written.code, frame.code, frame.id]).toEqual([at, a, a, id]);
+      case 'abort': {
+        const code = this.mapped(a);
+        expect([at, next.written.code, frame.code, frame.id]).toEqual([at, code, code, id]);
         break;
+      }
       default:
         throw new Error(`${at}: written ${type}`);
     }
@@ -407,10 +416,7 @@ class Main {
       case 'end':
         return protocol(() => this.delivered(this.feed(encodeEnd(id)), id));
       case 'abort': {
-        const frame =
-          errorCode === undefined
-            ? encodeAbort(id, arg, 'aborted')
-            : abortNaming(id, arg, 'aborted', errorCode);
+        const frame = encodeAbort(id, arg, 'aborted', errorCode);
         const got = protocol(() => this.delivered(this.feed(frame), id));
         return got?.abort === arg ? 'abort' : got;
       }
@@ -478,6 +484,12 @@ class Main {
  * frame is read as `service_streams` (no fragments). Its steps are
  * `duplex`'s, and `sender`'s cases hold on it as they are.
  *
+ * And the core's Swarm thread (`swarm_duplex`, design 0015): `sends:
+ * CORE_UPLOAD_ABORT_CODES`, `takes: PIECE_ABORT_CODES` and `allTakes` the
+ * three sets the core's requests give (`ASK_CODES`), each request's
+ * through `ask(id, takes)`. An abort that names an error code goes
+ * through main's encoder (`encodeAbort`'s `errorCode`).
+ *
  * Where main differs from the core by design:
  * - **`release n`:** the core's consumer lets go of bytes it was handed;
  *   main's consumer pulls them from the stream's ring (0007's, which 0009
@@ -487,7 +499,9 @@ class Main {
  *   against the ring, and nothing is pulled.
  * - **`end`:** main's receiver says whether the ring was drained
  *   (`end_drained`) or still holds bytes to pull (`end`): both are the
- *   core's `end`.
+ *   core's `end`. The core's record goes at `end`, the bytes it delivered
+ *   being its consumer's; main's stays, `eof`, until its ring is drained,
+ *   so a `check` reads main's `eof` as the core's no record.
  * - **`drop`:** main's cancel of its own request is a JSON `cancel` written
  *   through the same outbox, where the core writes its own elsewhere. A
  *   `write` step lists none, so the replay takes each in turn and checks it
@@ -498,14 +512,17 @@ class Core {
     dataCap = WRITER_DATA_CAP,
     sends = CORE_BODY_ABORT_CODES,
     takes = PIECE_ABORT_CODES,
+    allTakes = [takes],
     side = 'core_streams',
+    mapped = undefined,
   } = {}) {
-    this.duplex = new StreamDuplex({ dataCap, sends, takes });
+    this.duplex = new StreamDuplex({ dataCap, sends, takes, allTakes });
     this.side = side;
-    this.service = new Service({ sender: this.duplex.sender, link: this.duplex, side });
+    this.service = new Service({ sender: this.duplex.sender, link: this.duplex, side, mapped });
     this.sent = new Map(); // what the other side sent of the core's streams
     this.pulled = new Map();
     this.cancels = []; // drops whose cancel is still to be written
+    this.lengths = new Map(); // a sized head's length, never reached (see the header)
   }
 
   feed(bytes) {
@@ -527,27 +544,40 @@ class Core {
   }
 
   act(step) {
-    const [action, id, arg] = step;
+    const [action, id, arg, errorCode] = step;
     const d = this.duplex;
     switch (action) {
-      case 'ask':
+      case 'ask': {
+        const takes = arg === undefined ? null : ASK_CODES[arg];
+        expect([action, id, arg, takes === undefined]).toEqual([action, id, arg, false]);
         return protocol(() => {
-          d.ask(id);
+          d.ask(id, takes);
           return 'ok';
         });
+      }
       case 'answered':
         return protocol(() => d.answered(id, arg));
+      case 'sized':
+        this.lengths.set(id, arg);
+        return protocol(() => d.answered(id, true));
       case 'data': {
         const sent = this.sent.get(id) ?? 0;
+        if (this.lengths.has(id) && sent + arg > this.lengths.get(id)) {
+          throw new Error(`stream ${id} past its head's length, which main doesn't hold`);
+        }
         this.sent.set(id, sent + arg);
         const bytes = encodeData(id, body(id, sent, arg));
         const got = protocol(() => this.arrived(this.feed(bytes), id));
         return got?.data === arg ? 'data' : got;
       }
       case 'end':
+        if (this.lengths.has(id) && (this.sent.get(id) ?? 0) !== this.lengths.get(id)) {
+          throw new Error(`stream ${id} short of its head's length, which main doesn't hold`);
+        }
         return protocol(() => this.arrived(this.feed(encodeEnd(id)), id));
       case 'aborted': {
-        const got = protocol(() => this.arrived(this.feed(encodeAbort(id, arg, 'aborted')), id));
+        const frame = encodeAbort(id, arg, 'aborted', errorCode);
+        const got = protocol(() => this.arrived(this.feed(frame), id));
         return got?.abort === arg ? 'abort' : got;
       }
       case 'release':
@@ -617,15 +647,36 @@ class Core {
     for (const [key, want] of Object.entries(check.inbound ?? {})) {
       const id = Number(key);
       const info = this.duplex.receiver.info(id);
-      const got = info && { state: info.state, received: info.received, returned: info.returned };
+      const got =
+        info?.state === 'eof' || !info
+          ? null
+          : { state: info.state, received: info.received, returned: info.returned };
       expect([at, id, got]).toEqual([at, id, want]);
     }
     if (check.owed !== undefined) expect([at, this.duplex.owed()]).toEqual([at, check.owed]);
   }
 }
 
-/** A `duplex` or `service_duplex` case, or a `sender` case on a service
- * connection that takes main's bodies, through `Core` made with `options`. */
+/** The codes `["ask", id, codes]` names (`formats.swarm_duplex`). */
+const ASK_CODES = {
+  piece: PIECE_ABORT_CODES,
+  swarm_piece: SWARM_PIECE_ABORT_CODES,
+  swarm_part: SWARM_PART_ABORT_CODES,
+};
+
+/** A `sender` case's code on the Swarm thread's streams, whose uploads end
+ * only with `cancelled`, `internal` or `body_stream_error`: each of 0007's
+ * stands for one of them (`formats.swarm_duplex`, fc-protocol's
+ * `on_swarm`). */
+function onSwarm(code) {
+  if (code === 'stopped') return 'body_stream_error';
+  if (code === 'busy') return 'internal';
+  return code;
+}
+
+/** A `duplex`, `service_duplex` or `swarm_duplex` case, or a `sender` case
+ * on a connection that takes main's bodies, through `Core` made with
+ * `options`. */
 function replayDuplex(entry, options) {
   const core = new Core(options);
   entry.steps.forEach((step, i) => {
@@ -785,11 +836,24 @@ describeIfVectors("design 0007's stream vectors through main's frame.js", () => 
   });
 
   describe("freedom-cored's Swarm thread (swarm_duplex, design 0015)", () => {
-    // See the header: main's side of these streams is SWM-5's.
+    const swarm = {
+      sends: CORE_UPLOAD_ABORT_CODES,
+      takes: PIECE_ABORT_CODES,
+      allTakes: Object.values(ASK_CODES),
+    };
     for (const entry of vectors?.swarm_duplex || []) {
-      test.todo(`${entry.id} (main's side from SWM-5)`);
+      test(entry.id, () => replayDuplex(entry, swarm));
     }
-    if (vectors?.swarm_duplex) test.todo("every sender case on the Swarm thread's side (SWM-5)");
+    // Every `sender` case holds on this side too, each of 0007's codes
+    // standing for one of an upload's (formats.swarm_duplex).
+    for (const entry of vectors?.swarm_duplex ? vectors.sender : []) {
+      test(`sender's ${entry.id}`, () =>
+        replayDuplex(entry, {
+          ...swarm,
+          dataCap: entry.config?.data_cap ?? WRITER_DATA_CAP,
+          mapped: onSwarm,
+        }));
+    }
   });
 
   test('every category and refusal the file lists has a case', () => {
