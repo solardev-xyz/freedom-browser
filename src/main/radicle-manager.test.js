@@ -1047,6 +1047,57 @@ describe('Allow seeding from private windows (0008, question 11)', () => {
     expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
   });
 
+  // Codex round 2 on #1339: the window is checked first after every answer,
+  // so one destroyed while the prompt waits authorizes nothing, announcing
+  // changed or not.
+  test('on: the window destroyed while the prompt is open, announcing unchanged: refused, nothing seeded', async () => {
+    for (const response of [1, 0]) {
+      const ctx = await running({ settings: ON });
+      ctx.mod._setSeedsAnnouncedForTests(() => true);
+      ctx.dialog.showMessageBox.mockImplementationOnce(async () => {
+        ctx.privateWindow.isDestroyed = () => true;
+        return { response };
+      });
+      await expect(ctx.seed({ sender: ctx.guest })).resolves.toEqual(REFUSED);
+      expect(ctx.dialog.showMessageBox).toHaveBeenCalledTimes(1);
+      expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+      expect(ctx.guest.send).not.toHaveBeenCalled();
+    }
+  });
+
+  // Codex round 2: at most three prompts for one seed. Announcing that keeps
+  // changing after every answer is refused after the third, the window's
+  // prompt is released, and a fresh seed can start.
+  test('on: announcing changed after every answer: three prompts, then refused, and a fresh seed works', async () => {
+    const ctx = await running({ settings: ON });
+    let announced = false;
+    ctx.mod._setSeedsAnnouncedForTests(() => announced);
+    ctx.dialog.showMessageBox.mockImplementation(async () => {
+      announced = !announced;
+      return { response: 1 };
+    });
+    await expect(ctx.seed({ sender: ctx.guest })).resolves.toEqual({
+      success: false,
+      error: {
+        code: 'RADICLE_PRIVATE_WINDOW',
+        message:
+          'Seeding was not started: whether Radicle announces what it seeds kept changing. Try again.',
+      },
+    });
+    expect(details(ctx)).toEqual([UNANNOUNCED, ANNOUNCED, UNANNOUNCED]);
+    expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+    expect(ctx.guest.send).not.toHaveBeenCalled();
+
+    // The setting settles: a fresh seed is asked about once, and starts.
+    ctx.dialog.showMessageBox.mockReset();
+    ctx.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+    const started = await ctx.seed({ sender: ctx.guest });
+    expect(started).toMatchObject({ success: true, status: { rid: RID } });
+    expect(details(ctx)).toEqual([ANNOUNCED]);
+    await started.status.done;
+    expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+  });
+
   test('a read of the announcing state that fails, or answers anything but false, words the prompt as announced', async () => {
     const ctx = await running({ settings: ON, dialog: seedAnswer() });
     for (const read of [

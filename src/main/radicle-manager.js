@@ -1261,19 +1261,44 @@ function promptWindowOf(contents) {
   }
 }
 
+// At most this many prompts for one private-window seed: a first, and up
+// to two more if announcing keeps changing from another window meanwhile.
+const PRIVATE_SEED_PROMPTS = 3;
+
+// The answer when announcing changed after each of those prompts: nothing
+// is seeded, the window's prompt is released, and the user may start a
+// fresh seed. RADICLE_PRIVATE_WINDOW's code, as it is this window's seed
+// that isn't available now, with a message that says why.
+const PRIVATE_SEED_UNSETTLED = () =>
+  failure(
+    'RADICLE_PRIVATE_WINDOW',
+    'Seeding was not started: whether Radicle announces what it seeds kept changing. Try again.'
+  );
+
+/** Whether `win` is gone; a check that throws counts as gone. */
+function windowGone(win) {
+  try {
+    return win.isDestroyed();
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Main's prompt for a private window's seed, until the user's answer holds
- * for the settings as they are then: true on a Seed given to the prompt's
- * own wording, else a refusal or a Cancel, as `{ refused }`. Both settings
- * are read again after each answer, as either may change from another
- * window while the prompt is open. Seeding turned off refuses, as when it's
- * off. Announcing changed asks again, with the wording that now holds,
- * rather than seed on a consequence the user wasn't told; a window gone by
- * then has no one to ask, and is refused.
+ * for the window and the settings as they are then: true on a Seed given to
+ * the prompt's own wording, else a refusal or a Cancel, as `{ refused }`.
+ * After each answer, before anything else, the window must still be there:
+ * one gone by then has no one to have asked, and is refused, whatever the
+ * answer. Then both settings are read again, as either may change from
+ * another window while the prompt is open. Seeding turned off refuses, as
+ * when it's off. Announcing changed asks again, with the wording that now
+ * holds, rather than seed on a consequence the user wasn't told; after
+ * PRIVATE_SEED_PROMPTS prompts it is refused instead (PRIVATE_SEED_UNSETTLED).
  */
 async function askPrivateSeed(win, fullRid) {
   const cancelled = { refused: failure('RADICLE_SEED_CANCELLED', 'Seeding was cancelled') };
-  for (;;) {
+  for (let prompt = 1; ; prompt += 1) {
     const announced = announcesSeeds();
     let answer = null;
     try {
@@ -1281,10 +1306,11 @@ async function askPrivateSeed(win, fullRid) {
     } catch (err) {
       log.warn('[Radicle] The private-window seed prompt failed:', err?.message || err);
     }
+    if (windowGone(win)) return { refused: PRIVATE_SEED_FAILURE() };
     if (answer?.response !== 1) return cancelled;
     if (!allowsPrivateSeeding()) return { refused: PRIVATE_SEED_FAILURE() };
     if (announcesSeeds() === announced) return true;
-    if (win.isDestroyed()) return { refused: PRIVATE_SEED_FAILURE() };
+    if (prompt >= PRIVATE_SEED_PROMPTS) return { refused: PRIVATE_SEED_UNSETTLED() };
   }
 }
 
