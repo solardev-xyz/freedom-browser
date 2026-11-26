@@ -43,6 +43,7 @@ const {
   ERROR_BODY,
   STREAM_CHARGE,
   WALK_CHARGE,
+  postCharge,
   wholeCharge,
 } = require('./swarm-shell');
 const { SwarmIoPool } = require('./swarm-io-pool');
@@ -345,10 +346,11 @@ const b64Length = (bytes) => 4 * Math.ceil(bytes / 3);
 /**
  * Records the Buffers main allocates of at least `min` bytes, by the
  * Buffer function that made them (the outermost call only: `concat`'s own
- * `allocUnsafe` isn't counted twice), until `restore()`. A `from` over an
+ * `allocUnsafe` isn't counted twice), with what `at()` gives as each is
+ * made (the pool's charge then, say), until `restore()`. A `from` over an
  * ArrayBuffer is a view, and isn't one.
  */
-function trackAllocations(min) {
+function trackAllocations(min, at = () => null) {
   const seen = [];
   const originals = {};
   let depth = 0;
@@ -362,7 +364,10 @@ function trackAllocations(min) {
         const view =
           name === 'from' &&
           (args[0] instanceof ArrayBuffer || args[0] instanceof SharedArrayBuffer);
-        if (depth === 1 && !view && out.length >= min) seen.push([name, out.length]);
+        if (depth === 1 && !view && out.length >= min) {
+          const held = at();
+          seen.push(held === null ? [name, out.length] : [name, out.length, held]);
+        }
         return out;
       } finally {
         depth -= 1;
@@ -2092,6 +2097,118 @@ describe("readData's walk map, reserved before its root may fill it (Codex round
     }
     for (const p of parents) p.handle.close();
     expect(pool.held).toBe(0);
+  });
+});
+
+describe("a base64 POST's body: decoded once, charged before it exists, to the dial's end", () => {
+  const n = 40 * KIB;
+  const bytes = Buffer.alloc(n, 0x5a);
+  const params = { data: data(bytes), contentType: 'application/octet-stream' };
+  const upload = (body = bytes) =>
+    calls.bzzFile({ contentType: 'application/octet-stream', body: { base64: b64(body) } });
+  const ROOM = wholeCharge(65536);
+
+  /** A publishData parent past its ready check and `/stamps`, on `node`. */
+  async function publishing(shell, node) {
+    const p = parent(shell, 'publishData', params, { node });
+    await p.ready('publish');
+    expect((await p.api(calls.stamps())).rule).toBeUndefined();
+    return p;
+  }
+
+  test('one decoded copy, made after its charge: the dial sends it, and its charge goes when the dial ends', async () => {
+    const pool = new SwarmIoPool();
+    const shell = makeShell();
+    let atDial = null;
+    let sent = null;
+    const node = scriptedNode((init) => {
+      if (init.method !== 'POST') return undefined;
+      atDial = pool.held;
+      sent = init.body;
+      return new Response('{"reference":"x"}', { status: 201 });
+    });
+    const p = await publishing(shell, node);
+    const call = upload();
+    const ctx = context({ pool });
+    const allocations = trackAllocations(n, () => pool.held);
+    let out;
+    try {
+      out = await p.api(call, ctx);
+    } finally {
+      allocations.restore();
+    }
+    expect(parsed(out.result).status).toBe(201);
+    // Decoded once, by the grammar's check, with its charge already taken.
+    expect(allocations.seen.filter(([, size]) => size === n)).toEqual([['from', n, postCharge(n)]]);
+    expect(Buffer.from(sent)).toEqual(bytes);
+    // During the dial: the body's charge and the reply's reservation.
+    expect(atDial).toBe(postCharge(n) + ROOM);
+    // After it: the reply's alone.
+    expect(pool.held).toBe(wholeCharge('{"reference":"x"}'.length));
+  });
+
+  test('released on every path: a failed dial, a refusal, no room for the reply', async () => {
+    const failing = scriptedNode((init) => {
+      if (init.method !== 'POST') return undefined;
+      throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } });
+    });
+    const pool = new SwarmIoPool();
+    const p = await publishing(makeShell(), failing);
+    expect(await p.api(upload(), context({ pool }))).toEqual({ result: { failed: 'unreachable' } });
+    expect(pool.held).toBe(0);
+    // Another body than the page's: refused, its charge gone.
+    const refused = await publishing(makeShell(), scriptedNode());
+    expect(await refused.api(upload(Buffer.alloc(n, 1)), context({ pool }))).toEqual({
+      rule: 'body',
+    });
+    expect(pool.held).toBe(0);
+    // Room for the body but not the reply: busy, nothing held, undialled.
+    const tight = new SwarmIoPool(postCharge(n) + ROOM - 1);
+    const node = scriptedNode();
+    const q = await publishing(makeShell(), node);
+    expect(await q.api(upload(), context({ pool: tight }))).toEqual({
+      result: { failed: 'busy' },
+    });
+    expect(tight.held).toBe(0);
+    expect(node.calls()).toHaveLength(1);
+  });
+
+  test('no room for the body: busy before the grammar decodes it, undialled, and the call still unadmitted', async () => {
+    const shell = makeShell();
+    const node = scriptedNode();
+    const p = await publishing(shell, node);
+    const tight = new SwarmIoPool(postCharge(n) - 1);
+    const call = upload();
+    const allocations = trackAllocations(n);
+    let out;
+    try {
+      out = await p.api(call, context({ pool: tight }));
+    } finally {
+      allocations.restore();
+    }
+    expect(out).toEqual({ result: { failed: 'busy' } });
+    expect(allocations.seen).toEqual([]);
+    expect(tight.held).toBe(0);
+    expect(node.calls()).toHaveLength(1);
+    // Nothing was admitted: the upload is still the parent's next call.
+    expect((await p.api(upload(), context({ pool: new SwarmIoPool() }))).rule).toBeUndefined();
+  });
+
+  test('a base64 past the inline bound is refused by its length, never decoded or charged', async () => {
+    const shell = makeShell();
+    const p = await publishing(shell, scriptedNode());
+    const huge = { ...upload(), body: { base64: 'A'.repeat(4 * Math.ceil((64 * KIB) / 3) + 4) } };
+    const pool = new SwarmIoPool();
+    const allocations = trackAllocations(64 * KIB);
+    let out;
+    try {
+      out = await p.api(huge, context({ pool }));
+    } finally {
+      allocations.restore();
+    }
+    expect(out).toEqual({ rule: 'body' });
+    expect(allocations.seen).toEqual([]);
+    expect(pool.highWater).toBe(0);
   });
 });
 

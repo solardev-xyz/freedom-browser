@@ -552,6 +552,8 @@ const MAX_PROBED_INDEX = 2 ** 40;
 /** A SOC's header before the chunk it wraps: identifier and signature. */
 const SOC_HEADER = 32 + 65;
 const INLINE_BODY = 64 * 1024;
+/** The longest base64 an inline body may be: 64 KiB's, 4⌈65,536 / 3⌉. */
+const INLINE_BASE64 = 4 * Math.ceil(INLINE_BODY / 3);
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -837,8 +839,13 @@ function dataBody(data, body) {
 function spanBody(data, span, body) {
   const bytes = inline(data);
   if (!bytes || !body.bytes) return 'body';
-  const expected = Buffer.concat([spanBytes(span === undefined ? bytes.length : span), bytes]);
-  return body.bytes.equals(expected) ? null : 'body';
+  // Compared in place: no copy of the body is made to compare it.
+  const head = spanBytes(span === undefined ? bytes.length : span);
+  return body.bytes.length === head.length + bytes.length &&
+    body.bytes.subarray(0, head.length).equals(head) &&
+    body.bytes.subarray(head.length).equals(bytes)
+    ? null
+    : 'body';
 }
 
 /** `params.span` as core-sdk's chunk takes it: a number or BigInt, and a span of 0, or none, is the data's length. */
@@ -1464,7 +1471,8 @@ function readBody(body) {
   const keys = Object.keys(body);
   if (keys.length !== 1) return 'invalid';
   if (keys[0] === 'base64') {
-    if (typeof body.base64 !== 'string') return 'invalid';
+    // Past the inline bound by its length alone: refused undecoded.
+    if (typeof body.base64 !== 'string' || body.base64.length > INLINE_BASE64) return 'invalid';
     const bytes = Buffer.from(body.base64, 'base64');
     if (bytes.toString('base64') !== body.base64 || bytes.length > INLINE_BODY) return 'invalid';
     return { kind: 'base64', bytes };
@@ -1616,7 +1624,9 @@ class Admission {
    * @param {object} call - `{ form, method, path, query, headers, body,
    *   max_bytes, stream?, feed?, tree? }`, the core's, with `headers`
    *   without main's own
-   * @returns {{ ticket: object }|{ rule: string }}
+   * @returns {{ ticket: object }|{ rule: string }} - the ticket carries
+   *   `bytes`, an inline (`{ base64 }`) body as the check decoded it, so it
+   *   is decoded once, for the check and the dial alike
    */
   admit(call) {
     if (this.ended || this.refused) return { rule: 'ended' };
@@ -1628,7 +1638,15 @@ class Admission {
     this.counts[rule.step] += 1;
     this.position = rule.step;
     this.open += 1;
-    return { ticket: { step: rule.step, form: call.form, onReply: rule.onReply, settled: false } };
+    return {
+      ticket: {
+        step: rule.step,
+        form: call.form,
+        onReply: rule.onReply,
+        bytes: rule.bytes,
+        settled: false,
+      },
+    };
   }
 
   /**
@@ -1682,7 +1700,7 @@ class Admission {
     if (value) return value;
     const refused = this.checkBody(form, call, ctx);
     if (refused) return refused;
-    return { step, onReply: ctx.onReply };
+    return { step, onReply: ctx.onReply, bytes: body?.kind === 'base64' ? body.bytes : null };
   }
 
   /** The row's step the call takes: the next whose forms have it, past only steps taken or not needed. */
@@ -1819,6 +1837,7 @@ module.exports = {
   FAILED,
   FORMS,
   HeadProbe,
+  INLINE_BASE64,
   IndexLookup,
   MAIN_HEADERS,
   MAX_PROBE_READS,

@@ -65,14 +65,24 @@
  *   `content-encoding` already dropped), each value at most 1 KiB, and the
  *   reason phrase at most 1 KiB, or the call fails `error`.
  * - **The Swarm I/O pool** (swarm-io-pool.js), charged through the
- *   handlers' leases before any dial: a whole call `m + 2 × b64(m) + 16
- *   KiB`, `m` the larger of its `max_bytes` and 8 KiB, shrunk to the same
- *   sum over the body it read; a streaming call 256 KiB, to its terminal;
- *   a `{ failed }` answer nothing. Each is released once its reply's last
- *   byte is written, or its reply dropped (service-client.js). `readData`'s
- *   walk reserves its occurrence map, 2,562 slots at 256 bytes, when the
- *   root main returned has a size it walks; without room, its later calls
- *   are `busy`.
+ *   handlers' leases for every buffer main holds at once for a call, each
+ *   before it exists:
+ *   - a whole call `m + 2 × b64(m) + 16 KiB`, `m` the larger of its
+ *     `max_bytes` and 8 KiB, shrunk to the same sum over the body it read
+ *     (kept as the transport's chunks, never copied whole), and that body's
+ *     length more when the grammar reads the answer (its one copy);
+ *   - a streaming call 256 KiB, to its terminal;
+ *   - a base64 POST's body, before the grammar decodes it (once, for its
+ *     check and the dial): its bytes, the base64 the check writes back and
+ *     the transport's copy, to the dial's end;
+ *   - `readData`'s walk, its occurrence map (2,562 slots at 256 bytes),
+ *     before the root's answer may fill it; without room the map stays
+ *     empty, and the parent's later calls are `busy`;
+ *   - a `{ failed }` answer nothing.
+ *   Each is released once its reply's last byte is written, or its reply
+ *   dropped (service-client.js). The ready probe's body (at most 64 KiB,
+ *   until parsed) alone is uncharged: 0015 lets `shell.swarm_ready`
+ *   answers go on while the pool is full.
  * - **Logs:** a refusal at `warn`, with the parent's row, its step and the
  *   rule; never a path, a value or a body.
  *
@@ -88,6 +98,7 @@ const {
   Admission,
   B,
   ERROR_REPLY,
+  INLINE_BASE64,
   MAIN_HEADERS,
   REPLY_HEADERS,
   ROWS,
@@ -126,6 +137,20 @@ const b64 = (bytes) => 4 * Math.ceil(bytes / 3);
 /** A whole call's charge for `m` bytes of body: the bytes, its base64 and
  * the serialized reply, every copy at once, and the reply's rest. */
 const wholeCharge = (m) => m + 2 * b64(m) + REPLY_ROOM;
+/** A base64 POST's charge for its `n`-byte body, to the dial's end: the
+ * body decoded once, the base64 the grammar writes back to check it is
+ * canonical, and the copy the transport makes to send it (undici's
+ * `extractBody`). */
+const postCharge = (n) => 2 * n + b64(n);
+
+/** A base64 POST's decoded size, from its base64's length alone (nothing
+ * decoded); null for a call with none, or one the grammar refuses by its
+ * length before decoding it. */
+function inlineBytes(call) {
+  const text = call.body?.base64;
+  if (typeof text !== 'string' || text.length > INLINE_BASE64) return null;
+  return Buffer.byteLength(text, 'base64');
+}
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const keyOf = (generation, id) => `${generation}:${id}`;
@@ -657,27 +682,39 @@ class SwarmShell {
     const { call } = read;
     // A walk whose map had no room: its calls are busy, never admitted.
     if (entry.walkBusy) return { failed: 'busy' };
+    // A base64 POST's body is charged before the grammar decodes it, once,
+    // for its check and the dial alike; without room, busy, undialled.
+    const sent = inlineBytes(call);
+    if (sent !== null && !charge(postCharge(sent))) return { failed: 'busy' };
     const verdict = entry.admission.admit(call);
-    if (verdict.rule) return this.refuse('shell.swarm_api', entry, verdict.rule);
+    if (verdict.rule) {
+      shrink(0);
+      return this.refuse('shell.swarm_api', entry, verdict.rule);
+    }
     let settled = false;
     const settle = (reply) => {
       if (settled) return;
       settled = true;
       entry.admission.settle(verdict.ticket, reply);
     };
+    // Before any dial: the call is over, and nothing of it is held.
+    const over = () => {
+      shrink(0);
+      settle(null);
+    };
     // The session's stack, a remote node's, sends U+0080 to U+00FF as their
     // UTF-8 (#1338): such a value is refused before the dial.
     if (!isLoopbackGatewayUrl(entry.backend.url) && !call.headers.every(([, v]) => ascii(v))) {
-      settle(null);
+      over();
       return this.refuse('shell.swarm_api', entry, 'header');
     }
     if (!this.nodeUp(entry)) {
-      settle(null);
+      over();
       return { failed: 'stopped' };
     }
     if (call.body && Object.hasOwn(call.body, 'stream')) {
       // A streamed upload: SWM-5's sixth step. Admitted, never dialled.
-      settle(null);
+      over();
       this.log.warn('[Core] shell.swarm_api: a streamed upload, not sent by this build', {
         parent: entry.row,
         step: verdict.ticket.step,
@@ -686,7 +723,7 @@ class SwarmShell {
     }
     const reserve = call.stream ? STREAM_CHARGE : wholeCharge(Math.max(call.max_bytes, ERROR_BODY));
     if (!charge(reserve)) {
-      settle(null);
+      over();
       return { failed: 'busy' };
     }
     try {
@@ -735,13 +772,17 @@ class SwarmShell {
           path: target(call),
           method: call.method,
           headers,
-          body: call.body ? Buffer.from(call.body.base64, 'base64') : null,
+          // The inline body as the grammar decoded it: never decoded again.
+          body: ticket.bytes ?? null,
           signal: life,
           ...(this.idleMs !== undefined && { idleMs: this.idleMs }),
         });
       } catch (err) {
         return failed(failureOf(err, life));
       }
+      // The dial is over: its request body, and the charge for it, go.
+      ticket.bytes = null;
+      shrink(reserve);
       const body = response.body ?? emptyBody();
       if (life.aborted) {
         cancelBody(body);
@@ -875,5 +916,6 @@ module.exports = {
   READY_TIMEOUT_MS,
   STREAM_CHARGE,
   WALK_CHARGE,
+  postCharge,
   wholeCharge,
 };
