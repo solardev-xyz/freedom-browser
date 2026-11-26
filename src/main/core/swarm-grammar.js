@@ -1509,10 +1509,10 @@ function readAnswer(reply) {
     return {
       status,
       headers: Array.isArray(headers) ? readPairs(headers) : [],
-      body:
-        body instanceof Uint8Array
-          ? Buffer.from(body.buffer, body.byteOffset, body.byteLength)
-          : undefined,
+      // A copy, not a view: nothing that holds the answer's backing store
+      // (a SharedArrayBuffer, a worker) can change the bytes under a
+      // handler (Codex, round 4 on #1336).
+      body: body instanceof Uint8Array ? Buffer.from(body) : undefined,
     };
   } catch {
     // A getter that throws: no answer.
@@ -1803,6 +1803,7 @@ module.exports = {
   feedIdentifier,
   feedUpdateAddress,
   pageTopic,
+  readAnswer,
   requestHeaders,
   rowFor,
   socAddress,

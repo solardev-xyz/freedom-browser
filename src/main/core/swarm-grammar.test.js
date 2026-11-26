@@ -17,6 +17,7 @@ const {
   RULES,
   feedUpdateAddress,
   pageTopic,
+  readAnswer,
   requestHeaders,
   rowFor,
 } = require('./swarm-grammar');
@@ -780,6 +781,15 @@ describe('core-supplied values are refused by a rule, never thrown', () => {
     const { head, lookup } = feedRead();
     expect(() => head.settle(lookup.ticket, { status: 200, headers: [pair] })).not.toThrow();
     expect(reads).toBe(1);
+  });
+
+  test("an answer's body is copied, so its backing store can't change under a handler", () => {
+    const shared = new Uint8Array(new SharedArrayBuffer(8));
+    shared.set([1, 2, 3, 4, 5, 6, 7, 8]);
+    const read = readAnswer({ status: 200, headers: [], body: shared });
+    expect(read.body.buffer).not.toBe(shared.buffer);
+    shared[0] = 9;
+    expect([...read.body]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
   test("main's answers are read for their shape: any other is a failed answer, and none throws", () => {
