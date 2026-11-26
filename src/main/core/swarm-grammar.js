@@ -1483,6 +1483,24 @@ function readBody(body) {
  * failed one (null), as `{ failed }` is. Nothing of it is converted before
  * its type is known.
  */
+/**
+ * Main's header pairs, each read once into a fresh `[name, value]` of two
+ * strings: what a handler reads later is what was checked here, whatever
+ * getters the answer had (Codex, round 3 on #1336).
+ */
+function readPairs(headers) {
+  const pairs = [];
+  const count = headers.length;
+  for (let i = 0; i < count; i++) {
+    const pair = headers[i];
+    if (!Array.isArray(pair) || pair.length !== 2) continue;
+    const name = pair[0];
+    const value = pair[1];
+    if (typeof name === 'string' && typeof value === 'string') pairs.push([name, value]);
+  }
+  return pairs;
+}
+
 function readAnswer(reply) {
   try {
     if (!reply || typeof reply !== 'object') return null;
@@ -1490,7 +1508,7 @@ function readAnswer(reply) {
     if (!Number.isInteger(status) || status < 100 || status > 599) return null;
     return {
       status,
-      headers: Array.isArray(headers) ? headers.filter((pair) => isPairs([pair])) : [],
+      headers: Array.isArray(headers) ? readPairs(headers) : [],
       body:
         body instanceof Uint8Array
           ? Buffer.from(body.buffer, body.byteOffset, body.byteLength)

@@ -765,6 +765,23 @@ describe('core-supplied values are refused by a rule, never thrown', () => {
     return { head, lookup, probe };
   };
 
+  test("main's header pairs are read once, so a pair that changes after the check can't throw", () => {
+    let reads = 0;
+    const pair = [];
+    Object.defineProperty(pair, 0, {
+      enumerable: true,
+      get() {
+        reads += 1;
+        if (reads > 1) throw new Error('changed header');
+        return 'swarm-feed-index';
+      },
+    });
+    pair[1] = '0000000000000000';
+    const { head, lookup } = feedRead();
+    expect(() => head.settle(lookup.ticket, { status: 200, headers: [pair] })).not.toThrow();
+    expect(reads).toBe(1);
+  });
+
   test("main's answers are read for their shape: any other is a failed answer, and none throws", () => {
     for (const reply of [...BAD_STATUS, ...BAD_MEMBERS]) {
       const failed = BAD_STATUS.includes(reply);
