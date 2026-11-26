@@ -76,7 +76,7 @@ async function verifyReport(report, nonce) {
   const results = [];
   for (const report of reports) results.push(await verifyReport(report, nonce));
   parentPort.postMessage({ status: results.every(r => r.status === 'checked') ? 'checked' : 'advisory',
-    checkedAt: Date.now(), verifier: 'dcap-qvl/0.6.5', reports: results });
+    checkedAt: Date.now(), verifier: 'dcap-qvl/0.7.1', reports: results });
 })().catch(error => parentPort.postMessage({
   status: error.code === 'EVIDENCE_REJECTED' ? 'failed' : 'unavailable', checkedAt: Date.now(), reports: [],
 }));
