@@ -439,6 +439,9 @@ describe('ipc-handlers', () => {
     expect(win.setFullScreen).toHaveBeenCalledWith(true);
 
     await expect(ctx.ipcMain.invoke(IPC.WINDOW_GET_PLATFORM)).resolves.toBe(process.platform);
+    await expect(ctx.ipcMain.invoke(IPC.WINDOW_GET_SWIPE_NAVIGATION)).resolves.toEqual({
+      twoFinger: expect.any(Boolean),
+    });
     await expect(ctx.ipcMain.invoke(IPC.PROFILE_GET_ACTIVE)).resolves.toEqual({
       id: 'default',
       displayName: 'Default',
@@ -494,6 +497,70 @@ describe('ipc-handlers', () => {
     );
     await ctx.ipcMain.handlers.get(IPC.SIDEBAR_OPEN_PUBLISH_SETUP)(event, { evil: true });
     expect(hostWebContents.send).toHaveBeenLastCalledWith(IPC.SIDEBAR_OPEN_PUBLISH_SETUP, 'setup');
+  });
+
+  describe('waiting for the scroll of a swipe that navigated (#980)', () => {
+    const { EventEmitter } = require('events');
+
+    function guestTab({ id = 7, hostId = 1, destroyed = false } = {}) {
+      const guest = new EventEmitter();
+      guest.id = id;
+      guest.hostWebContents = { id: hostId };
+      guest.isDestroyed = () => destroyed;
+      return guest;
+    }
+
+    function load(guests) {
+      const byId = new Map(guests.map((guest) => [guest.id, guest]));
+      const ctx = loadIpcHandlersModule({
+        webContents: {
+          getAllWebContents: jest.fn(() => []),
+          fromId: jest.fn((id) => {
+            if (id === 99) throw new Error('bad id');
+            return byId.get(id) ?? null;
+          }),
+        },
+      });
+      ctx.mod.registerBaseIpcHandlers();
+      return (sender, id) =>
+        ctx.ipcMain.handlers.get(IPC.WINDOW_AWAIT_SWIPE_SCROLL_END)({ sender }, id);
+    }
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    test('answers for a tab of the asking window once its wheel input is quiet', async () => {
+      jest.useFakeTimers();
+      const guest = guestTab();
+      const wait = load([guest]);
+      const answer = wait({ id: 1 }, 7);
+      guest.emit('input-event', {}, { type: 'mouseWheel' });
+      jest.advanceTimersByTime(150);
+      await expect(answer).resolves.toEqual({ quietForMs: 150 });
+      expect(guest.listenerCount('input-event')).toBe(0);
+    });
+
+    test.each([
+      ['an id that is not a positive integer', { id: 1 }, '7'],
+      ['an unknown id', { id: 1 }, 8],
+      ['an id webContents.fromId rejects', { id: 1 }, 99],
+      ["another window's tab", { id: 2 }, 7],
+      ['the tab itself asking', { id: 7 }, 7],
+      ['a sender without an id', {}, 7],
+    ])('refuses %s', async (_label, sender, id) => {
+      const guest = guestTab();
+      const wait = load([guest]);
+      expect(await wait(sender, id)).toBeNull();
+      expect(guest.listenerCount('input-event')).toBe(0);
+    });
+
+    test('refuses a tab that is gone', async () => {
+      const guest = guestTab({ destroyed: true });
+      const wait = load([guest]);
+      expect(await wait({ id: 1 }, 7)).toBeNull();
+      expect(guest.listenerCount('input-event')).toBe(0);
+    });
   });
 
   test('returns active profile metadata without local paths', async () => {
