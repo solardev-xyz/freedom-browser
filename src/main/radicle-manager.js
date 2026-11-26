@@ -1190,13 +1190,26 @@ function allowsPrivateSeeding() {
  * Whether the node announces the repositories it seeds to its peers (0008,
  * "Seeding and serving"): always, for now. The inventory setting, "Don't
  * announce what I seed" (0008, question 12), is a later step. Once it
- * exists this reads it, and the private-seed prompt below words itself by
- * the answer. Its key isn't read before then: a value only a hand-edited
- * file could hold would have the prompt say the node announces nothing
- * while it still does.
+ * exists, `seedsAnnounced` reads it, and the private-seed prompt below
+ * words itself by the answer, and asks again if it changes while the
+ * prompt is open. Its key isn't read before then: a value only a
+ * hand-edited file could hold would have the prompt say the node announces
+ * nothing while it still does. Anything but `false` reads as announced, the
+ * wording that says more.
  */
+let seedsAnnounced = () => true;
 function announcesSeeds() {
-  return true;
+  try {
+    return seedsAnnounced() !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** Test-only: stands in for the inventory setting's read until it exists
+ * (no argument puts back "always"). */
+function _setSeedsAnnouncedForTests(read) {
+  seedsAnnounced = typeof read === 'function' ? read : () => true;
 }
 
 /**
@@ -1249,12 +1262,38 @@ function promptWindowOf(contents) {
 }
 
 /**
+ * Main's prompt for a private window's seed, until the user's answer holds
+ * for the settings as they are then: true on a Seed given to the prompt's
+ * own wording, else a refusal or a Cancel, as `{ refused }`. Both settings
+ * are read again after each answer, as either may change from another
+ * window while the prompt is open. Seeding turned off refuses, as when it's
+ * off. Announcing changed asks again, with the wording that now holds,
+ * rather than seed on a consequence the user wasn't told; a window gone by
+ * then has no one to ask, and is refused.
+ */
+async function askPrivateSeed(win, fullRid) {
+  const cancelled = { refused: failure('RADICLE_SEED_CANCELLED', 'Seeding was cancelled') };
+  for (;;) {
+    const announced = announcesSeeds();
+    let answer = null;
+    try {
+      answer = await dialog.showMessageBox(win, privateSeedPrompt(fullRid, { announced }));
+    } catch (err) {
+      log.warn('[Radicle] The private-window seed prompt failed:', err?.message || err);
+    }
+    if (answer?.response !== 1) return cancelled;
+    if (!allowsPrivateSeeding()) return { refused: PRIVATE_SEED_FAILURE() };
+    if (announcesSeeds() === announced) return true;
+    if (win.isDestroyed()) return { refused: PRIVATE_SEED_FAILURE() };
+  }
+}
+
+/**
  * A seed from a private window, with Allow seeding from private windows on:
  * what seedRepository would refuse is refused before the prompt, so the
- * user is never asked about a seed that can't start. Then main's prompt,
- * and on its Seed, the seed a normal window's would be, but for main's
- * private-window log redaction, which its work keeps. The setting is read
- * again after the answer, as it may have been turned off meanwhile. The
+ * user is never asked about a seed that can't start. Then main's prompt
+ * (askPrivateSeed), and on its Seed, the seed a normal window's would be,
+ * but for main's private-window log redaction, which its work keeps. The
  * repository then stays after the window closes: nothing of a private
  * window's cleanup touches Radicle.
  */
@@ -1269,16 +1308,13 @@ async function seedFromPrivateWindow(event, rid, onStatus) {
     return failure('RADICLE_SEED_PENDING', 'A seed in this window is waiting for your answer');
   }
   seedPromptsOpen.add(win.id);
-  let answer = null;
+  let asked;
   try {
-    answer = await dialog.showMessageBox(win, privateSeedPrompt(fullRid));
-  } catch (err) {
-    log.warn('[Radicle] The private-window seed prompt failed:', err?.message || err);
+    asked = await askPrivateSeed(win, fullRid);
   } finally {
     seedPromptsOpen.delete(win.id);
   }
-  if (answer?.response !== 1) return failure('RADICLE_SEED_CANCELLED', 'Seeding was cancelled');
-  if (!allowsPrivateSeeding()) return PRIVATE_SEED_FAILURE();
+  if (asked !== true) return asked.refused;
   return runWithPrivateLogContext(true, () => seedRepository(fullRid, onStatus));
 }
 
@@ -1500,8 +1536,10 @@ module.exports = {
   getRadicleRepair,
   removeQuarantinedRepo,
   getConnections,
-  // The private-window seed's prompt, for its tests.
+  // The private-window seed's prompt, and its announcing read's stand-in,
+  // for their tests.
   privateSeedPrompt,
+  _setSeedsAnnouncedForTests,
   // The seed paths' reads, for their tests.
   repoExists,
   getSeederCount,
