@@ -681,7 +681,8 @@ function feedIndexHex(text) {
   return BigInt(`0x${digits}`);
 }
 
-const ok = (reply) => Boolean(reply) && reply.status >= 200 && reply.status < 300;
+const ok = (reply) =>
+  Boolean(reply) && Number.isInteger(reply.status) && reply.status >= 200 && reply.status < 300;
 
 /**
  * `probeFeedHead` replayed over main's own answers: index 0, then 1, 2, 4,
@@ -715,7 +716,7 @@ class HeadProbe {
   /** Main answered it with `status` (null for `{ failed }`). */
   answer(status) {
     this.pending = false;
-    const found = status >= 200 && status < 300;
+    const found = Number.isInteger(status) && status >= 200 && status < 300;
     if (!found && status !== 404) {
       this.failed = true;
       return;
@@ -1476,6 +1477,32 @@ function readBody(body) {
 }
 
 /**
+ * Main's answer to a call as the reply handlers read it: a status from 100
+ * to 599, the headers' `[name, value]` string pairs, and the body when it
+ * is bytes. An answer of any other shape, or one with no such status, is a
+ * failed one (null), as `{ failed }` is. Nothing of it is converted before
+ * its type is known.
+ */
+function readAnswer(reply) {
+  try {
+    if (!reply || typeof reply !== 'object') return null;
+    const { status, headers, body } = reply;
+    if (!Number.isInteger(status) || status < 100 || status > 599) return null;
+    return {
+      status,
+      headers: Array.isArray(headers) ? headers.filter((pair) => isPairs([pair])) : [],
+      body:
+        body instanceof Uint8Array
+          ? Buffer.from(body.buffer, body.byteOffset, body.byteLength)
+          : undefined,
+    };
+  } catch {
+    // A getter that throws: no answer.
+    return null;
+  }
+}
+
+/**
  * One parent's admission: what main admits for it, call by call.
  */
 class Admission {
@@ -1578,19 +1605,7 @@ class Admission {
     ticket.settled = true;
     this.open -= 1;
     if (this.ended || this.refused) return;
-    // Read as main answered: headers a list, a body bytes, else absent.
-    const answer =
-      reply && typeof reply === 'object'
-        ? {
-            status: reply.status,
-            headers: Array.isArray(reply.headers) ? reply.headers : [],
-            body:
-              reply.body instanceof Uint8Array
-                ? Buffer.from(reply.body.buffer, reply.body.byteOffset, reply.body.byteLength)
-                : undefined,
-          }
-        : null;
-    ticket.onReply?.(answer);
+    ticket.onReply?.(readAnswer(reply));
   }
 
   /** The call's rule, or `{ step, onReply }` when every check passed. */

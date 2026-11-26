@@ -12,6 +12,8 @@
 const {
   Admission,
   FAILED,
+  HeadProbe,
+  IndexLookup,
   RULES,
   feedUpdateAddress,
   pageTopic,
@@ -696,36 +698,108 @@ describe('core-supplied values are refused by a rule, never thrown', () => {
     expect(a.ready({})).toBe('value');
   });
 
-  test("main's answers are read as main gave them, whatever their shape", () => {
-    for (const reply of [
-      null,
-      undefined,
-      'x',
-      { status: 'x' },
-      { status: 200, headers: {}, body: 'not bytes' },
-      { status: 200, headers: [[1, 2], 'x'], body: [1, 2] },
-      {
-        status: 200,
-        headers: [
-          ['swarm-feed-index', 'zz'],
-          ['swarm-feed-index-next', 7],
-        ],
+  // Values whose primitive conversion throws, or that relational operators refuse.
+  const unconvertible = () => ({ toString: 1, valueOf: 1 });
+  const throwing = () =>
+    Object.defineProperty({}, 'status', {
+      enumerable: true,
+      get() {
+        throw new Error('no status');
       },
-    ]) {
-      const { admission, call } = streamCall();
-      const verdict = admission.admit(call);
-      expect(() => admission.settle(verdict.ticket, reply)).not.toThrow();
-      const head = new Admission({
-        row: 'swarm.feed:read',
-        params: { op: 'read', key: { kind: 'bee_wallet' }, topic: 'cd'.repeat(32) },
+    });
+  const BAD_STATUS = [
+    null,
+    undefined,
+    'x',
+    7,
+    throwing(),
+    { status: 'x' },
+    { status: '200' },
+    { status: unconvertible() },
+    { status: Symbol('status') },
+    { status: 200n },
+    { status: [200] },
+    { status: 200.5 },
+    { status: NaN },
+    { status: 99 },
+    { status: 600 },
+  ];
+  const BAD_MEMBERS = [
+    { status: 200, headers: {}, body: 'not bytes' },
+    { status: 200, headers: 'x', body: [1, 2] },
+    { status: 200, headers: { length: 1, 0: ['swarm-feed-index', '0000000000000001'] } },
+    { status: 200, headers: [[1, 2], 'x', [Symbol('name'), 'x'], [unconvertible(), 'v']] },
+    {
+      status: 200,
+      headers: [
+        ['swarm-feed-index', unconvertible()],
+        ['swarm-feed-index-next', Symbol('next')],
+      ],
+    },
+    {
+      status: 200,
+      headers: [
+        ['swarm-feed-index', 'zz'],
+        ['swarm-feed-index-next', 7],
+      ],
+    },
+    { status: 200, headers: [], body: unconvertible() },
+    { status: 200, headers: [], body: Symbol('body') },
+    { status: 200, headers: [], body: 5n },
+  ];
+  const feedRead = () => {
+    const topicHex = 'cd'.repeat(32);
+    const head = new Admission({
+      row: 'swarm.feed:read',
+      params: { op: 'read', key: { kind: 'bee_wallet' }, topic: topicHex },
+    });
+    const lookup = head.admit(
+      get('feed_head', `/feeds/${OWNER}/${topicHex}`, {
+        headers: [['swarm-only-root-chunk', 'true']],
+      })
+    );
+    const probe = (index) =>
+      get('chunk', `/chunks/${feedUpdateAddress(topicHex, OWNER, BigInt(index))}`, {
+        feed: { owner: OWNER, index },
       });
-      const lookup = head.admit(
-        get('feed_head', `/feeds/${OWNER}/${'cd'.repeat(32)}`, {
-          headers: [['swarm-only-root-chunk', 'true']],
-        })
-      );
+    return { head, lookup, probe };
+  };
+
+  test("main's answers are read for their shape: any other is a failed answer, and none throws", () => {
+    for (const reply of [...BAD_STATUS, ...BAD_MEMBERS]) {
+      const failed = BAD_STATUS.includes(reply);
+      // readData's root: no size is read from it, so no stream follows.
+      const { admission, call } = streamCall();
+      const root = new Admission({ row: 'readData', params: { reference: big.address }, key: KEY });
+      root.ready('reachable');
+      root.readyAnswered(true);
+      const first = root.admit(get('chunk', `/chunks/${big.address}`));
+      expect(() => root.settle(first.ticket, reply)).not.toThrow();
+      expect(root.admit(call)).toStrictEqual({ rule: 'order' });
+      expect(admission.admit(call).rule).toBeUndefined();
+      // feed_head: no index from it; only a 404 starts the probe.
+      const { head, lookup } = feedRead();
       expect(() => head.settle(lookup.ticket, reply)).not.toThrow();
       expect(head.lookup.writeIndex).toBeUndefined();
+      expect(head.lookup.probing).toBe(false);
+      // A probe read: a failed answer ends the probe.
+      const run = feedRead();
+      run.head.settle(run.lookup.ticket, { status: 404, headers: [] });
+      const zero = run.head.admit(run.probe(0));
+      expect(zero.rule).toBeUndefined();
+      expect(() => run.head.settle(zero.ticket, reply)).not.toThrow();
+      expect(run.head.lookup.probe.failed).toBe(failed);
+      expect(run.head.admit(run.probe(1)).rule).toBe(failed ? 'value' : undefined);
+    }
+    // HeadProbe and IndexLookup take such values directly as well.
+    for (const status of [unconvertible(), Symbol('s'), 200n, [200], '404']) {
+      const probe = new HeadProbe();
+      probe.asked();
+      expect(() => probe.answer(status)).not.toThrow();
+      expect(probe.failed).toBe(true);
+      const lookup = new IndexLookup({ probeOn: [404] });
+      expect(() => lookup.answerHead({ status, headers: [] })).not.toThrow();
+      expect(lookup.writeIndex).toBeUndefined();
     }
   });
 
