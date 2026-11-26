@@ -277,6 +277,11 @@ function isAnnouncedMainProcessDial(details, method) {
   // main process's own dial.
   if (details?.webContentsId !== undefined && details?.webContentsId !== null) return false;
   if (details?.webContents || details?.frame) return false;
+  // Main's dials go out through `net.request`, which Electron reports as
+  // `resourceType: 'other'`. A frameless service worker's fetch is `xhr`, so
+  // without this a worker that sent the announced method to the announced
+  // URL during the dial would pass as main's own (Codex, round 1 on #1338).
+  if (details?.resourceType !== 'other') return false;
   // Exactly the method the dial announced, for exactly its URL.
   return isMainProcessAntDial(details.url, method);
 }

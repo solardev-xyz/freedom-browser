@@ -310,6 +310,10 @@ describe('an announced main-process POST', () => {
     ['from a bzz: page', post({ frame: topFrame(`bzz://${'a'.repeat(64)}/`) })],
     ['from a webContents', post({ webContents: webview })],
     ['with a webContentsId', post({ webContentsId: 7 })],
+    // A frameless worker's fetch: no frame and no webContents, but `xhr`.
+    ['from a frameless worker (xhr)', post({ resourceType: 'xhr' })],
+    ['as a frameless fetch of another type', post({ resourceType: 'fetch' })],
+    ['with no resourceType', post({ resourceType: undefined })],
     [
       'as a top-level navigation (a form POST)',
       post({ resourceType: 'mainFrame', webContentsId: 3, webContents: webview }),
