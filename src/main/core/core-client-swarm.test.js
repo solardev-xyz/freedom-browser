@@ -766,6 +766,26 @@ describe("main's Swarm I/O pool (design 0015)", () => {
     expect(chainTake).not.toHaveBeenCalled();
   });
 
+  test("a Swarm head sent with bodyFlag: false carries no body member, which the core's strict readers refuse; the stream opens all the same", async () => {
+    makeClient(coreWith());
+    client.handle(
+      'shell.swarm_api',
+      () =>
+        new StreamedReply({ status: 200, status_text: 'OK', headers: [] }, source(10).stream, {
+          bodyFlag: false,
+        }),
+      { streams: true, failure: FAILED, race: true }
+    );
+    await client.start();
+    core().send({ type: 'request', id: 1, method: 'shell.swarm_api', params: {} });
+    await settle();
+    expect(core().replies()).toEqual([
+      { type: 'response', id: 1, result: { status: 200, status_text: 'OK', headers: [] } },
+    ]);
+    expect(core().dataOf(1).length).toBe(10);
+    expect(core().framesOf(KIND_END, 1)).toHaveLength(1);
+  });
+
   test("a reply dropped unwritten, or its core's end, releases its handler's charge", async () => {
     const pool = new SwarmIoPool();
     makeClient(coreWith());

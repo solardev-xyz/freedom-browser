@@ -409,19 +409,29 @@ class JsonText {
  * otherwise, naming the error's `errorCode` (an errno name) where they
  * take one (a `shell.swarm_part` part's). The core's cancel, or the
  * generation's end, cancels it.
+ *
+ * `bodyFlag: false` sends the head's result as it is, with no `body`
+ * member: design 0015's Swarm heads (`shell.swarm_api`'s `{ status,
+ * status_text, headers }`), which the core reads strictly, refusing any
+ * other member (freedom-cored's `swarm/wire.rs`, `api_reply`), and whose
+ * stream it opens by its own ask, not by a flag.
  */
 class StreamedReply {
   /**
    * @param {object} result - the head's result, e.g. `{ status, headers }`
    * @param {ReadableStream} body
+   * @param {object} [options]
+   * @param {boolean} [options.bodyFlag] - false to leave `body: true` out
+   *   of the head (design 0015's Swarm heads)
    */
-  constructor(result, body) {
+  constructor(result, body, { bodyFlag = true } = {}) {
     if (!isObject(result)) throw new TypeError('A streamed reply needs a result object');
     if (typeof body?.getReader !== 'function') {
       throw new TypeError('A streamed reply needs a ReadableStream body');
     }
     this.result = result;
     this.body = body;
+    this.bodyFlag = bodyFlag !== false;
   }
 
   /** Lets go of a body that was never read. */
@@ -2998,7 +3008,7 @@ class ServiceClient extends EventEmitter {
     let code = null;
     try {
       if (streamed) {
-        const result = { ...streamed.result, body: true };
+        const result = streamed.bodyFlag ? { ...streamed.result, body: true } : streamed.result;
         json = Buffer.from(JSON.stringify({ type: 'response', id, result }), 'utf8');
       } else if (outcome.result instanceof JsonText) {
         const head = `{"type":"response","id":${id},"result":`;
