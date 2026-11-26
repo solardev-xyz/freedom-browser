@@ -313,20 +313,18 @@ describe('settings.html helper lines earn their place (#273)', () => {
   });
 });
 
-describe('settings.html Advanced holds the experiments and the power-user controls (#275)', () => {
+describe('settings.html Advanced holds only the experiments (#275)', () => {
   const rowLabels = (html) =>
     [...html.matchAll(/<p class="row-label">([\s\S]*?)<\/p>/g)].map(([, body]) => textOf(body));
 
-  test('the Beta features, each badged rather than parenthesised, and one power-user control', () => {
+  test('only the Beta features are left, each badged rather than parenthesised', () => {
     const advanced = section('experimental');
     expect(rowLabels(advanced)).toEqual([
       'Enable Identity &amp; Wallet Beta',
       'Enable Tor (.onion access) Beta',
       'Route IPFS through Tor Beta',
       'Route Radicle through Tor Beta',
-      // A power-user control (settings-placement.md §2), not a Beta
-      // feature, so it has no badge (freedom-core design 0008, question 11).
-      'Allow seeding from private windows',
+      'Allow seeding from private windows Beta',
     ]);
     // A label wrapped in a span of its own (an accessible name, #784)
     // still carries the badge right after it.
@@ -335,6 +333,7 @@ describe('settings.html Advanced holds the experiments and the power-user contro
       'Enable Tor \\(\\.onion access\\)',
       'Route IPFS through Tor',
       'Route Radicle through Tor',
+      'Allow seeding from private windows',
     ]) {
       expect(advanced).toMatch(
         new RegExp(`${label}(</span>)?\\s*<span class="resolver-badge">Beta</span>`)

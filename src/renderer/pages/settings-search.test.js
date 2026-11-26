@@ -356,7 +356,7 @@ describe('buildSettingsSearchIndex', () => {
     // Experimental, not Startup; #275 moved it, and the result says where.
     expect(attribution('Start Tor when Freedom opens')).toBe('Nodes › Startup');
     expect(attribution('Enable Tor (.onion access) Beta')).toBe('Advanced');
-    expect(attribution('Allow seeding from private windows')).toBe('Advanced');
+    expect(attribution('Allow seeding from private windows Beta')).toBe('Advanced');
     expect(attribution('Theme')).toBe('Appearance');
     expect(attribution('Show IPFS load progress in the status bar')).toBe('Appearance');
     expect(attribution('Swarm publishing')).toBe('Nodes');
@@ -753,7 +753,7 @@ describe('matchSettingsSearch', () => {
   // and the result opens Advanced, the entry it is in.
   test('Allow seeding from private windows is found by its label, under Advanced', () => {
     const row = (query) =>
-      search(query).find((result) => result.label === 'Allow seeding from private windows');
+      search(query).find((result) => result.label === 'Allow seeding from private windows Beta');
     expect(row('allow seeding')).toMatchObject({
       sectionId: 'experimental',
       section: 'Advanced',
