@@ -12,6 +12,8 @@ const CODES = {
   SAFE_BUSY: 'SAFE_BUSY',
   /** One pending SafeTx per Safe — finish or discard the current one. */
   SAFE_PENDING_EXISTS: 'SAFE_PENDING_EXISTS',
+  /** safe-pending.json exists but cannot be read; nothing was changed. */
+  SAFE_PENDING_UNREADABLE: 'SAFE_PENDING_UNREADABLE',
   /** A live SafeMessage session belongs to another page — no takeover. */
   SAFE_MESSAGE_EXISTS: 'SAFE_MESSAGE_EXISTS',
   /** The pending item was discarded while a signature was being made. */

@@ -6848,6 +6848,12 @@
   font-weight: 600;
 }
 
+/* A full filesystem path: wrap it, never clip it */
+.safe-pending-store-notice {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+
 .safe-pending-item-chevron {
   color: var(--muted);
   font-size: 16px;

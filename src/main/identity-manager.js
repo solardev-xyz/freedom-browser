@@ -2106,11 +2106,15 @@ async function deleteDerivedWallet(index) {
   // a later account that reuses the index must neither inherit nor be
   // blocked by the deleted Safe's leftovers. Cleanup precedes the meta
   // write so a failure never leaves a deleted record with live state.
+  // The pending store goes first: clearPending can refuse (an unreadable
+  // store throws SAFE_PENDING_UNREADABLE), and a refused delete must keep
+  // the Safe whole, including a live session's collected signatures.
+  // discardSession cannot fail, so it runs only once the store is clear.
   // (Lazy requires — both modules are dependency-light — keep the Safe
   // stack out of ordinary wallet operations.)
   if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
-    require('./wallet/safe/message-sessions').discardSession(index);
     require('./wallet/safe/pending-store').clearPending(index);
+    require('./wallet/safe/message-sessions').discardSession(index);
   }
 
   // Remove from list

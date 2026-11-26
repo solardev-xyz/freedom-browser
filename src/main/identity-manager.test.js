@@ -1125,6 +1125,44 @@ describe('identity-manager safe accounts', () => {
     expect(JSON.parse(fs.readFileSync(pendingFile, 'utf-8'))).toEqual({});
   });
 
+  test('a Safe delete refused by an unreadable pending store keeps the live message session', async () => {
+    await seedOwners();
+    const safe = await addSafe();
+
+    const pendingStore = require('./wallet/safe/pending-store');
+    const messageSessions = require('./wallet/safe/message-sessions');
+    const detach = jest.fn();
+    const session = { token: 'session-token', detach, signatures: ['0xsig'] };
+    messageSessions.setSession(safe.index, session);
+
+    // A directory where the store file should be: readFileSync fails with
+    // EISDIR, an I/O error the store refuses on (never treated as empty).
+    pendingStore._resetForTests();
+    const pendingFile = path.join(tmpDir, 'safe-pending.json');
+    fs.rmSync(pendingFile, { force: true });
+    fs.mkdirSync(pendingFile);
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+        code: 'SAFE_PENDING_UNREADABLE',
+      });
+    } finally {
+      consoleError.mockRestore();
+      fs.rmSync(pendingFile, { recursive: true, force: true });
+      pendingStore._resetForTests();
+    }
+
+    // The refused delete left the Safe whole: record, session, signatures.
+    expect(identityManager.getWalletRecord(safe.index)).toMatchObject({ type: 'safe' });
+    expect(messageSessions.getSession(safe.index)).toBe(session);
+    expect(detach).not.toHaveBeenCalled();
+
+    // With the store readable again, the delete goes through and cleans up.
+    await identityManager.deleteDerivedWallet(safe.index);
+    expect(messageSessions.getSession(safe.index)).toBeNull();
+    expect(detach).toHaveBeenCalled();
+  });
+
   test('an account created after deleting the highest-index Safe starts with a clean slate', async () => {
     await seedOwners();
     const safe = await addSafe(); // highest index in the vault
