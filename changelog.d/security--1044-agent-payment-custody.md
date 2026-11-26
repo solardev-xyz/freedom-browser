@@ -1,0 +1,1 @@
+- Automatic x402 payments require fresh approval if Agent takes control of the tab while they are pending, and never pay for the first page load of a tab Agent opens ([#1044](https://github.com/solardev-xyz/freedom-browser/issues/1044))
