@@ -38,16 +38,22 @@
  * one `StreamDuplex`. fc-protocol's `stream` module is the reference, and
  * freedom-core's `vectors/streams.json` holds the cases both pass.
  *
- * **Abort codes** (0007, Errors; 0009, Streams in the core): every code in
- * `ABORT_CODES` decodes, and which a stream may end with depends on who
- * sends it. A sender refuses to write any other, and a receiver takes any
- * other as a protocol error (`abort_code`):
+ * **Abort codes** (0007, Errors; 0009, Streams in the core; 0015, Streams):
+ * every code in `ABORT_CODES` decodes, and which a stream may end with
+ * depends on who sends it. A sender refuses to write any other, and a
+ * receiver takes any other as a protocol error (`abort_code`):
  * - a service's body, on a service connection: `SERVICE_ABORT_CODES`,
  *   0007's five;
  * - a verified body the core sends main at protocol 2:
  *   `CORE_BODY_ABORT_CODES`;
  * - a piece main sends the core at protocol 2 (`shell.dweb_get`):
  *   `PIECE_ABORT_CODES`.
+ * Design 0015's Swarm streams (the `shell.swarm_api` bodies and
+ * `shell.swarm_part` parts main will stream the core, which may also end
+ * `too_large` or name a part's error code, and the `swarm.body` uploads the
+ * core streams main) have their codes in fc-protocol; main sends and takes
+ * none of them yet (SWM-5). Their aborts decode here, and every receiver of
+ * main's takes an abort that names an error code as `abort_code`.
  */
 
 const KIND_JSON = 0x01;
@@ -72,7 +78,9 @@ const MAX_U32 = 0xffffffff;
 // A message ID: 1 to 2^53 - 1, exact in JS.
 const MAX_ID = Number.MAX_SAFE_INTEGER;
 // Every abort code, in fc-protocol's order (`AbortCode::ALL`): 0007's five,
-// then 0009's.
+// then 0009's, then 0015's `too_large` (a `shell.swarm_api` body main
+// streams the core past its `max_bytes`, which no stream of main's takes
+// yet).
 const ABORT_CODES = new Set([
   'cancelled',
   'internal',
@@ -84,6 +92,7 @@ const ABORT_CODES = new Set([
   'malformed',
   'piece_failed',
   'stalled',
+  'too_large',
 ]);
 // The codes a stream may end with, by who sends it (fc-protocol's `Codes`).
 const SERVICE_ABORT_CODES = new Set([
@@ -317,10 +326,15 @@ function readStreamId(payload) {
 
 // An abort's JSON, read as fc-protocol's serde reads it: an object with
 // exactly `code`, one of the abort codes, and `message`, each a JSON string,
-// once; JSON's whitespace between tokens and nothing after. JSON.parse would
-// take a duplicate member (keeping the last), an extra one, or a lone
-// surrogate's escape, which serde refuses.
+// once, and optionally `error_code` (design 0015: the errno name a part's
+// file failed with, a string of ERROR_CODE's form), once; JSON's whitespace
+// between tokens and nothing after. JSON.parse would take a duplicate member
+// (keeping the last), an extra one, or a lone surrogate's escape, which serde
+// refuses.
 const JSON_WS = new Set([' ', '\t', '\n', '\r']);
+const ABORT_MEMBERS = new Set(['code', 'message', 'error_code']);
+// fc-protocol's `is_error_code`: `^[A-Z][A-Z0-9_]{0,31}$`.
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,31}$/;
 const ESCAPES = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
 
 function parseAbortJson(bytes) {
@@ -392,7 +406,7 @@ function parseAbortJson(bytes) {
     if (text[at] !== ':') refuse();
     at += 1;
     space();
-    if ((name !== 'code' && name !== 'message') || members.has(name)) refuse();
+    if (!ABORT_MEMBERS.has(name) || members.has(name)) refuse();
     members.set(name, string());
     space();
     if (text[at] === ',') {
@@ -404,16 +418,24 @@ function parseAbortJson(bytes) {
     break;
   }
   space();
-  if (at !== text.length || members.size !== 2 || !ABORT_CODES.has(members.get('code'))) {
+  if (
+    at !== text.length ||
+    !members.has('code') ||
+    !members.has('message') ||
+    !ABORT_CODES.has(members.get('code'))
+  ) {
     refuse();
   }
-  return { code: members.get('code'), message: members.get('message') };
+  const abort = { code: members.get('code'), message: members.get('message') };
+  if (!members.has('error_code')) return abort;
+  if (!ERROR_CODE.test(members.get('error_code'))) refuse();
+  return { ...abort, errorCode: members.get('error_code') };
 }
 
 /**
  * A stream frame's payload, decoded: `{ kind, id }`, with `bytes` (a view)
- * for data, `code` and `message` for an abort, and `credit` for credit.
- * The length was checked at the header.
+ * for data, `code` and `message` for an abort (and `errorCode` when it names
+ * one), and `credit` for credit. The length was checked at the header.
  */
 function decodeStreamFrame(kind, payload) {
   checkStreamLength(kind, payload.length);
@@ -780,8 +802,10 @@ class Ring {
  * (`received - returned > 128 KiB`), a frame for a stream that isn't open,
  * a frame for an ID above the highest request sent, credit from the
  * service, a reply that isn't pending, an abort whose code the other side
- * never ends a stream with (`abort_code`, checked before the ID, as
- * fc-protocol checks it). Main's own request IDs must increase
+ * never ends a stream with, or that names an error code (`abort_code`,
+ * checked before the ID, as fc-protocol checks it: only a
+ * `shell.swarm_part` part main streams the core may name one, design 0015,
+ * and main receives none). Main's own request IDs must increase
  * (`request_order`).
  *
  * **The codes** it takes are a service's (`SERVICE_ABORT_CODES`), unless it
@@ -849,7 +873,9 @@ class StreamReceiver {
         return this.fail(err.category);
       }
     }
-    if (kind === KIND_ABORT && !this.codes.has(frame.code)) return this.fail('abort_code');
+    if (kind === KIND_ABORT && (!this.codes.has(frame.code) || frame.errorCode !== undefined)) {
+      return this.fail('abort_code');
+    }
     if (id > this.highest) return this.fail('stream_unknown');
     const entry = this.entries.get(id);
     if (entry?.state === 'retiring') {

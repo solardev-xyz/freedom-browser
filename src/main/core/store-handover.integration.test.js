@@ -4,7 +4,7 @@
  * names `vault_meta` (PRF-6(a)), `intents` (PRF-6(b2)), `payments`
  * (PRF-6(c)), `safe_pending` (PRF-6(d)) and `rpc_api_keys` (PRF-6(e)), in
  * `STORES` order, and the pinned core echoes them all. A hello naming
- * none, as a build before PRF-6 sends, has the pinned core (0.28.0) write
+ * none, as a build before PRF-6 sends, has the pinned core (0.29.0) write
  * none of the stores, answer each of their writes `not_moved` and serves
  * the reads it can; a store's request sent with
  * `requires: requiresStore(name)` fails `requirement_unmet` in main, unsent;
