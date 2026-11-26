@@ -72,6 +72,29 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Where the Linux jobs run. On `merge_group`, `push` and `workflow_dispatch`
+  # most Linux jobs run on the project's own self-hosted runners (label
+  # `freedom-linux`: ephemeral, one job per container, then destroyed); on
+  # every other event they stay on GitHub's `ubuntu-latest`. This is a public
+  # repository, so a `pull_request` run can carry anyone's code, a fork's
+  # included, and a self-hosted runner must never execute it. The three
+  # events on the list only run code that is already trusted: a push needs
+  # write access to `main`/`release/**`/`hotfix/**`/a tag, a dispatch needs
+  # write access, and a merge-queue candidate is a pull request a maintainer
+  # has already approved and queued. The expression is an allowlist, so any
+  # event not named here (a future `pull_request_target`, `schedule`, …)
+  # falls back to `ubuntu-latest` rather than onto the self-hosted runners:
+  #
+  #   runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
+  #
+  # The `native-addons` and `myotis-native-e2e` matrices switch only their
+  # `ubuntu-latest` entry the same way; every other entry keeps `matrix.os`.
+  # Two Linux jobs stay on GitHub-hosted runners on every event, because the
+  # container cannot host them: `e2e-agent-linux` (its linux-agent-sandbox
+  # action loads an AppArmor profile into the host kernel) and `e2e-desktop`
+  # (the preview-network-isolation qualification needs user namespaces).
+  # `scripts/ci/ci-gate.test.js` pins all of this.
+  #
   # Is there anything in this pull request that the *gated* suites below could
   # possibly be testing? A changelog fragment, a playbook or a doc cannot
   # change what the app does, and re-running 40 Playwright, native-addon and
@@ -147,7 +170,7 @@ jobs:
   # anything, a gate that never wrote it runs the full matrix, and a label
   # lookup that errors counts as "labelled".
   code-changed:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -228,7 +251,7 @@ jobs:
   # Lint plus the whole jest suite, doc<->code guards included — which is why
   # this is the one suite `code-changed` does not gate. See the note there.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 20
 
     steps:
@@ -335,7 +358,7 @@ jobs:
             myotis: win32-x64
             myotis_addon: myotis-bin/win-x64/myotis-node.node
     name: native-addons (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || matrix.os }}
     timeout-minutes: 45
 
     steps:
@@ -654,7 +677,7 @@ jobs:
   packed-asar-contents:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
 
     steps:
@@ -720,7 +743,7 @@ jobs:
           - os: windows-latest
             target: win32-x64
             addon: myotis-bin/win-x64/myotis-node.node
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || matrix.os }}
     # Spec budget is READY_TIMEOUT * 2 + 10 min = 60 min; the rest covers
     # npm ci, Playwright deps, and the two addon downloads.
     timeout-minutes: 75
@@ -885,7 +908,7 @@ jobs:
   e2e-settings-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 45
 
     steps:
@@ -1116,7 +1139,7 @@ jobs:
   e2e-browser:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 40
 
     steps:
@@ -1540,7 +1563,7 @@ jobs:
   e2e-live:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 45
 
     steps:
@@ -1672,7 +1695,7 @@ jobs:
   # — see the note on that job: a gate that fails must run the suites, not
   # skip them into a reported Success.
   renderer-changed:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       renderer: ${{ steps.filter.outputs.renderer }}
@@ -1723,7 +1746,7 @@ jobs:
   e2e-renderer:
     needs: renderer-changed
     if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 25
 
     steps:
@@ -1816,7 +1839,7 @@ jobs:
   # only .github/, takes well under a minute, and a prose-only pull request
   # that somehow touched a workflow should still be audited.
   zizmor:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       # Read the tree. The online audits (impostor commits, known-vulnerable
@@ -1873,7 +1896,7 @@ jobs:
         test,
         zizmor,
       ]
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(fromJSON('["merge_group","push","workflow_dispatch"]'), github.event_name) && fromJSON('["self-hosted","freedom-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Report whether every job that ran succeeded

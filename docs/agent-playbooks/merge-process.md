@@ -27,6 +27,11 @@ them before queueing, add the `full-ci` label and push a commit or use
 **Re-run all jobs** on the latest CI run (see `release-process.md`, "The merge
 queue").
 
+Merge-queue, `main` and dispatch runs use project-owned Linux runners for most
+Linux jobs; a pull request's own run stays on GitHub-hosted runners. A Linux
+failure that shows up only in the queue can therefore be a runner difference,
+not just a merge difference.
+
 ## Procedure
 
 1. Confirm each pull request is reviewed and its checks are green.
