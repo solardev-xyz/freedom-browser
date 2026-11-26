@@ -181,6 +181,27 @@ All four suites use a temporary Electron `userData` directory and run sequential
 
 CI does not run the harness project wholesale: each `e2e-*` job in `.github/workflows/ci.yml` names its own list of specs. When you add a `test-e2e/*.spec.js`, add it to the job that fits its area. If it can't run in CI yet, add a `# e2e-not-in-ci: <spec> — <reason>` line to the list above those jobs, with the issue that tracks it. `scripts/ci/e2e-spec-coverage.test.js` fails the `test` job on a spec that is in neither place.
 
+### Driving Freedom from your own scripts
+
+To automate Freedom outside the Playwright suites, for example to test a site or a Swarm app with several users at once, start it on a scratch profile with a DevTools port and attach over the Chrome DevTools Protocol, as the packaged e2e projects do (`test-e2e/packaged-launch.js`):
+
+```bash
+FREEDOM_TEST_USER_DATA=/tmp/freedom-alice npm start -- --remote-debugging-port=9301
+```
+
+A packaged build accepts `--remote-debugging-port` only together with `FREEDOM_TEST_USER_DATA` (`src/main/remote-debugging-gate.js`).
+
+- **The chrome's bridges are internal.** `window.electronAPI`, `window.identity`, `window.ant` and the other objects the chrome's preload exposes are Freedom's own IPC, not an automation API. They change without notice, and each serves only what the chrome needs: `window.ant.apiGet`, for example, answers only `/health`, `/peers` and `/topology`, the endpoints the Nodes menu reads. A script that reads them anyway gets the vault's state from `window.identity.getStatus()` (`hasVault`, `isUnlocked`).
+- **Talk to the Swarm node directly.** `window.serviceRegistry.getRegistry()` gives the running node's address as `ant.api`. Call that HTTP API from the script itself, for example with Node's `fetch`, not from a page: the node allows no browser origin.
+- **Several profiles at once.** A scratch profile runs its own node on `1633`. The next one finds that node and asks whether to use it or keep its own (see [Node Endpoints](configuration.md#node-endpoints)). The question has no timeout, so an unattended run stalls on it. Write the answer into each profile directory before its first launch:
+
+  ```bash
+  mkdir -p /tmp/freedom-bob
+  echo '{"bee":{"choice":"managed"}}' > /tmp/freedom-bob/external-node-decisions.json
+  ```
+
+  With `managed`, a profile that finds another profile's node starts its own on the next free port. Read the port from `ant.api` as above.
+
 ## Logging and debugging
 
 The main process uses `electron-log`:
