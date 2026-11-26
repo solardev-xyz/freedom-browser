@@ -47,13 +47,18 @@
  * - a verified body the core sends main at protocol 2:
  *   `CORE_BODY_ABORT_CODES`;
  * - a piece main sends the core at protocol 2 (`shell.dweb_get`):
- *   `PIECE_ABORT_CODES`.
- * Design 0015's Swarm streams (the `shell.swarm_api` bodies and
- * `shell.swarm_part` parts main will stream the core, which may also end
- * `too_large` or name a part's error code, and the `swarm.body` uploads the
- * core streams main) have their codes in fc-protocol; main sends and takes
- * none of them yet (SWM-5). Their aborts decode here, and every receiver of
- * main's takes an abort that names an error code as `abort_code`.
+ *   `PIECE_ABORT_CODES`;
+ * - design 0015's Swarm streams, on the same connection: a
+ *   `shell.swarm_api` body main streams the core, which may also end
+ *   `too_large` past the call's `max_bytes` (`SWARM_PIECE_ABORT_CODES`); a
+ *   `shell.swarm_part` part, whose `body_stream_error` alone may name the
+ *   error code its file failed with (`SWARM_PART_ABORT_CODES`); and a
+ *   `swarm.body` upload the core streams main (`CORE_UPLOAD_ABORT_CODES`).
+ * One connection carries streams of several sets, so each request carries
+ * its own (`StreamDuplex#request(id, sends)` and `#ask(id, takes)`), the
+ * connection's by default, as fc-protocol's `Inbound::request_with` does.
+ * An abort with no record is checked against every set the receiving side
+ * takes (`allowsAbort`, fc-protocol's `Codes::allows_abort`).
  */
 
 const KIND_JSON = 0x01;
@@ -79,8 +84,7 @@ const MAX_U32 = 0xffffffff;
 const MAX_ID = Number.MAX_SAFE_INTEGER;
 // Every abort code, in fc-protocol's order (`AbortCode::ALL`): 0007's five,
 // then 0009's, then 0015's `too_large` (a `shell.swarm_api` body main
-// streams the core past its `max_bytes`, which no stream of main's takes
-// yet).
+// streams the core past its `max_bytes`).
 const ABORT_CODES = new Set([
   'cancelled',
   'internal',
@@ -111,6 +115,13 @@ const CORE_BODY_ABORT_CODES = new Set([
   'cancelled',
 ]);
 const PIECE_ABORT_CODES = new Set(['cancelled', 'stalled', 'body_stream_error']);
+// Design 0015's (Streams): a `shell.swarm_api` body main streams the core,
+// a piece's and `too_large`; a `shell.swarm_part` part, a piece's, the one
+// set whose `body_stream_error` may name an error code (`allowsAbort`); a
+// `swarm.body` upload the core streams main.
+const SWARM_PIECE_ABORT_CODES = new Set(['cancelled', 'stalled', 'body_stream_error', 'too_large']);
+const SWARM_PART_ABORT_CODES = new Set(['cancelled', 'stalled', 'body_stream_error']);
+const CORE_UPLOAD_ABORT_CODES = new Set(['cancelled', 'internal', 'body_stream_error']);
 // The largest serialized message, fragmented or not (design 0005, Frames).
 const MAX_MESSAGE = 32 * 1024 * 1024;
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -337,6 +348,24 @@ const ABORT_MEMBERS = new Set(['code', 'message', 'error_code']);
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,31}$/;
 const ESCAPES = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
 
+/**
+ * Whether a stream whose codes are `codes` may end with `code` and, when
+ * one is given, `errorCode`: an error code only on a part's
+ * `body_stream_error` (`SWARM_PART_ABORT_CODES`, design 0015) and only of
+ * ERROR_CODE's form, as fc-protocol's `Codes::allows_abort` holds it. The
+ * part's set is told by identity: a copy of it names no error code.
+ */
+function allowsAbort(codes, code, errorCode) {
+  if (!codes.has(code)) return false;
+  if (errorCode === undefined || errorCode === null) return true;
+  return (
+    codes === SWARM_PART_ABORT_CODES &&
+    code === 'body_stream_error' &&
+    typeof errorCode === 'string' &&
+    ERROR_CODE.test(errorCode)
+  );
+}
+
 function parseAbortJson(bytes) {
   const refuse = () => {
     throw new FrameError('abort_payload');
@@ -483,16 +512,27 @@ function encodeEnd(id) {
 }
 
 /**
- * Stream `id`'s abort frame: `{"code":…,"message":…}`, at most 1 KiB. The
- * message must be well-formed UTF-16: JSON.stringify writes a lone
- * surrogate as its escape, which serde and this decoder refuse, so such a
- * message is refused here, before anything is written.
+ * Stream `id`'s abort frame: `{"code":…,"message":…}`, at most 1 KiB, with
+ * `"error_code"` after them when `errorCode` names one (design 0015: the
+ * errno name a part's file failed with, of ERROR_CODE's form), as
+ * fc-protocol's `Abort::to_json` writes it. The message must be
+ * well-formed UTF-16: JSON.stringify writes a lone surrogate as its
+ * escape, which serde and this decoder refuse, so such a message is
+ * refused here, before anything is written, as is an error code of another
+ * form.
  */
-function encodeAbort(id, code, message) {
-  if (!ABORT_CODES.has(code) || typeof message !== 'string' || !message.isWellFormed()) {
+function encodeAbort(id, code, message, errorCode) {
+  const named = errorCode !== undefined && errorCode !== null;
+  if (
+    !ABORT_CODES.has(code) ||
+    typeof message !== 'string' ||
+    !message.isWellFormed() ||
+    (named && (typeof errorCode !== 'string' || !ERROR_CODE.test(errorCode)))
+  ) {
     throw new FrameError('abort_payload');
   }
-  const json = Buffer.from(JSON.stringify({ code, message }), 'utf8');
+  const abort = named ? { code, message, error_code: errorCode } : { code, message };
+  const json = Buffer.from(JSON.stringify(abort), 'utf8');
   const header = streamHeader(KIND_ABORT, id, json.length);
   checkStreamLength(KIND_ABORT, ID_BYTES + json.length);
   return Buffer.concat([header, json]);
@@ -801,33 +841,41 @@ class Ring {
  * closed, and every later call reports it): data beyond the window
  * (`received - returned > 128 KiB`), a frame for a stream that isn't open,
  * a frame for an ID above the highest request sent, credit from the
- * service, a reply that isn't pending, an abort whose code the other side
- * never ends a stream with, or that names an error code (`abort_code`,
- * checked before the ID, as fc-protocol checks it: only a
- * `shell.swarm_part` part main streams the core may name one, design 0015,
- * and main receives none). Main's own request IDs must increase
+ * service, a reply that isn't pending, an abort with a code its stream
+ * doesn't take, or naming an error code where its stream takes none
+ * (`abort_code`, checked before the ID, as fc-protocol checks it: only a
+ * `shell.swarm_part` part main streams the core may name one, design
+ * 0015). An abort for an ID with no record is checked against every set it
+ * takes (`allCodes`). Main's own request IDs must increase
  * (`request_order`).
  *
- * **The codes** it takes are a service's (`SERVICE_ABORT_CODES`), unless it
+ * **The codes** each stream takes are its request's (`request(id, codes)`),
+ * by default the receiver's: a service's (`SERVICE_ABORT_CODES`), unless it
  * is made for the core's verified bodies at protocol 2
- * (`CORE_BODY_ABORT_CODES`, design 0009).
+ * (`CORE_BODY_ABORT_CODES`, design 0009). A stream keeps its codes while it
+ * retires.
  */
 class StreamReceiver {
-  /** @param {object} [options] - `codes`: the abort codes it takes */
-  constructor({ codes = SERVICE_ABORT_CODES } = {}) {
+  /** @param {object} [options] - `codes`: the abort codes its streams take
+   *   by default; `allCodes`: every set its requests give, `codes` among
+   *   them ([codes]), against which an abort with no record is checked */
+  constructor({ codes = SERVICE_ABORT_CODES, allCodes = [codes] } = {}) {
     this.codes = codes;
+    this.allCodes = allCodes;
     this.highest = 0;
-    this.entries = new Map(); // id -> { state, ring, received, returned, eof }
+    // id -> { state, codes, ring, received, returned, eof }
+    this.entries = new Map();
     this.failed = null;
   }
 
-  /** Main sent request `id`. */
-  request(id) {
+  /** Main sent request `id`, whose stream the other side may end only with
+   * `codes` (one of `allCodes`; the receiver's by default). */
+  request(id, codes = null) {
     this.alive();
     if (!validId(id)) throw new FrameError('stream_id');
     if (id <= this.highest) throw new FrameError('request_order');
     this.highest = id;
-    this.entries.set(id, { state: 'pending' });
+    this.entries.set(id, { state: 'pending', codes: codes ?? this.codes });
   }
 
   /**
@@ -841,14 +889,21 @@ class StreamReceiver {
     const entry = this.entries.get(id);
     if (entry?.state === 'pending') {
       if (opens) {
-        this.entries.set(id, { state: 'open', ring: null, received: 0, returned: 0, eof: false });
+        this.entries.set(id, {
+          state: 'open',
+          codes: entry.codes,
+          ring: null,
+          received: 0,
+          returned: 0,
+          eof: false,
+        });
       } else {
         this.entries.delete(id);
       }
       return 'deliver';
     }
     if (entry?.state === 'retired_pending') {
-      if (opens) this.entries.set(id, { state: 'retiring' });
+      if (opens) this.entries.set(id, { state: 'retiring', codes: entry.codes });
       else this.entries.delete(id);
       return 'retired';
     }
@@ -859,8 +914,9 @@ class StreamReceiver {
    * A stream frame from the service, as `FrameDecoder` decodes it. Returns
    * `{ type: 'data', id, length }`, `{ type: 'end', id, drained }` (drained:
    * nothing is left to pull, and its record is gone), `{ type: 'abort', id,
-   * code, message }` (error the body; its record is gone) or `{ type:
-   * 'dropped', id }` for a retiring stream.
+   * code, message }` (error the body; its record is gone; with `errorCode`
+   * when the abort names one its stream takes) or `{ type: 'dropped', id }`
+   * for a retiring stream.
    */
   receive(frame) {
     this.alive();
@@ -873,11 +929,17 @@ class StreamReceiver {
         return this.fail(err.category);
       }
     }
-    if (kind === KIND_ABORT && (!this.codes.has(frame.code) || frame.errorCode !== undefined)) {
+    const entry = this.entries.get(id);
+    // Its stream's codes, or, with no record, those of any stream it takes.
+    if (
+      kind === KIND_ABORT &&
+      !(entry
+        ? allowsAbort(entry.codes, frame.code, frame.errorCode)
+        : this.allCodes.some((codes) => allowsAbort(codes, frame.code, frame.errorCode)))
+    ) {
       return this.fail('abort_code');
     }
     if (id > this.highest) return this.fail('stream_unknown');
-    const entry = this.entries.get(id);
     if (entry?.state === 'retiring') {
       if (kind !== KIND_DATA) this.entries.delete(id);
       return { type: 'dropped', id };
@@ -898,7 +960,8 @@ class StreamReceiver {
       return { type: 'end', id, drained };
     }
     this.entries.delete(id);
-    return { type: 'abort', id, code: frame.code, message: frame.message };
+    const abort = { type: 'abort', id, code: frame.code, message: frame.message };
+    return frame.errorCode === undefined ? abort : { ...abort, errorCode: frame.errorCode };
   }
 
   /**
@@ -930,7 +993,7 @@ class StreamReceiver {
   cancel(id) {
     const entry = this.entries.get(id);
     if (entry?.state === 'pending') {
-      this.entries.set(id, { state: 'retired_pending' });
+      this.entries.set(id, { state: 'retired_pending', codes: entry.codes });
       return 'send_cancel';
     }
     if (entry?.state === 'open') {
@@ -938,7 +1001,7 @@ class StreamReceiver {
         this.entries.delete(id);
         return 'freed';
       }
-      this.entries.set(id, { state: 'retiring' });
+      this.entries.set(id, { state: 'retiring', codes: entry.codes });
       return 'send_cancel';
     }
     return 'nothing';
@@ -1184,9 +1247,12 @@ const refused = (name) => ({ refused: name });
  *   the head and body go and `cancelled` is the one reply; against an open
  *   stream, it purges and writes `abort { code: "cancelled" }`; otherwise it
  *   is late.
- * - **Codes.** Its streams end only with `codes` (a service's, unless made
- *   for main's pieces: `PIECE_ABORT_CODES`); an abort with any other is
- *   refused (`code`), and the stream stays as it was.
+ * - **Codes.** Each stream ends only with its request's codes
+ *   (`request(id, codes)`), by default the sender's `codes` (a service's,
+ *   unless made for main's pieces: `PIECE_ABORT_CODES`), and names an error
+ *   code only where they take one (`allowsAbort`); an abort for no request
+ *   is checked against the sender's. Any other is refused (`code`), and the
+ *   stream stays as it was.
  * - **Bounds.** The writer holds at most its data cap (16 MiB by default)
  *   of queued bytes, in 4 KiB blocks freed as they are written. Bytes its
  *   producer has read for a body and not yet pushed (`reserve`) count
@@ -1200,12 +1266,13 @@ const refused = (name) => ({ refused: name });
  */
 class StreamSender {
   /** @param {object} [options] - `dataCap`: the writer's cap (16 MiB);
-   *   `codes`: the abort codes its streams may end with */
+   *   `codes`: the abort codes its streams may end with, unless their
+   *   requests give their own */
   constructor({ dataCap = WRITER_DATA_CAP, codes = SERVICE_ABORT_CODES } = {}) {
     this.dataCap = Math.max(dataCap, SMALL_FRAME);
     this.codes = codes;
     this.highest = 0;
-    // id -> { state: working | head | open | reply, json?, body?, cancelled? }
+    // id -> { state: working | head | open | reply, codes, json?, body?, cancelled? }
     this.requests = new Map();
     this.control = []; // [entry, id]: head, reply or abort
     this.rotation = []; // ids
@@ -1255,12 +1322,14 @@ class StreamSender {
 
   // ---- the other side's frames ----
 
-  request(id) {
+  /** The other side's request `id`, whose stream ends only with `codes`
+   * (the sender's by default). */
+  request(id, codes = null) {
     this.alive();
     if (!Number.isSafeInteger(id) || id < 1) return this.fail('stream_id');
     if (id <= this.highest) return this.fail('request_order');
     this.highest = id;
-    this.requests.set(id, { state: 'working' });
+    this.requests.set(id, { state: 'working', codes: codes ?? this.codes });
     return 'ok';
   }
 
@@ -1271,7 +1340,12 @@ class StreamSender {
     if (!request) return 'late';
     if (request.state === 'working' || request.state === 'head') {
       if (request.state === 'head' && request.body) this.held -= purge(request.body);
-      this.requests.set(id, { state: 'reply', json: cancelledReply(id), cancelled: true });
+      this.requests.set(id, {
+        state: 'reply',
+        codes: request.codes,
+        json: cancelledReply(id),
+        cancelled: true,
+      });
       this.control.push(['reply', id]);
       return 'cancelled';
     }
@@ -1318,7 +1392,7 @@ class StreamSender {
   answer(id, next, entry) {
     const request = this.requests.get(id);
     if (request?.state === 'working') {
-      this.requests.set(id, next);
+      this.requests.set(id, { ...next, codes: request.codes });
       this.control.push([entry, id]);
       return 'ok';
     }
@@ -1362,10 +1436,12 @@ class StreamSender {
     return 'ok';
   }
 
-  abort(id, code, message = 'aborted') {
+  /** Ends stream `id` with `code`, naming `errorCode` where its codes take
+   * one (`allowsAbort`). */
+  abort(id, code, message = 'aborted', errorCode = null) {
     if (this.failed) return refused('closed');
-    if (!this.codes.has(code)) return refused('code');
     const request = this.requests.get(id);
+    if (!allowsAbort(request?.codes ?? this.codes, code, errorCode)) return refused('code');
     if (!request) return refused(this.absent(id));
     if (request.state === 'reply' && request.cancelled) return refused('gone');
     if ((request.state !== 'head' && request.state !== 'open') || !request.body) {
@@ -1375,7 +1451,7 @@ class StreamSender {
     if (body.abort !== null) return refused('gone');
     this.held -= purge(body);
     this.unschedule(body, id);
-    body.abort = { code, message };
+    body.abort = { code, message, errorCode: errorCode ?? null };
     this.control.push(['abort', id]);
     return 'ok';
   }
@@ -1459,7 +1535,7 @@ class StreamSender {
           request.body.scheduled = true;
           this.rotation.push(id);
         }
-        this.requests.set(id, { state: 'open', body: request.body });
+        this.requests.set(id, { state: 'open', codes: request.codes, body: request.body });
       }
       return { written: { type: 'head', id }, bytes: jsonFrame(request.json) };
     }
@@ -1472,8 +1548,10 @@ class StreamSender {
     }
     if (entry === 'abort' && request.state === 'open' && request.body.abort) {
       this.requests.delete(id);
-      const { code, message } = request.body.abort;
-      return { written: { type: 'abort', id, code }, bytes: encodeAbort(id, code, message) };
+      const { code, message, errorCode = null } = request.body.abort;
+      const written = { type: 'abort', id, code };
+      if (errorCode !== null) written.errorCode = errorCode;
+      return { written, bytes: encodeAbort(id, code, message, errorCode) };
     }
     return null;
   }
@@ -1599,6 +1677,12 @@ class StreamSender {
  *   (`shell.dweb_get` with `stream: true`): a `StreamSender` whose streams
  *   end only with a piece's codes.
  *
+ * Design 0015 puts streams of other codes on the same connection: the
+ * `shell.swarm_api` bodies and `shell.swarm_part` parts main sends, and the
+ * `swarm.body` uploads it takes. So each request may carry its own codes
+ * (`request(id, sends)`, `ask(id, takes)`), and `allTakes` names every set
+ * main's requests give, against which an abort with no record is checked.
+ *
  * The same number may name a stream in each at once; a frame's kind says
  * which. Credit goes to the sender; data, end and abort to the receiver. A
  * protocol error in either fails the connection as a whole: neither side
@@ -1610,33 +1694,39 @@ class StreamSender {
  * owed for a stream whose terminal arrives would cross it, so it is
  * dropped then, as it is when main cancels the request.
  *
- * `sends` and `takes` name the codes (`PIECE_ABORT_CODES` and
+ * `sends` and `takes` name the default codes (`PIECE_ABORT_CODES` and
  * `CORE_BODY_ABORT_CODES` for main); freedom-core's vectors model the
  * core's side, with the two sets the other way round.
  */
 class StreamDuplex {
   /**
    * @param {object} [options] - `dataCap`: the sender's writer cap (16
-   *   MiB); `sends`: the codes the bodies main sends may end with; `takes`:
-   *   the codes it takes from the other side's bodies
+   *   MiB); `sends`: the codes the bodies main sends may end with, unless
+   *   their requests give their own; `takes`: the codes it takes from the
+   *   other side's bodies, likewise; `allTakes`: every set main's requests
+   *   give, `takes` among them ([takes])
    */
   constructor({
     dataCap = WRITER_DATA_CAP,
     sends = PIECE_ABORT_CODES,
     takes = CORE_BODY_ABORT_CODES,
+    allTakes = [takes],
   } = {}) {
     this.sender = new StreamSender({ dataCap, codes: sends });
-    this.receiver = new StreamReceiver({ codes: takes });
+    this.receiver = new StreamReceiver({ codes: takes, allCodes: allTakes });
     this.outbox = new StreamOutbox();
     this.failed = null;
   }
 
   // ---- the core's requests, which main answers ----
 
-  /** The core sent request `id`, one main may answer with a body. */
-  request(id) {
+  /** The core sent request `id`, one main may answer with a body that ends
+   * only with `sends` (the duplex's by default: design 0015's
+   * `SWARM_PIECE_ABORT_CODES` for a `shell.swarm_api` body,
+   * `SWARM_PART_ABORT_CODES` for a `shell.swarm_part` part). */
+  request(id, sends = null) {
     this.alive();
-    return this.guard(() => this.sender.request(id));
+    return this.guard(() => this.sender.request(id, sends));
   }
 
   /** The core cancelled its request `id`: `cancelled` or `late`. */
@@ -1647,11 +1737,13 @@ class StreamDuplex {
 
   // ---- main's requests, which the core answers ----
 
-  /** Main sent request `id`. An error is main's own bug, and the
-   * connection is fine. */
-  ask(id) {
+  /** Main sent request `id`, whose body the core ends only with `takes`
+   * (the duplex's by default: design 0015's `CORE_UPLOAD_ABORT_CODES` for
+   * `swarm.body`). An error is main's own bug, and the connection is
+   * fine. */
+  ask(id, takes = null) {
     this.alive();
-    this.receiver.request(id);
+    this.receiver.request(id, takes);
   }
 
   /** The core's reply to main's request `id` arrived (`StreamReceiver.reply`). */
@@ -1776,8 +1868,11 @@ module.exports = {
   StreamSender,
   ABORT_CODES,
   CORE_BODY_ABORT_CODES,
+  CORE_UPLOAD_ABORT_CODES,
   PIECE_ABORT_CODES,
   SERVICE_ABORT_CODES,
+  SWARM_PART_ABORT_CODES,
+  SWARM_PIECE_ABORT_CODES,
   ID_BYTES,
   KIND_ABORT,
   KIND_BEGIN,

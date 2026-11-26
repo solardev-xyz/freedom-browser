@@ -4,8 +4,9 @@
  * the abort JSON's edges as serde reads them (design 0015's `error_code`
  * among them), main's outbox, a failure that sticks, the abort codes by
  * connection and direction (design 0009), the core's connection at
- * protocol 2 (`StreamDuplex`), and the kinds of a service connection that
- * takes main's bodies (design 0014).
+ * protocol 2 (`StreamDuplex`), the kinds of a service connection that
+ * takes main's bodies (design 0014), and design 0015's codes per request
+ * on main's duplex: the Swarm sets, `too_large` and an abort's error code.
  */
 
 const {
@@ -27,8 +28,11 @@ const {
   StreamSender,
   ABORT_CODES,
   CORE_BODY_ABORT_CODES,
+  CORE_UPLOAD_ABORT_CODES,
   PIECE_ABORT_CODES,
   SERVICE_ABORT_CODES,
+  SWARM_PART_ABORT_CODES,
+  SWARM_PIECE_ABORT_CODES,
   KIND_ABORT,
   KIND_DATA,
   KIND_END,
@@ -163,6 +167,39 @@ describe('the stream encoders', () => {
     expect(encodeAbort(7, 'cancelled', 'Cancelled').subarray(13).toString()).toBe(
       '{"code":"cancelled","message":"Cancelled"}'
     );
+  });
+
+  // Design 0015: as fc-protocol's `Abort::to_json` writes it, the error
+  // code after the code and the message, and only of `is_error_code`'s form.
+  test('an abort naming an error code writes it last, and it round-trips', () => {
+    const frame = encodeAbort(7, 'body_stream_error', 'm', 'ENOENT');
+    expect(frame.subarray(13).toString()).toBe(
+      '{"code":"body_stream_error","message":"m","error_code":"ENOENT"}'
+    );
+    expect(new FrameDecoder({ kinds: CORE_STREAM_KINDS }).push(frame)).toEqual([
+      { kind: KIND_ABORT, id: 7, code: 'body_stream_error', message: 'm', errorCode: 'ENOENT' },
+    ]);
+    const longest = `E${'_'.repeat(31)}`;
+    expect(decodeAbort(encodeAbort(7, 'cancelled', 'm', longest).subarray(13).toString())).toEqual({
+      code: 'cancelled',
+      message: 'm',
+      errorCode: longest,
+    });
+    for (const none of [undefined, null]) {
+      expect(encodeAbort(7, 'cancelled', 'm', none)).toEqual(encodeAbort(7, 'cancelled', 'm'));
+    }
+  });
+
+  test.each([
+    ['empty', ''],
+    ['lower case', 'enoent'],
+    ['a leading digit', '1EIO'],
+    ['33 bytes', `E${'X'.repeat(32)}`],
+    ['a space', 'E IO'],
+    ['a number', 5],
+    ['an object', {}],
+  ])('an error code that is not an errno name is refused: %s', (_label, errorCode) => {
+    expect(() => encodeAbort(7, 'body_stream_error', 'm', errorCode)).toThrow('abort_payload');
   });
 });
 
@@ -580,5 +617,180 @@ describe("a service connection that takes main's bodies (design 0014, COL-3)", (
       expect(category(() => new FrameDecoder({ kinds }).push(frame))).toBe('unknown_kind');
     }
     expect(() => serviceKinds('main')).toThrow(TypeError);
+  });
+});
+
+describe("design 0015's codes, per request, on main's duplex", () => {
+  const abort = (id, code, errorCode) =>
+    errorCode === undefined
+      ? { kind: KIND_ABORT, id, code, message: 'm' }
+      : { kind: KIND_ABORT, id, code, message: 'm', errorCode };
+
+  test("the three Swarm sets are the design's, and every code in them decodes", () => {
+    expect([...SWARM_PIECE_ABORT_CODES].sort()).toEqual([
+      'body_stream_error',
+      'cancelled',
+      'stalled',
+      'too_large',
+    ]);
+    expect([...SWARM_PART_ABORT_CODES].sort()).toEqual([
+      'body_stream_error',
+      'cancelled',
+      'stalled',
+    ]);
+    expect([...CORE_UPLOAD_ABORT_CODES].sort()).toEqual([
+      'body_stream_error',
+      'cancelled',
+      'internal',
+    ]);
+    // The part's set is its own: a set of the same codes names no error code.
+    expect(SWARM_PART_ABORT_CODES).not.toBe(PIECE_ABORT_CODES);
+    for (const codes of [
+      SWARM_PIECE_ABORT_CODES,
+      SWARM_PART_ABORT_CODES,
+      CORE_UPLOAD_ABORT_CODES,
+    ]) {
+      for (const code of codes) expect(ABORT_CODES.has(code)).toBe(true);
+    }
+  });
+
+  test("a body main sends ends with its request's codes, the duplex's a piece's by default", () => {
+    const duplex = new StreamDuplex();
+    const open = (id, sends) => {
+      duplex.request(id, sends);
+      expect(duplex.sender.head(id, Buffer.from('{}'), true)).toBe('ok');
+    };
+    open(1);
+    open(2, SWARM_PIECE_ABORT_CODES);
+    open(3, SWARM_PART_ABORT_CODES);
+    expect(duplex.sender.abort(1, 'too_large')).toEqual({ refused: 'code' });
+    expect(duplex.sender.abort(3, 'too_large')).toEqual({ refused: 'code' });
+    expect(duplex.sender.abort(2, 'internal')).toEqual({ refused: 'code' });
+    // Only a part's body_stream_error names an error code, an errno name.
+    expect(duplex.sender.abort(1, 'body_stream_error', 'm', 'EIO')).toEqual({ refused: 'code' });
+    expect(duplex.sender.abort(2, 'body_stream_error', 'm', 'EIO')).toEqual({ refused: 'code' });
+    expect(duplex.sender.abort(3, 'stalled', 'm', 'EIO')).toEqual({ refused: 'code' });
+    expect(duplex.sender.abort(3, 'body_stream_error', 'm', 'eio')).toEqual({ refused: 'code' });
+    // Each refusal left its stream open.
+    for (const id of [1, 2, 3]) expect(duplex.sender.room(id)).toBe(128 * 1024);
+    expect(duplex.sender.abort(2, 'too_large', 'past max_bytes')).toBe('ok');
+    expect(duplex.sender.abort(3, 'body_stream_error', 'm', 'EACCES')).toBe('ok');
+    expect(duplex.sender.abort(1, 'stalled')).toBe('ok');
+    const written = [];
+    for (let next = duplex.nextFrame(); next; next = duplex.nextFrame()) {
+      written.push([
+        next.wrote,
+        ...new FrameDecoder({ kinds: CORE_STREAM_KINDS }).push(next.bytes),
+      ]);
+    }
+    const aborts = written.filter(([wrote]) => wrote.type === 'abort');
+    expect(aborts).toEqual([
+      [
+        { type: 'abort', id: 2, code: 'too_large' },
+        { kind: KIND_ABORT, id: 2, code: 'too_large', message: 'past max_bytes' },
+      ],
+      [
+        { type: 'abort', id: 3, code: 'body_stream_error', errorCode: 'EACCES' },
+        { kind: KIND_ABORT, id: 3, code: 'body_stream_error', message: 'm', errorCode: 'EACCES' },
+      ],
+      [
+        { type: 'abort', id: 1, code: 'stalled' },
+        { kind: KIND_ABORT, id: 1, code: 'stalled', message: 'aborted' },
+      ],
+    ]);
+  });
+
+  test('a request keeps its codes through its head, its cancel and its stream', () => {
+    const duplex = new StreamDuplex();
+    duplex.request(4, SWARM_PIECE_ABORT_CODES);
+    // Before its head, a body's code is a code it may take: not open yet.
+    expect(duplex.sender.abort(4, 'too_large')).toEqual({ refused: 'not_open' });
+    duplex.sender.head(4, Buffer.from('{}'), true);
+    expect(duplex.nextFrame().wrote).toEqual({ type: 'head', id: 4 });
+    // Open, after its head was written.
+    expect(duplex.sender.abort(4, 'internal')).toEqual({ refused: 'code' });
+    expect(duplex.sender.abort(4, 'too_large')).toBe('ok');
+    // Cancelled before its head: gone, by its own codes.
+    duplex.request(5, SWARM_PIECE_ABORT_CODES);
+    expect(duplex.cancel(5)).toBe('cancelled');
+    expect(duplex.sender.abort(5, 'too_large')).toEqual({ refused: 'gone' });
+    expect(duplex.sender.abort(5, 'internal')).toEqual({ refused: 'code' });
+    // Once it has gone, the duplex's own codes.
+    expect(duplex.sender.abort(9, 'too_large')).toEqual({ refused: 'code' });
+    expect(duplex.sender.abort(9, 'stalled')).toEqual({ refused: 'unknown' });
+  });
+
+  test("a body main takes ends with its request's codes, the core's verified bodies' by default", () => {
+    const duplex = new StreamDuplex({
+      allTakes: [CORE_BODY_ABORT_CODES, CORE_UPLOAD_ABORT_CODES],
+    });
+    duplex.ask(1);
+    duplex.ask(2, CORE_UPLOAD_ABORT_CODES);
+    duplex.answered(1, true);
+    duplex.answered(2, true);
+    expect(duplex.receive(abort(2, 'internal'))).toEqual({
+      type: 'abort',
+      id: 2,
+      code: 'internal',
+      message: 'm',
+    });
+    expect(category(() => duplex.receive(abort(1, 'internal')))).toBe('abort_code');
+    expect(duplex.failed.category).toBe('abort_code');
+
+    // A retiring upload keeps its codes: dropped, not a protocol error.
+    const retiring = new StreamDuplex();
+    retiring.ask(3, CORE_UPLOAD_ABORT_CODES);
+    expect(retiring.withdraw(3)).toBe('send_cancel');
+    expect(retiring.answered(3, true)).toBe('retired');
+    expect(retiring.receive(abort(3, 'internal'))).toEqual({ type: 'dropped', id: 3 });
+    retiring.ask(4, CORE_UPLOAD_ABORT_CODES);
+    retiring.answered(4, true);
+    retiring.withdraw(4);
+    expect(category(() => retiring.receive(abort(4, 'verification_failed')))).toBe('abort_code');
+  });
+
+  test('an abort with no record is checked against every set main takes, then its ID', () => {
+    const takes = (allTakes) => {
+      const duplex = new StreamDuplex(allTakes && { allTakes });
+      duplex.ask(1);
+      return duplex;
+    };
+    const both = [CORE_BODY_ABORT_CODES, CORE_UPLOAD_ABORT_CODES];
+    expect(category(() => takes(both).receive(abort(9, 'internal')))).toBe('stream_unknown');
+    expect(category(() => takes(both).receive(abort(9, 'piece_failed')))).toBe('stream_unknown');
+    expect(category(() => takes(both).receive(abort(9, 'stalled')))).toBe('abort_code');
+    expect(category(() => takes(both).receive(abort(9, 'body_stream_error', 'EIO')))).toBe(
+      'abort_code'
+    );
+    // By default, the duplex's own set alone.
+    expect(category(() => takes().receive(abort(9, 'internal')))).toBe('abort_code');
+  });
+
+  test("the core's side of a part: only its body_stream_error names an error code, which it delivers", () => {
+    const receiver = new StreamReceiver({
+      codes: PIECE_ABORT_CODES,
+      allCodes: [PIECE_ABORT_CODES, SWARM_PIECE_ABORT_CODES, SWARM_PART_ABORT_CODES],
+    });
+    receiver.request(1, SWARM_PART_ABORT_CODES);
+    receiver.reply(1, true);
+    expect(receiver.receive(abort(1, 'body_stream_error', 'ENOENT'))).toEqual({
+      type: 'abort',
+      id: 1,
+      code: 'body_stream_error',
+      message: 'm',
+      errorCode: 'ENOENT',
+    });
+    receiver.request(2, SWARM_PART_ABORT_CODES);
+    receiver.reply(2, true);
+    expect(category(() => receiver.receive(abort(2, 'stalled', 'ENOENT')))).toBe('abort_code');
+    // No record: a part's codes take it, so its ID decides.
+    const none = new StreamReceiver({
+      codes: PIECE_ABORT_CODES,
+      allCodes: [PIECE_ABORT_CODES, SWARM_PART_ABORT_CODES],
+    });
+    none.request(1);
+    expect(category(() => none.receive(abort(7, 'body_stream_error', 'EIO')))).toBe(
+      'stream_unknown'
+    );
   });
 });

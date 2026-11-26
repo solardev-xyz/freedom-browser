@@ -78,10 +78,13 @@
  * reader, asked for no more than that and the room; any other stream a
  * chunk at a time, and a chunk past 64 KiB ends it as `body_stream_error`
  * (a source main can't bound). It ends with `end`, or with an abort
- * (`stalled` or `body_stream_error`), and the core's cancel aborts it with
- * `cancelled` and cancels the body. Credit
- * main owes, its cancels and the sender's frames are written in that
- * order, one write in flight.
+ * (`stalled` or `body_stream_error`; design 0015's handlers give their
+ * bodies codes of their own, `handle(…, { sends })`, which may also end
+ * `too_large` or name a part's error code), and the core's cancel aborts
+ * it with `cancelled` and cancels the body. Main's own requests may give
+ * the codes their bodies take likewise (`requestStreamTo(…, { takes })`,
+ * the core's `swarm.body` uploads). Credit main owes, its cancels and the
+ * sender's frames are written in that order, one write in flight.
  *
  * **A two-way service** (freedom-core design 0014, COL-3: a service
  * connection that takes main's bodies, freedom-colibrid's) has the same
@@ -143,6 +146,7 @@ const {
   StreamReceiver,
   CORE_BODY_ABORT_CODES,
   CORE_STREAM_KINDS,
+  CORE_UPLOAD_ABORT_CODES,
   SERVICE_ABORT_CODES,
   KIND_ABORT,
   KIND_DATA,
@@ -167,10 +171,12 @@ const STREAM_WRITE_BYTES = 256 * 1024;
 // stream's chunk past it can't be bounded, and ends the body.
 const MAX_READ_AHEAD = MAX_DATA;
 // How a body main sends the core ends when it fails (design 0009,
-// `shell.dweb_get`): a piece's codes, with fixed messages.
+// `shell.dweb_get`): a piece's codes, and design 0015's `too_large` for a
+// stream whose codes take it, with fixed messages.
 const PIECE_ABORTS = Object.freeze({
   stalled: 'The body stalled',
   body_stream_error: 'The body failed',
+  too_large: 'The body is too large',
 });
 // A two-way service's duplex (design 0014, COL-3), for its `service` to
 // spread beside `duplex(hello)`: all four stream frames both ways and no
@@ -180,6 +186,9 @@ const SERVICE_DUPLEX = Object.freeze({
   duplexKinds: serviceKinds('both'),
   duplexTakes: SERVICE_ABORT_CODES,
 });
+// Every set the core's bodies may end with: its verified bodies' and its
+// `swarm.body` uploads' (design 0015), whose requests give theirs.
+const CORE_TAKES = Object.freeze([CORE_BODY_ABORT_CODES, CORE_UPLOAD_ABORT_CODES]);
 // Why an owner abandons its process (`abandon`): a fixed name, safe to log.
 const ABANDON_CAUSE = /^[a-z][a-z0-9_]{0,31}$/;
 
@@ -354,8 +363,11 @@ class JsonText {
  * room; any other in its own chunks, each at most 64 KiB, or the stream ends
  * `body_stream_error`. Its close ends the stream once the bytes before it
  * have gone; its error aborts it at once, read or not and with no credit
- * needed, with `stalled` if the error's `abortCode` says so (main's body
- * idle timer) and `body_stream_error` otherwise. The core's cancel, or the
+ * needed, with the code the error's `abortCode` names where its stream's
+ * codes take it (`stalled`, main's body idle timer; `too_large`, a node's
+ * body past its call's `max_bytes`, design 0015), and `body_stream_error`
+ * otherwise, naming the error's `errorCode` (an errno name) where they
+ * take one (a `shell.swarm_part` part's). The core's cancel, or the
  * generation's end, cancels it.
  */
 class StreamedReply {
@@ -704,6 +716,8 @@ class ServiceClient extends EventEmitter {
     this.shapedHandlers = new Map();
     // Those that may answer with a body (`StreamedReply`).
     this.streamHandlers = new WeakSet();
+    // The abort codes their bodies end with, where not a piece's (`sends`).
+    this.streamSends = new WeakMap();
   }
 
   /**
@@ -725,7 +739,13 @@ class ServiceClient extends EventEmitter {
    * handler may answer with a `StreamedReply`, and is called with
    * `streams: true` there; its requests' replies, cancels and bodies
    * go through the duplex. Elsewhere `streams` is false, and a
-   * `StreamedReply` is an internal error.
+   * `StreamedReply` is an internal error. `sends` is the set of abort codes
+   * its bodies may end with, a piece's by default: design 0015's
+   * `SWARM_PIECE_ABORT_CODES` for `shell.swarm_api`, which take
+   * `too_large`, and `SWARM_PART_ABORT_CODES` for `shell.swarm_part`, whose
+   * `body_stream_error` may name an error code (`StreamedReply`). Like
+   * `streams`, it is the handler's: one function registered for two
+   * methods has one set.
    *
    * Every handler is called as `handler(params, { signal, charge, streams,
    * generation, private, privateSession })`: `generation` is the number of
@@ -734,8 +754,10 @@ class ServiceClient extends EventEmitter {
    * and `privateSession` the private session it would serve, or null when
    * that can't be told (`privacyOf`, from the requests of main's it names).
    */
-  handle(method, handler, { when = null, streams = false } = {}) {
+  handle(method, handler, { when = null, streams = false, sends = null } = {}) {
+    if (sends && !streams) throw new TypeError('Only a streams handler sends bodies');
     if (streams) this.streamHandlers.add(handler);
+    if (sends) this.streamSends.set(handler, sends);
     if (!when) {
       this.handlers.set(method, handler);
       return;
@@ -1209,8 +1231,10 @@ class ServiceClient extends EventEmitter {
     // both ways from here on. A process whose handshake granted `stream`
     // (design 0007): its stream frames are taken from here on.
     if (this.service.duplex?.(hello)) {
+      const takes = this.service.duplexTakes;
       gen.duplex = new StreamDuplex({
-        takes: this.service.duplexTakes ?? CORE_BODY_ABORT_CODES,
+        takes: takes ?? CORE_BODY_ABORT_CODES,
+        allTakes: takes ? [takes] : CORE_TAKES,
       });
       gen.streams = gen.duplex.receiver;
       gen.outbox = gen.duplex.outbox;
@@ -1503,6 +1527,7 @@ class ServiceClient extends EventEmitter {
       onSent = null,
       endsOnError = false,
       requires = null,
+      takes = null,
     } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
@@ -1570,9 +1595,10 @@ class ServiceClient extends EventEmitter {
     if (fence && !fence()) return refuse(new CoreError('fenced', 'Fenced'));
     gen.nextId += 1;
     // Every request main sends on a stream connection: a frame for an ID
-    // above the highest is a protocol error.
-    if (gen.duplex) gen.duplex.ask(id);
-    else gen.streams?.request(id);
+    // above the highest is a protocol error. A body ends only with `takes`,
+    // the connection's codes by default.
+    if (gen.duplex) gen.duplex.ask(id, takes);
+    else gen.streams?.request(id, takes);
 
     let promise = null;
     let entry;
@@ -1872,7 +1898,7 @@ class ServiceClient extends EventEmitter {
     const streams = Boolean(gen.duplex) && this.streamHandlers.has(handler);
     if (streams) {
       try {
-        gen.duplex.request(id);
+        gen.duplex.request(id, this.streamSends.get(handler));
       } catch (err) {
         return this.protocolFault(gen, err instanceof FrameError ? err.category : 'stream');
       }
@@ -2320,7 +2346,9 @@ class ServiceClient extends EventEmitter {
    * been read after `end`, and errors on `abort` (with the abort's code),
    * on the process's end, or on a protocol fault. Its `cancel()`, or
    * `signal` aborting, retires the stream: main sends `cancel` and no more
-   * credit, and drops what is left. Options are `requestTo`'s.
+   * credit, and drops what is left. Options are `requestTo`'s, and `takes`:
+   * the abort codes the body may end with, the connection's by default
+   * (design 0015's `CORE_UPLOAD_ABORT_CODES` for `swarm.body`).
    */
   callStream(method, params = {}, context = { caller: 'shell' }, options = {}) {
     return this.requestStreamTo(this.current, method, params, context, options);
@@ -2335,6 +2363,7 @@ class ServiceClient extends EventEmitter {
       fence = null,
       onSent = null,
       requires = null,
+      takes = null,
     } = options;
     return this.send(gen, method, params, context, {
       watchdogMs,
@@ -2342,6 +2371,7 @@ class ServiceClient extends EventEmitter {
       fence,
       onSent,
       requires,
+      takes,
       stream: true,
     });
   }
@@ -2613,7 +2643,7 @@ class ServiceClient extends EventEmitter {
         () => {},
         (err) => {
           if (gen.pieces.get(id) !== piece) return;
-          this.abortPiece(gen, piece, err?.abortCode);
+          this.abortPiece(gen, piece, err);
         }
       );
       this.pumpPiece(gen, piece);
@@ -2722,17 +2752,28 @@ class ServiceClient extends EventEmitter {
       (err) => {
         sender.release(over());
         if (gen.pieces.get(piece.id) !== piece) return;
-        this.abortPiece(gen, piece, err?.abortCode);
+        this.abortPiece(gen, piece, err);
       }
     );
   }
 
-  /** The body failed: its stream ends with `stalled` (main's body idle
-   * timer) or `body_stream_error`. */
-  abortPiece(gen, piece, abortCode) {
-    const code = abortCode === 'stalled' ? 'stalled' : 'body_stream_error';
+  /**
+   * The body failed with `err` (null for a source main can't bound): its
+   * stream ends with the code `err.abortCode` names, `stalled` (main's body
+   * idle timer) or `too_large` (design 0015), or else `body_stream_error`,
+   * naming `err.errorCode`, an errno name. A code, or a name, the stream's
+   * codes don't take (`handle(…, { sends })`) ends it `body_stream_error`
+   * alone.
+   */
+  abortPiece(gen, piece, err) {
+    const named = err?.abortCode === 'stalled' || err?.abortCode === 'too_large';
+    const code = named ? err.abortCode : 'body_stream_error';
+    const errorCode = named ? null : (err?.errorCode ?? null);
     this.dropPiece(gen, piece);
-    gen.duplex?.sender.abort(piece.id, code, PIECE_ABORTS[code]);
+    const sender = gen.duplex?.sender;
+    if (sender?.abort(piece.id, code, PIECE_ABORTS[code], errorCode).refused === 'code') {
+      sender.abort(piece.id, 'body_stream_error', PIECE_ABORTS.body_stream_error);
+    }
     this.flushStreams(gen);
   }
 
