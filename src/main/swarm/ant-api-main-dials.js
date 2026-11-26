@@ -10,8 +10,11 @@
  * and the ENS prefetch (`ens-prefetch.js`). In webRequest such a dial looks
  * like a worker's request — no frame, no webContents — so the guard cannot
  * tell it apart by shape. Instead the caller announces the exact URL here for
- * the lifetime of the dial, and the guard lets a frameless GET/HEAD of
- * exactly that URL through.
+ * the lifetime of the dial, with the one method the dial sends, and the guard
+ * lets a frameless request of exactly that method to exactly that URL through
+ * (freedom-core design 0015, The transport: main's Swarm executor POSTs to a
+ * remote node on this path too). An announced GET lets no HEAD, POST or any
+ * other method of the same URL through, nor an announced POST a GET.
  *
  * Kept free of dependencies so both the guard and its callers can load it.
  */
@@ -48,12 +51,27 @@ function dialKey(url) {
   }
 }
 
+// The methods main dials the node with: the dweb handler's GET and HEAD, the
+// ENS prefetch's GET, and the Swarm executor's GET and POST.
+const METHODS = new Set(['GET', 'HEAD', 'POST']);
+
+/** The method's key, as webRequest reports it (upper case), or null. */
+function methodKey(method) {
+  if (typeof method !== 'string') return null;
+  const key = method.toUpperCase();
+  return METHODS.has(key) ? key : null;
+}
+
 /**
- * Announce a main-process dial of `url`. Returns a release function; call it
- * once the dial has settled (idempotent).
+ * Announce a main-process dial of `url` with `method`, the one the dial
+ * sends. Returns a release function; call it once the dial has settled
+ * (idempotent). Throws on a method main never dials, so a caller can't
+ * announce more than it sends.
  */
-function announceMainProcessAntDial(url) {
-  const key = dialKey(url);
+function announceMainProcessAntDial(url, method) {
+  const verb = methodKey(method);
+  if (!verb) throw new TypeError(`an Ant dial announces GET, HEAD or POST (got ${method})`);
+  const key = `${verb} ${dialKey(url)}`;
   pending.set(key, (pending.get(key) || 0) + 1);
   let released = false;
   return () => {
@@ -65,8 +83,10 @@ function announceMainProcessAntDial(url) {
   };
 }
 
-function isMainProcessAntDial(url) {
-  return pending.has(dialKey(url));
+/** True while a dial of `url` with `method` is announced. */
+function isMainProcessAntDial(url, method) {
+  const verb = methodKey(method);
+  return verb !== null && pending.has(`${verb} ${dialKey(url)}`);
 }
 
 function _resetMainProcessAntDialsForTests() {

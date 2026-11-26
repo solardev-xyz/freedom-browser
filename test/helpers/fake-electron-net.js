@@ -12,7 +12,10 @@
  *    `headers` (string values, arrays for `set-cookie`), then `data`* + `end`,
  *  - a connection failure emits `error` on the request with a `net::ERR_…`
  *    message,
- *  - a request aborted mid-body emits nothing further on the response.
+ *  - a request aborted mid-body emits nothing further on the response,
+ *  - a write's callback runs once Chromium has taken the chunk (Electron's
+ *    `ChunkedBodyStream`, under `chunkedEncoding`); `holdWrites` keeps each
+ *    callback until `takeWrite()`, as a node that stops reading does.
  *
  * Shared by `src/main/ipfs/gateway-transport.test.js`,
  * `src/main/ipfs-manager.test.js` and the ENS CCIP-Read suites
@@ -30,14 +33,27 @@ class FakeClientRequest extends EventEmitter {
     this.written = [];
     this.ended = false;
     this.aborted = false;
+    this.chunkedEncoding = false;
+    this.holdWrites = false;
+    this.heldWrites = [];
   }
 
   setHeader(name, value) {
     this.sentHeaders[name] = value;
   }
 
-  write(chunk) {
+  write(chunk, callback) {
     this.written.push(Buffer.from(chunk));
+    if (typeof callback !== 'function') return true;
+    if (this.holdWrites) this.heldWrites.push(callback);
+    else queueMicrotask(() => callback());
+    return true;
+  }
+
+  /** Chromium takes the oldest held chunk: its write's callback runs. */
+  takeWrite(err) {
+    const callback = this.heldWrites.shift();
+    if (callback) callback(err);
   }
 
   end() {

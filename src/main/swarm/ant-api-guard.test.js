@@ -145,17 +145,63 @@ describe('an announced main-process dial', () => {
 
   test('is cancelled until announced, allowed while announced, cancelled after release', () => {
     expect(guardAntApiRequest(mainDial())).toEqual({ cancel: true });
-    const release = announceMainProcessAntDial(URL_);
+    const release = announceMainProcessAntDial(URL_, 'GET');
     expect(guardAntApiRequest(mainDial())).toBeNull();
-    expect(guardAntApiRequest(mainDial({ method: 'HEAD' }))).toBeNull();
     release();
     release(); // idempotent
     expect(guardAntApiRequest(mainDial())).toEqual({ cancel: true });
   });
 
+  // Design 0015, The transport: an announcement names the one method its
+  // dial sends (SWM-5 point 10), so an announced GET is no HEAD and the
+  // reverse, as an announced POST is neither.
+  test.each([
+    ['GET', 'HEAD'],
+    ['HEAD', 'GET'],
+  ])('an announced %s lets that method through and no other', (announced, other) => {
+    const release = announceMainProcessAntDial(URL_, announced);
+    try {
+      expect(guardAntApiRequest(mainDial({ method: announced }))).toBeNull();
+      for (const method of [other, 'POST', 'PUT', 'DELETE', 'OPTIONS']) {
+        expect(guardAntApiRequest(mainDial({ method }))).toEqual({ cancel: true });
+      }
+    } finally {
+      release();
+    }
+  });
+
+  test('two dials of one URL with two methods each let only their own through', () => {
+    const get = announceMainProcessAntDial(URL_, 'GET');
+    const head = announceMainProcessAntDial(URL_, 'HEAD');
+    get();
+    expect(guardAntApiRequest(mainDial())).toEqual({ cancel: true });
+    expect(guardAntApiRequest(mainDial({ method: 'HEAD' }))).toBeNull();
+    head();
+    expect(guardAntApiRequest(mainDial({ method: 'HEAD' }))).toEqual({ cancel: true });
+  });
+
+  test.each([undefined, null, '', 'PUT', 'DELETE', 'OPTIONS', 'CONNECT', 'TRACE', 7])(
+    'an announcement must name GET, HEAD or POST (%p is refused)',
+    (method) => {
+      expect(() => announceMainProcessAntDial(URL_, method)).toThrow(TypeError);
+      expect(guardAntApiRequest(mainDial({ method: method || 'GET' }))).toEqual({ cancel: true });
+    }
+  );
+
+  test("a method's case doesn't matter: Chromium reports it upper-case", () => {
+    const release = announceMainProcessAntDial(URL_, 'post');
+    try {
+      expect(guardAntApiRequest(mainDial({ method: 'POST' }))).toBeNull();
+      expect(guardAntApiRequest(mainDial({ method: 'post' }))).toBeNull();
+      expect(guardAntApiRequest(mainDial({ method: 'GET' }))).toEqual({ cancel: true });
+    } finally {
+      release();
+    }
+  });
+
   test('two overlapping dials of one URL each hold it open', () => {
-    const a = announceMainProcessAntDial(URL_);
-    const b = announceMainProcessAntDial(URL_);
+    const a = announceMainProcessAntDial(URL_, 'GET');
+    const b = announceMainProcessAntDial(URL_, 'GET');
     a();
     expect(guardAntApiRequest(mainDial())).toBeNull();
     b();
@@ -176,7 +222,7 @@ describe('an announced main-process dial', () => {
     ],
     ['an upper-case host', `http://ANT.example.test:1633/bzz/${'a'.repeat(64)}`, URL_],
   ])('matches the canonical form Chromium reports (%s)', (_label, announced, reported) => {
-    const release = announceMainProcessAntDial(announced);
+    const release = announceMainProcessAntDial(announced, 'GET');
     try {
       expect(guardAntApiRequest(mainDial({ url: reported }))).toBeNull();
     } finally {
@@ -186,7 +232,7 @@ describe('an announced main-process dial', () => {
   });
 
   test('an escaped slash still names a different path', () => {
-    const release = announceMainProcessAntDial(`${URL_}/a/b`);
+    const release = announceMainProcessAntDial(`${URL_}/a/b`, 'GET');
     try {
       expect(guardAntApiRequest(mainDial({ url: `${URL_}/a%2Fb` }))).toEqual({ cancel: true });
     } finally {
@@ -201,12 +247,104 @@ describe('an announced main-process dial', () => {
     ['the same URL from a webContents', mainDial({ webContents: webview })],
     ['the same URL with a webContentsId', mainDial({ webContentsId: 7 })],
   ])('%s is still cancelled while the dial is announced', (_label, details) => {
-    const release = announceMainProcessAntDial(URL_);
+    const release = announceMainProcessAntDial(URL_, 'GET');
     try {
       expect(guardAntApiRequest(details)).toEqual({ cancel: true });
     } finally {
       release();
     }
+  });
+});
+
+// Design 0015, The transport: main's Swarm executor POSTs to a remote node
+// through `net.request`, which meets the guard frameless. Its announcement
+// names POST, and the guard lets exactly that POST to exactly that URL
+// through, from main only, while the dial lasts.
+describe('an announced main-process POST', () => {
+  const REMOTE = 'http://ant.example.test:1633';
+  const BYTES = `${REMOTE}/bytes`;
+  const BZZ = `${REMOTE}/bzz?name=index.html`;
+  const post = (over = {}) => ({ url: BYTES, method: 'POST', resourceType: 'other', ...over });
+
+  beforeEach(() => {
+    mockGetAntApiUrl.mockReturnValue(REMOTE);
+  });
+
+  test('passes while announced, and is cancelled before and after', () => {
+    expect(guardAntApiRequest(post())).toEqual({ cancel: true });
+    const release = announceMainProcessAntDial(BYTES, 'POST');
+    expect(guardAntApiRequest(post())).toBeNull();
+    release();
+    expect(guardAntApiRequest(post())).toEqual({ cancel: true });
+  });
+
+  test('a query is part of the URL it binds', () => {
+    const release = announceMainProcessAntDial(BZZ, 'POST');
+    try {
+      expect(guardAntApiRequest(post({ url: BZZ }))).toBeNull();
+      expect(guardAntApiRequest(post({ url: `${REMOTE}/bzz?name=other.html` }))).toEqual({
+        cancel: true,
+      });
+      expect(guardAntApiRequest(post({ url: `${REMOTE}/bzz` }))).toEqual({ cancel: true });
+    } finally {
+      release();
+    }
+  });
+
+  test.each([
+    // Another URL: the admin routes main never announces, and other uploads.
+    ['to /stamps/<amount>/<depth>', post({ url: `${REMOTE}/stamps/1/17` })],
+    ['to /stamps/topup', post({ url: `${REMOTE}/stamps/topup/${'b'.repeat(64)}/1` })],
+    ['to /chequebook/withdraw', post({ url: `${REMOTE}/chequebook/withdraw?amount=1` })],
+    ['to /chunks', post({ url: `${REMOTE}/chunks` })],
+    ['to /bytes on another host', post({ url: 'http://127.0.0.1:1633/bytes' })],
+    ['to /bytes with a query', post({ url: `${BYTES}?x=1` })],
+    // Another method of the announced URL.
+    ['as a GET', post({ method: 'GET' })],
+    ['as a HEAD', post({ method: 'HEAD' })],
+    ['as a PUT', post({ method: 'PUT' })],
+    ['as an OPTIONS preflight', post({ method: 'OPTIONS' })],
+    // From a frame, a page or a worker's webContents.
+    ['from a page frame', post({ frame: topFrame('https://evil.example/') })],
+    ['from a sub-frame', post({ frame: subFrame('https://evil.example/') })],
+    ['from a bzz: page', post({ frame: topFrame(`bzz://${'a'.repeat(64)}/`) })],
+    ['from a webContents', post({ webContents: webview })],
+    ['with a webContentsId', post({ webContentsId: 7 })],
+    // A frameless worker's fetch: no frame and no webContents, but `xhr`.
+    ['from a frameless worker (xhr)', post({ resourceType: 'xhr' })],
+    ['as a frameless fetch of another type', post({ resourceType: 'fetch' })],
+    ['with no resourceType', post({ resourceType: undefined })],
+    [
+      'as a top-level navigation (a form POST)',
+      post({ resourceType: 'mainFrame', webContentsId: 3, webContents: webview }),
+    ],
+  ])('the same POST %s is cancelled', (_label, details) => {
+    const release = announceMainProcessAntDial(BYTES, 'POST');
+    try {
+      expect(guardAntApiRequest(details)).toEqual({ cancel: true });
+    } finally {
+      release();
+    }
+  });
+
+  test('an announced GET or HEAD of the URL lets no POST through', () => {
+    const get = announceMainProcessAntDial(BYTES, 'GET');
+    const head = announceMainProcessAntDial(BYTES, 'HEAD');
+    try {
+      expect(guardAntApiRequest(post())).toEqual({ cancel: true });
+    } finally {
+      get();
+      head();
+    }
+  });
+
+  test('two POSTs of one URL each hold it open', () => {
+    const a = announceMainProcessAntDial(BYTES, 'POST');
+    const b = announceMainProcessAntDial(BYTES, 'POST');
+    a();
+    expect(guardAntApiRequest(post())).toBeNull();
+    b();
+    expect(guardAntApiRequest(post())).toEqual({ cancel: true });
   });
 });
 

@@ -877,7 +877,7 @@ describe('a non-loopback Ant', () => {
     const dialled = `${REMOTE}/bzz/${HASH}/index.html`;
     let announced = null;
     mockNetGatewayFetch.mockImplementation(async (url) => {
-      announced = isMainProcessAntDial(url);
+      announced = isMainProcessAntDial(url, 'GET');
       return new Response('remote content');
     });
     const fetchImpl = jest.fn();
@@ -895,13 +895,13 @@ describe('a non-loopback Ant', () => {
     expect(deps).toEqual({ session });
     expect(announced).toBe(true);
     // Released once the dial settled: nothing frameless is let through after.
-    expect(isMainProcessAntDial(dialled)).toBe(false);
+    expect(isMainProcessAntDial(dialled, 'GET')).toBe(false);
   });
 
   test("a refused connection is Chromium's, read as undici's: 503 after the schedule", async () => {
     jest.useFakeTimers();
     mockNetGatewayFetch.mockImplementation(async (url) => {
-      expect(isMainProcessAntDial(url)).toBe(true);
+      expect(isMainProcessAntDial(url, 'GET')).toBe(true);
       throw new Error('net::ERR_CONNECTION_REFUSED');
     });
     const pending = handleBzzRequest(request(`bzz://${HASH}/x`), { session });
@@ -910,7 +910,7 @@ describe('a non-loopback Ant', () => {
     expect(mockNetGatewayFetch).toHaveBeenCalledTimes(10);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ code: 503, message: 'bee gateway unreachable' });
-    expect(isMainProcessAntDial(`${REMOTE}/bzz/${HASH}/x`)).toBe(false);
+    expect(isMainProcessAntDial(`${REMOTE}/bzz/${HASH}/x`, 'GET')).toBe(false);
   });
 
   test('an onion Ant the session would resolve DIRECT is never dialled, and is retried', async () => {
@@ -922,6 +922,70 @@ describe('a non-loopback Ant', () => {
     const pending = handleBzzRequest(request(`bzz://${HASH}/x`), { session });
     await jest.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
     await expect((await pending).text()).resolves.toBe('over tor');
+  });
+
+  test('a HEAD is announced as a HEAD: an announcement names the method its dial sends', async () => {
+    const dialled = `${REMOTE}/bzz/${HASH}/x`;
+    const seen = {};
+    mockNetGatewayFetch.mockImplementation(async (url, init) => {
+      for (const method of ['GET', 'HEAD', 'POST'])
+        seen[method] = isMainProcessAntDial(url, method);
+      expect(init.method).toBe('HEAD');
+      return new Response(null);
+    });
+    const res = await handleBzzRequest(
+      { ...request(`bzz://${HASH}/x`), method: 'HEAD' },
+      { session }
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ GET: false, HEAD: true, POST: false });
+    expect(isMainProcessAntDial(dialled, 'HEAD')).toBe(false);
+  });
+
+  // Design 0015, The transport: main's Swarm executor POSTs to a remote node
+  // on the session's stack, its announcement bound to POST.
+  test('a POST is announced as a POST to exactly its URL, only while it dials', async () => {
+    const dialled = `${REMOTE}/bzz?name=site.tar`;
+    const body = new ReadableStream({ pull: (controller) => controller.close() });
+    const seen = {};
+    mockNetGatewayFetch.mockImplementation(async (url, init) => {
+      for (const method of ['GET', 'HEAD', 'POST'])
+        seen[method] = isMainProcessAntDial(url, method);
+      seen.other = isMainProcessAntDial(`${REMOTE}/bzz?name=other.tar`, 'POST');
+      seen.init = init;
+      return new Response('{"reference":"ab"}', { status: 201 });
+    });
+    const fetchImpl = jest.fn();
+
+    const res = await antBackend({ session, fetchImpl }).request({
+      path: '/bzz?name=site.tar',
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/x-tar' }),
+      body,
+      signal: new AbortController().signal,
+      headersTimeoutMs: null,
+    });
+    expect(res.status).toBe(201);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(mockNetGatewayFetch.mock.calls[0][0]).toBe(dialled);
+    expect(mockNetGatewayFetch.mock.calls[0][2]).toEqual({ session });
+    expect(seen).toMatchObject({ GET: false, HEAD: false, POST: true, other: false });
+    // The stack writes the stream itself, as it is pulled.
+    expect(seen.init).toMatchObject({ method: 'POST', redirect: 'manual', body });
+    expect(seen.init.duplex).toBeUndefined();
+    expect(isMainProcessAntDial(dialled, 'POST')).toBe(false);
+  });
+
+  test('a body on a GET is refused before anything is announced or dialled', async () => {
+    await expect(
+      antBackend({ session }).request({
+        path: `/chunks/${HASH}`,
+        method: 'GET',
+        body: new Uint8Array(1),
+        signal: new AbortController().signal,
+      })
+    ).rejects.toThrow('a GET request cannot carry a body');
+    expect(mockNetGatewayFetch).not.toHaveBeenCalled();
   });
 
   test("a loopback Ant keeps Node's fetch, outside the session", async () => {
@@ -981,11 +1045,11 @@ describe("a remote Ant's dial is bounded by its attempt", () => {
 
     const pending = handleBzzRequest(request(), { session });
     while (mockNetGatewayFetch.mock.calls.length === 0) await Promise.resolve();
-    expect(isMainProcessAntDial(dialled)).toBe(true);
+    expect(isMainProcessAntDial(dialled, 'GET')).toBe(true);
     await jest.advanceTimersByTimeAsync(BZZ_HEADERS_MS);
     // The attempt is over though its transport isn't: abandoned, unannounced.
     expect(abandonedAntDials()).toBe(1);
-    expect(isMainProcessAntDial(dialled)).toBe(false);
+    expect(isMainProcessAntDial(dialled, 'GET')).toBe(false);
     await jest.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
     await expect((await pending).text()).resolves.toBe('second attempt');
 
@@ -1005,7 +1069,7 @@ describe("a remote Ant's dial is bounded by its attempt", () => {
     page.abort();
     const res = await pending;
     expect(res.status).toBe(502);
-    expect(isMainProcessAntDial(`${ONION}/bzz/${HASH}/x`)).toBe(false);
+    expect(isMainProcessAntDial(`${ONION}/bzz/${HASH}/x`, 'GET')).toBe(false);
     stalled.reject(new Error('aborted'));
     await new Promise(setImmediate);
     expect(abandonedAntDials()).toBe(0);
