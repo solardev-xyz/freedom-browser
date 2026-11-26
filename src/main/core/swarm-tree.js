@@ -384,7 +384,9 @@ class Occurrences {
    */
   take(address, length, depth) {
     if (this.over) return 'count';
-    const key = Occurrences.key(address, BigInt(length), depth);
+    const logical = typeof length === 'bigint' || Number.isSafeInteger(length) ? BigInt(length) : null;
+    if (typeof address !== 'string' || logical === null || !Number.isSafeInteger(depth)) return 'value';
+    const key = Occurrences.key(address, logical, depth);
     const left = this.map.get(key);
     if (left === undefined) return 'value';
     if (left === 0) return 'count';

@@ -410,3 +410,414 @@ describe("the tree reader's arithmetic and refusals", () => {
     expect(occurrences.take(leaves[0].address, 4096, 2)).toBe('count');
   });
 });
+
+// Codex round 1 on #1336: /stamps without a batch, the `stream` member,
+// and core-supplied values that must be refused by a rule, never thrown.
+describe("main's own writes without a batch: /stamps first", () => {
+  const BATCH = 'a1'.repeat(32);
+  const GIVEN = 'b2'.repeat(32);
+  const TOPIC = 'cd'.repeat(32);
+  const post = (form, path, headers, extra = {}) => ({
+    form,
+    method: 'POST',
+    path,
+    query: [],
+    headers,
+    max_bytes: 65536,
+    stream: false,
+    ...extra,
+  });
+  const ROWS_WITHOUT_BATCH = {
+    'swarm.publish:data,file': {
+      params: { kind: 'data', parts: [{ bytes: 1, base64: 'eA==' }], pin: true, deferred: false },
+      call: (batch) =>
+        post(
+          'bzz_file',
+          '/bzz',
+          [
+            ['content-type', 'text/plain'],
+            ['swarm-postage-batch-id', batch],
+            ['swarm-pin', 'true'],
+            ['swarm-deferred-upload', 'false'],
+          ],
+          { query: [['name', 'data']], body: { base64: 'eA==' } }
+        ),
+    },
+    'swarm.publish:collection': {
+      params: {
+        kind: 'collection',
+        parts: [{ path: 'a.txt', bytes: 1 }],
+        pin: true,
+        deferred: true,
+      },
+      call: (batch) =>
+        post(
+          'bzz_tar',
+          '/bzz',
+          [
+            ['content-type', 'application/x-tar'],
+            ['swarm-collection', 'true'],
+            ['swarm-postage-batch-id', batch],
+            ['swarm-pin', 'true'],
+            ['swarm-deferred-upload', 'true'],
+          ],
+          { body: { stream: 3072 } }
+        ),
+    },
+    'swarm.feed:create': {
+      params: { op: 'create', key: { kind: 'bee_wallet' }, topic: TOPIC },
+      call: (batch) =>
+        post('feed_manifest', `/feeds/${OWNER}/${TOPIC}`, [['swarm-postage-batch-id', batch]]),
+    },
+    'swarm.feed:update': {
+      params: {
+        op: 'update',
+        key: { kind: 'bee_wallet' },
+        topic: TOPIC,
+        reference: 'ef'.repeat(32),
+      },
+      call: () =>
+        get('feed_head', `/feeds/${OWNER}/${TOPIC}`, {
+          headers: [['swarm-only-root-chunk', 'true']],
+        }),
+    },
+  };
+
+  test.each(Object.keys(ROWS_WITHOUT_BATCH))(
+    '%s: a call before /stamps is refused by order',
+    (row) => {
+      const { params, call } = ROWS_WITHOUT_BATCH[row];
+      expect(new Admission({ row, params }).admit(call(BATCH))).toStrictEqual({ rule: 'order' });
+      // After the /stamps it is the row's next call.
+      const a = new Admission({ row, params });
+      const stamps = a.admit(get('stamps', '/stamps', { max_bytes: 1048576 }));
+      expect(stamps.rule).toBeUndefined();
+      a.settle(stamps.ticket, ok(Buffer.from('[]')));
+      expect(a.admit(call(BATCH)).rule).toBeUndefined();
+      // With the parent's own batch, the row leaves /stamps out.
+      const given = new Admission({ row, params: { ...params, batch: GIVEN } });
+      expect(given.admit(call(GIVEN)).rule).toBeUndefined();
+    }
+  );
+});
+
+describe('core-supplied values are refused by a rule, never thrown', () => {
+  const topic = pageTopic(KEY, 'blog');
+  const big = over(4097, [leaf(1, 4096), leaf(2, 1)]);
+  /** A readData parent whose root declares 4,097 bytes, and its stream call. */
+  const streamCall = () => ({
+    admission: readData(big),
+    call: get('bytes', `/bytes/${big.address}`, {
+      headers: [['range', 'bytes=0-4096']],
+      max_bytes: 4097,
+      stream: true,
+    }),
+  });
+  /** A readFeedEntry_index parent whose SOC wraps a 4,097-byte root, and its stream call. */
+  const feedStreamCall = () => {
+    const wrapped = chunk(4097, Buffer.alloc(64, 7));
+    const a = new Admission({
+      row: 'readFeedEntry_index',
+      params: { name: 'blog', owner: OWNER, index: 0 },
+      key: KEY,
+    });
+    a.ready('reachable');
+    a.readyAnswered(true);
+    const soc = a.admit(
+      get('chunk', `/chunks/${feedUpdateAddress(topic, OWNER, 0n)}`, {
+        feed: { owner: OWNER, index: 0 },
+      })
+    );
+    a.settle(soc.ticket, ok(Buffer.concat([Buffer.alloc(97), wrapped.wire])));
+    return {
+      admission: a,
+      call: get('bytes', `/bytes/${wrapped.address}`, { max_bytes: 4097, stream: true }),
+    };
+  };
+  const wholeCall = () => {
+    const reference = 'ab'.repeat(32);
+    const a = new Admission({ row: 'readChunk', params: { reference }, key: KEY });
+    a.ready('reachable');
+    a.readyAnswered(true);
+    return { admission: a, call: get('chunk', `/chunks/${reference}`) };
+  };
+  const latestCall = () => {
+    const a = new Admission({
+      row: 'readFeedEntry_latest',
+      params: { name: 'blog', owner: OWNER },
+      key: KEY,
+    });
+    a.ready('reachable');
+    a.readyAnswered(true);
+    return {
+      admission: a,
+      call: get('feed_latest', `/feeds/${OWNER}/${topic}`, { max_bytes: 4096, stream: true }),
+    };
+  };
+  const leafCall = () => ({
+    admission: readData(big),
+    call: get('chunk', `/chunks/${leaf(1, 4096).address}`, { tree: { length: 4096, depth: 1 } }),
+  });
+
+  test('each base call is admitted as it stands', () => {
+    for (const make of [streamCall, feedStreamCall, wholeCall, latestCall, leafCall]) {
+      const { admission, call } = make();
+      expect(admission.admit(call).rule).toBeUndefined();
+    }
+  });
+
+  test('a call without its stream member, whole or streamed, is refused by form', () => {
+    for (const make of [wholeCall, streamCall, latestCall]) {
+      const { admission, call } = make();
+      delete call.stream;
+      expect(admission.admit(call)).toStrictEqual({ rule: 'form' });
+    }
+    const { admission, call } = streamCall();
+    expect(admission.admit({ ...call, stream: 'true' })).toStrictEqual({ rule: 'form' });
+  });
+
+  const MALFORMED = [
+    undefined,
+    null,
+    1.5,
+    'x',
+    '4097',
+    [],
+    [4097],
+    {},
+    { n: 4097 },
+    -1,
+    0,
+    NaN,
+    Infinity,
+    2 ** 53,
+    true,
+  ];
+
+  test('a malformed max_bytes is refused by body, on whole and streamed calls alike', () => {
+    for (const make of [streamCall, feedStreamCall, wholeCall, latestCall, leafCall]) {
+      for (const max of MALFORMED) {
+        const { admission, call } = make();
+        if (max === undefined) delete call.max_bytes;
+        else call.max_bytes = max;
+        expect({ max, verdict: admission.admit(call) }).toStrictEqual({
+          max,
+          verdict: { rule: 'body' },
+        });
+      }
+    }
+  });
+
+  test("a max_bytes past its bound is refused by the bound's rule", () => {
+    const past = [
+      [wholeCall, 4202, 'body'],
+      [latestCall, 5 * 1024 * 1024 + 1, 'body'],
+      [streamCall, 4098, 'value'],
+      [streamCall, 4096, 'value'],
+      [feedStreamCall, 4098, 'value'],
+    ];
+    for (const [make, max, rule] of past) {
+      const { admission, call } = make();
+      expect(admission.admit({ ...call, max_bytes: max })).toStrictEqual({ rule });
+    }
+  });
+
+  const JUNK = [
+    undefined,
+    null,
+    true,
+    0,
+    -1,
+    1.5,
+    NaN,
+    2 ** 60,
+    '',
+    'x',
+    '1e3',
+    '18446744073709551616',
+    [],
+    [[]],
+    [['a']],
+    [[1, 2]],
+    [['range', 7]],
+    {},
+    { base64: 5 },
+    { base64: 'eA==', stream: 1 },
+    { stream: '1' },
+    { stream: -1 },
+    { length: 'x', depth: [] },
+    { length: 2 ** 60, depth: 1 },
+    { length: 4096, depth: 1.5 },
+    { owner: 5, index: {} },
+    { owner: OWNER, index: '0x1' },
+    { owner: OWNER, index: -1 },
+    { owner: OWNER, index: 2 ** 60 },
+  ];
+  const MEMBERS = [
+    'form',
+    'method',
+    'path',
+    'query',
+    'headers',
+    'body',
+    'max_bytes',
+    'stream',
+    'feed',
+    'tree',
+  ];
+
+  test('every member of a call, replaced by junk, gives a rule or an admission, never a throw', () => {
+    let refused = 0;
+    for (const make of [streamCall, feedStreamCall, wholeCall, latestCall, leafCall]) {
+      for (const member of MEMBERS) {
+        for (const junk of JUNK) {
+          const { admission, call } = make();
+          if (junk === undefined) delete call[member];
+          else call[member] = junk;
+          let verdict;
+          expect(() => {
+            verdict = admission.admit(call);
+          }).not.toThrow();
+          if (verdict.rule) {
+            expect(RULES).toContain(verdict.rule);
+            refused += 1;
+          } else {
+            expect(verdict.ticket).toBeDefined();
+          }
+        }
+      }
+    }
+    expect(refused).toBeGreaterThan(1000);
+    for (const call of [null, undefined, [], 'x', 7, { form: { toString: () => 'chunk' } }]) {
+      const { admission } = wholeCall();
+      expect(admission.admit(call)).toStrictEqual({ rule: 'form' });
+    }
+    const a = new Admission({ row: 'readChunk', params: {}, key: KEY });
+    expect(a.ready({})).toBe('value');
+  });
+
+  test("main's answers are read as main gave them, whatever their shape", () => {
+    for (const reply of [
+      null,
+      undefined,
+      'x',
+      { status: 'x' },
+      { status: 200, headers: {}, body: 'not bytes' },
+      { status: 200, headers: [[1, 2], 'x'], body: [1, 2] },
+      {
+        status: 200,
+        headers: [
+          ['swarm-feed-index', 'zz'],
+          ['swarm-feed-index-next', 7],
+        ],
+      },
+    ]) {
+      const { admission, call } = streamCall();
+      const verdict = admission.admit(call);
+      expect(() => admission.settle(verdict.ticket, reply)).not.toThrow();
+      const head = new Admission({
+        row: 'swarm.feed:read',
+        params: { op: 'read', key: { kind: 'bee_wallet' }, topic: 'cd'.repeat(32) },
+      });
+      const lookup = head.admit(
+        get('feed_head', `/feeds/${OWNER}/${'cd'.repeat(32)}`, {
+          headers: [['swarm-only-root-chunk', 'true']],
+        })
+      );
+      expect(() => head.settle(lookup.ticket, reply)).not.toThrow();
+      expect(head.lookup.writeIndex).toBeUndefined();
+    }
+  });
+
+  test('a page param with no string (an own toString or valueOf that is no function) binds nothing, and throws nothing', () => {
+    const unconvertible = readTyped({
+      object: [
+        ['toString', { string: 'x' }],
+        ['valueOf', { string: 'y' }],
+      ],
+    });
+    expect(() => String(unconvertible)).toThrow(TypeError);
+    const data = new SwarmData('Buffer', 2, Buffer.from('hi'), null);
+    const make = (row, params) => {
+      const a = new Admission({ row, params, key: KEY });
+      a.ready('publish');
+      a.readyAnswered(true);
+      a.settle(
+        a.admit(get('stamps', '/stamps', { max_bytes: 1048576 })).ticket,
+        ok(Buffer.from('[]'))
+      );
+      return a;
+    };
+    const batch = ['swarm-postage-batch-id', 'a1'.repeat(32)];
+    let a = make('publishData', { data, contentType: 'text/plain', name: unconvertible });
+    expect(
+      a.admit({
+        form: 'bzz_file',
+        method: 'POST',
+        path: '/bzz',
+        query: [['name', '[object Object]']],
+        headers: [
+          ['content-type', 'text/plain'],
+          batch,
+          ['swarm-pin', 'true'],
+          ['swarm-deferred-upload', 'false'],
+        ],
+        body: { base64: 'aGk=' },
+        max_bytes: 65536,
+        stream: false,
+      })
+    ).toStrictEqual({ rule: 'value' });
+    expect(() => make('createFeed', { name: unconvertible })).not.toThrow();
+    a = make('createFeed', { name: unconvertible });
+    expect(
+      a.admit({
+        ...get('feed_manifest', `/feeds/${OWNER}/${'cd'.repeat(32)}`),
+        method: 'POST',
+        headers: [batch],
+        max_bytes: 65536,
+      })
+    ).toStrictEqual({ rule: 'value' });
+    a = make('publishFiles', {
+      files: [{ path: 'a.txt', bytes: data }],
+      indexDocument: unconvertible,
+    });
+    expect(
+      a.admit({
+        form: 'bzz_tar',
+        method: 'POST',
+        path: '/bzz',
+        query: [],
+        headers: [
+          ['content-type', 'application/x-tar'],
+          ['swarm-collection', 'true'],
+          batch,
+          ['swarm-pin', 'true'],
+          ['swarm-deferred-upload', 'true'],
+        ],
+        body: { stream: 3072 },
+        max_bytes: 65536,
+        stream: false,
+      })
+    ).toStrictEqual({ rule: 'header' });
+    for (const row of ['readFeedEntry_latest', 'updateFeed', 'writeFeedEntry']) {
+      expect(
+        () =>
+          new Admission({ row, params: { name: unconvertible, feedId: unconvertible }, key: KEY })
+      ).not.toThrow();
+    }
+  });
+
+  test('the occurrences refuse a length or depth that is no number', () => {
+    const occurrences = new Occurrences();
+    for (const [length, depth] of [
+      ['x', 1],
+      [1.5, 1],
+      [4096, '1'],
+      [null, 1],
+      [{}, 1],
+    ]) {
+      expect(occurrences.take('ab'.repeat(32), length, depth)).toBe('value');
+    }
+    expect(occurrences.take(null, 4096, 1)).toBe('value');
+  });
+});

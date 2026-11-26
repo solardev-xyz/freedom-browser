@@ -30,6 +30,9 @@
  *   length and, where the page's own bytes make it, those bytes (`body`).
  *   A refused call is answered with its rule, and every later call of that
  *   parent is refused (`ended`), as is any call after the parent ended.
+ *   Each member of a call (every one of them required, `stream` included)
+ *   is checked for its type before it is converted or compared, so the
+ *   core's input is refused by a rule, never thrown on.
  * - **Values main derives** from its own replies: a feed update's address
  *   from the row's topic, the parent's owner and the index; the index a
  *   write takes, `swarm-feed-index-next` of a 2xx `feed_head`, else
@@ -587,9 +590,22 @@ deepFreeze(RULES);
 
 const hex = (bytes) => Buffer.from(bytes).toString('hex');
 
-/** keccak256(utf8(text)), as bee-js's `Topic.fromString` (a lone surrogate as U+FFFD). */
+/**
+ * `String(value)`, as the reference converts a param, or null where that
+ * throws (an object whose own `toString` or `valueOf` isn't callable).
+ */
+function jsString(value) {
+  try {
+    return String(value);
+  } catch {
+    return null;
+  }
+}
+
+/** keccak256(utf8(text)), as bee-js's `Topic.fromString` (a lone surrogate as U+FFFD); null when `text` has no string. */
 function topicOf(text) {
-  return hex(keccak(Buffer.from(String(text), 'utf8')));
+  const string = jsString(text);
+  return string === null ? null : hex(keccak(Buffer.from(string, 'utf8')));
 }
 
 /** A feed index as 8 bytes, big-endian. */
@@ -614,9 +630,10 @@ function feedUpdateAddress(topic, owner, index) {
   return socAddress(feedIdentifier(topic, index), owner);
 }
 
-/** A page's own feed topic: keccak256(utf8(key + "/" + name)), as `buildTopicString`. */
+/** A page's own feed topic: keccak256(utf8(key + "/" + name)), as `buildTopicString`; null when `name` has no string. */
 function pageTopic(key, name) {
-  return topicOf(`${key}/${name}`);
+  const string = jsString(name);
+  return string === null ? null : topicOf(`${key}/${string}`);
 }
 
 /** A hex param of `bytes` bytes, lowercased first (as spi lowercases its targets); null when it isn't one. */
@@ -650,9 +667,9 @@ function annotatedIndex(index) {
 
 /** A header's value as `Headers.get` reads it: every value of the name, joined, case-insensitive. */
 function headerText(pairs, name) {
-  const values = (pairs || [])
-    .filter((pair) => Array.isArray(pair) && String(pair[0]).toLowerCase() === name)
-    .map((pair) => String(pair[1]));
+  const values = pairs
+    .filter((pair) => isPairs([pair]) && pair[0].toLowerCase() === name)
+    .map((pair) => pair[1]);
   return values.length ? values.join(', ') : null;
 }
 
@@ -859,6 +876,24 @@ function referenceParam(value) {
 // `bind` may return a reply handler as `ctx.onReply`.
 
 const stampsUnlessBatch = (a, step) => step !== 0 || !a.batchGiven;
+/** Without a batch the row's `/stamps` is required: the upload names the batch it chose. */
+const stampsRequired = (a, step) => step === 0 && !a.batchGiven;
+
+/**
+ * A tar's index document: the param when truthy (null when it has no
+ * string), else `index.html` when a top-level entry has that name, else
+ * none (undefined).
+ */
+function indexDocument(value, entries) {
+  if (truthy(value)) return jsString(value);
+  return entries && entries.some((entry) => entry.path === 'index.html') ? 'index.html' : undefined;
+}
+
+/** `swarm-index-document`, the tar row's own header: none, or exactly the index document (never, for one with no string). */
+const indexHeader = (a, call) =>
+  call.form === 'bzz_tar' && a.indexDocument !== undefined
+    ? { 'swarm-index-document': a.indexDocument }
+    : {};
 
 /** A size a read streams: over one chunk (else the chunk is the whole read), and at most B. */
 const walkable = (size) => size !== null && size > BigInt(CHUNK_SIZE) && size <= BigInt(B);
@@ -1030,7 +1065,7 @@ const BINDINGS = {
   publishData: {
     setup(a) {
       const name = param(a.params, 'name');
-      a.name = String(truthy(name) ? name : 'data');
+      a.name = truthy(name) ? jsString(name) : 'data';
       const contentType = param(a.params, 'contentType');
       a.contentType = typeof contentType === 'string' ? contentType : null;
       a.data = param(a.params, 'data');
@@ -1058,17 +1093,9 @@ const BINDINGS = {
           })
         : null;
       a.bound = entries ? tarBound(entries) : null;
-      const index = param(a.params, 'indexDocument');
-      a.indexDocument = truthy(index)
-        ? String(index)
-        : entries && entries.some((entry) => entry.path === 'index.html')
-          ? 'index.html'
-          : null;
+      a.indexDocument = indexDocument(param(a.params, 'indexDocument'), entries);
     },
-    rowHeaders: (a, call) =>
-      call.form === 'bzz_tar' && a.indexDocument !== null
-        ? { 'swarm-index-document': a.indexDocument }
-        : {},
+    rowHeaders: indexHeader,
     bind: (a, call) => plain(call),
     body: (a, call, ctx) =>
       call.form !== 'bzz_tar' || (a.bound !== null && ctx.body.stream <= a.bound) ? null : 'body',
@@ -1229,10 +1256,10 @@ const BINDINGS = {
       mainBatch(a);
       const kind = param(a.params, 'kind');
       const name = param(a.params, 'name');
-      a.name = truthy(name) ? String(name) : kind === 'data' ? 'data' : null;
+      a.name = truthy(name) ? jsString(name) : kind === 'data' ? 'data' : null;
       const contentType = param(a.params, 'content_type');
       a.contentType = truthy(contentType)
-        ? String(contentType)
+        ? jsString(contentType)
         : kind === 'data'
           ? 'text/plain'
           : 'application/octet-stream';
@@ -1242,6 +1269,7 @@ const BINDINGS = {
       a.part = Array.isArray(parts) && parts.length === 1 ? parts[0] : null;
     },
     enabled: stampsUnlessBatch,
+    required: stampsRequired,
     headerValue: (a, name) =>
       ({ 'content-type': a.contentType, 'swarm-deferred-upload': a.deferred })[name],
     bind(a, call, ctx) {
@@ -1275,18 +1303,11 @@ const BINDINGS = {
         ? parts.map((part) => ({ path: param(part, 'path'), size: param(part, 'bytes') }))
         : null;
       a.bound = entries ? tarBound(entries) : null;
-      const index = param(a.params, 'index_document');
-      a.indexDocument = truthy(index)
-        ? String(index)
-        : entries && entries.some((entry) => entry.path === 'index.html')
-          ? 'index.html'
-          : null;
+      a.indexDocument = indexDocument(param(a.params, 'index_document'), entries);
     },
     enabled: stampsUnlessBatch,
-    rowHeaders: (a, call) =>
-      call.form === 'bzz_tar' && a.indexDocument !== null
-        ? { 'swarm-index-document': a.indexDocument }
-        : {},
+    required: stampsRequired,
+    rowHeaders: indexHeader,
     bind: (a, call) => plain(call),
     body: (a, call, ctx) =>
       call.form !== 'bzz_tar' || (a.bound !== null && ctx.body.stream <= a.bound) ? null : 'body',
@@ -1298,6 +1319,7 @@ const BINDINGS = {
       a.topic = hexParam(param(a.params, 'topic'), 32);
     },
     enabled: stampsUnlessBatch,
+    required: stampsRequired,
     bind: (a, call, ctx) =>
       plain(call) || (call.form === 'feed_manifest' ? feedPath(a, ctx, a.topic) : null),
   },
@@ -1314,6 +1336,7 @@ const BINDINGS = {
       });
     },
     enabled: (a, step) => stampsUnlessBatch(a, step) && (step !== 2 || a.lookup.probing),
+    required: stampsRequired,
     phase: (a, call) =>
       call.form === 'soc_up' && a.lookup.writeIndex === undefined ? 'order' : null,
     bind(a, call, ctx) {
@@ -1554,7 +1577,20 @@ class Admission {
     if (!ticket || ticket.settled) return;
     ticket.settled = true;
     this.open -= 1;
-    if (!this.ended && !this.refused) ticket.onReply?.(reply || null);
+    if (this.ended || this.refused) return;
+    // Read as main answered: headers a list, a body bytes, else absent.
+    const answer =
+      reply && typeof reply === 'object'
+        ? {
+            status: reply.status,
+            headers: Array.isArray(reply.headers) ? reply.headers : [],
+            body:
+              reply.body instanceof Uint8Array
+                ? Buffer.from(reply.body.buffer, reply.body.byteOffset, reply.body.byteLength)
+                : undefined,
+          }
+        : null;
+    ticket.onReply?.(answer);
   }
 
   /** The call's rule, or `{ step, onReply }` when every check passed. */
@@ -1565,7 +1601,8 @@ class Admission {
     if (!form || !this.forms.has(call.form) || call.method !== form.method) return 'form';
     const path = parsePath(call.form, call.path);
     if (!path) return 'form';
-    if (call.stream !== undefined && call.stream !== Boolean(form.reply.stream)) return 'form';
+    // Every call carries `stream`, which its form fixes.
+    if (call.stream !== Boolean(form.reply.stream)) return 'form';
     if (this.spec.ready && this.readyState !== 'ok') return 'order';
     if (this.open >= this.maxOpen) return 'order';
     const step = this.locate(call.form);
@@ -1576,6 +1613,8 @@ class Admission {
     if (typeof query === 'string') return query;
     const headers = this.checkHeaders(form, call, step);
     if (typeof headers === 'string') return headers;
+    // `max_bytes` is a positive integer before any value is held to it.
+    if (!Number.isSafeInteger(call.max_bytes) || call.max_bytes < 1) return 'body';
     const body = readBody(call.body);
     const ctx = { step, path, query, headers, body, onReply: null };
     const value = this.checkValues(form, call, ctx);
@@ -1603,8 +1642,7 @@ class Admission {
     return exhausted ? 'count' : 'order';
   }
 
-  checkQuery(form, query) {
-    const pairs = query === undefined ? [] : query;
+  checkQuery(form, pairs) {
     if (!isPairs(pairs)) return 'query';
     if (pairs.length !== form.query.length) return 'query';
     const out = new Map();
@@ -1617,7 +1655,7 @@ class Admission {
   }
 
   checkHeaders(form, call, step) {
-    const headers = call.headers === undefined ? [] : call.headers;
+    const headers = call.headers;
     if (!isPairs(headers)) return 'header';
     const rowHeaders = this.binding.rowHeaders?.(this, call, step) || {};
     const allowed = new Map();
@@ -1666,9 +1704,7 @@ class Admission {
   }
 
   checkBody(form, call, ctx) {
-    const max = call.max_bytes;
-    if (!Number.isSafeInteger(max) || max < 1) return 'body';
-    if (form.reply.whole !== undefined && max > form.reply.whole) return 'body';
+    if (form.reply.whole !== undefined && call.max_bytes > form.reply.whole) return 'body';
     const body = ctx.body;
     if (body === 'invalid') return 'body';
     if (form.body === null) return body === null ? null : 'body';
