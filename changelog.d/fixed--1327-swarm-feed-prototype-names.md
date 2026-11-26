@@ -1,0 +1,2 @@
+- Swarm feed names that are also JavaScript object properties now create and read real feeds instead of returning empty data or silently failing to save ([#1327](https://github.com/solardev-xyz/freedom-browser/issues/1327))
+  - Names such as `toString` and `__proto__` are stored as own keys in the per-site feed map
