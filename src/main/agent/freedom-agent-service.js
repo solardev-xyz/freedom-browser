@@ -1054,8 +1054,10 @@ function normalizeWalletApproval(value) {
 // The typed card description of a domain transaction Freedom prepared
 // (src/main/domains/service.js presentPlan). Bounded here; the renderer
 // re-validates it and only names the contract the wallet actually calls.
-const DOMAIN_PRESENTATION_ACTIONS = new Set(['register_commit', 'register', 'renew',
-  'set_website', 'clear_website', 'set_address', 'set_text']);
+// Keep in step with ACTIONS in src/renderer/lib/domain-approval.js: an action
+// missing here is dropped before the renderer sees it (guarded by a test).
+const DOMAIN_PRESENTATION_ACTIONS = new Set(['register_commit', 'approve_payment', 'setup_resolver',
+  'register', 'renew', 'set_website', 'clear_website', 'set_address', 'set_text']);
 function normalizeDomainPresentation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value.format !== 'freedom-domain-approval/1' || !DOMAIN_PRESENTATION_ACTIONS.has(value.action)) return null;
@@ -3726,8 +3728,10 @@ module.exports = {
   AGENT_ERROR_CODES,
   AGENT_EVENT_VERSION,
   MAX_AGENT_PROMPT_LENGTH,
+  DOMAIN_PRESENTATION_ACTIONS,
   FreedomAgentError,
   FreedomAgentService,
+  normalizeDomainPresentation,
   normalizePiEvent,
   providerFailureFromPiMessage,
   reasoningProgressFromPiText,
