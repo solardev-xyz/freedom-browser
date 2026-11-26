@@ -127,9 +127,10 @@
  * reply's last byte is written (a streamed reply's terminal), or until the
  * reply is dropped; a reply of 64 KiB or more is charged there for what
  * the handler didn't. A request main sends with `{ pool }` has its
- * fragmented response charged there, twice its bytes as they arrive, until
- * its caller has it; one main can't charge is dropped, and the caller gets
- * `busy`.
+ * fragmented response charged there, twice the size its begin declares,
+ * before its buffer is made, until its caller has it; one main can't
+ * charge is never held: it is read with no buffer and dropped, and the
+ * caller gets `busy`.
  *
  * **Idle watchdogs** (design 0015, D13): a request with no total deadline
  * goes with `idleWatchdogMs`, a hang watchdog whose deadline its progress
@@ -314,6 +315,22 @@ const SHELL_ERRORS = Object.freeze({
   // `shell.dweb_get`: read strictly).
   invalid_argument: 'Invalid argument',
 });
+
+/**
+ * The grammar's rules a Swarm refusal names (design 0015, "The operation
+ * grammar"; the core's `wire.rs` `rule()`, which takes no other): the only
+ * `data` a Swarm handler's `invalid_argument` may carry, as `{ rule }`.
+ */
+const REFUSAL_RULES = new Set([
+  'form',
+  'order',
+  'count',
+  'value',
+  'header',
+  'query',
+  'body',
+  'ended',
+]);
 
 /** A handler's terminal error for one of the process's requests: one of
  * SHELL_ERRORS' codes (anything else is sent as internal), with `data`, an
@@ -516,19 +533,34 @@ function shellError(code, data) {
 /**
  * A handler's failure as its outcome. A handler registered with `failure`
  * (design 0015's Swarm handlers: the core takes only `cancelled`, for an
- * ask it cancelled, or `invalid_argument` with `data: { rule }`, and any
- * other error ends its connection) answers just those two as errors, and
- * anything else, a throw or another ShellError, with the result
- * `failure(code)` gives (`{ failed: "error" }`), never `internal`.
+ * ask it cancelled, or `invalid_argument` with `data: { rule }` exactly,
+ * and any other error ends its connection) answers just those two as
+ * errors, and anything else, a throw, another ShellError or a refusal of
+ * any other shape, with the result `failure(code)` gives
+ * (`{ failed: "error" }`), never `internal`.
  */
 function failedOutcome(err, signal, failure) {
   if (!failure) return { error: shellErrorBody(err, signal) };
   if (signal.aborted) return { error: shellError('cancelled') };
-  if (err instanceof ShellError && err.code === 'invalid_argument' && err.data !== undefined) {
-    return { error: shellError(err.code, err.data) };
-  }
+  const rule = refusalRule(err);
+  if (rule !== null) return { error: shellError('invalid_argument', { rule }) };
   const code = err instanceof ShellError && err.code !== 'cancelled' ? err.code : 'internal';
   return failedWith(code, failure);
+}
+
+/**
+ * The rule of a refusal the core takes from a Swarm handler: a ShellError
+ * `invalid_argument` whose data is exactly `{ rule }`, one member, a rule
+ * the core knows (REFUSAL_RULES). Null for any other error, which the core
+ * would read as a fault and end its connection for.
+ */
+function refusalRule(err) {
+  if (!(err instanceof ShellError) || err.code !== 'invalid_argument') return null;
+  const { data } = err;
+  if (!isObject(data) || Object.keys(data).length !== 1 || !Object.hasOwn(data, 'rule')) {
+    return null;
+  }
+  return typeof data.rule === 'string' && REFUSAL_RULES.has(data.rule) ? data.rule : null;
 }
 
 /** What main answers in place of a reply it can't send as it is (`code`:
@@ -849,7 +881,8 @@ class ServiceClient extends EventEmitter {
    *   (`busy`, `too_large`, `internal`): `{ failed: "error" }`, never an
    *   error the core can't take. Only `cancelled`, once the signal aborted,
    *   and a refusal that carries its rule (a ShellError `invalid_argument`
-   *   with data) still go as errors.
+   *   whose data is exactly `{ rule }`, one of REFUSAL_RULES) still go as
+   *   errors.
    * - `race`: the process's cancel is answered `cancelled` at once, without
    *   waiting for the handler (on the duplex its sender answers it so
    *   anyway); the handler's outcome is dropped once it settles, and its
@@ -1024,10 +1057,12 @@ class ServiceClient extends EventEmitter {
    * no other method takes it: either way round, nothing is sent and the
    * request fails `invalid_argument`.
    *
-   * `pool` charges the request's fragmented response, twice each
-   * fragment's bytes as it arrives, until the caller has it (design 0015,
-   * Results for pages). A fragment main can't charge drops the response:
-   * the caller gets `busy` at once, and the rest is read and let go of.
+   * `pool` charges the request's fragmented response, twice the size its
+   * begin declares, before its buffer is made, until the caller has it
+   * (design 0015, Results for pages). One main can't charge is never held:
+   * the caller gets `busy` at once, and the response is read to its end
+   * with no buffer and let go of. A response within one frame isn't
+   * charged (SWM-7).
    *
    * `signal` cancels it (0001's `cancel`): the caller gets `cancelled` at
    * once and the process is told, unless its response came first. A signal
@@ -1915,10 +1950,11 @@ class ServiceClient extends EventEmitter {
 
   /**
    * Charges a request's fragmented response to `pool` (`requestTo`'s
-   * `pool`), twice each fragment's bytes as it arrives (`chargeFragment`),
-   * until its caller has it. A fragment that doesn't fit drops it: the
-   * caller is answered `busy` at once, and the response, when it comes, is
-   * let go of. Its watchdog runs on to that response, as a cancelled
+   * `pool`): twice the size its begin declares, before the buffer for it
+   * is made (`admitResponse`), until its caller has it. One that doesn't
+   * fit is never held: the caller is answered `busy` at once, and the
+   * response is read to its end with no buffer and let go of
+   * (`onDroppedResponse`). Its watchdog runs on to that end, as a cancelled
    * request's does. The generation's retirement releases what it holds.
    */
   chargeable(gen, entry, pool) {
@@ -1931,15 +1967,16 @@ class ServiceClient extends EventEmitter {
       held = 0;
     };
     entry.charge = (bytes) => {
-      if (answered) return;
       if (pool.take(bytes)) {
         held += bytes;
         gen.charges.add(release);
-        return;
+        return true;
       }
-      release();
-      answered = true;
-      settle({ error: new CoreError('busy', 'No room for the response') });
+      if (!answered) {
+        answered = true;
+        settle({ error: new CoreError('busy', 'No room for the response') });
+      }
+      return false;
     };
     entry.settle = (outcome) => {
       release();
@@ -1949,10 +1986,35 @@ class ServiceClient extends EventEmitter {
     };
   }
 
-  /** A fragment of the response to main's request `id` arrived: what its
-   * `pool` is charged (`chargeable`). */
-  chargeFragment(gen, id, bytes) {
-    gen.pending.get(id)?.charge?.(2 * bytes);
+  /** A fragmented response of `bytes` to main's request `id` begins:
+   * whether main holds it, its pool charged twice its size first
+   * (`chargeable`). One sent without a pool is held as before. */
+  admitResponse(gen, id, bytes) {
+    const charge = gen.pending.get(id)?.charge;
+    return charge ? charge(2 * bytes) : true;
+  }
+
+  /**
+   * A fragmented response main declined at its begin (`admitResponse`),
+   * read to its end with no buffer: its request ends as a response ends
+   * it, its caller has had `busy`, and the process's credit goes back.
+   */
+  onDroppedResponse(gen, id) {
+    const entry = gen.pending.get(id);
+    if (!entry) return this.protocolFault(gen, 'unsolicited_response');
+    if (gen.streams) {
+      try {
+        if (gen.duplex) gen.duplex.answered(id, false);
+        else gen.streams.reply(id, false);
+      } catch (err) {
+        return this.protocolFault(gen, err instanceof FrameError ? err.category : 'stream');
+      }
+    }
+    this.idleEnded(gen, id);
+    gen.pending.delete(id);
+    entry.settle({ error: new CoreError('busy', 'No room for the response') });
+    if (!gen.distrusted) this.returnCredit(gen);
+    return undefined;
   }
 
   /**
@@ -1999,6 +2061,7 @@ class ServiceClient extends EventEmitter {
     try {
       this.writeInOrder(gen, encodeFrame({ type: 'cancel', id }), (err) => {
         if (err) this.connectionFailed(gen, 'stdin_error');
+        else this.idleProgress(gen, id);
       });
     } catch {
       this.connectionFailed(gen, 'stdin_error');
@@ -2083,15 +2146,16 @@ class ServiceClient extends EventEmitter {
       }
       let delivery;
       try {
-        // A begin must name a request still waiting for its response.
-        delivery = gen.reassembler.push(frame, (id) => gen.pending.has(id));
+        // A begin must name a request still waiting for its response, and
+        // one sent with a pool is charged before its buffer is made.
+        delivery = gen.reassembler.push(
+          frame,
+          (id) => gen.pending.has(id),
+          (id, bytes) => this.admitResponse(gen, id, bytes)
+        );
       } catch (err) {
         this.protocolFault(gen, err instanceof FrameError ? err.category : 'decode');
         return;
-      }
-      if (frame.kind === KIND_FRAGMENT || frame.kind === KIND_LAST) {
-        const id = delivery ? delivery.id : gen.reassembler.reassembling();
-        this.chargeFragment(gen, id, frame.payload.length);
       }
       if (!delivery) continue;
       try {
@@ -2099,6 +2163,8 @@ class ServiceClient extends EventEmitter {
           this.onMessage(gen, delivery.message);
         } else if (delivery.type === 'response') {
           this.onFragmentedResponse(gen, delivery.id, delivery.message);
+        } else if (delivery.type === 'dropped') {
+          this.onDroppedResponse(gen, delivery.id);
         } else {
           this.onCredit(gen);
         }
@@ -3169,9 +3235,10 @@ class ServiceClient extends EventEmitter {
   /** One of the duplex's frames is written. A reply, or a body's terminal,
    * is the core's request's last: its entry goes. */
   streamWritten(gen, wrote) {
-    // Main's credit for the body of one of its own requests: an idle one's
-    // progress.
-    if (wrote.type === 'credit') this.idleProgress(gen, wrote.id);
+    // Main's credit for the body of one of its own requests, or its cancel
+    // of one: an idle one's progress (the core has D13's 60 s to answer a
+    // cancel).
+    if (wrote.type === 'credit' || wrote.type === 'cancel') this.idleProgress(gen, wrote.id);
     if (wrote.type === 'credit' || wrote.type === 'cancel' || wrote.type === 'data') return;
     const release = gen.pieceCharges.get(wrote.id);
     if (release) {
@@ -3309,6 +3376,7 @@ module.exports = {
   StreamedReply,
   SERVICE_DUPLEX,
   SHELL_ERRORS,
+  REFUSAL_RULES,
   MAX_INCOMING,
   scrubbedEnv,
   isObject,

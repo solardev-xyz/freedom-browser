@@ -478,4 +478,46 @@ describe('Reassembler', () => {
     const [credit] = new FrameDecoder().push(encodeCredit());
     expect(new Reassembler().push(credit, never)).toEqual({ type: 'credit' });
   });
+
+  // Main's Swarm I/O pool (design 0015): a response is charged at its
+  // begin, before its buffer is made, and one that doesn't fit is never
+  // held.
+  test('admit is asked at a begin after every other check, before the buffer; declined, nothing is held, its fragments are still checked, and it ends dropped', () => {
+    const asked = [];
+    const admit = (answer) => (id, bytes) => {
+      asked.push([id, bytes]);
+      return answer;
+    };
+    const held = new Reassembler();
+    held.push(begin(7, 2), pending, admit(true));
+    expect(held.current.buffer.length).toBe(2);
+    expect(held.push(frame(KIND_LAST, '{}'), pending, never)).toEqual({
+      type: 'response',
+      id: 7,
+      message: {},
+    });
+    const declined = new Reassembler();
+    // Refused begins don't ask.
+    expect(() => declined.push(begin(9, 2), pending, admit(true))).toThrow(/begin_unknown_id/);
+    expect(asked).toEqual([[7, 2]]);
+    const r = new Reassembler();
+    r.push(begin(7, 3 * MIB), pending, admit(false));
+    expect(asked).toEqual([
+      [7, 2],
+      [7, 3 * MIB],
+    ]);
+    expect(r.current).toMatchObject({ id: 7, size: 3 * MIB, buffer: null });
+    expect(r.push(frame(KIND_FRAGMENT, Buffer.alloc(MIB, 1)), pending, never)).toBeNull();
+    expect(r.current.buffer).toBeNull();
+    // Not valid JSON, and never decoded.
+    expect(r.push(frame(KIND_LAST, Buffer.alloc(2 * MIB, 1)), pending, never)).toEqual({
+      type: 'dropped',
+      id: 7,
+    });
+    expect(r.inProgress()).toBe(false);
+    // Its length is held to the begin's as any response's is.
+    const short = new Reassembler();
+    short.push(begin(7, 3), pending, admit(false));
+    expect(() => short.push(frame(KIND_LAST, '{}'), pending)).toThrow(/fragment_length/);
+  });
 });

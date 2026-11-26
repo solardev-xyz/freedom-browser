@@ -21,6 +21,7 @@
 const { EventEmitter } = require('events');
 const os = require('os');
 const { PassThrough, Writable } = require('stream');
+const { REFUSAL_RULES } = require('./service-client');
 const {
   CoreClient,
   JsonText,
@@ -487,6 +488,74 @@ describe("the idle Swarm methods' watchdog (design 0015, D13)", () => {
     expect(core().killed).toBe('SIGKILL');
   });
 
+  test("main's cancel is progress: a late one gives the core its bound to answer, as D13's 60 s for a cancel allows", async () => {
+    makeClient(coreWith());
+    await client.start();
+    const shell = { caller: 'shell' };
+    const cancels = [new AbortController(), new AbortController(), new AbortController()];
+    const publishes = cancels.map((cancel) =>
+      sendOwn((onSent) =>
+        client
+          .request('swarm.publish', { kind: 'data', parts: [] }, shell, {
+            idleWatchdogMs: 75_000,
+            onSent,
+            signal: cancel.signal,
+          })
+          .catch((e) => e)
+      )
+    );
+    const withdraw = new AbortController();
+    const upload = sendOwn((onSent) =>
+      client.callStream('swarm.body', { for: 1 }, shell, {
+        idleWatchdogMs: 75_000,
+        onSent,
+        signal: withdraw.signal,
+      })
+    );
+    await settle();
+    // The body's head at 10 s: due at 85 s.
+    await advance(10_000);
+    core().send({ type: 'response', id: upload.sent.id, result: { bytes: 1, body: true } });
+    const { body } = await upload.pending;
+    // Main cancels every publish at 74 s: due at 149 s, not 75 s.
+    await advance(64_000);
+    for (const cancel of cancels) cancel.abort();
+    await settle();
+    const cancelled = core()
+      .messages.filter((m) => m.type === 'cancel')
+      .map((m) => m.id);
+    expect(cancelled).toEqual(publishes.map((p) => p.sent.id));
+    await advance(1_000);
+    expect(core().killed).toBeNull();
+    // The core answers one 10 s after the cancel, and another 59 s after.
+    const answer = (id) =>
+      core().send({ type: 'response', id, error: { code: 'cancelled', message: 'Cancelled' } });
+    await advance(9_000);
+    answer(publishes[0].sent.id);
+    // Main withdraws the body at 84 s: due at 159 s, not 85 s.
+    withdraw.abort();
+    await expect(body.getReader().read()).rejects.toMatchObject({ code: 'cancelled' });
+    await settle();
+    expect(core().messages.at(-1)).toEqual({ type: 'cancel', id: upload.sent.id });
+    await advance(49_000);
+    answer(publishes[1].sent.id);
+    await settle();
+    for (const publish of publishes.slice(0, 2)) {
+      expect((await publish.pending).code).toBe('cancelled');
+    }
+    // The body's terminal at 140 s, past its own 85 s.
+    await advance(7_000);
+    core().write(encodeAbort(upload.sent.id, 'cancelled', 'Cancelled'));
+    await settle();
+    expect(core().killed).toBeNull();
+    expect([...client.current.idleWatchdogs.keys()]).toEqual([publishes[2].sent.id]);
+    // The third is never answered: the core is hung 75 s after its cancel.
+    await advance(8_999);
+    expect(core().killed).toBeNull();
+    await advance(1);
+    expect(core().killed).toBe('SIGKILL');
+  });
+
   test('an idle method without its idle watchdog, or with a total one, is refused in main and never sent; no other method takes one', async () => {
     makeClient(coreWith());
     await client.start();
@@ -738,12 +807,27 @@ describe("a Swarm handler's answers (design 0015: the core takes no other error)
   test("a refusal carries its rule; any other failure is the handler's failure result, never internal", async () => {
     makeClient(coreWith());
     const swarm = { failure: FAILED, race: true };
+    // Data set after construction, as a handler could.
+    const odd = (data) => Object.assign(new ShellError('invalid_argument'), { data });
     const throws = {
       rule: () => new ShellError('invalid_argument', { rule: 'order' }),
       bare: () => new ShellError('invalid_argument'),
       timeout: () => new ShellError('timeout'),
       cancelled: () => new ShellError('cancelled'),
       type: () => new TypeError('boom'),
+      // Shapes the core's `wire.rs` doesn't take, which would end its
+      // connection: a rule it doesn't know, an extra member, a rule that
+      // isn't a string, another member, none, an inherited one, and data
+      // that isn't an object.
+      bogus: () => new ShellError('invalid_argument', { rule: 'bogus' }),
+      extra: () => new ShellError('invalid_argument', { rule: 'order', extra: true }),
+      number: () => new ShellError('invalid_argument', { rule: 7 }),
+      named: () => new ShellError('invalid_argument', { name: 'order' }),
+      empty: () => new ShellError('invalid_argument', {}),
+      inherited: () => new ShellError('invalid_argument', Object.create({ rule: 'order' })),
+      string: () => odd('order'),
+      array: () => odd(['order']),
+      nulled: () => odd(null),
     };
     client.handle(
       'shell.swarm_api',
@@ -794,20 +878,30 @@ describe("a Swarm handler's answers (design 0015: the core takes no other error)
       message: 'Invalid argument',
       data: { rule: name },
     });
+    const failed = { failed: 'error' };
+    const n = cases.length;
     expect(
       core()
         .replies()
         .sort((a, b) => a.id - b.id)
     ).toEqual([
       { type: 'response', id: 1, error: rule('order') },
-      { type: 'response', id: 2, result: { failed: 'error' } },
-      { type: 'response', id: 3, result: { failed: 'error' } },
-      { type: 'response', id: 4, result: { failed: 'error' } },
-      { type: 'response', id: 5, result: { failed: 'error' } },
-      { type: 'response', id: 6, error: rule('value') },
-      { type: 'response', id: 7, result: { failed: 'error' } },
-      { type: 'response', id: 8, error: { code: 'internal', message: 'Internal error' } },
-      { type: 'response', id: 9, error: rule('query') },
+      ...cases.slice(1).map((_, i) => ({ type: 'response', id: i + 2, result: failed })),
+      { type: 'response', id: n + 1, error: rule('value') },
+      { type: 'response', id: n + 2, result: failed },
+      { type: 'response', id: n + 3, error: { code: 'internal', message: 'Internal error' } },
+      { type: 'response', id: n + 4, error: rule('query') },
+    ]);
+    // Every rule the core knows goes as it is.
+    expect([...REFUSAL_RULES]).toEqual([
+      'form',
+      'order',
+      'count',
+      'value',
+      'header',
+      'query',
+      'body',
+      'ended',
     ]);
     expect(core().killed).toBeNull();
     // A shell error's data is an object.
@@ -883,7 +977,19 @@ describe("main's own fragmented responses, charged to a pool ({ pool })", () => 
     return { begin: encodeBegin(message.id, payload.length), frames, payload };
   }
 
-  test('twice each fragment as it arrives, until the caller has it', async () => {
+  /** Buffer.alloc watched: the pool's holding at each allocation of a
+   * MiB or more, the reassembler's buffer among them. */
+  function watchAllocations(pool) {
+    const alloc = Buffer.alloc.bind(Buffer);
+    const seen = [];
+    const spy = jest.spyOn(Buffer, 'alloc').mockImplementation((size, ...rest) => {
+      if (size >= MIB) seen.push({ size, held: pool.held });
+      return alloc(size, ...rest);
+    });
+    return { seen, restore: () => spy.mockRestore() };
+  }
+
+  test('twice the size its begin declares, charged before its buffer is made, until the caller has it', async () => {
     const pool = new SwarmIoPool();
     makeClient(coreWith());
     const chainTake = jest.spyOn(client.pool, 'take');
@@ -903,50 +1009,76 @@ describe("main's own fragmented responses, charged to a pool ({ pool })", () => 
       result: { result_typed: 'y'.repeat(2 * MIB) },
     };
     const { begin, frames, payload } = fragments(message, 3);
-    core().write(begin);
-    let arrived = 0;
-    for (const frame of frames.slice(0, -1)) {
-      core().write(frame);
-      arrived += frame.length - 5;
+    const allocations = watchAllocations(pool);
+    try {
+      core().write(begin);
       await settle();
-      expect(pool.held).toBe(2 * arrived);
+      // Charged whole at the begin, and only then is the buffer made.
+      expect(allocations.seen).toEqual([{ size: payload.length, held: 2 * payload.length }]);
+      for (const frame of frames.slice(0, -1)) {
+        core().write(frame);
+        await settle();
+        expect(pool.held).toBe(2 * payload.length);
+      }
+      core().write(frames.at(-1));
+      await expect(read.pending).resolves.toEqual(message.result);
+    } finally {
+      allocations.restore();
     }
-    core().write(frames.at(-1));
-    await expect(read.pending).resolves.toEqual(message.result);
     expect(pool.held).toBe(0);
     expect(pool.highWater).toBe(2 * payload.length);
     expect(core().credits).toBe(1);
     expect(chainTake).not.toHaveBeenCalled();
   });
 
-  test("a fragment main can't charge drops the response: busy at once, the rest read and let go of", async () => {
-    const pool = new SwarmIoPool(1.5 * MIB);
+  test('with the pool full, a response is never held: busy at its begin, no buffer made, read to its end with none and let go of', async () => {
+    const pool = new SwarmIoPool();
     makeClient(coreWith());
     await client.start();
+    // Other Swarm leases hold the whole 64 MiB.
+    const others = pool.reserve(pool.limit);
     const read = sendOwn((onSent) =>
       client
-        .request('swarm.request', { method: 'readData' }, { caller: 'shell' }, { pool, onSent })
+        .request(
+          'swarm.request',
+          { method: 'readData' },
+          { caller: 'shell' },
+          { pool, watchdogMs: watchdogMs('swarm.request'), onSent }
+        )
         .catch((e) => e)
     );
     await settle();
     const message = { type: 'response', id: read.sent.id, result: { data: 'z'.repeat(2 * MIB) } };
-    const { begin, frames } = fragments(message, 4);
-    core().write(begin);
-    core().write(frames[0]);
-    await settle();
-    expect(pool.held).toBe(2 * (frames[0].length - 5));
-    // The second would pass 1.5 MiB: the caller hears `busy` now.
-    core().write(frames[1]);
-    const dropped = await read.pending;
-    expect(dropped.code).toBe('busy');
-    expect(pool.held).toBe(0);
-    for (const frame of frames.slice(2)) core().write(frame);
-    await settle();
-    // Read to its end and let go of: the core's credit is back, and the
-    // connection serves on.
+    const { begin, frames, payload } = fragments(message, 4);
+    const allocations = watchAllocations(pool);
+    try {
+      core().write(begin);
+      // The caller hears `busy` at the begin, before any fragment.
+      expect((await read.pending).code).toBe('busy');
+      const { reassembler } = client.current;
+      expect(reassembler.current).toMatchObject({ size: payload.length, buffer: null });
+      for (const frame of frames.slice(0, -1)) {
+        core().write(frame);
+        await settle();
+        expect(reassembler.current).toMatchObject({ buffer: null });
+      }
+      core().write(frames.at(-1));
+      await settle();
+      // Nothing of it was ever allocated, nor charged.
+      expect(allocations.seen).toEqual([]);
+      expect(reassembler.inProgress()).toBe(false);
+    } finally {
+      allocations.restore();
+    }
+    expect(pool.held).toBe(pool.limit);
+    expect(pool.highWater).toBe(pool.limit);
+    // Read to its end and let go of: the core's credit is back, the
+    // request and its watchdog with it, and the connection serves on.
     expect(core().credits).toBe(1);
+    expect(client.current.pending.has(read.sent.id)).toBe(false);
+    expect(live().filter((t) => t.at === 315_000)).toEqual([]);
+    others.close();
     expect(pool.held).toBe(0);
-    expect(pool.highWater).toBe(2 * (frames[0].length - 5));
     const next = sendOwn((onSent) =>
       client.request('vault.status', {}, { caller: 'chrome' }, { onSent })
     );
@@ -955,6 +1087,30 @@ describe("main's own fragmented responses, charged to a pool ({ pool })", () => 
     await expect(next.pending).resolves.toEqual({ exists: true });
     expect(core().killed).toBeNull();
     expect(log.error).not.toHaveBeenCalled();
+  });
+
+  test('one larger than an empty pool is refused at its begin too, and a dropped response still checks its fragments', async () => {
+    const pool = new SwarmIoPool(1.5 * MIB);
+    makeClient(coreWith());
+    await client.start();
+    const read = sendOwn((onSent) =>
+      client.request('swarm.request', {}, { caller: 'shell' }, { pool, onSent }).catch((e) => e)
+    );
+    await settle();
+    const message = { type: 'response', id: read.sent.id, result: { data: 'q'.repeat(MIB) } };
+    const { begin, frames } = fragments(message, 2);
+    core().write(begin);
+    expect((await read.pending).code).toBe('busy');
+    expect(pool.held).toBe(0);
+    // A fragment past its declared size breaks the protocol, held or not.
+    core().write(frames[0]);
+    core().write(frames[0]);
+    await settle();
+    expect(log.error).toHaveBeenCalledWith('[Core] protocol error', {
+      category: 'fragment_length',
+    });
+    expect(pool.held).toBe(0);
+    expect(pool.highWater).toBe(0);
   });
 
   test('a response under one frame, or one to a request without a pool, is charged nothing', async () => {

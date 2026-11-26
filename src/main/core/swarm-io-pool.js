@@ -13,8 +13,8 @@
  *   lasts until its reply's last byte is written, or a streamed reply's
  *   terminal, or until the reply is dropped (service-client.js);
  * - **main's own requests' fragmented responses** (`{ pool }` on a
- *   request): twice each fragment's bytes as it arrives, until the caller
- *   has the response;
+ *   request): twice the size the begin declares, before the buffer for it
+ *   is made, until the caller has the response;
  * - **the streams main holds itself** (a `swarm.body`): a reservation of
  *   its own (`reserve`), until the stream's terminal.
  *
