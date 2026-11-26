@@ -734,6 +734,11 @@ class Reassembler {
     return this.current !== null;
   }
 
+  /** The ID of the response in reassembly, or null. */
+  reassembling() {
+    return this.current ? this.current.id : null;
+  }
+
   /** Drops the response in reassembly, with its reservation. */
   discard() {
     this.current = null;

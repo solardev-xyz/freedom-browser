@@ -13,13 +13,18 @@
 const fs = require('fs');
 const path = require('path');
 const {
+  ASK_IDLE_MS,
+  ASK_REPLY_MS,
   HEAD_DEADLINE_MS,
+  IDLE_WATCHDOGS,
   METHOD_CLASSES,
   PROTOCOL_2_METHODS,
   SESSION_DEADLINE_MS,
   SWARM_DEADLINE_MS,
   VAULT_DEADLINE_MS,
   WATCHDOG_MARGIN_MS,
+  idleWatchdogMs,
+  isIdleMethod,
   watchdogMs,
 } = require('./core-deadlines');
 const { CONTROL_WATCHDOG_MS: NAMING_CONTROL } = require('./naming-config');
@@ -101,10 +106,10 @@ describe('core deadlines', () => {
   });
 
   // cored-v0.29.0's (design 0015, D5): the `swarm` kind is a session's
-  // rule at 300 s. An idle method has no total deadline, and its watchdog
-  // must follow its progress (D13), which SWM-5 adds: until then asking
-  // for one throws, so main can't send an idle request unwatched.
-  test("a Swarm request gets 300 s, or the caller's shorter deadline, plus 15 s; an idle one isn't sent yet", () => {
+  // rule at 300 s. An idle method has no total deadline, so it has no total
+  // watchdog: asking for one throws, and its watchdog follows its progress
+  // (`idleWatchdogMs`, below).
+  test("a Swarm request gets 300 s, or the caller's shorter deadline, plus 15 s; an idle one has no total watchdog", () => {
     for (const method of ['swarm.request', 'swarm.feed', 'swarm.stamps', 'swarm.upload_status']) {
       expect(watchdogMs(method)).toBe(SWARM_DEADLINE_MS + WATCHDOG_MARGIN_MS);
       expect(watchdogMs(method, 60_000)).toBe(75_000);
@@ -115,11 +120,50 @@ describe('core deadlines', () => {
       expect(watchdogMs('swarm.request', odd)).toBe(315_000);
     }
     for (const method of ['swarm.body', 'swarm.publish']) {
-      expect(() => watchdogMs(method)).toThrow(/idle method: main sends none before SWM-5/);
+      expect(() => watchdogMs(method)).toThrow(/idle method: its watchdog follows its progress/);
       expect(() => watchdogMs(method, 10_000)).toThrow(/idle method/);
     }
     for (const method of ['swarm.identities', 'swarm.history', 'swarm.manifest']) {
       expect(watchdogMs(method)).toBe(15_000);
+    }
+  });
+
+  // Design 0015's D13 mirrored, with the margin (fc-swarm-provider's
+  // `ask_bound` at the pinned core: `IDLE_MS` 60 s, `WHOLE_REPLY_MS` 300 s).
+  test("an idle method's watchdog: 75 s after progress, and for swarm.publish 315 s after a whole call's ask or a streamed body's end", () => {
+    expect([ASK_IDLE_MS, ASK_REPLY_MS]).toEqual([60_000, 300_000]);
+    expect(idleWatchdogMs('swarm.body')).toBe(75_000);
+    expect(idleWatchdogMs('swarm.body', 'progress')).toBe(75_000);
+    expect(idleWatchdogMs('swarm.publish')).toBe(75_000);
+    expect(idleWatchdogMs('swarm.publish', 'whole_call')).toBe(315_000);
+    expect(idleWatchdogMs('swarm.publish', 'body_end')).toBe(315_000);
+    expect(IDLE_WATCHDOGS).toEqual({
+      'swarm.body': { progress: ASK_IDLE_MS + WATCHDOG_MARGIN_MS },
+      'swarm.publish': {
+        progress: ASK_IDLE_MS + WATCHDOG_MARGIN_MS,
+        whole_call: ASK_REPLY_MS + WATCHDOG_MARGIN_MS,
+        body_end: ASK_REPLY_MS + WATCHDOG_MARGIN_MS,
+      },
+    });
+    // A body's own terminal ends its watchdog: it has no later bound.
+    expect(() => idleWatchdogMs('swarm.body', 'whole_call')).toThrow(/no whole_call watchdog/);
+    expect(() => idleWatchdogMs('swarm.body', 'body_end')).toThrow(/no body_end/);
+    expect(() => idleWatchdogMs('swarm.publish', 'deadline')).toThrow(/no deadline/);
+    expect(() => idleWatchdogMs('swarm.publish', 'toString')).toThrow(/no toString/);
+  });
+
+  test('every idle method has its idle watchdog, and no other method has one', () => {
+    const idle = Object.keys(METHOD_CLASSES).filter((m) => METHOD_CLASSES[m] === 'idle');
+    expect(idle).toEqual(['swarm.body', 'swarm.publish']);
+    expect(Object.keys(IDLE_WATCHDOGS)).toEqual(idle);
+    for (const method of idle) expect(isIdleMethod(method)).toBe(true);
+    for (const method of Object.keys(METHOD_CLASSES).filter((m) => !idle.includes(m))) {
+      expect(isIdleMethod(method)).toBe(false);
+      expect(() => idleWatchdogMs(method)).toThrow(/is not an idle method/);
+    }
+    for (const odd of ['swarm.unknown', 'toString', 'constructor', '', undefined]) {
+      expect(isIdleMethod(odd)).toBe(false);
+      expect(() => idleWatchdogMs(odd)).toThrow(/is not an idle method/);
     }
   });
 
