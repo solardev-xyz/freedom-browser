@@ -9,12 +9,42 @@
 const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
+const { normalizeTokenKey } = require('../token-registry');
 
 // Cache file path
 const CACHE_FILE = path.join(app.getPath('userData'), 'balance-cache.json');
 
-// Current cache version (bumped to 2 for new token key format)
-const CACHE_VERSION = 2;
+// Current cache version: 2 for the "<chainId>:<asset>" token keys, 3 once
+// every key is normalized the way the token registry emits them (#104).
+const CACHE_VERSION = 3;
+
+// Version 2 predates token-key normalization (400dd6f): its token keys can
+// still carry EIP-55 checksum casing. Fresh fetches only ever wrote the
+// normalized key, so where both are present the normalized entry is the
+// newer one; a legacy key on its own is renamed, keeping its balance.
+const KEY_NORMALIZED_FROM_VERSION = 2;
+
+function normalizeEntryKeys(entry) {
+  const normalized = {};
+  const legacy = [];
+  for (const [key, value] of Object.entries(entry || {})) {
+    const normalizedKey = key === 'updatedAt' ? key : normalizeTokenKey(key);
+    if (normalizedKey === key) normalized[key] = value;
+    else legacy.push([normalizedKey, value]);
+  }
+  for (const [key, value] of legacy) {
+    if (!Object.hasOwn(normalized, key)) normalized[key] = value;
+  }
+  return normalized;
+}
+
+function migrateFromVersion2(parsed) {
+  const balances = {};
+  for (const [address, entry] of Object.entries(parsed.balances || {})) {
+    balances[address] = normalizeEntryKeys(entry);
+  }
+  return { version: CACHE_VERSION, balances };
+}
 
 // In-memory cache
 let cache = {
@@ -30,15 +60,19 @@ let cacheLoaded = false;
  */
 function loadCache() {
   if (cacheLoaded) return;
+  let migrated = false;
 
   try {
     if (fs.existsSync(CACHE_FILE)) {
       const data = fs.readFileSync(CACHE_FILE, 'utf8');
       const parsed = JSON.parse(data);
 
-      // Version check - discard old format caches
+      // Version check: migrate a version-2 cache, discard older formats
       if (parsed.version === CACHE_VERSION) {
         cache = parsed;
+      } else if (parsed.version === KEY_NORMALIZED_FROM_VERSION) {
+        cache = migrateFromVersion2(parsed);
+        migrated = true;
       } else {
         console.log('[BalanceCache] Cache version mismatch, starting fresh');
         cache = { version: CACHE_VERSION, balances: {} };
@@ -51,6 +85,7 @@ function loadCache() {
 
   cacheLoaded = true;
   console.log('[BalanceCache] Loaded cache with', Object.keys(cache.balances).length, 'addresses');
+  if (migrated) saveCache();
 }
 
 /**
@@ -101,7 +136,7 @@ function setCachedBalances(address, balances) {
     if (tokenKey === 'lastUpdated' || tokenKey === 'fromCache') continue;
     if (balance?.error) continue;
 
-    cached[tokenKey] = {
+    cached[normalizeTokenKey(tokenKey)] = {
       formatted: balance.formatted,
       symbol: balance.symbol,
       raw: balance.raw,
