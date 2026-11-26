@@ -202,11 +202,15 @@ jobs:
       # its Radicle vectors (design 0008), which `radicle-vectors.test.js`
       # replays through today's main, its key-store helper's answers
       # (design 0013), which `keystore-drain.test.js` reads as the core
-      # does, and its profile layout (design 0013, PRF-9a), which
-      # `freedom-root.vectors.test.js` checks MOVED_ENTRIES against, at one
-      # reviewed commit: moved on purpose when the protocol's vectors,
-      # method table, Radicle vectors, key-store vectors or layout vectors
-      # change, never with freedom-core's main. It is the commit
+      # does, its profile layout (design 0013, PRF-9a), which
+      # `freedom-root.vectors.test.js` checks MOVED_ENTRIES against, and its
+      # Swarm vectors (design 0015's grammar, the reference's recording, and
+      # design 0009's file trees), which `swarm-grammar.vectors.test.js` and
+      # `swarm-tree.vectors.test.js` hold main's operation grammar, tree
+      # reader and BMT to, at one reviewed commit: moved on purpose when the
+      # protocol's vectors, method table, Radicle vectors, key-store
+      # vectors, layout vectors or Swarm vectors change, never with
+      # freedom-core's main. It is the commit
       # `cored-v0.29.0` was built from (df54269b). Each suite fails if a
       # file it is pointed at is missing.
       - name: Check out freedom-core's vectors and method table
@@ -225,6 +229,9 @@ jobs:
             vectors/radicle-import.json
             vectors/keystore.json
             vectors/layout.json
+            vectors/swarm-grammar.json
+            vectors/swarm.json
+            vectors/dweb-verify.json
             protocol/schema.json
           sparse-checkout-cone-mode: false
 
@@ -276,6 +283,7 @@ jobs:
           FREEDOM_CORE_RADICLE_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
           FREEDOM_CORE_KEYSTORE_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/keystore.json
           FREEDOM_CORE_LAYOUT_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/layout.json
+          FREEDOM_CORE_SWARM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
           FREEDOM_CORE_SCHEMA: ${{ github.workspace }}/.freedom-core/protocol/schema.json
           FREEDOM_CORE_COLIBRI_VECTORS: ${{ github.workspace }}/.freedom-core-colibri/vectors/colibri.json
         run: npm run test:coverage
