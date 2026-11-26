@@ -48,6 +48,7 @@ const {
 const { ServiceClient } = require('./service-client');
 const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 const { createFetchAdmission } = require('../dweb/fetch-admission');
+const { idleWatchdogMs } = require('./core-deadlines');
 
 const tick = () => new Promise(setImmediate);
 
@@ -935,14 +936,20 @@ describe("design 0015's codes, per request, on the core's connection", () => {
     makeClient(coreAt(2));
     await client.start();
     for (const code of ['internal', 'body_stream_error', 'cancelled']) {
-      const { id, stream } = await opened('swarm.body', { takes: CORE_UPLOAD_ABORT_CODES });
+      const { id, stream } = await opened('swarm.body', {
+        takes: CORE_UPLOAD_ABORT_CODES,
+        idleWatchdogMs: idleWatchdogMs('swarm.body'),
+      });
       core().write(encodeData(id, body(id, 0, 10)));
       core().write(encodeAbort(id, code, 'm'));
       const { error } = await readAll(stream);
       expect([code, error.code]).toEqual([code, code]);
     }
     expect(log.error).not.toHaveBeenCalled();
-    const { id, stream } = await opened('swarm.body', { takes: CORE_UPLOAD_ABORT_CODES });
+    const { id, stream } = await opened('swarm.body', {
+      takes: CORE_UPLOAD_ABORT_CODES,
+      idleWatchdogMs: idleWatchdogMs('swarm.body'),
+    });
     core().write(encodeAbort(id, 'verification_failed', 'm'));
     const { error } = await readAll(stream);
     expect(error.code).toBe('core_unavailable');

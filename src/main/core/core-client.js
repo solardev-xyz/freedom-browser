@@ -89,6 +89,8 @@
  *   codes; those main sends the core (`StreamedReply`, from a handler
  *   registered with `streams: true`) end only with a piece's.
  * - **Fragmented replies:** a core that offers `fragments` takes main's.
+ * - **Idle methods** (design 0015, D5: `swarm.body`, `swarm.publish`) go
+ *   only with their idle watchdog (`idleWatchdogMs`, core-deadlines.js).
  * - **Shutdown** is `core.shutdown`; logs say `[Core]`, and errors that the
  *   core isn't running are `core_unavailable`.
  *
@@ -116,6 +118,7 @@ const {
   POOL_BYTES,
   POOL_EXEMPT_BYTES,
 } = require('./service-client');
+const { isIdleMethod } = require('./core-deadlines');
 const path = require('path');
 
 // Protocol 2, streams in both directions (design 0009): the only one the
@@ -299,6 +302,9 @@ function coreService(storeMoved = STORE_MOVED) {
     // Streams both ways once the hello is valid, which says `streams`
     // (validHello).
     duplex: () => true,
+    // `swarm.body` and `swarm.publish` (design 0015, D5): sent only with
+    // their idle watchdog (core-deadlines.js `idleWatchdogMs`).
+    idleMethod: isIdleMethod,
   });
 }
 
