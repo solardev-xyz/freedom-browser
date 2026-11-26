@@ -101,8 +101,10 @@ describe('core deadlines', () => {
   });
 
   // cored-v0.29.0's (design 0015, D5): the `swarm` kind is a session's
-  // rule at 300 s; an idle method has no total deadline, so no watchdog.
-  test("a Swarm request gets 300 s, or the caller's shorter deadline, plus 15 s; an idle one none", () => {
+  // rule at 300 s. An idle method has no total deadline, and its watchdog
+  // must follow its progress (D13), which SWM-5 adds: until then asking
+  // for one throws, so main can't send an idle request unwatched.
+  test("a Swarm request gets 300 s, or the caller's shorter deadline, plus 15 s; an idle one isn't sent yet", () => {
     for (const method of ['swarm.request', 'swarm.feed', 'swarm.stamps', 'swarm.upload_status']) {
       expect(watchdogMs(method)).toBe(SWARM_DEADLINE_MS + WATCHDOG_MARGIN_MS);
       expect(watchdogMs(method, 60_000)).toBe(75_000);
@@ -113,8 +115,8 @@ describe('core deadlines', () => {
       expect(watchdogMs('swarm.request', odd)).toBe(315_000);
     }
     for (const method of ['swarm.body', 'swarm.publish']) {
-      expect(watchdogMs(method)).toBeNull();
-      expect(watchdogMs(method, 10_000)).toBeNull();
+      expect(() => watchdogMs(method)).toThrow(/idle method: main sends none before SWM-5/);
+      expect(() => watchdogMs(method, 10_000)).toThrow(/idle method/);
     }
     for (const method of ['swarm.identities', 'swarm.history', 'swarm.manifest']) {
       expect(watchdogMs(method)).toBe(15_000);

@@ -243,9 +243,15 @@ function ownDeadline(deadlineMs, longest) {
 }
 
 /**
- * A request's hang watchdog, in ms, or null for none (an idle method's). A
- * method the core doesn't serve is refused at once (`unknown_method`), so
- * it gets an immediate one.
+ * A request's hang watchdog, in ms. A method the core doesn't serve is
+ * refused at once (`unknown_method`), so it gets an immediate one.
+ *
+ * An idle method (`swarm.body`, `swarm.publish`) has no total deadline,
+ * but design 0015's D13 still bounds it by progress, and design 0001 has
+ * main catch a core that doesn't enforce its own bound. That needs a
+ * watchdog reset by the request's progress, which SWM-5's executor adds
+ * with the first caller. Until then main never sends one: asking for its
+ * watchdog throws, so no idle request goes out without one.
  * @param {string} method
  * @param {number} [deadlineMs] - a session or Swarm request's own
  *   `deadline_ms`
@@ -262,7 +268,9 @@ function watchdogMs(method, deadlineMs) {
     case SWARM:
       return ownDeadline(deadlineMs, SWARM_DEADLINE_MS) + WATCHDOG_MARGIN_MS;
     case IDLE:
-      return null;
+      throw new Error(
+        `${method} is an idle method: main sends none before SWM-5's progress watchdog (design 0015, D13)`
+      );
     default:
       return IMMEDIATE_WATCHDOG_MS;
   }
