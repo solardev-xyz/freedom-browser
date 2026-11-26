@@ -17,6 +17,16 @@ const {
 // `history:autocomplete` / `history:page` queries instead.
 const HISTORY_GET_MAX = historySearch.PAGE_SIZE_MAX;
 
+// Called after the user clears all history, for other per-site records
+// that should go with it (the SIWE accounts list, #1152).
+const clearedListeners = new Set();
+
+/** Run `listener()` whenever all history is cleared. */
+function onHistoryCleared(listener) {
+  clearedListeners.add(listener);
+  return () => clearedListeners.delete(listener);
+}
+
 // Database instance (singleton)
 let db = null;
 let dbPath = null;
@@ -236,6 +246,13 @@ function clearHistory() {
   // Vacuum to reclaim space
   getDb().exec('VACUUM');
   notifyHistoryChanged();
+  for (const listener of clearedListeners) {
+    try {
+      listener();
+    } catch (err) {
+      log.warn('[History] a clear-history listener failed:', err.message);
+    }
+  }
 
   return result.changes;
 }
@@ -366,6 +383,7 @@ module.exports = {
   searchHistory,
   removeHistoryEntry,
   clearHistory,
+  onHistoryCleared,
   getHistoryCount,
   autocompleteHistory,
   getHistoryPage,
