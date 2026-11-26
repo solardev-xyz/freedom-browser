@@ -397,6 +397,37 @@ describe('feed-store', () => {
       setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
     });
 
+    test('getFeed returns null for a prototype key that is not a feed', () => {
+      expect(getFeed('myapp.eth', 'toString')).toBeNull();
+      expect(getFeed('myapp.eth', 'constructor')).toBeNull();
+      expect(getFeed('myapp.eth', 'hasOwnProperty')).toBeNull();
+      expect(getFeed('myapp.eth', '__proto__')).toBeNull();
+    });
+
+    test('setFeed stores a feed named after an Object.prototype key', () => {
+      const feed = setFeed('myapp.eth', 'toString', {
+        topic: 'topic-1',
+        owner: 'owner-1',
+        manifestReference: 'ref-1',
+      });
+      expect(feed.topic).toBe('topic-1');
+      expect(getFeed('myapp.eth', 'toString').topic).toBe('topic-1');
+    });
+
+    test('setFeed stores a feed named __proto__ without changing the feed map prototype', () => {
+      const feed = setFeed('myapp.eth', '__proto__', {
+        topic: 'topic-2',
+        owner: 'owner-2',
+        manifestReference: 'ref-2',
+      });
+      expect(feed.topic).toBe('topic-2');
+      expect(getFeed('myapp.eth', '__proto__').topic).toBe('topic-2');
+
+      const stored = readFeedsFile();
+      expect(Object.keys(Object.values(stored.origins)[0].feeds)).toContain('__proto__');
+      expect(getFeed('myapp.eth', 'toString')).toBeNull();
+    });
+
     test('getFeed returns null for unknown feed', () => {
       expect(getFeed('myapp.eth', 'unknown')).toBeNull();
     });

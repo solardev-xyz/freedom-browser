@@ -173,7 +173,7 @@ function getActiveIdentityFromEntry(entry) {
 }
 
 function copyFeeds(feeds) {
-  const feedsCopy = {};
+  const feedsCopy = Object.create(null);
   if (!isPlainObject(feeds)) {
     return feedsCopy;
   }
@@ -181,6 +181,20 @@ function copyFeeds(feeds) {
     feedsCopy[name] = { ...feed };
   }
   return feedsCopy;
+}
+
+// Feed names come from sites and can be keys of Object.prototype. Look them
+// up as own properties only so `toString` cannot read an inherited function
+// and `__proto__` cannot redirect the lookup.
+function getOwnFeed(feeds, feedName) {
+  if (!isPlainObject(feeds) || !Object.hasOwn(feeds, feedName)) return null;
+  return feeds[feedName];
+}
+
+// Assignments to a plain object's `__proto__` change its prototype instead
+// of storing a feed. Keep the per-origin map prototype-free.
+function ownFeedsMap(feeds) {
+  return Object.assign(Object.create(null), isPlainObject(feeds) ? feeds : {});
 }
 
 function copyIdentities(identities) {
@@ -812,7 +826,7 @@ function activateIdentity(origin, identityId, { source = 'user' } = {}) {
 function getFeed(origin, feedName) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
-  const feed = store.origins[key]?.feeds?.[feedName];
+  const feed = getOwnFeed(store.origins[key]?.feeds, feedName);
   if (!feed) return null;
   return { ...feed };
 }
@@ -832,11 +846,9 @@ function setFeed(origin, feedName, feedData) {
     throw new Error(`No origin entry for ${key}. Call setOriginEntry first.`);
   }
 
-  if (!store.origins[key].feeds) {
-    store.origins[key].feeds = {};
-  }
+  store.origins[key].feeds = ownFeedsMap(store.origins[key].feeds);
 
-  const existing = store.origins[key].feeds[feedName];
+  const existing = getOwnFeed(store.origins[key].feeds, feedName);
   store.origins[key].feeds[feedName] = {
     topic: feedData.topic,
     owner: feedData.owner,
@@ -863,7 +875,7 @@ function updateFeedReference(origin, feedName, reference) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
 
-  const feed = store.origins[key]?.feeds?.[feedName];
+  const feed = getOwnFeed(store.origins[key]?.feeds, feedName);
   if (!feed) {
     throw new Error(`Feed ${feedName} not found for ${key}`);
   }
