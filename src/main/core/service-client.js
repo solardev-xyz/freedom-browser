@@ -2545,20 +2545,17 @@ class ServiceClient extends EventEmitter {
     } else if (whole || (gen.fragments && size <= MAX_MESSAGE)) {
       const release = this.charged(gen, lease, size);
       if (release) {
-        const payload = Buffer.allocUnsafe(size);
-        const at = text.writeInto(payload, payload.write(head, 0, 'latin1'));
-        payload.write('}', at, 'latin1');
-        if (whole) {
-          this.writeReply(
-            gen,
-            id,
-            controller,
-            Buffer.concat([frameHeader(KIND_JSON, size), payload]),
-            release
-          );
-        } else {
-          this.queueBulk(gen, { id, controller, payload, release });
-        }
+        // A whole reply is written into its frame, after the frame's
+        // header, in one buffer: never assembled once and copied again
+        // (a Swarm reply's charge counts one serialized copy, design 0015).
+        const header = whole ? frameHeader(KIND_JSON, size) : null;
+        const offset = header ? header.length : 0;
+        const buffer = Buffer.allocUnsafe(offset + size);
+        if (header) header.copy(buffer, 0);
+        const at = text.writeInto(buffer, offset + buffer.write(head, offset, 'latin1'));
+        buffer.write('}', at, 'latin1');
+        if (whole) this.writeReply(gen, id, controller, buffer, release);
+        else this.queueBulk(gen, { id, controller, payload: buffer, release });
         return;
       }
       code = 'busy';

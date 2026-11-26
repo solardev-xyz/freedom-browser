@@ -339,6 +339,42 @@ function without(call, key) {
   return out;
 }
 
+/** `b64(m)`, 4⌈m / 3⌉. */
+const b64Length = (bytes) => 4 * Math.ceil(bytes / 3);
+
+/**
+ * Records the Buffers main allocates of at least `min` bytes, by the
+ * Buffer function that made them (the outermost call only: `concat`'s own
+ * `allocUnsafe` isn't counted twice), until `restore()`. A `from` over an
+ * ArrayBuffer is a view, and isn't one.
+ */
+function trackAllocations(min) {
+  const seen = [];
+  const originals = {};
+  let depth = 0;
+  for (const name of ['alloc', 'allocUnsafe', 'allocUnsafeSlow', 'concat', 'from']) {
+    const original = Buffer[name];
+    originals[name] = original;
+    Buffer[name] = function tracked(...args) {
+      depth += 1;
+      try {
+        const out = original.apply(this, args);
+        const view =
+          name === 'from' &&
+          (args[0] instanceof ArrayBuffer || args[0] instanceof SharedArrayBuffer);
+        if (depth === 1 && !view && out.length >= min) seen.push([name, out.length]);
+        return out;
+      } finally {
+        depth -= 1;
+      }
+    };
+  }
+  return {
+    seen,
+    restore: () => Object.assign(Buffer, originals),
+  };
+}
+
 /** A handler's outcome: `{ rule }` for a refusal, else `{ result }`. */
 async function outcome(pending) {
   try {
@@ -1351,6 +1387,8 @@ describe('through the core client, over loopback HTTP: the pool, the bodies, the
   }
 
   afterEach(async () => {
+    // A core a test left not reading reads again, so it can be stopped.
+    harness?.core().release();
     if (harness) await harness.client.stop();
     harness = null;
     for (const node of nodes.splice(0)) await node.close();
@@ -1920,6 +1958,140 @@ describe('through the core client, over loopback HTTP: the pool, the bodies, the
     status.handle.close();
     expect((await answered(ask)).result).toEqual({ failed: 'aborted' });
     await settledAtZero();
+  });
+
+  describe("what main holds beyond the pool's view (Codex round 1 on #1340)", () => {
+    /**
+     * Stops the core reading, behind one small write it holds: what main
+     * writes after it waits in main, never reaching the scripted core's
+     * decoder, so main's own allocations are the only ones made.
+     */
+    async function stall() {
+      const core = harness.core();
+      const fresh = await open('getUploadStatus', { tagUid: 99 });
+      core.stuck = true;
+      // A reply the core holds unfinished: everything after it waits in main.
+      core.api(fresh.id, { ...calls.tag(99), extra: true });
+      await until(() => core.held.length === 1, 'the held write');
+      return core;
+    }
+
+    test('a whole reply holds one decoded body, the chunks it was read in: no copy of it is made whole, and its frame is serialized once', async () => {
+      // 40 writes of 16 KiB, read in as many chunks or fewer.
+      const length = 640 * KIB;
+      await httpNode((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        let sent = 0;
+        const step = () => {
+          if (sent >= length) {
+            res.end();
+            return;
+          }
+          res.write(Buffer.alloc(16 * KIB, 0x30));
+          sent += 16 * KIB;
+          setImmediate(step);
+        };
+        step();
+      });
+      await start();
+      const p = await open('swarm.stamps', {});
+      const core = await stall();
+      const allocations = trackAllocations(length / 2);
+      let id;
+      try {
+        id = core.api(p.id, calls.stamps());
+        await until(
+          () => harness.shell.stats().calls === 0 && pool.held === wholeCharge(length),
+          'the reply serialized, waiting'
+        );
+      } finally {
+        allocations.restore();
+      }
+      // Nothing m-sized but the one frame: no whole copy of the body, no
+      // second copy of the frame.
+      const frame = 5 + JSON.stringify({ type: 'response', id }).length + b64Length(length) + 60;
+      expect(allocations.seen).toHaveLength(1);
+      expect(allocations.seen[0][0]).toBe('allocUnsafe');
+      expect(allocations.seen[0][1]).toBeGreaterThan(b64Length(length));
+      expect(allocations.seen[0][1]).toBeLessThan(frame + 1024);
+      core.release();
+      const reply = await answered(id);
+      expect(Buffer.from(reply.result.body_base64, 'base64')).toEqual(Buffer.alloc(length, 0x30));
+      await settledAtZero();
+    });
+
+    test('an answer the grammar reads is copied once, and that copy is charged: m + 2 x b64(m) + 16 KiB and m more', async () => {
+      // A readData root of one chunk (its span 4,096: no walk), which the
+      // grammar reads for its size.
+      const root = Buffer.concat([span(4096), Buffer.alloc(4096, 7)]);
+      await httpNode((req, res) => {
+        res.end(req.url === '/node' ? '{}' : root);
+      });
+      await start();
+      const p = await ready('readData', { reference: A }, 'reachable');
+      const core = await stall();
+      const allocations = trackAllocations(root.length);
+      let id;
+      try {
+        id = core.api(p.id, calls.chunk(A));
+        await until(
+          () =>
+            harness.shell.stats().calls === 0 &&
+            pool.held === wholeCharge(root.length) + root.length,
+          'the reply serialized, waiting'
+        );
+      } finally {
+        allocations.restore();
+      }
+      expect(allocations.seen.filter(([, n]) => n === root.length)).toEqual([
+        ['concat', root.length],
+      ]);
+      core.release();
+      expect((await answered(id)).result.body_base64).toBe(b64(root));
+      await settledAtZero();
+    });
+  });
+});
+
+describe("readData's walk map, reserved before its root may fill it (Codex round 1 on #1340)", () => {
+  // A root of 8,192 logical bytes: two leaves, which its answer adds to the
+  // occurrence map.
+  const LEAVES = ['33'.repeat(32), '44'.repeat(32)];
+  const ROOT = Buffer.concat([span(8192), ...LEAVES.map((leaf) => Buffer.from(leaf, 'hex'))]);
+  const treeOf = (shell, p) => shell.live.get(`1:${p.id}`)?.admission.tree;
+
+  test('many open readData parents with a tight pool: each walk without room leaves no map, and its calls are busy, undialled', async () => {
+    const pool = new SwarmIoPool(2 * WALK_CHARGE + WALK_CHARGE / 2);
+    const shell = makeShell({ pool });
+    const parents = [];
+    for (let i = 0; i < 5; i++) {
+      const node = scriptedNode((init) => (init.path === '/node' ? undefined : new Response(ROOT)));
+      const p = parent(shell, 'readData', { reference: A }, { node });
+      await p.ready('reachable');
+      expect(await p.api(calls.chunk(A))).toEqual({ result: expect.any(Object) });
+      parents.push(p);
+    }
+    expect(pool.held).toBe(2 * WALK_CHARGE);
+    expect(shell.stats().walks).toBe(2);
+    const [first, second, ...without] = parents;
+    for (const p of [first, second]) {
+      expect(treeOf(shell, p).slots).toBe(2);
+      // Its leaves are the walk's to fetch.
+      const leaf = calls.chunk(LEAVES[0], { tree: { length: 4096, depth: 1 } });
+      expect((await p.api(leaf)).rule).toBeUndefined();
+    }
+    for (const p of without) {
+      const tree = treeOf(shell, p);
+      expect({ slots: tree.slots, keys: tree.map.size }).toEqual({ slots: 0, keys: 0 });
+      const leaf = calls.chunk(LEAVES[0], { tree: { length: 4096, depth: 1 } });
+      expect(await p.api(leaf)).toEqual({ result: { failed: 'busy' } });
+      expect(await p.api(calls.bytes(A, 8192, 'bytes=0-8191'))).toEqual({
+        result: { failed: 'busy' },
+      });
+      expect(p.node.calls()).toHaveLength(1);
+    }
+    for (const p of parents) p.handle.close();
+    expect(pool.held).toBe(0);
   });
 });
 

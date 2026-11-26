@@ -1502,6 +1502,26 @@ function readPairs(headers) {
   return pairs;
 }
 
+/**
+ * A reply's body as the handlers read it: the bytes, given whole or as the
+ * transport's chunks of them, copied once into a fresh Buffer. A copy, not
+ * a view: nothing that holds the answer's backing store (a
+ * SharedArrayBuffer, a worker) can change the bytes under a handler (Codex,
+ * round 4 on #1336). Main's executor charges that one copy
+ * (`readsReply`).
+ */
+function bodyOf(body) {
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  if (!Array.isArray(body)) return undefined;
+  const parts = [];
+  for (let i = 0; i < body.length; i++) {
+    const part = body[i];
+    if (!(part instanceof Uint8Array)) return undefined;
+    parts.push(part);
+  }
+  return Buffer.concat(parts);
+}
+
 function readAnswer(reply) {
   try {
     if (!reply || typeof reply !== 'object') return null;
@@ -1510,10 +1530,7 @@ function readAnswer(reply) {
     return {
       status,
       headers: Array.isArray(headers) ? readPairs(headers) : [],
-      // A copy, not a view: nothing that holds the answer's backing store
-      // (a SharedArrayBuffer, a worker) can change the bytes under a
-      // handler (Codex, round 4 on #1336).
-      body: body instanceof Uint8Array ? Buffer.from(body) : undefined,
+      body: bodyOf(body),
     };
   } catch {
     // A getter that throws: no answer.
@@ -1615,9 +1632,19 @@ class Admission {
   }
 
   /**
+   * Whether settling `ticket` reads main's answer: only then is its body
+   * copied (once, `readAnswer`), and only then does a handler see it. The
+   * other calls' answers are never read, so never copied.
+   */
+  readsReply(ticket) {
+    return typeof ticket?.onReply === 'function';
+  }
+
+  /**
    * Main answered an admitted call: `reply` is `{ status, headers, body? }`
    * (`headers` as `[name, value]` pairs, `body` the bytes of a whole reply
-   * main returned), or null for `{ failed }` or a call cancelled unanswered.
+   * main returned, whole or as the transport's chunks of them), or null for
+   * `{ failed }` or a call cancelled unanswered.
    */
   settle(ticket, reply) {
     if (!ticket || ticket.settled) return;

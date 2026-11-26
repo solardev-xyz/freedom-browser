@@ -267,14 +267,19 @@ function tooLargeBody(max) {
   });
 }
 
+/** A chunk the transport gave, as a Buffer over the same bytes: no copy. */
+const viewOf = (chunk) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+
 /**
- * Reads `body` whole, at most `max` bytes: `{ bytes }`, or `{ failed }`
+ * Reads `body` whole, at most `max` bytes: `{ chunks, length }`, the
+ * transport's own chunks, never copied into one buffer (that copy would be
+ * a second decoded body the reservation doesn't count), or `{ failed }`
  * (its class, or `too_large` past `max`). With `cut`, a longer body is cut
  * at `max` instead (an error status's).
  */
 async function readWhole(body, max, life, { cut = false } = {}) {
   const reader = body.getReader();
-  const parts = [];
+  const chunks = [];
   let length = 0;
   for (;;) {
     let chunk;
@@ -284,18 +289,59 @@ async function readWhole(body, max, life, { cut = false } = {}) {
       return { failed: failureOf(err, life) };
     }
     if (chunk.done) break;
-    const { value } = chunk;
+    const value = viewOf(chunk.value);
     if (length + value.byteLength > max) {
       reader.cancel().catch(() => {});
       if (!cut) return { failed: 'too_large' };
-      parts.push(value.subarray(0, max - length));
+      chunks.push(value.subarray(0, max - length));
       length = max;
       break;
     }
-    parts.push(value);
+    if (value.byteLength) chunks.push(value);
     length += value.byteLength;
   }
-  return { bytes: Buffer.concat(parts, length) };
+  return { chunks, length };
+}
+
+/**
+ * The base64 of `chunks`' bytes, as the strings of their runs: each run a
+ * whole number of 3-byte groups but the last, so the strings joined are the
+ * bytes' base64, with no copy of the bytes made whole (a carry of at most
+ * two bytes moves to the next chunk).
+ */
+function base64Runs(chunks) {
+  const runs = [];
+  let carry = null;
+  for (let chunk of chunks) {
+    if (carry) {
+      const need = 3 - carry.length;
+      if (chunk.length < need) {
+        carry = Buffer.concat([carry, chunk]);
+        continue;
+      }
+      runs.push(Buffer.concat([carry, chunk.subarray(0, need)]).toString('base64'));
+      chunk = chunk.subarray(need);
+      carry = null;
+    }
+    const whole = chunk.length - (chunk.length % 3);
+    if (whole) runs.push(chunk.subarray(0, whole).toString('base64'));
+    if (whole < chunk.length) carry = Buffer.from(chunk.subarray(whole));
+  }
+  if (carry) runs.push(carry.toString('base64'));
+  return runs;
+}
+
+/** The first `n` bytes of `chunks` (fewer when they hold fewer). */
+function headOf(chunks, n) {
+  const parts = [];
+  let length = 0;
+  for (const chunk of chunks) {
+    if (length >= n) break;
+    const part = chunk.subarray(0, n - length);
+    parts.push(part);
+    length += part.length;
+  }
+  return Buffer.concat(parts, length);
 }
 
 /** A JSON text part as JsonText takes it: ASCII as a string, else UTF-8. */
@@ -304,15 +350,16 @@ function jsonPart(value) {
   return ascii(text) ? text : Buffer.from(text, 'utf8');
 }
 
-/** A whole reply, written straight into its frame (`JsonText`). */
-function wholeReply(status, statusText, headers, bytes) {
+/** A whole reply, written straight into its frame (`JsonText`): its body's
+ * base64 in runs, one per chunk read. */
+function wholeReply(status, statusText, headers, chunks) {
   return new JsonText([
     `{"status":${status},"status_text":`,
     jsonPart(statusText),
     ',"headers":',
     jsonPart(headers),
     ',"body_base64":"',
-    bytes.toString('base64'),
+    ...base64Runs(chunks),
     '"}',
   ]);
 }
@@ -552,8 +599,13 @@ class SwarmShell {
     return this.probe(entry, signal);
   }
 
-  /** `GET /node` on the parent's transport, 5 s in all, its body at most
-   * 64 KiB of JSON: `{ ok: true }`, or `node-stopped`. */
+  /**
+   * `GET /node` on the parent's transport, 5 s in all, its body at most
+   * 64 KiB of JSON: `{ ok: true }`, or `node-stopped`. Uncharged: design
+   * 0015 exempts `shell.swarm_ready` answers, which go on while the pool is
+   * full; the probe's body is held only until it is parsed, decoded chunk
+   * by chunk, never copied whole.
+   */
   async probe(entry, signal) {
     if (!this.nodeUp(entry)) return NODE_STOPPED;
     const timeout = new AbortController();
@@ -573,9 +625,13 @@ class SwarmShell {
         return NODE_STOPPED;
       }
       const read = await readWhole(body, READY_BODY, life);
-      if (!read.bytes) return NODE_STOPPED;
-      // As `res.json()` reads it: UTF-8, a leading BOM dropped.
-      JSON.parse(new TextDecoder().decode(read.bytes));
+      if (!read.chunks) return NODE_STOPPED;
+      // As `res.json()` reads it: UTF-8, a leading BOM dropped, decoded
+      // chunk by chunk.
+      const decoder = new TextDecoder();
+      let text = '';
+      for (const chunk of read.chunks) text += decoder.decode(chunk, { stream: true });
+      JSON.parse(text + decoder.decode());
       return { ok: true };
     } catch {
       return NODE_STOPPED;
@@ -599,6 +655,8 @@ class SwarmShell {
     }
     const { entry } = found;
     const { call } = read;
+    // A walk whose map had no room: its calls are busy, never admitted.
+    if (entry.walkBusy) return { failed: 'busy' };
     const verdict = entry.admission.admit(call);
     if (verdict.rule) return this.refuse('shell.swarm_api', entry, verdict.rule);
     let settled = false;
@@ -617,10 +675,6 @@ class SwarmShell {
       settle(null);
       return { failed: 'stopped' };
     }
-    if (entry.walkBusy) {
-      settle(null);
-      return { failed: 'busy' };
-    }
     if (call.body && Object.hasOwn(call.body, 'stream')) {
       // A streamed upload: SWM-5's sixth step. Admitted, never dialled.
       settle(null);
@@ -636,7 +690,12 @@ class SwarmShell {
       return { failed: 'busy' };
     }
     try {
-      return await this.dial(entry, call, verdict.ticket, settle, { signal, shrink });
+      return await this.dial(entry, call, verdict.ticket, settle, {
+        signal,
+        charge,
+        shrink,
+        reserve,
+      });
     } catch (err) {
       // Main's own fault: the call is over, and answered `{ failed: "error" }`.
       shrink(0);
@@ -646,7 +705,7 @@ class SwarmShell {
   }
 
   /** One dial of an admitted call, and its reply. */
-  async dial(entry, call, ticket, settle, { signal, shrink }) {
+  async dial(entry, call, ticket, settle, { signal, charge, shrink, reserve }) {
     const life = AbortSignal.any([signal, entry.life.signal]);
     const failed = (code) => {
       shrink(0);
@@ -731,25 +790,42 @@ class SwarmShell {
       }
       const whole = await readWhole(body, ok ? max : ERROR_BODY, life, { cut: !ok });
       if (whole.failed) return failed(whole.failed);
-      const { bytes } = whole;
-      shrink(wholeCharge(bytes.length));
-      settle({ status, headers: replyHeaders, body: bytes });
-      if (ok && entry.row === 'readData' && ticket.step === 0) this.startWalk(entry, bytes);
-      return wholeReply(status, statusText, replyHeaders, bytes);
+      const { chunks, length } = whole;
+      // The charge, over the body as read: its chunks, its base64 and the
+      // serialized reply (0015's sum), and the grammar's one copy of it
+      // when the grammar reads this answer.
+      const reads = entry.admission.readsReply(ticket);
+      const held = wholeCharge(length) + (reads ? length : 0);
+      if (held <= reserve) shrink(held);
+      else if (!charge(held - reserve)) return failed('busy');
+      // readData's walk: its map is reserved before its root's answer may
+      // fill it, and without room is never filled.
+      const walk =
+        ok && entry.row === 'readData' && ticket.step === 0 ? this.startWalk(entry, chunks) : null;
+      settle({ status, headers: replyHeaders, ...(walk !== false && { body: chunks }) });
+      return wholeReply(status, statusText, replyHeaders, chunks);
     } finally {
       if (!handed) done();
     }
   }
 
-  /** `readData`'s walk starts once the root main returned has a size it
-   * walks: its occurrence map is reserved; without room, its later calls
-   * are `busy`. */
-  startWalk(entry, root) {
-    if (entry.ended || entry.walk || entry.walkBusy || root.length < 8) return;
-    const { size } = decodeSpan(root.subarray(0, 8));
-    if (size <= BigInt(CHUNK_SIZE) || size > BigInt(B)) return;
+  /**
+   * `readData`'s walk starts once the root main returned has a size it
+   * walks: its occurrence map is reserved before the root's answer fills
+   * it. False, with nothing reserved, when the pool has no room: the root's
+   * answer is then settled unread, so nothing fills the map, and the
+   * parent's later calls are `busy`. Null for a root that starts no walk.
+   */
+  startWalk(entry, chunks) {
+    if (entry.ended || entry.walk || entry.walkBusy) return null;
+    const span = headOf(chunks, 8);
+    if (span.length < 8) return null;
+    const { size } = decodeSpan(span);
+    if (size <= BigInt(CHUNK_SIZE) || size > BigInt(B)) return null;
     entry.walk = this.pool.reserve(WALK_CHARGE);
-    if (!entry.walk) entry.walkBusy = true;
+    if (entry.walk) return true;
+    entry.walkBusy = true;
+    return false;
   }
 }
 
