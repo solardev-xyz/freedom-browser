@@ -42,7 +42,8 @@
  *   which must be `bytes_up`'s reference; and `readData`'s tree, read with
  *   swarm-tree.js from the intermediate chunks main returned.
  *
- * Nothing calls this yet: the Swarm shell's executor (SWM-5) is its caller.
+ * Its caller is main's executor for the core's Swarm asks
+ * (core/swarm-shell.js), one Admission per parent it opens.
  */
 
 const { SwarmData, isNullish, param, truthy } = require('./swarm-typed');

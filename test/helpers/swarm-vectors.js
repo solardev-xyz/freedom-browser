@@ -37,6 +37,11 @@
  * leave out (SWM-4's #497): `pin: true`, `deferred` as today's callers set
  * it (false for data, true for a file or collection), and a data or file
  * part's bytes, as the call's body.
+ *
+ * Its parts (`coreCall`, `replyOf`, `uploadReferences`) are exported for the
+ * suites that play a scenario through more than the Admission:
+ * swarm-shell.test.js plays each through main's executor, its node answering
+ * with the scenario's replies.
  */
 
 const crypto = require('crypto');
@@ -220,11 +225,14 @@ function playScenario(scenario, { grammar, swarm, dwebVerify }) {
 module.exports = {
   content,
   contentSlice,
+  coreCall,
   dataOf,
   playScenario,
+  replyOf,
   scenarioParams,
   sha256,
   swarmVectors,
   swarmVectorsDir: dir,
   swarmVectorsRequired,
+  uploadReferences,
 };
