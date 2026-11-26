@@ -635,8 +635,13 @@ describe('the macOS/Windows jobs on a pull request', () => {
 
 describe('the self-hosted Linux runners', () => {
   // The project's own runners (`freedom-linux`) take the Linux jobs only on
-  // trusted events. This is a public repository: a `pull_request` run can
-  // carry a fork's code, and that must never resolve to a self-hosted label.
+  // `merge_group`, `push` and `workflow_dispatch`. This pins what *this*
+  // repository's ci.yml does. It is not a defence against a fork: a
+  // `pull_request` run uses the pull request's own copy of the workflow (and
+  // of this test), so a fork can route itself to the runners whatever this
+  // file says. What stops that is the "Approve and run" step for outside
+  // contributors; see the top of `jobs:` in ci.yml and
+  // https://github.com/solardev-xyz/freedom-browser/issues/1332.
   const SELF_HOSTED_JOBS = [
     'code-changed',
     'ci-ok',
@@ -648,12 +653,22 @@ describe('the self-hosted Linux runners', () => {
     'renderer-changed',
     'test',
   ];
-  const SELF_HOSTED_MATRIX_JOBS = ['myotis-native-e2e', 'native-addons'];
-  // The container cannot host these: an AppArmor profile load on the host,
-  // user namespaces for the preview-network-isolation qualification, and
-  // `pip` for zizmor-action's install.
-  const HOSTED_ONLY_JOBS = ['e2e-agent-linux', 'e2e-desktop', 'zizmor'];
-  const TRUSTED = ['merge_group', 'push', 'workflow_dispatch'];
+  const SELF_HOSTED_MATRIX_JOBS = ['native-addons'];
+  // The container cannot host the first three: an AppArmor profile load on
+  // the host, user namespaces for the preview-network-isolation
+  // qualification, and `pip` for zizmor-action's install. `myotis-native-e2e`
+  // has not been qualified on the self-hosted runners yet.
+  const HOSTED_ONLY_JOBS = ['e2e-agent-linux', 'e2e-desktop', 'myotis-native-e2e', 'zizmor'];
+  // The events routed to the self-hosted runners. Not "reviewed": a queued
+  // pull request runs there whether or not anyone approved it.
+  const ROUTED = ['merge_group', 'push', 'workflow_dispatch'];
+
+  // GitHub-hosted runner labels are single strings of this shape. Anything
+  // else (a custom label such as `freedom-linux` on its own, an array, an
+  // unknown string) counts as self-hosted, so a new spelling can't slip past
+  // a check that only looked for the word `self-hosted`.
+  const isGitHubHosted = (label) =>
+    typeof label === 'string' && /^(ubuntu|macos|windows)-[a-z0-9.-]+$/.test(label);
 
   const runsOn = (name) => {
     const block = jobs().get(name);
@@ -662,6 +677,17 @@ describe('the self-hosted Linux runners', () => {
     expect(found).toBeTruthy();
     return found[1];
   };
+
+  // The `os` values a job's matrix can take: literal entries, plus every
+  // quoted label inside an expression-valued `os:` (e2e-desktop's).
+  const matrixOses = (name) =>
+    [
+      ...jobs()
+        .get(name)
+        .matchAll(/^ {8,12}(?:- )?os: (.*)$/gm),
+    ].flatMap((m) =>
+      m[1].startsWith('${{') ? [...m[1].matchAll(/"([^"]+)"/g)].map((q) => q[1]) : [m[1]]
+    );
 
   // Evaluates the small subset of the Actions expression language the
   // runs-on lines use (`contains`, `fromJSON`, `&&`, `||`, `==`, string
@@ -685,35 +711,42 @@ describe('the self-hosted Linux runners', () => {
     return new Function('contains', 'event', 'os', `return (${js});`)(contains, event, os);
   };
 
-  const EVENTS = [...TRUSTED, 'pull_request', 'pull_request_target', 'schedule', 'workflow_run'];
-  const isSelfHosted = (label) => Array.isArray(label) && label.includes('self-hosted');
+  const EVENTS = [...ROUTED, 'pull_request', 'pull_request_target', 'schedule', 'workflow_run'];
 
-  it('are named by exactly the jobs the containers were qualified for', () => {
-    const named = [...jobs().keys()].filter((name) => /self-hosted/.test(jobs().get(name)));
-    expect(named.sort()).toEqual([...SELF_HOSTED_JOBS, ...SELF_HOSTED_MATRIX_JOBS].sort());
+  // Every label a job can resolve to on `event`, one per matrix os.
+  const labelsOn = (name, event) => {
+    const oses = matrixOses(name);
+    return (oses.length ? oses : [undefined]).map((os) => resolve(runsOn(name), { event, os }));
+  };
+
+  it('are reached by exactly the jobs the containers were qualified for', () => {
+    const reaching = [...jobs().keys()].filter((name) =>
+      EVENTS.some((event) => labelsOn(name, event).some((label) => !isGitHubHosted(label)))
+    );
+    expect(reaching.sort()).toEqual([...SELF_HOSTED_JOBS, ...SELF_HOSTED_MATRIX_JOBS].sort());
+    const named = [...jobs().keys()].filter((name) =>
+      /self-hosted|freedom-linux/.test(runsOn(name))
+    );
+    expect(named.sort()).toEqual(reaching.sort());
   });
 
-  it.each(SELF_HOSTED_JOBS)('%s runs on freedom-linux only for trusted events', (name) => {
+  it.each(SELF_HOSTED_JOBS)('%s runs on freedom-linux only for the routed events', (name) => {
     for (const event of EVENTS) {
       const label = resolve(runsOn(name), { event });
-      if (TRUSTED.includes(event)) expect(label).toEqual(['self-hosted', 'freedom-linux']);
+      if (ROUTED.includes(event)) expect(label).toEqual(['self-hosted', 'freedom-linux']);
       else expect(label).toBe('ubuntu-latest');
     }
   });
 
   it.each(SELF_HOSTED_MATRIX_JOBS)(
-    '%s switches only its ubuntu-latest entry, and only for trusted events',
+    '%s switches only its ubuntu-latest entry, and only for the routed events',
     (name) => {
-      const oses = [
-        ...jobs()
-          .get(name)
-          .matchAll(/^ {10,12}(?:- )?os: (.*)$/gm),
-      ].map((m) => m[1]);
+      const oses = matrixOses(name);
       expect(oses).toContain('ubuntu-latest');
       for (const os of oses) {
         for (const event of EVENTS) {
           const label = resolve(runsOn(name), { event, os });
-          if (os === 'ubuntu-latest' && TRUSTED.includes(event)) {
+          if (os === 'ubuntu-latest' && ROUTED.includes(event)) {
             expect(label).toEqual(['self-hosted', 'freedom-linux']);
           } else {
             expect(label).toBe(os);
@@ -724,28 +757,20 @@ describe('the self-hosted Linux runners', () => {
   );
 
   it.each(HOSTED_ONLY_JOBS)('%s stays on GitHub-hosted runners', (name) => {
-    expect(jobs().get(name)).not.toMatch(/self-hosted|freedom-linux/);
+    expect(runsOn(name)).not.toMatch(/self-hosted|freedom-linux/);
+    for (const event of EVENTS) {
+      for (const label of labelsOn(name, event)) {
+        expect([event, label, isGitHubHosted(label)]).toEqual([event, label, true]);
+      }
+    }
   });
 
-  it('never resolve to a self-hosted label on a pull_request run', () => {
+  it('resolve to a GitHub-hosted label on every event outside the routed three', () => {
     for (const name of jobs().keys()) {
-      const value = runsOn(name);
-      const oses = [
-        ...jobs()
-          .get(name)
-          .matchAll(/^ {8,12}(?:- )?os: (.*)$/gm),
-      ].map((m) => m[1]);
-      for (const os of oses.length ? oses : [undefined]) {
-        let label;
-        try {
-          label = resolve(value, { event: 'pull_request', os });
-        } catch {
-          // e2e-desktop's matrix is itself an expression; it names no
-          // self-hosted label (pinned above), so there is nothing to resolve.
-          expect(value).not.toMatch(/self-hosted/);
-          continue;
+      for (const event of EVENTS.filter((e) => !ROUTED.includes(e))) {
+        for (const label of labelsOn(name, event)) {
+          expect([name, event, isGitHubHosted(label)]).toEqual([name, event, true]);
         }
-        expect(isSelfHosted(label)).toBe(false);
       }
     }
   });
@@ -754,13 +779,36 @@ describe('the self-hosted Linux runners', () => {
     const dir = path.join(repoRoot, '.github/workflows');
     for (const file of fs.readdirSync(dir)) {
       if (file === 'ci.yml') continue;
-      // Only the runs-on lines: an artifact may well be named `freedom-linux-…`.
-      const text = fs
-        .readFileSync(path.join(dir, file), 'utf8')
-        .split('\n')
-        .filter((line) => /^\s*runs-on:/.test(line))
-        .join('\n');
-      expect([file, /self-hosted|freedom-linux/.test(text)]).toEqual([file, false]);
+      const lines = fs.readFileSync(path.join(dir, file), 'utf8').split('\n');
+      // Every literal runs-on, and every matrix `os`/`runner` a runs-on
+      // expression can pick, must be a GitHub-hosted label. Only those lines:
+      // an artifact may well be named `freedom-linux-…`.
+      for (const line of lines) {
+        const runs = line.match(/^\s*runs-on: (.*)$/);
+        if (runs) {
+          const value = runs[1].trim();
+          if (value.startsWith('${{')) {
+            expect([file, value]).toEqual([
+              file,
+              expect.stringMatching(/^\$\{\{ matrix\.(os|runner) \}\}$/),
+            ]);
+          } else {
+            expect([file, value, isGitHubHosted(value)]).toEqual([file, value, true]);
+          }
+        }
+        const entry = line.match(/^\s*(?:- )?(?:os|runner): (.*)$/);
+        if (entry) {
+          const values = entry[1].trim().startsWith('[')
+            ? entry[1]
+                .replace(/[[\]]/g, '')
+                .split(',')
+                .map((v) => v.trim())
+            : [entry[1].trim()];
+          for (const value of values) {
+            expect([file, value, isGitHubHosted(value)]).toEqual([file, value, true]);
+          }
+        }
+      }
     }
   });
 });

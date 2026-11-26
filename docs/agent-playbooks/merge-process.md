@@ -28,9 +28,18 @@ them before queueing, add the `full-ci` label and push a commit or use
 queue").
 
 Merge-queue, `main` and dispatch runs use project-owned Linux runners for most
-Linux jobs; a pull request's own run stays on GitHub-hosted runners. A Linux
-failure that shows up only in the queue can therefore be a runner difference,
-not just a merge difference.
+Linux jobs; `ci.yml` keeps a pull request's own run on GitHub-hosted runners. A
+Linux failure that shows up only in the queue can therefore be a runner
+difference, not just a merge difference.
+
+That routing lives in the workflow file, and a pull request's run uses the pull
+request's own copy of it. Before clicking **Approve and run** on an outside
+contributor's pull request, read its `.github/` diff: any `runs-on` change, or
+any mention of `self-hosted` or `freedom-linux`, would put that code on the
+project's runners. Don't approve such a run. Queueing a pull request also runs
+its code on those runners, reviewed or not, so queue only pull requests you
+have read. Runner-side enforcement is tracked in
+https://github.com/solardev-xyz/freedom-browser/issues/1332.
 
 ## Procedure
 
