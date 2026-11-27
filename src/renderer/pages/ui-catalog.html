@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; object-src 'none'; base-uri 'none'; form-action 'none';"
+    />
+    <title>UI catalog</title>
+    <!-- Every shared block (#1198, docs/design-system.md) in both themes, side
+         by side. A development page: it is not one of the app's internal
+         pages and is left out of packaged builds. Open this file in any
+         browser, or `npm run ui:catalog`. -->
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/ui.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+      }
+
+      body {
+        background: var(--surface-canvas);
+        color: var(--text);
+        font-family:
+          'Inter',
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+        font-size: var(--font-size-md);
+      }
+
+      .catalog {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        min-width: 960px;
+      }
+
+      .catalog-column {
+        padding: var(--space-6);
+        background: var(--surface);
+        color: var(--text);
+      }
+
+      .catalog-column-title {
+        margin: 0 0 var(--space-6);
+        color: var(--text-strong);
+        font-size: var(--font-size-title);
+        font-weight: 600;
+      }
+
+      .catalog-section {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+        margin-bottom: var(--space-6);
+      }
+
+      .catalog-section > h2 {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: var(--font-size-xs);
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .catalog-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-2);
+      }
+
+      .catalog-swatches {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-2);
+      }
+
+      .catalog-swatch {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        font-family: var(--font-mono);
+        font-size: var(--font-size-xs);
+      }
+
+      .catalog-swatch > span:first-child {
+        flex: none;
+        width: 24px;
+        height: 24px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+      }
+
+      .catalog-type > span {
+        display: block;
+      }
+
+      .catalog-frame {
+        display: flex;
+        flex-direction: column;
+        width: 360px;
+        height: 460px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface);
+        overflow: hidden;
+      }
+
+      .catalog-frame-header {
+        padding: var(--space-3) var(--space-4);
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
+        font-size: var(--font-size-lg);
+        font-weight: 600;
+      }
+
+      .catalog-page {
+        padding: var(--space-5);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface-canvas);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="catalog">
+      <section class="catalog-column" data-theme="dark" data-catalog-column>
+        <h1 class="catalog-column-title">Dark</h1>
+      </section>
+      <section class="catalog-column" data-theme="light" data-catalog-column>
+        <h1 class="catalog-column-title">Light</h1>
+      </section>
+    </main>
+
+    <template id="catalog-blocks">
+      <section class="catalog-section">
+        <h2>Colours</h2>
+        <div class="catalog-swatches">
+          <div class="catalog-swatch">
+            <span style="background: var(--surface-canvas)"></span><span>surface-canvas</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--surface)"></span><span>surface</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--surface-raised)"></span><span>surface-raised</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--surface-inset)"></span><span>surface-inset</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--surface-hover)"></span><span>surface-hover</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--border)"></span><span>border</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--border-strong)"></span><span>border-strong</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--text-strong)"></span><span>text-strong</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--text)"></span><span>text</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--text-muted)"></span><span>text-muted</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--text-faint)"></span><span>text-faint</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--accent)"></span><span>accent</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--accent-soft)"></span><span>accent-soft</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--danger)"></span><span>danger</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--warning)"></span><span>warning</span>
+          </div>
+          <div class="catalog-swatch">
+            <span style="background: var(--success)"></span><span>success</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="catalog-section catalog-type">
+        <h2>Type</h2>
+        <span style="font-size: var(--font-size-display); font-weight: 600">Display 28</span>
+        <span style="font-size: var(--font-size-title); font-weight: 600">Title 20</span>
+        <span style="font-size: var(--font-size-xl)">Extra large 16</span>
+        <span style="font-size: var(--font-size-lg)">Large 14: buttons on an approval sheet</span>
+        <span style="font-size: var(--font-size-md)">Medium 13: body text and most controls</span>
+        <span style="font-size: var(--font-size-sm); color: var(--text-muted)"
+          >Small 12: labels and secondary lines</span
+        >
+        <span style="font-size: var(--font-size-xs); color: var(--text-muted)"
+          >Extra small 11: badges</span
+        >
+      </section>
+
+      <section class="catalog-section">
+        <h2>Button</h2>
+        <div class="catalog-row">
+          <button type="button" class="ui-button ui-button--primary">Confirm</button>
+          <button type="button" class="ui-button">Cancel</button>
+          <button type="button" class="ui-button ui-button--danger">Delete wallet</button>
+          <button type="button" class="ui-button ui-button--ghost">View all</button>
+        </div>
+        <div class="catalog-row">
+          <button type="button" class="ui-button ui-button--primary ui-button--sm">Save</button>
+          <button type="button" class="ui-button ui-button--sm">Edit</button>
+          <button type="button" class="ui-button ui-button--primary" disabled>Signing…</button>
+          <button type="button" class="ui-button" disabled>Reject</button>
+        </div>
+        <div class="catalog-row">
+          <button type="button" class="ui-button ui-button--primary ui-button--lg">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 2a5 5 0 0 0-5 5v3H5v12h14V10h-2V7a5 5 0 0 0-5-5z" />
+            </svg>
+            Unlock with Touch ID
+          </button>
+        </div>
+        <button type="button" class="ui-button ui-button--primary ui-button--block">
+          Buy postage stamps
+        </button>
+      </section>
+
+      <section class="catalog-section">
+        <h2>Button row</h2>
+        <div class="ui-button-row">
+          <button type="button" class="ui-button ui-button--lg">Reject</button>
+          <button type="button" class="ui-button ui-button--primary ui-button--lg">Sign</button>
+        </div>
+        <div class="ui-button-row ui-button-row--end">
+          <button type="button" class="ui-button">Cancel</button>
+          <button type="button" class="ui-button ui-button--primary">Save</button>
+        </div>
+      </section>
+
+      <section class="catalog-section">
+        <h2>Icon button</h2>
+        <div class="catalog-row">
+          <button type="button" class="ui-icon-button ui-icon-button--sm" aria-label="Copy address">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="9" y="9" width="13" height="13" rx="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          </button>
+          <button type="button" class="ui-icon-button" aria-label="Refresh">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+              <path d="M21 3v5h-5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="ui-icon-button ui-icon-button--lg ui-icon-button--round"
+            aria-label="Back"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M19 12H5" />
+              <path d="M12 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <button type="button" class="ui-icon-button ui-icon-button--danger" aria-label="Remove">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 6h18" />
+              <path d="M8 6V4h8v2" />
+              <path d="M19 6l-1 14H6L5 6" />
+            </svg>
+          </button>
+          <button type="button" class="ui-icon-button" aria-label="Disabled" disabled>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+          </button>
+        </div>
+      </section>
+
+      <section class="catalog-section">
+        <h2>Card and detail list</h2>
+        <div class="ui-card ui-card--inset">
+          <h3 class="ui-card__title">Transaction</h3>
+          <dl class="ui-detail-list">
+            <dt>Send</dt>
+            <dd>0.25 xDAI</dd>
+            <dt>To</dt>
+            <dd><code>0x1f9a…c03e</code></dd>
+            <dt>Network</dt>
+            <dd>Gnosis</dd>
+            <dt>Network fee</dt>
+            <dd>about 0.0001 xDAI</dd>
+          </dl>
+        </div>
+        <div class="ui-card">
+          <h3 class="ui-card__title">This will allow the site to</h3>
+          See your wallet address and ask you to sign. It cannot move funds without your
+          confirmation.
+        </div>
+        <div class="ui-card ui-card--interactive" tabindex="0">
+          An interactive card: hover or focus it.
+        </div>
+      </section>
+
+      <section class="catalog-section">
+        <h2>Callout</h2>
+        <div class="ui-callout ui-callout--info">
+          <svg
+            class="ui-callout__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5" />
+            <path d="M12 8h.01" />
+          </svg>
+          <div class="ui-callout__body">
+            Your Swarm node is starting. Uploads wait until it is connected.
+          </div>
+        </div>
+        <div class="ui-callout ui-callout--warning">
+          <svg
+            class="ui-callout__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M12 3l9 16H3z" />
+            <path d="M12 10v4" />
+            <path d="M12 17h.01" />
+          </svg>
+          <div class="ui-callout__body">
+            <p class="ui-callout__title">Unverified name</p>
+            This ENS name could not be checked against the chain.
+          </div>
+          <button type="button" class="ui-button ui-button--sm ui-callout__action">Details</button>
+        </div>
+        <div class="ui-callout ui-callout--danger">
+          <svg
+            class="ui-callout__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M15 9l-6 6" />
+            <path d="M9 9l6 6" />
+          </svg>
+          <div class="ui-callout__body">The purchase failed. Nothing was charged.</div>
+        </div>
+        <div class="ui-callout ui-callout--success">
+          <svg
+            class="ui-callout__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M5 12l5 5 9-10" />
+          </svg>
+          <div class="ui-callout__body">Published to Swarm.</div>
+        </div>
+      </section>
+
+      <section class="catalog-section">
+        <h2>Badge</h2>
+        <div class="catalog-row">
+          <span class="ui-badge">Default</span>
+          <span class="ui-badge ui-badge--accent">Swarm</span>
+          <span class="ui-badge ui-badge--success">Verified</span>
+          <span class="ui-badge ui-badge--warning">Pending</span>
+          <span class="ui-badge ui-badge--danger">Failed</span>
+        </div>
+      </section>
+
+      <section class="catalog-section">
+        <h2>Field</h2>
+        <label class="ui-field">
+          <span class="ui-field__label">Amount</span>
+          <input class="ui-field__control" type="text" placeholder="0.00" />
+          <span class="ui-field__help">Available: 1.24 xDAI</span>
+        </label>
+        <label class="ui-field ui-field--invalid">
+          <span class="ui-field__label">Recipient</span>
+          <input class="ui-field__control" type="text" value="0x1f9a" />
+          <span class="ui-field__error">Not a complete address.</span>
+        </label>
+        <label class="ui-field">
+          <span class="ui-field__label">Network</span>
+          <select class="ui-field__control">
+            <option>Gnosis</option>
+            <option>Ethereum</option>
+          </select>
+        </label>
+        <label class="ui-field ui-field--sm">
+          <span class="ui-field__label">Note</span>
+          <textarea class="ui-field__control" placeholder="Optional"></textarea>
+        </label>
+      </section>
+
+      <section class="catalog-section">
+        <h2>Sheet</h2>
+        <div class="catalog-frame">
+          <div class="catalog-frame-header">Confirm transaction</div>
+          <div class="ui-sheet ui-sheet--approval">
+            <div class="ui-sheet__body">
+              <div class="ui-sheet__origin">
+                <span class="ui-sheet__origin-icon" style="background: var(--accent-soft)"></span>
+                <div>
+                  <p class="ui-sheet__origin-name">app.example.eth</p>
+                  <p class="ui-sheet__origin-note">wants to send a transaction</p>
+                </div>
+              </div>
+              <div class="ui-card ui-card--inset">
+                <dl class="ui-detail-list">
+                  <dt>Send</dt>
+                  <dd>0.25 xDAI</dd>
+                  <dt>To</dt>
+                  <dd><code>0x1f9a…c03e</code></dd>
+                </dl>
+              </div>
+            </div>
+            <div class="ui-sheet__footer">
+              <div class="ui-button-row">
+                <button type="button" class="ui-button">Reject</button>
+                <button type="button" class="ui-button ui-button--primary">Confirm</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="catalog-section">
+        <h2>Page header, list row and empty state</h2>
+        <div class="catalog-page">
+          <header class="ui-page-header">
+            <h1 class="ui-page-header__title">
+              <svg
+                width="28"
+                height="28"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 2" />
+              </svg>
+              History
+            </h1>
+            <span class="ui-page-header__count">2 pages</span>
+            <div class="ui-page-header__actions">
+              <button type="button" class="ui-button ui-button--danger ui-button--sm">
+                Clear all
+              </button>
+            </div>
+          </header>
+          <div class="ui-list-row ui-list-row--interactive" tabindex="0">
+            <svg
+              class="ui-list-row__icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+            <div class="ui-list-row__main">
+              <span class="ui-list-row__title">Freedom docs</span>
+              <span class="ui-list-row__subtitle">bzz://freedom.eth/docs</span>
+            </div>
+            <span class="ui-list-row__meta">09:41</span>
+            <div class="ui-list-row__actions">
+              <button
+                type="button"
+                class="ui-icon-button ui-icon-button--sm ui-icon-button--danger"
+                aria-label="Remove"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="ui-list-row ui-list-row--selected">
+            <svg
+              class="ui-list-row__icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+            <div class="ui-list-row__main">
+              <span class="ui-list-row__title">Swarm Scan</span>
+              <span class="ui-list-row__subtitle">bzz://swarmscan.eth</span>
+            </div>
+            <span class="ui-list-row__meta">Yesterday</span>
+          </div>
+          <div class="ui-empty-state">
+            <svg
+              class="ui-empty-state__icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M4 4h16v16H4z" />
+              <path d="M4 9h16" />
+            </svg>
+            <p class="ui-empty-state__title">No payments yet</p>
+            <p class="ui-empty-state__text">Payments you make from this browser appear here.</p>
+            <button type="button" class="ui-button ui-button--danger ui-button--sm" disabled>
+              Clear all
+            </button>
+          </div>
+        </div>
+      </section>
+    </template>
+
+    <script src="scripts/ui-catalog.js"></script>
+  </body>
+</html>

@@ -1,0 +1,680 @@
+/* Shared building blocks (#1198): the one place buttons, cards, detail
+ * lists, callouts, badges, fields, list rows, sheets, page headers and empty
+ * states are styled. docs/design-system.md lists them with their markup,
+ * and ui-catalog.html shows every one in both themes.
+ *
+ * Rules for this file:
+ * - colours, font sizes, radii and control heights come from tokens.css;
+ * - every class starts with `ui-`; variants are `--modifier`, parts are
+ *   `__part`;
+ * - a screen never restyles a block. If none fits, add a variant here, in
+ *   the same pull request, rather than a local copy.
+ *
+ * Loaded by the chrome (styles.css imports it) and by every migrated
+ * internal page, after tokens.css. */
+
+/* ============================================
+   Button
+   ============================================ */
+
+.ui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-md);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.ui-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+/* The screen's one primary action: filled accent (#239). */
+.ui-button--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.ui-button--primary:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+/* Destructive actions are outlined, never filled (#259). */
+.ui-button--danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.ui-button--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+/* A quiet action inside text or a row: no border, accent words. */
+.ui-button--ghost {
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.ui-button--sm {
+  min-height: var(--control-sm);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+.ui-button--lg {
+  min-height: var(--control-lg);
+  padding: 0 var(--space-5);
+  font-size: var(--font-size-lg);
+}
+
+.ui-button--block {
+  display: flex;
+  width: 100%;
+}
+
+.ui-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-button svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+/* ============================================
+   Button row
+   ============================================ */
+
+/* The secondary action first, the primary last. Buttons share the width
+   equally; `--end` keeps them at their own width, on the right. */
+.ui-button-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ui-button-row > .ui-button {
+  flex: 1 1 0;
+}
+
+.ui-button-row--end {
+  justify-content: flex-end;
+}
+
+.ui-button-row--end > .ui-button {
+  flex: none;
+}
+
+/* ============================================
+   Icon button
+   ============================================ */
+
+.ui-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.ui-icon-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.ui-icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ui-icon-button--sm {
+  width: var(--control-xs);
+  height: var(--control-xs);
+  border-radius: var(--radius-sm);
+}
+
+.ui-icon-button--sm svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ui-icon-button--lg {
+  width: var(--control-md);
+  height: var(--control-md);
+}
+
+.ui-icon-button--lg svg {
+  width: 18px;
+  height: 18px;
+}
+
+.ui-icon-button--round {
+  border-radius: var(--radius-pill);
+}
+
+.ui-icon-button--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.ui-icon-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   Card
+   ============================================ */
+
+/* Bordered, on whatever surface it sits on. `--inset` tints it, for a
+   detail card inside a sheet. */
+.ui-card {
+  box-sizing: border-box;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text);
+}
+
+.ui-card--inset {
+  background: var(--surface-inset);
+}
+
+.ui-card--interactive {
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.ui-card--interactive:hover {
+  background: var(--surface-hover);
+}
+
+.ui-card__title {
+  margin: 0 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+/* ============================================
+   Detail list
+   ============================================ */
+
+/* Label and value pairs, as a <dl>: an approval's amount, recipient and
+   network. Values that are addresses or hashes go in <code>, or the whole
+   list takes `--mono`. */
+.ui-detail-list {
+  display: grid;
+  grid-template-columns: minmax(64px, max-content) minmax(0, 1fr);
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+.ui-detail-list > dt,
+.ui-detail-list > dd {
+  margin: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+}
+
+.ui-detail-list > dt:first-of-type,
+.ui-detail-list > dt:first-of-type + dd {
+  padding-top: 0;
+  border-top: none;
+}
+
+/* The gap between label and value is the label's padding, not a column gap,
+   so each row's divider runs unbroken across both. */
+.ui-detail-list > dt {
+  padding-right: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.ui-detail-list > dd {
+  color: var(--text);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.ui-detail-list > dd code,
+.ui-detail-list--mono > dd {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+/* ============================================
+   Callout
+   ============================================ */
+
+.ui-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--surface-inset);
+  color: var(--text);
+  font-size: var(--font-size-md);
+  line-height: 1.45;
+}
+
+.ui-callout--info {
+  background: var(--info-soft);
+}
+
+.ui-callout--warning {
+  background: var(--warning-soft);
+}
+
+.ui-callout--danger {
+  background: var(--danger-soft);
+}
+
+.ui-callout--success {
+  background: var(--success-soft);
+}
+
+.ui-callout__icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--text-muted);
+}
+
+.ui-callout--info .ui-callout__icon {
+  color: var(--accent);
+}
+
+.ui-callout--warning .ui-callout__icon {
+  color: var(--warning);
+}
+
+.ui-callout--danger .ui-callout__icon {
+  color: var(--danger);
+}
+
+.ui-callout--success .ui-callout__icon {
+  color: var(--success);
+}
+
+.ui-callout__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-callout__title {
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+}
+
+.ui-callout__action {
+  flex: none;
+  align-self: center;
+}
+
+/* ============================================
+   Badge
+   ============================================ */
+
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.ui-badge--accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ui-badge--success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.ui-badge--warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.ui-badge--danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ============================================
+   Field
+   ============================================ */
+
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ui-field__label {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.ui-field__control {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-size-md);
+}
+
+textarea.ui-field__control {
+  min-height: calc(var(--control-md) * 2);
+  padding: var(--space-2) var(--space-3);
+  resize: vertical;
+}
+
+.ui-field__control::placeholder {
+  color: var(--text-faint);
+}
+
+/* The chrome's one text-field ring (styles/inputs.css, #237), so a field
+   looks the same on an internal page, which does not load that sheet. */
+.ui-field__control:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.ui-field__help {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.ui-field__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--font-size-sm);
+}
+
+.ui-field--invalid .ui-field__control {
+  border-color: var(--danger);
+}
+
+.ui-field--sm .ui-field__control {
+  min-height: var(--control-sm);
+  font-size: var(--font-size-sm);
+}
+
+/* ============================================
+   List row
+   ============================================ */
+
+.ui-list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  min-height: var(--control-lg);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--text);
+}
+
+.ui-list-row--interactive {
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.ui-list-row--interactive:hover {
+  background: var(--surface-hover);
+}
+
+.ui-list-row--selected {
+  background: var(--accent-soft);
+}
+
+.ui-list-row__icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--text-muted);
+}
+
+.ui-list-row__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ui-list-row__title,
+.ui-list-row__subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-list-row__title {
+  font-size: var(--font-size-md);
+}
+
+.ui-list-row__subtitle,
+.ui-list-row__meta {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.ui-list-row__meta {
+  flex: none;
+}
+
+.ui-list-row__actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+}
+
+/* ============================================
+   Sheet
+   ============================================ */
+
+/* A sidebar sub-screen's content under its shared header (`.subscreen-header`,
+   #246): a scrolling body and a footer that holds the button row. On an
+   approval sheet (`--approval`) the footer's buttons are the large size, and
+   the body opens with the asking site (`__origin`). */
+.ui-sheet {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ui-sheet__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  padding: var(--space-5) var(--space-4);
+  overflow-y: auto;
+}
+
+.ui-sheet__footer {
+  flex: none;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.ui-sheet--approval .ui-sheet__footer .ui-button {
+  min-height: var(--control-lg);
+  padding: 0 var(--space-5);
+  font-size: var(--font-size-lg);
+}
+
+.ui-sheet__origin {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ui-sheet__origin-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+}
+
+.ui-sheet__origin-name {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ui-sheet__origin-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* ============================================
+   Page header
+   ============================================ */
+
+/* An internal page's title row: the shared 28px accent title with its icon
+   (internal-page-headers.test.js), a count, and actions on the right. A
+   Clear action is disabled while there is nothing to clear. */
+.ui-page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.ui-page-header__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  color: var(--accent);
+  font-size: var(--font-size-display);
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+
+.ui-page-header__count {
+  color: var(--text-muted);
+  font-size: var(--font-size-lg);
+}
+
+.ui-page-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.ui-page-header__subtitle {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-lg);
+}
+
+/* ============================================
+   Empty state
+   ============================================ */
+
+.ui-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.ui-empty-state__icon {
+  width: 32px;
+  height: 32px;
+  color: var(--text-faint);
+}
+
+.ui-empty-state__title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+}
+
+.ui-empty-state__text {
+  max-width: 40ch;
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+/* ============================================
+   Focus
+   ============================================ */
+
+/* One ring for every block a keyboard can reach. Text fields keep theirs
+   just inside the border (above); everything else gets it just outside. */
+.ui-button:focus-visible,
+.ui-icon-button:focus-visible,
+.ui-card--interactive:focus-visible,
+.ui-list-row--interactive:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

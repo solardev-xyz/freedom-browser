@@ -1,5 +1,10 @@
+/* The design system (#1198, docs/design-system.md): the shared tokens first,
+   so the older names in variables.css still win while screens migrate, and
+   the shared blocks before the component sheets. */
+@import './pages/styles/tokens.css';
 @import './styles/variables.css';
 @import './styles/base.css';
+@import './pages/styles/ui.css';
 @import './styles/tabs.css';
 @import './styles/toolbar.css';
 @import './styles/menus.css';

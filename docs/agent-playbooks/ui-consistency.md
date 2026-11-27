@@ -6,6 +6,17 @@ conventions the UI already follows so new surfaces match their siblings, and
 it lists the checks that catch drift. It was distilled from the visual audit
 of the 0.8.5 cycle (issues #223–#242).
 
+## Start with the design system
+
+Build a screen from the shared `ui-` blocks in `pages/styles/ui.css` and the
+tokens in `pages/styles/tokens.css`: `docs/design-system.md` lists them, and
+`npm run ui:catalog` shows each one in both themes (#1198). If no block or
+variant fits, add one to `ui.css` in the same pull request, never a local
+copy. `src/renderer/design-system.test.js` fails a new self-styled button,
+card, badge, callout or field, an old token name, a literal font size or
+radius, and any rule outside `ui.css` that restyles a block. The conventions
+below describe the screens that have not moved yet; the blocks follow them.
+
 ## Conventions
 
 **Tokens, not literals.** The chrome's colours come from

@@ -19,10 +19,15 @@ const path = require('path');
 
 const STYLES_DIR = __dirname;
 
-const sheets = fs
-  .readdirSync(STYLES_DIR)
-  .filter((name) => name.endsWith('.css'))
-  .sort();
+// Every chrome stylesheet, plus the design system's shared blocks, which the
+// chrome imports and every screen will draw its buttons from (#1198).
+const sheets = [
+  ...fs
+    .readdirSync(STYLES_DIR)
+    .filter((name) => name.endsWith('.css'))
+    .sort(),
+  '../pages/styles/ui.css',
+];
 
 const read = (name) => fs.readFileSync(path.join(STYLES_DIR, name), 'utf8');
 

@@ -1,0 +1,3 @@
+- The sidebar's approval prompts now use the hover and label colours they were meant to have ([#1198](https://github.com/solardev-xyz/freedom-browser/issues/1198))
+  - In the dark theme, the Reject and Touch ID buttons of transaction and signing prompts, the Swarm Reject button, the account picker and the publisher identity rows now show a hover state
+  - In the light theme, the secondary labels of transaction, signing and x402 prompts are grey rather than black, and a token or network without a logo shows its initial in white on its grey circle
