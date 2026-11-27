@@ -2336,6 +2336,9 @@ class WebContentsPageAdapter extends EventEmitter {
   // page listener registered earlier on the same window that calls
   // stopImmediatePropagation() hides the event, so the call waits the full
   // limit; the input itself is unaffected.
+  //
+  // Deadlines use the monotonic clock: a wall-clock step backwards would
+  // otherwise stretch the wait by the size of the step.
   async #deliverInput(ref, types, send) {
     const navigationId = this.navigationId;
     const probe = (action, deadline) => {
@@ -2343,19 +2346,19 @@ class WebContentsPageAdapter extends EventEmitter {
       return Promise.race([
         this.#execute(inputProbe, [ref, action, types], false),
         new Promise((resolve) => {
-          timer = setTimeout(resolve, Math.max(0, deadline - Date.now()), null);
+          timer = setTimeout(resolve, Math.max(0, deadline - performance.now()), null);
         }),
       ]).finally(() => clearTimeout(timer));
     };
-    const armed = await probe('arm', Date.now() + INPUT_DELIVERY_LIMIT_MS).then(
+    const armed = await probe('arm', performance.now() + INPUT_DELIVERY_LIMIT_MS).then(
       (result) => result?.ok === true,
       () => false
     );
     send();
     if (!armed) return;
-    const deadline = Date.now() + INPUT_DELIVERY_LIMIT_MS;
+    const deadline = performance.now() + INPUT_DELIVERY_LIMIT_MS;
     try {
-      while (Date.now() < deadline) {
+      while (performance.now() < deadline) {
         if (this.destroyed || this.navigationInProgress || navigationId !== this.navigationId)
           return;
         const state = await probe('read', deadline);
@@ -2368,7 +2371,7 @@ class WebContentsPageAdapter extends EventEmitter {
       // A dialog opened or the document went away: the input was sent.
     } finally {
       await Promise.resolve()
-        .then(() => probe('disarm', Date.now() + INPUT_DELIVERY_LIMIT_MS))
+        .then(() => probe('disarm', performance.now() + INPUT_DELIVERY_LIMIT_MS))
         .catch(() => {});
     }
   }

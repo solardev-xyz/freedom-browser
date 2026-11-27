@@ -555,6 +555,34 @@ describe('WebContentsPageAdapter', () => {
       expect(webContents.sendInputEvent).toHaveBeenCalledTimes(3);
     });
 
+    // The wait is bounded on the monotonic clock: a wall clock stepping back
+    // an hour mid-press must not stretch it past INPUT_DELIVERY_LIMIT_MS.
+    test('a backwards wall-clock step does not extend the wait', async () => {
+      const realNow = Date.now.bind(Date);
+      let skew = 0;
+      const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => realNow() - skew);
+      try {
+        const webContents = scriptedPage(
+          Array.from({ length: 1_000 }, () => () => {
+            skew = 60 * 60 * 1000;
+            return { ok: true, seen: ['keydown'], focused: true };
+          })
+        );
+        const adapter = await adapterFor(webContents);
+
+        const started = performance.now();
+        await expect(adapter.press('ref_test_0', 'Enter')).resolves.toMatchObject({
+          pressed: true,
+        });
+        const elapsed = performance.now() - started;
+        expect(elapsed).toBeGreaterThanOrEqual(1_900);
+        expect(elapsed).toBeLessThan(4_000);
+        expect(probeCalls(webContents).at(-1)).toBe('disarm');
+      } finally {
+        nowSpy.mockRestore();
+      }
+    }, 10_000);
+
     test('still sends the input when the probe cannot be armed', async () => {
       const webContents = new FakeWebContents();
       webContents.executeJavaScriptInIsolatedWorld
