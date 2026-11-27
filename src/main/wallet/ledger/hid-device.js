@@ -610,7 +610,8 @@ class HidDevice {
 
   _onReply(pending, reply) {
     if (this._pending !== pending) return;
-    this._dropped += reply.dropped ?? 0;
+    // The host sends its session's running total: keep it, don't add it.
+    this._dropped = Math.max(this._dropped, reply.dropped ?? 0);
     if (reply.op === 'answer') {
       this._settle(pending, null, reply.answer);
       return;

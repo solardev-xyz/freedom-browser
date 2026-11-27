@@ -421,6 +421,16 @@ describe('R5 and late answers across operations', () => {
     await jest.advanceTimersByTimeAsync(10);
     await expect(nextExchange).resolves.toEqual(APP);
     expect(next.droppedFrames).toBe(1);
+
+    // A second exchange in the same operation, with nothing dropped before
+    // it: the count stays the operation's total (the host sends a running
+    // total, which main keeps rather than adds).
+    const again = next.exchange(B001, DEADLINE_MS.DEVICE);
+    await jest.advanceTimersByTimeAsync(10);
+    fake.ledger.release(APP_ANSWER);
+    await jest.advanceTimersByTimeAsync(10);
+    await expect(again).resolves.toEqual(APP);
+    expect(next.droppedFrames).toBe(1);
     next.detach();
     expect(log.warn).not.toHaveBeenCalled();
   });
