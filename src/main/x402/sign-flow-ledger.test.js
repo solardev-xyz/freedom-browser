@@ -25,9 +25,11 @@
  * - **Main's holds against a cap** (cap-holds.js): an auto-pay that passes
  *   holds its amount in the same step, so of two authorize replies held
  *   against one cap with room for one, the second is CAP_NOT_COVERED, no
- *   APDU, withheld once; a hold is let go at once when nothing was written
- *   to the cap, and otherwise once the mirror's read asked after the end
- *   lands (a signed payment's: until then another auto-pay finds no room).
+ *   APDU, withheld once. A hold is let go at once when no signature of the
+ *   device's left main (as the relay saw it), whatever the core says;
+ *   otherwise only once the mirror shows the spend (each rise claimed by
+ *   one hold) or another cap under the key: a read that lands with the cap
+ *   unchanged keeps it, and meanwhile another auto-pay finds no room.
  * - **A settled payment:** `now_s` sent with the Ledger's `device`, main's
  *   own frozen copy settled as `{ reservation, typed_data }` under the
  *   device watchdog, the honest stream carried to the device byte for byte,
@@ -492,8 +494,9 @@ describeIfVectors("a Ledger auto-pay on the core: main's holds against the cap",
   const assetOf = (c) => c.x402.requirements.asset.toLowerCase();
   const heldOf = (c) => capHolds.heldAmount(ORIGIN, 8453, assetOf(c));
   const cancelled = { code: 'cancelled', message: 'Cancelled' };
+  const capRecord = () => mockState.caps.get(ORIGIN)[0];
 
-  /** A mirror read that lands only when the test says so. */
+  /** A mirror read that lands only when the test says so (with the mirror as the test left it). */
   function readHeld() {
     const read = {};
     read.promise = new Promise((resolve) => {
@@ -501,6 +504,20 @@ describeIfVectors("a Ledger auto-pay on the core: main's holds against the cap",
     });
     mockState.reread = () => read.promise;
     return read;
+  }
+
+  /** The core: each auto-pay's honest stream on the device, then `end(message)` (the payment, by default). */
+  function signingCore(c, end = null) {
+    started.devices.respond = answersOf(c);
+    const fc = serveX402({
+      authorize: () => authorizeReply(c, { charged: true }),
+      settle: (message) => {
+        playLane(fc, message.id, honest.get(c.id)).then(() =>
+          end ? end(fc, message) : fc.respond(message.id, { payload: JSON.parse(c.result.payload), charged: true })
+        );
+      },
+    });
+    return fc;
   }
 
   test('two authorize replies held against one insufficient cap: one goes on, the other is CAP_NOT_COVERED with no APDU, withheld once', async () => {
@@ -539,63 +556,158 @@ describeIfVectors("a Ledger auto-pay on the core: main's holds against the cap",
     expect(fc.faults).toEqual([]);
   });
 
-  // [the end, how the test brings it about] — each lets go of the hold at
-  // once, even with the mirror's read never landing.
+  // No signature of the device's left main, as main's relay saw it: the
+  // hold is let go at once, whatever the core says of its charge, even with
+  // the mirror's read never landing.
+  const lastApdu = (c) => c.exchanges.length - 1;
   const AT_ONCE = [
-    ["refused before the device (the core's hash isn't main's)", { hash: `0x${'11'.repeat(32)}` }, null],
-    ["refused unsent (a path main can't derive a stream for)", { path: true }, null],
-    ['refunded', {}, { code: 'device_failed', message: 'Ledger device failed', data: { ledger: 'LEDGER_USER_REJECTED', refunded: true } }],
-    ['cancelled', {}, cancelled],
+    ["refused before the device (the core's hash isn't main's)", { hash: `0x${'11'.repeat(32)}` }],
+    ["refused unsent (a path main can't derive a stream for)", { path: true }],
+    [
+      'the core ends it before the device, saying refunded false',
+      { error: { code: 'not_authorized', message: 'x', data: { reason: 'cap_changed', refunded: false } } },
+    ],
+    ['cancelled before the device', { error: cancelled }],
+    [
+      'rejected on the device, the core saying refunded false',
+      {
+        lane: (c) => ({ [lastApdu(c)]: '6985' }),
+        error: { code: 'device_failed', message: 'x', data: { ledger: 'LEDGER_USER_REJECTED', refunded: false } },
+      },
+    ],
+    [
+      'the device fails at the signature',
+      {
+        lane: (c) => ({ [lastApdu(c)]: { fail: 'disconnected' } }),
+        error: { code: 'device_failed', message: 'x', data: { ledger: 'LEDGER_DISCONNECTED', refunded: true } },
+      },
+    ],
   ];
 
-  test.each(AT_ONCE)('%s: the hold is let go at once', async (_what, how, coreError) => {
+  test.each(AT_ONCE)('%s: the hold is let go at once', async (_what, how) => {
     const [, c] = FORMS[0];
     recordFor(c, how.path ? { path: `m/${c.record.path}` } : {});
     capFor(c, '15000');
     readHeld();
+    if (how.lane) started.devices.respond = answersOf(c, how.lane(c));
     const fc = serveX402({
       authorize: () => authorizeReply(c, { charged: true, ...(how.hash ? { hash: how.hash } : {}) }),
-      settle: (message) => fc.fail(message.id, coreError),
+      settle: (message) => {
+        const lane = how.lane ? playLane(fc, message.id, honest.get(c.id)) : Promise.resolve();
+        lane.then(() => fc.fail(message.id, how.error));
+      },
     });
 
     const { error } = await pay(c, { authorizedBy: 'cap' });
 
     expect(error).toBeDefined();
     expect(heldOf(c)).toBe(0n);
-    expect(started.devices.events).toEqual([]);
+    if (!how.lane) expect(started.devices.events).toEqual([]);
+  });
+
+  test("a signed payment whose first read after it lands with the cap unchanged: another auto-pay stays refused until a later read shows the spend", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    capFor(c, '15000');
+    const read = readHeld();
+    signingCore(c);
+
+    const first = await pay(c, { authorizedBy: 'cap' });
+    expect(first.error).toBeUndefined();
+    expect(setPendingPayment).toHaveBeenCalledTimes(1);
+    expect(heldOf(c)).toBe(10000n);
+
+    // The read asked after it lands, the cap unchanged (a core that doesn't
+    // report the spend): the hold stays, and another auto-pay finds no room.
+    read.land();
+    await settle();
+    expect(heldOf(c)).toBe(10000n);
+    const second = await pay(c, { authorizedBy: 'cap', tab: 8 });
+    expect(second.error.code).toBe(CAP_NOT_COVERED);
+    expect(ledgerSettles()).toHaveLength(1);
+    expect(started.devices.of('open')).toHaveLength(1);
+
+    // A later refresh shows the spend: the mirror counts it now, not the hold.
+    capRecord().spentAmount = '10000';
+    expect(heldOf(c)).toBe(0n);
+    const third = await pay(c, { authorizedBy: 'cap', tab: 9 });
+    expect(third.error.code).toBe(CAP_NOT_COVERED);
+    expect(ledgerSettles()).toHaveLength(1);
+  });
+
+  test('two signed payments against one rise: only one hold is let go', async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    capFor(c, '25000');
+    signingCore(c);
+
+    expect((await pay(c, { authorizedBy: 'cap', tab: 7 })).error).toBeUndefined();
+    expect((await pay(c, { authorizedBy: 'cap', tab: 8 })).error).toBeUndefined();
+    expect(heldOf(c)).toBe(20000n);
+
+    capRecord().spentAmount = '10000';
+    expect(heldOf(c)).toBe(10000n);
+    capRecord().spentAmount = '20000';
+    expect(heldOf(c)).toBe(0n);
   });
 
   test.each([
-    ['the cap changed (not refunded)', { code: 'not_authorized', message: 'the cap changed', data: { reason: 'cap_changed', refunded: false } }],
-    [
-      "the hold's write wasn't flushed (counted, not refunded)",
-      { code: 'storage', message: 'not durable', data: { store: 'x402', applied: true, durable: false, refunded: false } },
-    ],
-  ])('%s: the hold is kept until the mirror read asked after it lands', async (_what, coreError) => {
+    ['revoked, then granted again (another createdAt)', 'replaced'],
+    ['gone from the mirror, then granted again', 'gone'],
+  ])('a signed payment whose cap is %s: the hold is let go', async (_what, how) => {
     const [, c] = FORMS[0];
     recordFor(c);
     capFor(c, '15000');
-    const read = readHeld();
-    const fc = serveX402({
-      authorize: () => authorizeReply(c, { charged: true }),
-      settle: (message) => fc.fail(message.id, coreError),
-    });
+    signingCore(c);
 
-    await pay(c, { authorizedBy: 'cap' });
-
+    expect((await pay(c, { authorizedBy: 'cap' })).error).toBeUndefined();
     expect(heldOf(c)).toBe(10000n);
-    read.land();
-    await settle();
+
+    if (how === 'gone') {
+      mockState.caps.delete(ORIGIN);
+      // No cap covers anything: the hold waits, inert.
+      expect(heldOf(c)).toBe(10000n);
+      expect((await pay(c, { authorizedBy: 'cap', tab: 8 })).error.code).toBe(CAP_NOT_COVERED);
+      capFor(c, '15000');
+    }
+    capRecord().createdAt += 30;
     expect(heldOf(c)).toBe(0n);
-    expect(outcomeSettles()).toEqual([]);
   });
 
-  test("the core exits while the device signs: the hold is kept until the mirror's read lands", async () => {
+  test.each([
+    ["the cap changed after the signature (refunded false): kept until another cap takes the key", 'replaced'],
+    ["the hold's write wasn't flushed (counted, refunded false): kept until the mirror shows it", 'spent'],
+    ['the core says refunded after the signature: kept until the mirror shows the spend or another cap', 'spent'],
+  ])('%s', async (what, settles) => {
     const [, c] = FORMS[0];
     recordFor(c);
     capFor(c, '15000');
     const read = readHeld();
-    started.devices.respond = answersOf(c, { [c.exchanges.length - 1]: { hold: true } });
+    const data = what.includes('flushed')
+      ? { store: 'x402', applied: true, durable: false, refunded: false }
+      : { reason: 'cap_changed', refunded: what.includes('says refunded') };
+    signingCore(c, (fc, message) =>
+      fc.fail(message.id, { code: what.includes('flushed') ? 'storage' : 'not_authorized', message: 'x', data })
+    );
+
+    const { error } = await pay(c, { authorizedBy: 'cap' });
+
+    expect(error).toBeDefined();
+    expect(outcomeSettles()).toEqual([]);
+    read.land();
+    await settle();
+    expect(heldOf(c)).toBe(10000n);
+    if (settles === 'spent') capRecord().spentAmount = '10000';
+    else capRecord().createdAt += 30;
+    expect(heldOf(c)).toBe(0n);
+  });
+
+  test('the core exits while the device waits for the user: no signature left main, the hold is let go at once', async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    capFor(c, '15000');
+    readHeld();
+    started.devices.respond = answersOf(c, { [lastApdu(c)]: { hold: true } });
     const fc = serveX402({
       authorize: () => authorizeReply(c, { charged: true }),
       settle: (message) => {
@@ -610,48 +722,24 @@ describeIfVectors("a Ledger auto-pay on the core: main's holds against the cap",
     const { error } = await paid;
 
     expect(error.code).toBe('core_unavailable');
-    expect(heldOf(c)).toBe(10000n);
-    read.land();
-    await settle();
     expect(heldOf(c)).toBe(0n);
   });
 
-  test('a signed payment keeps its hold until the mirror shows the spend: meanwhile another auto-pay finds no room', async () => {
+  test('the core exits after the device signed: the hold is kept until the mirror accounts for it', async () => {
     const [, c] = FORMS[0];
     recordFor(c);
     capFor(c, '15000');
     const read = readHeld();
-    started.devices.respond = answersOf(c);
-    let settles = 0;
-    const fc = serveX402({
-      authorize: () => authorizeReply(c, { charged: true }),
-      settle: (message) => {
-        settles += 1;
-        playLane(fc, message.id, honest.get(c.id)).then(() =>
-          fc.respond(message.id, { payload: JSON.parse(c.result.payload), charged: true })
-        );
-      },
-    });
+    signingCore(c, (fc) => fc.exit(null, 'SIGKILL'));
 
-    const first = await pay(c, { authorizedBy: 'cap' });
+    const { error } = await pay(c, { authorizedBy: 'cap' });
 
-    expect(first.error).toBeUndefined();
-    expect(setPendingPayment).toHaveBeenCalledTimes(1);
-    expect(heldOf(c)).toBe(10000n);
-    // The mirror hasn't shown the spend: the hold still counts it.
-    const second = await pay(c, { authorizedBy: 'cap', tab: 8 });
-    expect(second.error.code).toBe(CAP_NOT_COVERED);
-    expect(settles).toBe(1);
-    expect(started.devices.of('open')).toHaveLength(1);
-
-    // The read lands with the spend: the mirror counts it now, not the hold.
-    mockState.caps.get(ORIGIN)[0].spentAmount = '10000';
+    expect(error.code).toBe('core_unavailable');
     read.land();
     await settle();
+    expect(heldOf(c)).toBe(10000n);
+    capRecord().spentAmount = '10000';
     expect(heldOf(c)).toBe(0n);
-    const third = await pay(c, { authorizedBy: 'cap', tab: 9 });
-    expect(third.error.code).toBe(CAP_NOT_COVERED);
-    expect(settles).toBe(1);
   });
 });
 

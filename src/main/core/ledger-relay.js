@@ -96,6 +96,7 @@
  *     }).finally(() => handle?.close());
  *     handle.cancel();     // the user's Cancel: main's own cancel
  *     handle.stopped;      // beforeSign's error, once it refused
+ *     handle.signed;       // whether the device's signature may have left main
  *
  * - `path`: the account's path text from main's record snapshot, for every
  *   signature (`sign.*`, `x402.settle`); `records`: `ledger.accounts`'
@@ -109,6 +110,11 @@
  *   once it reports the state on screen (two animation frames in a visible
  *   window); `signal` aborts when main stops waiting for that report, or
  *   when the parent ends.
+ * - `handle.signed`: whether the device answered the operation's last APDU
+ *   (a signature's `E0 0C`) with status `9000` and main passed that answer
+ *   to the core, however the parent then ended (a late answer included):
+ *   the device's signature may have left main. False otherwise: the core
+ *   holds no signature of the device's for the parent, whatever it says.
  */
 
 const defaultLog = require('../logger');
@@ -130,6 +136,8 @@ const HASH_ONLY_WAIT_MS = 10_000;
 /** An APDU, as `shell.ledger_apdu` carries it: 5 to 260 bytes. */
 const APDU_MIN = 5;
 const APDU_MAX = 260;
+/** The status word of an answer that went through. */
+const STATUS_OK = 0x9000;
 /** A device's answer: 2 to 260 bytes, its status word last. */
 const ANSWER_MIN = 2;
 const ANSWER_MAX = 260;
@@ -295,7 +303,7 @@ class LedgerRelay {
    *   check, before the first APDU after `B0 01`: throws to refuse
    * @param {Function} [capture.hashOnlySurface] - the hash-only warning's
    *   surface (the module's comment)
-   * @returns {{ operation: string|null, close(): void, cancel(): void, stopped: * }}
+   * @returns {{ operation: string|null, close(): void, cancel(): void, stopped: *, signed: boolean }}
    */
   open({ generation, id } = {}, capture = {}) {
     if (this.backendKind() !== 'core') {
@@ -340,6 +348,8 @@ class LedgerRelay {
       beforeSignAsked: false,
       hashOnlySurface,
       stopped: null,
+      // A 9000 answer to its last APDU went to the core (`handle.signed`).
+      signed: false,
       device: null,
       deviceClosed: false,
       ended: null,
@@ -361,6 +371,9 @@ class LedgerRelay {
       cancel: () => entry.controller.abort(),
       get stopped() {
         return entry.stopped;
+      },
+      get signed() {
+        return entry.signed;
       },
     };
   }
@@ -502,6 +515,12 @@ class LedgerRelay {
     return Boolean(entry.admission) && entry.admission.outstanding !== null && !entry.ended;
   }
 
+  /** Whether the APDU last admitted for the parent is its stream's last one. */
+  isLast(entry) {
+    const { admission } = entry;
+    return Boolean(admission) && admission.position >= admission.expected.length;
+  }
+
   /** Whether the parent can admit nothing more: its stream is over. */
   over(entry) {
     const { admission } = entry;
@@ -588,6 +607,11 @@ class LedgerRelay {
     ) {
       this.log.warn('[Ledger] the device gave an answer out of bounds');
       return this.failed(entry, 'disconnected');
+    }
+    // The operation's last APDU, answered 9000: the device's signature goes
+    // to the core with this answer, whether or not the parent still waits.
+    if (this.isLast(entry) && Buffer.from(answer).readUInt16BE(answer.length - 2) === STATUS_OK) {
+      entry.signed = true;
     }
     // Ended meanwhile (the core's cancel, main's own): whatever the exchange
     // gave, which the core drops as late.

@@ -57,7 +57,7 @@ const {
 } = require('./caps');
 const { checkLedgerAuthorization, nonceOf } = require('./ledger-authorization');
 const { tupleFromAccept } = require('./payment-utils');
-const { holdIfCovered, releaseHold, releaseHoldWhen } = require('./cap-holds');
+const { holdIfCovered, releaseHold, awaitSpend } = require('./cap-holds');
 const { ledgerBackendKind } = require('../wallet/ledger/ledger-backend-kind');
 const { createLedgerError } = require('../wallet/ledger/errors');
 const { isUserPageId, isAgentPageId } = require('../wallet/agent-tab-custody');
@@ -622,13 +622,16 @@ function ledgerEntry(detected, reply, ledger, origin) {
  *   the reservation as it was, for the caller to settle `withheld`.
  * - **The address check** is kept as the JS backend keeps it: `matched`
  *   after a signed payment, `mismatched` on LEDGER_WRONG_DEVICE.
- * - **An auto-pay's hold** (cap-holds.js) is let go however the payment
- *   ends: at once when nothing was written to the cap (refused before the
- *   device or unsent, then settled `withheld`; refunded; cancelled), and
- *   otherwise only once a read of the mirror asked after the end has
- *   landed (a signed payment, whose charge the core wrote before it
- *   answered; any other end that may have left its charge counted), so
- *   the charge is never counted by neither.
+ * - **An auto-pay's hold** (cap-holds.js) is let go at once only when the
+ *   device's signature never left main, as main's relay saw it
+ *   (`handle.signed`: refused before the device or unsent, then settled
+ *   `withheld`; rejected on the device; failed or ended before the
+ *   signature), whatever the core says of its charge. Otherwise (a signed
+ *   payment, or one the core failed after the signature) it stays until
+ *   main's mirror accounts for the spend or another cap takes its key
+ *   (`awaitSpend`), checked once a mirror read asked after the end lands
+ *   and at every later check of that cap: so the charge is never counted
+ *   by neither, and a core that never reports it leaves its room held.
  */
 async function settledByLedger(webContentsId, detected, reply, held, ledger) {
   const typed = reply?.device;
@@ -641,21 +644,19 @@ async function settledByLedger(webContentsId, detected, reply, held, ledger) {
     if (ledger.byCap) throw capNotCoveredError();
     throw new Error("The payment the identity core prepared isn't the one you approved: nothing was paid");
   }
-  const end = { written: false };
+  // The settle's progress (caps.js `settleTypedData`): whether it was sent,
+  // and whether the device's signature may have left main.
+  const track = { sent: false, signed: false };
   try {
-    return await settleLedgerEntry(webContentsId, detected, reply, held, ledger, entry.accept, end);
+    return await settleLedgerEntry(webContentsId, detected, reply, held, ledger, entry.accept, track);
   } finally {
-    if (end.written) releaseHoldWhen(entry.hold, rereadCaps(held.origin));
+    if (track.signed) awaitSpend(entry.hold, rereadCaps(held.origin));
     else releaseHold(entry.hold);
   }
 }
 
-/**
- * `settledByLedger`'s check and settle of `accept`, the entry main asked
- * for; `end.written` says, once it ends, whether the cap's charge was, or
- * may have been, written.
- */
-async function settleLedgerEntry(webContentsId, detected, reply, held, ledger, accept, end) {
+/** `settledByLedger`'s check and settle of `accept`, the entry main asked for, filling `track`. */
+async function settleLedgerEntry(webContentsId, detected, reply, held, ledger, accept, track) {
   const typed = reply.device;
   const checked = checkLedgerAuthorization({
     x402Version: detected.requirements?.x402Version,
@@ -675,30 +676,23 @@ async function settleLedgerEntry(webContentsId, detected, reply, held, ledger, a
     );
     throw new Error("The payment the identity core prepared isn't the one this site asked for: nothing was paid");
   }
-  let sent = false;
   let settled;
   try {
     settled = await settleTypedData(held.reservation, checked.typedData, {
       path: ledger.path,
       expectedHash: ownHash,
       origin: held.origin,
-      onSent: () => {
-        sent = true;
-      },
+      track,
     });
   } catch (err) {
-    if (sent) {
+    if (track.sent) {
       held.reservation = null;
-      const refunded = err?.data?.refunded === true;
-      if (refunded) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
-      // Nothing written: the room is back, or the cancel dropped the hold.
-      end.written = !refunded && err?.code !== 'cancelled';
+      if (err?.data?.refunded === true) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
     }
     const failure = ledgerPaymentError(err);
     if (failure?.code === 'LEDGER_WRONG_DEVICE') keepLedgerAddressCheck(ledger.walletIndex, false);
     throw failure;
   }
-  end.written = true;
   keepLedgerAddressCheck(ledger.walletIndex, true);
   // A token's payment writes its grant and charges a cap only now.
   if (settled?.charged && !reply.charged) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });

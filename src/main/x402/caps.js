@@ -283,14 +283,17 @@ function refusal(code, message, data) {
  * before the core can ask anything for it; its end, whatever it is, closes
  * it there.
  *
- * `onSent()` hears the settle written to the core: from then on the
- * reservation is the core's to spend, however the settle ends. Resolves
+ * `track` is filled as the settle goes: `track.sent` once it is written to
+ * the core (from then on the reservation is the core's to spend, however
+ * the settle ends), and `track.signed` once it ends, the relay's
+ * `handle.signed` (whether the device's signature may have left main).
+ * Resolves
  * `{ payload, charged, grant?, durable? }` (the reservation then waits for
  * `sent` or `withheld`); rejects with the core's error, whose `data.refunded`
  * says whether the charge's room is back on its cap (`cancelled` carries
  * none). The mirror reads the seller's caps again either way.
  */
-async function settleTypedData(reservation, typedData, { path, expectedHash, origin = null, onSent = null } = {}) {
+async function settleTypedData(reservation, typedData, { path, expectedHash, origin = null, track = {} } = {}) {
   try {
     const relay = require('../core/core-process').getLedgerRelay();
     if (!relay) throw refusal('core_unavailable', 'The identity core is not running');
@@ -309,7 +312,7 @@ async function settleTypedData(reservation, typedData, { path, expectedHash, ori
       return await vault().x402.settleOnLedger(params, {
         signal: controller.signal,
         onSent: (id, generation) => {
-          onSent?.();
+          track.sent = true;
           try {
             handle = relay.open({ id, generation }, { prepared, controller });
           } catch (err) {
@@ -322,6 +325,7 @@ async function settleTypedData(reservation, typedData, { path, expectedHash, ori
     } catch (err) {
       throw unopened ?? err;
     } finally {
+      track.signed = handle?.signed === true;
       handle?.close();
     }
   } finally {
