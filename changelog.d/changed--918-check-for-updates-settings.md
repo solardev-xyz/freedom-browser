@@ -1,0 +1,3 @@
+- "Check for Updates…" opens Settings → About Freedom → Updates and runs the check there ([#918](https://github.com/solardev-xyz/freedom-browser/issues/918))
+  - From the hamburger menu and from the Freedom menu on macOS; a Settings tab that is already open is reused
+  - The panel shows the result, or why this profile can't check, in place of the "Freedom is up to date" notice and the "Updates Managed Elsewhere" dialog

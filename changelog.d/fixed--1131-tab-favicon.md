@@ -1,0 +1,2 @@
+- A tab no longer shows the previous site's icon on a site that has none of its own ([#1131](https://github.com/solardev-xyz/freedom-browser/pull/1131))
+  - Going from Google or X to such a site kept their icon in the tab, and leaving Settings for one kept the Settings gear; the tab now shows the globe

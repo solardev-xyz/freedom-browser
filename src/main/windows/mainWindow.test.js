@@ -193,6 +193,15 @@ describe('opening launch URLs', () => {
     ]);
   });
 
+  test('a three-finger swipe goes back or forward like History > Back / Forward (#980)', () => {
+    const mod = load();
+    mod.createMainWindow();
+    const [onSwipe] = windows[0].handlers.swipe;
+    onSwipe({}, 'left');
+    onSwipe({}, 'right');
+    expect(windows[0].webContents.send.mock.calls).toEqual([['history:back'], ['history:forward']]);
+  });
+
   test('a plain focus request opens no tab', () => {
     const mod = load();
     mod.createMainWindow();

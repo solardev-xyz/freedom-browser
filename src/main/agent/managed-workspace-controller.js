@@ -1162,7 +1162,17 @@ class ManagedWorkspaceController {
     externalSignal?.addEventListener?.('abort', abort, { once: true });
     if (externalSignal?.aborted) controller.abort();
     const activeToken = {};
-    const timeout = setTimeout(() => controller.abort(), DEFAULT_FILE_OPERATION_TIMEOUT_MS);
+    const windows = capabilities.backend === 'windows-elevated';
+    let ready = !windows;
+    let timedOut = false;
+    const expire = () => { timedOut = true; controller.abort(); };
+    let timeout = setTimeout(expire, windows ? 75000 : DEFAULT_FILE_OPERATION_TIMEOUT_MS);
+    const onReady = () => {
+      if (ready || controller.signal.aborted) return;
+      ready = true;
+      clearTimeout(timeout);
+      timeout = setTimeout(expire, DEFAULT_FILE_OPERATION_TIMEOUT_MS);
+    };
     this.activeCommands.set(activeToken, { conversationId, controller });
     let receipt;
     try {
@@ -1172,7 +1182,7 @@ class ManagedWorkspaceController {
           ? (request.projectReadVersions || this.projectReads.get(conversationId))?.get(relative) || 'missing' : '',
         grant ? `${grant.dev}:${grant.ino}` : ''];
       receipt = capabilities.backend === 'windows-elevated'
-        ? await this.executor.executeTrustedFileHelper(lease.helperPolicy, { args: helperArgs, signal: controller.signal })
+        ? await this.executor.executeTrustedFileHelper(lease.helperPolicy, { args: helperArgs, signal: controller.signal, onReady })
         : await this.executor.execute(lease.helperPolicy, {
         command: '/bin/sh',
         args: [
@@ -1201,6 +1211,17 @@ class ManagedWorkspaceController {
       this.activeCommands.delete(activeToken);
     }
     if (receipt.state !== EXECUTION_STATES.COMPLETED || receipt.exitCode !== 0) {
+      if (windows && !externalSignal?.aborted && (receipt.error?.code === 'WORKSPACE_STARTUP_BUSY' || timedOut || receipt.state === EXECUTION_STATES.TIMED_OUT)) {
+        // Only the adapter's explicit lock-wait refusal proves no workload was
+        // launched. Missing ready alone does not: a child may start before the
+        // handshake reaches us, so other timeouts still require inspection.
+        if (receipt.error?.code === 'WORKSPACE_STARTUP_BUSY') {
+          throw new ManagedWorkspaceError('WORKSPACE_STARTUP_BUSY', receipt.error.message);
+        }
+        throw new ManagedWorkspaceError(receipt.ready === true ? 'WORKSPACE_FILE_OPERATION_TIMEOUT' : 'WORKSPACE_STARTUP_TIMEOUT',
+          receipt.ready === true ? 'The project file operation timed out. Inspect the file before retrying.'
+            : 'Project protection did not become ready in time. Inspect current files before retrying.');
+      }
       if (externalSignal?.aborted || receipt.state === EXECUTION_STATES.CANCELLED) {
         throw workspaceCancelledError();
       }

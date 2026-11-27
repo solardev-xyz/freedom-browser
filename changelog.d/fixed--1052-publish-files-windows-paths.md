@@ -1,0 +1,2 @@
+- Sites a page publishes with `window.swarm.publishFiles` on Windows keep their folder structure ([#1052](https://github.com/solardev-xyz/freedom-browser/issues/1052))
+  - Files in subfolders reached the node with backslashes in their names, and an index document in a subfolder did not open

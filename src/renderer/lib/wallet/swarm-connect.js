@@ -9,12 +9,13 @@ import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-st
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { formatBytes } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getPermissionKey, getActiveWebview, getActivePageUrl } from '../dapp-provider.js';
+import { getPermissionKey, getActivePageUrl } from '../dapp-provider.js';
 import { showSwarmPermissions } from './permission-manage.js';
 import { createPromptQueue, setButtonsDisabled } from './prompt-queue.js';
 import {
   BEE_WALLET_IDENTITY_ID,
   getActivePublisherIdentity,
+  identityLabel,
   renderPublisherIdentitySelector,
 } from './publisher-identity-selector.js';
 
@@ -40,6 +41,8 @@ let swarmPublishType;
 let swarmPublishSize;
 let swarmPublishNameRow;
 let swarmPublishName;
+let swarmPublishOwnerRow;
+let swarmPublishOwner;
 let swarmPublishPathsRow;
 let swarmPublishPaths;
 let swarmPublishRejectBtn;
@@ -61,6 +64,19 @@ let swarmMessagingAutoApproveLabel;
 let swarmMessagingAutoApproveCheckbox;
 let swarmMessagingRejectBtn;
 let swarmMessagingConfirmBtn;
+
+// DOM references — ACT approval screen (#648)
+let swarmActScreen;
+let swarmActBackBtn;
+let swarmActSite;
+let swarmActPublisher;
+let swarmActPublisherAddress;
+let swarmActReference;
+let swarmActPathRow;
+let swarmActPath;
+let swarmActAutoApproveCheckbox;
+let swarmActRejectBtn;
+let swarmActConfirmBtn;
 
 // DOM references — feed approval screen
 let swarmFeedScreen;
@@ -98,6 +114,9 @@ const swarmPublishQueue = createPromptQueue(presentSwarmPublishApproval, (armed)
 const swarmMessagingQueue = createPromptQueue(presentSwarmMessagingApproval, (armed) => {
   setButtonsDisabled([swarmMessagingConfirmBtn, swarmMessagingRejectBtn], !armed);
 });
+const swarmActQueue = createPromptQueue(presentSwarmActApproval, (armed) => {
+  setButtonsDisabled([swarmActConfirmBtn, swarmActRejectBtn], !armed);
+});
 const swarmFeedQueue = createPromptQueue(presentSwarmFeedApproval, (armed) => {
   setButtonsDisabled([swarmFeedRejectBtn], !armed);
   // Approve is additionally gated on the vault being unlocked.
@@ -111,8 +130,40 @@ let currentBannerPermissionKey = null;
 
 function syncFeedApproveButton() {
   if (swarmFeedApproveBtn) {
-    swarmFeedApproveBtn.disabled = !(swarmFeedVaultUnlocked && swarmFeedQueue.armed);
+    swarmFeedApproveBtn.disabled =
+      !(swarmFeedVaultUnlocked && swarmFeedQueue.armed) || sharedIdentityBlocksFeedRequest();
   }
+}
+
+const SIGNING_WARNING =
+  'Publisher signing can create Single Owner Chunks and reveal the active publisher owner for this site.';
+
+// SW-1: a raw Single Owner Chunk needs a publisher identity only this site
+// uses; main refuses one under a shared identity (`shared_identity`), so
+// the prompt says so and keeps Allow off until the user picks another.
+function sharedIdentityBlocksFeedRequest() {
+  if (swarmFeedQueue.current?.method !== 'swarm_writeSingleOwnerChunk') return false;
+  return getActivePublisherIdentity(swarmFeedIdentityState)?.shared === true;
+}
+
+function syncFeedSharedIdentityNotice() {
+  const current = swarmFeedQueue.current;
+  if (!current || current.autoApproveType !== 'signing' || !swarmFeedWarning) return;
+  // The encryption key is the site's own whatever identity it signs with, so
+  // its prompt keeps its own warning.
+  if (ENCRYPTION_METHODS.has(current.method)) return;
+  const active = getActivePublisherIdentity(swarmFeedIdentityState);
+  if (active?.shared !== true) {
+    swarmFeedWarning.textContent = SIGNING_WARNING;
+  } else if (current.method === 'swarm_writeSingleOwnerChunk') {
+    swarmFeedWarning.textContent =
+      `${identityLabel(active)} is also used by other sites, so it cannot write ` +
+      'Single Owner Chunks for this one. Choose or create an app-scoped identity for this site.';
+  } else {
+    swarmFeedWarning.textContent =
+      `${identityLabel(active)} is also used by other sites: they sign as the same owner address.`;
+  }
+  syncFeedApproveButton();
 }
 
 function rejectDismissed(queue) {
@@ -142,6 +193,8 @@ export function initSwarmConnect() {
   swarmPublishNameRow = document.getElementById('swarm-publish-name-row');
   swarmPublishName = document.getElementById('swarm-publish-name');
   swarmPublishPathsRow = document.getElementById('swarm-publish-paths-row');
+  swarmPublishOwnerRow = document.getElementById('swarm-publish-owner-row');
+  swarmPublishOwner = document.getElementById('swarm-publish-owner');
   swarmPublishPaths = document.getElementById('swarm-publish-paths');
   swarmPublishRejectBtn = document.getElementById('swarm-publish-reject');
   swarmPublishConfirmBtn = document.getElementById('swarm-publish-confirm');
@@ -190,6 +243,31 @@ export function initSwarmConnect() {
     if (wasVisible) rejectDismissed(swarmMessagingQueue);
   });
 
+  swarmActScreen = document.getElementById('sidebar-swarm-act-approve');
+  swarmActBackBtn = document.getElementById('swarm-act-back');
+  swarmActSite = document.getElementById('swarm-act-site');
+  swarmActPublisher = document.getElementById('swarm-act-publisher');
+  swarmActPublisherAddress = document.getElementById('swarm-act-publisher-address');
+  swarmActReference = document.getElementById('swarm-act-reference');
+  swarmActPathRow = document.getElementById('swarm-act-path-row');
+  swarmActPath = document.getElementById('swarm-act-path');
+  swarmActAutoApproveCheckbox = document.getElementById('swarm-act-auto-approve');
+  swarmActRejectBtn = document.getElementById('swarm-act-reject');
+  swarmActConfirmBtn = document.getElementById('swarm-act-confirm');
+
+  registerScreenHider(() => {
+    if (swarmActQueue.presenting) return;
+    const wasVisible = swarmActScreen && !swarmActScreen.classList.contains('hidden');
+    swarmActScreen?.classList.add('hidden');
+    if (!wasVisible) return;
+    // The rule checkbox counts on every exit, a dismissal included.
+    const onScreen = swarmActQueue.current;
+    const keepRule = !!swarmActAutoApproveCheckbox?.checked;
+    for (const pending of swarmActQueue.drain()) {
+      rejectSwarmAct(pending, pending === onScreen ? keepRule : true, 'User dismissed prompt');
+    }
+  });
+
   swarmFeedScreen = document.getElementById('sidebar-swarm-feed-approve');
   swarmFeedBackBtn = document.getElementById('swarm-feed-back');
   swarmFeedTitle = document.getElementById('swarm-feed-title');
@@ -223,6 +301,7 @@ export function initSwarmConnect() {
   setupSwarmConnectScreen();
   setupSwarmPublishScreen();
   setupSwarmMessagingScreen();
+  setupSwarmActScreen();
   setupSwarmFeedScreen();
 }
 
@@ -312,7 +391,7 @@ function closeSwarmConnect() {
 }
 
 async function approveSwarmConnect(pending) {
-  const { permissionKey, resolve, webview } = pending;
+  const { permissionKey, resolve } = pending;
 
   try {
     await window.swarmPermissions.grantPermission(permissionKey);
@@ -323,14 +402,8 @@ async function approveSwarmConnect(pending) {
       throw response.error;
     }
 
+    // swarm-provider.js announces `connect` to the page once this resolves.
     resolve(response.result);
-
-    if (webview && webview.send) {
-      webview.send('swarm:provider-event', {
-        event: 'connect',
-        data: { origin: permissionKey },
-      });
-    }
 
     console.log('[SwarmConnect] Approved:', permissionKey);
     updateSwarmConnectionBanner(permissionKey);
@@ -375,7 +448,8 @@ export async function updateSwarmConnectionBanner(permissionKey = null) {
       if (swarmConnectionSite) {
         swarmConnectionSite.textContent = permissionKey;
       }
-      const hasAutoApprove = permission.autoApprove?.publish || permission.autoApprove?.feeds || permission.autoApprove?.signing;
+      const hasAutoApprove = permission.autoApprove?.publish || permission.autoApprove?.feeds || permission.autoApprove?.signing ||
+        Object.keys(permission.act || {}).length > 0;
       swarmAutoApproveBadge?.classList.toggle('hidden', !hasAutoApprove);
 
       currentBannerPermissionKey = permissionKey;
@@ -401,17 +475,9 @@ export async function disconnectSwarmApp(permissionKey = null) {
       await window.swarmPermissions.revokePermission(key);
       await window.swarmFeedStore?.revokeFeedAccess?.(key);
     }
+    // Main tells every window, and each sends `disconnect` to its pages of
+    // this site (swarm-provider.js notifySiteDisconnected).
     console.log('[SwarmConnect] Disconnected:', key);
-
-    // Only the visible page can be told — and only when it is the site
-    // that was disconnected.
-    const webview = getActiveWebview();
-    if (webview && webview.send && getPermissionKey(getActivePageUrl()) === key) {
-      webview.send('swarm:provider-event', {
-        event: 'disconnect',
-        data: { origin: key },
-      });
-    }
 
     // Only the banner of the site that was revoked: a key from the
     // permissions list can name a site in another tab.
@@ -490,6 +556,7 @@ function presentSwarmPublishApproval({ permissionKey, params, method }) {
 
   const isFileMode = Array.isArray(params?.files);
   const isChunkMode = method === 'swarm_publishChunk';
+  const isSignedSocMode = method === 'swarm_publishSingleOwnerChunk';
 
   if (isFileMode) {
     // File mode: show file count, total size, path preview
@@ -516,7 +583,11 @@ function presentSwarmPublishApproval({ permissionKey, params, method }) {
   } else {
     // Data mode: show content type, size, optional name
     if (swarmPublishType) {
-      swarmPublishType.textContent = isChunkMode ? 'Swarm chunk' : (params?.contentType || 'unknown');
+      swarmPublishType.textContent = isSignedSocMode
+        ? 'Single Owner Chunk'
+        : isChunkMode
+          ? 'Swarm chunk'
+          : (params?.contentType || 'unknown');
     }
     if (swarmPublishSize) {
       swarmPublishSize.textContent = formatBytes(payloadByteSize(params?.data));
@@ -530,6 +601,13 @@ function presentSwarmPublishApproval({ permissionKey, params, method }) {
       }
     }
     swarmPublishPathsRow?.classList.add('hidden');
+  }
+
+  // A page-signed SOC names the key it was signed with; Freedom signs nothing.
+  if (swarmPublishOwnerRow && swarmPublishOwner) {
+    const owner = isSignedSocMode && typeof params?.owner === 'string' ? params.owner : '';
+    swarmPublishOwner.textContent = owner && !owner.startsWith('0x') ? `0x${owner}` : owner;
+    swarmPublishOwnerRow.classList.toggle('hidden', !owner);
   }
 
   hideAllSubscreens();
@@ -708,6 +786,103 @@ function rejectSwarmMessaging(pending) {
 }
 
 // ============================================
+// ACT approval prompt (#648)
+// ============================================
+
+function setupSwarmActScreen() {
+  const settleWith = (approve) => () => {
+    const pending = swarmActQueue.claim();
+    if (!pending) return;
+    // Read the shared checkbox before the first await (see approveSwarmPublish).
+    const keepRule = !!swarmActAutoApproveCheckbox?.checked;
+    if (approve) approveSwarmAct(pending, keepRule);
+    else rejectSwarmAct(pending, keepRule);
+    closeSwarmActApproval();
+  };
+  swarmActBackBtn?.addEventListener('click', settleWith(false));
+  swarmActRejectBtn?.addEventListener('click', settleWith(false));
+  swarmActConfirmBtn?.addEventListener('click', settleWith(true));
+}
+
+/**
+ * Ask the user whether `permissionKey` may open content `publisher` shared
+ * with this node through ACT (swarm_openAct). `params` is main's canonical
+ * form of the request and `publisher` its description
+ * (swarm-permissions.js describeActRequest): the normalised key
+ * the grant and the node request use, its address, and whether a rule for it
+ * already exists (only an Agent-held tab is prompted despite one). Resolves on
+ * Open, rejects (4001) otherwise.
+ */
+export function showSwarmActApproval(permissionKey, params, publisher, resolve, reject) {
+  // A live device confirmation owns the sidebar (see signature-flight.js).
+  if (isSignatureInFlight()) {
+    reject(signatureInFlightError());
+    return;
+  }
+
+  swarmActQueue.show({ permissionKey, params, publisher, resolve, reject });
+}
+
+function presentSwarmActApproval({ permissionKey, params, publisher }) {
+  if (swarmActSite) swarmActSite.textContent = permissionKey || 'Unknown';
+  if (swarmActPublisher) swarmActPublisher.textContent = publisher?.publicKey || '';
+  if (swarmActPublisherAddress) swarmActPublisherAddress.textContent = publisher?.address || '';
+  if (swarmActReference) {
+    swarmActReference.textContent = typeof params?.reference === 'string' ? params.reference.toLowerCase() : '';
+  }
+  const hasPath = typeof params?.path === 'string';
+  swarmActPathRow?.classList.toggle('hidden', !hasPath);
+  if (swarmActPath) swarmActPath.textContent = hasPath ? (params.path || '/') : '';
+  // Shows the rule as it stands, so unticking it here removes it.
+  if (swarmActAutoApproveCheckbox) swarmActAutoApproveCheckbox.checked = publisher?.granted === true;
+
+  hideAllSubscreens();
+  walletState.identityView?.classList.add('hidden');
+  swarmActScreen?.classList.remove('hidden');
+
+  openSidebarPanel();
+}
+
+function closeSwarmActApproval() {
+  swarmActScreen?.classList.add('hidden');
+  walletState.identityView?.classList.remove('hidden');
+  swarmActQueue.settle();
+}
+
+/**
+ * Store or remove the "always allow" rule for this publisher as the checkbox
+ * left it. A failure to save is logged; the page still gets the user's answer.
+ */
+async function applyActRule(pending, keepRule, { mayGrant }) {
+  const { permissionKey, publisher } = pending;
+  if (!permissionKey || !publisher?.publicKey) return;
+  const had = publisher.granted === true;
+  try {
+    if (keepRule && !had && mayGrant) {
+      await window.swarmPermissions.grantAct(permissionKey, publisher.publicKey);
+    } else if (!keepRule && had) {
+      await window.swarmPermissions.revokeAct(permissionKey, publisher.publicKey);
+    } else {
+      return;
+    }
+    updateSwarmConnectionBanner(permissionKey);
+  } catch (err) {
+    console.error('[SwarmConnect] Could not save the ACT rule:', err);
+  }
+}
+
+async function approveSwarmAct(pending, keepRule) {
+  await applyActRule(pending, keepRule, { mayGrant: true });
+  pending.resolve();
+}
+
+async function rejectSwarmAct(pending, keepRule, message = 'User rejected the request') {
+  // A rejection never turns a rule on, but unticking it still removes one.
+  await applyActRule(pending, keepRule, { mayGrant: false });
+  pending.reject({ code: 4001, message });
+}
+
+// ============================================
 // Feed approval prompt
 // ============================================
 
@@ -804,16 +979,23 @@ function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, meth
   checkFeedUnlockStatus();
 }
 
+// The site's own encryption key shares the signing grant and its
+// auto-approve rule (swarm-provider.js), but gets its own wording.
+const ENCRYPTION_METHODS = new Set(['swarm_getEncryptionKey', 'swarm_deriveSharedSecrets']);
+
 function applyFeedPromptCopy(method, params, autoApproveType) {
   const signing = autoApproveType === 'signing';
+  const encryption = signing && ENCRYPTION_METHODS.has(method);
 
   if (swarmFeedTitle) {
-    swarmFeedTitle.textContent = signing ? 'Publisher Signing' : 'Feed Access';
+    swarmFeedTitle.textContent = encryption
+      ? 'Encryption Key'
+      : (signing ? 'Publisher Signing' : 'Feed Access');
   }
   if (swarmFeedWants) {
-    swarmFeedWants.textContent = signing
-      ? 'wants to use your publisher identity'
-      : 'wants to create and manage feeds';
+    swarmFeedWants.textContent = encryption
+      ? 'wants to use its encryption key'
+      : (signing ? 'wants to use your publisher identity' : 'wants to create and manage feeds');
   }
   if (swarmFeedDetailLabel) {
     swarmFeedDetailLabel.textContent = signing ? 'Request' : 'Feed name';
@@ -824,15 +1006,26 @@ function applyFeedPromptCopy(method, params, autoApproveType) {
       : (params?.name || params?.feedId || params?.identifier || 'Feed operation');
   }
   if (swarmFeedWarning) {
-    swarmFeedWarning.textContent = signing
-      ? 'Publisher signing can create Single Owner Chunks and reveal the active publisher owner for this site.'
-      : 'Feeds provide stable URLs that this app can update over time. Uses your stamps and bandwidth.';
+    if (encryption) {
+      swarmFeedWarning.textContent =
+        'This key belongs to this site only. Using it lets the site read what others encrypted to it.';
+    } else {
+      swarmFeedWarning.textContent = signing
+        ? SIGNING_WARNING
+        : 'Feeds provide stable URLs that this app can update over time. Uses your stamps and bandwidth.';
+    }
   }
   if (swarmFeedAutoApproveLabel) {
+    // One rule covers signing and the encryption key, so both prompts say so.
     swarmFeedAutoApproveLabel.textContent = signing
-      ? 'Always allow this site to use this publisher identity without asking'
+      ? 'Always allow this site to sign and use its encryption key without asking'
       : 'Always allow this site to manage feeds without asking';
   }
+}
+
+function shortPublicKey(value) {
+  const hex = typeof value === 'string' ? value.replace(/^0x/, '') : '';
+  return hex.length > 12 ? `${hex.slice(0, 6)}…${hex.slice(-4)}` : hex || 'a public key';
 }
 
 function signingRequestLabel(method, params) {
@@ -841,6 +1034,15 @@ function signingRequestLabel(method, params) {
   }
   if (method === 'swarm_getSigningIdentity') {
     return 'Signing identity';
+  }
+  if (method === 'swarm_getEncryptionKey') {
+    return 'Encryption public key';
+  }
+  if (method === 'swarm_deriveSharedSecrets') {
+    const keys = Array.isArray(params?.publicKeys) ? params.publicKeys : [];
+    return keys.length === 1
+      ? `Shared key with ${shortPublicKey(keys[0])}`
+      : `Shared keys with ${keys.length} public keys`;
   }
   return 'Publisher signing';
 }
@@ -851,6 +1053,7 @@ function renderFeedIdentitySelector() {
     onSelect: (identity) => activateFeedPromptIdentity(identity),
     onCreateAppScoped: () => createFeedPromptIdentity(),
   });
+  syncFeedSharedIdentityNotice();
 }
 
 async function refreshFeedIdentitySelector() {

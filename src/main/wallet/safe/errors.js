@@ -12,12 +12,20 @@ const CODES = {
   SAFE_BUSY: 'SAFE_BUSY',
   /** One pending SafeTx per Safe — finish or discard the current one. */
   SAFE_PENDING_EXISTS: 'SAFE_PENDING_EXISTS',
+  /** safe-pending.json exists but cannot be read; nothing was changed. */
+  SAFE_PENDING_UNREADABLE: 'SAFE_PENDING_UNREADABLE',
   /** A live SafeMessage session belongs to another page — no takeover. */
   SAFE_MESSAGE_EXISTS: 'SAFE_MESSAGE_EXISTS',
   /** The pending item was discarded while a signature was being made. */
   SAFE_DISCARDED: 'SAFE_DISCARDED',
   /** Nothing local can pay gas — render the fund-the-executor state. */
   SAFE_NEEDS_FUNDS: 'SAFE_NEEDS_FUNDS',
+  /** No pinned Safe deployment (proxy code) for this chain or version. */
+  SAFE_UNSUPPORTED: 'SAFE_UNSUPPORTED',
+  /** The Safe's code was read, but no verified source confirmed it. */
+  SAFE_UNVERIFIED: 'SAFE_UNVERIFIED',
+  /** The deployment would create another address than the record's. */
+  SAFE_ADDRESS_MISMATCH: 'SAFE_ADDRESS_MISMATCH',
 };
 
 function codedError(message, code) {

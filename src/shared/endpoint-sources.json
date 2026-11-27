@@ -98,6 +98,7 @@
     "name": "Alchemy",
     "website": "https://alchemy.com",
     "docsUrl": "https://www.alchemy.com/rpc",
+    "providerDomains": ["alchemy.com"],
     "coverage": {
       "1": "https://eth-mainnet.g.alchemy.com/v2/{API_KEY}",
       "42161": "https://arb-mainnet.g.alchemy.com/v2/{API_KEY}",
@@ -122,6 +123,7 @@
     "name": "Infura",
     "website": "https://infura.io",
     "docsUrl": "https://docs.metamask.io/services/get-started/endpoints/",
+    "providerDomains": ["infura.io"],
     "coverage": {
       "1": "https://mainnet.infura.io/v3/{API_KEY}",
       "42161": "https://arbitrum-mainnet.infura.io/v3/{API_KEY}",
@@ -144,6 +146,7 @@
     "name": "DRPC",
     "website": "https://drpc.org",
     "docsUrl": "https://drpc.org/docs",
+    "providerDomains": ["drpc.org", "drpc.live"],
     "coverage": {
       "1": "https://lb.drpc.live/ethereum/{API_KEY}",
       "42161": "https://lb.drpc.live/arbitrum/{API_KEY}",

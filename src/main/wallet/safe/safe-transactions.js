@@ -27,6 +27,7 @@ const {
   getSafeRecord,
   resolveOwnerAddresses,
   chainRead,
+  isMarkedDeployed,
   DEPLOY_CHAIN_ID,
 } = require('./safe-service');
 const { getPending, setPending, clearPending, listPendingIndexes } = require('./pending-store');
@@ -55,8 +56,9 @@ async function chainSafeNonce(safeAddress) {
 }
 
 /**
- * The board's render model. Pure — never touches the chain, never
- * throws for a render call. Null when nothing is pending.
+ * The board's render model. Pure — never touches the chain. Null when
+ * nothing is pending; throws SAFE_PENDING_UNREADABLE only when the store
+ * file itself cannot be read (see pending-store).
  *
  * @returns {{safeIndex: number, chainId: number, safeTxHash: string,
  *   threshold: number, collected: number,
@@ -128,7 +130,9 @@ async function startSafeSend({ safeIndex, tx, display, chainId }) {
   if (!Number.isInteger(sendChainId) || sendChainId !== DEPLOY_CHAIN_ID) {
     throw new Error('Multi-signature accounts can only send on Gnosis');
   }
-  if (!record.deployed?.[DEPLOY_CHAIN_ID]) {
+  // Only a verified check's mark counts (#1066): a Safe still pending
+  // verification is refused like one not yet activated.
+  if (!isMarkedDeployed(record, DEPLOY_CHAIN_ID)) {
     throw new Error('Activate this account on Gnosis before sending');
   }
   if (getPending(safeIndex)) {
@@ -207,6 +211,11 @@ async function executeSafePending(safeIndex) {
   if (!pending) {
     throw new Error('No pending transaction for this account');
   }
+  // A SafeTx saved while a release before #1066 trusted an unverified
+  // deployed mark waits until a verified check marks the Safe again.
+  if (!isMarkedDeployed(record, DEPLOY_CHAIN_ID)) {
+    throw new Error('Activate this account on Gnosis before sending');
+  }
 
   acquire(safeIndex);
   try {
@@ -253,7 +262,13 @@ async function executeSafePending(safeIndex) {
     }
 
     const state = getSafeSendState(safeIndex);
-    clearPending(safeIndex);
+    try {
+      clearPending(safeIndex);
+    } catch (err) {
+      // The transaction landed: report it as executed. The leftover entry
+      // turns 'superseded' via the nonce guard on the next execute.
+      console.error('[SafeSend] executed, but clearing the pending entry failed:', err);
+    }
     return { ...state, status: 'executed', executed: { hash: result.hash, explorerUrl: result.explorerUrl } };
   } finally {
     release(safeIndex);

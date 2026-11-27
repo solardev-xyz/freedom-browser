@@ -43,6 +43,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUrlInNewWindow: (url) => ipcRenderer.send('window:new-with-url', url),
   showAbout: () => ipcRenderer.send('app:show-about'),
   getPlatform: () => ipcRenderer.invoke('window:get-platform'),
+  // { twoFinger } — whether a two-finger swipe past a page's edge navigates (#980).
+  getSwipeNavigation: () => ipcRenderer.invoke('window:get-swipe-navigation'),
+  awaitSwipeScrollEnd: (webContentsId) =>
+    ipcRenderer.invoke('window:await-swipe-scroll-end', webContentsId),
   // Synchronous copy of process.platform for renderer/platform-init.js, which
   // must tag <html> before first paint (getPlatform() resolves too late for
   // layout that differs per OS, e.g. the macOS traffic-light spacer).
@@ -130,6 +134,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   x402RevokePermission: (args) => ipcRenderer.invoke('x402:revoke-permission', args),
   x402RevokeAllForOrigin: (args) => ipcRenderer.invoke('x402:revoke-all-for-origin', args),
   x402UpdatePermission: (args) => ipcRenderer.invoke('x402:update-permission', args),
+  // Sign-In with Ethereum over HTTP auth (#1152): the sidebar's sign-in card.
+  siweGetChallenge: (args) => ipcRenderer.invoke('siwe:get-challenge', args),
+  siwePrepare: (args) => ipcRenderer.invoke('siwe:prepare', args),
+  siweComplete: (args) => ipcRenderer.invoke('siwe:complete', args),
+  siweCancel: (args) => ipcRenderer.invoke('siwe:cancel', args),
+  onSiweChallenge: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('siwe:challenge', handler);
+    return () => ipcRenderer.removeListener('siwe:challenge', handler);
+  },
+  onSiweChallengeClosed: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('siwe:challenge-closed', handler);
+    return () => ipcRenderer.removeListener('siwe:challenge-closed', handler);
+  },
   // Main fires this when an unsupervised 402 needs approval (no active
   // cap covers the charge). Returns a disposer.
   onX402ApprovalNeeded: (callback) => {
@@ -618,6 +637,7 @@ function reDispatchAsWindowEvent(channel) {
 }
 reDispatchAsWindowEvent('settings:updated');
 reDispatchAsWindowEvent('payments:tx-recorded');
+reDispatchAsWindowEvent('wallet:records-changed');
 
 contextBridge.exposeInMainWorld('ant', {
   start: () => ipcRenderer.invoke('ant:start'),
@@ -734,8 +754,6 @@ contextBridge.exposeInMainWorld('serviceRegistry', {
 });
 
 contextBridge.exposeInMainWorld('identity', {
-  hasVault: () => ipcRenderer.invoke('identity:has-vault'),
-  isUnlocked: () => ipcRenderer.invoke('identity:is-unlocked'),
   getStatus: () => ipcRenderer.invoke('identity:get-status'),
   getVaultMeta: () => ipcRenderer.invoke('identity:get-vault-meta'),
   generateMnemonic: (strength = 256) => ipcRenderer.invoke('identity:generate-mnemonic', strength),
@@ -785,6 +803,8 @@ contextBridge.exposeInMainWorld('wallet', {
   getActiveIndex: () => ipcRenderer.invoke('wallet:get-active-index'),
   setActiveWallet: (index) => ipcRenderer.invoke('wallet:set-active-wallet', index),
   createDerivedWallet: (name) => ipcRenderer.invoke('wallet:create-derived-wallet', name),
+  previewWalletAtPath: (path) => ipcRenderer.invoke('wallet:preview-wallet-at-path', path),
+  addWalletAtPath: (name, path) => ipcRenderer.invoke('wallet:add-wallet-at-path', name, path),
   renameWallet: (index, newName) => ipcRenderer.invoke('wallet:rename-wallet', index, newName),
   deleteWallet: (index) => ipcRenderer.invoke('wallet:delete-wallet', index),
   getActiveAddress: () => ipcRenderer.invoke('wallet:get-active-address'),
@@ -885,8 +905,11 @@ contextBridge.exposeInMainWorld('remoteSigner', {
   // The request is being handed to the phone: from now on a timeout or
   // cancel cannot prove the phone did not act on it.
   delivered: (payload) => ipcRenderer.send('remote-signer:delivered', payload),
-  // Persist a phone account discovered via eth_requestAccounts.
+  // Persist a phone account discovered via eth_requestAccounts. Main has
+  // the phone sign a check as the account first (#1078).
   addAccount: (name, address) => ipcRenderer.invoke('wallet:add-remote-wallet', name, address),
+  // Check an existing phone account on the phone (#1078).
+  checkAccount: (index) => ipcRenderer.invoke('wallet:check-remote-wallet', index),
 });
 
 contextBridge.exposeInMainWorld('swarmNode', {
@@ -905,6 +928,8 @@ contextBridge.exposeInMainWorld('publishSetup', {
   getPlans: () => ipcRenderer.invoke('swarm:setup-get-plans'),
   getExtendOptions: (batchId, depth) =>
     ipcRenderer.invoke('swarm:setup-get-extend-options', batchId, depth),
+  // Price a custom buy or extend request without arming it (#1257).
+  quote: (request) => ipcRenderer.invoke('swarm:setup-quote', request),
   arm: (request) => ipcRenderer.invoke('swarm:setup-arm', request),
   cancel: (opId) => ipcRenderer.invoke('swarm:setup-cancel', opId),
   // Leave a finished result this window showed; another window's screen may
@@ -1044,6 +1069,19 @@ contextBridge.exposeInMainWorld('swarmPermissions', {
   grantMessaging: (origin) => ipcRenderer.invoke('swarm:grant-messaging', origin),
   revokeMessaging: (origin) => ipcRenderer.invoke('swarm:revoke-messaging', origin),
   hasMessagingGrant: (origin) => ipcRenderer.invoke('swarm:has-messaging-grant', origin),
+  grantAct: (origin, publisher) => ipcRenderer.invoke('swarm:grant-act', origin, publisher),
+  revokeAct: (origin, publisher) => ipcRenderer.invoke('swarm:revoke-act', origin, publisher),
+  getActGrants: (origin) => ipcRenderer.invoke('swarm:get-act-grants', origin),
+  describeActRequest: (origin, params) =>
+    ipcRenderer.invoke('swarm:describe-act-request', origin, params),
+  // A site lost its connection, by any route; the provider tells its pages.
+  onOriginDisconnected: (callback) => {
+    const handler = (_event, payload) => callback(payload?.origin);
+    ipcRenderer.on('swarm:origin-disconnected', handler);
+    return () => ipcRenderer.removeListener('swarm:origin-disconnected', handler);
+  },
+  describeSharedSecretsRequest: (params) =>
+    ipcRenderer.invoke('swarm:describe-shared-secrets-request', params),
 });
 
 contextBridge.exposeInMainWorld('swarmManifest', {

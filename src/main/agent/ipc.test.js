@@ -1583,6 +1583,18 @@ describe('Freedom agent IPC', () => {
     expect(JSON.stringify(response)).not.toContain('secret');
   });
 
+  test('preserves safe model capability guidance before a run starts, without exposing resolver details', async () => {
+    const ctx = register({ resolveModel: jest.fn(async () => {
+      throw Object.assign(new Error('private diagnostic fixture'), { code: 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' });
+    }) });
+    const response = await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' }
+    );
+    expect(response).toMatchObject({ ok: false, error: { code: 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' } });
+    expect(response.error.message).toContain('Choose a compatible model');
+    expect(JSON.stringify(response)).not.toContain('private diagnostic');
+  });
+
   test('preserves safe service errors and validates input', async () => {
     const service = createService({
       start: jest.fn(async () => {
@@ -1803,4 +1815,35 @@ describe('profile AI opt-in', () => {
     expect(ctx.service.start).not.toHaveBeenCalled();
     await ctx.dispose();
   });
+});
+
+test('AI-off never forwards a held tab to the human wallet flow or an active Agent task', async () => {
+  const ctx = register({ isEnabled: () => false, isAgentHeldTab: tabId => tabId === 'tab_bound' });
+  const handle = ctx.ipcMain.handlers.get(IPC.AGENT_WALLET_REQUEST);
+  expect(handle({ sender: ctx.sender }, { rendererTabId: 7, request: { method: 'personal_sign' } }))
+    .toMatchObject({ handled: true, error: { code: 4001, message: expect.stringContaining('Take control') } });
+  expect(handle({ sender: ctx.sender }, { rendererTabId: 7, request: { method: 'personal_sign' } }).error.message).not.toMatch(/continue/i);
+  expect(handle({ sender: ctx.otherSender }, { rendererTabId: 7, request: { method: 'personal_sign' } })).toEqual({ handled: false });
+  expect(handle({ sender: ctx.sender }, { rendererTabId: 99, request: { method: 'personal_sign' } })).toEqual({ handled: false });
+  expect(ctx.service.handleWalletRequest).not.toHaveBeenCalled();
+});
+
+test('unavailable Agent storage preserves custody for held tabs without affecting ordinary user tabs', async () => {
+  const sender = createSender();
+  const ipcMain = createIpcMain();
+  const dispose = registerUnavailableAgentIpc({ ipcMain, isTrustedSender: value => value === sender,
+    automationTabIdForRenderer: (value, id) => value === sender && id === 7 ? 'held' : 'human',
+    isAgentHeldTab: tabId => tabId === 'held' });
+  const handle = ipcMain.handlers.get(IPC.AGENT_WALLET_REQUEST);
+  expect(handle({ sender }, { rendererTabId: 7, request: { method: 'eth_requestAccounts' } })).toMatchObject({ handled: true, error: { code: 4001 } });
+  expect(handle({ sender }, { rendererTabId: 8, request: { method: 'eth_requestAccounts' } })).toEqual({ handled: false });
+  dispose();
+});
+
+test('the main custody binding refuses a stale service fallback after a runtime replacement', async () => {
+  const ctx = register({ isAgentHeldTab: tabId => tabId === 'tab_bound' });
+  const response = await ctx.ipcMain.handlers.get(IPC.AGENT_WALLET_REQUEST)({ sender: ctx.sender },
+    { rendererTabId: 7, request: { method: 'eth_requestAccounts' } });
+  expect(response).toMatchObject({ handled: true, error: { code: 4001 } });
+  expect(ctx.service.handleWalletRequest).toHaveBeenCalledWith('tab_bound', expect.any(Object));
 });

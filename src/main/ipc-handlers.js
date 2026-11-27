@@ -21,6 +21,7 @@ const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
 const { normalizeSocksEndpoint } = require('../shared/socks-endpoint');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
+const { isOnionGatewayUrl } = require('./ipfs/gateway-transport');
 const {
   startProbe: startSwarmProbe,
   cancelProbe: cancelSwarmProbe,
@@ -41,6 +42,7 @@ const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
 const { relaunchArgs } = require('./launch-urls');
+const { awaitScrollEnd, getSwipeNavigationState } = require('./swipe-navigation');
 
 // Bzz content probes, keyed by probe id. Each entry exposes a promise that
 // resolves to the probe outcome. Entries survive until BZZ_AWAIT_PROBE
@@ -259,6 +261,20 @@ function validateProfileNodeConfigUpdate(protocol, patch = {}) {
         }),
       };
     }
+    // The main process dials the Swarm API with Node's own HTTP stack, which
+    // ignores the session's Tor routing, so an onion host would go to the
+    // system resolver: a lookup that leaks the name and cannot succeed (#360).
+    // An IPFS gateway is dialled over the session and may be an onion host.
+    if (field === 'externalApi' && isOnionGatewayUrl(normalized)) {
+      return {
+        ok: false,
+        response: failure(
+          'UNSUPPORTED_PROFILE_NODE_ENDPOINT',
+          "Freedom can't reach a Swarm node at a .onion address yet",
+          { field }
+        ),
+      };
+    }
     sanitized[field] = normalized;
   }
 
@@ -327,7 +343,12 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
     }
     if (protocol === 'radicle') {
       const radicleManager = require('./radicle-manager');
-      await radicleManager.syncProfileMode();
+      const status = await radicleManager.syncProfileMode();
+      // A disable whose stop wasn't proved (R-8): the mode is saved, but the
+      // node may still be running, so it was not applied.
+      if (validation.sanitized.mode === 'disabled' && status?.status === 'error') {
+        throw new Error(status.error || 'The Radicle node did not stop');
+      }
     }
     if (protocol === 'ipfs') {
       // Publish the newly configured mode to the service registry. Nothing is
@@ -775,6 +796,28 @@ function registerBaseIpcHandlers(callbacks = {}) {
 
   ipcMain.handle(IPC.WINDOW_GET_PLATFORM, () => {
     return process.platform;
+  });
+
+  // Asked at the start of each two-finger swipe past a page's edge (#980),
+  // so a change to "Swipe between pages" applies without a restart.
+  ipcMain.handle(IPC.WINDOW_GET_SWIPE_NAVIGATION, () => getSwipeNavigationState());
+
+  // After a two-finger swipe navigates, the chrome waits for that tab's scroll
+  // to be over before it takes another swipe from it. Only for a tab of the
+  // asking window: a page could otherwise keep listeners on other tabs.
+  ipcMain.handle(IPC.WINDOW_AWAIT_SWIPE_SCROLL_END, (event, webContentsId) => {
+    if (!validateWebContentsId(webContentsId)) return null;
+    let contents;
+    try {
+      contents = webContents.fromId(webContentsId);
+    } catch {
+      return null;
+    }
+    if (!contents || contents.isDestroyed?.()) return null;
+    if (!Number.isInteger(event?.sender?.id) || contents.hostWebContents?.id !== event.sender.id) {
+      return null;
+    }
+    return awaitScrollEnd(contents);
   });
 
   // Which window-manager buttons the desktop expects (GNOME defaults to

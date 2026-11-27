@@ -1,0 +1,4 @@
+- Agent presentation refinements ([#995](https://github.com/solardev-xyz/freedom-browser/pull/995)):
+  - Glass What's new announcement restored on New Tab
+  - Deployment cards match assistant bubbles
+  - Tab-scope info button removed from the floating Agent header; Agent-first mode keeps its inline scope note

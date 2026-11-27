@@ -1054,8 +1054,10 @@ function normalizeWalletApproval(value) {
 // The typed card description of a domain transaction Freedom prepared
 // (src/main/domains/service.js presentPlan). Bounded here; the renderer
 // re-validates it and only names the contract the wallet actually calls.
-const DOMAIN_PRESENTATION_ACTIONS = new Set(['register_commit', 'register', 'renew',
-  'set_website', 'clear_website', 'set_address', 'set_text']);
+// Keep in step with ACTIONS in src/renderer/lib/domain-approval.js: an action
+// missing here is dropped before the renderer sees it (guarded by a test).
+const DOMAIN_PRESENTATION_ACTIONS = new Set(['register_commit', 'approve_payment', 'setup_resolver',
+  'register', 'renew', 'set_website', 'clear_website', 'set_address', 'set_text']);
 function normalizeDomainPresentation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value.format !== 'freedom-domain-approval/1' || !DOMAIN_PRESENTATION_ACTIONS.has(value.action)) return null;
@@ -1081,6 +1083,16 @@ function normalizeDomainPresentation(value) {
     }),
     items: Object.freeze(items),
   });
+}
+
+// Only offer "continue the task" when a conversation still owns the tab; a
+// tab whose conversation was deleted (or seen with AI off / storage
+// unavailable / no service record) can only be taken back by the user.
+function agentHeldWalletRefusal({ canContinue = false } = {}) {
+  return { handled: true, error: { code: 4001,
+    message: canContinue
+      ? 'Agent still controls this tab. Continue the task or take control of the tab before using its wallet.'
+      : 'Agent still controls this tab. Take control of the tab before using its wallet.' } };
 }
 
 class FreedomAgentService {
@@ -1700,6 +1712,11 @@ class FreedomAgentService {
 
   async handleWalletRequest(tabId, payload) {
     const run = this.activeRun;
+    const record = this.agentTabs.get(tabId);
+    const held = record?.custody === 'agent' || this.controller.isPageAgentCustody?.(tabId) === true;
+    const canContinue = record?.custody === 'agent' && typeof record.conversationId === 'string' &&
+      record.conversationId !== '';
+    const unavailable = () => held ? agentHeldWalletRefusal({ canContinue }) : { handled: false };
     if (
       !this.walletController ||
       !run ||
@@ -1711,10 +1728,10 @@ class FreedomAgentService {
       (run.scopedController?.getTabController?.(tabId) || run.scopedController)?.getActiveTabId?.() !== tabId ||
       !this.#conversationHasTab(this.conversation, tabId)
     ) {
-      return { handled: false };
+      return unavailable();
     }
     const pageState = this.controller.getPageState?.(tabId);
-    if (!pageState?.url) return { handled: false };
+    if (!pageState?.url) return unavailable();
 
     const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload,
       run.scopedController?.getTabController?.(tabId)?.delegationSignal);
@@ -3041,8 +3058,14 @@ class FreedomAgentService {
     ) {
       return;
     }
-    const errorCode =
-      workspace.state === 'timed_out'
+    // Windows reports a startup-busy refusal as sandbox_denied; keep its own
+    // code so the receipt says "nothing ran, retry" instead of a policy block.
+    // WORKSPACE_STARTUP_TIMEOUT never arrives here: the controller throws it
+    // as an exception, and no backend puts it in a receipt's error.code.
+    const startupBusy = outcome.workspace?.error?.code === 'WORKSPACE_STARTUP_BUSY';
+    const errorCode = startupBusy && ['sandbox_denied', 'timed_out', 'failed'].includes(workspace.state)
+      ? 'WORKSPACE_STARTUP_BUSY'
+      : workspace.state === 'timed_out'
         ? 'WORKSPACE_COMMAND_TIMED_OUT'
         : workspace.state === 'cancelled'
           ? 'WORKSPACE_COMMAND_CANCELLED'
@@ -3723,11 +3746,14 @@ class FreedomAgentService {
 }
 
 module.exports = {
+  agentHeldWalletRefusal,
   AGENT_ERROR_CODES,
   AGENT_EVENT_VERSION,
   MAX_AGENT_PROMPT_LENGTH,
+  DOMAIN_PRESENTATION_ACTIONS,
   FreedomAgentError,
   FreedomAgentService,
+  normalizeDomainPresentation,
   normalizePiEvent,
   providerFailureFromPiMessage,
   reasoningProgressFromPiText,

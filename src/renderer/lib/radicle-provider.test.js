@@ -39,6 +39,7 @@ const loadProvider = async (options = {}) => {
     displayUrl: options.displayUrl ?? 'https://app.example',
     permission: options.permission ?? null,
     autoApprove: options.autoApprove ?? false,
+    writeRule: options.writeRule ?? false,
     signingGrant: options.signingGrant ?? false,
   };
 
@@ -54,7 +55,13 @@ const loadProvider = async (options = {}) => {
   const permissions = {
     getPermission: jest.fn(async () => state.permission),
     grantPermission: jest.fn(async () => {}),
-    getAutoApprove: jest.fn(async () => state.autoApprove),
+    getAutoApprove: jest.fn(async (_origin, type) =>
+      type === 'signing' ? state.writeRule : state.autoApprove
+    ),
+    setAutoApprove: jest.fn(async (_origin, type, enabled) => {
+      if (type === 'signing') state.writeRule = enabled;
+      return true;
+    }),
     hasSigningGrant: jest.fn(async () => state.signingGrant),
     grantSigning: jest.fn(async () => {}),
   };
@@ -63,8 +70,7 @@ const loadProvider = async (options = {}) => {
   let providerEventHandler = null;
 
   global.window = {
-    electronAPI: {
-    },
+    electronAPI: {},
     addEventListener: jest.fn(),
     radiclePermissions: permissions,
     radicleProvider: {
@@ -131,6 +137,146 @@ describe('radicle-provider', () => {
     jest.restoreAllMocks();
   });
 
+  describe('chrome disconnect (the sidebar\'s Radicle banner and permissions screen)', () => {
+    test('runs main\'s radicle_disconnect and tells the site\'s open pages only', async () => {
+      const { mod, webview, execute, state } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        writeRule: true,
+      });
+      const otherSite = createElement('webview');
+      otherSite.send = jest.fn();
+      mod.setupRadicleProvider(otherSite);
+      const getDisplayUrl = (await import('./tabs.js')).getDisplayUrlForWebview;
+      getDisplayUrl.mockImplementation((w) => (w === otherSite ? 'https://other.example' : state.displayUrl));
+
+      global.document = { dispatchEvent: jest.fn() };
+      global.CustomEvent = class {
+        constructor(type, init) {
+          this.type = type;
+          this.detail = init?.detail;
+        }
+      };
+      try {
+        await mod.disconnectRadicleSite('https://app.example');
+        expect(execute).toHaveBeenCalledWith('radicle_disconnect', {}, 'https://app.example');
+        expect(webview.send).toHaveBeenCalledWith('radicle:provider-event', {
+          event: 'disconnect',
+          data: { origin: 'https://app.example' },
+        });
+        expect(otherSite.send).not.toHaveBeenCalled();
+        expect(global.document.dispatchEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'radicle-permissions-changed',
+            detail: { origin: 'https://app.example' },
+          })
+        );
+      } finally {
+        delete global.document;
+        delete global.CustomEvent;
+      }
+    });
+
+    test('a disconnect from another window reaches this window\'s pages of the site and its banner', async () => {
+      const { mod, webview, state, emitProviderEvent } = await loadProvider();
+      const otherSite = createElement('webview');
+      otherSite.send = jest.fn();
+      mod.setupRadicleProvider(otherSite);
+      const getDisplayUrl = (await import('./tabs.js')).getDisplayUrlForWebview;
+      getDisplayUrl.mockImplementation((w) => (w === otherSite ? 'https://other.example' : state.displayUrl));
+
+      global.document = { dispatchEvent: jest.fn() };
+      global.CustomEvent = class {
+        constructor(type, init) {
+          this.type = type;
+          this.detail = init?.detail;
+        }
+      };
+      try {
+        emitProviderEvent({
+          event: 'disconnect',
+          origin: 'https://app.example',
+          data: { origin: 'https://app.example' },
+        });
+        expect(webview.send).toHaveBeenCalledWith('radicle:provider-event', {
+          event: 'disconnect',
+          data: { origin: 'https://app.example' },
+        });
+        expect(otherSite.send).not.toHaveBeenCalled();
+        expect(global.document.dispatchEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'radicle-permissions-changed',
+            detail: { origin: 'https://app.example' },
+          })
+        );
+
+        // Seed progress is not a permission change.
+        global.document.dispatchEvent.mockClear();
+        emitProviderEvent({ event: 'seedStatus', origin: 'https://app.example', data: {} });
+        expect(global.document.dispatchEvent).not.toHaveBeenCalled();
+      } finally {
+        delete global.document;
+        delete global.CustomEvent;
+      }
+    });
+
+    test('a page\'s own radicle_disconnect tells every page of the site in this window, siblings too', async () => {
+      const { mod, webview, sendRequest, execute, state } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+      });
+      // A second tab of the same site, and a tab of another site, in this window.
+      const sibling = createElement('webview');
+      sibling.send = jest.fn();
+      mod.setupRadicleProvider(sibling);
+      const otherSite = createElement('webview');
+      otherSite.send = jest.fn();
+      mod.setupRadicleProvider(otherSite);
+      const getDisplayUrl = (await import('./tabs.js')).getDisplayUrlForWebview;
+      getDisplayUrl.mockImplementation((w) => (w === otherSite ? 'https://other.example' : state.displayUrl));
+
+      global.document = { dispatchEvent: jest.fn() };
+      global.CustomEvent = class {
+        constructor(type, init) {
+          this.type = type;
+          this.detail = init?.detail;
+        }
+      };
+      try {
+        sendRequest({ id: 9, method: 'radicle_disconnect', params: {} });
+        await flushMicrotasks();
+
+        expect(execute).toHaveBeenCalledWith('radicle_disconnect', {}, 'https://app.example');
+        const disconnectEvent = [
+          'radicle:provider-event',
+          { event: 'disconnect', data: { origin: 'https://app.example' } },
+        ];
+        expect(webview.send).toHaveBeenCalledWith(...disconnectEvent);
+        expect(sibling.send).toHaveBeenCalledWith(...disconnectEvent);
+        expect(otherSite.send).not.toHaveBeenCalled();
+        expect(responsesSentTo(webview)).toEqual([
+          ['radicle:provider-response', { id: 9, result: 'ok', error: null }],
+        ]);
+        expect(global.document.dispatchEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'radicle-permissions-changed',
+            detail: { origin: 'https://app.example' },
+          })
+        );
+      } finally {
+        delete global.document;
+        delete global.CustomEvent;
+      }
+    });
+
+    test('a refused disconnect throws and tells no page', async () => {
+      const { mod, webview, execute } = await loadProvider();
+      execute.mockResolvedValueOnce({ error: { code: 4100, message: 'Origin not authorized' } });
+      await expect(mod.disconnectRadicleSite('https://app.example')).rejects.toMatchObject({
+        code: 4100,
+      });
+      expect(webview.send).not.toHaveBeenCalled();
+    });
+  });
+
   describe('happy paths (same document throughout)', () => {
     test('routes pushed seed status only to the matching current origin', async () => {
       const { webview, state, emitProviderEvent } = await loadProvider();
@@ -169,12 +315,19 @@ describe('radicle-provider', () => {
         webview
       );
       expect(permissions.grantSigning).toHaveBeenCalledWith('https://app.example');
-      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
+      // The grant lets the site ask; the write itself still prompts (R-6).
+      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledWith(
+        'https://app.example',
+        'radicle_createIssue',
+        { title: 'hi' },
+        webview,
+        { agentHeld: false, alwaysAllow: false, limited: false }
+      );
       expect(execute).toHaveBeenCalledWith(
         'radicle_createIssue',
         { title: 'hi' },
         'https://app.example',
-        { webContentsId: 41, approval: 'auto' }
+        { webContentsId: 41, approval: 'user' }
       );
       expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
         id: 1,
@@ -183,16 +336,44 @@ describe('radicle-provider', () => {
       });
     });
 
-    test('the signing grant answers writes from a user tab without a prompt', async () => {
-      const { sendRequest, consentMocks, execute } = await loadProvider({
+    test('the signing grant alone does not answer a write: each write prompts', async () => {
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
         permission: { origin: 'https://app.example' },
         signingGrant: true,
       });
 
       sendRequest({ id: 11, method: 'radicle_commentIssue', params: { body: 'Same here' } });
       await flushMicrotasks();
+      sendRequest({ id: 12, method: 'radicle_commentIssue', params: { body: 'Again' } });
+      await flushMicrotasks();
 
       expect(consentMocks.showRadicleSigningApproval).not.toHaveBeenCalled();
+      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledTimes(2);
+      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenLastCalledWith(
+        'https://app.example',
+        'radicle_commentIssue',
+        { body: 'Again' },
+        webview,
+        { agentHeld: false, alwaysAllow: false, limited: false }
+      );
+      expect(execute.mock.calls.map((call) => call[3])).toEqual([
+        { webContentsId: 41, approval: 'user' },
+        { webContentsId: 41, approval: 'user' },
+      ]);
+      // Approving without the checkbox leaves the rule off.
+      expect(permissions.setAutoApprove).not.toHaveBeenCalled();
+    });
+
+    test('the "always allow writes" rule answers a write without a prompt', async () => {
+      const { sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+
+      sendRequest({ id: 15, method: 'radicle_commentIssue', params: { body: 'Same here' } });
+      await flushMicrotasks();
+
       expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
       expect(execute).toHaveBeenCalledWith(
         'radicle_commentIssue',
@@ -202,33 +383,223 @@ describe('radicle-provider', () => {
       );
     });
 
+    test('checking "always allow" in a write prompt turns the rule on', async () => {
+      const { sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+      });
+      consentMocks.showRadicleSignedWriteApproval.mockResolvedValueOnce({ alwaysAllow: true });
+
+      sendRequest({ id: 16, method: 'radicle_createIssue', params: { title: 'Bug' } });
+      await flushMicrotasks();
+      expect(permissions.setAutoApprove).toHaveBeenCalledWith(
+        'https://app.example',
+        'signing',
+        true
+      );
+      expect(execute).toHaveBeenLastCalledWith(
+        'radicle_createIssue',
+        { title: 'Bug' },
+        'https://app.example',
+        { webContentsId: 41, approval: 'user' }
+      );
+
+      sendRequest({ id: 17, method: 'radicle_createIssue', params: { title: 'Next' } });
+      await flushMicrotasks();
+      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenLastCalledWith(
+        'radicle_createIssue',
+        { title: 'Next' },
+        'https://app.example',
+        { webContentsId: 41, approval: 'auto' }
+      );
+    });
+
+    test("past main's limit a rule-answered write falls back to the prompt", async () => {
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+      execute.mockResolvedValueOnce({
+        error: { code: 4100, message: 'limit', data: { reason: 'auto_write_limit' } },
+      });
+      // The user unchecks the box in the fallback prompt: the rule goes off.
+      consentMocks.showRadicleSignedWriteApproval.mockResolvedValueOnce({ alwaysAllow: false });
+
+      sendRequest({ id: 18, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledWith(
+        'https://app.example',
+        'radicle_commentIssue',
+        { body: 'Hi' },
+        webview,
+        { agentHeld: false, alwaysAllow: true, limited: true }
+      );
+      expect(execute.mock.calls.map((call) => call[3])).toEqual([
+        { webContentsId: 41, approval: 'auto' },
+        { webContentsId: 41, approval: 'user' },
+      ]);
+      expect(permissions.setAutoApprove).toHaveBeenCalledWith(
+        'https://app.example',
+        'signing',
+        false
+      );
+      expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
+        id: 18,
+        result: 'ok',
+        error: null,
+      });
+    });
+
+    test('unchecking the rule and rejecting the fallback prompt turns the rule off unpublished', async () => {
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+      execute.mockResolvedValueOnce({
+        error: { code: 4100, message: 'limit', data: { reason: 'auto_write_limit' } },
+      });
+      consentMocks.showRadicleSignedWriteApproval.mockRejectedValueOnce({
+        code: 4001,
+        message: 'User rejected the request',
+        alwaysAllow: false,
+      });
+
+      sendRequest({ id: 19, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+      await flushMicrotasks();
+
+      // Only the automatic attempt main refused; nothing was published.
+      expect(execute.mock.calls.map((call) => call[3])).toEqual([
+        { webContentsId: 41, approval: 'auto' },
+      ]);
+      expect(permissions.setAutoApprove).toHaveBeenCalledWith(
+        'https://app.example',
+        'signing',
+        false
+      );
+      // The page gets a plain rejection, not the checkbox state.
+      expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
+        id: 19,
+        result: null,
+        error: { code: 4001, message: 'User rejected the request', data: undefined },
+      });
+    });
+
+    test('a failed revoke still answers the page with the user rejection', async () => {
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+      execute.mockResolvedValueOnce({
+        error: { code: 4100, message: 'limit', data: { reason: 'auto_write_limit' } },
+      });
+      consentMocks.showRadicleSignedWriteApproval.mockRejectedValueOnce({
+        code: 4001,
+        message: 'User rejected the request',
+        alwaysAllow: false,
+      });
+      permissions.setAutoApprove.mockRejectedValueOnce(new Error('store unavailable'));
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        sendRequest({ id: 20, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+        await flushMicrotasks();
+
+        expect(permissions.setAutoApprove).toHaveBeenCalledWith(
+          'https://app.example',
+          'signing',
+          false
+        );
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining('Could not turn off "always allow writes"'),
+          expect.objectContaining({ message: 'store unavailable' })
+        );
+        expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
+          id: 20,
+          result: null,
+          error: { code: 4001, message: 'User rejected the request', data: undefined },
+        });
+        expect(execute).toHaveBeenCalledTimes(1);
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
+    test('checking the box and rejecting does not turn the rule on', async () => {
+      const { sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+      });
+      consentMocks.showRadicleSignedWriteApproval.mockRejectedValueOnce({
+        code: 4001,
+        message: 'User rejected the request',
+        alwaysAllow: true,
+      });
+
+      sendRequest({ id: 20, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+      await flushMicrotasks();
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(permissions.setAutoApprove).not.toHaveBeenCalled();
+    });
+
+    test('any other refusal of a rule-answered write is returned, not prompted', async () => {
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+      execute.mockResolvedValueOnce({
+        error: { code: 4100, message: 'custody', data: { reason: 'agent_custody' } },
+      });
+
+      sendRequest({ id: 19, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
+        id: 19,
+        result: null,
+        error: { code: 4100, message: 'custody', data: { reason: 'agent_custody' } },
+      });
+    });
+
     test.each([
       ['radicle_createIssue', { rid: 'rad:zExample', title: 'Bug', description: 'Steps' }],
       ['radicle_commentIssue', { rid: 'rad:zExample', issueId: 'a1b2c3', body: 'Same here' }],
       ['radicle_editIssueState', { rid: 'rad:zExample', issueId: 'a1b2c3', state: 'closed' }],
       ['radicle_commentPatch', { rid: 'rad:zExample', patchId: 'd4e5f6', body: 'LGTM' }],
-    ])('%s from a tab in Agent custody needs a per-write prompt despite the grant', async (method, params) => {
-      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
-        permission: { origin: 'https://app.example' },
-        signingGrant: true,
-        agentOwnedTabId: 3,
-      });
+    ])(
+      '%s from a tab in Agent custody needs a per-write prompt despite the grant',
+      async (method, params) => {
+        const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+          permission: { origin: 'https://app.example' },
+          signingGrant: true,
+          agentOwnedTabId: 3,
+        });
 
-      sendRequest({ id: 12, method, params });
-      await flushMicrotasks();
+        sendRequest({ id: 12, method, params });
+        await flushMicrotasks();
 
-      expect(consentMocks.showRadicleSigningApproval).not.toHaveBeenCalled();
-      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledWith(
-        'https://app.example',
-        method,
-        params,
-        webview
-      );
-      expect(execute).toHaveBeenCalledWith(method, params, 'https://app.example', {
-        webContentsId: 41,
-        approval: 'user',
-      });
-    });
+        expect(consentMocks.showRadicleSigningApproval).not.toHaveBeenCalled();
+        expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledWith(
+          'https://app.example',
+          method,
+          params,
+          webview,
+          { agentHeld: true, alwaysAllow: false, limited: false }
+        );
+        expect(execute).toHaveBeenCalledWith(method, params, 'https://app.example', {
+          webContentsId: 41,
+          approval: 'user',
+        });
+      }
+    );
 
     test('a rejected per-write prompt on an Agent-held tab signs nothing', async () => {
       const { webview, sendRequest, consentMocks, execute } = await loadProvider({
@@ -250,6 +621,29 @@ describe('radicle-provider', () => {
         result: null,
         error: { code: 4001, message: 'User rejected the request', data: undefined },
       });
+    });
+
+    test('the "always allow writes" rule does not answer for a tab in Agent custody', async () => {
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+        agentOwnedTabId: 3,
+      });
+
+      sendRequest({ id: 20, method: 'radicle_createIssue', params: { title: 'Bug' } });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledWith(
+        'https://app.example',
+        'radicle_createIssue',
+        { title: 'Bug' },
+        webview,
+        { agentHeld: true, alwaysAllow: false, limited: false }
+      );
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0][3]).toEqual({ webContentsId: 41, approval: 'user' });
+      expect(permissions.setAutoApprove).not.toHaveBeenCalled();
     });
 
     test('disclosing the identity on an Agent-held tab stays on the grant', async () => {
@@ -405,6 +799,54 @@ describe('radicle-provider', () => {
     });
   });
 
+  describe('a signed write whose document navigates before its prompt (R-6 review)', () => {
+    test('a held auto_write_limit answer opens no prompt for the departed document', async () => {
+      const pendingAuto = deferred();
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+      execute.mockReturnValueOnce(pendingAuto.promise);
+
+      sendRequest({ id: 30, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+      await flushMicrotasks();
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      webview.dispatch('did-navigate', { url: 'https://other.example' });
+      pendingAuto.resolve({
+        error: { code: 4100, message: 'limit', data: { reason: 'auto_write_limit' } },
+      });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(webview.send).not.toHaveBeenCalled();
+    });
+
+    test('a delayed rule lookup answering "no rule" opens no prompt after navigation', async () => {
+      const lookup = deferred();
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+      });
+      permissions.getAutoApprove.mockImplementation((_origin, type) =>
+        type === 'signing' ? lookup.promise : Promise.resolve(false)
+      );
+
+      sendRequest({ id: 31, method: 'radicle_createIssue', params: { title: 'Bug' } });
+      await flushMicrotasks();
+
+      webview.dispatch('did-navigate', { url: 'https://other.example' });
+      lookup.resolve(false);
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleSignedWriteApproval).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(webview.send).not.toHaveBeenCalled();
+    });
+  });
+
   describe('navigation while a request executes (no prompt involved)', () => {
     test('a result that arrives after navigation is never delivered', async () => {
       const pendingExecution = deferred();
@@ -485,7 +927,11 @@ describe('radicle-provider', () => {
       expect(responsesSentTo(webview)).toEqual([
         [
           'radicle:provider-response',
-          { id: 21, result: null, error: { code: 4001, message: 'User rejected the request', data: undefined } },
+          {
+            id: 21,
+            result: null,
+            error: { code: 4001, message: 'User rejected the request', data: undefined },
+          },
         ],
       ]);
     });

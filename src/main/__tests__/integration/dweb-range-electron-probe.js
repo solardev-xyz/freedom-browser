@@ -16,7 +16,7 @@
  * Results are printed as one JSON line prefixed with `PROBE-RESULT `.
  */
 
-const { app, protocol, session } = require('electron');
+const { app, BrowserWindow, protocol, session } = require('electron');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -90,8 +90,23 @@ function origin(req, res) {
     res.end('blog index');
     return;
   }
+  if (file === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end('<!doctype html><title>range page</title>');
+    return;
+  }
   if (file === '/endless') {
     serveEndless(res);
+    return;
+  }
+  // Ant's HEAD (antd v0.5.77): the length, no Accept-Ranges, Range ignored.
+  if (req.method === 'HEAD') {
+    res.writeHead(200, {
+      ETag: ETAG,
+      'Content-Type': 'video/mp4',
+      'Content-Length': CONTENT.length,
+    });
+    res.end();
     return;
   }
   const base = { ETag: ETAG, 'Accept-Ranges': 'bytes', 'Content-Type': 'video/mp4' };
@@ -155,7 +170,11 @@ async function main() {
     await ses.fetch(url('/video.mp4'), { headers: { Range: 'bytes=0-9', 'If-Range': '"v0"' } })
   );
   const head = await ses.fetch(url('/video.mp4'), { method: 'HEAD' });
-  results.head = { status: head.status, contentLength: head.headers.get('content-length') };
+  results.head = {
+    status: head.status,
+    contentLength: head.headers.get('content-length'),
+    acceptRanges: head.headers.get('accept-ranges'),
+  };
 
   const seenBeforeRedirect = seen.length;
   const redirected = await ses.fetch(url('/blog'));
@@ -191,6 +210,43 @@ async function main() {
   }
   results.abortReachedNode = await until(() => streams[1] && streams[1].closed);
   results.abortedAtNode = Boolean(streams[1] && streams[1].aborted);
+
+  // #169: the same reads issued by page script on a bzz: page, the way a
+  // lazy reader (swarmlite's SQLite VFS) issues them — `fetch` and a sync
+  // XHR, same origin. Renders offscreen, so it needs no display.
+  const win = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  try {
+    await win.loadURL(url('/'));
+    results.page = await win.webContents.executeJavaScript(`(async () => {
+      const pick = (status, get, body) => ({
+        status,
+        contentRange: get('content-range'),
+        contentLength: get('content-length'),
+        acceptRanges: get('accept-ranges'),
+        body,
+      });
+      const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+      const read = async (init) => {
+        const res = await fetch('/video.mp4', init);
+        return pick(res.status, (h) => res.headers.get(h), b64(await res.arrayBuffer()));
+      };
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', '/video.mp4', false);
+      xhr.overrideMimeType('text/plain; charset=x-user-defined');
+      xhr.setRequestHeader('Range', 'bytes=300-303');
+      xhr.send();
+      const xhrBytes = Array.from(xhr.responseText, (c) => c.charCodeAt(0) & 0xff);
+      return {
+        origin: location.origin,
+        probe: await read({ headers: { Range: 'bytes=0-0' } }),
+        slice: await read({ headers: { Range: 'bytes=200-299' } }),
+        head: await read({ method: 'HEAD' }),
+        xhr: pick(xhr.status, (h) => xhr.getResponseHeader(h), btoa(String.fromCharCode(...xhrBytes))),
+      };
+    })()`);
+  } finally {
+    win.destroy();
+  }
 
   results.seen = seen;
   server.closeAllConnections();

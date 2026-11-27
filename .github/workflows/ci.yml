@@ -17,9 +17,9 @@ on:
     # each `npm version <x>-rc.N` bump straight onto the release branch and §8
     # expects same-cycle `fix(build): …` commits there, and even the fixes that
     # do arrive as pull requests (§0) land as a merge commit whose tree no
-    # `pull_request` run ever saw. §4 then gates the pre-tag "CI is green"
-    # check on exactly these runs — "every push to the release branch runs the
-    # full CI matrix", read off the Actions tab, since §8 makes the pull
+    # `pull_request` run ever saw. §5 then gates every pre-tag "CI is green"
+    # check on exactly these runs (§4: "every push to the release branch runs
+    # the full CI matrix"), read off the Actions tab, since §8 makes the pull
     # request into `main` optional and there is often no `gh pr checks` to ask.
     # Counted 2026-09-22 over the runs still in Actions retention,
     # release/0.8.5 took 13 of these runs and release/0.8.0 took 8. Dropping
@@ -81,7 +81,8 @@ jobs:
   #
   # What that does and does not buy: the filter reads the pull request's whole
   # diff against its base, so it fires only on a pull request that is prose all
-  # the way down. A code pull request still runs everything on every push, an
+  # the way down. A code pull request still runs every Linux suite on every
+  # push (the macOS/Windows ones are `full_matrix`'s call, below), an
   # update-branch commit included — so this job does nothing for a four-PR
   # merge train of code changes; what shortened that is `changelog.d/`
   # fragments no longer manufacturing a conflict per merge. What this job buys
@@ -115,11 +116,46 @@ jobs:
   # green and leave `main` red for the next PR. It is the cheap job anyway
   # (~100s against 10-14 minutes), and `scripts/ci/ci-gate.test.js` pins that
   # it stays ungated for as long as the jest suite reads prose.
+  #
+  # The same job also decides how wide a code pull request's run is, as the
+  # `full_matrix` output. macOS runners are this workflow's bottleneck: the
+  # org gets about five concurrent macOS jobs, a macOS job here takes ~12
+  # minutes, and every run used to queue three of them (`e2e-desktop`'s macOS
+  # leg, `e2e-agent`, `e2e-automation`) on every pull request push *and* again
+  # in the merge queue — measured 20-26 minutes average queue wait, enough
+  # for pull requests and queue entries to time out waiting. So on a
+  # `pull_request` event the macOS and Windows legs of `e2e-desktop`, and the
+  # macOS-only `e2e-agent` and `e2e-automation`, do not run; every Linux job
+  # and the cheap `native-addons` build matrix still do. The merge queue
+  # (`merge_group`), pushes to `main`/release branches and manual dispatches
+  # still run the full matrix, so the queue — which requires `ci-ok` — stays
+  # the gate that catches a macOS- or Windows-only failure before it lands.
+  # That only holds for `main`: `release/**` and `hotfix/**` have no queue, so
+  # a pull request into any base other than `main` keeps the full matrix on
+  # its own run.
+  #
+  # Opt in on a pull request with the `full-ci` label. The label is read live
+  # from the API rather than from the event payload, because a re-run replays
+  # the original payload: add the label, then either push a commit or use
+  # "Re-run all jobs" on the latest CI run (not "Re-run failed jobs", which
+  # reuses this job's earlier answer). `labeled` is deliberately *not* a
+  # `pull_request` trigger type: it fires for every label, shares this
+  # workflow's concurrency group with the push run (same `refs/pull/N/merge`),
+  # so adding any label would cancel the run in flight and start a duplicate.
+  #
+  # Fails open like `code`: only a positive `full_matrix=false` narrows
+  # anything, a gate that never wrote it runs the full matrix, and a label
+  # lookup that errors counts as "labelled".
   code-changed:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # Read the pull request's current labels for the `full-ci` opt-in.
+      pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      full_matrix: ${{ steps.filter.outputs.full_matrix }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,12 +168,34 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ "$EVENT" != "pull_request" ]; then
             echo "not a pull request — running everything"
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "full_matrix=true" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          # Only `main` has a merge queue to run the macOS/Windows jobs before
+          # a change lands. A pull request into `release/**` or `hotfix/**`
+          # merges straight onto the branch an rc tag is cut from, and
+          # `release.yml` does not gate on CI, so it gets the full matrix on
+          # its own run, label or not.
+          # Otherwise, the `full-ci` opt-in, read from the pull request as it
+          # is now. An API error fails open to the full matrix rather than
+          # failing this job (which would turn `ci-ok` red for a lookup).
+          if [ "$BASE" != "main" ]; then
+            echo "pull request into $BASE, which has no merge queue — running the full matrix"
+            labelled=true
+          elif labelled=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" \
+            --jq 'any(.labels[]; .name == "full-ci")'); then
+            :
+          else
+            echo "::warning::could not read the pull request's labels — running the full matrix"
+            labelled=true
           fi
           git fetch --no-tags origin "$BASE"
           changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
@@ -156,6 +214,15 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
+            # Prose only skips the macOS/Windows jobs too, label or not.
+            labelled=false
+          fi
+          if [ "$labelled" = "true" ]; then
+            echo "full-ci label, a base other than main, or lookup failed — running the macOS/Windows jobs too"
+            echo "full_matrix=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no full-ci label, or prose only — macOS/Windows jobs run in the merge queue"
+            echo "full_matrix=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Lint plus the whole jest suite, doc<->code guards included — which is why
@@ -405,13 +472,18 @@ jobs:
   # The suites that must hold on all three desktop operating systems. The
   # onboarding section downloads Ant and freedom-ipfs and the preview-network
   # qualification makes Linux's chrome-sandbox setuid, so those two go last.
+  #
+  # On a pull request without the `full-ci` label only the Linux leg runs; the
+  # Windows and macOS legs run in the merge queue, on `main`/release pushes
+  # and on dispatch (see `full_matrix` at `code-changed`). Narrowed only on a
+  # positive `'false'`, so a gate that never answered keeps all three.
   e2e-desktop:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.code-changed.outputs.full_matrix == 'false' && '["ubuntu-latest"]' || '["ubuntu-latest", "windows-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
 
@@ -496,6 +568,13 @@ jobs:
           else
             npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js
           fi
+
+      # Two-finger swipe between pages (#980) is a macOS feature, so its spec
+      # only means something on the macOS leg (it skips itself elsewhere).
+      - name: Run swipe-between-pages E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}
+        shell: bash
+        run: npm run test:e2e -- --output=test-results/e2e-swipe-navigation test-e2e/swipe-navigation.spec.js
 
       # ── was the `e2e-onboarding-identity` job ──
       # Onboarding wizard must create node identities while a real Swarm node (now
@@ -888,14 +967,19 @@ jobs:
       # `publish-text-shortcut.spec.js` (#720) pins the page's Cmd/Ctrl+Enter
       # text publish. `dapp-background-tab.spec.js` (#764) keeps a background
       # tab's wallet requests attributed to its own site, with a real vault and
-      # the real main-side signing check. The anvil-backed Safe specs run in
-      # `e2e-safe` below.
+      # the real main-side signing check. `siwe-http-auth.spec.js` (#1152) signs
+      # in to the SIWE reference server on localhost through the sign-in card,
+      # with a real vault and the real webRequest hooks.
+      # `wallet-derivation-path.spec.js` (#1039) adds accounts at preset and
+      # custom derivation paths with a real vault, and keeps reserved paths
+      # refused. The anvil-backed Safe specs run in `e2e-safe` below.
       - name: Run wallet approval E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-wallet \
             test-e2e/dapp-tx-ledger-confirm.spec.js \
             test-e2e/dapp-background-tab.spec.js \
+            test-e2e/siwe-http-auth.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
@@ -904,7 +988,8 @@ jobs:
             test-e2e/browsing-credit.spec.js \
             test-e2e/publish-setup-rediscovery.spec.js \
             test-e2e/publish-page-setup.spec.js \
-            test-e2e/publish-text-shortcut.spec.js
+            test-e2e/publish-text-shortcut.spec.js \
+            test-e2e/wallet-derivation-path.spec.js
 
       # ── was the `e2e-safe` job ──
       # Safe (multi-owner account) lifecycle through the real UI against an anvil
@@ -999,6 +1084,9 @@ jobs:
       # `swarm-cache.spec.js` (#579) covers Settings → Nodes → Swarm cache: its
       # usage line, Clear cache and the live size change against a fake antd's
       # `/debugstore` and `/v0/cache` routes, and its size picker.
+      # `secure-dns.spec.js` (#472) follows Settings → Privacy and security →
+      # Secure DNS to Chromium's resolver, and reads Chromium's net log to show
+      # Strict sends lookups over DoH only (no internet: a dead loopback server).
       - name: Download adblock filter lists
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npm run adblock:download
@@ -1022,6 +1110,7 @@ jobs:
           test-e2e/page-dark-background.spec.js
           test-e2e/updates.spec.js
           test-e2e/swarm-cache.spec.js
+          test-e2e/secure-dns.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1142,8 +1231,10 @@ jobs:
       # focus ring every chrome text field draws (`chrome-input-focus`, #246),
       # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
       # and the download shelf, whose dismissed card must stay dismissed for the
-      # rest of the transfer (`downloads`, #309), and the application menu's
-      # History menu, which reads private-window state (`history-menu`, #584).
+      # rest of the transfer (`downloads`, #309), the application menu's
+      # History menu, which reads private-window state (`history-menu`, #584),
+      # and the Swarm ACT prompt a page's `window.swarm.openAct` raises
+      # (`swarm-open-act`, #648).
       - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
@@ -1152,6 +1243,7 @@ jobs:
             test-e2e/tab-mute.spec.js \
             test-e2e/private-windows.spec.js \
             test-e2e/page-providers-early.spec.js \
+            test-e2e/swarm-open-act.spec.js \
             test-e2e/private-tab-color.spec.js \
             test-e2e/chrome-input-focus.spec.js \
             test-e2e/sidebar-subscreen-headers.spec.js \
@@ -1212,6 +1304,9 @@ jobs:
       # eth.limo/eth.link/bzz.link pages: the URL is never rewritten, the popover
       # opens the native address with path/query/fragment, and the opt-in
       # "always" redirect leaves a gateway page reached by Back alone.
+      # `markdown-view.spec.js` (#1035) opens Markdown files in a real tab: the
+      # page rendered in place with nothing able to run, and the address bar's
+      # Markdown button switching to the source and back.
       - name: Run address-bar + ENSv2 + name-interstitial E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
@@ -1223,7 +1318,8 @@ jobs:
             test-e2e/tez-unverified.spec.js \
             test-e2e/tez-head-conflict.spec.js \
             test-e2e/ens-trust-popover.spec.js \
-            test-e2e/gateway-offer.spec.js
+            test-e2e/gateway-offer.spec.js \
+            test-e2e/markdown-view.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -1235,10 +1331,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Native Agent qualification uses macOS's real workspace sandbox.
+  # Native Agent qualification uses macOS's real workspace sandbox. Not on a
+  # pull request without the `full-ci` label: the merge queue runs it (see
+  # `full_matrix` at `code-changed`). `e2e-agent-linux` covers the same area
+  # on every pull request. `full_matrix` is `false` whenever `code` is, so
+  # this one output covers the prose-only skip too.
   e2e-agent:
     needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    if: ${{ !cancelled() && needs.code-changed.outputs.full_matrix != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -1296,9 +1396,11 @@ jobs:
   # macOS-only security suites (formerly the `agent-macos-jest` job) share this
   # runner: they need the same built supervisor, and a macOS runner of their
   # own cost one of the org's five concurrent macOS slots for a minute of jest.
+  # Like `e2e-agent`, it runs in the merge queue rather than on a pull request
+  # without the `full-ci` label — the macOS security suites included.
   e2e-automation:
     needs: code-changed
-    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    if: ${{ !cancelled() && needs.code-changed.outputs.full_matrix != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 40
     permissions:
@@ -1752,7 +1854,7 @@ jobs:
       # lock for fails the step, so bump both together (Dependabot bumps the
       # action).
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           version: 1.30.1
           # Findings as inline annotations on the pull request instead of a

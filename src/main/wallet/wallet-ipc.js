@@ -530,7 +530,7 @@ function registerWalletIpc() {
       const status = await getSafeStatus(index);
       return { success: true, status };
     } catch (err) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, code: err.code };
     }
   });
 
@@ -541,7 +541,9 @@ function registerWalletIpc() {
       return { success: true, ...result };
     } catch (err) {
       const code = err.code ?? (isVaultLockedError(err) ? 'VAULT_LOCKED' : undefined);
-      return { success: false, error: err.message, code };
+      // `hash` is set only on a SAFE_UNVERIFIED thrown after the
+      // deployment was sent (safe-service confirmDeployment).
+      return { success: false, error: err.message, code, hash: err.hash };
     }
   });
 
@@ -609,9 +611,11 @@ function registerWalletIpc() {
   ipcMain.handle('wallet:safe-pending-list', async () => {
     try {
       const { getAllSafeSendStates } = require('./safe/safe-transactions');
-      return { success: true, states: getAllSafeSendStates() };
+      const { getStoreNotice } = require('./safe/pending-store');
+      const states = getAllSafeSendStates();
+      return { success: true, states, storeNotice: getStoreNotice() };
     } catch (err) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, code: err.code };
     }
   });
 

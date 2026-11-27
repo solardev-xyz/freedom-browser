@@ -13,6 +13,22 @@ const {
 } = require('./provider-failure');
 
 describe('provider failure classification', () => {
+  test('an Ollama tool rejection is permanent and offers a model change, with HTTP status preserved', () => {
+    const message = '400: {"message":"registry.ollama.ai/library/gemma3:4b does not support tools","type":"invalid_request_error","param":null,"code":null}';
+    const failure = classifyProviderFailure(message);
+    expect(failure).toMatchObject({ category: 'tools_unsupported', recovery: 'provider_setup', httpStatus: 400 });
+    expect(isPermanentModelFailure({ stopReason: 'error', errorMessage: message })).toBe(true);
+    expect(isPermanentModelFailure({ errorMessage: '500 model returned invalid tool call' })).toBe(false);
+    const presentation = providerFailurePresentation(failure, { providerLabel: 'Ollama', modelId: 'gemma3:4b' });
+    expect(presentation.summaryMessage).toContain('does not support Agent actions');
+    expect(presentation.technicalDetails).not.toContain('no recognized HTTP');
+    expect(presentation.nextStep).not.toContain('try again');
+  });
+
+  test('unknown HTTP failures do not claim there was no HTTP status', () => {
+    expect(providerFailurePresentation('400: unknown rejection').technicalDetails).toContain('HTTP 400');
+    expect(providerFailurePresentation('400: unknown rejection').technicalDetails).not.toContain('no recognized HTTP');
+  });
   test.each([
     'Model temporarily unavailable, please retry',
     '503: {"error":{"message":"The model is unavailable due to high load"}}',

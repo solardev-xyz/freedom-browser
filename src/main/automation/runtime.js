@@ -6,6 +6,7 @@ const { createInitialAutomationPolicy } = require('./policy-controller');
 const { WebContentsPageAdapter } = require('./adapters/web-contents-page-adapter');
 const { AutomationError, ERROR_CODES } = require('./contract/errors');
 const IPC = require('../../shared/ipc-channels');
+const { setPageCustodyUndecided } = require('../wallet/agent-tab-custody');
 
 const DEFAULT_DESKTOP_NAVIGATION_TIMEOUT_MS = 330_000;
 const DEFAULT_DESKTOP_TAB_CONTROL_TIMEOUT_MS = 10_000;
@@ -341,10 +342,87 @@ function createAutomationRuntime(options = {}) {
         );
       }
     };
+    // Custody of the guests that attach while a creation has not named its
+    // guest, kept apart from the creation's promise: a creation can fail
+    // after the chrome opened its tab, and that tab is still the Agent's.
+    const creationCustodies = new Set();
+    // Guests a creation named as its own; another creation never releases them.
+    const createdGuests = new WeakSet();
+    // The renderer tab each guest bound to (the chrome binds at dom-ready).
+    const boundRendererTabs = new WeakMap();
+    const releaseHeldGuest = (guest) => {
+      if (createdGuests.has(guest)) return;
+      const stillClaimed = [...creationCustodies].some((other) => other.attachedGuests.has(guest));
+      if (!stillClaimed) setPageCustodyUndecided(guest, false);
+    };
+    // Names the created guest (or none): it stays undecided until the Agent
+    // claims it (setAgentPageCustody); every other guest still held is
+    // released unless another creation may still own it.
+    const decideCreationCustody = (custody, createdGuest) => {
+      if (custody.decided) return;
+      custody.decided = true;
+      clearTimeout(custody.graceTimer);
+      creationCustodies.delete(custody);
+      if (createdGuest) createdGuests.add(createdGuest);
+      const held = [...custody.attachedGuests];
+      custody.attachedGuests.clear();
+      for (const guest of held) releaseHeldGuest(guest);
+    };
+    // Once both the creation's renderer tab and a held guest's binding are
+    // known, the guest is decided by elimination: the created one is kept,
+    // any other is released at its own bind, without waiting for the Agent
+    // page's first navigation to commit.
+    const settleHeldGuest = (custody, guest) => {
+      if (custody.decided || !custody.rendererTabId || !custody.attachedGuests.has(guest)) return;
+      const rendererTabId = boundRendererTabs.get(guest);
+      if (rendererTabId === undefined) return;
+      if (rendererTabId === custody.rendererTabId) {
+        decideCreationCustody(custody, guest);
+        return;
+      }
+      custody.attachedGuests.delete(guest);
+      releaseHeldGuest(guest);
+      releaseSpentFailedCreation(custody);
+    };
+    // A failed creation that has stopped collecting and holds no guest any
+    // more has nothing left to decide.
+    const releaseSpentFailedCreation = (custody) => {
+      if (custody.failed && !custody.collecting && custody.attachedGuests.size === 0) {
+        decideCreationCustody(custody, null);
+      }
+    };
+    const learnCreatedRendererTab = (custody, rendererTabId) => {
+      custody.rendererTabId = rendererTabId;
+      for (const guest of [...custody.attachedGuests]) settleHeldGuest(custody, guest);
+    };
+    // A creation that failed before naming its guest may still have opened a
+    // tab, and that tab's guest may not have attached yet (the chrome can
+    // answer, or the creation time out, before did-attach-webview). For a
+    // short grace it keeps collecting guests like a pending creation; each
+    // one is decided at its own bind once the chrome's answer names the tab
+    // (the named one stays held, any other is released). When the grace ends
+    // it stops collecting: with no answer from the chrome every held guest is
+    // released, otherwise the guests still held wait for their own bind.
+    // The created tab itself stays undecided for its whole life: the Agent
+    // never got a tab id to claim it with, so it never pays from a cap or
+    // auto-approves a Swarm/Radicle action until it is closed.
+    const holdFailedCreation = (custody) => {
+      custody.failed = true;
+      custody.collecting = true;
+      custody.graceTimer = setTimeout(() => {
+        custody.collecting = false;
+        if (!custody.rendererTabId) decideCreationCustody(custody, null);
+        else releaseSpentFailedCreation(custody);
+      }, desktopTabControlTimeoutMs);
+    };
     const settleTabControlRequest = (request, result, error = null) => {
       if (!pendingTabControlRequests.delete(request.requestId)) return;
       clearTimeout(request.timeout);
       request.cleanup();
+      if (request.custody && !request.custody.decided) {
+        if (!error || request.custody.noTab) decideCreationCustody(request.custody, null);
+        else holdFailedCreation(request.custody);
+      }
       if (error) request.reject(error);
       else request.resolve(result);
     };
@@ -359,6 +437,12 @@ function createAutomationRuntime(options = {}) {
           requestId,
           type,
           rendererTabId: null,
+          // A created tab's first navigation starts when its guest attaches,
+          // before main can tell which guest it is. See onAttached.
+          custody:
+            type === 'creation'
+              ? { requestId, rendererTabId: null, attachedGuests: new Set(), decided: false }
+              : null,
           resolve,
           reject,
           cleanup: () => {},
@@ -374,9 +458,11 @@ function createAutomationRuntime(options = {}) {
           ),
         };
         pendingTabControlRequests.set(requestId, request);
+        if (request.custody) creationCustodies.add(request.custody);
         try {
           hostWebContents.send(channel, { requestId, ...payload });
         } catch (error) {
+          if (request.custody) request.custody.noTab = true;
           settleTabControlRequest(
             request,
             null,
@@ -396,6 +482,7 @@ function createAutomationRuntime(options = {}) {
       const createdTabId = bindingsByRendererTab.get(request.rendererTabId);
       const binding = createdTabId && desktopBindingsByAutomationTab.get(createdTabId);
       if (!binding) return;
+      if (request.custody) decideCreationCustody(request.custody, binding.guestWebContents);
       const committedUrl = () => {
         try {
           return binding.guestWebContents.getURL?.() || '';
@@ -430,6 +517,23 @@ function createAutomationRuntime(options = {}) {
       if (isCommittedTarget(committedUrl())) settleTabControlRequest(request, createdTabId);
     };
     const onAttached = (_event, guestWebContents) => {
+      // Any guest attaching while an automation creation has not named its
+      // guest may be the Agent's new tab: hold it out of user custody (no
+      // x402 cap payment, no Swarm/Radicle auto-approve rule). A guest that
+      // is not the created one is released when it binds to its own renderer
+      // tab (its first dom-ready), not when the Agent page's navigation
+      // commits. See settleHeldGuest. A failed creation keeps collecting
+      // for its grace (see holdFailedCreation).
+      for (const custody of creationCustodies) {
+        if ((custody.failed && !custody.collecting) || !guestWebContents) continue;
+        custody.attachedGuests.add(guestWebContents);
+        setPageCustodyUndecided(guestWebContents, true);
+      }
+      guestWebContents?.once?.('destroyed', () => {
+        for (const custody of [...creationCustodies]) {
+          if (custody.attachedGuests.delete(guestWebContents)) releaseSpentFailedCreation(custody);
+        }
+      });
       const tabId = registerWebContents(guestWebContents, { kind: 'desktop' });
       if (!tabId) return;
       if (Number.isInteger(guestWebContents.id)) {
@@ -482,6 +586,8 @@ function createAutomationRuntime(options = {}) {
           completeCreatedTabWhenBound(request);
         }
       }
+      boundRendererTabs.set(guestWebContents, rendererTabId);
+      for (const custody of [...creationCustodies]) settleHeldGuest(custody, guestWebContents);
     };
     const onNavigationResult = (event, payload = {}) => {
       if (event?.sender !== hostWebContents) return;
@@ -492,9 +598,25 @@ function createAutomationRuntime(options = {}) {
     };
     const onCreateTabResult = (event, payload = {}) => {
       if (event?.sender !== hostWebContents) return;
+      const tabOpened =
+        payload?.ok === true &&
+        Number.isSafeInteger(payload.rendererTabId) &&
+        payload.rendererTabId > 0;
       const request = pendingTabControlRequests.get(payload?.requestId);
-      if (!request || request.type !== 'creation' || typeof payload.ok !== 'boolean') return;
-      if (!payload.ok || !Number.isSafeInteger(payload.rendererTabId) || payload.rendererTabId < 1) {
+      if (!request) {
+        // A late answer for a creation that already failed: its custody may
+        // still be waiting to learn which guest the chrome opened.
+        const custody = [...creationCustodies].find(
+          (held) => held.requestId === payload?.requestId
+        );
+        if (!custody || typeof payload.ok !== 'boolean') return;
+        if (!tabOpened) decideCreationCustody(custody, null);
+        else learnCreatedRendererTab(custody, payload.rendererTabId);
+        return;
+      }
+      if (request.type !== 'creation' || typeof payload.ok !== 'boolean') return;
+      if (!tabOpened) {
+        request.custody.noTab = true;
         settleTabControlRequest(
           request,
           null,
@@ -503,6 +625,7 @@ function createAutomationRuntime(options = {}) {
         return;
       }
       request.rendererTabId = payload.rendererTabId;
+      learnCreatedRendererTab(request.custody, payload.rendererTabId);
       completeCreatedTabWhenBound(request);
     };
     const handleBooleanTabResult = (event, payload, type, failureMessage) => {
@@ -552,12 +675,14 @@ function createAutomationRuntime(options = {}) {
         desktopBindingsByAutomationTab.delete(automationTabId);
       }
       for (const request of [...pendingTabControlRequests.values()]) {
+        if (request.custody) request.custody.noTab = true;
         settleTabControlRequest(
           request,
           null,
           new AutomationError(ERROR_CODES.TAB_NOT_FOUND, 'The browser window was closed')
         );
       }
+      for (const custody of [...creationCustodies]) decideCreationCustody(custody, null);
       desktopBindingsByHost.delete(hostWebContents);
       desktopControlsByHost.delete(hostWebContents);
     };

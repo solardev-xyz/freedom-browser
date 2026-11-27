@@ -31,24 +31,12 @@ links there rather than restating it.
   Linux x64/arm64, Windows x64). Unlike the others it is **compiled from
   crates.io**, host-only, not downloaded. Fetch script `scripts/fetch-arti.js`;
   pin `PINNED_ARTI_VERSION` (and `MIN_RUST_VERSION`) in that script.
-  **The Windows build is patched.** Arti 2.7.0's `saturating-time` 0.5.0 loops
-  forever on Windows (its `find_limit` never sees `None`, because Windows
-  `SystemTime` ticks in 100 ns and a smaller step returns the same value), so
-  Tor never bootstraps there
-  ([#925](https://github.com/solardev-xyz/freedom-browser/issues/925)). Until
-  a released Arti carries upstream's fix
-  ([MR 4520](https://gitlab.torproject.org/tpo/core/arti/-/merge_requests/4520)),
-  the Windows build downloads the `arti` and `saturating-time` crates from
-  crates.io, checks both against sha256s pinned in the script
-  (`ARTI_CRATE_SHA256`, `WINDOWS_CRATE_PATCHES`), applies
-  `scripts/patches/saturating-time-0.5.0-windows.patch` (upstream's diff,
-  verbatim) and builds with `cargo install --path … --locked` plus a
-  `[patch.crates-io]` override. macOS and Linux build the pristine crate. The
-  patch file is a recipe input of the prebuilt Arti, and a guard test in
-  `scripts/fetch-arti.test.js` fails the moment `PINNED_ARTI_VERSION` moves,
-  so the bump has to decide whether the patch can go
-  ([#926](https://github.com/solardev-xyz/freedom-browser/issues/926), which
-  stays open until it is removed).
+  Windows needs Arti 2.8.0 or later: earlier releases pull in a
+  `saturating-time` whose `find_limit` never returns on Windows, so Tor never
+  bootstraps there
+  ([#925](https://github.com/solardev-xyz/freedom-browser/issues/925)). 2.7.0
+  shipped with a patched copy until 2.8.0 carried upstream's fix
+  ([#926](https://github.com/solardev-xyz/freedom-browser/issues/926)).
 
 Adjacent but out of scope here: **Myotis** (the experimental Ethereum light
 client addon, `scripts/fetch-myotis.js`, `npm run myotis:download`) follows the
@@ -287,6 +275,31 @@ This is the sequence [#387](https://github.com/solardev-xyz/freedom-browser/pull
     `connectedPeers`, and `lastSyncedBlock` advancing). Shut it down with
     SIGTERM and delete the temp dir afterwards.
 
+11. **Re-run the `bzz://` range matrix against that node** before shutting it
+    down. Single-range reads are a kept contract (`docs/protocols/swarm.md`,
+    _Byte ranges on `bzz://`_), and the tests pin the handler against a fake
+    node shaped like Ant v0.5.77, so only this step notices the real node
+    drifting. Pick any file that is live on Swarm today (an image under a
+    well-known ENS site's root does; resolve the name's contenthash first) of
+    at least a few KiB, and check:
+
+    ```
+    U=http://127.0.0.1:<port>/bzz/<ref>/<path>
+    curl -s -o full "$U"; S=$(wc -c < full)
+    curl -s -D - -o /dev/null -H 'Range: bytes=0-0' "$U"        # 206, Content-Range: bytes 0-0/S
+    curl -s -D - -o part -H 'Range: bytes=4096-8191' "$U"       # 206, 4096 bytes, the right ones
+    curl -s -D - -o /dev/null -H "Range: bytes=$((S-5))-$((S+5000))" "$U"  # 206, clamped to S-1
+    curl -s -D - -o /dev/null -H "Range: bytes=$S-" "$U"        # 416, Content-Range: bytes */S
+    curl -s -I "$U"                                             # 200, Content-Length: S
+    ```
+
+    Compare `part` against the same bytes of `full`
+    (`cmp part <(tail -c +4097 full | head -c 4096)`). If the
+    node's answer changed (a HEAD that now carries `Accept-Ranges`, a
+    multi-range request that is now refused), update the fake's Ant shape in
+    `test/helpers/fake-http-node.js` (`rangeResponder`'s `headAcceptRanges`),
+    `dweb-range-electron-probe.js`, and the doc's table together.
+
 ### What the PR description is expected to contain
 
 - **Real command output**, pasted — not a summary of what passed.
@@ -332,8 +345,8 @@ Same shape, different pin location:
 - **Arti** — bump `PINNED_ARTI_VERSION`, and `MIN_RUST_VERSION` in the same
   commit when the release raises its MSRV. Arti is compiled, so its bump has
   extra steps (CLI/`arti.toml` key changes read against
-  `src/main/tor-manager.js`, `cargoFeatures()`'s Windows `static-sqlite`
-  feature, and the Windows `saturating-time` patch) — those are written up in
+  `src/main/tor-manager.js`, and `cargoFeatures()`'s Windows `static-sqlite`
+  feature) — those are written up in
   [`release-process.md` § Bundled binaries](release-process.md), not repeated
   here.
 
@@ -342,10 +355,7 @@ each pin the sha256 of the release's own `SHA256SUMS` asset in-repo
 (`PINNED_SHA256SUMS_DIGEST` / `PINNED_SHA256SUMS`), because that file ships
 from the same mutable GitHub release as the binaries and proves nothing on its
 own. freedom-ipfs skips the sums file and pins each asset's sha256 directly.
-Arti pins a crates.io version, and cargo does the fetching and verification;
-the patched Windows build additionally pins the sha256 of the `arti` and
-`saturating-time` crates it downloads itself, because `cargo install --path`
-no longer checks the top-level crate.
+Arti pins a crates.io version only — cargo does the fetching and verification.
 All the downloaders share one retry/timeout/redirect policy,
 `scripts/lib/fetch-with-retry.js`; `release-process.md` § Bundled binaries has
 the full policy and the per-binary authoritative-source table.
@@ -362,8 +372,7 @@ tag and, per component, the recipe key it was built from and each archive's
 sha256. `scripts/prebuilt-natives.js` owns the component list.
 
 - **Recipe key**: the sha256 of every file that decides a component's bytes
-  (`scripts/fetch-arti.js` and its Windows patch under `scripts/patches/`;
-  `scripts/build-dictation-runtime.js` with
+  (`scripts/fetch-arti.js`; `scripts/build-dictation-runtime.js` with
   `src/shared/dictation-runtime.js` and the notices; `scripts/build-windows-workspace.js`,
   its notices writer, the repository `LICENSE` those notices embed and the adapter under `src/main/agent/workspace-execution/native/windows/`),
   line endings normalised.

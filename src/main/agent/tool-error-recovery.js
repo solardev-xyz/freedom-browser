@@ -14,6 +14,10 @@ function recoveryForToolError(code, operation) {
     'This action was not run. Follow the observation tool named in the error on the same tab: browser_snapshot for semantic controls, browser_list_frames and browser_read_frame for embedded controls, browser_screenshot and browser_target_point for visual targets, or browser_list_page_tools for website tools. Use the newly returned references and continue the authorized task. No new user permission is needed.');
   if (code === 'TAB_BUSY') return step('refresh_state',
     'A helper owns this tab temporarily. Wait for its report with helper_task, or work on another task-owned tab. Once returned, observe it again before acting. Do not take control while the helper is active.');
+  if (code === 'WORKSPACE_STARTUP_BUSY') return step('refresh_state',
+    'Windows project protection refused this operation before it started because another command was still starting. Nothing ran. Wait briefly, then retry the same operation once. Do not switch tools or paths to work around it.');
+  if (code === 'WORKSPACE_STARTUP_TIMEOUT') return step('inspect_outcome',
+    'Project protection did not confirm it was ready in time, but the operation may still have started. Read the affected files before deciding whether a retry is needed; do not repeat it blindly.', { tool: 'read' });
   if (code === 'WORKSPACE_WRITER_BUSY') return step('refresh_state', 'Wait for the editing helper report and pending project operations to finish, then inspect current files before continuing. Do not start a competing writer or shell command.');
   if (code === 'DELEGATED_PATH_DENIED') return step('stop', 'Return to the parent to revise the explicit file assignment. The helper cannot broaden its own scope or bypass it with other tools.');
   if (code === 'WORKSPACE_CHANGED_DURING_VALIDATION') return step('refresh_state',

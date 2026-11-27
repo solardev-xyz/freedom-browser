@@ -11,6 +11,7 @@ const mockIdentity = {
 const mockResetVaultAutoLockTimer = jest.fn();
 
 const mockGetWalletRecord = jest.fn();
+const mockRecordRemoteAddressCheck = jest.fn();
 const mockLedgerBackend = {
   getAddress: jest.fn(),
   signTransaction: jest.fn(),
@@ -27,12 +28,28 @@ const mockRemoteBackend = {
 };
 const mockCreateRemoteBackend = jest.fn(() => mockRemoteBackend);
 
+const mockRecordLedgerAddressCheck = jest.fn();
+const mockWindowSend = jest.fn();
+const mockGuestSend = jest.fn();
+jest.mock('electron', () => ({
+  BrowserWindow: {
+    getAllWindows: () => [
+      { isDestroyed: () => false, webContents: { send: (...args) => mockWindowSend(...args) } },
+      { isDestroyed: () => true, webContents: { send: (...args) => mockGuestSend(...args) } },
+    ],
+  },
+}));
 jest.mock('../identity-manager', () => ({
   loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
+  recordLedgerAddressCheck: (...args) => mockRecordLedgerAddressCheck(...args),
+  recordRemoteAddressCheck: (...args) => mockRecordRemoteAddressCheck(...args),
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
+  // Mirrors identity-manager's hasVaultKey.
+  hasVaultKey: (index, record) =>
+    (!record || record.type === 'mnemonic') && (index < 1000000 || Boolean(record?.path)),
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
 }));
 jest.mock('../vault-timer', () => ({
@@ -63,7 +80,7 @@ describe('getSigner (vault-backed)', () => {
   test('getAddress resolves the address for the wallet index', async () => {
     const signer = getSigner(0);
     await expect(signer.getAddress()).resolves.toBe(testWallet.address);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0);
+    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0, undefined);
   });
 
   test('signMessage matches ethers Wallet.signMessage for plain text', async () => {
@@ -154,7 +171,34 @@ describe('getSigner (vault-backed)', () => {
     mockGetWalletRecord.mockReturnValue(null);
     const signer = getSigner(3);
     await expect(signer.getAddress()).resolves.toBe(testWallet.address);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(3);
+    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(3, undefined);
+  });
+
+  test('an account at an explicit path signs with the key at that path', async () => {
+    // Hardhat's default seed: this path's published address, recovered from
+    // real signatures, so nothing here can agree with itself by accident.
+    const mnemonic = 'test test test test test test test test test test test junk';
+    const path = "m/44'/60'/0'/0/2";
+    const address = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
+    const { deriveWalletAtPath } = jest.requireActual('../identity/derivation');
+    mockGetWalletRecord.mockReturnValue({ index: 1000000, type: 'mnemonic', path, address });
+    mockIdentity.exportPrivateKey.mockImplementation(
+      (_index, walletPath) => deriveWalletAtPath(mnemonic, walletPath).privateKey
+    );
+
+    const signer = getSigner(1000000);
+
+    await expect(signer.getAddress()).resolves.toBe(address);
+    expect(verifyMessage('hello freedom', await signer.signMessage('hello freedom'))).toBe(address);
+    const signedTx = await signer.signTransaction({
+      to: address,
+      value: 0n,
+      nonce: 0,
+      gasLimit: 21000n,
+      gasPrice: 1n,
+      chainId: 100n,
+    });
+    expect(Transaction.from(signedTx).from).toBe(address);
   });
 });
 
@@ -180,9 +224,54 @@ describe('getSigner (ledger-backed dispatch)', () => {
     const signer = getSigner(2);
     await expect(signer.getAddress()).resolves.toBe(LEDGER_RECORD.address);
     await expect(signer.signTransaction({ chainId: 1 })).resolves.toBe('0xsignedtx');
-    expect(mockCreateLedgerBackend).toHaveBeenCalledWith(LEDGER_RECORD);
+    expect(mockCreateLedgerBackend).toHaveBeenCalledWith(LEDGER_RECORD, {
+      onAddressCheck: expect.any(Function),
+    });
     expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+  });
+
+  test('what the device says about the record is kept on the record (#1065)', () => {
+    getSigner(2);
+    const [, { onAddressCheck }] = mockCreateLedgerBackend.mock.calls[0];
+    onAddressCheck(false);
+    expect(mockRecordLedgerAddressCheck).toHaveBeenCalledWith(2, false);
+    onAddressCheck(true);
+    expect(mockRecordLedgerAddressCheck).toHaveBeenLastCalledWith(2, true);
+  });
+
+  test('a sign that turns an old unchecked record matched tells the chrome, once (#1065)', () => {
+    mockGetWalletRecord.mockReturnValue({ ...LEDGER_RECORD, addressCheck: 'unchecked' });
+    mockWindowSend.mockClear();
+    mockGuestSend.mockClear();
+    mockRecordLedgerAddressCheck.mockReset().mockReturnValue('matched');
+    getSigner(2);
+    const [, { onAddressCheck }] = mockCreateLedgerBackend.mock.calls[0];
+
+    onAddressCheck(true);
+    expect(mockWindowSend).toHaveBeenCalledTimes(1);
+    expect(mockWindowSend).toHaveBeenCalledWith('wallet:records-changed');
+    // A destroyed window is skipped.
+    expect(mockGuestSend).not.toHaveBeenCalled();
+
+    // The same signer signing again changes nothing stored: no repeat.
+    onAddressCheck(true);
+    expect(mockWindowSend).toHaveBeenCalledTimes(1);
+  });
+
+  test('a sign that leaves the stored state as it was says nothing (#1065)', () => {
+    mockGetWalletRecord.mockReturnValue({ ...LEDGER_RECORD, addressCheck: 'matched' });
+    mockWindowSend.mockClear();
+    mockRecordLedgerAddressCheck.mockReset().mockReturnValue('matched');
+    getSigner(2);
+    const [, { onAddressCheck }] = mockCreateLedgerBackend.mock.calls[0];
+    onAddressCheck(false);
+    onAddressCheck(true);
+
+    // Not a Ledger record any more (deleted mid-sign): null, nothing said.
+    mockRecordLedgerAddressCheck.mockReturnValue(null);
+    onAddressCheck(true);
+    expect(mockWindowSend).not.toHaveBeenCalled();
   });
 
   test('factory-level normalization applies to ledger backends too', async () => {
@@ -247,9 +336,21 @@ describe('getSigner (remote-backed dispatch)', () => {
   test('routes to the remote backend built from the wallet record, never the vault', async () => {
     const signer = getSigner(4);
     await expect(signer.getAddress()).resolves.toBe(REMOTE_RECORD.address);
-    expect(mockCreateRemoteBackend).toHaveBeenCalledWith(REMOTE_RECORD);
+    expect(mockCreateRemoteBackend).toHaveBeenCalledWith(REMOTE_RECORD, {
+      onAddressCheck: expect.any(Function),
+    });
     expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+  });
+
+  test("keeps what the phone's answer showed on the record (#1078)", () => {
+    getSigner(4);
+    const [, { onAddressCheck }] = mockCreateRemoteBackend.mock.calls[0];
+
+    onAddressCheck(true);
+    expect(mockRecordRemoteAddressCheck).toHaveBeenLastCalledWith(4, true);
+    onAddressCheck(false);
+    expect(mockRecordRemoteAddressCheck).toHaveBeenLastCalledWith(4, false);
   });
 
   test('advertises the backend sendTransaction capability', async () => {

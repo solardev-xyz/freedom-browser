@@ -1,0 +1,1 @@
+- `window.swarm` point-to-point messages reach the bundled Swarm node, which refused every one ([#1062](https://github.com/solardev-xyz/freedom-browser/issues/1062))

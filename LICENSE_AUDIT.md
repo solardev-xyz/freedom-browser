@@ -30,6 +30,17 @@ The **optional local dictation notices** in
 CLI. Selecting local dictation downloads only the checksum-pinned multilingual
 Whisper Base model (MIT), with the same notices. No npm dependency was added.
 
+## Agent pin upgrade addendum (2026-11-09, #831)
+
+The scoped Pi 1.5.0, DCAP 0.7.1 and PDF.js 6.5.438 upgrade adds
+`@earendil-works/pi-schema` 1.5.0 and `marked-cjk-friendly` 0.1.2 (MIT),
+plus `@isaacs/nonrecursive-glob-match` 1.1.0 and Pi’s nested `minimatch`
+11.0.3 (BlueOak-1.0.0). Package licence declarations and shipped licence files were checked. Pi-schema
+declares MIT and includes the vendored TypeBox MIT licence. This is a
+scoped addendum, not a re-derivation of the release-wide counts below. Existing
+PDF packaging exclusions for Liberation Sans 1.x and `@napi-rs/canvas` stay in
+place; the new PDF renderer is unused by Freedom.
+
 ## Executive Summary
 
 **VERDICT: OK TO SHIP UNDER MPL-2.0**, with the notice obligations in `NOTICES` met as written.
@@ -99,7 +110,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.77` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.78` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC
@@ -136,7 +147,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Arti (Tor Client) — _new in 0.8.5_
 
 - **Source:** https://gitlab.torproject.org/tpo/core/arti (crates.io crate `arti`)
-- **Version:** `2.7.0` (pin: `scripts/fetch-arti.js` `PINNED_ARTI_VERSION`)
+- **Version:** `2.8.0` (pin: `scripts/fetch-arti.js` `PINNED_ARTI_VERSION`)
 - **License:** MIT OR Apache-2.0 (crate `license` field; `LICENSE-MIT` reads _Copyright 2019-2025, The Tor Project, Inc._)
 - **Risk:** Green
 - **Platforms:** macOS, Linux and Windows x64 (no Windows ARM64 package is built)

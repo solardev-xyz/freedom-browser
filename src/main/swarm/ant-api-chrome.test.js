@@ -47,6 +47,26 @@ describe('antApiGet (chrome → main Ant API reads, security audit O-1)', () => 
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  test.each(['ANT_API', 'BEE_API'])(
+    'refuses a .onion %s override without dialling it (#360)',
+    async (name) => {
+      mockGetAntApiUrl.mockReturnValue(null);
+      const saved = process.env[name];
+      process.env[name] = 'http://abcdefghijklmnop.onion:1633';
+      try {
+        const fetchImpl = jest.fn();
+        await expect(antApiGet('/peers', { fetchImpl })).resolves.toMatchObject({
+          ok: false,
+          error: 'Ant API on a .onion address is not supported',
+        });
+        expect(fetchImpl).not.toHaveBeenCalled();
+      } finally {
+        if (saved === undefined) delete process.env[name];
+        else process.env[name] = saved;
+      }
+    }
+  );
+
   test('reports a node that is not ready or unreachable as an error', async () => {
     mockGetAntApiUrl.mockReturnValue(null);
     const fetchImpl = jest.fn();

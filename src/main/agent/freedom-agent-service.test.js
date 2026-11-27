@@ -6,6 +6,7 @@ const {
   AGENT_ERROR_CODES,
   AGENT_EVENT_VERSION,
   MAX_AGENT_PROMPT_LENGTH,
+  DOMAIN_PRESENTATION_ACTIONS,
   FreedomAgentError,
   FreedomAgentService,
   normalizePiEvent,
@@ -337,6 +338,20 @@ describe('independent command access review', () => {
     expect(ctx.events.at(-1).wallet.summary).toBe('Name: freedom-audit.eth');
     await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
     await second; await stop(ctx);
+  });
+
+  test.each(['approve_payment', 'setup_resolver'])('an ENSv2 %s approval keeps its typed card description through the approval path', async (action) => {
+    const ctx = await setup('every_interaction');
+    const domain = { format: 'freedom-domain-approval/1', action, name: 'freedom-audit.eth', durationSeconds: 31536000,
+      contract: { address: '0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63', name: 'ENS contract' },
+      items: [{ label: 'Name', value: 'freedom-audit.eth' }] };
+    const scope = ctx.dependencies.createControllerScope.mock.calls[0][0];
+    const pending = scope.requestApproval({ action: 'wallet_transaction', operation: 'domain_execute', label: 'ENS setup',
+      wallet: { kind: 'transaction', chainId: 1, chainName: 'Ethereum', to: domain.contract.address, value: '0.0 ETH',
+        maxFee: '0.0001 ETH', data: '0x095ea7b3', summary: 'Name: freedom-audit.eth', domain } });
+    expect(ctx.events.at(-1)).toMatchObject({ type: 'approval_requested', wallet: { domain } });
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await pending; await stop(ctx);
   });
 
   test('Ask when needed allows a private workspace without a sheet or model review', async () => {
@@ -1842,7 +1857,13 @@ describe('FreedomAgentService', () => {
     // Finishing the turn and deleting the conversation keep custody...
     fake.prompt.resolve();
     await service.waitForIdle();
+    await expect(service.handleWalletRequest('tab_assigned', { method: 'personal_sign' })).resolves.toMatchObject({ handled: true,
+      error: { code: 4001, message: expect.stringContaining('Continue the task') } });
     await expect(service.deleteConversation('conversation_test')).resolves.toBe(true);
+    // No conversation is left to continue: only taking control is offered.
+    const orphaned = await service.handleWalletRequest('tab_assigned', { method: 'personal_sign' });
+    expect(orphaned).toMatchObject({ handled: true, error: { code: 4001, message: expect.stringContaining('Take control') } });
+    expect(orphaned.error.message).not.toMatch(/continue/i);
     expect(service.listAgentTabs()).toEqual([
       expect.objectContaining({ tabId: 'tab_assigned', custody: 'agent', conversationId: null }),
     ]);
@@ -1851,6 +1872,7 @@ describe('FreedomAgentService', () => {
     await expect(service.claimTab('tab_assigned')).resolves.toBe(true);
     expect(controller.setPageAgentCustody).toHaveBeenLastCalledWith('tab_assigned', false);
     expect(service.listAgentTabs()).toEqual([]);
+    await expect(service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })).resolves.toEqual({ handled: false });
   });
 
   test('a popup from an Agent-held page opens as an Agent-held tab of the same conversation', async () => {
@@ -2992,7 +3014,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
-  test('leaves wallet requests from inactive or unrelated tabs to the human wallet flow', async () => {
+  test('only non-Agent tabs fall back to the human wallet flow when no active task can handle the request', async () => {
     const fake = createFakeSession();
     const walletController = { handleRequest: jest.fn() };
     const { service } = createService(fake, { walletController });
@@ -3003,7 +3025,7 @@ describe('FreedomAgentService', () => {
     await service.start(startOptions());
     await expect(
       service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })
-    ).resolves.toEqual({ handled: false });
+    ).resolves.toMatchObject({ handled: true, error: { code: 4001 } });
     expect(walletController.handleRequest).not.toHaveBeenCalled();
 
     fake.prompt.resolve();
@@ -3480,6 +3502,47 @@ describe('FreedomAgentService', () => {
     fake.prompt.resolve(); await service.waitForIdle();
     expect(service.getState().transcript[0].activity[0]).toMatchObject({ operation: 'workspace_server',
       label: 'Ran node server.js', workspace: { state: 'completed', processId: workspace.processId },
+    });
+    await service.dispose();
+  });
+
+  test.each([
+    ['startup-busy refusal', { code: 'WORKSPACE_STARTUP_BUSY', message: 'busy' }, 'WORKSPACE_STARTUP_BUSY'],
+    ['policy denial', undefined, 'WORKSPACE_SANDBOX_DENIED'],
+    ['unrelated receipt error', { code: 'WORKSPACE_EXECUTION_FAILED', message: 'x' }, 'WORKSPACE_SANDBOX_DENIED'],
+    // Startup timeout is thrown by the controller, never carried in a receipt;
+    // it must not inherit the busy code's "nothing ran" mapping.
+    ['startup-timeout code in a receipt', { code: 'WORKSPACE_STARTUP_TIMEOUT', message: 't' }, 'WORKSPACE_SANDBOX_DENIED'],
+  ])('records a sandbox_denied yielded process terminal as its own code (%s)', async (_name, error, expected) => {
+    const fake = createFakeSession();
+    let workspaceOptions;
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', enabled: true })),
+      disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(), dispose: jest.fn(),
+    };
+    const { service } = createService(fake, { workspaceController,
+      createWorkspaceTools: jest.fn(async options => { workspaceOptions = options; return [{ name: 'bash' }]; }),
+    });
+    await service.start(startOptions());
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'busy_call', toolName: 'bash', args: { command: 'npm test' } });
+    const workspace = {
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      processId: 'workspace_process_cccccccccccccccccccccccc', kind: 'command', command: 'npm test',
+      workingDirectory: '.', backend: 'windows-elevated', networkPosture: 'none', state: 'running',
+      terminationGuarantee: 'pending', terminationScope: 'pending',
+      sideEffects: 'unknown', survivorsPossible: false, completeDescendantTermination: false,
+    };
+    workspaceOptions.onToolOutcome({ toolCallId: 'busy_call', operation: 'bash', status: 'succeeded', workspace });
+    fake.emit({ type: 'tool_execution_end', toolCallId: 'busy_call', toolName: 'bash', isError: false });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve(); await service.waitForIdle();
+    workspaceOptions.onProcessTerminal({ toolCallId: 'busy_call', operation: 'bash', workspace: {
+      ...workspace, state: 'sandbox_denied', terminationGuarantee: 'not_applicable', terminationScope: 'not_applicable',
+      sideEffects: 'none', ...(error && { error }),
+    } });
+    expect(service.getState().transcript[0].activity[0]).toMatchObject({
+      status: 'failed', errorCode: expected, workspace: { state: 'sandbox_denied' },
     });
     await service.dispose();
   });
@@ -4605,4 +4668,17 @@ test('per-conversation retention changes persist and a failed save does not weak
       privacy: expect.objectContaining({ settings: { requireZeroRetention: false } }),
     }));
   } finally { await service.dispose(); }
+});
+
+test('main-process domain card actions match the renderer card actions', () => {
+  // The renderer re-validates the same description; an action only one side
+  // knows is silently dropped to the generic wallet card.
+  const fs = require('fs');
+  const path = require('path');
+  const source = fs.readFileSync(path.join(__dirname, '../../renderer/lib/domain-approval.js'), 'utf8');
+  const block = source.match(/const ACTIONS = new Set\(\[([^\]]*)\]\)/);
+  expect(block).not.toBeNull();
+  const renderer = [...block[1].matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+  expect(renderer.length).toBeGreaterThan(0);
+  expect([...DOMAIN_PRESENTATION_ACTIONS].sort()).toEqual(renderer.sort());
 });

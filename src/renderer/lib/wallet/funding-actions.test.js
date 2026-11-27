@@ -69,18 +69,29 @@ describe('funding-actions', () => {
     expect(openSend).not.toHaveBeenCalled();
   });
 
-  test('reads legacy checksum-cased balance maps', async () => {
+  test('looks a token up by its normalized key, then as given, and scans for nothing else (#104)', async () => {
     const walletState = createWalletState();
     const { mod } = await loadFundingActions(walletState);
 
     expect(
-      mod.hasPositiveTokenBalance({
-        [CHECKSUM_XBZZ_KEY]: { formatted: '0.1' },
-      }, NORMALIZED_XBZZ_KEY)
+      mod.hasPositiveTokenBalance(
+        { [NORMALIZED_XBZZ_KEY]: { formatted: '0.1' } },
+        CHECKSUM_XBZZ_KEY
+      )
     ).toBe(true);
+    expect(
+      mod.getTokenMapEntry({ [CHECKSUM_XBZZ_KEY]: { formatted: '0.1' } }, CHECKSUM_XBZZ_KEY)
+    ).toEqual({
+      formatted: '0.1',
+    });
+    // The balance cache no longer hands out checksum-cased keys, so the
+    // old case-insensitive scan over every entry is gone.
+    expect(
+      mod.getTokenMapEntry({ [CHECKSUM_XBZZ_KEY]: { formatted: '0.1' } }, NORMALIZED_XBZZ_KEY)
+    ).toBeNull();
   });
 
-  test('returns present falsy token-map entries without falling through to legacy scan', async () => {
+  test('returns a present falsy entry instead of trying the key as given', async () => {
     const walletState = createWalletState();
     const { mod } = await loadFundingActions(walletState);
 

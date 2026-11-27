@@ -149,6 +149,18 @@ const loadNavigationModule = async (options = {}) => {
     }),
     updateActiveTabTitle: jest.fn(),
     updateTabFavicon: jest.fn(),
+    // Mirrors tabs.js#isSameFaviconSite for the http(s) pages these tests
+    // load: same host, same per-site cached icon.
+    isSameFaviconSite: jest.fn((a, b) => {
+      const hostOf = (url) => {
+        try {
+          return new URL(url).host;
+        } catch {
+          return '';
+        }
+      };
+      return hostOf(a) !== '' && hostOf(a) === hostOf(b);
+    }),
     setTabLoading: jest.fn(),
     getTabs: jest.fn(() => tabsRef.list),
     getTabById: jest.fn((tabId) => {
@@ -1099,6 +1111,8 @@ describe('navigation', () => {
 
     ctx.elements.addressInput.value = 'https://recorded.example';
     ctx.activeRef.tab.title = 'Recorded Title';
+    // tabs.js commits the page the tab is on at did-navigate.
+    ctx.activeRef.tab.url = 'https://loaded.example';
 
     ctx.tabsMocks.webviewEventHandler('did-stop-loading', {
       url: 'https://loaded.example',
@@ -1293,6 +1307,67 @@ describe('navigation', () => {
       });
 
       expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    // A slow icon fetch can land after the tab has gone on to another site:
+    // painting it then put the old site's icon on the new site's tab.
+    test('an icon that lands after the tab left for another site is not painted', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      let finishFetch;
+      ctx.electronAPI.fetchFaviconWithKey.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFetch = resolve;
+        })
+      );
+      ctx.activeRef.tab.url = 'https://shop.example/item';
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      ctx.tabsMocks.updateTabFavicon.mockClear();
+      ctx.activeRef.tab.url = 'https://elsewhere.example/';
+      finishFetch('data:image/png;base64,shop');
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.updateTabFavicon).not.toHaveBeenCalled();
+    });
+
+    test('an icon that lands while the tab is on another page of the site is painted', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      let finishFetch;
+      ctx.electronAPI.fetchFaviconWithKey.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFetch = resolve;
+        })
+      );
+      ctx.activeRef.tab.url = 'https://shop.example/item';
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      ctx.tabsMocks.updateTabFavicon.mockClear();
+      ctx.activeRef.tab.url = 'https://shop.example/cart';
+      finishFetch('data:image/png;base64,shop');
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.updateTabFavicon).toHaveBeenCalledWith(
+        ctx.activeRef.tab.id,
+        'https://shop.example/item'
+      );
     });
 
     test('a report for a tab that no longer exists is ignored', async () => {
@@ -2701,6 +2776,52 @@ describe('navigation', () => {
       const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
       expect(loadedUrl).toContain('pages/error.html');
       expect(loadedUrl).toContain('protocol=ipfs');
+    });
+
+    test('IPFS: a stopped node that still serves saved content loads the page (#30)', async () => {
+      const ctx = await loadNavigationModule({
+        currentIpfsStatus: 'stopped',
+        registry: { ipfs: { mode: 'none', cacheOnly: true } },
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('ipfs://QmSaved');
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toBe('ipfs://QmSaved');
+    });
+
+    test('IPFS: saved content does not cover a switch still in flight', async () => {
+      // Mid-stop main has no node to answer with; mid-start the store is
+      // about to change hands. Both keep the friendly page.
+      for (const desired of [false, true]) {
+        const ctx = await loadNavigationModule({
+          currentIpfsStatus: 'stopped',
+          registry: { ipfs: { mode: 'none', cacheOnly: true } },
+        });
+        await ctx.mod.initNavigation();
+        ctx.state.ipfsDesiredRunning = desired;
+
+        ctx.mod.loadTarget('ipfs://QmSaved');
+        await flushMicrotasks();
+
+        const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+        expect(loadedUrl).toContain('pages/error.html');
+      }
+    });
+
+    test('IPFS: saved content does not cover a node in error', async () => {
+      const ctx = await loadNavigationModule({
+        currentIpfsStatus: 'error',
+        registry: { ipfs: { mode: 'none', cacheOnly: true } },
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('ipfs://QmSaved');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain('pages/error.html');
     });
 
     test('IPFS: a running node navigates normally (no error page)', async () => {

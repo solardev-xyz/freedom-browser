@@ -347,11 +347,14 @@ test('the start-page banner follows setup and fits both themes at narrow widths'
   test.setTimeout(60_000);
   const home = await guest(electronApp, 'home');
   const open = home.locator('#ai-invitation-open');
+  await expect(home.getByRole('heading', { name: 'What’s new', exact: true })).toBeVisible();
+  await expect(home.locator('.whats-new-list > li')).toHaveCount(1);
   const guide = home.locator('#ai-privacy-guide-home');
   await expect(guide).toHaveAttribute('href', AI_PRIVACY_GUIDE_URL);
   await expect(guide).toBeVisible();
   await expect(home.locator('#ai-invitation-heading')).toHaveText('Meet Freedom Agent');
   await expect(open).toHaveText('Set up');
+  await expect(open).toHaveAccessibleName('Set up');
   await expect(open).toHaveAttribute('href', 'freedom://settings/ai');
   expect(await window.evaluate(() => window.electronAPI.getSettings())).toMatchObject({ enableAi: false });
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
@@ -387,6 +390,7 @@ test('the start-page banner follows setup and fits both themes at narrow widths'
   const configured = await window.evaluate(baseUrl => window.electronAPI.configureOllamaAgentProvider(undefined, baseUrl), baseUrl);
   expect(configured?.ok).toBe(true);
   await expect(home.locator('#ai-invitation')).toBeHidden();
+  await expect(home.locator('.whats-new')).toBeHidden();
   // A model still connected with AI turned off: say it is off, not "Meet".
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
   await expect(home.locator('#ai-invitation-heading')).toHaveText('Freedom Agent is off');

@@ -13,7 +13,9 @@ test.beforeAll(async () => {
     response.setHeader('Content-Type', 'application/json');
     if (request.url === '/api/tags') {
       response.end(JSON.stringify({ models: [{ name: 'freedom-examples-fixture' }] }));
-    } else {
+    } else if (request.method === 'POST' && request.url === '/api/show') {
+      response.end(JSON.stringify({ capabilities: ['completion', 'tools'] }));
+    } else if (request.method === 'POST' && request.url === '/v1/chat/completions') {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       inferenceRequests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
@@ -26,6 +28,9 @@ test.beforeAll(async () => {
       response.write(`data: ${JSON.stringify(chunk({ role: 'assistant', content: 'Example started.' }))}\n\n`);
       response.write(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`);
       response.end('data: [DONE]\n\n');
+    } else {
+      response.writeHead(404);
+      response.end('{}');
     }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

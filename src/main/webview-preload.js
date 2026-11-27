@@ -7,6 +7,7 @@
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
+const { webFrame } = require('electron');
 
 // CSP connect-src does not cover WebRTC/TURN. Apply this in the main world
 // before page scripts, including inherited blank/srcdoc preview frames.
@@ -848,6 +849,152 @@ if (isInternalPage()) {
   installInternalPageTheme();
 }
 
+// ============================================
+// Markdown documents (#1035)
+// ============================================
+//
+// Chromium shows a `text/markdown` file as plain text: the whole file in one
+// <pre>, black on white. Freedom renders it as a page instead, in place and
+// from any scheme a tab loads (https, file, bzz, ipfs/ipns …), and the
+// address bar's Markdown button (markdown-view-ui.js) flips between that page
+// and the file's source. `text/x-markdown` counts too, and so does
+// `text/plain` at a path ending in .md or .markdown: that is how GitHub's raw
+// files and most static servers send Markdown. Swarm and IPFS files that
+// arrive with no usable type are relabelled in main (gateway-response-headers.js).
+//
+// The view itself — front matter, marked, DOMPurify, the reading style — is
+// webview-preload-markdown.js, which main serves with the vendored marked and
+// DOMPurify (markdown-view.js) only once a document turns out to be Markdown.
+// All three run here, in this isolated world: the page's main world never
+// sees them, and the rendered page is no more able to run code than the text
+// it came from. Rendering in the tab rather than in main also means a huge
+// or hostile file can only stall its own tab.
+const MARKDOWN_TYPES = new Set(['text/markdown', 'text/x-markdown']);
+const MARKDOWN_PATH = /\.(?:md|markdown)$/i;
+// A bigger file stays Chromium's plain-text page: parsing it would hold the
+// tab for seconds.
+const MARKDOWN_MAX_LENGTH = 2 * 1024 * 1024;
+// The raw text is hidden until the page is ready, so it doesn't flash up
+// first. If main hasn't answered by then, the text shows anyway.
+const MARKDOWN_REVEAL_TIMEOUT_MS = 3000;
+const MARKDOWN_HIDE_CSS =
+  'html { visibility: hidden !important; } ' +
+  '@media (prefers-color-scheme: dark) { html { background: #202122 !important; } }';
+
+const isMarkdownDocument = () => {
+  if (IS_ISOLATED_PREVIEW || isInternalPage()) return false;
+  const type = String(document.contentType || '').toLowerCase();
+  if (MARKDOWN_TYPES.has(type)) return true;
+  return type === 'text/plain' && MARKDOWN_PATH.test(globalThis.location?.pathname || '');
+};
+
+// marked and DOMPurify are UMD bundles and the view a CommonJS module: given
+// `exports` and `module`, each hands its API back without writing to this
+// world's globals. Built with `new Function` here in the isolated world,
+// where the page's CSP doesn't apply (as buildScriptletBundle above).
+function evaluateMarkdownModule(source) {
+  const module = { exports: {} };
+  new Function('exports', 'module', 'define', source)(module.exports, module, undefined);
+  return module.exports;
+}
+
+// Listen for this document's lifetime only (see activeSubscriptions).
+function subscribeForPage(channel, handler) {
+  ipcRenderer.on(channel, handler);
+  const unsubscribe = () => {
+    ipcRenderer.removeListener(channel, handler);
+    activeSubscriptions.delete(unsubscribe);
+  };
+  activeSubscriptions.add(unsubscribe);
+}
+
+function renderMarkdownDocument(sources) {
+  // Each way out leaves the text as Chromium shows it, and says why.
+  if (!sources) {
+    console.warn('[markdown] no renderer from the main process; showing the text');
+    return;
+  }
+  const pre = document.body?.querySelector(':scope > pre');
+  if (!pre) {
+    console.warn('[markdown] no text to render:', document.body?.innerHTML.slice(0, 120));
+    return;
+  }
+  if (pre.textContent.length > MARKDOWN_MAX_LENGTH) {
+    console.info('[markdown] file too large to render; showing the text');
+    return;
+  }
+
+  const { createMarkdownView } = evaluateMarkdownModule(sources.view);
+  const markdown = createMarkdownView({
+    marked: evaluateMarkdownModule(sources.marked),
+    DOMPurify: evaluateMarkdownModule(sources.purify),
+  });
+  const page = markdown.mount({
+    document,
+    location: globalThis.location,
+    pre,
+    insertCSS: (css) => webFrame.insertCSS(css),
+  });
+
+  // The page follows Settings > Appearance live, like internal pages.
+  let configuredTheme = sources.theme || 'system';
+  const applyTheme = () => page.setTheme(resolveTheme(configuredTheme));
+  applyTheme();
+  subscribeForPage('settings:updated', (_event, settings) => {
+    configuredTheme = settings?.theme || 'system';
+    applyTheme();
+  });
+  prefersDarkQuery?.addEventListener('change', applyTheme);
+
+  // The address bar shows its Markdown button for as long as this page
+  // reports in, and asks it to switch views.
+  const report = () => ipcRenderer.sendToHost('markdown:state', { view: page.view });
+  subscribeForPage('markdown:toggle', () => {
+    page.setView(page.view === 'formatted' ? 'source' : 'formatted');
+    report();
+  });
+  report();
+}
+
+(function setupMarkdownDocument() {
+  if (!isMarkdownDocument()) return;
+  let hideKey = null;
+  try {
+    hideKey = webFrame.insertCSS(MARKDOWN_HIDE_CSS);
+  } catch {
+    // Not hidden: the text may show for a moment before the page.
+  }
+  let revealed = false;
+  const reveal = () => {
+    if (revealed) return;
+    revealed = true;
+    if (hideKey) webFrame.removeInsertedCSS(hideKey);
+  };
+  const revealTimer = setTimeout(() => {
+    console.info('[markdown] not rendered yet; showing the text meanwhile');
+    reveal();
+  }, MARKDOWN_REVEAL_TIMEOUT_MS);
+
+  const sources = ipcRenderer.invoke('markdown:get-view').catch((err) => {
+    console.warn('[markdown] the main process did not answer:', err?.message || err);
+    return null;
+  });
+  const parsed = new Promise((resolve) => {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', resolve, { once: true });
+    } else {
+      resolve();
+    }
+  });
+  Promise.all([sources, parsed])
+    .then(([view]) => renderMarkdownDocument(view))
+    .catch((err) => console.warn('[markdown] could not render this document:', err?.message || err))
+    .finally(() => {
+      clearTimeout(revealTimer);
+      reveal();
+    });
+})();
+
 const guardInternalSubscription = (name, channel) => (callback) => {
   if (!isInternalPage()) {
     console.warn(`[freedomAPI] blocked subscription "${name}" on non-internal page`);
@@ -1069,6 +1216,311 @@ document.addEventListener(
 );
 document.addEventListener('mouseleave', () => sendLinkStatusZone(false));
 window.addEventListener('blur', () => sendLinkStatusZone(false));
+
+// ============================================
+// Two-finger swipe between pages (macOS, #980)
+// ============================================
+//
+// Chrome and Safari go back when a two-finger sideways scroll runs past the
+// page's left edge, and forward past its right edge. Electron leaves that to
+// the embedder, and the main process cannot see how far a scroll went (its
+// `input-event` names the gesture events without their deltas, probed on
+// Electron 45), so the page measures it here and the chrome
+// (renderer/lib/swipe-navigation.js) draws the arrow and navigates.
+//
+// The page never sees the trackpad's gesture phases, so a gesture is a run of
+// wheel events with no pause longer than SWIPE_GESTURE_GAP_MS; the momentum
+// events macOS sends after the fingers lift belong to the same run, so a flick
+// counts its momentum, as in Safari. Each gesture is decided once, when it has
+// moved SWIPE_AXIS_LOCK_PX: it is the page's, and nothing is reported, when
+// - it is mostly vertical;
+// - it is shift-scroll or pinch zoom (see isPlainScroll); one that looks like
+//   a notched mouse wheel rather than a trackpad waits (see looksNotched);
+// - something under the pointer can still scroll that way, stops scroll
+//   chaining with `overscroll-behavior-x` (which also keeps Chrome from
+//   navigating), or may hide a scroller from it (see pageKeepsSwipe), either
+//   at its first sideways movement or when it is decided;
+// - the page cancels any of its wheel events (maps, canvas apps).
+// Otherwise it reports the distance past the edge as it grows, and the end.
+// Each message also says how long ago the gesture's first wheel event came
+// (`sinceStart`): once a swipe has navigated, the chrome drops gestures that
+// began before that swipe's scroll was over, such as the arriving page's
+// share of it, which a page busy loading hears only late.
+// Listening is passive, so scrolling never waits on it.
+// Only the main frame listens (sub-frames return early above), and a wheel
+// event over an <iframe> is dispatched in that frame's document, same-site or
+// not, so a swipe that starts over any embedded frame never navigates.
+const SWIPE_GESTURE_GAP_MS = 150;
+const SWIPE_AXIS_LOCK_PX = 8;
+// A gesture counts as sideways when its horizontal travel is at least this
+// many times its vertical travel when it is decided.
+const SWIPE_AXIS_RATIO = 2;
+
+// Shift turns a vertical wheel sideways, ctrl marks a pinch, and a page can
+// dispatch wheel events of its own.
+const isPlainScroll = (event) =>
+  event.isTrusted && event.deltaMode === 0 && !event.shiftKey && !event.ctrlKey;
+
+// A notched mouse wheel moves in whole ticks: Chromium sets the event's tick
+// count from the wheel's raw notches and Blink reports it as
+// `wheelDeltaX = ticks * 120 / devicePixelRatio`. Trackpads and other smooth
+// devices get pixels / 40 ticks, which is whole only when the pixels happen to
+// be a multiple of 40 (web_input_event_builders_mac.mm, wheel_event.cc). So a
+// sideways gesture whose events all looked notched so far stays undecided
+// until one does not, and a decided swipe is never undone by one.
+function looksNotched(event) {
+  const ticks = (Math.abs(event.wheelDeltaX || 0) * (window.devicePixelRatio || 1)) / 120;
+  return ticks >= 0.99 && Math.abs(ticks - Math.round(ticks)) < 0.01;
+}
+
+// Where `element`'s horizontal scroll origin is: 'left', or 'right', where
+// Chromium reports positions from 0 down to -max; null when that cannot be
+// told. A position away from 0 says so by its sign. At 0 only unambiguous
+// styles decide: horizontal lines running one way in every style in
+// `writings` (the viewport's come from both <html> and the body), flipped by a
+// reversed flex row, or by wrap-reverse on a flex column whose lines then run
+// right to left. Vertical writing modes, and an <html> and body that disagree,
+// are left unknown, and the caller treats unknown as able to scroll.
+function scrollOrigin(element, style, writings) {
+  if (element.scrollLeft < 0) return 'right';
+  if (element.scrollLeft > 0) return 'left';
+  if (writings.some((writing) => (writing.writingMode || 'horizontal-tb') !== 'horizontal-tb')) {
+    return null;
+  }
+  const directions = new Set(writings.map((writing) => writing.direction || 'ltr'));
+  if (directions.size !== 1) return null;
+  const rtl = directions.has('rtl');
+  const flex = style.display === 'flex' || style.display === 'inline-flex';
+  const column = /^column/.test(style.flexDirection || '');
+  const flipped =
+    flex &&
+    ((!column && style.flexDirection === 'row-reverse') ||
+      (column && style.flexWrap === 'wrap-reverse'));
+  return rtl !== flipped ? 'right' : 'left';
+}
+
+// Whether `element` can scroll further toward `direction` ('back' is toward
+// its left edge).
+function canScrollToward(element, direction, style, writings = [style]) {
+  const max = element.scrollWidth - element.clientWidth;
+  if (!(max > 1)) return false;
+  const origin = scrollOrigin(element, style, writings);
+  if (origin === null) return true;
+  const fromLeft = origin === 'right' ? max + element.scrollLeft : element.scrollLeft;
+  return direction === 'back' ? fromLeft > 1 : fromLeft < max - 1;
+}
+
+const keepsScrollChain = (style) =>
+  style.overscrollBehaviorX === 'contain' || style.overscrollBehaviorX === 'none';
+const scrollsSideways = (overflowX) => overflowX === 'auto' || overflowX === 'scroll';
+// Any containment stops overflow propagation (CSS Containment 2), including
+// what content-visibility and a size container type imply without showing in
+// the computed `contain`.
+const setTo = (value, unset) => typeof value === 'string' && value !== '' && value !== unset;
+const isContained = (style) =>
+  setTo(style.contain, 'none') ||
+  setTo(style.contentVisibility, 'visible') ||
+  setTo(style.containerType, 'normal');
+
+// Whether the body's overflow is the viewport's (CSS Overflow 3, overflow
+// propagation): <html> leaves both axes visible, and neither element is
+// contained. Otherwise the body is a scroller like any other.
+function bodyOverflowIsViewports(htmlStyle, bodyStyle) {
+  return (
+    htmlStyle.overflowX === 'visible' &&
+    htmlStyle.overflowY === 'visible' &&
+    bodyStyle.display !== 'none' &&
+    !isContained(htmlStyle) &&
+    !isContained(bodyStyle)
+  );
+}
+
+// Whether the page keeps a sideways scroll toward `direction` that started
+// over `event`'s target: a scroll container on the way up can still move that
+// way, or one stops the chain there.
+//
+// A closed shadow root hides its insides from composedPath(), which then ends
+// at its host, and nothing outside it hears its scrolls (Electron 45 has no
+// `overscroll` event either). A custom element as the target with no open
+// shadow root may be such a host, so the page keeps the swipe there; a closed
+// root on a built-in element such as <div> cannot be told apart.
+function pageKeepsSwipe(event, direction) {
+  const html = document.documentElement;
+  const body = document.body;
+  const root = document.scrollingElement || html;
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+  const target = path.find((node) => node?.nodeType === 1);
+  if (target && target.localName?.includes('-') && !target.shadowRoot) return true;
+  const htmlStyle = html ? getComputedStyle(html) : null;
+  const bodyStyle = body ? getComputedStyle(body) : null;
+  const bodyIsViewport =
+    !!htmlStyle && !!bodyStyle && bodyOverflowIsViewports(htmlStyle, bodyStyle);
+  for (const node of path) {
+    if (!node || node.nodeType !== 1 || node === root || node === html) continue;
+    if (node === body && bodyIsViewport) continue;
+    const style = getComputedStyle(node);
+    // A single-line <input> reports `overflow: clip` (Chromium's UA sheet),
+    // yet its inner editor scrolls a value too long for the field sideways,
+    // and scrollLeft/scrollWidth on the input read that editor. So it takes
+    // the scroll while its text can still move that way.
+    if (node.localName === 'input') {
+      if (canScrollToward(node, direction, style)) return true;
+      continue;
+    }
+    // `hidden` still makes a scroll container, which stops the chain when it
+    // says so, though the user cannot scroll it.
+    if (style.overflowX === 'hidden' && keepsScrollChain(style)) return true;
+    if (!scrollsSideways(style.overflowX)) continue;
+    if (keepsScrollChain(style) || canScrollToward(node, direction, style)) return true;
+  }
+  for (const style of [htmlStyle, bodyStyle]) {
+    if (style && keepsScrollChain(style)) return true;
+  }
+  const viewportOverflowX = bodyIsViewport ? bodyStyle.overflowX : htmlStyle?.overflowX;
+  if (viewportOverflowX === 'hidden' || viewportOverflowX === 'clip') return false;
+  if (!root) return false;
+  // The viewport is not a flex container; its writing comes from <html> or
+  // the body, and the two must agree for a position of 0 to be read.
+  const writings = [htmlStyle, bodyStyle].filter(Boolean);
+  return canScrollToward(root, direction, {}, writings);
+}
+
+let swipeGesture = null;
+let swipeGestureEndTimer = null;
+
+// Durations only: the page's clock and the chrome's are not comparable.
+const swipeMessage = (gesture, fields = {}) => ({
+  ...fields,
+  sinceStart: Math.max(0, performance.now() - gesture.startedAt),
+});
+
+function reportSwipeEnd(gesture) {
+  if (gesture.reported && gesture.state !== 'page') {
+    ipcRenderer.sendToHost(
+      'swipe-nav:end',
+      swipeMessage(gesture, { direction: gesture.state, distance: gesture.distance })
+    );
+  }
+}
+
+// The end waits for the gesture's last cancellation checks (deferSwipeCheck),
+// so a page that cancelled its final wheel event is never reported as letting
+// a swipe through.
+function endSwipeGesture() {
+  clearTimeout(swipeGestureEndTimer);
+  swipeGestureEndTimer = null;
+  const gesture = swipeGesture;
+  swipeGesture = null;
+  if (!gesture) return;
+  gesture.ended = true;
+  if (gesture.pendingChecks === 0) reportSwipeEnd(gesture);
+}
+
+function handOverSwipeGesture(gesture) {
+  if (gesture.reported && gesture.state !== 'page') {
+    ipcRenderer.sendToHost('swipe-nav:cancel', swipeMessage(gesture));
+  }
+  gesture.state = 'page';
+}
+
+function onSwipeWheel(event) {
+  if (swipeGesture && event.timeStamp - swipeGesture.lastAt > SWIPE_GESTURE_GAP_MS) {
+    endSwipeGesture();
+  }
+  if (!swipeGesture) {
+    swipeGesture = {
+      state: 'pending',
+      startedAt: event.timeStamp,
+      sumX: 0,
+      sumY: 0,
+      notched: true,
+      checkedStart: false,
+      distance: 0,
+      reported: false,
+      ended: false,
+      pendingChecks: 0,
+    };
+  }
+  const gesture = swipeGesture;
+  gesture.lastAt = event.timeStamp;
+  clearTimeout(swipeGestureEndTimer);
+  swipeGestureEndTimer = setTimeout(endSwipeGesture, SWIPE_GESTURE_GAP_MS);
+  if (gesture.state === 'page') return;
+
+  if (!isPlainScroll(event)) {
+    handOverSwipeGesture(gesture);
+    return;
+  }
+  if (gesture.state === 'pending') {
+    // Like Chrome's scroll latching: a gesture whose first sideways movement
+    // the page could take stays the page's, even once it has scrolled the
+    // page to its edge before being decided.
+    if (!gesture.checkedStart && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      gesture.checkedStart = true;
+      if (pageKeepsSwipe(event, event.deltaX < 0 ? 'back' : 'forward')) {
+        gesture.state = 'page';
+        return;
+      }
+    }
+    gesture.sumX += event.deltaX;
+    gesture.sumY += event.deltaY;
+    if (event.deltaX !== 0 && !looksNotched(event)) gesture.notched = false;
+    const travel = Math.abs(gesture.sumX) + Math.abs(gesture.sumY);
+    if (
+      travel >= SWIPE_AXIS_LOCK_PX &&
+      Math.abs(gesture.sumX) < SWIPE_AXIS_RATIO * Math.abs(gesture.sumY)
+    ) {
+      gesture.state = 'page';
+      return;
+    }
+    if (travel < SWIPE_AXIS_LOCK_PX || gesture.notched) {
+      deferSwipeCheck(event, gesture);
+      return;
+    }
+    const direction = gesture.sumX < 0 ? 'back' : 'forward';
+    if (pageKeepsSwipe(event, direction)) {
+      gesture.state = 'page';
+      return;
+    }
+    gesture.state = direction;
+    gesture.distance = Math.abs(gesture.sumX);
+  } else {
+    gesture.distance += gesture.state === 'back' ? -event.deltaX : event.deltaX;
+  }
+  deferSwipeCheck(event, gesture, true);
+}
+
+// The page's own wheel listeners run after this one when they sit on
+// `window` too, so whether it cancelled the event is read once dispatch is
+// over (the same deferral as the context-menu interceptor above). Each check
+// touches only its own gesture, and the last one of an ended gesture sends
+// its end. An update reports the distance as of its own event: later events
+// may still be cancelled when it runs, and the chrome navigates as soon as
+// the distance is far enough.
+function deferSwipeCheck(event, gesture, report = false) {
+  gesture.pendingChecks += 1;
+  const distance = gesture.distance;
+  setTimeout(() => {
+    gesture.pendingChecks -= 1;
+    if (gesture.state !== 'page') {
+      if (event.defaultPrevented) {
+        handOverSwipeGesture(gesture);
+      } else if (report) {
+        gesture.reported = true;
+        ipcRenderer.sendToHost(
+          'swipe-nav:update',
+          swipeMessage(gesture, { direction: gesture.state, distance })
+        );
+      }
+    }
+    if (gesture.ended && gesture.pendingChecks === 0) reportSwipeEnd(gesture);
+  }, 0);
+}
+
+// `process` is the sandboxed preload's own binding (see readWebviewBoot).
+if (typeof process !== 'undefined' && process.platform === 'darwin') {
+  window.addEventListener('wheel', onSwipeWheel, { passive: true });
+}
 
 // Expose APIs to internal pages (guarded for safety)
 contextBridge.exposeInMainWorld('freedomAPI', {
@@ -1424,12 +1876,20 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
 
   // Radicle
-  seedRadicle: guardInternal('seedRadicle', (rid) => ipcRenderer.invoke('radicle:seed', rid)),
+  // PRIVATE MODE GUARD (R-9): no seeding policy or fetched repository may
+  // outlive a private window; main refuses these too.
+  seedRadicle: guardInternal('seedRadicle', (rid) =>
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:seed', rid)
+  ),
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
-    ipcRenderer.invoke('radicle:syncRepo', rid)
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:syncRepo', rid)
   ),
   getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
     ipcRenderer.invoke('radicle:getSeedStatus', rid)
@@ -1836,10 +2296,14 @@ const SWARM_INJECT_SOURCE = `
             method === 'swarm_writeFeedEntry' ||
             method === 'swarm_writeSingleOwnerChunk' ||
             method === 'swarm_getSigningIdentity' ||
+            method === 'swarm_getEncryptionKey' ||
+            method === 'swarm_deriveSharedSecrets' ||
             method === 'swarm_getMessagingIdentity' ||
             method === 'swarm_subscribe' ||
             // A blob of up to 5 MiB joined from the network can outlast 60s.
-            method === 'swarm_readData';
+            method === 'swarm_readData' ||
+            // Waits on the ACT prompt, then on the node's ACT lookup.
+            method === 'swarm_openAct';
           const timeout = longRunning ? 300000 : 60000;
           setTimeout(() => {
             if (pendingRequests.has(id)) {
@@ -1863,16 +2327,20 @@ const SWARM_INJECT_SOURCE = `
       readFeedEntry(params) { return this.request({ method: 'swarm_readFeedEntry', params: params }); },
       listFeeds() { return this.request({ method: 'swarm_listFeeds' }); },
       publishChunk(params) { return this.request({ method: 'swarm_publishChunk', params: params }); },
+      publishSingleOwnerChunk(params) { return this.request({ method: 'swarm_publishSingleOwnerChunk', params: params }); },
       readChunk(params) { return this.request({ method: 'swarm_readChunk', params: params }); },
       readData(params) { return this.request({ method: 'swarm_readData', params: params }); },
       writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
       readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
       getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
+      getEncryptionKey() { return this.request({ method: 'swarm_getEncryptionKey' }); },
+      deriveSharedSecrets(params) { return this.request({ method: 'swarm_deriveSharedSecrets', params: params }); },
       getMessagingIdentity() { return this.request({ method: 'swarm_getMessagingIdentity' }); },
       subscribe(params) { return this.request({ method: 'swarm_subscribe', params: params }); },
       unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
       sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
       sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
+      openAct(params) { return this.request({ method: 'swarm_openAct', params: params }); },
 
       on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
       removeListener(event, handler) {
@@ -1994,6 +2462,7 @@ const RADICLE_INJECT_SOURCE = `
           // sibling's 300s budget for anything that can prompt.
           const canPrompt = method === 'radicle_requestAccess' ||
             method === 'radicle_seed' ||
+            method === 'radicle_unseed' ||
             method === 'radicle_getIdentity' ||
             method === 'radicle_createIssue' ||
             method === 'radicle_commentIssue' ||

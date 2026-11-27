@@ -1,0 +1,7 @@
+- Markdown pages ([#1035](https://github.com/solardev-xyz/freedom-browser/issues/1035)):
+  - Markdown files from the web, Swarm, IPFS and local disk open as pages in Freedom's reading style, light or dark
+  - The Markdown button in the address bar shows the file's source and switches back; a link ending in `?format=markdown` opens on the source
+  - Front matter from Dave Winer's [Web of Markdown](https://github.com/scripting/markdownWeb) names the tab, adds a byline and a description, and links the previous, next and parent pages; a post with no title is headed by its date
+  - Images follow his conventions: one that opens a paragraph sits in the right margin, one on its own is a picture captioned with its alt text
+  - Headings offer a link to themselves
+  - Raw HTML in a file is left out, and nothing in it runs

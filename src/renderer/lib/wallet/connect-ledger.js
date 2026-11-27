@@ -197,6 +197,9 @@ async function loadAccountsPage(replace, onFailure = showError) {
       scheme: schemeSelect?.value || 'live',
       start: replace ? 0 : discoveredAccounts.length,
       count: ACCOUNTS_PER_PAGE,
+      // Check the wallet's unchecked Ledger records once per list, not
+      // again on every "Load more" page (#1065).
+      checkRecords: replace,
     });
     if (!result.success) {
       onFailure(result.error || 'Failed to read accounts from the device');
@@ -204,6 +207,18 @@ async function loadAccountsPage(replace, onFailure = showError) {
     }
     discoveredAccounts = replace ? result.accounts : [...discoveredAccounts, ...result.accounts];
     renderAccountList();
+    if (result.mismatched?.length) {
+      // Main checked the wallet's unchecked Ledger accounts against this
+      // device (#1065); these it doesn't hold. Kept, but unusable until
+      // the Ledger that holds them is connected.
+      showError(mismatchNotice(result.mismatched));
+    }
+    if (result.updated || result.mismatched?.length) {
+      // A record's check state changed — a match too, which clears the
+      // Safe owner warning, the create-safe owner sub-label and the
+      // "Doesn't match" badge — so repaint from the stored records.
+      loadDerivedWallets();
+    }
     return true;
   } catch (err) {
     console.error('[ConnectLedger] Account load failed:', err);
@@ -212,6 +227,17 @@ async function loadAccountsPage(replace, onFailure = showError) {
   } finally {
     if (loadMoreBtn) loadMoreBtn.disabled = false;
   }
+}
+
+/** The notice for wallet Ledger accounts the connected device doesn't hold. */
+export function mismatchNotice(mismatched) {
+  const names = mismatched.map((account) => `"${account.name}"`).join(', ');
+  const one = mismatched.length === 1;
+  return (
+    `This Ledger doesn't hold ${names} at ${one ? 'its path' : 'their paths'}. ` +
+    `${one ? 'It stays' : 'They stay'} in your wallet list, but can't sign or own a Safe ` +
+    `until you connect the Ledger that holds ${one ? 'it' : 'them'}.`
+  );
 }
 
 function renderAccountList() {

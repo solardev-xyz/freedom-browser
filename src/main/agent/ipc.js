@@ -2,7 +2,7 @@
 
 const IPC = require('../../shared/ipc-channels');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
-const { AGENT_ERROR_CODES, FreedomAgentError } = require('./freedom-agent-service');
+const { AGENT_ERROR_CODES, FreedomAgentError, agentHeldWalletRefusal } = require('./freedom-agent-service');
 
 const AGENT_IPC_ERROR_CODES = Object.freeze({
   TAB_NOT_BOUND: 'AGENT_TAB_NOT_BOUND',
@@ -28,6 +28,8 @@ const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
   AGENT_OLLAMA_DISCOVERY_FAILED: 'Could not load models from Ollama. Make sure Ollama is running and check the local URL in connection settings.',
   AGENT_OLLAMA_NO_MODELS: 'Ollama is running, but no models are installed. Download a model in Ollama, then connect again.',
   AGENT_OLLAMA_MODEL_LIMIT: 'This Ollama server has more than the supported 128 models.',
+  AGENT_OLLAMA_TOOLS_UNSUPPORTED: 'This model does not support Agent actions in Ollama. Choose a compatible model.',
+  AGENT_OLLAMA_CHECK_FAILED: 'Tool support could not be verified. Retry the compatibility check or choose another model.',
   AGENT_MODEL_INVALID: 'Selected agent model is invalid',
   AGENT_MODEL_UNAVAILABLE: 'No configured agent model is available',
   AGENT_PROVIDER_AUTH_BUSY: 'A provider sign-in is already in progress',
@@ -74,17 +76,24 @@ function errorEnvelope(code, message) {
   return { ok: false, error: { code, message } };
 }
 
-function registerUnavailableAgentIpc({ ipcMain, isTrustedSender, isProviderSettingsSender, isAgentLauncherSender }) {
+function inactiveWalletResponse({ isTrustedSender, automationTabIdForRenderer, isAgentHeldTab }, event, payload = {}) {
+  if (!payload || typeof payload !== 'object' || !isTrustedSender(event?.sender) || !Number.isSafeInteger(payload.rendererTabId) || payload.rendererTabId < 1) return { handled: false };
+  const tabId = automationTabIdForRenderer?.(event.sender, payload.rendererTabId);
+  return tabId && isAgentHeldTab?.(tabId) === true ? agentHeldWalletRefusal() : { handled: false };
+}
+
+function registerUnavailableAgentIpc(options) {
+  const { ipcMain, isTrustedSender, isProviderSettingsSender, isAgentLauncherSender } = options;
   const channels = Object.entries(IPC)
     .filter(([name]) => name.startsWith('AGENT_') && !name.endsWith('_EVENT'))
     .map(([, channel]) => channel);
   for (const channel of channels) {
-    ipcMain.handle(channel, (event) => {
+    ipcMain.handle(channel, (event, payload) => {
       const settingsRequest = channel.startsWith('agent:provider:') && isProviderSettingsSender?.(event);
       const launcherRequest = [IPC.AGENT_OPEN, IPC.AGENT_SETUP_STATE].includes(channel) && (isAgentLauncherSender?.(event) || isProviderSettingsSender?.(event));
       if (!isTrustedSender(event.sender) && !settingsRequest && !launcherRequest)
         return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
-      if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
+      if (channel === IPC.AGENT_WALLET_REQUEST) return inactiveWalletResponse(options, event, payload);
       return errorEnvelope(
         'AGENT_STORAGE_UNAVAILABLE',
         'Agent storage is unavailable. Restart Freedom; if this persists, check profile-folder access or restore Agent data from a backup.'
@@ -435,7 +444,7 @@ function registerFreedomAgentIpc(options = {}) {
         } catch (error) {
           const errorCode = typeof error?.code === 'string' ? error.code : 'UNKNOWN';
           console.error('[agent] Model resolution failed:', errorCode);
-          if (['AGENT_MODEL_POLICY', 'AGENT_CATALOG_EXPIRED'].includes(errorCode)) {
+          if (['AGENT_MODEL_POLICY', 'AGENT_CATALOG_EXPIRED', 'AGENT_OLLAMA_TOOLS_UNSUPPORTED'].includes(errorCode)) {
             return safeProviderError(error);
           }
           return errorEnvelope(
@@ -680,7 +689,8 @@ function registerFreedomAgentIpc(options = {}) {
     }
     const tabId = automationTabIdForRenderer(event.sender, payload.rendererTabId);
     if (!tabId) return { handled: false };
-    return service.handleWalletRequest(tabId, payload.request);
+    const result = await service.handleWalletRequest(tabId, payload.request);
+    return result?.handled ? result : inactiveWalletResponse(options, event, payload);
   };
 
   const handleGetState = (event) => {
@@ -1141,7 +1151,10 @@ function registerFreedomAgentIpc(options = {}) {
   const handleProviderPreferences = (event, payload) =>
     handleProviderMutation(event, () => ({ status: providerResolver.setPreferences(payload) }));
   const handleTestConnection = (event, payload) =>
-    handleProviderMutation(event, async () => ({ result: await providerResolver.testConnection(payload) }));
+    handleProviderMutation(event, async () => ({
+      result: await providerResolver.testConnection(payload),
+      status: providerResolver.getStatus(),
+    }));
   const handleConfigureOllama = (event, payload) =>
     handleProviderMutation(event, async () => ({ status: await providerResolver.configureOllama(payload) }));
   const handleLoginSubscription = (event, payload) =>
@@ -1422,7 +1435,7 @@ function registerFreedomAgentIpc(options = {}) {
   ]);
   const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
     if (!isEnabled() && !availableWhileOff.has(channel)) {
-      if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
+      if (channel === IPC.AGENT_WALLET_REQUEST) return inactiveWalletResponse(options, event, payload);
       return disabled();
     }
     return handler(event, payload);

@@ -119,7 +119,7 @@ ENS, WNS, and GNS domains are resolved against Ethereum mainnet. ENS uses the EN
 Under **Settings → Networks → Name Resolution**, enable and order the available methods. Each is listed by a plain-language name; its technical name, how it works, and — for the two that have them — its settings sit under that row's collapsed **Advanced** disclosure. A chain's own page under **Settings → Networks** lists the same sources under the same names.
 
 - **Local node** (Myotis): Reads finalized Ethereum or Gnosis state through the embedded peer-to-peer light client.
-- **Proof check** (Colibri): Cryptographically verifies answers against the chain's sync committee through a proof server (the Colibri prover). **Advanced → Proof server** overrides the server; leave it empty for the default.
+- **Proof check** (Colibri): Not used for names; the row says so ([#1076](https://github.com/solardev-xyz/freedom-browser/issues/1076)). Colibri 3.0.3 runs a lookup on contract code it fetches from a public server without checking it against the proven state, so its answer could be forged. Its place in the order goes to **Several servers must agree**, preceded by **Local node** when that method is enabled; one that already comes earlier keeps its earlier place, and Local node is never switched on by this. It still verifies chain data where its proofs cover the read. **Advanced → Proof server** overrides the server; leave it empty for the default.
 - **Several servers must agree** (RPC quorum): Queries several independently configured servers and accepts matching answers. **Advanced → Agreement threshold** sets how many must agree out of how many are asked.
 - **One server, unchecked** (Direct RPC): Trusts the first configured server; disabled by default for name resolution.
 
@@ -135,6 +135,24 @@ npm start
 ```
 
 Never commit provider keys or put them directly in documentation, issue reports, or command history.
+
+## Secure DNS
+
+**Settings → Privacy and security → Secure DNS** chooses how the sites you visit are looked up. It is on by default, in Automatic mode with Quad9:
+
+| Mode      | What it does                                                                                       |
+| --------- | -------------------------------------------------------------------------------------------------- |
+| Automatic | DNS over HTTPS to the chosen provider; your network's DNS when the provider can't be reached       |
+| Strict    | DNS over HTTPS only; sites don't load while the provider can't be reached, Wi-Fi sign-in pages too |
+| Off       | Your network's DNS                                                                                 |
+
+Strict also means names that only your network's DNS can answer stop resolving: an intranet site, a router or NAS name such as `router.lan`, or an external IPFS gateway set up by such a name (`http://nas.lan:8080`), since the public provider has never heard of them. Address a local gateway by its IP address instead, or use Automatic.
+
+Strict has two exceptions: the provider's own hostname is looked up through the system's DNS, because Chromium has to find the provider before it can use it; and when Chromium's network service crashes and is replaced, a lookup made before Freedom hands the setting to the new one (at once, on the next turn of the event loop) uses Electron's defaults.
+
+The providers are Quad9 (`https://dns.quad9.net/dns-query`, which refuses known malware and phishing domains), Cloudflare (`https://cloudflare-dns.com/dns-query`) and Mullvad (`https://dns.mullvad.net/dns-query`), or **Custom**: any `https://` DNS-over-HTTPS address, optionally with the RFC 8484 `{?dns}` variable. A change applies at once, with no restart. The profile's `settings.json` keeps the choice as `secureDnsMode` (`automatic`, `secure` or `off`), `secureDnsProvider` and `secureDnsCustomTemplate`; only the Settings page may change them.
+
+It applies to everything Chromium's network stack looks up, in every window, private ones too: pages, internal pages, downloads, favicons, updates, an external IPFS gateway and ENS CCIP-Read gateways. The requests the main process makes with Node's own stack still use the system's DNS — Ethereum and Gnosis RPC providers (ENS lookups included), the chain list, Freedom Agent's AI providers and the GitHub bridge — and so do the bundled nodes. See [Features → Secure DNS](features.md#settings--ui) for what it does and doesn't hide.
 
 ## Home Page
 

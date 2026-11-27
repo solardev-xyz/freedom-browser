@@ -84,3 +84,61 @@ describe('private-log-context', () => {
     });
   });
 });
+
+// #1058: a private context remembers its private session, so work that
+// outlives the session can tell.
+describe('private session', () => {
+  const {
+    privateSessionLive,
+    openPrivateSession,
+    endPrivateSession,
+  } = require('./private-log-context');
+
+  // Work entered in a private context now, which checks the session each
+  // time it is asked to, from inside that context.
+  function privateWork() {
+    const asks = [];
+    const done = runWithPrivateLogContext(true, async () => {
+      const answers = [];
+      for (;;) {
+        const ask = await new Promise((resolve) => asks.push(resolve));
+        if (!ask) return answers;
+        answers.push([isPrivateLogContext(), privateSessionLive()]);
+      }
+    });
+    const step = async (more = true) => {
+      while (asks.length === 0) await new Promise((resolve) => setImmediate(resolve));
+      asks.shift()(more);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    return { step, done };
+  }
+
+  afterEach(() => endPrivateSession());
+
+  test('a private context is live while the session it was entered in is open', async () => {
+    openPrivateSession();
+    const work = privateWork();
+    await work.step();
+    // A normal context is never live.
+    expect(privateSessionLive()).toBe(false);
+    endPrivateSession();
+    await work.step();
+    // The next session does not revive it.
+    openPrivateSession();
+    await work.step();
+    await work.step(false);
+    await expect(work.done).resolves.toEqual([[true, true], [true, false], [true, false]]);
+    runWithPrivateLogContext(true, () => expect(privateSessionLive()).toBe(true));
+  });
+
+  test('a private context entered with no private window open is never live', async () => {
+    endPrivateSession();
+    const work = privateWork();
+    await work.step();
+    openPrivateSession();
+    await work.step();
+    await work.step(false);
+    await expect(work.done).resolves.toEqual([[true, false], [true, false]]);
+  });
+});

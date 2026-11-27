@@ -937,6 +937,79 @@ describe('handleRequest', () => {
       expect.objectContaining({ method, path: `/ipfs/${CIDV1_BASE32}/file.txt` })
     );
   });
+
+  // F-6: Chromium keeps `%2F`, `%5C` and escapes inside a segment, so these
+  // reach the handler as written. A node or gateway that decodes them before
+  // it resolves dot segments would serve another CID or name, or its own
+  // RPC API, under this CID's origin.
+  test.each([
+    ['ipfs', `ipfs://${CIDV1_BASE32}/..%2f..%2fipns/example.com`],
+    ['ipfs', `ipfs://${CIDV1_BASE32}/..%2F..%2Fapi/v0/id`],
+    ['ipfs', `ipfs://${CIDV1_BASE32}/%2e%2e%2f%2e%2e%2fapi/v0/id`],
+    ['ipfs', `ipfs://${CIDV1_BASE32}/a%5c..%5c..%5capi/v0/id`],
+    ['ipfs', `ipfs://${CIDV1_BASE32}/a/.%2E%2F.%2e/x`],
+    ['ipfs', `ipfs://${CIDV1_BASE32}/a/..\\..\\api/v0/id`],
+    ['ipfs', `ipfs://${CIDV1_BASE32}/a\\b`],
+    ['ipns', `ipns://${IPNS_KEY_BASE36}/..%2f..%2fipfs/${CIDV1_BASE32}`],
+    ['ipns', 'ipns://docs.ipfs.tech/%2E%2E%2Fx'],
+    // Refused before the gateway-form redirect and before any resolution.
+    ['ipfs', `ipfs://localhost/ipfs/${CIDV1_BASE32}/..%2f..%2fapi/v0/id`],
+    ['ipfs', 'ipfs://vitalik.eth/..%2f..%2fapi/v0/id'],
+  ])('%s: refuses a path that leaves the content root: %s', async (ns, url) => {
+    const requestImpl = jest.fn();
+    const res = await handleRequest(ns, makeRequest(url), { requestImpl });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ code: 400, message: `invalid ${ns} path` });
+    expect(requestImpl).not.toHaveBeenCalled();
+    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    // An encoded separator that doesn't climb passes, as in freedom-core.
+    [`ipfs://${CIDV1_BASE32}/a%2Fb`, `/ipfs/${CIDV1_BASE32}/a%2Fb`],
+    [`ipfs://${CIDV1_BASE32}/my%20file%2Etxt?q=..%2f`, `/ipfs/${CIDV1_BASE32}/my%20file%2Etxt?q=..%2f`],
+    [`ipfs://${CIDV1_BASE32}/..foo/%2e%2ebar/100%25`, `/ipfs/${CIDV1_BASE32}/..foo/%2e%2ebar/100%25`],
+    [`ipfs://${CIDV1_BASE32}/.well-known/caf%C3%A9`, `/ipfs/${CIDV1_BASE32}/.well-known/caf%C3%A9`],
+  ])('still serves %s', async (url, path) => {
+    const requestImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    const res = await handleRequest('ipfs', makeRequest(url), { requestImpl });
+    expect(res.status).toBe(200);
+    expect(requestImpl).toHaveBeenCalledWith(expect.objectContaining({ path }));
+  });
+
+  // A `.tez` website URI is the domain owner's: its path is appended too.
+  test('refuses a name whose published path leaves the content root', async () => {
+    mockResolveTezosDomain.mockResolvedValue({
+      type: 'ok',
+      system: 'tezos',
+      protocol: 'ipfs',
+      decoded: CIDV1_BASE32,
+      basePath: '/..%2F..%2Fapi/v0',
+      uri: `ipfs://${CIDV1_BASE32}/..%2F..%2Fapi/v0`,
+    });
+    const requestImpl = jest.fn();
+    const res = await handleRequest('ipfs', makeRequest('ipfs://docs.example.tez/id'), {
+      requestImpl,
+    });
+    expect(res.status).toBe(502);
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  test('logs a failed native request without its error text', async () => {
+    const log = require('../logger');
+    log.warn.mockClear();
+    const err = Object.assign(new Error(`could not read /ipfs/${CIDV1_BASE32}/diary.txt`), {
+      code: 'native_gateway_error',
+    });
+    const requestImpl = jest.fn().mockRejectedValue(err);
+    const res = await handleRequest('ipfs', makeRequest(`ipfs://${CIDV1_BASE32}/x`), {
+      requestImpl,
+    });
+    expect(res.status).toBe(502);
+    const logged = log.warn.mock.calls.flat().join(' ');
+    expect(logged).not.toContain('diary.txt');
+    expect(logged).toContain('(native_gateway_error)');
+  });
 });
 
 // O-3: gateway-form URLs must never be served under the gateway host's
@@ -1277,5 +1350,37 @@ describe('extensionless IPFS text navigation', () => {
     expect(result.headers.get('content-type')).toBe('application/octet-stream');
     expect(result.headers.get('x-content-type-options')).toBeNull();
     expect(await result.text()).toBe(fixture);
+  });
+});
+
+// A node that serves a `.md` file as octet-stream would have Chromium
+// download it; a navigation to one opens as Markdown instead (#1035).
+describe('Markdown file navigation', () => {
+  const NAVIGATION_ACCEPT = 'text/html,application/xhtml+xml,*/*;q=0.8';
+  const serve = (path, body, headers) =>
+    handleRequest(
+      'ipfs',
+      new Request(`ipfs://${CIDV1_BASE32}/${path}`, { headers: { accept: NAVIGATION_ACCEPT } }),
+      {
+        requestImpl: async () =>
+          new Response(new TextEncoder().encode(body), {
+            headers: { 'content-length': String(Buffer.byteLength(body)), ...headers },
+          }),
+      }
+    );
+
+  test.each([
+    ['a small file', '# Notes\n'],
+    ['one past the small-text limit', `# Notes\n${'a'.repeat(5000)}`],
+  ])('%s served as octet-stream is text/markdown, not plain text', async (_label, body) => {
+    const result = await serve('README.md', body, { 'content-type': 'application/octet-stream' });
+    expect(result.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(result.headers.get('x-content-type-options')).toBeNull();
+    expect(await result.text()).toBe(body);
+  });
+
+  test('a .md file the node typed as text keeps its type and gains UTF-8', async () => {
+    const result = await serve('notes.md', 'Hi', { 'content-type': 'text/plain' });
+    expect(result.headers.get('content-type')).toBe('text/plain; charset=utf-8');
   });
 });
