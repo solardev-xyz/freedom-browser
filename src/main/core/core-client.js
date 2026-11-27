@@ -91,6 +91,7 @@
  * - **Fragmented replies:** a core that offers `fragments` takes main's.
  * - **Idle methods** (design 0015, D5: `swarm.body`, `swarm.publish`) go
  *   only with their idle watchdog (`idleWatchdogMs`, core-deadlines.js).
+ *   `swarm.body`'s head, `{ bytes }`, opens its body with no `body: true`.
  * - **Shutdown** is `core.shutdown`; logs say `[Core]`, and errors that the
  *   core isn't running are `core_unavailable`.
  *
@@ -305,6 +306,10 @@ function coreService(storeMoved = STORE_MOVED) {
     // `swarm.body` and `swarm.publish` (design 0015, D5): sent only with
     // their idle watchdog (core-deadlines.js `idleWatchdogMs`).
     idleMethod: isIdleMethod,
+    // `swarm.body`'s head is `{ bytes }`, and its body always follows
+    // (design 0015, Methods main calls; freedom-cored's `swarm/stream.rs`,
+    // `body_head`).
+    headOpens: (method) => method === 'swarm.body',
   });
 }
 

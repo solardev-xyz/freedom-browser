@@ -41,6 +41,10 @@
  *   address of the chunk a feed SOC wraps; a large feed write's root,
  *   which must be `bytes_up`'s reference; and `readData`'s tree, read with
  *   swarm-tree.js from the intermediate chunks main returned.
+ * - **The parts** a parent's params name (`paramParts`), which its
+ *   `shell.swarm_part` asks may pull: main's executor holds each to its
+ *   rules (another parent's part or one the params lack is `value`, one
+ *   asked twice `count`, one with no streaming call open `order`).
  *
  * Its caller is main's executor for the core's Swarm asks
  * (core/swarm-shell.js), one Admission per parent it opens.
@@ -1825,6 +1829,54 @@ function rowFor(method, params) {
   return name.includes('_') || !Object.hasOwn(ROWS, name) ? null : name;
 }
 
+/** The largest part number the core reads (`u32`, `parse_part`). */
+const MAX_PART = 0xffff_ffff;
+
+/**
+ * The payload parts the params main sent name, each by its number, with
+ * its length: what `shell.swarm_part` may ask for (design 0015, Main's
+ * encoding of a request, and The rules, "Parts"). A page's bytes where a
+ * method reads data, `data` and `files[i].bytes`, are `{ bytes, part }`
+ * (a `SwarmData` with a part, swarm-typed.js); `swarm.publish`'s are its
+ * `parts[i]` with a `part`. Main's other methods carry none.
+ *
+ * Throws a TypeError for a part named twice, or one whose number or length
+ * isn't one: main wrote the params, so either is main's own bug (the core
+ * refuses a part named twice).
+ *
+ * @param {string} row - the parent's row (`rowFor`)
+ * @param {*} params - the params main sent, as the Admission takes them
+ * @returns {Map<number, number>} part number to its length in bytes
+ */
+function paramParts(row, params) {
+  const parts = new Map();
+  const add = (part, length) => {
+    if (!Number.isSafeInteger(part) || part < 0 || part > MAX_PART) {
+      throw new TypeError('a part number is a u32');
+    }
+    if (!Number.isSafeInteger(length) || length < 0) throw new TypeError("a part's length");
+    if (parts.has(part)) throw new TypeError(`part ${part} is named twice`);
+    parts.set(part, length);
+  };
+  const data = (value) => {
+    if (value instanceof SwarmData && !isNullish(value.part)) add(value.part, value.length);
+  };
+  if (row.startsWith('swarm.publish:')) {
+    const items = param(params, 'parts');
+    if (!Array.isArray(items)) return parts;
+    for (const item of Array.from(items)) {
+      const part = param(item, 'part');
+      if (part !== undefined) add(part, param(item, 'bytes'));
+    }
+    return parts;
+  }
+  if (row.startsWith('swarm.')) return parts;
+  data(param(params, 'data'));
+  const files = param(params, 'files');
+  if (Array.isArray(files)) for (const file of Array.from(files)) data(param(file, 'bytes'));
+  return parts;
+}
+
 /** The headers main sends for an admitted call: its own, then the call's. */
 function requestHeaders(call) {
   return [...Object.entries(MAIN_HEADERS), ...(call.headers || [])];
@@ -1840,6 +1892,7 @@ module.exports = {
   INLINE_BASE64,
   IndexLookup,
   MAIN_HEADERS,
+  MAX_PART,
   MAX_PROBE_READS,
   MAX_PROBED_INDEX,
   READ_DATA_OPEN,
@@ -1850,6 +1903,7 @@ module.exports = {
   feedIdentifier,
   feedUpdateAddress,
   pageTopic,
+  paramParts,
   readAnswer,
   requestHeaders,
   rowFor,

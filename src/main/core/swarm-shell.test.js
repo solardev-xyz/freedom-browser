@@ -67,6 +67,12 @@ const {
   until,
 } = require('../../../test/helpers/fake-swarm-core');
 const { startFakeHttpNode, streamBody } = require('../../../test/helpers/fake-http-node');
+const {
+  bodyClient,
+  drainBody,
+  unreadParts,
+  zeros,
+} = require('../../../test/helpers/swarm-upload-fixtures');
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
@@ -310,10 +316,19 @@ function scriptedNode(
   return node;
 }
 
-/** The context the client calls a handler with: its signal, its lease. */
+let nextAsk = 5000;
+
+/**
+ * The context the client calls a handler with: the core's ID for the ask,
+ * its signal, its lease. `release()` lets go of the lease as the client
+ * does once the reply is written or dropped: what it holds goes, and its
+ * `onRelease` callbacks run.
+ */
 function context({ generation = 1, pool = null } = {}) {
   const controller = new AbortController();
+  const released = [];
   const ctx = {
+    id: nextAsk++,
     controller,
     signal: controller.signal,
     generation,
@@ -328,6 +343,11 @@ function context({ generation = 1, pool = null } = {}) {
       if (bytes >= ctx.held) return;
       pool?.release(ctx.held - bytes);
       ctx.held = bytes;
+    },
+    onRelease: (fn) => released.push(fn),
+    release: () => {
+      ctx.shrink(0);
+      for (const fn of released.splice(0)) fn();
     },
   };
   return ctx;
@@ -621,7 +641,7 @@ describe('the parent registry', () => {
     clock = 1500;
     timers[0].fn();
     expect(await pending).toEqual({ result: { failed: 'aborted' } });
-    expect(shell.stats()).toEqual({ parents: 0, calls: 0, walks: 0 });
+    expect(shell.stats()).toEqual({ parents: 0, calls: 0, walks: 0, uploads: 0, parts: 0 });
     expect(await p.api(calls.tag(5))).toEqual({ rule: 'ended' });
   });
 
@@ -1204,23 +1224,32 @@ function nodeAnswer(reply) {
 /**
  * Plays a grammar scenario through the shell, call by call, the node
  * answering each dial with the scenario's reply: `{ at, rule }` for the
- * first refusal, `{ upload }` for the first streamed upload (admitted and
- * answered `{ failed: "error" }`, undialled: SWM-5's sixth step), or null.
- * Each admitted call is dialled exactly once, a refused one never.
+ * first refusal, or null. Each admitted call is dialled exactly once, a
+ * refused one never; a streamed upload sends one `swarm.body` for itself,
+ * whose bytes (the core's: zeros here, of its head's length) the node
+ * takes whole before it answers. `uploads` counts those played.
  */
-async function playThroughShell(s) {
+async function playThroughShell(s, played = { uploads: 0 }) {
   const params = scenarioParams(s);
   const references = uploadReferences(s, grammar, swarmFile);
   let pending = null;
+  let streamed = 0;
   const node = scriptedNode((init) => {
     if (init.path === '/node') {
       return new Response(s.ready?.ok ? '{}' : '', { status: s.ready?.ok ? 200 : 503 });
     }
     const reply = pending;
     pending = null;
-    return nodeAnswer(reply);
+    if (typeof init.body?.getReader !== 'function') return nodeAnswer(reply);
+    return drainBody(init.body).then((bytes) => {
+      streamed = bytes;
+      return nodeAnswer(reply);
+    });
   });
+  let length = 0;
+  const client = bodyClient({ answer: () => ({ result: { bytes: length }, body: zeros(length) }) });
   const shell = makeShell({
+    client,
     nodeUrl: () => node.backend.url,
     publishReadiness: async () =>
       s.ready?.ok ? { ok: true } : { ok: false, reason: 'node-not-ready', message: 'x' },
@@ -1228,7 +1257,14 @@ async function playThroughShell(s) {
   const id = nextParent++;
   shell.open(
     { generation: 1, id },
-    { row: s.row, params, key: s.key ?? null, backend: node.backend }
+    {
+      row: s.row,
+      params,
+      key: s.key ?? null,
+      backend: node.backend,
+      // No part is asked in this play: none is ever opened.
+      parts: unreadParts(s.row, params),
+    }
   );
   if (s.ready) {
     const ready = await outcome(shell.ready({ for: id, check: s.ready.check }, context()));
@@ -1239,18 +1275,26 @@ async function playThroughShell(s) {
     const call = coreCall(c, params);
     pending = replyOf(c, dwebVerify.swarm.chunks, references);
     const dialled = node.calls().length;
-    const out = await outcome(shell.api({ for: id, ...call }, context()));
+    const asked = client.bodies.length;
+    const upload = call.body?.stream !== undefined;
+    length = upload ? call.body.stream : 0;
+    const ctx = context();
+    const out = await outcome(shell.api({ for: id, ...call }, ctx));
     if (out.rule) {
       expect(node.calls()).toHaveLength(dialled);
+      expect(client.bodies).toHaveLength(asked);
       return { at, rule: out.rule };
-    }
-    if (call.body?.stream !== undefined) {
-      expect(out.result).toEqual({ failed: 'error' });
-      expect(node.calls()).toHaveLength(dialled);
-      return { upload: at };
     }
     if (out.result instanceof StreamedReply) await readStream(out.result.body);
     expect(node.calls()).toHaveLength(dialled + 1);
+    // One swarm.body for a streamed upload, for that call alone; none else.
+    expect(client.bodies.slice(asked).map((b) => b.params)).toEqual(
+      upload ? [{ for: ctx.id }] : []
+    );
+    if (upload) {
+      expect(streamed).toBe(call.body.stream);
+      played.uploads += 1;
+    }
   }
   return null;
 }
@@ -1260,26 +1304,20 @@ describeIfVectors('every scenario of vectors/swarm-grammar.json through the shel
    * The shell refuses and admits exactly what main's Admission does with
    * the scenario's own replies (`playScenario`, which
    * swarm-grammar.vectors.test.js holds to the file), with the replies main
-   * forwarded from the node in their place; a streamed upload ends the play
-   * here, before what main's Admission would decide after it.
+   * forwarded from the node in their place, streamed uploads included.
    */
   async function compare(list) {
     const wrong = [];
     let played = 0;
-    let uploads = 0;
+    const counts = { uploads: 0 };
     for (const s of grammar[list]) {
       const expected = playScenario(s, vectorFiles);
-      const got = await playThroughShell(s);
+      const got = await playThroughShell(s, counts);
       played += 1;
-      if (got?.upload !== undefined) {
-        uploads += 1;
-        if (expected && expected.at <= got.upload) wrong.push({ id: s.id, expected, got });
-        continue;
-      }
       const want = expected && { at: expected.at, rule: expected.rule };
       if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push({ id: s.id, want, got });
     }
-    return { wrong, played, uploads };
+    return { wrong, played, uploads: counts.uploads };
   }
 
   test("every honest scenario: the Admission's verdict, call by call, each admitted call dialled once", async () => {
@@ -1287,8 +1325,9 @@ describeIfVectors('every scenario of vectors/swarm-grammar.json through the shel
     expect(wrong).toEqual([]);
     expect(played).toBe(grammar.honest.length);
     expect(played).toBeGreaterThanOrEqual(370);
-    // The streamed uploads among them stop at the upload, for SWM-5's sixth step.
-    expect(uploads).toBeGreaterThan(0);
+    // The streamed uploads among them (publishData's 10 MiB, publishFiles'
+    // tars up to 50 MiB, writeFeedEntry's bytes_up), each piped whole.
+    expect(uploads).toBeGreaterThanOrEqual(5);
   });
 
   test('every forbidden scenario: refused where the Admission refuses it, by its rule, undialled', async () => {
@@ -2397,17 +2436,6 @@ describe('the dial', () => {
         { parent: 'getUploadStatus', step: 0 }
       );
     }
-  });
-
-  test('a streamed upload is admitted and answered error, never dialled (SWM-5 PR 6)', async () => {
-    const shell = makeShell();
-    const p = parent(shell, 'publishFiles', {
-      files: [{ path: 'a.txt', bytes: data(Buffer.from('a')) }],
-    });
-    await p.ready('publish');
-    await p.api(calls.stamps());
-    expect(await p.api(calls.bzzTar({ stream: 2048 }))).toEqual({ result: { failed: 'error' } });
-    expect(p.node.calls()).toHaveLength(1);
   });
 
   test('a value past U+00FF fails the request, as the reference does, undialled', async () => {
