@@ -141,9 +141,6 @@ const FAILURES = new Set(['not_found', 'busy', 'disconnected', 'unresponsive', '
 const SIGNATURES = new Set(['sign.transaction', 'sign.message', 'sign.typed_data', 'x402.settle']);
 const HEAD_ROWS = new Set(['signature.first', 'signature.second']);
 
-/** How many ended parents the relay remembers, to answer their late APDUs `ended`. */
-const ENDED_KEPT = 64;
-
 const MEMBERS = ['for', 'apdu', 'deadline_ms'];
 const HEX = /^(?:[0-9a-fA-F]{2})+$/;
 
@@ -219,8 +216,11 @@ class LedgerRelay {
     this.hashOnlyWaitMs = hashOnlyWaitMs;
     // The live parents, by generation and ID.
     this.live = new Map();
-    // The last ENDED_KEPT parents that ended, oldest first.
-    this.endedKeys = new Set();
+    // Every parent that ended in the newest generation seen, so a late APDU
+    // for any of them is refused `ended`, however many parents came after.
+    // An older generation's core is gone, so its IDs are dropped with it.
+    this.endedGeneration = null;
+    this.endedIds = new Set();
     // The parent whose device is open, if one is: at most one at a time.
     this.holder = null;
   }
@@ -315,7 +315,7 @@ class LedgerRelay {
       throw new TypeError('hashOnlySurface is a function');
     }
     const key = keyOf(generation, id);
-    if (this.live.has(key) || this.endedKeys.has(key)) {
+    if (this.live.has(key) || this.hasEnded(generation, id)) {
       throw new TypeError('that request is open already');
     }
     const prepared = capture.prepared ?? this.prepare(capture);
@@ -383,11 +383,17 @@ class LedgerRelay {
     entry.unlisten?.();
     entry.unlisten = null;
     if (this.live.get(entry.key) === entry) this.live.delete(entry.key);
-    this.endedKeys.add(entry.key);
-    if (this.endedKeys.size > ENDED_KEPT) {
-      this.endedKeys.delete(this.endedKeys.values().next().value);
+    if (this.endedGeneration === null || entry.generation > this.endedGeneration) {
+      this.endedGeneration = entry.generation;
+      this.endedIds = new Set();
     }
+    if (entry.generation === this.endedGeneration) this.endedIds.add(entry.id);
     this.retire(entry);
+  }
+
+  /** Whether the parent `id` of `generation` was opened here and has ended. */
+  hasEnded(generation, id) {
+    return generation === this.endedGeneration && this.endedIds.has(id);
   }
 
   /** A parent may admit nothing more: its holds stop and its device closes. */
@@ -476,7 +482,7 @@ class LedgerRelay {
       if (ask.for === null) return this.refuse(null, ask.rule);
       const key = keyOf(generation, ask.for);
       entry = this.live.get(key) ?? null;
-      if (!entry) return this.refuse(null, this.endedKeys.has(key) ? 'ended' : 'parent');
+      if (!entry) return this.refuse(null, this.hasEnded(generation, ask.for) ? 'ended' : 'parent');
       if (ask.rule) return this.refuse(entry, ask.rule);
       this.watch(entry, ask.deadlineMs, onAnswer);
       if (entry.refused || !entry.admission) {
@@ -689,5 +695,4 @@ module.exports = {
   readAsk,
   METHOD,
   HASH_ONLY_WAIT_MS,
-  ENDED_KEPT,
 };

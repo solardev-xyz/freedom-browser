@@ -264,6 +264,21 @@ describe('the parent registry', () => {
     expect(refusals().map(([, fields]) => fields)).toEqual([{ rule: 'parent' }, { rule: 'ended' }]);
   });
 
+  test('a parent that ended is still refused ended after many more parents end', async () => {
+    await start();
+    const first = open('message');
+    await until(() => first.handle, 'the first parent');
+    const stream = streamOf(PARENTS.message);
+    first.handle.close();
+    for (let i = 0; i < 70; i++) {
+      const later = open('message');
+      await until(() => later.handle, 'a later parent');
+      later.handle.close();
+    }
+    expect(await ask(first, stream[0].apdu)).toEqual({ refused: 'ended' });
+    expect(devices.bytes()).toEqual([]);
+  });
+
   test('with js, open() throws and every APDU is refused parent', async () => {
     await start({ deps: { backendKind: () => 'js' } });
     const parent = open('message');
