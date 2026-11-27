@@ -1,0 +1,1 @@
+- ChatGPT connection failures show a reason and support details in the sign-in browser and Settings ([#1253](https://github.com/solardev-xyz/freedom-browser/pull/1253))

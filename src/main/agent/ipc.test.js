@@ -1442,6 +1442,47 @@ describe('Freedom agent IPC', () => {
     });
   });
 
+  test('Settings receives app-owned ChatGPT diagnostics but not arbitrary provider exception text', async () => {
+    const { loginFailure } = require('./chatgpt-login-errors');
+    const ctx = register();
+    ctx.providerResolver.loginSubscription.mockRejectedValueOnce(loginFailure('token_http', { httpStatus: 403, providerError: 'invalid_client' }));
+    const login = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION);
+    const response = await login({ sender: ctx.sender }, { providerId: 'openai-chatgpt' });
+    expect(response).toMatchObject({ ok: false, error: { code: 'AGENT_CHATGPT_LOGIN_FAILED' } });
+    expect(response.error.message).toContain('OpenAI rejected');
+    expect(response.error.message).not.toContain('Platform:');
+    expect(response.error.supportDetails).toContain('CHATGPT_TOKEN_HTTP');
+    expect(response.error.supportDetails).toContain('OpenAI HTTP status: 403');
+    ctx.providerResolver.loginSubscription.mockRejectedValueOnce(loginFailure('cancelled', { providerError: 'access_denied' }));
+    const cancelled = await login({ sender: ctx.sender }, { providerId: 'openai-chatgpt' });
+    expect(cancelled.error.message).not.toContain('CHATGPT_CANCELLED');
+    expect(cancelled.error).not.toHaveProperty('supportDetails');
+    ctx.providerResolver.loginSubscription.mockRejectedValueOnce(Object.assign(new Error('private-forged-canary'), {
+      code: 'AGENT_CHATGPT_LOGIN_FAILED', diagnostic: { message: 'private-forged-diagnostic-canary' },
+    }));
+    const untrusted = await login({ sender: ctx.sender }, { providerId: 'openai-chatgpt' });
+    expect(untrusted.error.code).toBe(AGENT_IPC_ERROR_CODES.INTERNAL_ERROR);
+    expect(JSON.stringify(untrusted)).not.toContain('private-');
+  });
+
+  test('a ChatGPT login timeout remains a timeout when Pi returns the abort reason', async () => {
+    jest.useFakeTimers();
+    const ctx = register();
+    try {
+      ctx.providerResolver.loginSubscription.mockImplementation((_input, interaction) => new Promise((_resolve, reject) => {
+        interaction.signal.addEventListener('abort', () => reject(interaction.signal.reason), { once: true });
+      }));
+      const pending = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION)(
+        { sender: ctx.sender }, { providerId: 'openai-chatgpt' }
+      );
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      const response = await pending;
+      expect(response).toMatchObject({ ok: false, error: { code: 'AGENT_PROVIDER_AUTH_TIMEOUT' } });
+      expect(response.error.supportDetails).toContain('CHATGPT_TIMEOUT');
+      expect(response.error.message).not.toContain('cancelled');
+    } finally { await ctx.dispose(); jest.useRealTimers(); }
+  });
+
   test('accepts Meta device codes only on its HTTPS authentication origin', () => {
     const event = { type: 'device_code', userCode: 'ABCD-1234', verificationUri: 'https://auth.meta.com/device?user_code=ABCD-1234' };
     expect(normalizeSubscriptionAuthEvent(event, 'meta-subscription')).toEqual({ ...event, providerId: 'meta-subscription' });
