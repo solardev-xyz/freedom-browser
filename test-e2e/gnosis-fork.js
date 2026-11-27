@@ -82,6 +82,11 @@ const SLOW_LOG_MS = 1500;
 const BENCH_MS = 30_000;
 // Measured 2026-11-27: 1.9–9.3 s over 20 starts with one provider faulted.
 const WARM_UP_BUDGET_MS = 12_000;
+// How long a warm-up stopped at its budget gets to fail on the refused reads.
+const WARM_UP_SETTLE_MS = 2000;
+// What the proxy answers while refusing (a warm-up past its budget being
+// stopped): an error anvil fails the read with at once, without retrying.
+const REFUSED_REPLY = { status: 500, text: '' };
 // anvil's own extension methods, answered "method not found" locally.
 const LOCAL_ONLY_METHODS = new Set(['eth_getAccountInfo', 'anvil_nodeInfo']);
 // A single attempt is dropped after this, so a request that every provider
@@ -94,6 +99,31 @@ const FORK_BLOCK_OFFSET = 5;
 const CHAIN_ID_BODY = '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}';
 
 const reachableCache = new Map();
+
+/**
+ * curl's output for the eth_chainId probe: the body, then `\n` and
+ * `%{time_total}` from -w. The time is what follows the *last* newline:
+ * a body can end in a newline of its own (publicnode's does, measured
+ * 2026-11-27: `{...}\n\n0.0667`) or span several lines. A time that doesn't
+ * parse sorts last, never first. Null when the body isn't a JSON-RPC answer.
+ *
+ * @returns {{chainId: number, ms: number} | null}
+ */
+function parseChainIdProbe(stdout) {
+  const cut = stdout.lastIndexOf('\n');
+  if (cut < 0) return null;
+  const seconds = Number(stdout.slice(cut + 1).trim());
+  let result;
+  try {
+    ({ result } = JSON.parse(stdout.slice(0, cut)));
+  } catch {
+    return null; // not a JSON-RPC answer: unreachable for our purposes
+  }
+  return {
+    chainId: parseInt(result, 16),
+    ms: Number.isFinite(seconds) && stdout.slice(cut + 1).trim() ? seconds * 1000 : Infinity,
+  };
+}
 
 /**
  * Upstreams that answer eth_chainId = 100, fastest first (synchronous probe,
@@ -124,14 +154,10 @@ function reachableGnosisUpstreams(urls = GNOSIS_FORK_UPSTREAMS) {
         { encoding: 'utf-8' }
       );
       if (probe.status !== 0) continue;
-      const [body, seconds] = probe.stdout.split('\n');
-      try {
-        if (parseInt(JSON.parse(body).result, 16) === 100) timed.push({ url, ms: seconds * 1000 });
-      } catch {
-        // not a JSON-RPC answer: unreachable for our purposes
-      }
+      const reply = parseChainIdProbe(probe.stdout);
+      if (reply?.chainId === 100) timed.push({ url, ms: reply.ms });
     }
-    if (!FIXED_ORDER) timed.sort((a, b) => a.ms - b.ms);
+    if (!FIXED_ORDER) timed.sort((a, b) => (a.ms === b.ms ? 0 : a.ms < b.ms ? -1 : 1));
     reachableCache.set(
       key,
       timed.map(({ url }) => url)
@@ -200,7 +226,7 @@ function localReply(body) {
  * Hedged JSON-RPC proxy on 127.0.0.1 (ephemeral port) over `upstreams`,
  * tried in the order given (fastest first) except for benched ones.
  *
- * @returns {Promise<{url: string, close: () => Promise<void>}>}
+ * @returns {Promise<{url: string, close: () => Promise<void>, refuse: () => () => void}>}
  */
 function startForkUpstream(
   upstreams,
@@ -222,11 +248,20 @@ function startForkUpstream(
     ...upstreams.filter(isBenched).sort((a, b) => benchedUntil.get(a) - benchedUntil.get(b)),
   ];
 
+  // refuse(): every pending and new read is answered REFUSED_REPLY at once,
+  // until the function refuse() returned is called.
+  let refusing = false;
+  const pending = new Set();
+
   const forward = (body) =>
     new Promise((resolve) => {
       const local = localReply(body);
       if (local) {
         resolve(local);
+        return;
+      }
+      if (refusing) {
+        resolve(REFUSED_REPLY);
         return;
       }
       const order = currentOrder();
@@ -241,10 +276,12 @@ function startForkUpstream(
       const finish = (reply) => {
         if (done) return;
         done = true;
+        pending.delete(finish);
         clearTimeout(hedgeTimer);
         controllers.forEach((controller) => controller.abort());
         resolve(reply);
       };
+      pending.add(finish);
       const launch = () => {
         if (done || launched >= order.length) return;
         const url = order[launched++];
@@ -324,6 +361,13 @@ function startForkUpstream(
             server.close(() => done());
             server.closeAllConnections();
           }),
+        refuse: () => {
+          refusing = true;
+          [...pending].forEach((finish) => finish(REFUSED_REPLY));
+          return () => {
+            refusing = false;
+          };
+        },
       })
     );
   });
@@ -433,7 +477,7 @@ async function startGnosisFork({ port, upstreams = reachableGnosisUpstreams(), l
     await stop();
     throw err;
   }
-  await warmSharedState(rpc, log);
+  await warmSharedState(rpc, upstream, log);
   return { url, rpc, stop };
 }
 
@@ -452,25 +496,57 @@ async function startGnosisFork({ port, upstreams = reachableGnosisUpstreams(), l
  * Best effort, within WARM_UP_BUDGET_MS (fixture set-up shares the test's
  * default 30 s with anvil's start and the app's launch): a failure or an
  * overrun is logged, and the test meets the rest of the state cold.
+ *
+ * An overrun stops the warm-up's reads too, not just the wait for them:
+ * anvil 1.8.3 keeps executing a call whose client has disconnected
+ * (measured 2026-11-27: aborting the warm-up's fetches left the same ~55
+ * upstream reads coming as letting them run), and those chains are what
+ * would hold the app's first reads up. So the proxy refuses every upstream
+ * read until the warm-up's calls have failed on it (measured: ~10 ms), then
+ * forwards again. Nothing else reads the fork yet, and a read refused this
+ * way is not cached: the same calls asked again afterwards succeed.
  */
-async function warmSharedState(rpc, log) {
+async function warmSharedState(
+  rpc,
+  upstream,
+  log,
+  { budgetMs = WARM_UP_BUDGET_MS, settleMs = WARM_UP_SETTLE_MS, warm = warmUp } = {}
+) {
   const started = Date.now();
+  const warming = warm(rpc).then(() => 'done');
   let budgetTimer;
+  let settleTimer;
   try {
-    await Promise.race([
-      warmUp(rpc),
-      new Promise((_, reject) => {
-        budgetTimer = setTimeout(
-          () => reject(new Error(`not done within ${WARM_UP_BUDGET_MS}ms`)),
-          WARM_UP_BUDGET_MS
-        );
+    const outcome = await Promise.race([
+      warming,
+      new Promise((resolve) => {
+        budgetTimer = setTimeout(() => resolve('over'), budgetMs);
       }),
     ]);
-    log(`warmed the token contracts and the Safe deployment in ${Date.now() - started}ms`);
+    if (outcome === 'done') {
+      log(`warmed the token contracts and the Safe deployment in ${Date.now() - started}ms`);
+      return;
+    }
+    const resume = upstream.refuse();
+    const settled = await Promise.race([
+      warming.then(
+        () => true,
+        () => true
+      ),
+      new Promise((resolve) => {
+        settleTimer = setTimeout(() => resolve(false), settleMs);
+      }),
+    ]);
+    resume();
+    log(
+      `warm-up stopped at its ${budgetMs}ms budget, its upstream reads refused ` +
+        `(${settled ? 'settled' : `still not settled after ${settleMs}ms`}); the rest reads cold`
+    );
   } catch (err) {
-    log(`warm-up stopped after ${Date.now() - started}ms (${err.message}); the rest reads cold`);
+    log(`warm-up failed after ${Date.now() - started}ms (${err.message}); the rest reads cold`);
   } finally {
     clearTimeout(budgetTimer);
+    clearTimeout(settleTimer);
   }
 }
 
@@ -508,8 +584,10 @@ module.exports = {
   attachForkLogOnFailure,
   localReply,
   gnosisForkUnavailableReason,
+  parseChainIdProbe,
   reachableGnosisUpstreams,
   startForkUpstream,
   startGnosisFork,
   usableReply,
+  warmSharedState,
 };

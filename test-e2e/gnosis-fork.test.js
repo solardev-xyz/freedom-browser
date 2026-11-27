@@ -3,7 +3,13 @@
 // anvil's answer while another provider can give a good one.
 
 const http = require('http');
-const { localReply, startForkUpstream, usableReply } = require('./gnosis-fork');
+const {
+  localReply,
+  parseChainIdProbe,
+  startForkUpstream,
+  usableReply,
+  warmSharedState,
+} = require('./gnosis-fork');
 
 const OK = '{"jsonrpc":"2.0","id":1,"result":"0x1"}';
 
@@ -168,5 +174,100 @@ describe('gnosis-fork upstream proxy', () => {
       await startForkUpstream([a.url], { hedgeAfterMs: 50, attemptTimeoutMs: 300 })
     );
     expect(await post(proxy.url)).toEqual({ status: 502, text: '' });
+  });
+
+  test('refuse() answers pending and new reads at once until resumed', async () => {
+    let stall = true;
+    const a = await open(await fakeUpstream(() => (stall ? 'stall' : { status: 200, body: OK })));
+    const proxy = await open(await startForkUpstream([a.url], { attemptTimeoutMs: 20_000 }));
+    const pending = post(proxy.url);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const resume = proxy.refuse();
+    expect(await pending).toEqual({ status: 500, text: '' });
+    expect(await post(proxy.url)).toEqual({ status: 500, text: '' });
+    expect(a.hits).toHaveLength(1); // the refused new read never went upstream
+    resume();
+    stall = false;
+    expect(await post(proxy.url)).toEqual({ status: 200, text: OK });
+  });
+});
+
+describe('gnosis-fork warm-up', () => {
+  const opened = [];
+  afterEach(async () => {
+    await Promise.all(opened.splice(0).map((thing) => thing.close()));
+  });
+
+  test('a warm-up past its budget has its upstream reads stopped, not left running', async () => {
+    // The warm-up's reads stand for anvil's: anvil keeps reading for a call
+    // whose client has gone, so only the proxy can stop them.
+    let stall = true;
+    const a = await fakeUpstream(() => (stall ? 'stall' : { status: 200, body: OK }));
+    opened.push(a);
+    const proxy = await startForkUpstream([a.url], { attemptTimeoutMs: 20_000 });
+    opened.push(proxy);
+    const reads = [];
+    const lines = [];
+    const started = Date.now();
+    await warmSharedState(null, proxy, (line) => lines.push(line), {
+      budgetMs: 200,
+      warm: async () => {
+        // Like an anvil call, a chain of reads that fails on a failed read.
+        for (let i = 0; i < 3; i += 1) {
+          const reply = await post(proxy.url);
+          reads.push(reply);
+          if (reply.status !== 200) throw new Error(`read failed: HTTP ${reply.status}`);
+        }
+      },
+    });
+    expect(Date.now() - started).toBeLessThan(1500);
+    // The chain failed at its first refused read and issued no more.
+    expect(reads).toEqual([{ status: 500, text: '' }]);
+    expect(a.hits).toHaveLength(1);
+    expect(lines.join('\n')).toMatch(
+      /stopped at its 200ms budget, its upstream reads refused \(settled\)/
+    );
+    // ...and the proxy forwards again for the app.
+    stall = false;
+    expect(await post(proxy.url)).toEqual({ status: 200, text: OK });
+  });
+
+  test('a warm-up inside its budget refuses nothing', async () => {
+    const a = await fakeUpstream(() => ({ status: 200, body: OK }));
+    opened.push(a);
+    const proxy = await startForkUpstream([a.url]);
+    opened.push(proxy);
+    const lines = [];
+    await warmSharedState(null, proxy, (line) => lines.push(line), {
+      budgetMs: 2000,
+      warm: async () => {
+        expect(await post(proxy.url)).toEqual({ status: 200, text: OK });
+      },
+    });
+    expect(lines.join('\n')).toMatch(/^warmed /);
+    expect(await post(proxy.url)).toEqual({ status: 200, text: OK });
+  });
+});
+
+describe('gnosis-fork upstream probe', () => {
+  test('the probe time is what follows the last newline, so a trailing newline in the body is not 0 ms', () => {
+    // publicnode's body ends in a newline of its own (measured 2026-11-27).
+    const publicnode = parseChainIdProbe('{"jsonrpc":"2.0","id":1,"result":"0x64"}\n\n0.0667');
+    expect(publicnode.chainId).toBe(100);
+    expect(publicnode.ms).toBeCloseTo(66.7);
+    expect(parseChainIdProbe('{"jsonrpc":"2.0","id":1,"result":"0x64"}\n0.25')).toEqual({
+      chainId: 100,
+      ms: 250,
+    });
+    expect(
+      parseChainIdProbe('{\n  "jsonrpc": "2.0",\n  "id": 1,\n  "result": "0x64"\n}\n1.5')
+    ).toEqual({ chainId: 100, ms: 1500 });
+  });
+
+  test('an unreadable time sorts last, and a non-JSON body is no answer', () => {
+    expect(parseChainIdProbe('{"result":"0x64"}\n')).toEqual({ chainId: 100, ms: Infinity });
+    expect(parseChainIdProbe('{"result":"0x64"}\nabc')).toEqual({ chainId: 100, ms: Infinity });
+    expect(parseChainIdProbe('<html>\n0.1')).toBeNull();
+    expect(parseChainIdProbe('{"result":"0x64"}')).toBeNull();
   });
 });
