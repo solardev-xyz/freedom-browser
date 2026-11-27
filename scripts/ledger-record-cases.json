@@ -1,0 +1,656 @@
+{
+  "source": {
+    "repo": "solardev-xyz/freedom-core",
+    "commit": "b4e0cef4f24f4e80aaa9df6568c7c9737ade9589",
+    "release": "cored-v0.30.0",
+    "file": "vectors/ledger.json",
+    "what": "The ledger.json cases scripts/ledger-record.js plays: each one's operation, request and record as ledger.json has them; for the four reference cases (deviation name-ascii, which the core refuses before any APDU) also the reference's APDUs, in order. scripts/ledger-record.test.js holds each to ledger.json at this commit."
+  },
+  "cases": {
+    "discovery-live-0-1": {
+      "operation": "ledger.accounts",
+      "request": {
+        "scheme": "live",
+        "start": 0,
+        "count": 1
+      }
+    },
+    "tx-type0-chain-1-parity-0": {
+      "operation": "sign.transaction",
+      "request": {
+        "tx": {
+          "type": 0,
+          "chain_id": "1",
+          "nonce": "0",
+          "gas_limit": "21000",
+          "to": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
+          "value": "1000000000000000",
+          "data": "0x",
+          "gas_price": "1000000000"
+        }
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "tx-type2-chain-1-parity-0": {
+      "operation": "sign.transaction",
+      "request": {
+        "tx": {
+          "type": 2,
+          "chain_id": "1",
+          "nonce": "2",
+          "gas_limit": "21000",
+          "to": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
+          "value": "1000000000000000",
+          "data": "0x",
+          "max_fee_per_gas": "2000000000",
+          "max_priority_fee_per_gas": "1000000000"
+        }
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "msg-steps": {
+      "operation": "sign.message",
+      "request": {
+        "message": "0x050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f76"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "typed-mail": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "Ether Mail",
+            "version": "1",
+            "chainId": 1,
+            "verifyingContract": "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"
+          },
+          "types": {
+            "Person": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "wallet",
+                "type": "address"
+              }
+            ],
+            "Mail": [
+              {
+                "name": "from",
+                "type": "Person"
+              },
+              {
+                "name": "to",
+                "type": "Person"
+              },
+              {
+                "name": "contents",
+                "type": "string"
+              }
+            ]
+          },
+          "message": {
+            "from": {
+              "name": "Cow",
+              "wallet": "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826"
+            },
+            "to": {
+              "name": "Bob",
+              "wallet": "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
+            },
+            "contents": "Hello, Bob!"
+          }
+        },
+        "expected_hash": "0xbe609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "typed-safe-tx": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "chainId": 100,
+            "verifyingContract": "0x1234567890AbcdEF1234567890aBcdef12345678"
+          },
+          "types": {
+            "SafeTx": [
+              {
+                "name": "to",
+                "type": "address"
+              },
+              {
+                "name": "value",
+                "type": "uint256"
+              },
+              {
+                "name": "data",
+                "type": "bytes"
+              },
+              {
+                "name": "operation",
+                "type": "uint8"
+              },
+              {
+                "name": "safeTxGas",
+                "type": "uint256"
+              },
+              {
+                "name": "baseGas",
+                "type": "uint256"
+              },
+              {
+                "name": "gasPrice",
+                "type": "uint256"
+              },
+              {
+                "name": "gasToken",
+                "type": "address"
+              },
+              {
+                "name": "refundReceiver",
+                "type": "address"
+              },
+              {
+                "name": "nonce",
+                "type": "uint256"
+              }
+            ]
+          },
+          "message": {
+            "to": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
+            "value": "1234567890123456789",
+            "data": "0x",
+            "operation": 0,
+            "safeTxGas": "0",
+            "baseGas": "0",
+            "gasPrice": "0",
+            "gasToken": "0x0000000000000000000000000000000000000000",
+            "refundReceiver": "0x0000000000000000000000000000000000000000",
+            "nonce": "3"
+          }
+        },
+        "expected_hash": "0xca3ef876ccf3a37b744cf5e32615a1803f823e75b471d1872ddaa1a61970f2a4"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "typed-eip3009-transfer-with-authorization": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "USD Coin",
+            "version": "2",
+            "chainId": 8453,
+            "verifyingContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+          },
+          "types": {
+            "TransferWithAuthorization": [
+              {
+                "name": "from",
+                "type": "address"
+              },
+              {
+                "name": "to",
+                "type": "address"
+              },
+              {
+                "name": "value",
+                "type": "uint256"
+              },
+              {
+                "name": "validAfter",
+                "type": "uint256"
+              },
+              {
+                "name": "validBefore",
+                "type": "uint256"
+              },
+              {
+                "name": "nonce",
+                "type": "bytes32"
+              }
+            ]
+          },
+          "message": {
+            "from": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+            "to": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
+            "value": "10000",
+            "validAfter": "1767225000",
+            "validBefore": "1767225600",
+            "nonce": "0x4242424242424242424242424242424242424242424242424242424242424242"
+          }
+        },
+        "expected_hash": "0x478bd984e8e1944026f33eb1ab458258c9b0ebcb349494f75fd1d63b3504b04c"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "name-field-ascii-253": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "N"
+          },
+          "types": {
+            "M": [
+              {
+                "name": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "type": "string"
+              }
+            ]
+          },
+          "message": {
+            "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "x"
+          }
+        },
+        "expected_hash": "0x4c3a5da276494a1614fbc8eda510a53f2297dc97790a98ddee74d3d801b7bdd1"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "name-primary-type-ascii-255": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "N"
+          },
+          "types": {
+            "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP": [
+              {
+                "name": "v",
+                "type": "uint8"
+              }
+            ]
+          },
+          "message": {
+            "v": 1
+          }
+        },
+        "expected_hash": "0x9686b03f68de0643fb68d353dd927df2285aab5716b3c4b872519f3b5f044c06"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "add-live-0": {
+      "operation": "ledger.add",
+      "request": {
+        "name": "Ledger 1",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        "path": "44'/60'/0'/0/0"
+      }
+    },
+    "msg-live-125": {
+      "operation": "sign.message",
+      "request": {
+        "message": "0x030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b52596067"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "tx-steps": {
+      "operation": "sign.transaction",
+      "request": {
+        "tx": {
+          "type": 2,
+          "chain_id": "1",
+          "nonce": "0",
+          "gas_limit": "90000",
+          "to": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
+          "value": "1000000000000000",
+          "data": "0x030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930",
+          "max_fee_per_gas": "2000000000",
+          "max_priority_fee_per_gas": "1000000000"
+        }
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "msg-live-126": {
+      "operation": "sign.message",
+      "request": {
+        "message": "0x030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "msg-live-275": {
+      "operation": "sign.message",
+      "request": {
+        "message": "0x030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "msg-live-1": {
+      "operation": "sign.message",
+      "request": {
+        "message": "0x03"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "typed-hash-only-mail": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "Ether Mail",
+            "version": "1",
+            "chainId": 1,
+            "verifyingContract": "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"
+          },
+          "types": {
+            "Person": [
+              {
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "name": "wallet",
+                "type": "address"
+              }
+            ],
+            "Mail": [
+              {
+                "name": "from",
+                "type": "Person"
+              },
+              {
+                "name": "to",
+                "type": "Person"
+              },
+              {
+                "name": "contents",
+                "type": "string"
+              }
+            ]
+          },
+          "message": {
+            "from": {
+              "name": "Cow",
+              "wallet": "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826"
+            },
+            "to": {
+              "name": "Bob",
+              "wallet": "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
+            },
+            "contents": "Hello, Bob!"
+          }
+        },
+        "expected_hash": "0xbe609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "typed-hash-only-safe-tx": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "chainId": 100,
+            "verifyingContract": "0x1234567890AbcdEF1234567890aBcdef12345678"
+          },
+          "types": {
+            "SafeTx": [
+              {
+                "name": "to",
+                "type": "address"
+              },
+              {
+                "name": "value",
+                "type": "uint256"
+              },
+              {
+                "name": "data",
+                "type": "bytes"
+              },
+              {
+                "name": "operation",
+                "type": "uint8"
+              },
+              {
+                "name": "safeTxGas",
+                "type": "uint256"
+              },
+              {
+                "name": "baseGas",
+                "type": "uint256"
+              },
+              {
+                "name": "gasPrice",
+                "type": "uint256"
+              },
+              {
+                "name": "gasToken",
+                "type": "address"
+              },
+              {
+                "name": "refundReceiver",
+                "type": "address"
+              },
+              {
+                "name": "nonce",
+                "type": "uint256"
+              }
+            ]
+          },
+          "message": {
+            "to": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
+            "value": "1234567890123456789",
+            "data": "0x",
+            "operation": 0,
+            "safeTxGas": "0",
+            "baseGas": "0",
+            "gasPrice": "0",
+            "gasToken": "0x0000000000000000000000000000000000000000",
+            "refundReceiver": "0x0000000000000000000000000000000000000000",
+            "nonce": "3"
+          }
+        },
+        "expected_hash": "0xca3ef876ccf3a37b744cf5e32615a1803f823e75b471d1872ddaa1a61970f2a4"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      }
+    },
+    "name-field-e-acute-252": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "N"
+          },
+          "types": {
+            "M": [
+              {
+                "name": "faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e9",
+                "type": "string"
+              }
+            ]
+          },
+          "message": {
+            "faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e9": "x"
+          }
+        },
+        "expected_hash": "0x230c0764fbc5f43fc791eb778d27ef9d48464d6d1515f56e07cf4cab94f03e85"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      },
+      "deviation": "name-ascii",
+      "apdus": [
+        "e002000015058000002c8000003c800000000000000000000000",
+        "b001000000",
+        "e01a00000c454950373132446f6d61696e",
+        "e01a00ff0605046e616d65",
+        "e01a0000014d",
+        "e01a00fffe05fb66616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161c3a9",
+        "e01c00000c454950373132446f6d61696e",
+        "e01c00ff0300014e",
+        "e01c0000014d",
+        "e01c00ff03000178",
+        "e00c000115058000002c8000003c800000000000000000000000"
+      ]
+    },
+    "name-field-e-acute-253": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "N"
+          },
+          "types": {
+            "M": [
+              {
+                "name": "faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e9",
+                "type": "string"
+              }
+            ]
+          },
+          "message": {
+            "faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e9": "x"
+          }
+        },
+        "expected_hash": "0x37d335f10f70b9a0dfc13f671bed32529804d75a808564068fc60fdce5497bfe"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      },
+      "deviation": "name-ascii",
+      "apdus": [
+        "e002000015058000002c8000003c800000000000000000000000",
+        "b001000000",
+        "e01a00000c454950373132446f6d61696e",
+        "e01a00ff0605046e616d65",
+        "e01a0000014d",
+        "e01a00ffff05fc6661616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161c3a9",
+        "e01c00000c454950373132446f6d61696e",
+        "e01c00ff0300014e",
+        "e01c0000014d",
+        "e01c00ff03000178",
+        "e00c000115058000002c8000003c800000000000000000000000"
+      ]
+    },
+    "name-field-emoji-252": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "N"
+          },
+          "types": {
+            "M": [
+              {
+                "name": "faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d\ude00",
+                "type": "string"
+              }
+            ]
+          },
+          "message": {
+            "faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d\ude00": "x"
+          }
+        },
+        "expected_hash": "0xd086ea791ce31ea1db0c84bb9394ded6ad80bcb5fc8e42432928cfa5b3c8c452"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      },
+      "deviation": "name-ascii",
+      "apdus": [
+        "e002000015058000002c8000003c800000000000000000000000",
+        "b001000000",
+        "e01a00000c454950373132446f6d61696e",
+        "e01a00ff0605046e616d65",
+        "e01a0000014d",
+        "e01a00fffe05fa6661616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161f09f9880",
+        "e01c00000c454950373132446f6d61696e",
+        "e01c00ff0300014e",
+        "e01c0000014d",
+        "e01c00ff03000178",
+        "e00c000115058000002c8000003c800000000000000000000000"
+      ]
+    },
+    "name-field-emoji-253": {
+      "operation": "sign.typed_data",
+      "request": {
+        "typed_data": {
+          "domain": {
+            "name": "N"
+          },
+          "types": {
+            "M": [
+              {
+                "name": "faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d\ude00",
+                "type": "string"
+              }
+            ]
+          },
+          "message": {
+            "faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d\ude00": "x"
+          }
+        },
+        "expected_hash": "0x17da58881e8c3e1eaa4642a72a8b7511a031676661c5c1964fcf2ad74c1a3df4"
+      },
+      "record": {
+        "path": "44'/60'/0'/0/0",
+        "address": "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+      },
+      "deviation": "name-ascii",
+      "apdus": [
+        "e002000015058000002c8000003c800000000000000000000000",
+        "b001000000",
+        "e01a00000c454950373132446f6d61696e",
+        "e01a00ff0605046e616d65",
+        "e01a0000014d",
+        "e01a00ffff05fb666161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161f09f9880",
+        "e01c00000c454950373132446f6d61696e",
+        "e01c00ff0300014e",
+        "e01c0000014d",
+        "e01c00ff03000178",
+        "e00c000115058000002c8000003c800000000000000000000000"
+      ]
+    }
+  }
+}
