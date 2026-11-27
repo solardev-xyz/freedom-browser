@@ -402,14 +402,16 @@ describeIfBinary("main's Swarm executor with the real freedom-cored (switch on)"
   // last frame is written, which can land just after its answer is read
   // (seen on Windows): wait, bounded, for the pool and the shell to empty.
   afterEach(async () => {
-    expect(exits).toEqual([]);
-    expect(client.current?.child?.pid).toBe(pid);
-    expect(complaints()).toEqual([]);
     const idle = { parents: 0, calls: 0, walks: 0, uploads: 0, parts: 0 };
     await until(
       () => swarmIoPool.held === 0 && JSON.stringify(shell.stats()) === JSON.stringify(idle),
       'the pool and the shell empty',
     ).catch(() => {});
+    // After the wait, so a last write that failed meanwhile (and retired
+    // the connection, emptying the pool) still shows here.
+    expect(exits).toEqual([]);
+    expect(client.current?.child?.pid).toBe(pid);
+    expect(complaints()).toEqual([]);
     expect(swarmIoPool.held).toBe(0);
     expect(shell.stats()).toEqual(idle);
   });
