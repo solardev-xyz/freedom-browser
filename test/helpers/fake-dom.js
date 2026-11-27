@@ -86,6 +86,8 @@ const matchesSingleSelector = (element, selector) => {
     return element.dataset[key] !== undefined;
   }
 
+  if (/^[a-z][a-z0-9-]*$/i.test(selector)) return element.tagName === selector.toUpperCase();
+
   return false;
 };
 

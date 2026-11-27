@@ -1583,6 +1583,18 @@ describe('Freedom agent IPC', () => {
     expect(JSON.stringify(response)).not.toContain('secret');
   });
 
+  test('preserves safe model capability guidance before a run starts, without exposing resolver details', async () => {
+    const ctx = register({ resolveModel: jest.fn(async () => {
+      throw Object.assign(new Error('private diagnostic fixture'), { code: 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' });
+    }) });
+    const response = await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' }
+    );
+    expect(response).toMatchObject({ ok: false, error: { code: 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' } });
+    expect(response.error.message).toContain('Choose a compatible model');
+    expect(JSON.stringify(response)).not.toContain('private diagnostic');
+  });
+
   test('preserves safe service errors and validates input', async () => {
     const service = createService({
       start: jest.fn(async () => {

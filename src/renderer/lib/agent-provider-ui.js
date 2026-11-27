@@ -270,21 +270,30 @@ export function createAgentProviderUi(options = {}) {
     return catalogModel(providerId, modelId)?.name || modelId || 'Model';
   }
 
+  function ollamaModels(connection) {
+    return (connection?.modelIds || (connection ? [connection.modelId] : [])).map(id => ({
+      id, name: id, ...connection.models?.find(model => model.id === id),
+    }));
+  }
+
+  function ollamaCompatibility(model) {
+    return model.tools === false
+      ? 'No tool support'
+      : model.tools === true ? '' : 'Tool support unverified';
+  }
+
   function configuredModels() {
     return providerConnections().flatMap((connection) => {
       const models =
         connection.kind === 'ollama'
-          ? (connection.modelIds || [connection.modelId]).map((modelId) => ({
-              id: modelId,
-              name: modelId,
-            }))
+          ? ollamaModels(connection)
           : state.providerCatalog.find((provider) => provider.providerId === connection.providerId)
               ?.models || [{ id: connection.modelId, name: connection.modelId }];
       const query = elements.modelMenuSearch.value.trim().toLowerCase();
       const favorites = connection.favoriteModelIds || [connection.modelId];
       return models
         .filter((model) => {
-          if (!uiModelAllowed(model, connection.privacyPolicy)) return false;
+          if (connection.kind !== 'ollama' && !uiModelAllowed(model, connection.privacyPolicy)) return false;
           return (
             !query ||
             `${model.name} ${model.id} ${providerName(connection.providerId)}`
@@ -298,6 +307,10 @@ export function createAgentProviderUi(options = {}) {
           providerId: connection.providerId,
           modelId: model.id,
           name: model.name || model.id,
+          ...(connection.kind === 'ollama' && {
+            incompatible: model.tools === false,
+            compatibility: ollamaCompatibility(model),
+          }),
           privacyInfo: modelPrivacyInfo(
             connection.providerId,
             model,
@@ -336,8 +349,9 @@ export function createAgentProviderUi(options = {}) {
       elements.providerAdvanced.appendChild(elements.testProvider);
       elements.providerAdvanced.appendChild(elements.testProviderNote);
     }
-    elements.testProvider.textContent = isCustom ? 'Check compatibility' : 'Send test prompt';
-    elements.testProvider.disabled = compatibilityCheckPending;
+    elements.testProvider.textContent = isOllama && compatibilityCheckPending
+      ? 'Checking…' : isCustom || isOllama ? 'Check compatibility' : 'Send test prompt';
+    elements.testProvider.disabled = compatibilityCheckPending && !(isOllama && document.activeElement === elements.testProvider);
     // A model on this device bills no tokens (#859).
     const charges =
       isOllama || (isCustom && isLoopbackUrl(connection?.baseUrl))
@@ -345,7 +359,9 @@ export function createAgentProviderUi(options = {}) {
         : ' Token charges may apply.';
     elements.testProviderNote.textContent = isCustom
       ? `Sends up to three small synthetic requests to check streaming, tool calling and tool results. No files or pages are shared.${charges}`
-      : `Sends only “Reply with OK.” to this model.${charges}`;
+      : isOllama
+        ? 'Checks tool support with a small synthetic request. No conversation, files or pages are shared, and no actions are performed.'
+        : `Sends only “Reply with OK.” to this model.${charges}`;
     elements.providerHeading.textContent = providerName(providerId);
     elements.providerStatus.textContent = connection ? 'Connected' : 'Not connected';
     elements.providerStatus.classList.toggle('active', Boolean(connection));
@@ -383,7 +399,8 @@ export function createAgentProviderUi(options = {}) {
     elements.model.disabled = providerLoginPending;
     elements.modelRefresh.hidden = !isOllama && !descriptor?.canRefresh;
     // Nothing to refresh until the provider is connected (#856).
-    elements.modelRefresh.disabled = !connection;
+    elements.modelRefresh.disabled = !connection || compatibilityCheckPending;
+    elements.providerDisconnect.disabled = compatibilityCheckPending;
     elements.apiKey.placeholder =
       isCustom && !connection
         ? 'Optional, leave empty if not required'
@@ -419,14 +436,36 @@ export function createAgentProviderUi(options = {}) {
     );
     elements.privacyPolicy.value = connection?.privacyPolicy || 'standard';
     elements.privacySave.hidden = !connection;
-    elements.catalogStatus.textContent = descriptor?.updatedAt
+    let catalogDescription = descriptor?.updatedAt
       ? `Catalog updated ${new Date(descriptor.updatedAt).toLocaleString()}`
       : descriptor?.canRefresh
         ? 'Refresh to discover current models. No prompts are sent.'
         : 'Bundled model catalog';
+    if (isOllama && connection) {
+      const models = ollamaModels(connection);
+      catalogDescription = models.every(model => model.tools === false)
+        ? 'None of your installed models support Agent actions. Install a model with tool support in Ollama, then refresh.'
+        : models.some(model => model.tools === undefined)
+          ? 'Some models have unverified tool support. Check compatibility before starting a chat.'
+          : 'Tool support reported by your local Ollama installation. Refresh after changing installed models.';
+    }
+    const catalogKey = JSON.stringify([providerId, catalogDescription, Boolean(connection)]);
+    if (elements.catalogStatus.dataset.description !== catalogKey) {
+      elements.catalogStatus.dataset.description = catalogKey;
+      elements.catalogStatus.textContent = `${catalogDescription}${isOllama && connection ? ' ' : ''}`;
+      if (isOllama && connection) {
+        const browse = document.createElement('a');
+        browse.href = 'https://ollama.com/search?c=tools';
+        browse.target = '_blank';
+        browse.rel = 'noreferrer';
+        browse.textContent = 'Browse models with tool support';
+        elements.catalogStatus.appendChild(browse);
+      }
+    }
+    elements.catalogStatus.classList.toggle('row-help', isOllama);
     if (!isOllama) renderModelOptions(providerId);
     else {
-      renderProviderModelPreview(providerId);
+      if (!compatibilityCheckPending) renderProviderModelPreview(providerId);
       renderModelDetails();
     }
     const subscriptionConnected = Boolean(
@@ -516,18 +555,14 @@ export function createAgentProviderUi(options = {}) {
     const connection = providerConnection(providerId);
     const models =
       providerId === 'ollama'
-        ? (connection?.modelIds || (connection ? [connection.modelId] : [])).map((id) => ({
-            id,
-            name: id,
-          }))
+        ? ollamaModels(connection)
         : state.providerCatalog.find((provider) => provider.providerId === providerId)?.models ||
           [];
-    const available = models.filter((model) =>
+    const available = providerId === 'ollama' ? models : models.filter((model) =>
       uiModelAllowed(model, elements.privacyPolicy.value || 'standard')
     );
-    elements.providerModelsHeading.textContent = available.length
-      ? `Available models · ${available.length}`
-      : 'Available models';
+    const heading = providerId === 'ollama' ? 'Installed models' : 'Available models';
+    elements.providerModelsHeading.textContent = available.length ? `${heading} · ${available.length}` : heading;
     let hasPrivacySymbols = false;
     elements.providerModelsList.replaceChildren(
       ...available.map((model) => {
@@ -544,7 +579,9 @@ export function createAgentProviderUi(options = {}) {
           name.className = 'agent-settings-model-name';
           const select = document.createElement('button');
           select.type = 'button';
+          select.dataset.modelId = model.id;
           select.textContent = model.name || model.id;
+          if (providerId === 'ollama') select.disabled = model.tools === false;
           select.setAttribute('aria-label', `Use ${model.name || model.id} for new chats`);
           const isDefault =
             state.providerStatus?.providerId === providerId &&
@@ -552,6 +589,26 @@ export function createAgentProviderUi(options = {}) {
           select.setAttribute('aria-pressed', String(isDefault));
           select.addEventListener('click', () => selectModel(providerId, model.id));
           name.replaceChildren(select);
+          if (providerId === 'ollama' && ollamaCompatibility(model)) {
+            const note = document.createElement('span');
+            note.className = 'agent-model-default-tag';
+            note.textContent = ollamaCompatibility(model);
+            name.appendChild(note);
+            select.title = model.tools === false
+              ? 'This model can chat, but this Ollama installation cannot use it with Freedom Agent.'
+              : 'Ollama did not report tool support. You can check compatibility without sharing your conversation.';
+            if (model.tools === undefined) {
+              const check = document.createElement('button');
+              check.type = 'button';
+              check.className = 'agent-model-compatibility-check';
+              check.dataset.modelId = model.id;
+              check.textContent = 'Check compatibility';
+              check.setAttribute('aria-label', `Check compatibility of ${model.id}`);
+              check.disabled = compatibilityCheckPending;
+              check.addEventListener('click', () => testProviderConnection(model.id));
+              name.appendChild(check);
+            }
+          }
           if (isDefault) {
             const tag = document.createElement('span');
             tag.className = 'agent-model-default-tag';
@@ -787,6 +844,7 @@ export function createAgentProviderUi(options = {}) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'agent-model-star';
+    button.dataset.modelId = modelId;
     button.textContent = active ? '★' : '☆';
     button.setAttribute(
       'aria-label',
@@ -795,6 +853,7 @@ export function createAgentProviderUi(options = {}) {
     button.setAttribute('aria-pressed', String(active));
     button.hidden = !connection;
     button.addEventListener('click', async () => {
+      if (compatibilityCheckPending) return;
       button.disabled = true;
       await saveProviderPreferences(
         {
@@ -859,7 +918,7 @@ export function createAgentProviderUi(options = {}) {
   function detailsModel(providerId) {
     if (providerId !== 'ollama') return catalogModel(providerId, elements.model.value);
     const modelId = providerConnection(providerId)?.modelId;
-    return modelId ? { id: modelId, name: modelId } : undefined;
+    return ollamaModels(providerConnection(providerId)).find(model => model.id === modelId);
   }
   function renderModelDetails() {
     const providerId = elements.provider.value;
@@ -1003,20 +1062,59 @@ export function createAgentProviderUi(options = {}) {
           : 'Continue without checking';
   }
 
-  async function testProviderConnection() {
+  async function testProviderConnection(ollamaModelId) {
+    if (compatibilityCheckPending) return;
     const providerId = elements.provider.value;
     const modelId =
-      providerId === 'ollama' ? providerConnection(providerId)?.modelId : elements.model.value;
+      providerId === 'ollama'
+        ? (typeof ollamaModelId === 'string' ? ollamaModelId : providerConnection(providerId)?.modelId)
+        : elements.model.value;
     const custom = isCustomProvider(providerId);
     const key = compatibilityKey();
-    elements.testProvider.disabled = true;
+    const heldControls = [];
+    const focused = document.activeElement;
+    const focusedLabel = focused?.textContent;
+    if (providerId !== 'ollama') elements.testProvider.disabled = true;
+    if (providerId === 'ollama') {
+      compatibilityCheckPending = true;
+      for (const control of [...elements.providerModelsList.querySelectorAll('button'),
+        elements.modelRefresh, elements.saveProvider, elements.providerDisconnect, elements.testProvider]) {
+        heldControls.push([control, control.disabled]);
+        if (control === focused && (control.classList.contains('agent-model-compatibility-check') || control === elements.testProvider)) {
+          control.disabled = false;
+          control.setAttribute('aria-disabled', 'true');
+          control.textContent = 'Checking…';
+        } else control.disabled = true;
+      }
+    }
     if (custom) {
       compatibilityCheckPending = true;
       compatibilityCheck = { key, pending: true, message: `Checking ${modelId}…` };
       renderCompatibilityCheck();
-    } else setMessage(elements.providerMessage, 'Sending test prompt…');
+    } else setMessage(elements.providerMessage, providerId === 'ollama' ? 'Checking tool support…' : 'Sending test prompt…');
     try {
       const response = await api.testAgentProviderConnection(providerId, modelId);
+      if (providerId === 'ollama') {
+        const status = response?.status || (await api.getAgentProviderStatus())?.status;
+        const scrollTop = elements.providerModelsList.scrollTop;
+        const restoreFocus = focused && document.activeElement === focused;
+        compatibilityCheckPending = false;
+        if (status) renderProviderStatus(status);
+        if (elements.provider.value === providerId) {
+          elements.providerModelsList.scrollTop = scrollTop;
+          if (restoreFocus) {
+            const buttons = [...elements.providerModelsList.querySelectorAll('button')];
+            const replacement = buttons.find(button => button.dataset.modelId === modelId && button.classList.contains('agent-model-compatibility-check')) ||
+              buttons.find(button => button.dataset.modelId === modelId && !button.disabled);
+            (focused === elements.testProvider ? focused : replacement)?.focus({ preventScroll: true });
+          }
+          const passed = response?.ok && response.result?.outcome === 'tools_verified';
+          setMessage(elements.providerMessage, passed
+            ? `${modelId}: Tool calling verified. No actions were performed.`
+            : responseMessage(response, 'Could not verify tool support. Retry the check or choose another model.'), !passed);
+        }
+        return;
+      }
       if (custom) {
         const result = response?.result;
         const descriptions = {
@@ -1060,10 +1158,19 @@ export function createAgentProviderUi(options = {}) {
           failed: true,
           message: `${modelId}: Compatibility check could not finish. You can retry or continue anyway.`,
         };
-      else setMessage(elements.providerMessage, 'Test prompt failed', true);
+      else setMessage(elements.providerMessage, providerId === 'ollama'
+        ? 'Could not finish the compatibility check. Try again or choose another model.'
+        : 'Test prompt failed', true);
     } finally {
-      if (custom) compatibilityCheckPending = false;
+      if (custom || providerId === 'ollama') compatibilityCheckPending = false;
       elements.testProvider.disabled = false;
+      for (const [control, disabled] of heldControls) {
+        control.disabled = disabled;
+        control.removeAttribute('aria-disabled');
+      }
+      if (focused && focusedLabel && focused.textContent === 'Checking…') focused.textContent = focusedLabel;
+      if (providerId === 'ollama') elements.testProvider.disabled = false;
+      if (providerId === 'ollama' && elements.provider.value !== providerId) renderProviderFields();
       renderCompatibilityCheck();
     }
   }
@@ -1156,14 +1263,18 @@ export function createAgentProviderUi(options = {}) {
         const name = document.createElement('span');
         name.className = 'agent-model-name';
         name.textContent = model.name;
+        if (model.compatibility) name.textContent += ` · ${model.compatibility}`;
+        option.disabled = model.incompatible === true;
         option.appendChild(check);
         option.appendChild(name);
         const privacy = createModelPrivacySymbols(model.privacyInfo);
         option.appendChild(privacy);
-        option.title = model.privacyInfo.detail;
+        option.title = model.incompatible
+          ? 'This model can chat, but this Ollama installation cannot use it with Freedom Agent.'
+          : [model.compatibility, model.privacyInfo.detail].filter(Boolean).join('. ');
         option.setAttribute(
           'aria-label',
-          `${model.name}. ${model.privacyInfo.label}. ${model.privacyInfo.detail}`
+          [model.name, model.compatibility, model.privacyInfo.label, model.privacyInfo.detail].filter(Boolean).join('. ')
         );
         option.addEventListener('click', () => selectModel(model.providerId, model.modelId));
         const row = document.createElement('div');
@@ -1288,11 +1399,12 @@ export function createAgentProviderUi(options = {}) {
   }
 
   async function selectModel(providerId, modelId) {
-    if (context.runStatus !== 'idle' || context.conversationId) return;
+    if (context.runStatus !== 'idle' || context.conversationId || compatibilityCheckPending) return;
     if (elements.modelMenuButton) elements.modelMenuButton.disabled = true;
     try {
       const response = await api.selectAgentModel(providerId, modelId);
       if (!response?.ok) {
+        if (response?.error?.code === 'AGENT_OLLAMA_TOOLS_UNSUPPORTED') await refreshProvider();
         setMessage(elements.runMessage, responseMessage(response, 'Could not select model'), true);
         return;
       }
@@ -1447,7 +1559,11 @@ export function createAgentProviderUi(options = {}) {
       const savedOllamaUrl = providerId === 'ollama' && providerConnection(providerId)?.baseUrl;
       if (savedOllamaUrl) elements.ollamaUrl.value = savedOllamaUrl;
       setConnectMessage(
-        providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile'
+        providerId === 'ollama'
+          ? ollamaModels(providerConnection(providerId)).every(model => model.tools === false)
+            ? 'Ollama connected. Install a model with tool support to use Agent.'
+            : 'Ollama models ready'
+          : 'Model saved for this profile'
       );
       if (isCustomProvider(providerId)) {
         renderCompatibilityCheck();
@@ -1724,6 +1840,10 @@ export function createAgentProviderUi(options = {}) {
     renderProviderFields,
     renderConnectedProviders,
     renderModelMenu,
+    expandModelProvider(providerId) {
+      if (providerId) expandedModelProviders.add(providerId);
+      renderModelMenu();
+    },
     renderActiveModel,
     refreshProvider,
     loadProviderCatalog,

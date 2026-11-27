@@ -4608,6 +4608,14 @@ async function startRun(options = {}) {
       pendingPromptText = '';
       setRunState('idle', '');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
+      if (response?.error?.code === 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' && !currentConversationId) {
+        await refreshProvider();
+        elements.modelMenuSearch.value = '';
+        providerUi.expandModelProvider('ollama');
+        openModelMenu();
+        elements.modelMenuSearch.focus();
+        return false;
+      }
       focusComposer({ preserveExplicitFocus: true });
       return false;
     }
@@ -4745,6 +4753,7 @@ async function chooseAnotherModel(view) {
     userText: turn.userText,
     assistantText: turn.assistantText,
   })));
+  const providerId = conversationModel?.providerId || providerStatus?.providerId;
   view.outcomeChooseModel.disabled = true;
   if (currentConversationId && !(await clearConversation())) {
     view.outcomeChooseModel.disabled = false;
@@ -4754,10 +4763,11 @@ async function chooseAnotherModel(view) {
     elements.prompt.value = prompt;
     updateSendAvailability();
   }
+  await refreshProvider();
   closeComposerPopovers();
   // Show every model: an earlier search could hide the alternatives.
   elements.modelMenuSearch.value = '';
-  renderModelMenu();
+  providerUi.expandModelProvider(providerId);
   openModelMenu();
   elements.modelMenuSearch.focus();
 }
