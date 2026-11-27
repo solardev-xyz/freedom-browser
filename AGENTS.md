@@ -24,7 +24,7 @@ Before executing task-specific work, read the corresponding playbook:
 - Renderer/UI changes _(anything under `src/renderer/`: chrome, sidebar, settings, internal pages; reviewing such changes; and attaching screenshots to a pull request or issue)_: `docs/agent-playbooks/ui-consistency.md`
 - Settings placement _(adding, moving or renaming a setting, or a feature that needs a user-facing preference; and reviewing such changes)_: `docs/agent-playbooks/settings-placement.md`
 - Commit message conventions _(any git commit)_: `docs/agent-playbooks/commit-messages.md`
-- Merging approved pull requests _(landing one or a batch on `main`)_: `docs/agent-playbooks/merge-process.md`
+- Merging approved pull requests, and stacking dependent ones _(landing one, a batch or a stack on `main`; opening a pull request that builds on another open one)_: `docs/agent-playbooks/merge-process.md`
 - Changelog entries _(any user-visible change: add a `changelog.d/` fragment on the pull request that makes it, never a `CHANGELOG.md` edit; also version bumps and release prep)_: `docs/agent-playbooks/changelog-process.md`
 - Cutting a release _(release branch, version bump, tag, build, publish)_: `docs/agent-playbooks/release-process.md`
 - Electron security release _(an open `security-release` issue, or the `electron-watch/electron-*` bump pull request)_: `docs/agent-playbooks/release-process.md` § Security release (Electron), plus `docs/agent-playbooks/dependency-updates.md` for the bump pull request's format
