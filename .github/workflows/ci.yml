@@ -185,9 +185,9 @@ jobs:
       - name: Run lint
         run: npm run lint
 
-      # Four suites spawn a real Electron (`ipfs-gateway-proxy`, `ens-ccip-proxy`,
-      # `colibri-fetch-proxy`, `swarm-post-proxy`) and electron 44 downloads its
-      # binary on the first `require('electron')`.
+      # Five suites spawn a real Electron (`ipfs-gateway-proxy`, `ens-ccip-proxy`,
+      # `colibri-fetch-proxy`, `swarm-post-proxy`, `swarm-shell-proxy`) and
+      # electron 44 downloads its binary on the first `require('electron')`.
       # Left to the tests, parallel jest workers both start that download and
       # one spawns the binary while the other is still writing it
       # (`spawn ETXTBSY`). Pull it once, here, before any worker starts.
@@ -1233,6 +1233,22 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # freedom-core design 0015, SWM-5's gates (the plan's PR 7): main's
+      # Swarm executor with the switch on (FREEDOM_SWARM_BACKEND=core, which
+      # the suite sets) against the pinned core, whose strict readers end the
+      # connection (exit 76) on any reply, head, stream frame or credit of
+      # main's they don't take. `swarm.stamps` (the list and one batch) and a
+      # 50 MiB `swarm.publish` of 100 files without history, half held parts
+      # and half picked files, its tar taken chunked by a node on loopback,
+      # every file byte for byte; the same core throughout, nothing refused,
+      # the Swarm I/O pool back at 0. Its resident-memory measurements need
+      # FREEDOM_SWARM_PEAKS=1 and stay out of CI.
+      - name: Main's Swarm executor with the switch on (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/core/swarm-shell.integration.test.js
+        env:
+          FREEDOM_CORED_SWARM_TEST: '1'
+
       # The key store through main (freedom-core design 0013, PRF-2): main's
       # `shell.keystore` executor and the drain of the forget file, against
       # the same binary. On macOS, the helper against a temporary keychain
@@ -1437,6 +1453,35 @@ jobs:
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      # freedom-core design 0015, SWM-5's node gate (the plan's PR 7): main's
+      # Swarm executor against the antd just downloaded, offline, its chunk
+      # cache seeded from the pinned core's `dweb-verify.json` (the `test`
+      # job's commit). `feed-v1`'s index lookup (`feed_head` with
+      # `swarm-only-root-chunk`) is answered with `swarm-feed-index` and the
+      # root chunk the vectors recorded; a `bzz_file` and a `bzz_tar`
+      # streamed through the executor, and a `/bytes` body on its transport,
+      # are taken chunked and answered as the same bytes with a length are
+      # (503: the node has no postage); a broken tar sent chunked is
+      # malformed. Linux only: Ant's HTTP API is the same on every OS.
+      - name: Check out freedom-core's file trees (node gate)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'Linux' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: df54269bf3879843a11f3ca18ebcf5f793e09c6e
+          path: .freedom-core
+          persist-credentials: false
+          sparse-checkout: |
+            vectors/dweb-verify.json
+          sparse-checkout-cone-mode: false
+
+      - name: Main's Swarm executor against the bundled antd (SWARM_NODE_E2E)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'Linux' }}
+        run: npx jest src/main/core/swarm-shell-node.integration.test.js
+        env:
+          SWARM_NODE_E2E: '1'
+          FREEDOM_CORE_SWARM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
 
       - name: Download freedom-ipfsd binaries
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
@@ -1949,15 +1994,35 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: node -e "require('electron')"
 
-      - name: Run the external gateway, ENS CCIP-Read, Colibri fetch and Swarm POST proxy integration tests
+      # `swarm-shell-proxy` (freedom-core design 0015, SWM-5's gates) plays
+      # every honest scenario of the pinned core's Swarm grammar through
+      # main's executor against a remote node behind a session proxy, so it
+      # needs the `test` job's Swarm vectors, at the same commit.
+      - name: Check out freedom-core's Swarm vectors
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: df54269bf3879843a11f3ca18ebcf5f793e09c6e
+          path: .freedom-core
+          persist-credentials: false
+          sparse-checkout: |
+            vectors/swarm-grammar.json
+            vectors/swarm.json
+            vectors/dweb-verify.json
+          sparse-checkout-cone-mode: false
+
+      - name: Run the external gateway, ENS CCIP-Read, Colibri fetch and Swarm POST and executor proxy integration tests
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FREEDOM_ELECTRON_NET_TEST: '1'
+          FREEDOM_CORE_SWARM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
         run: >-
           npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
           src/main/__tests__/integration/ens-ccip-proxy.test.js
           src/main/__tests__/integration/colibri-fetch-proxy.test.js
           src/main/__tests__/integration/swarm-post-proxy.test.js
+          src/main/__tests__/integration/swarm-shell-proxy.test.js
 
       # ── was the `e2e-wallet` job ──
       # Wallet approval surfaces, driven through the real sidebar renderer with the

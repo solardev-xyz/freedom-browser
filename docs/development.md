@@ -93,6 +93,27 @@ COLIBRI_SERVICE_E2E=1 FREEDOM_CORE_COLIBRI_VECTORS=../freedom-core/vectors/colib
 
 `.github/workflows/colibri-live.yml` runs the live run and the Colibri suites on Linux, macOS and Windows. It runs on a push to a `colibri-live/<name>` branch: `git push origin HEAD:colibri-live/<name>`.
 
+### Swarm through the core (freedom-cored)
+
+Swarm moves from bee-js in main to freedom-cored's swarm thread (freedom-core design 0015). Main's executor for the core's node calls (`src/main/core/swarm-shell.js`) is built, behind a switch: `FREEDOM_SWARM_BACKEND=core` turns it on in a development build, `js` (the default) keeps today's bee-js modules, and packaged builds always run `js` until SWM-9. Nothing sends the core a Swarm request yet: SWM-7 and SWM-8 move `window.swarm` and main's own Swarm calls over.
+
+Its gates, beside the executor's unit suites (`swarm-shell`, `swarm-shell-uploads`, `swarm-grammar.vectors`, `swarm-tree.vectors`):
+
+- **The real core with the switch on** (`src/main/core/swarm-shell.integration.test.js`): `swarm.stamps` and a 50 MiB `swarm.publish` of 100 files through the pinned core, which ends the connection (exit 76) on any frame of main's it doesn't take. It needs the binary, as the other real-core suites do (`node scripts/fetch-freedom-cored.js`); CI's `e2e-desktop` job runs it on each OS with `FREEDOM_CORED_SWARM_TEST=1`.
+- **Every form through a session proxy** (`src/main/__tests__/integration/swarm-shell-proxy.test.js`): every honest scenario of the core's Swarm grammar played through the executor in a real Electron process, against a remote node behind a SOCKS proxy on the session. It needs the Swarm vectors (`FREEDOM_CORE_SWARM_VECTORS`, freedom-core's `vectors` directory at CI's pin) and runs with the other proxy suites.
+- **The bundled node** (`src/main/core/swarm-shell-node.integration.test.js`, gated by `SWARM_NODE_E2E=1`): antd, offline, with its chunk cache seeded from the vectors, answers `feed-v1`'s index lookup with `swarm-feed-index`, and takes chunked `/bzz` and `/bytes` uploads. It needs `npm run ant:download` and the vectors; CI runs it on Linux.
+- **Peaks and resident memory** (`FREEDOM_SWARM_PEAKS=1`, in the real-core suite): main's resident memory through the largest whole reply, 64 concurrent maximum calls and the 50 MiB publish, printed with the figures. They depend on the allocator and the machine, so no CI job runs them.
+
+```bash
+node scripts/fetch-freedom-cored.js && npm run ant:download
+FREEDOM_CORED_PATH=freedom-cored-bin/linux-x64/freedom-cored FREEDOM_SWARM_PEAKS=1 \
+  npx jest src/main/core/swarm-shell.integration.test.js
+SWARM_NODE_E2E=1 FREEDOM_CORE_SWARM_VECTORS=../freedom-core/vectors \
+  npx jest src/main/core/swarm-shell-node.integration.test.js
+FREEDOM_CORE_SWARM_VECTORS=../freedom-core/vectors \
+  npx jest src/main/__tests__/integration/swarm-shell-proxy.test.js
+```
+
 ### Experimental Windows Agent workspace backend
 
 On the Agent Windows branch, build the native workspace helpers on Windows with
