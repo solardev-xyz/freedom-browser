@@ -6,9 +6,13 @@ jest.mock('./dapp-provider.js', () => ({
 }));
 
 const mockIsTabAgentOwned = jest.fn(() => false);
+const mockGetTabs = jest.fn(() => []);
+// The provider subscribes once, when first loaded; keep what it registered.
+let registeredDisconnectListener = null;
 jest.mock('./tabs.js', () => ({
   getDisplayUrlForWebview: jest.fn(() => 'bzz://app.eth/'),
   getNavigationKeyForWebview: jest.fn(() => 'tab-1:1'),
+  getTabs: (...args) => mockGetTabs(...args),
   isTabAgentOwned: (...args) => mockIsTabAgentOwned(...args),
 }));
 
@@ -79,6 +83,9 @@ beforeAll(async () => {
     swarmPermissions: {
       getPermission: jest.fn().mockResolvedValue({ origin: 'app.eth', autoApprove: {} }),
       updateLastUsed: jest.fn().mockResolvedValue(true),
+      onOriginDisconnected: jest.fn((listener) => {
+        registeredDisconnectListener = listener;
+      }),
     },
     swarmProvider: { execute: jest.fn() },
   };
@@ -500,6 +507,106 @@ describe('feed writes with a locked vault', () => {
   });
 });
 
+describe('swarm_deriveSharedSecrets is checked by main before its prompt', () => {
+  let setupSwarmProvider;
+  let showSwarmFeedApproval;
+  let showVaultUnlock;
+  const KEY = `02${'ab'.repeat(32)}`;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmFeedApproval, showVaultUnlock } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({ origin: 'app.eth', autoApprove: {} });
+    window.swarmPermissions.getAutoApprove = jest.fn().mockResolvedValue(false);
+    window.swarmPermissions.describeSharedSecretsRequest = jest.fn();
+    window.swarmFeedStore = { hasFeedGrant: jest.fn().mockResolvedValue(true) };
+    window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }) };
+    window.swarmProvider.execute.mockResolvedValue({ result: { sharedSecrets: ['x'] } });
+    showSwarmFeedApproval.mockImplementation((_key, _params, resolve) => resolve());
+    showVaultUnlock.mockResolvedValue();
+  });
+
+  afterAll(() => {
+    delete window.swarmFeedStore;
+    delete window.identity;
+    delete window.swarmPermissions.describeSharedSecretsRequest;
+    delete window.swarmPermissions.getAutoApprove;
+  });
+
+  const derive = async (params) => {
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 7, method: 'swarm_deriveSharedSecrets', params });
+    for (let i = 0; i < 6; i += 1) await flush();
+    return webview;
+  };
+
+  test.each([
+    [{ hasFeedAccess: true, autoApprove: false }],
+    [{ hasFeedAccess: true, autoApprove: true }],
+    [{ hasFeedAccess: false, autoApprove: false }],
+  ])('a request main refuses gets its -32602 and no prompt or unlock (%o)', async ({ hasFeedAccess, autoApprove }) => {
+    window.swarmFeedStore.hasFeedGrant.mockResolvedValue(hasFeedAccess);
+    window.swarmPermissions.getAutoApprove.mockResolvedValue(autoApprove);
+    window.identity.getStatus.mockResolvedValue({ isUnlocked: false });
+    window.swarmPermissions.describeSharedSecretsRequest.mockResolvedValue({
+      valid: false,
+      reason: 'payload_too_large',
+      message: 'publicKeys may hold at most 256 keys',
+      data: { limit: 256, actual: 1000 },
+    });
+    const params = { publicKeys: new Array(1000).fill(KEY) };
+
+    const webview = await derive(params);
+
+    expect(window.swarmPermissions.describeSharedSecretsRequest).toHaveBeenCalledWith(params);
+    expect(showSwarmFeedApproval).not.toHaveBeenCalled();
+    expect(showVaultUnlock).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview).at(-1)[1]).toEqual({
+      id: 7,
+      result: null,
+      error: {
+        code: -32602,
+        message: 'publicKeys may hold at most 256 keys',
+        data: { reason: 'payload_too_large', limit: 256, actual: 1000 },
+      },
+    });
+  });
+
+  test('a valid request is prompted with main\'s canonical keys and executed as sent', async () => {
+    window.swarmPermissions.describeSharedSecretsRequest.mockResolvedValue({
+      valid: true,
+      publicKeys: [`0x${KEY}`],
+    });
+    const params = { publicKeys: [KEY.toUpperCase()] };
+
+    const webview = await derive(params);
+
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+    expect(showSwarmFeedApproval.mock.calls[0][1]).toEqual({ publicKeys: [`0x${KEY}`] });
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_deriveSharedSecrets', params, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+    expect(responsesSentTo(webview).at(-1)[1]).toEqual({ id: 7, result: { sharedSecrets: ['x'] }, error: null });
+  });
+
+  test('other signing methods are not sent through the shared-secrets check', async () => {
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 8, method: 'swarm_getEncryptionKey', params: {} });
+    for (let i = 0; i < 6; i += 1) await flush();
+    expect(window.swarmPermissions.describeSharedSecretsRequest).not.toHaveBeenCalled();
+    expect(showSwarmFeedApproval).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('swarm_openAct (#648)', () => {
   let setupSwarmProvider;
   let showSwarmActApproval;
@@ -629,5 +736,223 @@ describe('swarm_openAct (#648)', () => {
     expect(showSwarmActApproval).toHaveBeenCalledTimes(1);
     const approvals = window.swarmProvider.execute.mock.calls.map(([, , , meta]) => meta.approval);
     expect(approvals).toEqual(['user', 'auto', 'auto']);
+  });
+});
+
+describe('connect and disconnect events (#1158)', () => {
+  let mod;
+  let onOriginDisconnected;
+  const tabs = require('./tabs.js');
+  const { getPermissionKey } = require('./dapp-provider.js');
+  const eventsSentTo = (webview) =>
+    webview.send.mock.calls.filter(([channel]) => channel === 'swarm:provider-event').map(([, payload]) => payload);
+
+  beforeAll(async () => {
+    mod = require('./swarm-provider.js');
+    await flush();
+    onOriginDisconnected = registeredDisconnectListener;
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({
+      kind: 'consent',
+      token: 'opaque-token',
+      model: { origin: 'app.eth', changed: [{ key: 'publish' }], removed: [] },
+    });
+    mockShowPermissionManifest.mockResolvedValue('allow');
+    window.swarmManifest.decide.mockResolvedValue({ allowed: true, mode: 'allow' });
+    window.swarmProvider.execute.mockResolvedValue({ result: { connected: true, origin: 'app.eth' } });
+    window.swarmPermissions.getPermission.mockResolvedValue({ origin: 'app.eth', autoApprove: {} });
+  });
+
+  afterEach(() => {
+    tabs.getNavigationKeyForWebview.mockImplementation(() => 'tab-1:1');
+    tabs.getDisplayUrlForWebview.mockImplementation(() => 'bzz://app.eth/');
+    getPermissionKey.mockImplementation(() => 'app.eth');
+  });
+
+  async function requestAccessThroughSheet() {
+    const webview = setUp(mod.setupSwarmProvider);
+    sendRequest(webview, { id: 1, method: 'swarm_requestAccess', params: {} });
+    for (let i = 0; i < 4; i += 1) await flush();
+    return webview;
+  }
+
+  test('a manifest sheet that connects the site sends connect once', async () => {
+    window.swarmPermissions.getPermission.mockResolvedValueOnce(null);
+    const webview = await requestAccessThroughSheet();
+    expect(eventsSentTo(webview)).toEqual([{ event: 'connect', data: { origin: 'app.eth' } }]);
+    expect(responsesSentTo(webview)).toHaveLength(1);
+  });
+
+  test("'ask each time' connects the site too", async () => {
+    mockShowPermissionManifest.mockResolvedValue('individual');
+    window.swarmManifest.decide.mockResolvedValue({ allowed: true, mode: 'individual' });
+    window.swarmPermissions.getPermission.mockResolvedValueOnce(null);
+    const webview = await requestAccessThroughSheet();
+    expect(eventsSentTo(webview)).toEqual([{ event: 'connect', data: { origin: 'app.eth' } }]);
+  });
+
+  test('no connect when the site was already connected', async () => {
+    const webview = await requestAccessThroughSheet();
+    expect(eventsSentTo(webview)).toEqual([]);
+  });
+
+  test('no connect when the sheet is declined', async () => {
+    mockShowPermissionManifest.mockResolvedValue('deny');
+    window.swarmManifest.decide.mockResolvedValue({ allowed: false });
+    window.swarmPermissions.getPermission.mockResolvedValueOnce(null).mockResolvedValue(null);
+    const webview = await requestAccessThroughSheet();
+    expect(eventsSentTo(webview)).toEqual([]);
+  });
+
+  test('no connect to a document the tab navigated to while the sheet was open', async () => {
+    window.swarmPermissions.getPermission.mockResolvedValueOnce(null);
+    mockShowPermissionManifest.mockImplementation(async () => {
+      tabs.getNavigationKeyForWebview.mockImplementation(() => 'tab-1:2');
+      return 'allow';
+    });
+    const webview = await requestAccessThroughSheet();
+    expect(eventsSentTo(webview)).toEqual([]);
+  });
+
+  test('no connect when the tab navigates while the final connection check is pending', async () => {
+    let finishCheck;
+    window.swarmPermissions.getPermission
+      .mockResolvedValueOnce(null)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishCheck = resolve; }));
+    const webview = setUp(mod.setupSwarmProvider);
+    sendRequest(webview, { id: 1, method: 'swarm_requestAccess', params: {} });
+    for (let i = 0; i < 4; i += 1) await flush();
+
+    tabs.getNavigationKeyForWebview.mockImplementation(() => 'tab-1:2');
+    finishCheck({ origin: 'app.eth', autoApprove: {} });
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(eventsSentTo(webview)).toEqual([]);
+  });
+
+  test("an operation's check and requestAccess sharing one sheet announce connect once", async () => {
+    let connected = false;
+    window.swarmPermissions.getPermission.mockImplementation(async () => (
+      connected ? { origin: 'app.eth', autoApprove: { publish: true } } : null
+    ));
+    let answerSheet;
+    const sheet = new Promise((resolve) => { answerSheet = resolve; });
+    mockShowPermissionManifest.mockImplementation(() => sheet);
+    window.swarmManifest.decide.mockImplementation(async () => {
+      connected = true;
+      return { allowed: true, mode: 'allow' };
+    });
+    const webview = setUp(mod.setupSwarmProvider);
+
+    sendRequest(webview, { id: 1, method: 'swarm_publishData', params: { data: 'x', contentType: 'text/plain' } });
+    await flush();
+    sendRequest(webview, { id: 2, method: 'swarm_requestAccess', params: {} });
+    for (let i = 0; i < 4; i += 1) await flush();
+    expect(window.swarmManifest.check).toHaveBeenCalledTimes(2);
+
+    answerSheet('allow');
+    for (let i = 0; i < 6; i += 1) await flush();
+    expect(eventsSentTo(webview)).toEqual([{ event: 'connect', data: { origin: 'app.eth' } }]);
+  });
+
+  test('a site disconnected and connected again in the same page hears connect again', async () => {
+    let connected = false;
+    window.swarmPermissions.getPermission.mockImplementation(async () => (
+      connected ? { origin: 'app.eth', autoApprove: { publish: true } } : null
+    ));
+    window.swarmManifest.decide.mockImplementation(async () => {
+      connected = true;
+      return { allowed: true, mode: 'allow' };
+    });
+    const webview = setUp(mod.setupSwarmProvider);
+
+    // An operation's check connects the site through the sheet.
+    sendRequest(webview, { id: 1, method: 'swarm_publishData', params: { data: 'x', contentType: 'text/plain' } });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    // The user disconnects it; main tells the window.
+    connected = false;
+    mockGetTabs.mockReturnValue([{ webview }]);
+    onOriginDisconnected('app.eth');
+
+    // requestAccess in the same document opens the sheet again and reconnects.
+    sendRequest(webview, { id: 2, method: 'swarm_requestAccess', params: {} });
+    for (let i = 0; i < 6; i += 1) await flush();
+    expect(eventsSentTo(webview)).toEqual([
+      { event: 'connect', data: { origin: 'app.eth' } },
+      { event: 'disconnect', data: { origin: 'app.eth' } },
+      { event: 'connect', data: { origin: 'app.eth' } },
+    ]);
+  });
+
+  describe('the plain connect prompt', () => {
+    const { showSwarmConnect } = require('./wallet-ui.js');
+    let approvals;
+
+    beforeEach(() => {
+      window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+      window.swarmPermissions.getPermission.mockResolvedValue(null);
+      approvals = [];
+      showSwarmConnect.mockImplementation((displayUrl, key, resolve) => {
+        approvals.push(() => resolve({ connected: true, origin: key }));
+      });
+    });
+
+    afterEach(() => {
+      showSwarmConnect.mockReset();
+    });
+
+    test('approving it announces connect once', async () => {
+      const webview = setUp(mod.setupSwarmProvider);
+      sendRequest(webview, { id: 1, method: 'swarm_requestAccess', params: {} });
+      for (let i = 0; i < 4; i += 1) await flush();
+      approvals[0]();
+      for (let i = 0; i < 4; i += 1) await flush();
+      expect(eventsSentTo(webview)).toEqual([{ event: 'connect', data: { origin: 'app.eth' } }]);
+    });
+
+    test('not to a document the tab navigated to before the approval landed', async () => {
+      const webview = setUp(mod.setupSwarmProvider);
+      sendRequest(webview, { id: 1, method: 'swarm_requestAccess', params: {} });
+      for (let i = 0; i < 4; i += 1) await flush();
+      tabs.getNavigationKeyForWebview.mockImplementation(() => 'tab-1:2');
+      approvals[0]();
+      for (let i = 0; i < 4; i += 1) await flush();
+      expect(eventsSentTo(webview)).toEqual([]);
+    });
+
+    test('two queued prompts that are both approved announce connect once', async () => {
+      const webview = setUp(mod.setupSwarmProvider);
+      sendRequest(webview, { id: 1, method: 'swarm_requestAccess', params: {} });
+      sendRequest(webview, { id: 2, method: 'swarm_requestAccess', params: {} });
+      for (let i = 0; i < 4; i += 1) await flush();
+      expect(approvals).toHaveLength(2);
+      approvals[0]();
+      approvals[1]();
+      for (let i = 0; i < 4; i += 1) await flush();
+      expect(eventsSentTo(webview)).toEqual([{ event: 'connect', data: { origin: 'app.eth' } }]);
+      expect(responsesSentTo(webview)).toHaveLength(2);
+    });
+  });
+
+  test('a revoked connection reaches every tab of the site in this window, and only those', () => {
+    expect(onOriginDisconnected).toEqual(expect.any(Function));
+    const front = createWebview();
+    const background = createWebview();
+    const otherSite = createWebview();
+    const urls = new Map([[front, 'bzz://app.eth/'], [background, 'bzz://app.eth/blog'], [otherSite, 'bzz://other.eth/']]);
+    tabs.getDisplayUrlForWebview.mockImplementation((webview) => urls.get(webview));
+    getPermissionKey.mockImplementation((url) => (url?.includes('other.eth') ? 'other.eth' : 'app.eth'));
+    mockGetTabs.mockReturnValue([{ webview: front }, { webview: background }, { webview: otherSite }, { webview: null }]);
+
+    onOriginDisconnected('app.eth');
+
+    const disconnect = [{ event: 'disconnect', data: { origin: 'app.eth' } }];
+    expect(eventsSentTo(front)).toEqual(disconnect);
+    expect(eventsSentTo(background)).toEqual(disconnect);
+    expect(eventsSentTo(otherSite)).toEqual([]);
+    expect(require('./wallet-ui.js').updateSwarmConnectionBanner).toHaveBeenCalledWith('app.eth');
   });
 });

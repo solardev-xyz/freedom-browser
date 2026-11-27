@@ -1106,6 +1106,15 @@ describe('Agent progress projection', () => {
     expect(outcome.nextStep).toContain('Choose another model for a new chat');
   });
 
+  test('offers a model choice for rejected tool support without calling it a connection failure', () => {
+    const outcome = buildAgentOutcome([], 'failed', {
+      code: 'PROVIDER_ERROR', message: '400: gemma3:4b does not support tools',
+      provider: { label: 'Ollama', modelId: 'gemma3:4b' },
+    });
+    expect(outcome).toMatchObject({ headline: 'Choose a compatible model', providerAction: 'choose_model', canRetry: false });
+    expect(outcome.nextStep).toContain('original prompt is preserved');
+  });
+
   test('reconstructs provider recovery evidence from persisted safe error copy', () => {
     const outcome = buildAgentOutcome([], 'failed', {
       code: 'PROVIDER_ERROR',

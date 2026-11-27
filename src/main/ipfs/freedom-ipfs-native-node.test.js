@@ -16,6 +16,7 @@ const createConstants = () => ({
   EVENT_CANCELLED: 1 << 4,
   EVENT_HANDLE_FREED: 1 << 5,
   ROUTING_MODE_AUTO: 20,
+  ROUTING_MODE_OFFLINE: 23,
 });
 
 function createBindingMock({
@@ -242,6 +243,29 @@ describe('FreedomIpfsNativeNode', () => {
       'https://delegated-ipfs.dev/routing/v1',
       'https://cid.contact/routing/v1',
     ]);
+  });
+
+  test('a cache-only node starts the gateway in offline routing mode (#30)', async () => {
+    const binding = createBindingMock();
+    const { FreedomIpfsNativeNode, REQUEST_QUEUE_TIMEOUT_MS, DELEGATED_ROUTERS } =
+      loadModule(binding);
+    const log = require('../logger');
+    const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', cacheOnly: true });
+
+    await expect(node.start()).resolves.toBe(true);
+
+    expect(binding.nodeStartNativeGatewayOnlineAsync).toHaveBeenCalledWith(
+      '1',
+      DELEGATED_ROUTERS,
+      binding.constants.ROUTING_MODE_OFFLINE,
+      0,
+      3,
+      0,
+      REQUEST_QUEUE_TIMEOUT_MS
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      '[IPFS] native gateway cache-only: serving the local store, no network'
+    );
   });
 
   test('rejects invalid native request handles without registering a controller', async () => {

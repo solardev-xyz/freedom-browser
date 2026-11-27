@@ -29,7 +29,7 @@ proof that the server is offline or cannot forward requests.
 
 ## Implemented in this branch
 
-- Exact-pinned `@phala/dcap-qvl@0.6.5` (user approved 2026-10-06).
+- Exact-pinned `@phala/dcap-qvl@0.7.1` (upgrade approved in #831, qualified 2026-11-09).
 - CPU quote checks in a bounded main-process-owned worker: Intel production trust
   chain and collateral, default rejection of debug enclaves, TCB/advisory results,
   fresh client nonce and ECDSA signing-address binding from authenticated report data.
@@ -202,9 +202,18 @@ and packaged-worker qualification remain open.
 
 Do not implement Intel quote cryptography from scratch or trust a provider's
 `verified` boolean. The approved dependency is an exact pin of
-`@phala/dcap-qvl@0.6.5`. Public npm metadata reports Apache-2.0, about
-134 KB unpacked for the package itself, plus eight direct dependencies. It is a
+`@phala/dcap-qvl@0.7.1`. Public npm metadata reports Apache-2.0, about
+146 KB unpacked for the package itself, plus eight direct dependencies. It is a
 JavaScript verifier suitable for a main-process-owned worker, avoiding UI stalls.
+The new `TDRelaunchAdvised` statuses remain advisories, never up-to-date checks.
+For TD 1.5, `TDRelaunchAdvised` replaces an `OutOfDate` result when the current
+TCB is updated but the trust domain still needs relaunching. Encryption accepts
+that pure relaunch advisory alongside `UpToDate` and `OutOfDate`, preserving
+previously supported quotes. Configuration-needed variants remain blocked.
+The verifier now combines platform and QE/module component statuses according
+to Intel QVL convergence rules, rather than always taking the most severe
+component status; this can also change the resulting platform label. Persisted checks
+from the previous 0.6.5 verifier retain their historical label.
 Existing Node crypto/ethers can support remaining protocol operations; assess
 those separately rather than adding a full provider SDK by default.
 

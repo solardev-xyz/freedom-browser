@@ -42,6 +42,7 @@ jest.mock('./permissions', () => ({
 }));
 
 const { webContents } = require('electron');
+const { userPageCustodyVersion } = require('../wallet/agent-tab-custody');
 const log = require('../logger');
 const { netGatewayFetch } = require('../ipfs/gateway-transport');
 const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
@@ -93,9 +94,7 @@ beforeEach(() => {
   clearAllPendingUnlockWaits();
   clearAllPendingApprovals();
   clearAllHostSenders();
-  webContents.fromId.mockReset().mockImplementation(() => ({
-    hostWebContents: { send: mockHostSend },
-  }));
+  webContents.fromId.mockReset().mockReturnValue({ hostWebContents: { send: mockHostSend } });
   mockRegister.mockClear();
   mockAppendReceipt.mockReset();
   mockHostSend.mockClear();
@@ -174,13 +173,18 @@ describe('parsePaymentRequiredHeader', () => {
 // === detectPaymentRequiredHandler ========================================
 
 describe('detectPaymentRequiredHandler', () => {
-  const detail = (overrides = {}) => ({
-    webContentsId: 7,
-    url: 'https://api.example/article',
-    statusLine: 'HTTP/1.1 402 Payment Required',
-    responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] },
-    ...overrides,
-  });
+  const detail = (overrides = {}) => {
+    const details = {
+      id: 1,
+      webContentsId: 7,
+      url: 'https://api.example/article',
+      statusLine: 'HTTP/1.1 402 Payment Required',
+      responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] },
+      ...overrides,
+    };
+    captureRequestContextHandler(details);
+    return details;
+  };
 
   test('on 402 with V2 header: stashes the payment and fires the approval event at the host', async () => {
     // Handler is async (returns a Promise — see the 307 path for why).
@@ -237,13 +241,17 @@ describe('detectPaymentRequiredHandler', () => {
         Location: ['https://api.example/article'],
       },
     });
-    expect(mockSignAndQueueRetry).toHaveBeenCalledWith(7, expect.objectContaining({
-      detection: expect.objectContaining({
-        url: 'https://api.example/article',
-        resourceType: 'xhr',
-      }),
-      authorizedBy: 'cap',
-    }));
+    expect(mockSignAndQueueRetry).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({
+        detection: expect.objectContaining({
+          url: 'https://api.example/article',
+          resourceType: 'xhr',
+          custodyVersion: userPageCustodyVersion(7),
+        }),
+        authorizedBy: 'cap',
+      })
+    );
     // No approval-needed event — auto-pay is silent.
     expect(mockHostSend).not.toHaveBeenCalled();
   });
@@ -262,8 +270,10 @@ describe('detectPaymentRequiredHandler', () => {
       asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
       amount: '10000',
       authorizedBy: 'cap',
+      custodyVersion: userPageCustodyVersion(7),
     });
     injectPaymentSignatureHandler({
+      id: 1,
       webContentsId: 7,
       url: 'https://api.example/article',
       requestHeaders: {},
@@ -295,8 +305,10 @@ describe('detectPaymentRequiredHandler', () => {
       asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
       amount: '10000',
       authorizedBy: 'cap',
+      custodyVersion: userPageCustodyVersion(7),
     });
     injectPaymentSignatureHandler({
+      id: 1,
       webContentsId: 7,
       url: 'https://api.example/article',
       requestHeaders: {},
@@ -1192,6 +1204,7 @@ describe('injectPaymentSignatureHandler', () => {
       asset: '0xabc',
       amount: '10000',
       authorizedBy: 'cap',
+      custodyVersion: userPageCustodyVersion(7),
     });
 
     expect(injectPaymentSignatureHandler(detail())).toBeNull();
@@ -1204,6 +1217,7 @@ describe('injectPaymentSignatureHandler', () => {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
       authorizedBy: 'cap',
+      custodyVersion: userPageCustodyVersion(7),
     });
 
     expect(injectPaymentSignatureHandler(detail())).toBeNull();
@@ -1225,6 +1239,7 @@ describe('injectPaymentSignatureHandler', () => {
       asset: '0xabc',
       amount: '10000',
       authorizedBy: 'cap',
+      custodyVersion: userPageCustodyVersion(7),
     });
     // tryConsume defaults to mockReturnValue(true) in beforeEach.
     injectPaymentSignatureHandler(detail());
@@ -1245,6 +1260,7 @@ describe('injectPaymentSignatureHandler', () => {
       asset: '0xabc',
       amount: '10000',
       authorizedBy: 'cap',
+      custodyVersion: userPageCustodyVersion(7),
     });
     injectPaymentSignatureHandler(detail());
     expect(mockHostSend).not.toHaveBeenCalledWith('x402:cap-consumed', expect.anything());
@@ -1518,9 +1534,14 @@ describe('request-shape retry keying', () => {
     // Set up "already signed" state for id=701; a 402 on id=701 must NOT
     // re-sign even though the URL is the same.
     setPendingPayment(7, 'https://api.example/article', {
-      header: X402_HEADERS.SIGNATURE_V2, value: 'sig',
-      origin: 'https://api.example', chainId: 8453,
-      asset: '0xabc', amount: '10000', authorizedBy: 'cap',
+      header: X402_HEADERS.SIGNATURE_V2,
+      value: 'sig',
+      origin: 'https://api.example',
+      chainId: 8453,
+      asset: '0xabc',
+      amount: '10000',
+      authorizedBy: 'cap',
+      custodyVersion: userPageCustodyVersion(7),
     });
     injectPaymentSignatureHandler({
       id: 701, webContentsId: 7, url: 'https://api.example/article',
@@ -1548,9 +1569,14 @@ describe('request-shape retry keying', () => {
   test('loop guard does NOT fire when a NEW request id 402s the same URL (a different request shape on the wire)', async () => {
     // First-signed (id=801) already in awaitingResponse from inject.
     setPendingPayment(7, 'https://api.example/article', {
-      header: X402_HEADERS.SIGNATURE_V2, value: 'sig',
-      origin: 'https://api.example', chainId: 8453,
-      asset: '0xabc', amount: '10000', authorizedBy: 'cap',
+      header: X402_HEADERS.SIGNATURE_V2,
+      value: 'sig',
+      origin: 'https://api.example',
+      chainId: 8453,
+      asset: '0xabc',
+      amount: '10000',
+      authorizedBy: 'cap',
+      custodyVersion: userPageCustodyVersion(7),
     });
     injectPaymentSignatureHandler({
       id: 801, webContentsId: 7, url: 'https://api.example/article',
@@ -1563,6 +1589,7 @@ describe('request-shape retry keying', () => {
       capAmount: '20000', spentAmount: '10000',
       createdAt: 1, expiresAt: 9999999999,
     });
+    captureRequestContextHandler({ id: 802, webContentsId: 7 });
     const result = await detectPaymentRequiredHandler({
       id: 802,
       webContentsId: 7,
@@ -1624,34 +1651,38 @@ describe('captureRequestContextHandler', () => {
     });
   });
 
-  test('skips capture for non-x402 resource types (image, stylesheet, font, script) to bound the working set', async () => {
-    // These resource types will never receive an x402 paywall in
-    // practice — pages with image galleries / CSS sprites / web fonts
-    // would otherwise flood `requestContext`.
-    for (const resourceType of ['image', 'stylesheet', 'font', 'script']) {
-      captureRequestContextHandler({
-        id: 800 + resourceType.length, // distinct ids per type
+  test.each(['image', 'stylesheet', 'font', 'script'])(
+    'a paywalled %s retains request custody and Range for cap authorization',
+    async (resourceType) => {
+      const details = {
+        id: 801,
         webContentsId: 7,
         method: 'GET',
         url: `https://x.example/${resourceType}`,
         requestHeaders: { Range: 'bytes=0-99' },
         resourceType,
+      };
+      captureRequestContextHandler(details);
+      mockGetPermission.mockReturnValue({
+        capAmount: '20000',
+        spentAmount: '0',
+        createdAt: 1,
+        expiresAt: 9999999999,
       });
+      expect(
+        await detectPaymentRequiredHandler({
+          ...details,
+          statusLine: 'HTTP/1.1 402 Payment Required',
+          responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] },
+        })
+      ).toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+      expect(getDetectedPayment(7)?.requestShape).toEqual({ method: 'GET', range: 'bytes=0-99' });
+      expect(mockSignAndQueueRetry).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ authorizedBy: 'cap' })
+      );
     }
-    // None of these captures landed. A detection with the same id falls
-    // back to synthetic shape.
-    await detectPaymentRequiredHandler({
-      id: 800 + 'image'.length,
-      webContentsId: 7,
-      url: 'https://x.example/image',
-      statusLine: 'HTTP/1.1 402 Payment Required',
-      responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] },
-    });
-    expect(getDetectedPayment(7)?.requestShape).toEqual({
-      method: 'GET',
-      range: null,
-    });
-  });
+  );
 
   test('Range header case-insensitive on capture (lowercase from Chromium / proxies)', () => {
     captureRequestContextHandler({
@@ -2123,5 +2154,179 @@ describe('paymentResponseLoggingHandler', () => {
       txHash: '0xabc',
       status: 'settled',
     }));
+  });
+});
+
+test.each([false, true])(
+  'a missing request capture or a request started under Agent custody cannot use a cap (captured=%s)',
+  async (captured) => {
+    const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+    const guest = webContents.fromId(7);
+    const details = {
+      id: 7001,
+      webContentsId: 7,
+      url: 'https://api.example/article',
+      resourceType: 'mainFrame',
+      statusLine: 'HTTP/1.1 402 Payment Required',
+      responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] },
+    };
+    if (captured) {
+      setAgentPageCustody(guest, true);
+      captureRequestContextHandler(details);
+      setAgentPageCustody(guest, false);
+    }
+    mockGetPermission.mockReturnValue({
+      capAmount: '20000',
+      spentAmount: '0',
+      createdAt: 1,
+      expiresAt: 9999999999,
+    });
+    await detectPaymentRequiredHandler(details);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(mockHostSend).toHaveBeenCalledWith(
+      'x402:approval-needed',
+      expect.objectContaining({ url: details.url })
+    );
+  }
+);
+
+test.each(['undecided', 'released'])(
+  'a request begun while its tab awaited a custody decision cannot pay from a cap (402 arrives %s)',
+  async (when) => {
+    // An Agent-created tab's guest attaches (the runtime marks it undecided)
+    // and its first request starts, then 402s, before creation resolves and
+    // the Agent claims the tab. 'released': the guest turned out not to be the
+    // created one, but its start stamp still fails closed.
+    const { setPageCustodyUndecided } = require('../wallet/agent-tab-custody');
+    const guest = webContents.fromId(7);
+    const details = {
+      id: 7002,
+      webContentsId: 7,
+      url: 'https://seller.example/paid',
+      resourceType: 'mainFrame',
+      method: 'GET',
+      requestHeaders: {},
+    };
+    setPageCustodyUndecided(guest, true);
+    try {
+      captureRequestContextHandler(details);
+      if (when === 'released') setPageCustodyUndecided(guest, false);
+      mockGetPermission.mockReturnValue({
+        capAmount: '20000',
+        spentAmount: '0',
+        createdAt: 1,
+        expiresAt: 9999999999,
+      });
+      await detectPaymentRequiredHandler({
+        ...details,
+        statusLine: 'HTTP/1.1 402 Payment Required',
+        responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      setPageCustodyUndecided(guest, false);
+    }
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(mockHostSend).toHaveBeenCalledWith(
+      'x402:approval-needed',
+      expect.objectContaining({ url: details.url })
+    );
+  }
+);
+
+describe('request-start custody survives redirect hops', () => {
+  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+  const capCovers = () =>
+    mockGetPermission.mockReturnValue({
+      capAmount: '20000',
+      spentAmount: '0',
+      createdAt: 1,
+      expiresAt: 9999999999,
+    });
+  const hop = (url, extra = {}) => ({
+    id: 7101,
+    webContentsId: 7,
+    method: 'GET',
+    url,
+    resourceType: 'mainFrame',
+    requestHeaders: {},
+    ...extra,
+  });
+  const final402 = {
+    ...hop('https://seller.example/paid'),
+    statusLine: 'HTTP/1.1 402 Payment Required',
+    responseHeaders: { 'PAYMENT-REQUIRED': [sampleRequirementsB64] },
+  };
+
+  test('a navigation begun under Agent custody cannot pay from a cap after the user takes control mid-redirect', async () => {
+    const guest = webContents.fromId(7);
+    setAgentPageCustody(guest, true);
+    captureRequestContextHandler(hop('https://seller.example/start'));
+    setAgentPageCustody(guest, false); // User takes control while the 302 is pending.
+    captureRequestContextHandler(hop('https://seller.example/paid')); // Redirect hop, same id.
+    capCovers();
+    await detectPaymentRequiredHandler(final402);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(mockHostSend).toHaveBeenCalledWith(
+      'x402:approval-needed',
+      expect.objectContaining({ url: final402.url })
+    );
+  });
+
+  test('a redirect hop under unbroken user custody keeps the cap and refreshes method/range', async () => {
+    captureRequestContextHandler(hop('https://seller.example/start', { method: 'POST' }));
+    captureRequestContextHandler(
+      hop('https://seller.example/paid', { requestHeaders: { Range: 'bytes=0-9' } })
+    );
+    capCovers();
+    await detectPaymentRequiredHandler(final402);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockSignAndQueueRetry).toHaveBeenCalled();
+    expect(getDetectedPayment(7)?.requestShape).toEqual({ method: 'GET', range: 'bytes=0-9' });
+  });
+
+  test('a 402 arriving past the TTL on an idle session finds no capture, even though no sweep ran', async () => {
+    captureRequestContextHandler(
+      hop('https://seller.example/paid', { requestHeaders: { Range: 'bytes=0-9' } })
+    );
+    capCovers();
+    const realNow = Date.now;
+    Date.now = () => realNow() + 61_000; // No other capture runs, so the lazy sweep never fires.
+    try {
+      await detectPaymentRequiredHandler(final402);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      Date.now = realNow;
+    }
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(mockHostSend).toHaveBeenCalledWith(
+      'x402:approval-needed',
+      expect.objectContaining({ url: final402.url })
+    );
+    expect(getDetectedPayment(7)?.requestShape).toEqual({ method: 'GET', range: null });
+  });
+
+  test('a hop arriving after its start capture was swept re-captures with no custody (fails closed)', async () => {
+    const guest = webContents.fromId(7);
+    setAgentPageCustody(guest, true);
+    captureRequestContextHandler(hop('https://seller.example/start'));
+    setAgentPageCustody(guest, false);
+    const realNow = Date.now;
+    Date.now = () => realNow() + 61_000;
+    try {
+      captureRequestContextHandler(hop('https://seller.example/paid'));
+      capCovers();
+      await detectPaymentRequiredHandler(final402);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      Date.now = realNow;
+    }
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+    expect(mockHostSend).toHaveBeenCalledWith(
+      'x402:approval-needed',
+      expect.objectContaining({ url: final402.url })
+    );
   });
 });

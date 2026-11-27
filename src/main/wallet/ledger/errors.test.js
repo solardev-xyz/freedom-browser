@@ -64,6 +64,15 @@ describe('mapLedgerError', () => {
       .toBe(LEDGER_ERROR_CODES.DEVICE_NOT_FOUND);
   });
 
+  test('a library TypeError is not read as an empty message', () => {
+    // signMessage refuses empty messages before the device call; a
+    // TypeError reaching here (e.g. hw-app-eth reading response[0] in any
+    // operation) says nothing about the message, so it stays generic.
+    const err = new TypeError("Cannot read properties of undefined (reading '0')");
+    expect(mapLedgerError(err).code).toBe(LEDGER_ERROR_CODES.UNKNOWN);
+    expect(mapLedgerError(err).message).toBe('Ledger error. Reconnect the device and try again.');
+  });
+
   test('unknown errors get the UNKNOWN code, never throw', () => {
     expect(mapLedgerError(new Error('wat')).code).toBe(LEDGER_ERROR_CODES.UNKNOWN);
     expect(mapLedgerError(undefined).code).toBe(LEDGER_ERROR_CODES.UNKNOWN);

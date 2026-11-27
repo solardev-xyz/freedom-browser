@@ -310,6 +310,11 @@ const { installAdblockUpdater } = require('./adblock/update-scheduler');
 const { attachWebRequestDispatcher } = require('./webrequest-dispatcher');
 const { installAntApiGuard } = require('./swarm/ant-api-guard');
 const { installX402Interception } = require('./x402/intercept');
+const {
+  installSiweInterception,
+  registerSiweIpc,
+  forgetAllAccounts: forgetSiweAccounts,
+} = require('./siwe-auth/intercept');
 const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
 const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs/ipfs-protocol');
@@ -378,10 +383,11 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-const { registerSettingsIpc, loadSettings } = require('./settings-store');
+const { registerSettingsIpc, loadSettings, onSettingsChanged } = require('./settings-store');
+const { initSecureDns } = require('./secure-dns');
 const { registerShortcutsIpc } = require('./shortcuts-ipc');
 const { registerBookmarksIpc } = require('./bookmarks-store');
-const { registerHistoryIpc, closeDb: closeHistoryDb } = require('./history');
+const { registerHistoryIpc, onHistoryCleared, closeDb: closeHistoryDb } = require('./history');
 const {
   registerDownloadsIpc,
   attachDownloadsManager,
@@ -400,6 +406,7 @@ const { dropPartition: dropPrivateDownloads } = require('./downloads/private-dow
 const { registerFaviconsIpc } = require('./favicons');
 const { registerEnsIpc } = require('./ens-resolver');
 const { registerGatewayOfferIpc } = require('./gateway-offer');
+const { registerMarkdownViewIpc, installMarkdownDocumentHeaders } = require('./markdown-view');
 const myotisManager = require('./myotis/myotis-manager');
 const { registerTezosDomainsIpc } = require('./tezos-domains-resolver');
 const {
@@ -597,6 +604,9 @@ async function bootstrap() {
   // 0644 RPC API key file becomes owner-only (K-5). Both readers repair it
   // too, through the same key store.
   repairRpcApiKeys();
+  // Secure DNS (#472) before anything goes out over Chromium's network stack,
+  // so not even the first window's lookups leave as plaintext DNS.
+  initSecureDns({ loadSettings, onSettingsChanged });
 
   const defaultSession = session.defaultSession;
   await defaultSession.clearCache();
@@ -636,6 +646,7 @@ async function bootstrap() {
   registerFaviconsIpc();
   registerEnsIpc();
   registerGatewayOfferIpc();
+  registerMarkdownViewIpc();
   registerTezosDomainsIpc();
   registerAntIpc();
   registerIpfsIpc();
@@ -668,6 +679,9 @@ async function bootstrap() {
     openAgentPopup: (contents, url) => agentRuntime?.service?.openCustodyPopup(contents, url) ?? false,
   });
   registerX402Ipc();
+  registerSiweIpc();
+  // Which account signed in to which site goes with the browsing history.
+  onHistoryCleared(forgetSiweAccounts);
   registerOnchainProvenanceIpc();
   paymentHistory.registerPaymentHistoryIpc();
   registerSwarmIpc();
@@ -757,7 +771,11 @@ async function bootstrap() {
   // harness owns the `web3:` bytes in test mode, but the guard is browser
   // policy either way.
   installOnchainProvenanceCapture();
+  // A Markdown document's charset and sandbox, before Chromium reads it (#1035).
+  installMarkdownDocumentHeaders();
   installX402Interception();
+  // Sign-In with Ethereum over HTTP auth (#1152): asks, never signs alone.
+  installSiweInterception();
   attachWebRequestDispatcher(defaultSession);
   // Per-site permission prompts (camera, mic, notifications, …) with
   // deny-by-default for everything unhandled. Webviews don't set a
@@ -777,7 +795,9 @@ async function bootstrap() {
   // PRIVATE MODE GUARD (x402): payment interception is NOT attached to
   // private sessions. The wallet providers are unavailable in private
   // windows, so no payment could ever be signed; excluding the x402
-  // handlers keeps 402 responses flowing to the page untouched.
+  // handlers keeps 402 responses flowing to the page untouched. The same
+  // holds for SIWE sign-in (#1152): a private window never offers to sign
+  // a site in, so its 401s reach the page untouched too.
   setPrivateSessionConfigurator((privateSession, { partition }) => {
     // The dweb protocol handlers log request URLs (and, underneath, the
     // names they resolve) to the persistent main.log. Passing the partition
@@ -794,7 +814,7 @@ async function bootstrap() {
       registerOnchainAppProtocol(privateSession, { privatePartition: partition });
     }
     attachWebRequestDispatcher(privateSession, {
-      exclude: (name) => name.startsWith('x402-'),
+      exclude: (name) => name.startsWith('x402-') || name.startsWith('siwe-'),
     });
     attachDownloadsManager(privateSession, { privatePartition: partition });
     installPermissionHandlers(privateSession, { privatePartition: partition });
@@ -1128,7 +1148,7 @@ async function windDown() {
   const LEGS = [
     ['Myotis', () => myotisStopped],
     ['Ant', stopAnt],
-    ['IPFS', stopIpfs],
+    ['IPFS', () => stopIpfs({ final: true })],
     ['Radicle', stopRadicle],
     ['Tor', stopTor],
   ];

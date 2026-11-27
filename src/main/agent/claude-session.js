@@ -74,7 +74,8 @@ async function createClaudeSession(options) {
     const codemode = createFreedomCodemode(options.sdk, sessionManager, () => session);
     // MCP uses JSON input, including {code}, rather than provider-specific grammars.
     const prepared = codemode.prepareLoadout({ declared: tools, callable: tools,
-      getExposure: () => 'codemode', getNamespace: () => undefined });
+      getExposure: () => 'codemode', getNamespace: () => undefined,
+      getPromptGuidelines: name => tools.find(tool => tool.name === name)?.promptGuidelines || [] });
     tools.push({ ...codemode, description: prepared.descriptions.codemode });
   }
   const inventory = new Map(tools.map(tool => [tool.name, tool]));

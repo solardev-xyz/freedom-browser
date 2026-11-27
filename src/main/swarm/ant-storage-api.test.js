@@ -77,6 +77,20 @@ describe('antRequest', () => {
     expect(api.isUncertainWrite(reset)).toBe(true);
   });
 
+  test('redacts the chain bridge capability antd quotes from a failed chain request (#992)', async () => {
+    const token = 'c0ffee'.repeat(10) + 'beef';
+    const quoted = (path) =>
+      `authorise payment: rpc: http: error sending request for url (http://127.0.0.1:53211${path})`;
+    const res = await api.buyStorage(
+      { depth: 20, amountPerChunk: '1' },
+      { fetchImpl: respond({ code: 502, message: quoted(`/ant-chain/${token}`) }, 502) }
+    );
+    const redacted = quoted('/ant-chain/[redacted]');
+    expect(res).toMatchObject({ status: 502, message: redacted, data: { message: redacted } });
+    expect(JSON.stringify(res)).not.toContain(token);
+    expect(api.describeAntError(res, 'Buying storage')).not.toContain(token);
+  });
+
   test('keeps a non-JSON body out of `data`', async () => {
     await expect(api.getNode({ fetchImpl: respond('<html>', 502) })).resolves.toEqual({
       ok: false,

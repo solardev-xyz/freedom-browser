@@ -94,11 +94,11 @@ test('reconnection loses TLS coverage, and ordinary post-send failures never tri
   expect(fallback).toHaveBeenCalledTimes(2);
 });
 
-test('NEAR encrypts at the transport boundary and refuses invalid model evidence before POST', async () => {
+test.each(['OutOfDate', 'TDRelaunchAdvised'])('NEAR encrypts with %s evidence and refuses invalid evidence before POST', async tcb => {
   const modelKey = wallet.signingKey.publicKey.slice(2);
   const hardware = { status: 'advisory', reports: [
-    { ...evidence.reports[0], tcb: 'OutOfDate' },
-    { ...evidence.reports[1], tcb: 'OutOfDate', encryptionKey: modelKey },
+    { ...evidence.reports[0], tcb },
+    { ...evidence.reports[1], tcb, encryptionKey: modelKey },
   ] };
   const { encryptText } = require('./privacy-encryption');
   const output = 'OK';
@@ -181,9 +181,13 @@ function veniceHarness(reply) {
   return { params, next, seen };
 }
 
-test('Venice answers ordinary messages with tools available using encrypted text and encrypted history', async () => {
+test.each(['OutOfDate', 'TDRelaunchAdvised'])('Venice encrypts ordinary text and history with %s evidence', async tcb => {
   const { fetchVeniceEncrypted } = require('./privacy-request');
   const { params } = veniceHarness(() => ['Hello', ' again']);
+  params.attest.mockImplementationOnce(async () => {
+    const hardware = await params.attest.getMockImplementation()();
+    return { ...hardware, reports: hardware.reports.map(report => ({ ...report, tcb })) };
+  });
   const response = await fetchVeniceEncrypted(params);
   expect(await response.text()).toContain('Hello');
   expect(params.fetchImpl).toHaveBeenCalledTimes(1);
@@ -270,3 +274,25 @@ test('text-part messages take the encrypted path with optional tools; real attac
   expect(params.reportEncryption).toHaveBeenCalledWith('unencrypted', 'attachments');
   expect(params.fetchImpl.mock.calls.at(-1)[1].body).toBe(params.options.body);
 });
+
+test.each(['TDRelaunchAdvisedConfigurationNeeded', 'OutOfDateConfigurationNeeded', 'Revoked', 'Unknown'])(
+  '%s evidence still refuses encryption before sending any content', async tcb => {
+    const { fetchVeniceEncrypted } = require('./privacy-request');
+    const fetchImpl = jest.fn();
+    const transport = { close: jest.fn(), peer: () => null, fetch: jest.fn() };
+    const hardware = { status: 'advisory', reports: [
+      { tcb, encryptionKey: wallet.signingKey.publicKey },
+      { tcb, encryptionKey: wallet.signingKey.publicKey },
+    ] };
+    const common = { modelId: 'qwen', apiKey: 'fixture', fetchImpl, report: jest.fn(),
+      reportEncryption: jest.fn(), attest: async () => hardware,
+      options: { method: 'POST', body: JSON.stringify({ model: 'qwen', stream: true,
+        messages: [{ role: 'user', content: 'private fixture' }] }) } };
+    expect((await fetchNearWithEvidence({ ...common, input: 'https://cloud-api.near.ai/v1/chat/completions',
+      encrypt: true, transportFactory: () => transport })).status).toBe(400);
+    expect((await fetchVeniceEncrypted({ ...common, input: 'https://api.venice.ai/api/v1/chat/completions',
+      attest: async () => ({ ...hardware, reports: hardware.reports.slice(0, 1) }) })).status).toBe(400);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(transport.fetch).not.toHaveBeenCalled();
+  }
+);

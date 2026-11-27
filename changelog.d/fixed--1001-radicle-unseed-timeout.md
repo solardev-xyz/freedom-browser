@@ -1,0 +1,2 @@
+- A page asking to stop seeding a Radicle repository no longer gives up after a minute while the consent prompt is still open ([#1001](https://github.com/solardev-xyz/freedom-browser/issues/1001))
+  - `radicle_unseed` now waits up to five minutes for an answer, like `radicle_seed`, instead of reporting a timeout for an unseed that still went through

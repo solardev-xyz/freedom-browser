@@ -1,5 +1,6 @@
 const { configureOllamaAgent, openProviderSettings, closeProviderSettings } = require('./agent-provider-fixture');
 const { test: baseTest, expect } = require('./fixtures');
+const { useWideAgentViewport } = require('./agent-viewport');
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
 const http = require('http');
@@ -16,7 +17,9 @@ const test = baseTest.extend({
       response.setHeader('Content-Type', 'application/json');
       if (request.method === 'GET' && request.url === '/api/tags') {
         response.end(JSON.stringify({ models: [{ name: 'freedom-e2e-no-server' }] }));
-      } else {
+      } else if (request.method === 'POST' && request.url === '/api/show') {
+        response.end(JSON.stringify({ capabilities: ['completion', 'tools'] }));
+      } else if (request.method === 'POST' && request.url === '/v1/chat/completions') {
         // Ollama answers a chat request for a model it does not have with
         // HTTP 500 (#849), which generic retry policies treat as transient.
         ollamaChatRequests.count += 1;
@@ -24,6 +27,9 @@ const test = baseTest.extend({
         response.end(JSON.stringify({
           error: { message: 'model "freedom-e2e-no-server" not found, try pulling it first' },
         }));
+      } else {
+        response.writeHead(404);
+        response.end('{}');
       }
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -39,20 +45,7 @@ const test = baseTest.extend({
 const repositoryRoot = path.resolve(__dirname, '..');
 
 // The run-lifecycle test below covers the wide, three-column Agent-first
-// layout, which only exists above the 1100px compact breakpoint. CI's macOS
-// desktop is 1024px wide and macOS will not size a window past its screen, so
-// the default 1200px window lands at 1024px and Agent-first opens compact
-// (sessions column closed). Zoom the chrome out instead until its CSS viewport
-// is wide: layout and every geometry assertion stay in CSS pixels, and the
-// result is the same on every host.
-const WIDE_AGENT_VIEWPORT = 1280;
-async function useWideAgentViewport(app, page) {
-  await app.evaluate(({ BrowserWindow }, width) => {
-    const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    win.webContents.setZoomFactor(Math.min(1, win.getContentBounds().width / width));
-  }, WIDE_AGENT_VIEWPORT);
-  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBeGreaterThan(1100);
-}
+// layout; see agent-viewport.js for why it zooms out on narrow hosts.
 
 test('Agent stays hidden throughout startup and opens only on request', async ({ window }) => {
   await window.addInitScript(() => {
@@ -997,6 +990,66 @@ test('domain approval card names the action, lists the summary and labels the co
   }
 });
 
+// Exercise the production ENSv2 presentation builder, including non-purchase
+// steps. All events and chain responses are disposable fixtures; no wallet.
+test('ENSv2 approval cards distinguish token permission, resolver setup and purchase', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  const ens = require('../src/main/domains/ens-v2');
+  const { ADDRESSES } = require('../src/main/domains/contracts');
+  // Main forwards a domain card only after normalizeDomainPresentation;
+  // pass the builder's output through it so a dropped action fails here.
+  const { normalizeDomainPresentation } = require('../src/main/agent/freedom-agent-service');
+  await configureOllamaAgent(window, ollamaServer);
+  const account = { index: 0, address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' };
+  const operation = { name: 'freedom-fixture.eth', label: 'freedom-fixture', intent: 'register', step: 'reveal', duration: 31536000,
+    commitment: `0x${'42'.repeat(32)}`, paymentToken: 'USDC', account };
+  let allowance = 0n;
+  let deployed = false;
+  const resolver = '0x2222222222222222222222222222222222222222';
+  const chain = { snapshot: async () => ({ tag: '0x100' }), checkCode: async () => {}, request: async () => deployed ? '0x01' : '0x', callAt: async () => [true],
+    call: async (_role, method) => {
+      const results = { ETH_REGISTRY: [ADDRESSES.ensRegistry], rentPriceOracle: [ADDRESSES.ensOracle], isPaymentToken: [true],
+        MIN_REGISTER_DURATION: [2419200n], getRegisterPrice: [8000000n, 0n], decimals: [6n], balanceOf: [10000000n],
+        allowance: [allowance], predictProxyAddress: [resolver], verifyContract: [ADDRESSES.ensResolverImpl] };
+      if (!results[method]) throw new Error(`Unexpected call: ${method}`);
+      return results[method];
+    } };
+  await ens.prepare(chain, operation, {});
+  const send = event => electronApp.evaluate(({ BrowserWindow }, event) => {
+    BrowserWindow.getAllWindows().find(win => !win.isDestroyed()).webContents.send('agent:event', event);
+  }, event);
+  await send({ type: 'run_started', runId: 'run_ensv2_approval' });
+  for (const action of ['approve_payment', 'setup_resolver', 'register']) {
+    const plan = await ens.build(chain, operation, { snapshot: { tag: '0x100' } }, true, `0x${'24'.repeat(32)}`);
+    expect(plan.presentation.action).toBe(action);
+    await send({ type: 'approval_requested', runId: 'run_ensv2_approval', approvalId: `approval_ensv2_${action}`,
+      action: 'wallet_transaction', operation: 'domain_execute', inputPreview: 'Owned ENSv2 fixture',
+      wallet: { kind: 'transaction', chainId: 1, chainName: 'Ethereum', account, to: plan.to, value: '0.0 ETH',
+        maxFee: '0.000412 ETH', data: plan.data, domain: normalizeDomainPresentation(plan.presentation), requiresUnlock: false } });
+    const heading = action === 'approve_payment' ? 'Approve token payment for freedom-fixture.eth?'
+      : action === 'setup_resolver' ? 'Set up ENS records for freedom-fixture.eth?' : 'Register freedom-fixture.eth for 1 year?';
+    await expect(window.locator('#agent-approval-action')).toHaveText(heading);
+    await expect(window.locator('#agent-wallet-approval-summary')).toContainText('8.0 USDC');
+    for (const width of [1000, 600]) {
+      await electronApp.evaluate(({ BrowserWindow }, width) => {
+        const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed()); win.setMinimumSize(320, 300); win.setContentSize(width, 800);
+      }, width);
+      for (const theme of ['dark', 'light']) {
+        await window.evaluate(theme => document.documentElement.setAttribute('data-theme', theme), theme);
+        await window.locator('#agent-approval-approve').scrollIntoViewIfNeeded();
+        expect(await window.evaluate(() => {
+          const button = document.getElementById('agent-approval-approve');
+          const bounds = button.getBoundingClientRect();
+          return document.documentElement.scrollWidth <= document.documentElement.clientWidth &&
+            document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)?.closest('#agent-approval-approve') !== null;
+        })).toBe(true);
+        await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ensv2-${action}-${width}-${theme}.png`) });
+      }
+    }
+    allowance = 8000000n;
+    if (action === 'setup_resolver') deployed = true;
+  }
+});
+
 test('existing project picker and access controls work in both layouts and themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-project-ui-'));
   const project = path.join(root, 'Existing project'); fs.mkdirSync(project);
@@ -1009,6 +1062,11 @@ test('existing project picker and access controls work in both layouts and theme
     await window.locator('#agent-attachment-button').click();
     await window.locator('#agent-open-project').click();
     await expect(window.locator('#agent-run-message')).toContainText('Project opened');
+    // The composer is still flying in from the launcher, and its path crosses
+    // the Workspace strip attached above it: a click released over the moving
+    // composer never reaches the toggle.
+    await window.locator('#agent-composer').evaluate(element =>
+      Promise.allSettled(element.getAnimations().map(animation => animation.finished)));
     await window.locator('#agent-process-compact-toggle').click();
     const row = window.locator('[data-workspace-focus="project"]:visible');
     await expect(row).toContainText('Existing project');
@@ -2261,22 +2319,35 @@ test('publication approval offers a private draft link and a stable address, wit
 
 test('publication card follows one job through waiting, confirmation and completion in both themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
   await configureOllamaAgent(window, ollamaServer);
-  await electronApp.evaluate(({ BrowserWindow }) => {
+  await expect(window.locator('#agent-scope-help')).toHaveCount(0);
+  await expect(window.locator('#agent-scope-help-text')).toHaveCount(0);
+  await electronApp.evaluate(({ BrowserWindow, ipcMain }) => {
+    globalThis.publicationActions = [];
+    // Exercise the real buttons without opening a tab or replacing the user's clipboard.
+    for (const channel of ['agent:publication:open', 'clipboard:copy-text']) {
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, (_event, value) => {
+        globalThis.publicationActions.push({ channel, value });
+        return { success: true };
+      });
+    }
     const page = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => page.webContents.send('agent:event', { runId: 'run_publication_ui', ...event });
     emit({ type: 'run_started', userText: 'Publish my website' });
+    emit({ type: 'assistant_text_delta', text: 'Publishing the project to Swarm.' });
     emit({ type: 'tool_started', toolCallId: 'publish', operation: 'swarm_publish', intent: 'Publish site' });
   });
   const publication = { publicationId: `swarm_pub_${'c'.repeat(24)}`, kind: 'folder', name: 'dist', public: true, applicationState: 'possibly_applied' };
   for (const stage of [
     { state: 'waiting_postage', message: 'Waiting for postage · 8 more blocks' },
     { state: 'confirming', message: 'Waiting for network confirmation', progress: 80 },
-    { state: 'outcome_unknown', message: 'Publication needs checking', error: 'A detailed fixture-only node error' },
+    { state: 'outcome_unknown', message: 'Publication needs checking', error: `A fixture-only node error: ${'a'.repeat(256)}` },
     { state: 'completed', message: 'Published · retrieval verified', verified: true, reference: 'd'.repeat(64), bzzUrl: `bzz://${'d'.repeat(64)}` },
   ]) {
     await electronApp.evaluate(({ BrowserWindow }, publication) => {
       BrowserWindow.getAllWindows().find(item => !item.isDestroyed()).webContents.send('agent:event', {
-        type: 'tool_progress', runId: 'run_publication_ui', toolCallId: 'publish', operation: 'swarm_publish', publication,
+        type: 'tool_progress', runId: 'run_publication_ui', toolCallId: 'publish', operation: 'swarm_publish',
+        state: publication.state, progress: publication.progress, publication,
       });
     }, { ...publication, ...stage });
     const card = window.locator('.agent-publication');
@@ -2290,8 +2361,38 @@ test('publication card follows one job through waiting, confirmation and complet
     }
     for (const theme of ['dark', 'light']) {
       await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+      const surfaces = await window.evaluate(() => {
+        const properties = ['backgroundColor', 'backgroundImage', 'borderTopColor', 'borderRadius', 'boxShadow', 'backdropFilter'];
+        const surface = selector => {
+          const style = getComputedStyle(document.querySelector(selector));
+          return Object.fromEntries(properties.map(key => [key, style[key]]));
+        };
+        return { card: surface('.agent-publication'), answer: surface('.agent-output:not(:empty)') };
+      });
+      expect(surfaces.card).toEqual(surfaces.answer);
+      expect(await card.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
       await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-${stage.state}-${theme}.png`) });
     }
+  }
+  const card = window.locator('.agent-publication');
+  await card.getByRole('button', { name: 'Open', exact: true }).click();
+  await card.getByRole('button', { name: 'Copy URL', exact: true }).click();
+  expect(await electronApp.evaluate(() => globalThis.publicationActions)).toEqual([
+    { channel: 'agent:publication:open', value: { bzzUrl: `bzz://${'d'.repeat(64)}` } },
+    { channel: 'clipboard:copy-text', value: `bzz://${'d'.repeat(64)}` },
+  ]);
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    win.setMinimumSize(320, 300);
+    win.setContentSize(390, 800);
+  });
+  await expect.poll(() => window.evaluate(() => innerWidth)).toBe(390);
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    await card.scrollIntoViewIfNeeded();
+    await expect(card).toBeInViewport();
+    expect(await card.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-narrow-${theme}.png`) });
   }
 });
 

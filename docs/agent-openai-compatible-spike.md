@@ -7,7 +7,7 @@ Date: 2026-10-10. Base: `feature/freedom-automation-kernel` at `f5a41b99`.
 ## Result
 
 The user-supplied `https://vibing.at/clankyou/v1` endpoint works with the installed
-Pi 1.0.2 `openai-completions` transport without endpoint-specific compatibility
+Pi 1.5.0 `openai-completions` transport without endpoint-specific compatibility
 flags. A Freedom isolated session and a Freedom codemode session each performed
 one synthetic tool call and used its returned value. The initial feasibility spike
 was followed by the implementation below on the same experimental branch.

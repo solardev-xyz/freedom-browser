@@ -47,6 +47,9 @@ jest.mock('../identity-manager', () => ({
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
+  // Mirrors identity-manager's hasVaultKey.
+  hasVaultKey: (index, record) =>
+    (!record || record.type === 'mnemonic') && (index < 1000000 || Boolean(record?.path)),
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
 }));
 jest.mock('../vault-timer', () => ({
@@ -77,7 +80,7 @@ describe('getSigner (vault-backed)', () => {
   test('getAddress resolves the address for the wallet index', async () => {
     const signer = getSigner(0);
     await expect(signer.getAddress()).resolves.toBe(testWallet.address);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0);
+    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0, undefined);
   });
 
   test('signMessage matches ethers Wallet.signMessage for plain text', async () => {
@@ -168,7 +171,34 @@ describe('getSigner (vault-backed)', () => {
     mockGetWalletRecord.mockReturnValue(null);
     const signer = getSigner(3);
     await expect(signer.getAddress()).resolves.toBe(testWallet.address);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(3);
+    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(3, undefined);
+  });
+
+  test('an account at an explicit path signs with the key at that path', async () => {
+    // Hardhat's default seed: this path's published address, recovered from
+    // real signatures, so nothing here can agree with itself by accident.
+    const mnemonic = 'test test test test test test test test test test test junk';
+    const path = "m/44'/60'/0'/0/2";
+    const address = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
+    const { deriveWalletAtPath } = jest.requireActual('../identity/derivation');
+    mockGetWalletRecord.mockReturnValue({ index: 1000000, type: 'mnemonic', path, address });
+    mockIdentity.exportPrivateKey.mockImplementation(
+      (_index, walletPath) => deriveWalletAtPath(mnemonic, walletPath).privateKey
+    );
+
+    const signer = getSigner(1000000);
+
+    await expect(signer.getAddress()).resolves.toBe(address);
+    expect(verifyMessage('hello freedom', await signer.signMessage('hello freedom'))).toBe(address);
+    const signedTx = await signer.signTransaction({
+      to: address,
+      value: 0n,
+      nonce: 0,
+      gasLimit: 21000n,
+      gasPrice: 1n,
+      chainId: 100n,
+    });
+    expect(Transaction.from(signedTx).from).toBe(address);
   });
 });
 

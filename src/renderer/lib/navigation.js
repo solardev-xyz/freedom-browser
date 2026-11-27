@@ -51,6 +51,7 @@ import {
   setWebviewEventHandler,
   updateActiveTabTitle,
   updateTabFavicon,
+  isSameFaviconSite,
   setTabLoading,
   getTabs,
   getTabById,
@@ -78,6 +79,11 @@ import {
   buildInternalPageUrl,
 } from './page-urls.js';
 import { clearHistoryTraversal, goBackInHistory, goForwardInHistory } from './history-traversal.js';
+import {
+  cancelSwipeNavigation,
+  handleSwipeNavigationMessage,
+  initSwipeNavigation,
+} from './swipe-navigation.js';
 import { grantContinueOnce, hasContinueOnceGrant } from './name-continue-grants.js';
 import { isTezosDomainHost } from './origin-utils.js';
 import {
@@ -299,7 +305,9 @@ const runFaviconFetch = (tab) => {
   electronAPI
     ?.fetchFaviconWithKey?.(load.internalUrl, load.displayUrl, reported.iconUrl)
     ?.then((favicon) => {
-      if (favicon) {
+      // The tab may have gone on to another site while main fetched; its
+      // strip belongs to that site now, so this one's icon stays out of it.
+      if (favicon && isSameFaviconSite(tab.url, load.pageUrl)) {
         updateTabFavicon(tab.id, load.displayUrl);
       }
     })
@@ -453,6 +461,18 @@ const isIpfsNodeUnavailable = () => {
   // just-set intent so the friendly page shows right away. `null` means no
   // pending toggle — fall through to the committed mode/status below.
   if (state.ipfsDesiredRunning === false) return true;
+  // IPFS off still serves saved content (#30): main's cache-only node answers
+  // the load, and says so on a page when it hasn't got it. Only once the stop
+  // has settled (`stopped`, no toggle pending; a pending `false` returned
+  // above): mid-stop, main has no node to answer with, and mid-start the
+  // store changes hands.
+  if (
+    state.registry?.ipfs?.cacheOnly === true &&
+    state.currentIpfsStatus === 'stopped' &&
+    state.ipfsDesiredRunning !== true
+  ) {
+    return false;
+  }
   return (
     state.registry?.ipfs?.mode === 'disabled' ||
     state.currentIpfsStatus === 'stopped' ||
@@ -3511,6 +3531,7 @@ export const initNavigation = () => {
         break;
 
       case 'ipc-message': {
+        if (handleSwipeNavigationMessage(data.channel, data.args?.[0])) break;
         if (data.channel === 'ens:continue-unverified') {
           const name = data.args?.[0]?.name;
           if (name) {
@@ -3627,6 +3648,7 @@ export const initNavigation = () => {
       }
 
       case 'tab-switched': {
+        cancelSwipeNavigation();
         // Save address bar state to previous tab before switching. The
         // per-tab view-source record (`prev.isViewingSource`) is owned by
         // tabs.js' did-navigate handler and is already up to date — we
@@ -3802,6 +3824,17 @@ export const initNavigation = () => {
   electronAPI?.onHistoryForward?.(() => {
     if (isActiveTabAgentOwned()) return;
     goForwardInHistory(getActiveWebview());
+  });
+
+  // Two-finger swipe past a page's edge (#980): the same traversal and the
+  // same Agent gate. Three-finger swipes arrive as History > Back / Forward.
+  initSwipeNavigation({
+    getActiveWebview,
+    isNavigationBlocked: isActiveTabAgentOwned,
+    goBack: goBackInHistory,
+    goForward: goForwardInHistory,
+    getSwipeSettings: () => electronAPI?.getSwipeNavigation?.() ?? { twoFinger: false },
+    awaitScrollEnd: (webview) => electronAPI?.awaitSwipeScrollEnd?.(webview.getWebContentsId()),
   });
 
   // Keyboard shortcuts — resolved through the shared shortcut registry so

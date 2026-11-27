@@ -595,6 +595,12 @@ function createAgentNodeLifecycleTestOptions() {
     dependencies: {
       startAnt: () => start('ant'),
       stopAnt: () => stop('ant'),
+      // Ant has its own restart (#988); fake it too, or a restart in test
+      // mode reaches the real ant-manager.
+      restartAnt: () => {
+        stop('ant');
+        start('ant');
+      },
       startIpfs: () => start('ipfs'),
       stopIpfs: () => stop('ipfs'),
       startRadicle: () => start('radicle'),
@@ -1111,10 +1117,15 @@ function installLinuxMockCredentialStore(storage = safeStorage, {
   return true;
 }
 
-// Neutralize the updater's user actions in test mode: "Check now" would hit
-// the network (or a native "Updates Managed Elsewhere" dialog, since index.js
-// never starts the updater in test mode) and "Restart to update" would quit
-// the app under test. updater.js checks this global and records instead.
+// Make the updater's user actions observable in test mode. index.js never
+// runs initUpdater under TEST_MODE, so without this recorder "Check now" (and
+// the menus' "Check for Updates…") would silently return at updater.js's
+// `!hasUpdaterOwnership()` guard, and "Restart to update" would no-op because
+// `dispatchUpdate` never sets the module's private `updateDownloaded` flag;
+// neither ever reaches autoUpdater or the network. Recording them lets
+// updates.spec.js assert the request was made, and keeps an install request
+// from quitting the app under test should a future change make it live.
+// updater.js checks this global and records instead.
 function installUpdaterRecorder() {
   globalThis.__FREEDOM_TEST_UPDATER__ = {
     record: (action) => {
@@ -1214,6 +1225,10 @@ function exposeGlobalShim(agentRuntime) {
       return require('./updater').getUpdateState();
     },
     updateState: () => require('./updater').getUpdateState(),
+    // Secure DNS (#472): the resolver config last handed to Chromium, so a
+    // spec can follow a Settings change all the way to configureHostResolver.
+    secureDnsConfig: () => require('./secure-dns').getAppliedSecureDnsConfig(),
+    secureDnsApplyCount: () => require('./secure-dns').getSecureDnsApplyCount(),
     // First ad-block engine (#538, see adblockEngineLandingGate): how many
     // requests/lookups the first-engine hold has caught so far, and the call
     // that lets the gated engine land. Returns whether a gate was open.

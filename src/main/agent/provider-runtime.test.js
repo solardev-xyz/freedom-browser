@@ -235,7 +235,10 @@ test('native ChatGPT login, refresh and Meta Responses stay separate from API ke
         const result = await resolved.modelRuntime.completeSimple(resolved.model, context, { fetch, maxRetries: 0 });
         assert.equal(result.stopReason, 'toolUse', result.errorMessage);
         assert.equal(result.content[0].name, 'inspect');
-        assert.equal(sent.at(-1).body.tools[0].name, 'inspect');
+        // Pi uses Responses additional_tools messages for supported OpenAI models.
+        const body = sent.at(-1).body;
+        const tools = body.tools || body.input.find(item => item.type === 'additional_tools')?.tools;
+        assert.equal(tools?.[0]?.name, 'inspect');
       }
       assert.deepEqual(sent.map(request => [request.url, request.auth]), [
         ['https://api.openai.com/v1/responses', 'Bearer refreshed-test'],

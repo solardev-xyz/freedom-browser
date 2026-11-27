@@ -1,0 +1,3 @@
+- On macOS, swiping sideways on the trackpad goes back and forward, as in Safari and Chrome ([#980](https://github.com/solardev-xyz/freedom-browser/issues/980))
+  - Two fingers past the page's edge: an arrow slides in, and the page changes as soon as it fills in; pages that scroll sideways keep the gesture
+  - Follows System Settings → Trackpad → Swipe between pages, three-finger setting included

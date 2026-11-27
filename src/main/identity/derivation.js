@@ -6,6 +6,7 @@
  * - Ed25519 keys via SLIP-0010
  */
 
+const { createHash } = require('crypto');
 const { mnemonicToSeedSync, validateMnemonic, generateMnemonic } = require('@scure/bip39');
 const { wordlist } = require('@scure/bip39/wordlists/english.js');
 const { HDNodeWallet, Mnemonic } = require('ethers');
@@ -30,7 +31,36 @@ const PATHS = {
   // Swarm publisher keys (secp256k1) - dedicated namespace for feed signing
   // One key per origin index: m/44'/73406'/{originIndex}'/0/0
   SWARM_PUBLISHER: "m/44'/73406'",       // base path (without trailing segments)
+
+  // Page encryption keys (secp256k1) - one per site, for key agreement only.
+  // m/44'/73407'/{a}'/{b}'/{c}', where a, b, c come from the site's
+  // permission key (see siteEncryptionKeyPath)
+  SWARM_ENCRYPTION: "m/44'/73407'",      // base path (without trailing segments)
 };
+
+// Domain separation for the hash that turns a site into its key path. The
+// path, and so the key, must never change for a site: anything encrypted to
+// the key would become unreadable. Changing this string, the hash, or the
+// way the permission key is formed is therefore a breaking change. The label
+// is vendor-neutral on purpose: the Swarm provider API's encryption
+// extension (SWIP) specifies this recipe, so every browser that follows it
+// derives the same key for a site from the same recovery phrase.
+const SITE_ENCRYPTION_KEY_DOMAIN = 'swarm-provider/encryption-key/v1\n';
+
+// A wallet account at an explicit path may not sit on a key Freedom already
+// uses for something else: a dApp could then ask that key to sign, and
+// Settings could export it. Every namespace in PATHS other than the user's
+// own m/44'/60' wallets belongs here, including the per-site encryption keys,
+// which must only ever be used for key agreement.
+const RESERVED_WALLET_PATH_PREFIXES = [
+  "m/44'/73404'",
+  "m/44'/73405'",
+  PATHS.SWARM_PUBLISHER,
+  PATHS.SWARM_ENCRYPTION,
+];
+const MAX_WALLET_PATH_DEPTH = 10;
+const MAX_WALLET_PATH_INDEX = 0x7fffffff;
+const INVALID_WALLET_PATH = "Enter a path like m/44'/60'/0'/0/0";
 
 /**
  * Generate a new BIP-39 mnemonic
@@ -126,6 +156,59 @@ function deriveUserWallet(mnemonic, accountIndex = 0) {
 }
 
 /**
+ * Normalize a user-supplied wallet path to its canonical `m/...` form.
+ * Ledger's format (no leading `m/`) is accepted. Numbers are rewritten
+ * without leading zeros, so `m/044'/...` cannot slip past the reserved-path
+ * check while still deriving the same key.
+ * @param {string} path
+ * @returns {string} Canonical path, e.g. "m/44'/60'/0'/0/0"
+ */
+function normalizeWalletPath(path) {
+  if (typeof path !== 'string') {
+    throw new Error(INVALID_WALLET_PATH);
+  }
+  const trimmed = path.trim();
+  const segments = (trimmed.startsWith('m/') ? trimmed.slice(2) : trimmed).split('/');
+  if (segments.length > MAX_WALLET_PATH_DEPTH) {
+    throw new Error(INVALID_WALLET_PATH);
+  }
+  const normalized = segments.map((segment) => {
+    const match = /^(\d{1,10})('?)$/.exec(segment);
+    if (!match || Number(match[1]) > MAX_WALLET_PATH_INDEX) {
+      throw new Error(INVALID_WALLET_PATH);
+    }
+    return `${Number(match[1])}${match[2]}`;
+  });
+  return `m/${normalized.join('/')}`;
+}
+
+/**
+ * Derive a user wallet at an explicit path, for accounts that don't follow
+ * Freedom's default `m/44'/60'/{accountIndex}'/0/0` scheme. Every derivation
+ * re-checks the path, signing included, because the path comes back from
+ * vault-meta.json, which sits outside the encrypted vault.
+ * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {string} path - Derivation path, with or without the leading `m/`
+ * @returns {Object} { privateKey, publicKey, address, path } with `path` canonical
+ */
+function deriveWalletAtPath(mnemonic, path) {
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('Invalid mnemonic');
+  }
+  const normalized = normalizeWalletPath(path);
+  if (normalized === PATHS.BEE_WALLET) {
+    throw new Error("This path is your Swarm node's wallet, so it can't be added as an account");
+  }
+  const reserved = RESERVED_WALLET_PATH_PREFIXES.some(
+    (prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`)
+  );
+  if (reserved) {
+    throw new Error("This path is reserved for Freedom's node, publishing and encryption keys");
+  }
+  return deriveEthereumKey(mnemonic, normalized);
+}
+
+/**
  * Derive an Ed25519 key at a specific SLIP-0010 path
  * @param {Uint8Array} seed - BIP-39 seed bytes
  * @param {string} path - Derivation path (must be all hardened for Ed25519)
@@ -170,6 +253,40 @@ function derivePublisherKey(mnemonic, originIndex) {
 }
 
 /**
+ * The derivation path of a site's encryption key. Three hardened indexes
+ * (93 bits) taken from a SHA-256 of the site's permission key, so that two
+ * sites practically never share a key, and the same recovery phrase gives
+ * the same key for a site on any device, with no stored index.
+ * @param {string} site - The site's permission key (e.g. 'myapp.eth')
+ * @returns {string} m/44'/73407'/{a}'/{b}'/{c}'
+ */
+function siteEncryptionKeyPath(site) {
+  if (typeof site !== 'string' || site.length === 0) {
+    throw new Error('Site must be a non-empty string');
+  }
+  const digest = createHash('sha256')
+    .update(SITE_ENCRYPTION_KEY_DOMAIN + site, 'utf8')
+    .digest();
+  const indexes = [0, 4, 8].map((offset) => digest.readUInt32BE(offset) & 0x7fffffff);
+  return `${PATHS.SWARM_ENCRYPTION}/${indexes.map((index) => `${index}'`).join('/')}`;
+}
+
+/**
+ * Derive a site's encryption key: a secp256k1 key used only for key
+ * agreement (ECDH) on behalf of that site, never for signing.
+ * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {string} site - The site's permission key
+ * @returns {Object} { privateKey, publicKey, path }
+ */
+function deriveSiteEncryptionKey(mnemonic, site) {
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('Invalid mnemonic');
+  }
+  const { privateKey, publicKey, path } = deriveEthereumKey(mnemonic, siteEncryptionKeyPath(site));
+  return { privateKey, publicKey, path };
+}
+
+/**
  * Get the seed from a mnemonic (for direct use with SLIP-0010)
  * @param {string} mnemonic - BIP-39 mnemonic
  * @returns {Uint8Array} 64-byte seed
@@ -188,7 +305,11 @@ module.exports = {
   deriveEthereumKey,
   deriveEd25519Key,
   deriveUserWallet,
+  normalizeWalletPath,
+  deriveWalletAtPath,
   derivePublisherKey,
+  siteEncryptionKeyPath,
+  deriveSiteEncryptionKey,
   getSeed,
   PATHS,
 };

@@ -14,6 +14,9 @@ jest.mock('../identity-manager', () => ({
   loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: jest.fn(() => null),
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
+  // Mirrors identity-manager's hasVaultKey.
+  hasVaultKey: (index, record) =>
+    (!record || record.type === 'mnemonic') && (index < 1000000 || Boolean(record?.path)),
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
 }));
 jest.mock('../vault-timer', () => ({
@@ -40,7 +43,7 @@ describe('createX402Client', () => {
   test('exposes the signer address on the client so callers can stamp from_address', async () => {
     const client = await createX402Client(0);
     expect(client.address).toBe(TEST_ADDRESS);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0);
+    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0, undefined);
   });
 
   test('payment signing throws if the vault re-locks after client construction', async () => {
@@ -173,4 +176,31 @@ describe('createX402Client', () => {
     );
     expect(recovered).toBe(TEST_ADDRESS);
   });
+});
+
+test('the signing boundary revalidates custody after client construction, before private-key signing', async () => {
+  const beforeSign = jest.fn(() => {
+    throw Object.assign(new Error('custody changed'), { code: 'X402_CUSTODY_CHANGED' });
+  });
+  const client = await createX402Client(0, { beforeSign });
+  mockIdentity.exportPrivateKey.mockClear();
+  await expect(
+    client.createPaymentPayload({
+      x402Version: 2,
+      resource: { url: 'https://fixture.test/' },
+      accepts: [
+        {
+          scheme: 'exact',
+          network: 'eip155:8453',
+          amount: '10000',
+          asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+          payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+          maxTimeoutSeconds: 60,
+          extra: { name: 'USD Coin', version: '2' },
+        },
+      ],
+    })
+  ).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+  expect(beforeSign).toHaveBeenCalledTimes(1);
+  expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
 });

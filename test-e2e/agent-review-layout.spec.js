@@ -45,21 +45,48 @@ async function resize(electronApp, width, height = 800) {
   })).toBe(true);
 }
 
-// Painted colour of one window pixel (CSS px), read back from the compositor:
-// a gradient's stops aren't visible through getComputedStyle.
-async function pixel(electronApp, x, y) {
-  return electronApp.evaluate(async ({ BrowserWindow }, point) => {
+// Read compared pixels from one compositor frame. A reference captured before
+// a theme/overlay repaint must not be compared with a later frame indefinitely.
+async function paintedRow(electronApp, points) {
+  return electronApp.evaluate(async ({ BrowserWindow }, points) => {
     const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
     const image = await win.webContents.capturePage();
-    const scale = image.getSize().width / win.getContentSize()[0];
-    const at = (Math.round(point.y * scale) * image.getSize().width + Math.round(point.x * scale)) * 4;
-    const [b, g, r] = image.toBitmap().subarray(at, at + 3);
-    return [r, g, b];
-  }, { x: Math.round(x), y: Math.round(y) });
+    const { width } = image.getSize();
+    const scale = width / win.getContentSize()[0];
+    const bitmap = image.toBitmap();
+    return points.map(point => {
+      const at = (Math.round(point.y * scale) * width + Math.round(point.x * scale)) * 4;
+      const [b, g, r] = bitmap.subarray(at, at + 3);
+      return [r, g, b];
+    });
+  }, points);
 }
 
 // Gradient stops rasterise a unit or two off a flat fill of the same colour.
 const samePaint = (a, b) => a.every((channel, i) => Math.abs(channel - b[i]) <= 2);
+
+async function expectOverlayPaint(electronApp, points, differentOutside) {
+  // Include actual colours in a failure, rather than a bare false result.
+  await expect(async () => {
+    const [slot, inside, outside] = await paintedRow(electronApp, points);
+    expect({ slot, inside, matches: samePaint(slot, inside) }).toMatchObject({ matches: true });
+    if (differentOutside) expect({ slot, outside, matches: samePaint(slot, outside) }).toMatchObject({ matches: false });
+  }).toPass({ timeout: 7500 });
+}
+
+// Only the sampled surfaces and their pseudo-elements matter. A bare
+// getAnimations() omits ::before/::after animations (their CSSAnimation/
+// CSSTransition is only returned with {subtree:true}), so ask for the
+// subtree and keep effects targeting the surface itself: a pseudo-element's
+// effect has the surface as target plus effect.pseudoElement. Descendants
+// include perpetual tab-loading spinners unrelated to their paint/geometry.
+async function waitForPaintAnimations(window, selectors) {
+  await expect.poll(() => window.evaluate(selectors => selectors.flatMap(selector => {
+    const element = document.querySelector(selector);
+    return element?.getAnimations({ subtree: true }).filter(animation => animation.effect?.target === element) || [];
+  }).filter(animation => animation.playState === 'running' || animation.pending)
+    .map(animation => `${animation.constructor.name}:${animation.effect?.target?.className}${animation.effect?.pseudoElement || ''}`), selectors)).toEqual([]);
+}
 
 async function hit(window, selector) {
   return window.locator(selector).evaluate(element => {
@@ -165,18 +192,21 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect(sessions).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
     await expect(sessions).toHaveCSS('opacity', '1');
     const sessionsEdge = await sessions.evaluate(el => el.getBoundingClientRect().right);
-    const sessionsSlot = await pixel(electronApp, 4, bar.y);
-    await expect.poll(async () => samePaint(await pixel(electronApp, sessionsEdge - 20, bar.y), sessionsSlot)).toBe(true);
-    expect(samePaint(await pixel(electronApp, sessionsEdge + 20, bar.y), sessionsSlot)).toBe(false);
+    await expectOverlayPaint(electronApp, [
+      { x: 4, y: bar.y }, { x: sessionsEdge - 20, y: bar.y }, { x: sessionsEdge + 20, y: bar.y },
+    ], true);
     await window.locator('#agent-workspace-sidebar-toggle').click();
     await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
     await expect(window.locator('body')).not.toHaveClass(/agent-workspace-sidebar-closed/);
-    await expect(window.locator('#agent-page-surface')).toHaveCSS('transform', 'none');
+    // The overlay opens with margin/opacity, not a transform. Measure its
+    // edge only after that actual transition has finished.
+    await waitForPaintAnimations(window, ['#agent-page-surface', '#agent-first-titlebar',
+      '.agent-first-titlebar-left']);
     const workspaceEdge = await window.locator('#agent-page-surface').evaluate(el => el.getBoundingClientRect().left);
-    const workspaceSlot = await pixel(electronApp, bar.right - 2, bar.y);
-    await expect.poll(async () => samePaint(await pixel(electronApp, workspaceEdge + 20, bar.y), workspaceSlot)).toBe(true);
     // Dark paints the conversation and the Workspace with the same --bg.
-    if (theme === 'light') expect(samePaint(await pixel(electronApp, workspaceEdge - 20, bar.y), workspaceSlot)).toBe(false);
+    await expectOverlayPaint(electronApp, [
+      { x: bar.right - 2, y: bar.y }, { x: workspaceEdge + 20, y: bar.y }, { x: workspaceEdge - 20, y: bar.y },
+    ], theme === 'light');
     await expect(window.locator('#agent-task-pages')).toBeVisible();
     await expect.poll(() => hit(window, '#address-input')).toBe(true);
     await expect.poll(() => window.evaluate(() => {
@@ -225,6 +255,11 @@ test('Agent-first columns paint like Settings: page background, sidebar tint, ac
   });
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    // First-send materialisation can still be fading the composer when the
+    // user switches to Agent-first. Assert settled paint, not that transient alpha.
+    await waitForPaintAnimations(window, ['#agent-sidebar', '.agent-workspace-scroll',
+      '.agent-composer-wrap', '.agent-first-titlebar-center',
+      '[data-test="agent-session-sidebar"]', '.agent-first-titlebar-left']);
     const paint = await window.evaluate(() => {
       const bg = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
       const probe = document.createElement('div');
@@ -605,4 +640,107 @@ test('the docked transcript scrolls below the header, never beneath it (#866)', 
     })).toBe(0);
     await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`docked-header-${theme}.png`) });
   }
+});
+
+test('Workspace stays attached above the composer in short and scrolling conversations', async ({ electronApp, window }, testInfo) => {
+  await openConversation(electronApp, window);
+  await electronApp.evaluate(({ BrowserWindow, ipcMain }) => {
+    // Project projection through the real renderer refresh path, without an
+    // inference request, project grant or writing to the user's filesystem.
+    ipcMain.removeHandler('agent:get-state');
+    ipcMain.handle('agent:get-state', () => ({ ok: true, state: {
+      status: 'idle', conversationId: 'workspace-layout',
+      workspace: { enabled: true, processes: [], servers: [] },
+    } }));
+    const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
+    win.webContents.send('agent:event', { type: 'run_started', runId: 'workspace-layout', conversationId: 'workspace-layout', userText: 'Build a small page' });
+    win.webContents.send('agent:event', { type: 'run_finished', runId: 'workspace-layout', status: 'completed', durationMs: 1000, actionCount: 0 });
+  });
+  const strip = window.locator('#agent-process-compact');
+  const scroller = window.locator('.agent-workspace-scroll');
+  await expect(strip).toBeVisible();
+  const gap = () => window.evaluate(() => {
+    const strip = document.getElementById('agent-process-compact').getBoundingClientRect();
+    const composer = document.getElementById('agent-composer-wrap').getBoundingClientRect();
+    return composer.top - strip.bottom;
+  });
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    for (const width of [1000, 760, 600]) {
+      await resize(electronApp, width);
+      await expect(scroller).toBeVisible();
+      if (width >= 720) expect(await scroller.evaluate(el => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`workspace-short-${theme}-${width}.png`) });
+      // The wide glass slip overlaps the composer by 16px; the narrow sheet
+      // joins them edge-to-edge. Neither layout may leave a blank gap.
+      expect.soft(await gap()).toBeLessThanOrEqual(1);
+      expect.soft(await gap()).toBeGreaterThanOrEqual(-17);
+      if (width >= 720) {
+        expect(await window.evaluate(() => {
+          const body = document.querySelector('.agent-workspace-body').getBoundingClientRect();
+          const strip = document.getElementById('agent-process-compact').getBoundingClientRect();
+          const target = document.elementFromPoint(strip.left + 30, (body.bottom + strip.top) / 2);
+          return strip.top > body.bottom + 20 && !target?.closest('#agent-sidebar');
+        })).toBe(true);
+      }
+      await strip.locator('#agent-process-compact-toggle').click();
+      await expect(window.locator('#agent-process-compact-popover')).toBeVisible();
+      expect.soft(await gap()).toBeLessThanOrEqual(1);
+      if (width === 600) {
+        await resize(electronApp, 600, 400);
+        const sizes = await window.evaluate(() => {
+          const header = document.querySelector('#agent-sidebar .agent-sidebar-header');
+          const composer = document.getElementById('agent-composer-wrap');
+          const strip = document.getElementById('agent-process-compact');
+          const panel = document.querySelector('#agent-sidebar .agent-sidebar-inner');
+          return { withoutStrip: header.offsetHeight + composer.scrollHeight,
+            withStrip: header.offsetHeight + composer.scrollHeight + strip.scrollHeight + strip.offsetHeight - strip.clientHeight,
+            room: panel.clientHeight };
+        });
+        expect(sizes.withoutStrip).toBeLessThanOrEqual(sizes.room);
+        expect(sizes.withStrip).toBeGreaterThan(sizes.room + 1);
+        await expect(window.locator('body')).toHaveClass(/agent-floating-sheet-cramped/);
+        const states = await window.evaluate(() => new Promise(resolve => {
+          const states = [];
+          const sample = () => {
+            states.push(document.body.classList.contains('agent-floating-sheet-cramped'));
+            if (states.length === 10) resolve(states); else requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        }));
+        expect([...new Set(states)]).toEqual([true]);
+        await window.locator('#agent-run').scrollIntoViewIfNeeded();
+        await expect.poll(() => hit(window, '#agent-run')).toBe(true);
+        await strip.locator('#agent-process-compact-toggle').focus();
+        await window.keyboard.press('Tab');
+        await window.keyboard.press('Shift+Tab');
+        await expect(strip.locator('#agent-process-compact-toggle')).toBeFocused();
+        await expect(strip.locator('#agent-process-compact-toggle')).toHaveCSS('outline-offset', '-3px');
+        await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`workspace-cramped-focus-${theme}.png`) });
+        await resize(electronApp, 600);
+      }
+      await strip.locator('#agent-process-compact-toggle').click();
+    }
+  }
+  await window.evaluate(() => {
+    const transcript = document.getElementById('agent-transcript');
+    for (let i = 0; i < 100; i += 1) {
+      const paragraph = document.createElement('p');
+      paragraph.textContent = `Project detail ${i}: a longer conversation still leaves Workspace attached to the composer.`;
+      transcript.appendChild(paragraph);
+    }
+  });
+  for (const width of [1000, 600]) {
+    await resize(electronApp, width);
+    expect(await scroller.evaluate(el => el.scrollHeight > el.clientHeight + 100)).toBe(true);
+    expect.soft(await gap()).toBeLessThanOrEqual(1);
+    expect.soft(await gap()).toBeGreaterThanOrEqual(-17);
+  }
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  expect(await strip.evaluate(el => el.parentElement.id)).toBe('agent-composer-wrap');
+  await window.locator('#agent-first-reduce').click();
+  await expect(strip).toBeVisible();
+  expect(await strip.evaluate(el => el.parentElement.id)).toBe('agent-workspace-view');
+  expect.soft(await gap()).toBeLessThanOrEqual(1);
 });

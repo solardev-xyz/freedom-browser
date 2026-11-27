@@ -2,9 +2,9 @@
  * Guard for the aggregate mechanisms in `.github/workflows/ci.yml`: the
  * `code-changed` and `renderer-changed` gates that decide which suites a
  * prose-only pull request skips, and the `ci-ok` job that is meant to
- * replace those individual job contexts in branch protection. That switch is
- * a settings change an admin still has to make: as of 2026-09-22 protection
- * names the ten job contexts, and not `ci-ok`.
+ * replace those individual job contexts in branch protection. As of
+ * 2026-11-24 it has: the `main` ruleset requires `ci-ok` alone and puts pull
+ * requests through a merge queue.
  *
  * Both are "never under-test" claims, and both fail silently when they are
  * wrong — a skipped job and a job nobody waits on are indistinguishable from a
@@ -303,9 +303,9 @@ describe('the triggers', () => {
     // only trigger that can produce a run there. Without it a queue run
     // reports no `ci-ok` and no `test` on the queue head at all, and every
     // queued pull request waits on checks that cannot arrive until the
-    // queue's own timeout evicts it. `release-process.md`'s "Next step: a
-    // merge queue" says enabling one is a settings change; this is the half
-    // that is not.
+    // queue's own timeout evicts it. `release-process.md`'s "The merge
+    // queue" says enabling one was a settings change; this is the half that
+    // is not.
     expect(covers('gh-readonly-queue/main/pr-400-0123456789ab')).toBe(false);
     expect(triggers()).toContain('merge_group');
   });
@@ -328,7 +328,7 @@ describe('the triggers', () => {
     // puts every `-rc.N` version bump straight onto it, §8 expects same-cycle
     // `fix(build): …` commits there, and a fix that does arrive as a pull
     // request still lands as a merge commit whose tree no `pull_request` run
-    // saw. §4 gates the pre-tag "CI is green" check on these runs off the
+    // saw. §5 gates every pre-tag "CI is green" check on these runs off the
     // Actions tab precisely because §8 makes the pull request into `main`
     // optional, so there is often no `gh pr checks` to ask instead.
     // Counted 2026-09-22 over the runs still in Actions retention,
@@ -451,14 +451,20 @@ describe('the gate jobs', () => {
     // result of a batch is the last tree that should be waved through as
     // prose — so every gate must answer "changed" on any event that is not a
     // `pull_request`, before it reaches the diff at all.
+    // Every output, not just the first: `code-changed` publishes both
+    // `code` and `full_matrix`, and a queue run that skipped the macOS jobs
+    // would be exactly as wrong as one that skipped everything.
     const defaultsToChanged = (gate) => {
       const block = jobs().get(gate);
-      const output = (block.match(/^ {6}([a-z]+): \$\{\{ steps\.filter\.outputs\./m) || [])[1];
-      if (!output) return false;
-      return new RegExp(
-        `if \\[ "\\$EVENT" != "pull_request" \\]; then[\\s\\S]*?` +
-          `echo "${output}=true" >> "\\$GITHUB_OUTPUT"[\\s\\S]*?exit 0`
-      ).test(block);
+      const outputs = [...block.matchAll(/^ {6}([a-z_]+): \$\{\{ steps\.filter\.outputs\./gm)].map(
+        (m) => m[1]
+      );
+      if (outputs.length === 0) return false;
+      const early = block.match(/if \[ "\$EVENT" != "pull_request" \]; then([\s\S]*?)exit 0/);
+      if (!early) return false;
+      return outputs.every((output) =>
+        early[1].includes(`echo "${output}=true" >> "$GITHUB_OUTPUT"`)
+      );
     };
     expect(GATES.map((gate) => [gate, defaultsToChanged(gate)])).toEqual(
       GATES.map((gate) => [gate, true])
@@ -489,5 +495,140 @@ describe('ci-ok', () => {
   it('goes red on a job that failed or was cancelled', () => {
     expect(jobs().get('ci-ok')).toContain('join(needs.*.result');
     expect(jobs().get('ci-ok')).toMatch(/"failure"[\s\S]*"cancelled"/);
+  });
+});
+
+describe('the macOS/Windows jobs on a pull request', () => {
+  // macOS runners are the workflow's bottleneck, so a pull request into `main`
+  // without the `full-ci` label runs only the Linux leg of `e2e-desktop` and skips the
+  // macOS-only jobs; the merge queue runs all of it. These pin that the
+  // narrowing is opt-out-able, fails open, and never reaches a queue run.
+  const block = (name) => {
+    const found = jobs().get(name);
+    expect(found).toBeTruthy();
+    return found;
+  };
+  const gateScript = () => block('code-changed');
+
+  it('skip the macOS-only jobs on the full_matrix output', () => {
+    for (const name of ['e2e-agent', 'e2e-automation']) {
+      expect(block(name)).toMatch(
+        /^ {4}if: \$\{\{ !cancelled\(\) && needs\.code-changed\.outputs\.full_matrix != 'false' \}\}$/m
+      );
+    }
+  });
+
+  it("narrow e2e-desktop to Linux only on a positive full_matrix == 'false'", () => {
+    const os = block('e2e-desktop').match(/^ {8}os: (.*)$/m);
+    expect(os).toBeTruthy();
+    expect(os[1]).toBe(
+      `\${{ fromJSON(needs.code-changed.outputs.full_matrix == 'false' && '["ubuntu-latest"]' || '["ubuntu-latest", "windows-latest", "macos-latest"]') }}`
+    );
+  });
+
+  it('read the full-ci label live, so a re-run after labelling picks it up', () => {
+    // A re-run replays the original event payload; only an API read sees a
+    // label added since.
+    expect(gateScript()).toMatch(/gh api "repos\/\$GH_REPO\/pulls\/\$PR_NUMBER"/);
+    expect(gateScript()).toContain(`any(.labels[]; .name == "full-ci")`);
+    expect(gateScript()).toMatch(/^ {6}pull-requests: read$/m);
+  });
+
+  it('fail open when the label lookup errors', () => {
+    expect(gateScript()).toMatch(/else\n\s+echo "::warning::[^\n]*"\n\s+labelled=true\n/);
+  });
+
+  it('keep labelled prose-only pull requests skipping the macOS jobs', () => {
+    expect(gateScript()).toMatch(
+      /echo "code=false" >> "\$GITHUB_OUTPUT"\n(?:\s+#.*\n)*\s+labelled=false\n/
+    );
+  });
+
+  // Run the gate's real script under bash with `gh` and `git` stubbed, so the
+  // decision table is pinned by what the script does, not by its text.
+  const runGate = ({
+    event = 'pull_request',
+    base,
+    label = false,
+    labelError = false,
+    changed,
+  }) => {
+    const { spawnSync } = require('child_process');
+    const os = require('os');
+    const script = workflow.match(
+      /^ {6}- name: Decide whether anything outside the docs changed\n[\s\S]*?^ {8}run: \|\n((?: {10}.*\n|\n)+)/m
+    );
+    expect(script).toBeTruthy();
+    const body = script[1].replace(/^ {10}/gm, '');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-gate-'));
+    try {
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(
+        path.join(bin, 'gh'),
+        labelError ? '#!/bin/sh\nexit 1\n' : `#!/bin/sh\necho ${label}\n`,
+        { mode: 0o755 }
+      );
+      fs.writeFileSync(
+        path.join(bin, 'git'),
+        `#!/bin/sh\n[ "$1" = diff ] && printf '%s\\n' ${changed.map((f) => `'${f}'`).join(' ')}\nexit 0\n`,
+        { mode: 0o755 }
+      );
+      const output = path.join(dir, 'output');
+      fs.writeFileSync(output, '');
+      const result = spawnSync('bash', ['-c', body], {
+        env: {
+          PATH: `${bin}:${process.env.PATH}`,
+          EVENT: event,
+          BASE: base,
+          PR_NUMBER: '1',
+          GH_REPO: 'o/r',
+          GITHUB_OUTPUT: output,
+        },
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(0);
+      return Object.fromEntries(
+        fs
+          .readFileSync(output, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => line.split('='))
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  (process.platform === 'win32' ? it.skip : it)(
+    'narrow only a pull request into main, the one base with a merge queue',
+    () => {
+      const code = ['src/main/index.js'];
+      expect(runGate({ base: 'main', changed: code }).full_matrix).toBe('false');
+      expect(runGate({ base: 'main', label: true, changed: code }).full_matrix).toBe('true');
+      expect(runGate({ base: 'main', labelError: true, changed: code }).full_matrix).toBe('true');
+      // `release/**` and `hotfix/**` have no queue and `release.yml` does not
+      // gate on CI, so their pull requests keep macOS/Windows on their own run.
+      for (const base of ['release/0.9.0', 'hotfix/0.8.5.1']) {
+        expect(runGate({ base, changed: code })).toEqual({ code: 'true', full_matrix: 'true' });
+      }
+      // Prose only still skips everything, whatever the base.
+      expect(runGate({ base: 'release/0.9.0', changed: ['docs/x.md'] })).toEqual({
+        code: 'false',
+        full_matrix: 'false',
+      });
+      expect(runGate({ event: 'merge_group', base: '', changed: [] })).toEqual({
+        code: 'true',
+        full_matrix: 'true',
+      });
+    }
+  );
+
+  it('do not trigger on labeled, which would cancel the run in flight', () => {
+    // `labeled` fires for any label and shares the concurrency group with the
+    // run for the head commit, so adding one would cancel and duplicate it.
+    const on = withoutComments.match(/^on:\n([\s\S]*?)^[a-z]/m);
+    const pr = on[1].match(/^ {2}pull_request:[ \t]*\n((?: {4,}\S.*\n)*)/m);
+    expect(pr ? pr[1] : '').not.toMatch(/labeled/);
   });
 });

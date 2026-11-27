@@ -18,6 +18,7 @@
 
 - IPFS uses the embedded `freedom-ipfs` native addon and does not open a loopback API or gateway port.
 - For source builds, rerun `npm run ipfs:download` and confirm the addon target matches the current OS and architecture.
+- On Linux, the addon needs glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system the IPFS switch in the Nodes panel is greyed out, and IPFS pages explain why. Use your own IPFS node instead: choose **Use external node** for IPFS under **Settings → Nodes** ([#350](https://github.com/solardev-xyz/freedom-browser/issues/350)).
 - Check the Nodes panel and application log for native startup diagnostics.
 
 ## Radicle fails to start
@@ -80,8 +81,16 @@ launch opens unchanged.
 
 - If you have a system-wide Swarm node or Tor SOCKS5 proxy running, configure external mode in **Settings → Nodes**. Radicle has no external mode; it always runs as the profile's embedded node
 - External mode is per profile and per protocol
+- A Swarm node at a `.onion` address isn't supported yet. Freedom talks to the Swarm API outside Tor, so Settings refuses such an address ([#360](https://github.com/solardev-xyz/freedom-browser/issues/360)). An external IPFS gateway at a `.onion` address works while Tor is running
 - The Nodes panel shows external/shared status when connected to an external node
 - Freedom does not stop external nodes on quit
+
+## Passkeys
+
+- **Windows:** sites get Windows' own passkey dialog, the one Edge and Chrome use. It offers a phone (by QR code) and a security key (checked on a Freedom 0.8.9 nightly build). Passkeys stored on the PC (Windows Hello) should show up too on an account with a PIN, used at the machine rather than over Remote Desktop; that part is untested.
+- **macOS:** passkeys need entitlements and Apple developer-account setup the app doesn't have yet ([#5](https://github.com/solardev-xyz/freedom-browser/issues/5)).
+- **Linux:** only a USB security key that needs no PIN can work, and that is untested. Any other request (a key with a PIN, a phone, a passkey stored on the computer or in a password manager) shows no prompt. It fails after about three minutes when the site sets a short timeout, can fail at once when a key asks for its PIN, and can stay pending for hours when the site sets no timeout at all. Sites may still offer passkeys, because Chromium reports phone sign-in as available whenever a Bluetooth adapter is present. The gaps are in Electron and the Linux desktop ([#733](https://github.com/solardev-xyz/freedom-browser/issues/733)).
+- **`bzz://`, `ipfs://` and ENS pages, on every platform:** passkeys fail at once with a `SecurityError`. Chromium only allows them on `https` pages, `localhost` and extensions.
 
 ## ENS resolution not working
 
