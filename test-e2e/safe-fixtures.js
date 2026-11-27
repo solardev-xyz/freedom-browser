@@ -8,10 +8,11 @@
 // deployment, execTransaction, balance display — runs against the fork.
 //
 // Needs `anvil` (foundry) on PATH and network access to the public fork
-// RPC; the spec skips cleanly otherwise (CI has neither).
+// RPCs; the spec skips cleanly otherwise, unless FREEDOM_SAFE_E2E_REQUIRED=1
+// (CI's e2e-safe job). anvil fetches through a failover proxy over several
+// providers (gnosis-fork.js says why, #536).
 
 const { test: base, expect, _electron: electron } = require('@playwright/test');
-const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -19,89 +20,47 @@ const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'src', 'main', 'identity'));
 const { closeApp } = require('./close-app');
 const { startRpcForwarder } = require('./rpc-forwarder');
+const {
+  attachForkLogOnFailure,
+  gnosisForkUnavailableReason,
+  startGnosisFork,
+} = require('./gnosis-fork');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-2026!';
-const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
 const ANVIL_PORT = 18847; // distinct from the jest fork tests (18845/6)
 // The fork's second endpoint, a forwarder (rpc-forwarder.js).
 const FORWARDER_PORT = 18849;
-const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
 
 // Builtin keyless Gnosis rpc sources to remove so nothing escapes to the
 // live chain (keyed sources resolve to nothing without API keys).
 const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-publicnode', 'gno-drpc-public'];
 
 /**
- * anvil present + fork RPC reachable — mirrors the jest fork-test gate.
+ * anvil present + a fork RPC reachable (gnosis-fork.js).
  *
  * With FREEDOM_SAFE_E2E_REQUIRED=1 (the `e2e-safe` CI job) a missing
  * prerequisite throws instead of skipping: a skipped spec reports green, so a
- * broken foundry install or an unreachable fork RPC would otherwise turn the
+ * broken foundry install or unreachable fork RPCs would otherwise turn the
  * job into a silent no-op.
  */
 function safeE2eAvailable() {
-  let missing = null;
-  if (spawnSync('anvil', ['--version']).status !== 0) {
-    missing = 'anvil (foundry) is not on PATH';
-  } else {
-    const probe = spawnSync('curl', [
-      '-sf', '-m', '10', '-X', 'POST', GNOSIS_FORK_URL,
-      '-H', 'Content-Type: application/json',
-      '-d', '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}',
-    ]);
-    if (probe.status !== 0) missing = `the fork RPC ${GNOSIS_FORK_URL} is unreachable`;
-  }
+  const missing = gnosisForkUnavailableReason();
   if (missing && process.env.FREEDOM_SAFE_E2E_REQUIRED === '1') {
     throw new Error(`Safe E2E required but ${missing}`);
   }
   return !missing;
 }
 
-async function rpc(method, params = []) {
-  const res = await fetch(ANVIL_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  });
-  const { result, error } = await res.json();
-  if (error) throw new Error(`${method}: ${error.message}`);
-  return result;
-}
-
-async function startAnvilFork() {
-  // --block-time (not automine): ethers' waitForTransaction — which the
-  // app relies on for confirmations — only re-checks receipts when new
-  // blocks arrive, exactly like on the real chain.
-  const proc = spawn('anvil', [
-    '--fork-url', GNOSIS_FORK_URL,
-    '--port', String(ANVIL_PORT),
-    '--block-time', '2',
-    '--silent',
-  ]);
-  const deadline = Date.now() + 120_000;
-  for (;;) {
-    if (proc.exitCode !== null) throw new Error(`anvil exited with ${proc.exitCode}`);
-    try {
-      const chainId = await rpc('eth_chainId');
-      if (parseInt(chainId, 16) === 100) return proc;
-      throw new Error(`unexpected chain id ${chainId}`);
-    } catch (err) {
-      if (Date.now() > deadline) {
-        throw new Error(`anvil fork not ready: ${err.message}`, { cause: err });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
-}
-
 const test = base.extend({
   // eslint-disable-next-line no-empty-pattern
-  anvil: async ({}, use) => {
-    const proc = await startAnvilFork();
-    const forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT);
-    await use({ url: ANVIL_URL, forwarderUrl: forwarder.url, rpc });
+  anvil: async ({}, use, testInfo) => {
+    const logPath = testInfo.outputPath('anvil-fork.log');
+    const fork = await startGnosisFork({ port: ANVIL_PORT, logPath });
+    const forwarder = await startRpcForwarder(fork.url, FORWARDER_PORT);
+    await use({ url: fork.url, forwarderUrl: forwarder.url, rpc: fork.rpc });
     await forwarder.close();
-    proc.kill();
+    await fork.stop();
+    await attachForkLogOnFailure(testInfo, logPath);
   },
 
   electronApp: async ({ anvil }, use) => {

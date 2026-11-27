@@ -9,7 +9,6 @@
 // needs the phone signature after the vault's free one.
 
 const { test: base, expect, _electron: electron, chromium } = require('@playwright/test');
-const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { Wallet } = require('ethers');
@@ -21,13 +20,16 @@ const { startLocalMqttBroker } = require(path.join(repoRoot, 'test', 'helpers', 
 const { WEBRTC_LOCAL_SWITCH } = require('../test/helpers/webrtc');
 const { closeApp } = require('./close-app');
 const { startRpcForwarder } = require('./rpc-forwarder');
+const {
+  attachForkLogOnFailure,
+  gnosisForkUnavailableReason,
+  startGnosisFork,
+} = require('./gnosis-fork');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-Phone-2026!';
-const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
 const ANVIL_PORT = 18848; // distinct from the other suites
 // The fork's second endpoint, a forwarder (rpc-forwarder.js).
 const FORWARDER_PORT = 18850;
-const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
 
 // Anvil/Hardhat-default test key — well-known, never funded on mainnet.
 // The fake phone page signs with it; the seeded remote record carries
@@ -40,57 +42,20 @@ const DEAD_PHONE_ADDRESS = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
 const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-publicnode', 'gno-drpc-public'];
 
 function safePhoneE2eAvailable() {
-  if (spawnSync('anvil', ['--version']).status !== 0) return false;
-  const probe = spawnSync('curl', [
-    '-sf', '-m', '10', '-X', 'POST', GNOSIS_FORK_URL,
-    '-H', 'Content-Type: application/json',
-    '-d', '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}',
-  ]);
-  return probe.status === 0;
-}
-
-async function rpc(method, params = []) {
-  const res = await fetch(ANVIL_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  });
-  const { result, error } = await res.json();
-  if (error) throw new Error(`${method}: ${error.message}`);
-  return result;
-}
-
-async function startAnvilFork() {
-  const proc = spawn('anvil', [
-    '--fork-url', GNOSIS_FORK_URL,
-    '--port', String(ANVIL_PORT),
-    '--block-time', '2',
-    '--silent',
-  ]);
-  const deadline = Date.now() + 120_000;
-  for (;;) {
-    if (proc.exitCode !== null) throw new Error(`anvil exited with ${proc.exitCode}`);
-    try {
-      const chainId = await rpc('eth_chainId');
-      if (parseInt(chainId, 16) === 100) return proc;
-      throw new Error(`unexpected chain id ${chainId}`);
-    } catch (err) {
-      if (Date.now() > deadline) {
-        throw new Error(`anvil fork not ready: ${err.message}`, { cause: err });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  }
+  return !gnosisForkUnavailableReason();
 }
 
 const test = base.extend({
+  // The anvil fork, as in safe-fixtures.js (gnosis-fork.js, #536).
   // eslint-disable-next-line no-empty-pattern
-  anvil: async ({}, use) => {
-    const proc = await startAnvilFork();
-    const forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT);
-    await use({ url: ANVIL_URL, forwarderUrl: forwarder.url, rpc });
+  anvil: async ({}, use, testInfo) => {
+    const logPath = testInfo.outputPath('anvil-fork.log');
+    const fork = await startGnosisFork({ port: ANVIL_PORT, logPath });
+    const forwarder = await startRpcForwarder(fork.url, FORWARDER_PORT);
+    await use({ url: fork.url, forwarderUrl: forwarder.url, rpc: fork.rpc });
     await forwarder.close();
-    proc.kill();
+    await fork.stop();
+    await attachForkLogOnFailure(testInfo, logPath);
   },
 
   // Local openlv services: signaling relay + bridge page.
