@@ -20,12 +20,23 @@
  * `shell.ledger_apdu` is answered `parent` (an `unknown_method` would end
  * the core's connection); its registry opens no parent unless this says
  * `core`.
+ *
+ * **The chrome hears it** through LEDGER_CORE_RENDERER_ARG on its command
+ * line (mainWindow.js; preload.js's `ledger.coreBackend`): only on the
+ * core's backend can a Ledger's wait be cancelled (LDG-3's PR 10), so only
+ * then does the send screen offer a Cancel, and the chrome's dApp screen
+ * keep Reject while the device waits.
  */
 
 const { app } = require('electron');
 const log = require('../../logger');
 
 const KINDS = new Set(['js', 'core']);
+
+// On the chrome's command line on the core's backend (preload.js; a
+// sandboxed preload can't require this module, so preload.test.js pins
+// the two together).
+const LEDGER_CORE_RENDERER_ARG = '--freedom-ledger-core';
 
 let warnedBackend = null;
 let chosen = null;
@@ -48,4 +59,4 @@ function ledgerBackendKind() {
   return chosen;
 }
 
-module.exports = { ledgerBackendKind, readLedgerBackendKind };
+module.exports = { ledgerBackendKind, readLedgerBackendKind, LEDGER_CORE_RENDERER_ARG };

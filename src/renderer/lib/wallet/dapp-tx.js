@@ -14,6 +14,14 @@
  * or until main asks again (the fee newly above the threshold at the press,
  * or quoted again), whose prompt the screen shows in place. A Safe's
  * approval takes the screen down at once, for its signing board.
+ *
+ * On the core's Ledger backend (freedom-core design 0016, deviation
+ * `cancel`; LDG-3's PR 10) a Ledger's send can still be rejected while the
+ * device waits: once main says so (`page:prompt-waiting`), Reject is
+ * enabled again, and pressing it is main's cancel of the device's request
+ * (`page:cancel`): the page hears a rejection, nothing is sent, and the
+ * screen shows main's notice (point 18) for a moment, or until Back. On
+ * the JS backend main never says so, and nothing changes.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -60,8 +68,13 @@ let dappTxAutoApproveCheckbox;
 // broadcast are in flight: a hardware signature is a device prompt we
 // cannot recall, so there is no cancellation path once it starts —
 // rejecting behind it would settle the dApp promise with 4001 while the
-// transaction still broadcasts.
+// transaction still broadcasts. The one exception is a Ledger on the core's
+// backend, whose request main can cancel (`cancellable`, once main says
+// so): main then answers the page itself.
 let dappTxPending = null;
+// How long the screen keeps main's notice after a cancel (as the approvals
+// document's panel does, approvals-document.js NOTICE_MS).
+const NOTICE_MS = 6000;
 
 // The approval's fee check at confirmation (freedom-core design 0005, A),
 // as main judged it. Confirm also waits for the fee itself (`feeKnown`):
@@ -123,16 +136,29 @@ export function initDappTx() {
     takesOver: pageSendTakesOver,
   });
   // Showing an undecided transaction: newcomers wait (dapp-prompt-guard.js).
+  // A cancel's notice is no transaction: a newcomer takes its place.
   registerDappPrompt(
-    () => dappTxPending !== null && Boolean(dappTxScreen) && !dappTxScreen.classList.contains('hidden')
+    () =>
+      dappTxPending !== null &&
+      !dappTxPending.notice &&
+      Boolean(dappTxScreen) &&
+      !dappTxScreen.classList.contains('hidden')
   );
+  // The decided send now waits on a Ledger whose request Reject can still
+  // cancel (the core's Ledger backend).
+  window.pagePrompts?.onWaiting?.((message) => {
+    const request = dappTxPending;
+    if (!request || !request.signing || request.handle !== message?.handle) return;
+    request.cancellable = true;
+    if (dappTxRejectBtn && !request.cancelling) dappTxRejectBtn.disabled = false;
+  });
 
   setupDappTxScreen();
 }
 
 function setupDappTxScreen() {
   const reject = () => {
-    if (!dappTxPending) {
+    if (!dappTxPending || dappTxPending.notice) {
       closeDappTx();
       return;
     }
@@ -140,7 +166,15 @@ function setupDappTxScreen() {
     decidePageSend(dappTxPending, false);
   };
   dappTxBackBtn?.addEventListener('click', reject);
-  dappTxRejectBtn?.addEventListener('click', reject);
+  dappTxRejectBtn?.addEventListener('click', () => {
+    const request = dappTxPending;
+    // Reject while the Ledger waits: main's cancel of the device's request.
+    if (request?.signing && request.cancellable) {
+      cancelPageSend(request);
+      return;
+    }
+    reject();
+  });
 
   if (dappTxApproveBtn) {
     dappTxApproveBtn.addEventListener('click', approveDappTx);
@@ -508,9 +542,64 @@ async function decidePageSend(request, approve, choices = {}, { retry = false } 
   } finally {
     request.signing = false;
     request.deciding = false;
+    request.cancellable = false;
     endSignatureFlight(request);
-    if (dappTxPending === request) closeDappTx();
+    // A cancel under way ends the screen itself; one done leaves its
+    // notice a moment (or until Back).
+    if (dappTxPending === request && !request.cancelling) {
+      if (request.noticeText !== undefined) holdNotice(request);
+      else closeDappTx();
+    }
   }
+}
+
+/**
+ * Reject while the Ledger waits (the core's Ledger backend): main cancels
+ * the device's request and answers the page rejected, which ends the
+ * decision above. Not cancelled (the device answered first), Reject comes
+ * back while the send still waits.
+ */
+async function cancelPageSend(request) {
+  if (request.cancelling) return;
+  request.cancelling = true;
+  if (dappTxRejectBtn) dappTxRejectBtn.disabled = true;
+  let answer = null;
+  try {
+    answer = await window.pagePrompts?.cancel?.(request.handle);
+  } catch (err) {
+    console.error('[WalletUI] The cancel did not reach main:', err);
+  }
+  request.cancelling = false;
+  if (answer?.ok === true) {
+    // Main's own text (wallet/ledger/errors.js), shown once the decision ends.
+    request.noticeText = typeof answer.notice === 'string' ? answer.notice : '';
+    if (!request.deciding && dappTxPending === request) holdNotice(request);
+    return;
+  }
+  // The decision ended meanwhile, as the device answered it.
+  if (!request.deciding) {
+    if (dappTxPending === request) closeDappTx();
+    return;
+  }
+  if (dappTxRejectBtn && request.signing && request.cancellable && dappTxPending === request) {
+    dappTxRejectBtn.disabled = false;
+  }
+}
+
+/** The screen shows a cancel's notice for NOTICE_MS, Back closing it sooner. */
+function holdNotice(request) {
+  if (request.notice) return;
+  request.notice = true;
+  if (dappTxApproveBtn) {
+    dappTxApproveBtn.disabled = true;
+    dappTxApproveBtn.textContent = DAPP_TX_CONFIRM_LABEL;
+  }
+  if (dappTxRejectBtn) dappTxRejectBtn.disabled = true;
+  if (dappTxBackBtn) dappTxBackBtn.disabled = false;
+  showDappTxError(request.noticeText);
+  setTimeout(() => {
+    if (dappTxPending === request) closeDappTx();
+  }, NOTICE_MS);
 }
 
 /**

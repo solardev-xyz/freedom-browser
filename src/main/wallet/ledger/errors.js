@@ -40,6 +40,10 @@ const LEDGER_ERROR_CODES = {
   // An array suffix written in a form the device wouldn't rebuild from its
   // descriptor (`uint8[02]`), refused before the first APDU.
   TYPE_NOT_CANONICAL: 'LEDGER_TYPE_NOT_CANONICAL',
+  // The user's Cancel (or Reject) while the Ledger waited (design 0016,
+  // "Deadlines, cancel and unplugging", deviation `cancel`): main's own
+  // cancel of the core's request, nothing signed.
+  CANCELLED: 'LEDGER_CANCELLED',
 };
 
 const MESSAGES = {
@@ -70,6 +74,14 @@ const MESSAGES = {
   [LEDGER_ERROR_CODES.EMPTY_MESSAGE]: "A Ledger can't sign an empty message. Nothing was sent.",
   [LEDGER_ERROR_CODES.TYPE_NOT_CANONICAL]:
     "This request writes a type in a form a Ledger can't sign. Nothing was sent.",
+  // What Freedom says after a Cancel or a Reject while the Ledger waits
+  // (the LDG-3 plan's point 18): closing the device doesn't clear its
+  // screen, so the request may still show there. This is option (a), the
+  // recommended one, while the user's decision is pending; option (b)
+  // would just close the screen. Every surface (the send screen, the
+  // approvals document, the chrome's dApp screen) shows this text and no
+  // copy of it, so changing the option changes this line.
+  [LEDGER_ERROR_CODES.CANCELLED]: 'Cancelled. If your Ledger still shows the request, reject it there.',
 };
 
 const KNOWN_CODES = new Set(Object.values(LEDGER_ERROR_CODES));
@@ -184,9 +196,20 @@ function fromCoreError(err) {
   return mapped;
 }
 
+/**
+ * The text Freedom shows once the user cancelled a request the Ledger
+ * waited on (point 18; MESSAGES says why it lives there).
+ *
+ * @returns {string}
+ */
+function ledgerCancelledNotice() {
+  return MESSAGES[LEDGER_ERROR_CODES.CANCELLED];
+}
+
 module.exports = {
   LEDGER_ERROR_CODES,
   createLedgerError,
+  ledgerCancelledNotice,
   mapLedgerError,
   isLedgerUserRejection,
   fromCoreError,

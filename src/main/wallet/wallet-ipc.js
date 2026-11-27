@@ -25,6 +25,8 @@ const { getEffectiveRpcUrls } = require('./rpc-manager');
 const { redactedHandler } = require('./rpc-errors');
 const { forSenderWindow } = require('../windows/request-window');
 const { getSigner } = require('./signers');
+const { ledgerBackendKind } = require('./ledger/ledger-backend-kind');
+const { LEDGER_ERROR_CODES } = require('./ledger/errors');
 const { isVaultLockedError } = require('./vault-errors');
 const {
   KINDS: CONFIRM_KINDS,
@@ -190,7 +192,13 @@ async function intentAccount(intentId) {
 // page's request (`eip1193.request`, page/page-eip1193.js): the core mints
 // its token when the prompt is approved, and main signs, records and sends
 // it under the requester's key (page/page-core-sends.js).
-async function handleSendTransaction(walletIndex, params, context = {}, authorization = null) {
+//
+// `signal` is the user's Cancel (`wallet:cancel-send`): on the core's
+// Ledger backend a Ledger's signature goes with it (signers.js), and its
+// abort is main's own cancel of the core's `sign.transaction`, the device
+// let go at once; the send then fails before its commit, its nonce
+// released (nonce-reservations.js), with LEDGER_CANCELLED's text.
+async function handleSendTransaction(walletIndex, params, context = {}, authorization = null, { signal = null } = {}) {
   try {
     const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params || {};
     if (!to || chainId === undefined || !gasLimit) {
@@ -207,7 +215,7 @@ async function handleSendTransaction(walletIndex, params, context = {}, authoriz
       // The core spends the token as it signs exactly this send.
       const result = await signAndRecord(
         tx,
-        getSigner(walletIndex, { confirmation }),
+        getSigner(walletIndex, signal ? { confirmation, signal } : { confirmation }),
         buildTxRecordContext(PAYMENT_KINDS.WALLET_SEND, context),
         { walletIndex }
       );
@@ -223,8 +231,49 @@ async function handleSendTransaction(walletIndex, params, context = {}, authoriz
       error: err.message,
       ...(await intentFailure(err)),
       ...(err.feeCheck ? { feeCheck: err.feeCheck } : {}),
+      // The user's Cancel: the send screen says so in its own title.
+      ...(err?.code === LEDGER_ERROR_CODES.CANCELLED ? { code: err.code } : {}),
     };
   }
+}
+
+/**
+ * The user's Cancel for the wallet's own sends (design 0016, "Deadlines,
+ * cancel and unplugging", deviation `cancel`; the LDG-3 plan's PR 10 and
+ * its point 5), on the core's Ledger backend only: each chrome window has
+ * at most one send in flight (the send screen holds the sidebar while it
+ * signs, signature-flight.js), keyed here by the window's chrome.
+ * `wallet:cancel-send` from that chrome aborts it: the core's
+ * `sign.transaction` is cancelled through the relay, which closes the
+ * device at once (ledger-relay.js, main's own cancel). On the JS backend
+ * no send is cancellable, as before: hw-app-eth's exchange can't be
+ * stopped, and the screen offers no Cancel.
+ */
+const sendCancels = new Map(); // chrome webContents id -> its send's AbortController
+
+/** A send's Cancel, for the chrome `event` came from, or null on the JS backend. */
+function cancellableSend(event) {
+  const id = event?.sender?.id;
+  if (ledgerBackendKind() !== 'core' || !Number.isInteger(id)) return null;
+  const controller = new AbortController();
+  // One send per window at a time; an older one's Cancel no longer reaches.
+  sendCancels.set(id, controller);
+  return controller;
+}
+
+function releaseCancel(event, controller) {
+  const id = event?.sender?.id;
+  if (controller && sendCancels.get(id) === controller) sendCancels.delete(id);
+}
+
+/** `wallet:cancel-send`: the window's send in flight, cancelled; or why not. */
+function cancelSend(event) {
+  const controller = sendCancels.get(event?.sender?.id);
+  if (!controller || controller.signal.aborted) {
+    return { success: false, error: 'No send is waiting on a Ledger here' };
+  }
+  controller.abort();
+  return { success: true };
 }
 
 /**
@@ -499,8 +548,19 @@ function registerWalletIpc() {
     }
   });
 
-  handle('wallet:send-transaction', (_event, params, context, authorization) =>
-    handleSendTransaction(getActiveWalletIndex(), params, context, authorization));
+  handle('wallet:send-transaction', async (event, params, context, authorization) => {
+    const controller = cancellableSend(event);
+    try {
+      return await handleSendTransaction(getActiveWalletIndex(), params, context, authorization, {
+        signal: controller?.signal ?? null,
+      });
+    } finally {
+      releaseCancel(event, controller);
+    }
+  });
+
+  // The send screen's Cancel while a Ledger waits (core backend only).
+  handle('wallet:cancel-send', (event) => cancelSend(event));
 
   // Get transaction status
   handle('wallet:get-transaction-status', async (_event, txHash, chainId) => {

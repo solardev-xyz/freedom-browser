@@ -34,6 +34,19 @@
  *                                          -> { ok } | { ok: false, reason }
  *   approvals:view-part  document -> main  { handle, revision, index }
  *                                          -> { ok, part } | { ok: false, reason }
+ *   page:prompt-waiting  main -> document  { handle }: the approved request now
+ *                                          waits on a Ledger Reject still reaches
+ *   approvals:cancel     document -> main  { handle } -> { ok, notice } | { ok: false, reason }
+ *
+ * The last two are the core's Ledger backend's (freedom-core design 0016,
+ * "Deadlines, cancel and unplugging", deviation `cancel`; LDG-3's PR 10).
+ * While the panel says where to confirm, an approval for a Ledger account
+ * whose device step can be cancelled (`page-requests.js` `deviceWait`)
+ * keeps Reject: the document's Reject for that handle is main's cancel of
+ * the device's request, and the page is answered rejected. The panel then
+ * shows main's notice (point 18, wallet/ledger/errors.js) for NOTICE_MS
+ * after the request is answered, unless another prompt shows first. A
+ * Reject needs no input delay, as a rejection never does.
  *
  * A view over 256 KiB (very large transaction data, typed data or a
  * message; APS-4) doesn't go in one message: `page:prompt` then carries
@@ -150,12 +163,24 @@ const CHANNELS = Object.freeze({
   SHOWN: 'approvals:shown',
   DECIDE: 'approvals:decide',
   VIEW_PART: 'approvals:view-part',
+  WAITING: 'page:prompt-waiting',
+  CANCEL: 'approvals:cancel',
   ANCHOR: 'page:approvals-anchor',
 });
 
 // The channels a renderer sends main here. The sender policy gives these to
 // the approvals document alone (`ipc-sender-policy.js`).
-const DOCUMENT_CHANNELS = Object.freeze([CHANNELS.READY, CHANNELS.SHOWN, CHANNELS.DECIDE, CHANNELS.VIEW_PART]);
+const DOCUMENT_CHANNELS = Object.freeze([
+  CHANNELS.READY,
+  CHANNELS.SHOWN,
+  CHANNELS.DECIDE,
+  CHANNELS.VIEW_PART,
+  CHANNELS.CANCEL,
+]);
+
+// How long the panel keeps a cancel's notice (point 18) once the request
+// it cancelled is answered, unless another prompt shows first.
+const NOTICE_MS = 6000;
 
 // Clicks and keys do nothing for this long after a prompt appears, its
 // content changes, or the panel is shown again or moves; main refuses an
@@ -384,6 +409,12 @@ function defaultChromeWindowOf(contents) {
  * @param {(windowId: number, payload: object) => Promise<object>} [options.decide]
  *   a decision for a handle of window `windowId` (`page-requests.js`
  *   `decideInWindow`), once main's own checks here have passed.
+ * @param {(windowId: number, payload: object) => object} [options.cancel]
+ *   Reject while a Ledger waits, for a handle window `windowId` approved
+ *   (`page-requests.js` `cancelInWindow`), once main's own checks here
+ *   have passed: `{ ok, notice }` or `{ ok: false, reason }`.
+ * @param {Function} [options.setTimer]
+ * @param {Function} [options.clearTimer]
  * @param {(contents: object) => number|null} [options.chromeWindowOf]
  * @param {(file: string) => Promise<Buffer>} [options.readFile]
  * @param {() => number} [options.now] a monotonic clock, in ms.
@@ -399,6 +430,9 @@ function createApprovalsDocuments({
   WebContentsView = () => require('electron').WebContentsView,
   sessionFor = (partition) => require('electron').session.fromPartition(partition),
   decide = async () => ({ ok: false, reason: 'unavailable' }),
+  cancel = async () => ({ ok: false, reason: 'unavailable' }),
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = (timer) => clearTimeout(timer),
   chromeWindowOf = defaultChromeWindowOf,
   readFile = (file) => fs.promises.readFile(file),
   now = () => performance.now(),
@@ -576,8 +610,11 @@ function createApprovalsDocuments({
       parts: null,
       revision: 0,
       report: null,
-      // `{ handle, device }` while an approval for a device's account signs.
+      // `{ handle, device, cancellable }` while an approval for a device's
+      // account signs; `cancellable` once Reject reaches its device step.
       waiting: null,
+      // `{ handle, timer }`: a cancel's notice the panel keeps a moment.
+      notice: null,
       armedAt: -Infinity,
       top: DEFAULT_TOP,
       bounds: null,
@@ -651,6 +688,7 @@ function createApprovalsDocuments({
       record.revision = lastRevision;
       record.report = null;
       record.waiting = null;
+      dropNotice(record);
       show(record);
       trace({ kind: 'prompt', window: windowId, handle, revision: lastRevision, parts: parts ? parts.length : 0 });
       deliver(record, CHANNELS.PROMPT, message);
@@ -674,7 +712,38 @@ function createApprovalsDocuments({
       }
       trace({ kind: 'closed', window: windowId, handle });
       deliver(record, CHANNELS.CLOSED, { handle, reason: payload?.reason });
+    } else if (channel === CHANNELS.WAITING) {
+      // The approved request's device step can be cancelled now: only for
+      // the approval the panel says to confirm.
+      if (!record.waiting || record.waiting.handle !== handle) return;
+      record.waiting.cancellable = true;
+      trace({ kind: 'waiting', window: windowId, handle });
+      deliver(record, CHANNELS.WAITING, { handle });
     }
+  }
+
+  function dropNotice(record) {
+    if (!record.notice) return;
+    if (record.notice.timer !== null) clearTimer(record.notice.timer);
+    record.notice = null;
+  }
+
+  /**
+   * The device's wait for `handle` is over (its request answered): the
+   * panel goes, unless it shows a prompt, or a cancel's notice for that
+   * handle, which it keeps for NOTICE_MS.
+   */
+  function waitOver(record, handle) {
+    const notice = record.notice;
+    if (notice && notice.handle === handle && !record.shown) {
+      notice.timer = setTimer(() => {
+        if (record.notice !== notice) return;
+        record.notice = null;
+        if (!record.shown && !record.waiting) hide(record);
+      }, NOTICE_MS);
+      return;
+    }
+    if (!record.shown) hide(record);
   }
 
   /**
@@ -786,9 +855,51 @@ function createApprovalsDocuments({
     }
     if (device && record.waiting?.handle === payload.handle) {
       record.waiting = null;
-      if (!record.shown) hide(record);
+      waitOver(record, payload.handle);
     }
     return out(isPlainObject(result) ? result : { ok: false, reason: 'failed' });
+  }
+
+  /**
+   * `approvals:cancel { handle }` from a window's own document: Reject for
+   * the approval the panel says to confirm on a Ledger, once main has said
+   * its device step can be cancelled (`page:prompt-waiting`). Main cancels
+   * the device's request and answers the page rejected; the panel keeps
+   * the notice main answers with for a moment after.
+   */
+  async function cancelFrom(event, payload) {
+    const { record, reason } = senderOf(event);
+    if (!record) return refused(CHANNELS.CANCEL, reason);
+    const out = (result) => {
+      trace({ kind: 'cancel', window: record.windowId, ok: result.ok === true, reason: result.reason });
+      return result;
+    };
+    if (!isPlainObject(payload) || typeof payload.handle !== 'string') return out({ ok: false, reason: 'invalid' });
+    const { handle } = payload;
+    const waiting = record.waiting;
+    if (!waiting || waiting.handle !== handle || waiting.cancellable !== true) {
+      return out({ ok: false, reason: 'not-waiting' });
+    }
+    // Held before the request is answered, so the end of the wait keeps
+    // the panel for it.
+    dropNotice(record);
+    const notice = { handle, timer: null };
+    record.notice = notice;
+    let result;
+    try {
+      result = await cancel(record.windowId, { handle });
+    } catch {
+      result = { ok: false, reason: 'failed' };
+    }
+    const ok = isPlainObject(result) && result.ok === true;
+    if (!ok && record.notice === notice) {
+      dropNotice(record);
+      // The wait ended meanwhile (the device answered first): the panel
+      // goes, as the end of the wait would have taken it.
+      if (record.waiting?.handle !== handle && !record.shown) hide(record);
+    }
+    if (!ok) return out(isPlainObject(result) ? result : { ok: false, reason: 'failed' });
+    return out({ ok: true, notice: typeof result.notice === 'string' ? result.notice : '' });
   }
 
   /**
@@ -851,6 +962,7 @@ function createApprovalsDocuments({
     });
     ipcMain.handle(CHANNELS.DECIDE, (event, payload) => decideFrom(event, payload));
     ipcMain.handle(CHANNELS.VIEW_PART, (event, payload) => viewPart(event, payload));
+    ipcMain.handle(CHANNELS.CANCEL, (event, payload) => cancelFrom(event, payload));
     ipcMain.on(CHANNELS.ANCHOR, (event, payload) => {
       anchor(event, payload);
     });
@@ -886,12 +998,27 @@ function createApprovalsDocuments({
         revision: record.revision,
         reported: record.report ? record.report.handle : null,
         waiting: record.waiting ? record.waiting.device : null,
+        cancellable: record.waiting?.cancellable === true,
+        notice: record.notice ? record.notice.handle : null,
       };
     }
     return out;
   }
 
-  return { attach, send, ready, shown, decide: decideFrom, viewPart, anchor, register, reshow, state, serve };
+  return {
+    attach,
+    send,
+    ready,
+    shown,
+    decide: decideFrom,
+    cancel: cancelFrom,
+    viewPart,
+    anchor,
+    register,
+    reshow,
+    state,
+    serve,
+  };
 }
 
 // The app's one instance, and its test hooks: inert until the E2E harness
@@ -910,6 +1037,7 @@ function getApprovalsDocuments() {
         sharedHooks.holdDecisions === true
           ? Promise.resolve({ ok: false, reason: 'held' })
           : require('../page/page-requests').getPageRequests().decideInWindow(windowId, payload),
+      cancel: (windowId, payload) => require('../page/page-requests').getPageRequests().cancelInWindow(windowId, payload),
       themeSetting: () => settings.loadSettings().theme,
       onThemeChange: (listener) =>
         settings.onSettingsChanged((merged, previous) => {
@@ -978,6 +1106,7 @@ module.exports = {
   MAX_VIEW_BYTES,
   MAX_PARTED_VIEW_BYTES,
   VIEW_PART_UNITS,
+  NOTICE_MS,
   WEB_PREFERENCES,
   isApprovalsDocumentEnabled,
   ownFile,

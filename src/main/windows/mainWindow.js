@@ -11,6 +11,7 @@ const {
   isApprovalsDocumentEnabled,
   APPROVALS_RENDERER_ARG,
 } = require('../approvals/approvals-document');
+const { ledgerBackendKind, LEDGER_CORE_RENDERER_ARG } = require('../wallet/ledger/ledger-backend-kind');
 
 let currentWindowTitle = 'Freedom';
 
@@ -78,6 +79,9 @@ function createMainWindow(initialUrl = null, options = {}) {
   const rendererArgs = [
     ...(require('../test-harness').isTestMode() ? [TEST_HARNESS_RENDERER_ARG] : []),
     ...(isApprovalsDocumentEnabled() ? [APPROVALS_RENDERER_ARG] : []),
+    // The core's Ledger backend (freedom-core design 0016, LDG-3): a
+    // Ledger's wait can be cancelled, so the chrome offers it.
+    ...(ledgerBackendKind() === 'core' ? [LEDGER_CORE_RENDERER_ARG] : []),
   ];
 
   const window = new BrowserWindow({

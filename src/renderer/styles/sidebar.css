@@ -3896,6 +3896,11 @@
   color: var(--danger);
 }
 
+/* The core's Ledger backend: the address to confirm on the device, in full. */
+.connect-ledger-confirm-text {
+  overflow-wrap: anywhere;
+}
+
 .connect-ledger-scheme-row {
   display: flex;
   align-items: center;
@@ -5196,6 +5201,11 @@
 .send-pending-text {
   font-size: 13px;
   color: var(--muted);
+}
+
+/* A Ledger's wait the user can cancel (the core's Ledger backend). */
+.send-pending-cancel {
+  margin-top: 24px;
 }
 
 /* ============================================

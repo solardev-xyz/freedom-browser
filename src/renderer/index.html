@@ -3277,6 +3277,13 @@
                   Add Account
                 </button>
 
+                <!-- The core's Ledger backend: the add waits for the user to
+                     confirm the address on the device. -->
+                <div id="connect-ledger-confirm" class="connect-ledger-status hidden" role="status">
+                  <span class="connect-ledger-status-spinner"></span>
+                  <span id="connect-ledger-confirm-text" class="connect-ledger-confirm-text"></span>
+                </div>
+
                 <div id="connect-ledger-error" class="unlock-error hidden"></div>
               </div>
 
@@ -3881,6 +3888,13 @@
                   <p class="send-pending-text">
                     Please wait while your transaction is being processed…
                   </p>
+                  <button
+                    type="button"
+                    class="send-retry-btn send-pending-cancel hidden"
+                    id="send-pending-cancel"
+                  >
+                    Cancel
+                  </button>
                 </div>
               </div>
 

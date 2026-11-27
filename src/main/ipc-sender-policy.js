@@ -37,8 +37,8 @@
  *     chrome, which has no page to speak for. Main then attests the sender
  *     itself (src/main/page/page-documents.js).
  *   - The approvals document's channels (`approvals:ready`, `approvals:shown`,
- *     `approvals:decide`, and from APS-4 `approvals:view-part`; design 0011,
- *     "The approvals document", APS-1) take
+ *     `approvals:decide`, from APS-4 `approvals:view-part`, and from LDG-3
+ *     `approvals:cancel`; design 0011, "The approvals document", APS-1) take
  *     only the top frame of `renderer/approvals/approvals.html`, and never
  *     the chrome: a decision there is the user's, and the chrome must not
  *     be able to make one. Main then checks the sender is that window's own
@@ -227,7 +227,13 @@ const PAGE_CHANNEL_SET = new Set(PAGE_CHANNELS);
 
 // The approvals document's own channels (APS-1): its top frame only. Like
 // the page channels, these refuse the chrome.
-const APPROVALS_CHANNELS = ['approvals:ready', 'approvals:shown', 'approvals:decide', 'approvals:view-part'];
+const APPROVALS_CHANNELS = [
+  'approvals:ready',
+  'approvals:shown',
+  'approvals:decide',
+  'approvals:view-part',
+  'approvals:cancel',
+];
 const APPROVALS_CHANNEL_SET = new Set(APPROVALS_CHANNELS);
 
 const WEBVIEW_CHANNEL_TIERS = new Map([

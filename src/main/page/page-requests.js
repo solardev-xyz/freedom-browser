@@ -90,6 +90,21 @@
  * a handle main opens for its decision (design 0012, "The Agent's answer",
  * APB-5: `context.agentPrompt`). Main mints no page token itself: the
  * agent's own issuer was removed in APB-5b.
+ *
+ * **Reject while a Ledger waits** (freedom-core design 0016, "Deadlines,
+ * cancel and unplugging", deviation `cancel`; LDG-3's PR 10): on the core's
+ * Ledger backend, the device step of an approved request (a page's
+ * signature or send from a Ledger account, `page-devices.js`,
+ * `page-core-sends.js`) says so (`context.deviceWait()`) as it starts; main
+ * then tells the surface that decided it (`page:prompt-waiting { handle }`,
+ * the window's approvals document, or with it off the chrome) that Reject
+ * still reaches it. The surface's Reject (`page:cancel { handle }`, or the
+ * document's `approvals:cancel`, `cancelInWindow`) answers the request
+ * rejected (4001) at once, which aborts the record's `signal`, the device
+ * step's: main cancels the core's `sign.*` and the relay lets go of the
+ * device. Before the step says so, or on the JS backend, where the device
+ * can't be stopped, nothing is cancellable and the surface keeps Reject
+ * off, as before.
  */
 
 const crypto = require('crypto');
@@ -131,6 +146,10 @@ const CHANNELS = Object.freeze({
 });
 
 const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']);
+const CANCEL_KEYS = new Set(['handle']);
+// A page's answer when the user rejected its request while the Ledger
+// waited (EIP-1193's 4001, as every other rejection).
+const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
 const RESERVE_KEYS = new Set(['nonce', 'method', 'bytes']);
 const FOREGROUND_KEYS = new Set(['guest']);
 const PASSWORD_KEYS = new Set(['password']);
@@ -332,6 +351,9 @@ function createPageRequests({
   const records = new Map(); // id -> record
   const byDocument = new Map(); // `${guest}:${navigation}` -> Set<record>
   const handles = new Map(); // handle -> record
+  // A decided handle -> its record, while the record's device step can be
+  // cancelled (`deviceWait`), until main answers the record.
+  const waits = new Map();
   const handleListeners = new Set();
 
   const trace = (entry) => {
@@ -494,6 +516,7 @@ function createPageRequests({
     }
     record.answered = true;
     stopDeadline(record);
+    if (record.handle && waits.get(record.handle) === record) waits.delete(record.handle);
     // A wallet operation still running for it (its deadline, its document
     // gone) is told to stop, and its document's slot is free again.
     if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
@@ -680,6 +703,9 @@ function createPageRequests({
       pageContext: () => pageContextOf(record),
       agentPrompt: (spec) => agentPrompt(record, spec),
       leaveWalletSlot: () => leaveWalletSlot(record),
+      // The device step of an approved request can be cancelled now (the
+      // core's Ledger backend): Reject reaches it until main answers.
+      deviceWait: () => deviceWait(record),
       // Aborted when main answers the record: for a dispatcher that waits on
       // something outside main's prompts.
       get signal() {
@@ -1201,6 +1227,67 @@ function createPageRequests({
   }
 
   /**
+   * The record's device step can be cancelled from here on (the core's
+   * Ledger backend, LDG-3's PR 10): the approved handle is kept until main
+   * answers the record, and the surface that decided it hears that Reject
+   * still reaches it. Only a prompt the user decided, still unanswered.
+   * Returns whether it can be cancelled.
+   */
+  function deviceWait(record) {
+    const handle = record.handle;
+    if (record.answered || !handle || record.handleClosed !== CLOSED.DECIDED) return false;
+    if (waits.get(handle) === record) return true;
+    waits.set(handle, record);
+    trace({ kind: 'device-wait', id: record.id });
+    sendPromptMessage(record.window, PROMPT_CHANNELS.WAITING, { handle });
+    return true;
+  }
+
+  /**
+   * Reject while the Ledger waits, from window `windowId`'s surface for the
+   * handle it decided: the request is answered rejected at once, which
+   * aborts its device step (`context.signal`). `{ ok: true, notice }`, the
+   * text to show (point 18, wallet/ledger/errors.js), or why not.
+   */
+  function cancelIn(windowId, payload, from) {
+    if (!isPlainObject(payload) || !hasOnlyKeys(payload, CANCEL_KEYS) || typeof payload.handle !== 'string') {
+      return { ok: false, reason: 'invalid' };
+    }
+    const record = waits.get(payload.handle);
+    if (!record || record.window !== windowId || record.answered) {
+      trace({ kind: 'cancel', window: windowId, from, ok: false, reason: 'not-waiting' });
+      return { ok: false, reason: 'not-waiting' };
+    }
+    trace({ kind: 'cancel', id: record.id, window: windowId, from, ok: true });
+    answer(record, { error: { ...USER_REJECTED } });
+    return { ok: true, notice: require('../wallet/ledger/errors').ledgerCancelledNotice() };
+  }
+
+  /**
+   * `page:cancel { handle }` from a chrome window, with the approvals
+   * document off: Reject while the Ledger waits, for a handle that window
+   * decided. With the document on, only the document's counts
+   * (`cancelInWindow`), as its decisions do.
+   */
+  function cancel(event, payload) {
+    let windowId;
+    try {
+      windowId = chromeWindowOf(event?.sender);
+    } catch {
+      windowId = null;
+    }
+    if (!Number.isInteger(windowId)) return { ok: false, reason: 'not-a-window' };
+    if (approvals) return { ok: false, reason: 'approvals-document' };
+    return cancelIn(windowId, payload, 'chrome');
+  }
+
+  /** Reject while the Ledger waits, from window `windowId`'s approvals document. */
+  function cancelInWindow(windowId, payload) {
+    if (!approvals || !Number.isInteger(windowId)) return { ok: false, reason: 'not-a-window' };
+    return cancelIn(windowId, payload, 'approvals');
+  }
+
+  /**
    * `page:foreground { guest }` from a chrome window: the guest now in front
    * of that window, or `null` for a tab with no page. Only a live guest the
    * window hosts; anything else is ignored. It only chooses which pending
@@ -1495,6 +1582,7 @@ function createPageRequests({
       return request(event, payload);
     });
     ipcMain.handle(CHANNELS.DECIDE, (event, payload) => decide(event, payload));
+    ipcMain.handle(CHANNELS.CANCEL, (event, payload) => cancel(event, payload));
     ipcMain.on(CHANNELS.FOREGROUND, (event, payload) => {
       foreground(event, payload);
     });
@@ -1514,6 +1602,8 @@ function createPageRequests({
     onHandleClosed,
     decide,
     decideInWindow,
+    cancel,
+    cancelInWindow,
     walletPrompt,
     walletUnlock,
     foreground,
