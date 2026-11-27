@@ -1,9 +1,9 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/1198",
   "totals": {
-    "legacyClasses": 187,
-    "oldTokens": 235,
-    "literalSizes": 237,
+    "legacyClasses": 188,
+    "oldTokens": 244,
+    "literalSizes": 238,
     "bareOutlines": 16
   },
   "legacyClasses": {
@@ -31,6 +31,7 @@
       "setup-banner",
       "setup-banner-action",
       "setup-banner-dismiss",
+      "setup-banner-icon",
       "setup-banner-tag"
     ],
     "pages/links.html": [
@@ -285,13 +286,20 @@
     ],
     "pages/home.html": [
       "--bg",
-      "--bg-elev",
       "--dark-only-display",
+      "--home-card",
+      "--home-card-border",
+      "--home-card-border-hover",
+      "--home-card-hover",
       "--home-card-shadow",
+      "--home-card-sheen",
       "--home-control-hover",
+      "--home-teal",
+      "--home-teal-soft",
       "--light-only-display",
       "--shell-bg",
       "--shell-code",
+      "--shell-heading",
       "--shell-link-home",
       "--shell-link-home-bg-hover",
       "--shell-link-home-hover",
@@ -535,6 +543,10 @@
       "--toolbar-hover",
       "--warning-fg"
     ],
+    "styles/swipe-navigation.css": [
+      "--menu-bg",
+      "--modal-bg"
+    ],
     "styles/tabs.css": [
       "--bg",
       "--muted",
@@ -588,9 +600,10 @@
     ],
     "pages/home.html": [
       "border-radius: 10px",
+      "border-radius: 14px",
       "border-radius: 4px",
-      "border-radius: 6px",
       "border-radius: 999px",
+      "border-radius: 9px",
       "font-size: 11px",
       "font-size: 12.5px",
       "font-size: 12px",
