@@ -103,6 +103,18 @@ async function openNodesTab(window) {
       })
     )
     .toBe(true);
+  // sidebar.isVisible() is true from the moment the sidebar starts its 0.2 s
+  // width transition (sidebar.css), and the tab buttons are flex children that
+  // move and grow with it: a click sent mid-transition can land on the tab bar
+  // beside the Nodes tab and switch nothing (#1346). Let it finish opening.
+  await window.evaluate(() =>
+    Promise.allSettled(
+      document
+        .getElementById('sidebar')
+        .getAnimations()
+        .map((a) => a.finished)
+    )
+  );
   await window.evaluate(async () => {
     const { walletState } = await import('./lib/wallet/wallet-state.js');
     walletState.viewMode = 'identity';
