@@ -122,6 +122,12 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
   WORKSPACE_PREVIEW_UNSAFE: 'Freedom blocked an unsafe workspace preview request',
   WORKSPACE_PREVIEW_TOO_LARGE: 'The workspace preview exceeded its bounded size limit',
   WORKSPACE_EXECUTION_FAILED: 'Freedom could not start the workspace command',
+  WORKSPACE_STARTUP_BUSY:
+    'Windows project protection is busy starting another command. This operation did not start; retry it shortly.',
+  WORKSPACE_STARTUP_TIMEOUT:
+    'Project protection did not become ready in time. The operation may have started; inspect current files before retrying.',
+  WORKSPACE_FILE_OPERATION_TIMEOUT:
+    'The project file operation timed out after it started. Inspect the file before retrying.',
   WORKSPACE_FILE_TOO_LARGE: 'The requested workspace file exceeds the supported size limit',
   WORKSPACE_FILE_UNAVAILABLE: 'The requested workspace file could not be accessed',
   WORKSPACE_FILE_UNSAFE: 'The requested workspace path is unsafe',
@@ -166,6 +172,9 @@ function safeWorkspaceError(error, options = {}) {
     'WORKSPACE_CAPABILITY_DETECTION_FAILED',
     'WORKSPACE_DIRECTORY_UNAVAILABLE',
     'WORKSPACE_EXECUTION_FAILED',
+    'WORKSPACE_STARTUP_BUSY',
+    'WORKSPACE_STARTUP_TIMEOUT',
+    'WORKSPACE_FILE_OPERATION_TIMEOUT',
     'WORKSPACE_EXECUTION_NOT_ENABLED',
     'WORKSPACE_EXECUTION_PLATFORM_UNAVAILABLE',
     'WORKSPACE_EXECUTION_DECLINED',

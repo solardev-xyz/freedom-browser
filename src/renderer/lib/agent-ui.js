@@ -3411,6 +3411,9 @@ function formatToolError(code, operation) {
     WORKSPACE_PROTECTED_PATH: 'Blocked protected workspace path',
     WORKSPACE_RUNTIME_UNAVAILABLE: 'Workspace runtime is unavailable',
     WORKSPACE_SANDBOX_DENIED: 'Blocked by workspace sandbox policy',
+    WORKSPACE_STARTUP_BUSY: 'Project protection was busy starting another command. Nothing ran; retry shortly',
+    WORKSPACE_STARTUP_TIMEOUT: 'Project protection did not become ready in time. Inspect files before retrying',
+    WORKSPACE_FILE_OPERATION_TIMEOUT: 'Project file operation timed out after it started. Inspect the file before retrying',
     WORKSPACE_WRITE_FAILED: 'Workspace file could not be written',
   };
   if (operation === 'attachment_list') return 'Attached sources could not be listed';

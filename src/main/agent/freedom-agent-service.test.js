@@ -3506,6 +3506,47 @@ describe('FreedomAgentService', () => {
     await service.dispose();
   });
 
+  test.each([
+    ['startup-busy refusal', { code: 'WORKSPACE_STARTUP_BUSY', message: 'busy' }, 'WORKSPACE_STARTUP_BUSY'],
+    ['policy denial', undefined, 'WORKSPACE_SANDBOX_DENIED'],
+    ['unrelated receipt error', { code: 'WORKSPACE_EXECUTION_FAILED', message: 'x' }, 'WORKSPACE_SANDBOX_DENIED'],
+    // Startup timeout is thrown by the controller, never carried in a receipt;
+    // it must not inherit the busy code's "nothing ran" mapping.
+    ['startup-timeout code in a receipt', { code: 'WORKSPACE_STARTUP_TIMEOUT', message: 't' }, 'WORKSPACE_SANDBOX_DENIED'],
+  ])('records a sandbox_denied yielded process terminal as its own code (%s)', async (_name, error, expected) => {
+    const fake = createFakeSession();
+    let workspaceOptions;
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', enabled: true })),
+      disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(), dispose: jest.fn(),
+    };
+    const { service } = createService(fake, { workspaceController,
+      createWorkspaceTools: jest.fn(async options => { workspaceOptions = options; return [{ name: 'bash' }]; }),
+    });
+    await service.start(startOptions());
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'busy_call', toolName: 'bash', args: { command: 'npm test' } });
+    const workspace = {
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      processId: 'workspace_process_cccccccccccccccccccccccc', kind: 'command', command: 'npm test',
+      workingDirectory: '.', backend: 'windows-elevated', networkPosture: 'none', state: 'running',
+      terminationGuarantee: 'pending', terminationScope: 'pending',
+      sideEffects: 'unknown', survivorsPossible: false, completeDescendantTermination: false,
+    };
+    workspaceOptions.onToolOutcome({ toolCallId: 'busy_call', operation: 'bash', status: 'succeeded', workspace });
+    fake.emit({ type: 'tool_execution_end', toolCallId: 'busy_call', toolName: 'bash', isError: false });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve(); await service.waitForIdle();
+    workspaceOptions.onProcessTerminal({ toolCallId: 'busy_call', operation: 'bash', workspace: {
+      ...workspace, state: 'sandbox_denied', terminationGuarantee: 'not_applicable', terminationScope: 'not_applicable',
+      sideEffects: 'none', ...(error && { error }),
+    } });
+    expect(service.getState().transcript[0].activity[0]).toMatchObject({
+      status: 'failed', errorCode: expected, workspace: { state: 'sandbox_denied' },
+    });
+    await service.dispose();
+  });
+
   test('finishes Stop at its deadline when both Pi abort and execution remain wedged', async () => {
     const fake = createFakeSession();
     fake.session.abort.mockImplementation(() => new Promise(() => {}));
