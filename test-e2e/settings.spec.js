@@ -830,6 +830,67 @@ test.describe('Search settings (#281)', () => {
     expect(await page.evaluate(() => document.activeElement?.id)).toBe('settings-search');
   });
 
+  // Allow seeding from private windows (freedom-core design 0008, question
+  // 11): its label finds it in Advanced, the result opens Advanced on the
+  // row, and the switch, off by default, is saved as it changes.
+  test('Allow seeding from private windows: found in Advanced, off by default, saved on change', async ({
+    window,
+    electronApp,
+  }) => {
+    await openSettings(window, expect);
+    let page;
+    await expect
+      .poll(() => {
+        page = electronApp
+          .windows()
+          .find((candidate) => candidate.url().includes('/pages/settings.html'));
+        return Boolean(page);
+      })
+      .toBe(true);
+
+    const field = page.locator('#settings-search');
+    await field.click();
+    await field.pressSequentially('seeding from private');
+    const result = page
+      .locator('#settings-search-list .settings-search-result')
+      .filter({ hasText: 'Allow seeding from private windows' });
+    await expect(result).toHaveCount(1);
+    await expect(result.locator('.settings-search-section')).toHaveText('Advanced');
+    await result.click();
+
+    await expect(page.locator('#experimental')).toBeVisible();
+    await expect(page.locator('.nav-item.active')).toHaveAttribute('data-target', 'advanced');
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            document
+              .getElementById('allow-private-radicle-seeding-row')
+              ?.classList.contains('settings-search-hit') === true
+        )
+      )
+      .toBe(true);
+    await expect(page.locator('#allow-private-radicle-seeding-row')).toBeVisible();
+
+    const toggle = page.locator('#allow-private-radicle-seeding');
+    await expect(toggle).not.toBeChecked();
+    // The input is visually hidden behind its slider: dispatch the change
+    // its label would.
+    const set = (value) =>
+      page.evaluate((checked) => {
+        const input = document.getElementById('allow-private-radicle-seeding');
+        input.checked = checked;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }, value);
+    const saved = () =>
+      window.evaluate(async () => (await window.electronAPI.getSettings()).allowPrivateRadicleSeeding);
+    expect(await saved()).toBe(false);
+    await set(true);
+    await expect.poll(saved).toBe(true);
+    await set(false);
+    await expect.poll(saved).toBe(false);
+  });
+
   test('Enter opens the top result, and the index reaches a section rendered from IPC state', async ({
     window,
     electronApp,

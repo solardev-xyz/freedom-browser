@@ -455,3 +455,129 @@ describe('raw files: images and downloads', () => {
     expect(policy).not.toMatch(/img-src [^;]*radapi:/);
   });
 });
+
+// Allow seeding from private windows (freedom-core design 0008, question 11):
+// the repository-not-found state offers Seed where main says this window may
+// seed, which a private window may only with the setting on, and a note
+// naming the setting where it may not. Main decides each seed itself too.
+describe('the Seed offer (0008, question 11)', () => {
+  const classes = (...initial) => {
+    const set = new Set(initial);
+    return {
+      toggle: (name, on) => (on ? set.add(name) : set.delete(name)),
+      contains: (name) => set.has(name),
+    };
+  };
+
+  function page(freedomAPI) {
+    const ui = {
+      window: { freedomAPI },
+      seedBtn: { classList: classes(), addEventListener: jest.fn(), disabled: true },
+      seedPrivateNote: { classList: classes('hidden') },
+      seedStatus: { className: 'seed-status show seeding', textContent: 'Setting seeding policy…' },
+      rid: 'z3gqcJUoA1n9HaHKufZs5FCSGazv5',
+    };
+    globalThis.__radSeedPage = ui;
+    const helpers = loadHelpers(
+      ['refreshSeedOffer', 'offerSeed', 'getErrorMessage', 'seedProgressText', 'seedRepository'],
+      'const { window, seedBtn, seedPrivateNote, seedStatus, rid } = globalThis.__radSeedPage; let seedOffered = false;'
+    );
+    const shown = () => ({
+      seed: !ui.seedBtn.classList.contains('hidden'),
+      note: !ui.seedPrivateNote.classList.contains('hidden'),
+    });
+    return { ...ui, ...helpers, shown };
+  }
+
+  afterEach(() => {
+    delete globalThis.__radSeedPage;
+  });
+
+  test('Seed where main says the window may seed, the note where it may not', async () => {
+    const allowed = page({ getRadicleSeedAvailability: jest.fn(async () => ({ available: true })) });
+    await allowed.refreshSeedOffer();
+    expect(allowed.shown()).toEqual({ seed: true, note: false });
+
+    const refused = page({ getRadicleSeedAvailability: jest.fn(async () => ({ available: false })) });
+    await refused.refreshSeedOffer();
+    expect(refused.shown()).toEqual({ seed: false, note: true });
+  });
+
+  test("a page that can't ask keeps the button: main refuses the seed itself if it must", async () => {
+    for (const freedomAPI of [
+      undefined,
+      {},
+      { getRadicleSeedAvailability: jest.fn(async () => undefined) },
+      { getRadicleSeedAvailability: jest.fn(async () => ({ available: 'no' })) },
+      {
+        getRadicleSeedAvailability: jest.fn(async () => {
+          throw new Error('refused');
+        }),
+      },
+    ]) {
+      const ui = page(freedomAPI);
+      await ui.refreshSeedOffer();
+      expect(ui.shown()).toEqual({ seed: true, note: false });
+    }
+  });
+
+  test('wired once, and following the setting while the page is open', async () => {
+    let available = false;
+    const listeners = [];
+    const ui = page({
+      getRadicleSeedAvailability: jest.fn(async () => ({ available })),
+      onSettingsUpdated: jest.fn((listener) => listeners.push(listener)),
+    });
+    await ui.offerSeed();
+    await ui.offerSeed();
+    expect(ui.shown()).toEqual({ seed: false, note: true });
+    expect(ui.seedBtn.addEventListener).toHaveBeenCalledTimes(1);
+    expect(ui.seedBtn.addEventListener).toHaveBeenCalledWith('click', expect.any(Function));
+    expect(listeners).toHaveLength(1);
+
+    available = true;
+    await listeners[0]({ allowPrivateRadicleSeeding: true });
+    expect(ui.shown()).toEqual({ seed: true, note: false });
+  });
+
+  test("Cancel on main's prompt leaves the page as it was", async () => {
+    const ui = page({
+      seedRadicle: jest.fn(async () => ({
+        success: false,
+        error: { code: 'RADICLE_SEED_CANCELLED', message: 'Seeding was cancelled' },
+      })),
+      onRadicleSeedStatus: jest.fn(() => () => {}),
+    });
+    await ui.seedRepository();
+    expect(ui.window.freedomAPI.seedRadicle).toHaveBeenCalledWith(ui.rid);
+    expect(ui.seedBtn.disabled).toBe(false);
+    expect(ui.seedStatus).toEqual({ className: 'seed-status', textContent: '' });
+  });
+
+  test("main's refusal is shown as a failed seed, as before", async () => {
+    const ui = page({
+      seedRadicle: jest.fn(async () => ({
+        success: false,
+        error: {
+          code: 'RADICLE_PRIVATE_WINDOW',
+          message: 'Seeding is not available in private windows',
+        },
+      })),
+      onRadicleSeedStatus: jest.fn(() => () => {}),
+    });
+    await ui.seedRepository();
+    expect(ui.seedBtn.disabled).toBe(false);
+    expect(ui.seedStatus).toEqual({
+      className: 'seed-status show error',
+      textContent: 'Could not fetch repository: Seeding is not available in private windows',
+    });
+  });
+
+  test('the note names the setting and where it is', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'rad-browser.html'), 'utf8');
+    const note = html.match(/<p id="seed-private-note" class="hidden">([\s\S]*?)<\/p>/);
+    expect(note[1].replace(/\s+/g, ' ').trim()).toBe(
+      'Seeding is off in private windows. Turn on Allow seeding from private windows under Settings &gt; Advanced.'
+    );
+  });
+});

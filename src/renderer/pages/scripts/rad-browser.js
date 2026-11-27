@@ -29,6 +29,7 @@ const invalidRidError = document.getElementById('invalid-rid-error');
 const errorRid = document.getElementById('error-rid');
 const seedBtn = document.getElementById('seed-btn');
 const seedStatus = document.getElementById('seed-status');
+const seedPrivateNote = document.getElementById('seed-private-note');
 const repoCount = document.getElementById('repo-count');
 const repoList = document.getElementById('repo-list');
 const networkCount = document.getElementById('network-count');
@@ -1149,6 +1150,35 @@ function seedProgressText(status) {
   }
 }
 
+// Whether this window may seed (freedom-core design 0008, question 11): a
+// private window only with Allow seeding from private windows on. Main
+// answers from the window and the setting, and decides each seed itself
+// too, so a page that can't ask keeps the button. Otherwise a note takes
+// its place, naming where the setting is.
+async function refreshSeedOffer() {
+  let available = true;
+  try {
+    const answer = await window.freedomAPI?.getRadicleSeedAvailability?.();
+    if (typeof answer?.available === 'boolean') available = answer.available;
+  } catch {
+    // Main refuses the seed itself if it must.
+  }
+  seedBtn.classList.toggle('hidden', !available);
+  seedPrivateNote.classList.toggle('hidden', available);
+}
+
+// The repository-not-found state's Seed offer: shown by the window's
+// availability, which follows the setting while the page is open. Wired
+// once, however often the state is shown.
+let seedOffered = false;
+async function offerSeed() {
+  await refreshSeedOffer();
+  if (seedOffered) return;
+  seedOffered = true;
+  seedBtn.addEventListener('click', seedRepository);
+  window.freedomAPI?.onSettingsUpdated?.(() => refreshSeedOffer());
+}
+
 async function seedRepository() {
   if (!rid) return;
 
@@ -1192,6 +1222,14 @@ async function seedRepository() {
     // Status transitions arrive over IPC; the invoke result is also fed into
     // the same handler so a fetch that completes immediately cannot race us.
     const result = await window.freedomAPI.seedRadicle(rid);
+    // A private window's seed waits on main's prompt, and its Cancel leaves
+    // the page as it was.
+    if (result?.error?.code === 'RADICLE_SEED_CANCELLED') {
+      seedBtn.disabled = false;
+      seedStatus.className = 'seed-status';
+      seedStatus.textContent = '';
+      return;
+    }
     if (!result.success) throw new Error(getErrorMessage(result));
     handleStatus(result.status);
     timeout = setTimeout(
@@ -1283,10 +1321,10 @@ async function init() {
 
     if (!meta) {
       // 404 — repository not found
+      await offerSeed();
       showState('error');
       const repos = await fetchAvailableRepos();
       renderRepoList(repos);
-      seedBtn.addEventListener('click', seedRepository);
       fetchNetworkRepos().then(renderNetworkRepoList);
       return;
     }
@@ -1359,10 +1397,10 @@ async function init() {
     if (err.name === 'TimeoutError' || err.message.includes('fetch')) {
       showState('connection-error');
     } else {
+      await offerSeed();
       showState('error');
       const repos = await fetchAvailableRepos();
       renderRepoList(repos);
-      seedBtn.addEventListener('click', seedRepository);
       fetchNetworkRepos().then(renderNetworkRepoList);
     }
   }

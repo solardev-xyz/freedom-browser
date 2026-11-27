@@ -93,6 +93,17 @@ const DEFAULT_SETTINGS = {
   // once: the node's process restarts under the new policy. The add-on,
   // development builds' rollback, ignores it and connects directly.
   routeRadicleThroughTor: false,
+  // Allow seeding from private windows (freedom-core design 0008, "Private
+  // windows", question 11): when true, a seed the user starts from a private
+  // window, and confirms in main's prompt, works as a normal window's: the
+  // repository stays in the profile after the window closes, and is
+  // announced. Off by default: private windows stay read-only. Sync, clones
+  // other than that seed's own fetch, COB writes and imports stay refused in
+  // private windows either way (radicle-manager.js RADICLE_SEED). Stored only
+  // as a boolean, and written over IPC only by Settings or the chrome
+  // (ipc-sender-policy.js): turning it on lets a private window leave a
+  // repository behind.
+  allowPrivateRadicleSeeding: false,
   autoUpdate: true,
   showBookmarkBar: false,
   // When true, every download opens a native save dialog. Off by default:
@@ -299,6 +310,7 @@ function withDefaults(parsed) {
   const settings = { ...DEFAULT_SETTINGS, ...parsed };
   settings.enableAi = parsed.enableAi === true;
   settings.loadOnlyVerifiedContent = parsed.loadOnlyVerifiedContent === true;
+  settings.allowPrivateRadicleSeeding = parsed.allowPrivateRadicleSeeding === true;
   settings.aiInvitationDismissed = normalizeAiInvitationDismissed(parsed.aiInvitationDismissed);
   return settings;
 }
@@ -417,6 +429,7 @@ function saveSettings(newSettings) {
 
         if (key === 'enableAi' && typeof newSettings[key] !== 'boolean') continue;
         if (key === 'loadOnlyVerifiedContent' && typeof newSettings[key] !== 'boolean') continue;
+        if (key === 'allowPrivateRadicleSeeding' && typeof newSettings[key] !== 'boolean') continue;
         if (key === 'aiInvitationDismissed' && !isAiInvitationDismissed(newSettings[key])) continue;
 
         if (key === 'shortcutOverrides') {
