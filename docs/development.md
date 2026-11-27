@@ -148,6 +148,14 @@ The fake can't show what the OS and the device do, so on each OS the probe must 
 
 A packaged build adds what the probe can't reach (R8): the utility process loading node-hid from `app.asar.unpacked`, and on macOS the helper's signature under the hardened runtime. Check those in a packaged build before LDG-3's last step makes the core the default.
 
+**Recording a real Ledger's answers** (`scripts/ledger-record.js`, development only, never packaged) writes one device's file in the form of freedom-core's `vectors/ledger-devices.json`, for the core's replay test. Use a Ledger reset to the public test phrase (`abandon` ×11, `about`) and never funded: the recorder reads the first account before it records anything and refuses any other seed. With Ledger Live closed and the Ledger unlocked in the Ethereum app, blind signing off:
+
+```bash
+ELECTRON_RUN_AS_NODE=1 npx electron scripts/ledger-record.js --model <nanoSP|nanoX|stax|flex|nanoS> --out ledger-devices-<model>.json
+```
+
+It asks for the firmware version (or takes `--firmware <version>`), then says what to do on the device at each step: transactions, a message, typed data field by field, the name-edge cases, adding an account, a rejection, a contract call with blind signing off and then on, an unplug, and a cancel while the old prompt shows; on a Nano S, only the hash-only cases. Each step's APDUs are main's own stream (the core's, by the joint contract), or the reference's for F-2's non-ASCII names; each exchange is timed (R3), and an answer held until the user goes on is marked (R2). The file is written after every step, never over an existing one. `scripts/ledger-record.test.js` runs it whole against the fake node-hid.
+
 ### Experimental Windows Agent workspace backend
 
 On the Agent Windows branch, build the native workspace helpers on Windows with
