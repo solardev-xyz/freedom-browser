@@ -20,12 +20,14 @@
  * - Every request runs under its method's hang watchdog (core-deadlines.js):
  *   15 s for an immediate method, 45 s on the vault queue. A core that hangs
  *   past it is killed and restarted, which fails the request
- *   `core_unavailable`, so a mutation reconciles as after a crash.
+ *   `core_unavailable`, so a mutation reconciles as after a crash. A
+ *   request that drives a Ledger (design 0016) goes only through
+ *   `ledgerCall`, under the device watchdog its params give it.
  */
 
 const log = require('../logger');
 const { getCoreClient } = require('./core-process');
-const { watchdogMs } = require('./core-deadlines');
+const { deviceWatchdogMs, drivesDevice, isDeviceMethod, watchdogMs } = require('./core-deadlines');
 const { keyStoreMessage } = require('./key-store-messages');
 const { requiresStore } = require('./core-client');
 
@@ -101,6 +103,23 @@ function decodablePage(page) {
   );
 }
 
+/** A request's context: main itself (`shell`), the chrome's relayed
+ * (`'chrome'`), or a page's with its PageContext (`call`). */
+function contextOf(page) {
+  if (page === 'chrome') return { caller: 'chrome' };
+  if (!page) return { caller: 'shell' };
+  if (decodablePage(page)) return { caller: 'page', page };
+  throw new VaultBackendError('invalid_argument', 'A page request needs its page’s context');
+}
+
+/** A request's failure as a VaultBackendError, the key store's and the
+ * secrets file's with main's own message (`call`). */
+function backendError(err) {
+  if (err instanceof VaultBackendError) return err;
+  const code = err.code || CORE_UNAVAILABLE;
+  return new VaultBackendError(code, keyStoreMessage(code, err.data) ?? err.message, err.data);
+}
+
 /**
  * One core request under its watchdog: from main itself (caller `shell`), or
  * for a page's request under `page` with its PageContext (freedom-core
@@ -115,22 +134,63 @@ function decodablePage(page) {
  * `requiresStore(name)` (core-client.js), so a core whose hello didn't
  * echo the store fails them `requirement_unmet` in main, unsent. Null
  * (the default) for every other request.
+ *
+ * The watchdog is the method's (`watchdogMs`), which takes no params. A
+ * request that drives a Ledger (design 0016, `drivesDevice`: a Ledger
+ * key's `sign.*`, every `ledger.*`, `x402.settle { reservation,
+ * typed_data }`) would be killed at its 15 s, so it is refused here,
+ * `invalid_argument`, unsent: it goes through `ledgerCall`.
  */
 async function call(method, params = {}, page = null, { requires = null } = {}) {
-  let context;
-  if (page === 'chrome') context = { caller: 'chrome' };
-  else if (!page) context = { caller: 'shell' };
-  else if (decodablePage(page)) context = { caller: 'page', page };
-  else throw new VaultBackendError('invalid_argument', 'A page request needs its page’s context');
+  const context = contextOf(page);
   try {
+    if (isDeviceMethod(method) && drivesDevice(method, params)) {
+      throw new VaultBackendError('invalid_argument', 'A Ledger request goes through ledgerCall');
+    }
     return await client().request(method, params, context, {
       watchdogMs: watchdogMs(method),
       requires,
     });
   } catch (err) {
-    if (err instanceof VaultBackendError) throw err;
-    const code = err.code || CORE_UNAVAILABLE;
-    throw new VaultBackendError(code, keyStoreMessage(code, err.data) ?? err.message, err.data);
+    throw backendError(err);
+  }
+}
+
+/**
+ * A request of a device-class method (freedom-core design 0016, D7) under
+ * the watchdog its params give it (core-deadlines.js `deviceWatchdogMs`):
+ * one that drives a Ledger (`drivesDevice`) goes with the client's device
+ * watchdog, 5 minutes and 15 s until its first `shell.ledger_apdu` (7
+ * minutes and 15 s for a Ledger owner's Safe signature), which main's
+ * relay sets again at each APDU and each answer (service-client.js
+ * `watchdogReset`, keyed by what `onSent` reports); any other goes with
+ * its plain watchdog. LDG-3's Ledger flows send through this.
+ *
+ * `ledgerOwner`: whether a `safe.sign_owner` or `safe.message_sign`
+ * names a Ledger owner, from main's record of it. `page` and `requires`
+ * are `call`'s; `onSent` and `signal` the client's (service-client.js
+ * `requestTo`).
+ */
+async function ledgerCall(
+  method,
+  params,
+  page = null,
+  { ledgerOwner = false, onSent = null, signal = null, requires = null } = {}
+) {
+  const context = contextOf(page);
+  try {
+    const ms = deviceWatchdogMs(method, params, { ledgerOwner });
+    const watchdog = drivesDevice(method, params, { ledgerOwner })
+      ? { deviceWatchdogMs: ms }
+      : { watchdogMs: ms };
+    return await client().request(method, params, context, {
+      ...watchdog,
+      onSent,
+      signal,
+      requires,
+    });
+  } catch (err) {
+    throw backendError(err);
   }
 }
 
@@ -1230,6 +1290,7 @@ module.exports = {
   // For tests.
   _internal: {
     call,
+    ledgerCall,
     wordsFor,
     reset() {
       locks = 0;
