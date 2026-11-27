@@ -626,7 +626,8 @@ function ledgerEntry(detected, reply, ledger, origin) {
  *   device's signature never left main, as main's relay saw it
  *   (`handle.signed`: refused before the device or unsent, then settled
  *   `withheld`; rejected on the device; failed or ended before the
- *   signature), whatever the core says of its charge. Otherwise (a signed
+ *   signature was handed to the core, a signature its cancel overtook
+ *   included), whatever the core says of its charge. Otherwise (a signed
  *   payment, or one the core failed after the signature) it stays until
  *   main's mirror accounts for the spend or another cap takes its key
  *   (`awaitSpend`), checked once a mirror read asked after the end lands

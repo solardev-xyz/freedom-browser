@@ -725,6 +725,44 @@ describeIfVectors("a Ledger auto-pay on the core: main's holds against the cap",
     expect(heldOf(c)).toBe(0n);
   });
 
+  test("the core's cancel overtakes the device's signature: no signature left main, the hold is let go at once", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    capFor(c, '15000');
+    readHeld();
+    // The device's signature reaches the relay after the core's cancel of
+    // the last APDU (a device whose answer outlives main letting go of it).
+    started.devices.respond = answersOf(c, { [lastApdu(c)]: { hold: true, outlives: true } });
+    let settleId = null;
+    let lastAsk = null;
+    const fc = serveX402({
+      authorize: () => authorizeReply(c, { charged: true }),
+      settle: (message) => {
+        settleId = message.id;
+        const apdus = honest.get(c.id);
+        playLane(fc, message.id, apdus.slice(0, -1)).then(() => {
+          lastAsk = fc.apdu(message.id, apdus.at(-1), USER_MS);
+        });
+      },
+    });
+    const paid = pay(c, { authorizedBy: 'cap' });
+    await until(() => started.devices.held.length === 1, 'the device waiting for the user');
+
+    fc.cancel(lastAsk);
+    await until(() => fc.reply(lastAsk) !== null, 'the cancelled reply');
+    expect(fc.reply(lastAsk)).toEqual({ cancelled: true });
+    const signature = c.exchanges[lastApdu(c)].answer;
+    started.devices.release(signature);
+    await settle();
+    expect(started.devices.of('answer').at(-1).answer).toBe(signature);
+    fc.fail(settleId, cancelled);
+    const { error } = await paid;
+
+    expect(error.code).toBe('cancelled');
+    expect(heldOf(c)).toBe(0n);
+    expect(fc.faults).toEqual([]);
+  });
+
   test('the core exits after the device signed: the hold is kept until the mirror accounts for it', async () => {
     const [, c] = FORMS[0];
     recordFor(c);

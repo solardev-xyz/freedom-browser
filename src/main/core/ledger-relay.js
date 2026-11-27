@@ -111,10 +111,13 @@
  *   window); `signal` aborts when main stops waiting for that report, or
  *   when the parent ends.
  * - `handle.signed`: whether the device answered the operation's last APDU
- *   (a signature's `E0 0C`) with status `9000` and main passed that answer
- *   to the core, however the parent then ended (a late answer included):
- *   the device's signature may have left main. False otherwise: the core
- *   holds no signature of the device's for the parent, whatever it says.
+ *   (a signature's `E0 0C`) with status `9000` and main handed that answer
+ *   to the pipe (latched by the handler's `onAnswer`), however the parent
+ *   then ended (a late answer included): the device's signature may have
+ *   left main. False otherwise, an answer the core's cancel overtook among
+ *   them (that APDU answered `cancelled` at once, the device's answer
+ *   dropped): the core holds no signature of the device's for the parent,
+ *   whatever it says.
  */
 
 const defaultLog = require('../logger');
@@ -348,7 +351,7 @@ class LedgerRelay {
       beforeSignAsked: false,
       hashOnlySurface,
       stopped: null,
-      // A 9000 answer to its last APDU went to the core (`handle.signed`).
+      // A 9000 answer to its last APDU was handed to the pipe (`handle.signed`).
       signed: false,
       device: null,
       deviceClosed: false,
@@ -503,7 +506,7 @@ class LedgerRelay {
       }
       const verdict = entry.admission.admit(ask.apdu);
       if (verdict.rule) return this.refuse(entry, verdict.rule);
-      return await this.carry(entry, ask, verdict, signal);
+      return await this.carry(entry, ask, verdict, signal, onAnswer);
     } catch (err) {
       if (err instanceof ShellError) throw err;
       return this.fault(entry, err);
@@ -528,7 +531,7 @@ class LedgerRelay {
   }
 
   /** An admitted APDU: held where the design holds it, exchanged once, answered. */
-  async carry(entry, ask, { row, waits }, signal) {
+  async carry(entry, ask, { row, waits }, signal, onAnswer) {
     if ((ask.deadlineMs === USER_MS) !== (waits === true)) {
       this.log.warn("[Ledger] deadline_ms isn't the row's", { row, deadline_ms: ask.deadlineMs });
     }
@@ -553,7 +556,7 @@ class LedgerRelay {
         const stop = await this.beforeSign(entry, apdu, signal);
         if (stop) return stop;
       }
-      return await this.exchange(entry, ask, apdu, signal);
+      return await this.exchange(entry, ask, apdu, signal, onAnswer);
     } finally {
       signal?.removeEventListener('abort', onCancel);
     }
@@ -579,7 +582,7 @@ class LedgerRelay {
   }
 
   /** The one exchange, under `deadline_ms` from the APDU's arrival. */
-  async exchange(entry, ask, apdu, signal) {
+  async exchange(entry, ask, apdu, signal, onAnswer) {
     if (entry.life.signal.aborted || signal?.aborted) return { failed: 'disconnected' };
     const device = this.deviceFor(entry);
     let timedOut = false;
@@ -608,18 +611,39 @@ class LedgerRelay {
       this.log.warn('[Ledger] the device gave an answer out of bounds');
       return this.failed(entry, 'disconnected');
     }
-    // The operation's last APDU, answered 9000: the device's signature goes
-    // to the core with this answer, whether or not the parent still waits.
-    if (this.isLast(entry) && Buffer.from(answer).readUInt16BE(answer.length - 2) === STATUS_OK) {
-      entry.signed = true;
-    }
+    // The operation's last APDU, answered 9000: the device's signature, which
+    // leaves main only with this answer (`signedOnHandOff`).
+    const signature =
+      this.isLast(entry) && Buffer.from(answer).readUInt16BE(answer.length - 2) === STATUS_OK;
     // Ended meanwhile (the core's cancel, main's own): whatever the exchange
     // gave, which the core drops as late.
-    if (signal?.aborted || !this.answering(entry)) return { answer: hex(answer) };
+    if (signal?.aborted || !this.answering(entry)) {
+      if (signature) this.signedOnHandOff(entry, signal, onAnswer);
+      return { answer: hex(answer) };
+    }
     if (entry.admission.isHashOnlyAnswer(answer)) return this.hashOnly(entry, answer, apdu, signal);
     entry.admission.answered({ answer });
     if (this.over(entry)) this.closeDevice(entry);
+    if (signature) this.signedOnHandOff(entry, signal, onAnswer);
     return { answer: hex(answer) };
+  }
+
+  /**
+   * `handle.signed`, latched as main hands the device's signature to the
+   * pipe (the handler's `onAnswer`, service-client.js), never before. Once
+   * the core has cancelled the APDU (its signal aborted), the service
+   * client has answered it `cancelled` at once (`race`) and drops this
+   * answer, so nothing is latched; and a hook run for another of the
+   * request's answers (that `cancelled`) finds the signal aborted. Without
+   * the hook (no service client), the answer is handed over by returning.
+   */
+  signedOnHandOff(entry, signal, onAnswer) {
+    if (signal?.aborted) return;
+    const latch = () => {
+      if (!signal?.aborted) entry.signed = true;
+    };
+    if (typeof onAnswer === 'function') onAnswer(latch);
+    else latch();
   }
 
   /** A `{ failed }` answer: the operation ends, and the device closes. */
