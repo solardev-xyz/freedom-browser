@@ -241,7 +241,10 @@
         {
           "from": "out/linux-workspace-owner/${arch}/",
           "to": "linux-workspace-owner",
-          "filter": ["freedom-linux-workspace-owner", "manifest.json"]
+          "filter": [
+            "freedom-linux-workspace-owner",
+            "manifest.json"
+          ]
         },
         {
           "from": "radicle-bin/${os}-${arch}/",
@@ -316,7 +319,12 @@
         {
           "from": "out/windows-workspace/${arch}/",
           "to": "windows-workspace",
-          "filter": ["*.exe", "manifest.json", "CODEX-*.txt", "CODEX-*.json"]
+          "filter": [
+            "*.exe",
+            "manifest.json",
+            "CODEX-*.txt",
+            "CODEX-*.json"
+          ]
         },
         {
           "from": "radicle-bin/${os}-${arch}/",
@@ -424,7 +432,7 @@
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^45.2.1",
+    "electron": "^45.5.0",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.1",
     "eslint": "^10.12.0",

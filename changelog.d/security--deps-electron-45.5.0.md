@@ -1,0 +1,2 @@
+- Updated runtime dependencies:
+  - Electron 45.2.1 to 45.5.0 (Chromium 156.0.8078.75 to 156.0.8078.109, Node 24.22.1 to 24.22.3)
