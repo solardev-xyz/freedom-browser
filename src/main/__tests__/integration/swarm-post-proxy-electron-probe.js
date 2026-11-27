@@ -299,6 +299,10 @@ async function main() {
   const originPort = await startOrigin();
   const socksPort = await startSocks(originPort);
   const ses = session.defaultSession;
+  // Before anything loads: Electron's spell checker downloads its Hunspell
+  // dictionary through the session (a gvt1.com fetch on Linux and Windows),
+  // which would take the proxy the legs below set.
+  ses.setSpellCheckerEnabled(false);
   const remote = `http://${NODE_HOST}:${originPort}`;
   const results = { remote };
 

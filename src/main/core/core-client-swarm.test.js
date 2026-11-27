@@ -49,6 +49,7 @@ const {
   KIND_FRAGMENT,
   KIND_LAST,
   KIND_STREAM_CREDIT,
+  SWARM_PART_ABORT_CODES,
   WINDOW,
 } = require('./frame');
 const { idleWatchdogMs, watchdogMs } = require('./core-deadlines');
@@ -823,6 +824,269 @@ describe("main's Swarm I/O pool (design 0015)", () => {
     ]);
     expect(core().dataOf(1).length).toBe(10);
     expect(core().framesOf(KIND_END, 1)).toHaveLength(1);
+  });
+
+  test("a handler's id is the core's, and its onRelease runs once what it charged is released: a whole reply's at its write, a stream's at its terminal, a dropped one's at once", async () => {
+    const pool = new SwarmIoPool();
+    makeClient(coreWith());
+    const seen = [];
+    const released = [];
+    client.handle(
+      'shell.swarm_api',
+      (_params, { id, charge, onRelease }) => {
+        seen.push(id);
+        charge(64 * KIB);
+        onRelease(() => released.push([id, pool.held]));
+        return { status: 200 };
+      },
+      { pool, failure: FAILED, race: true }
+    );
+    client.handle(
+      'shell.swarm_part',
+      (_params, { id, charge, onRelease }) => {
+        seen.push(id);
+        charge(256 * KIB);
+        onRelease(() => released.push([id, pool.held]));
+        return new StreamedReply({ bytes: WINDOW + 1 }, source(WINDOW + 1).stream, {
+          bodyFlag: false,
+        });
+      },
+      { streams: true, pool, race: true }
+    );
+    await client.start();
+    core().send({ type: 'request', id: 7, method: 'shell.swarm_api', params: {} });
+    core().send({ type: 'request', id: 8, method: 'shell.swarm_part', params: {} });
+    await settle();
+    expect(seen).toEqual([7, 8]);
+    // The whole reply is written; the stream waits for credit.
+    expect(released).toEqual([[7, 256 * KIB]]);
+    core().write(encodeStreamCredit(8, 64 * KIB));
+    await settle();
+    expect(core().framesOf(KIND_END, 8)).toHaveLength(1);
+    expect(released).toEqual([
+      [7, 256 * KIB],
+      [8, 0],
+    ]);
+    // A reply the core's end drops: released with the generation.
+    core().stuck = true;
+    core().send({ type: 'request', id: 9, method: 'shell.swarm_api', params: {} });
+    await settle();
+    core().exit(1);
+    await settle();
+    expect(released.at(-1)).toEqual([9, 0]);
+    expect(pool.held).toBe(0);
+  });
+
+  test("a streamed reply's onProgress sees each of main's frames as it is written and each of the core's credits, to its terminal", async () => {
+    makeClient(coreWith());
+    const progress = [];
+    client.handle(
+      'shell.swarm_part',
+      () =>
+        new StreamedReply({ bytes: WINDOW + 10 }, source(WINDOW + 10).stream, {
+          bodyFlag: false,
+          onProgress: () => progress.push(core().streams.length + core().replies().length),
+        }),
+      { streams: true, race: true }
+    );
+    await client.start();
+    core().send({ type: 'request', id: 1, method: 'shell.swarm_part', params: {} });
+    await settle();
+    // The head, and the window's two data frames.
+    expect(core().dataOf(1).length).toBe(WINDOW);
+    expect(progress).toHaveLength(3);
+    // The core's credit, then the last bytes and the end.
+    core().write(encodeStreamCredit(1, 64 * KIB));
+    await settle();
+    expect(core().framesOf(KIND_END, 1)).toHaveLength(1);
+    expect(progress).toHaveLength(6);
+    // Nothing after its terminal.
+    core().write(encodeStreamCredit(1, 10));
+    await settle();
+    expect(progress).toHaveLength(6);
+  });
+
+  test("onAnswer runs as main hands a whole reply to the pipe; abortStream then purges the data and end a stream's sender still holds, so only its abort follows the answer", async () => {
+    let streamsAtReply = null;
+    makeClient(
+      coreWith((message, core) => {
+        if (message.type === 'response' && message.id === 2) streamsAtReply = core.streams.length;
+      })
+    );
+    const part = source(10 * KIB);
+    let abortPart = null;
+    client.handle(
+      'shell.swarm_part',
+      (_params, { abortStream }) => {
+        abortPart = abortStream;
+        return new StreamedReply({ bytes: 10 * KIB }, part.stream, { bodyFlag: false });
+      },
+      { streams: true, race: true }
+    );
+    let answer;
+    const ready = new Promise((resolve) => {
+      answer = resolve;
+    });
+    const hooks = [];
+    client.handle(
+      'shell.swarm_api',
+      async (_params, { onAnswer }) => {
+        onAnswer(() => {
+          hooks.push(client.current.answers.has(2));
+          abortPart(new Error('its call is over'));
+        });
+        await ready;
+        return { status: 201 };
+      },
+      { failure: FAILED, race: true }
+    );
+    await client.start();
+    // The core stops reading: the part's head is in flight, and its bytes,
+    // read to their end, and its end wait in the sender.
+    core().stuck = true;
+    core().send({ type: 'request', id: 1, method: 'shell.swarm_part', params: {} });
+    core().send({ type: 'request', id: 2, method: 'shell.swarm_api', params: {} });
+    for (let i = 0; i < 100 && client.streamStats()?.held !== 10 * KIB; i++) await settle();
+    expect(part.read).toBe(10 * KIB);
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 10 * KIB });
+    answer();
+    for (let i = 0; i < 100 && hooks.length === 0; i++) await settle();
+    // The hook ran once, as the reply went into the pipe.
+    expect(hooks).toEqual([false]);
+    core().release();
+    for (let i = 0; i < 100 && core().framesOf(KIND_ABORT, 1).length === 0; i++) await settle();
+    expect(
+      core()
+        .replies()
+        .map((r) => r.id)
+    ).toEqual([1, 2]);
+    expect(
+      core()
+        .streams.slice(streamsAtReply)
+        .map((f) => [f.kind, f.id])
+    ).toEqual([[KIND_ABORT, 1]]);
+    expect(core().framesOf(KIND_ABORT, 1)[0].code).toBe('body_stream_error');
+    expect(core().dataOf(1).length + core().framesOf(KIND_END, 1).length).toBe(0);
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, sending: 0 });
+    // Once its terminal is written, abortStream does nothing.
+    abortPart(new Error('late'));
+    await settle();
+    expect(core().framesOf(KIND_ABORT, 1)).toHaveLength(1);
+  });
+
+  test("onAnswer for a streams handler's reply runs as the sender hands it to a write, before another frame is taken: another stream's queued data and end are purged, and its abort follows the reply in the same write", async () => {
+    let streamsAtReply = null;
+    makeClient(
+      coreWith((message, core) => {
+        if (message.type === 'response' && message.id === 2) streamsAtReply = core.streams.length;
+      })
+    );
+    const part = source(10 * KIB);
+    let abortPart = null;
+    client.handle(
+      'shell.swarm_part',
+      (_params, { abortStream }) => {
+        abortPart = abortStream;
+        return new StreamedReply({ bytes: 10 * KIB }, part.stream, { bodyFlag: false });
+      },
+      { streams: true, race: true }
+    );
+    let answer;
+    const ready = new Promise((resolve) => {
+      answer = resolve;
+    });
+    let runs = 0;
+    // A streams handler: its reply goes through the duplex's sender.
+    client.handle(
+      'shell.swarm_api',
+      async (_params, { onAnswer }) => {
+        onAnswer(() => {
+          runs += 1;
+          abortPart(new Error('its call is over'));
+        });
+        await ready;
+        return { status: 201 };
+      },
+      { streams: true, failure: FAILED, race: true }
+    );
+    await client.start();
+    // The core stops reading: the part's head is in flight; its bytes and
+    // its end wait in the sender, and the reply queues beside them.
+    core().stuck = true;
+    core().send({ type: 'request', id: 1, method: 'shell.swarm_part', params: {} });
+    core().send({ type: 'request', id: 2, method: 'shell.swarm_api', params: {} });
+    for (let i = 0; i < 100 && client.streamStats()?.held !== 10 * KIB; i++) await settle();
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 10 * KIB });
+    answer();
+    await settle();
+    // Queued, not yet taken: the hook waits for the hand-off.
+    expect(runs).toBe(0);
+    core().release();
+    for (let i = 0; i < 100 && core().framesOf(KIND_ABORT, 1).length === 0; i++) await settle();
+    expect(runs).toBe(1);
+    expect(
+      core()
+        .replies()
+        .map((r) => r.id)
+    ).toEqual([1, 2]);
+    expect(
+      core()
+        .streams.slice(streamsAtReply)
+        .map((f) => [f.kind, f.id])
+    ).toEqual([[KIND_ABORT, 1]]);
+    expect(core().dataOf(1).length + core().framesOf(KIND_END, 1).length).toBe(0);
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, sending: 0 });
+    expect(client.current.answers.size).toBe(0);
+  });
+
+  test('abortStream lets go of a body still being read: its source cancelled, its abort sent', async () => {
+    makeClient(coreWith());
+    const part = source(WINDOW + 10);
+    let abortPart = null;
+    client.handle(
+      'shell.swarm_part',
+      (_params, { abortStream }) => {
+        abortPart = abortStream;
+        return new StreamedReply({ bytes: WINDOW + 10 }, part.stream, { bodyFlag: false });
+      },
+      { streams: true, sends: SWARM_PART_ABORT_CODES, race: true }
+    );
+    await client.start();
+    core().send({ type: 'request', id: 1, method: 'shell.swarm_part', params: {} });
+    for (let i = 0; i < 100 && core().dataOf(1).length < WINDOW; i++) await settle();
+    // The window sent; the rest waits for credit.
+    expect(core().dataOf(1).length).toBe(WINDOW);
+    abortPart(Object.assign(new Error('unreadable'), { errorCode: 'EIO' }));
+    for (let i = 0; i < 100 && core().framesOf(KIND_ABORT, 1).length === 0; i++) await settle();
+    expect(part.cancelled).toBe(true);
+    const [abort] = core().framesOf(KIND_ABORT, 1);
+    expect(abort.code).toBe('body_stream_error');
+    expect(abort.errorCode).toBe('EIO');
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, sending: 0 });
+  });
+
+  test("swarm.body's head { bytes } opens its body with no body flag; another stream request's head still needs one", async () => {
+    makeClient(coreWith());
+    await client.start();
+    const shell = { caller: 'shell' };
+    const upload = sendOwn((onSent) =>
+      client.callStream('swarm.body', { for: 1 }, shell, { idleWatchdogMs: 75_000, onSent })
+    );
+    const verify = sendOwn((onSent) => client.callStream('dweb.verify', {}, shell, { onSent }));
+    await settle();
+    core().send({ type: 'response', id: upload.sent.id, result: { bytes: 3 } });
+    core().send({ type: 'response', id: verify.sent.id, result: { bytes: 3 } });
+    const { result, body } = await upload.pending;
+    expect(result).toEqual({ bytes: 3 });
+    expect((await verify.pending).body).toBeNull();
+    core().write(encodeData(upload.sent.id, Buffer.from('abc')));
+    core().write(encodeEnd(upload.sent.id));
+    const reader = body.getReader();
+    expect(Buffer.from((await reader.read()).value).toString()).toBe('abc');
+    expect((await reader.read()).done).toBe(true);
+    await settle();
+    expect(client.current.idleWatchdogs.size).toBe(0);
+    expect(core().killed).toBeNull();
   });
 
   test("a reply dropped unwritten, or its core's end, releases its handler's charge", async () => {

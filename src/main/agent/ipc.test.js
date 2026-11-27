@@ -988,16 +988,21 @@ describe('Freedom agent IPC', () => {
   test('a turn a start or a resume launches runs for the owning chrome\'s window, however many awaits later (0011, phone jobs)', async () => {
     const { requestWindowId } = require('../windows/request-window');
     const seen = [];
+    // The turns the calls leave running, which the test waits for (the
+    // handlers never do).
+    const turns = [];
     // What the bridge reads for a phone job: once the call returns, and
     // from the turn it left running, after a timer and an immediate (an
     // approval waited on, a fee read).
     const launch = (label) => {
       seen.push([label, requestWindowId()]);
-      void (async () => {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        await new Promise((resolve) => setImmediate(resolve));
-        seen.push([`${label} turn`, requestWindowId()]);
-      })();
+      turns.push(
+        (async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await new Promise((resolve) => setImmediate(resolve));
+          seen.push([`${label} turn`, requestWindowId()]);
+        })()
+      );
     };
     const service = createService({
       start: jest.fn(async () => {
@@ -1013,7 +1018,8 @@ describe('Freedom agent IPC', () => {
     await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Send 1 xDAI' });
     await ctx.ipcMain.handlers.get(IPC.AGENT_PAUSE)({ sender: ctx.sender }, { runId: 'run_test' });
     await ctx.ipcMain.handlers.get(IPC.AGENT_RESUME)({ sender: ctx.sender }, { runId: 'run_test' });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(turns).toHaveLength(2);
+    await Promise.all(turns);
     expect(seen).toEqual(
       expect.arrayContaining([
         ['start', 3],
