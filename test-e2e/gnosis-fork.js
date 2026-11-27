@@ -504,7 +504,9 @@ async function startGnosisFork({ port, upstreams = reachableGnosisUpstreams(), l
  * would hold the app's first reads up. So the proxy refuses every upstream
  * read until the warm-up's calls have failed on it (measured: ~10 ms), then
  * forwards again. Nothing else reads the fork yet, and a read refused this
- * way is not cached: the same calls asked again afterwards succeed.
+ * way is not cached: the same calls asked again afterwards succeed. `warm`
+ * must settle only once every call it started has returned, or forwarding
+ * resumes under a call still running.
  */
 async function warmSharedState(
   rpc,
@@ -559,7 +561,13 @@ async function warmUp(rpc) {
     saltNonce: String(Date.now()),
     chainId: 100,
   });
-  await Promise.all([
+  // allSettled, not all: an overrun is settled only once every call has
+  // returned from anvil. With Promise.all, the first call failing on a
+  // refused read would read as settled and resume forwarding while a
+  // sibling chain (the gas estimate's ~80 reads), between reads at that
+  // instant, still had reads to send; they would go upstream and overlap
+  // the app's first reads.
+  const results = await Promise.allSettled([
     ...tokens.map((token) =>
       rpc('eth_call', [
         { to: token.address, data: ERC20.encodeFunctionData('balanceOf', [holder()]) },
@@ -570,6 +578,8 @@ async function warmUp(rpc) {
       { from: holder(), to: deployment.to, data: deployment.data, value: '0x0' },
     ]),
   ]);
+  const failed = results.find((result) => result.status === 'rejected');
+  if (failed) throw failed.reason;
 }
 
 /** Attach the fork's log (anvil + its upstream proxy) when a test failed. */

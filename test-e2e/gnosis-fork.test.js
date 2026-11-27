@@ -232,6 +232,48 @@ describe('gnosis-fork warm-up', () => {
     expect(await post(proxy.url)).toEqual({ status: 200, text: OK });
   });
 
+  test('an overrun is settled only once every warm-up call has returned', async () => {
+    // The real warmUp, over a stand-in for anvil: each balanceOf eth_call is
+    // one read the upstream stalls on (pending at the proxy when refused);
+    // the gas estimate is a chain of fast reads with gaps between them, so
+    // at the refusal it has no read pending. Settling on the first failed
+    // call would resume forwarding and let the chain's next read go out.
+    let stall = true;
+    const a = await fakeUpstream((body) =>
+      stall && body.includes('eth_call') ? 'stall' : { status: 200, body: OK }
+    );
+    opened.push(a);
+    const proxy = await startForkUpstream([a.url], { attemptTimeoutMs: 20_000 });
+    opened.push(proxy);
+    const read = async (method) => {
+      const reply = await post(
+        proxy.url,
+        JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: [] })
+      );
+      if (reply.status !== 200) throw new Error(`read failed: HTTP ${reply.status}`);
+    };
+    const gasReads = [];
+    const rpc = async (method) => {
+      if (method === 'eth_call') return read('eth_call');
+      for (let i = 0; i < 20; i += 1) {
+        gasReads.push(i);
+        await read('eth_getStorageAt');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return '0x0';
+    };
+    const lines = [];
+    await warmSharedState(rpc, proxy, (line) => lines.push(line), { budgetMs: 250 });
+    expect(lines.join('\n')).toMatch(/budget, its upstream reads refused \(settled\)/);
+    // The chain met a refused read and stopped: well short of its 20 reads,
+    // and nothing reached the upstream once forwarding resumed.
+    expect(gasReads.length).toBeLessThan(20);
+    const hitsAtReturn = a.hits.length;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(a.hits).toHaveLength(hitsAtReturn);
+    stall = false;
+  });
+
   test('a warm-up inside its budget refuses nothing', async () => {
     const a = await fakeUpstream(() => ({ status: 200, body: OK }));
     opened.push(a);
