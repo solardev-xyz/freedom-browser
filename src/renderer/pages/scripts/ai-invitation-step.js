@@ -10,6 +10,7 @@
 // dismissal hid (`aiInvitationDismissed`, #881), so dismissing one step does
 // not hide the later ones.
 (function (root) {
+  const AI_PRIVACY_GUIDE_URL = 'https://github.com/solardev-xyz/freedom-browser/blob/main/docs/user/ai-what-it-sees.md';
   const AI_INVITATION_STEPS = ['enable', 'connect', 'resume'];
 
   // The step this profile is on, or null when there is nothing left to set up
@@ -35,7 +36,7 @@
     return AI_INVITATION_STEPS.includes(value) ? value : null;
   }
 
-  const api = { AI_INVITATION_STEPS, aiInvitationStep, dismissedAiInvitationStep };
+  const api = { AI_PRIVACY_GUIDE_URL, AI_INVITATION_STEPS, aiInvitationStep, dismissedAiInvitationStep };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.freedomAiInvitation = api;
 })(typeof window !== 'undefined' ? window : globalThis);

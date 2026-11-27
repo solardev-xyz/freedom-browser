@@ -91,7 +91,8 @@
 :is(#ai, #providers, #voice) input:not(.rpc-input):focus-visible,
 :is(#ai, #providers, #voice) textarea:focus-visible,
 :is(#ai, #providers, #voice) button:focus-visible,
-:is(#ai, #providers, #voice) summary:focus-visible {
+:is(#ai, #providers, #voice) summary:focus-visible,
+#ai .row-help a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }

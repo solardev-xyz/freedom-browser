@@ -34,7 +34,14 @@ const STEPS = {
   },
 };
 
-const { aiInvitationStep, dismissedAiInvitationStep } = window.freedomAiInvitation;
+const { aiInvitationStep, dismissedAiInvitationStep, AI_PRIVACY_GUIDE_URL } = window.freedomAiInvitation;
+
+const privacyGuide = document.createElement('a');
+privacyGuide.id = 'ai-privacy-guide-home';
+privacyGuide.href = AI_PRIVACY_GUIDE_URL;
+privacyGuide.target = '_blank';
+privacyGuide.rel = 'noreferrer';
+privacyGuide.textContent = 'What can AI see?';
 
 let settings = null;
 let revision = 0;
@@ -54,6 +61,7 @@ async function render() {
   if (!shown) return;
   heading.textContent = STEPS[shown].heading;
   byline.textContent = STEPS[shown].byline;
+  byline.append(' ', privacyGuide);
   open.textContent = STEPS[shown].action;
   open.href = STEPS[shown].href;
 }
