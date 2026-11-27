@@ -7,13 +7,10 @@
  * - the forms, the rows, their values and bounds are the file's, as main
  *   ships them (design 0015's SWM-5 plan, point 1: JavaScript, checked
  *   here, never loaded at runtime);
- * - `failed` is the file's set and `stopped`, the one difference in the
- *   tables, named below (plan point 7: 0015 and the core's wire.rs have
- *   it; the pinned file leaves it out, and the core's vectors are fixed);
+ * - `failed` is the file's set, `stopped` included (plan point 7: 0015, the
+ *   core's wire.rs and, from cored-v0.30.0's commit, the file);
  * - every honest scenario is admitted call by call, every forbidden one
  *   refused at its last call by its rule, all of them, not a sample;
- * - three scenarios of main's own rows are named below where the file
- *   contradicts itself or the design, each held to what main does;
  * - the head probe's runs, the next index, topics and identifiers are
  *   swarm.json's.
  *
@@ -37,7 +34,6 @@ const {
   rowFor,
   topicOf,
 } = require('./swarm-grammar');
-const { param } = require('./swarm-typed');
 const {
   playScenario,
   scenarioParams,
@@ -61,40 +57,6 @@ const files = { grammar, swarm, dwebVerify };
   }
 );
 
-/**
- * The file's scenarios that main can't play as written, each with why and
- * what main does instead. Each applies while the file still has the fault
- * (`applies`), so a fixed file runs the scenario with the rest.
- */
-const KNOWN = {
-  // The reference was called with name 'draft.md' and contentType
-  // 'text/markdown' (mainRows in the generator), but the scenario's params
-  // name neither, so the row binds `<n>` = data and text/plain.
-  'swarm.publish-data-batch-encrypt': {
-    list: 'honest',
-    applies: (s) =>
-      param(s.params, 'name') === undefined && param(s.params, 'content_type') === undefined,
-    refused: { at: 0, rule: 'value' },
-  },
-  // The reference was called with indexDocument 'x.txt', which the params
-  // leave out; with no index.html part the row binds no index document.
-  'swarm.publish-collection-batch-encrypt': {
-    list: 'honest',
-    applies: (s) => param(s.params, 'index_document') === undefined,
-    refused: { at: 0, rule: 'header' },
-  },
-  // "a /stamps when the parent named its batch": the /stamps itself is the
-  // call the row leaves out, so main refuses it, by the scenario's rule,
-  // at its first call rather than its last.
-  'swarm.publish-batch-and-stamps': {
-    list: 'forbidden',
-    applies: (s) => s.calls[0]?.form === 'stamps' && s.calls.length === 2,
-    refused: { at: 0, rule: 'order' },
-  },
-};
-
-const known = (list, s) => KNOWN[s.id]?.list === list && KNOWN[s.id].applies(s);
-
 describeIfVectors("main's grammar against vectors/swarm-grammar.json", () => {
   test("the forms, rows, values and reply bounds are the file's", () => {
     expect(FORMS).toStrictEqual(grammar.forms);
@@ -106,35 +68,28 @@ describeIfVectors("main's grammar against vectors/swarm-grammar.json", () => {
     expect(RULES).toStrictEqual(grammar.rules);
   });
 
-  test("failed is the file's set and stopped: the one known difference (0015 and wire.rs have stopped; the pinned file leaves it out)", () => {
-    if (grammar.failed.includes('stopped')) {
-      expect(FAILED).toStrictEqual(grammar.failed);
-      return;
-    }
-    expect(FAILED).toStrictEqual([...grammar.failed, 'stopped']);
+  test("failed is the file's set, stopped included (0015 and wire.rs have it)", () => {
+    expect(FAILED).toStrictEqual(grammar.failed);
+    expect(FAILED).toContain('stopped');
   });
 
   test('every honest scenario is admitted, call by call', () => {
     const refused = [];
     let played = 0;
     for (const s of grammar.honest) {
-      if (known('honest', s)) continue;
       const verdict = playScenario(s, files);
       if (verdict) refused.push({ id: s.id, row: s.row, ...verdict });
       played += 1;
     }
     expect(refused).toStrictEqual([]);
-    expect(played).toBe(
-      grammar.honest.length - Object.values(KNOWN).filter((k) => k.list === 'honest').length
-    );
-    expect(played).toBeGreaterThanOrEqual(370);
+    expect(played).toBe(grammar.honest.length);
+    expect(played).toBeGreaterThanOrEqual(372);
   });
 
   test('every forbidden scenario is refused at its last call, by its rule', () => {
     const wrong = [];
     let played = 0;
     for (const s of grammar.forbidden) {
-      if (known('forbidden', s)) continue;
       const verdict = playScenario(s, files);
       const want = { at: s.calls.length - 1, rule: s.rule };
       if (!verdict || verdict.at !== want.at || verdict.rule !== want.rule) {
@@ -143,21 +98,13 @@ describeIfVectors("main's grammar against vectors/swarm-grammar.json", () => {
       played += 1;
     }
     expect(wrong).toStrictEqual([]);
+    expect(played).toBe(grammar.forbidden.length);
     expect(played).toBeGreaterThanOrEqual(73);
   });
 
   test("every rule but ended is some forbidden scenario's", () => {
     const rules = new Set(grammar.forbidden.map((s) => s.rule));
     expect([...rules].sort()).toStrictEqual(RULES.filter((r) => r !== 'ended').sort());
-  });
-
-  test('the scenarios named in KNOWN: refused as main binds the rows', () => {
-    for (const [id, { list, refused }] of Object.entries(KNOWN)) {
-      const s = grammar[list].find((scenario) => scenario.id === id);
-      if (!s || !KNOWN[id].applies(s)) continue;
-      const verdict = playScenario(s, files);
-      expect({ id, at: verdict?.at, rule: verdict?.rule }).toStrictEqual({ id, ...refused });
-    }
   });
 
   test("each scenario's row is the one rowFor gives its method and params", () => {
