@@ -5,19 +5,21 @@
  * in docs/development.md (*Ledger through the core*); the plan's R1, R3, R5
  * and R8 need a device, and a fake can't show them.
  *
- * Gated: runs only with LEDGER_DEVICE_E2E=1, and skips when no Ledger is
- * plugged in. Plug one in, unlock it, open the Ethereum app, quit Ledger
- * Live (on Linux, install Ledger's udev rules). LEDGER_DEVICE_E2E_INTERACTIVE=1
- * adds the steps that need hands on the device (a prompt left showing and
- * rejected, an unplug). Run it under Electron's Node, one test at a time:
+ * Gated: runs only with LEDGER_DEVICE_E2E=1, and skips the device steps
+ * when no Ledger is plugged in (the first step, a kill before the host has
+ * spawned, needs none). Plug one in, unlock it, open the Ethereum app, quit
+ * Ledger Live (on Linux, install Ledger's udev rules).
+ * LEDGER_DEVICE_E2E_INTERACTIVE=1 adds the steps that need hands on the
+ * device (a prompt left showing and rejected, an unplug). Run it under
+ * Electron's Node, one test at a time:
  *
  *   LEDGER_DEVICE_E2E=1 ELECTRON_RUN_AS_NODE=1 npx electron node_modules/jest/bin/jest.js \
  *     --runInBand src/main/wallet/ledger/hid-device.probe.test.js
  *
- * Under Electron's Node the host is a Node child on the same runtime; one
- * step starts Electron's main process (test/helpers/ledger-hid-utility-main.js)
- * to run it as main does, in a utility process (on Linux it needs a display:
- * a desktop session, or xvfb-run). It prints what it saw at the end. It sends
+ * Under Electron's Node the host is a Node child on the same runtime; two
+ * steps start Electron's main process (test/helpers/ledger-hid-utility-main.js)
+ * to run it as main does, in a utility process (on Linux they need a
+ * display: a desktop session, or xvfb-run). It prints what it saw at the end. It sends
  * only `B0 01` (the open app's name and version) and, with hands, `E0 02 01
  * 00` (show the address at 44'/60'/0'/0/0); it signs nothing.
  */
@@ -46,8 +48,11 @@ function ledgers() {
 
 const found = RUN ? ledgers() : [];
 if (RUN && found.length === 0) console.info('[ledger probe] No Ledger plugged in: skipped');
+const describeIfRun = RUN
+  ? describe
+  : (name, fn) => describe.skip(`${name} (skipped: LEDGER_DEVICE_E2E is not 1)`, fn);
 const describeIfDevice = !RUN
-  ? (name, fn) => describe.skip(`${name} (skipped: LEDGER_DEVICE_E2E is not 1)`, fn)
+  ? describeIfRun
   : found.length === 0
     ? (name, fn) => describe.skip(`${name} (skipped: no Ledger plugged in)`, fn)
     : describe;
@@ -68,6 +73,53 @@ const report = [];
 function say(line) {
   console.info(`[ledger probe] ${line}`);
 }
+
+// Electron's main process running ledger-hid-utility-main.js's `step`: its
+// one result line, parsed.
+async function utilityMain(step) {
+  // Electron's binary: this runtime's, or the npm package's path (jest maps
+  // `electron` to a mock, so the real module is asked for).
+  const electron = process.versions.electron ? process.execPath : jest.requireActual('electron');
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-hid-utility-'));
+  const env = { ...process.env, FREEDOM_TEST_USER_DATA: userData, LEDGER_HID_UTILITY_STEP: step };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const args = [UTILITY_MAIN];
+  if (process.platform === 'linux' && process.getuid?.() === 0) args.unshift('--no-sandbox');
+  const output = await new Promise((resolve, reject) => {
+    const child = spawn(electron, args, { env, stdio: ['ignore', 'pipe', 'inherit'] });
+    let text = '';
+    child.stdout.on('data', (chunk) => (text += chunk));
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.on('error', reject);
+    child.on('exit', () => {
+      clearTimeout(timer);
+      resolve(text);
+    });
+  });
+  fs.rmSync(userData, { recursive: true, force: true });
+  const line = output.split('\n').find((l) => l.startsWith('LEDGER_HID_UTILITY '));
+  expect(line).toBeDefined();
+  return JSON.parse(line.slice('LEDGER_HID_UTILITY '.length));
+}
+
+describeIfRun("main's HID host in a utility process, with or without a Ledger", () => {
+  test('a cancel before the first host spawns ends it as it spawns; the next operation gets a fresh host', async () => {
+    const result = await utilityMain('prespawn');
+    say(`Cancel before the first host spawned: ${JSON.stringify(result)}`);
+    expect(result).toMatchObject({
+      letGo: 'detached',
+      next: found.length > 0 ? '9000' : 'not_found',
+      hosts: 2,
+      firstGone: true,
+    });
+    // It exited: main didn't have to give up on it (5 s).
+    expect(result.nextMs).toBeLessThan(5_000);
+    if (process.platform === 'linux') {
+      expect(result.env).toEqual(['FREEDOM_LEDGER_HID_HOST']);
+      expect(result.nodeHid).toBe(true);
+    }
+  }, 90_000);
+});
 
 describeIfDevice("main's HID device against a real Ledger (LDG-3 PR 5's probe)", () => {
   let host;
@@ -184,29 +236,7 @@ describeIfDevice("main's HID device against a real Ledger (LDG-3 PR 5's probe)",
   }, 300_000);
 
   test("R8: under Electron's main process, through a utility process", async () => {
-    // Electron's binary: this runtime's, or the npm package's path (jest maps
-    // `electron` to a mock, so the real module is asked for).
-    const electron = process.versions.electron ? process.execPath : jest.requireActual('electron');
-    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-hid-utility-'));
-    const env = { ...process.env, FREEDOM_TEST_USER_DATA: userData };
-    delete env.ELECTRON_RUN_AS_NODE;
-    const args = [UTILITY_MAIN];
-    if (process.platform === 'linux' && process.getuid?.() === 0) args.unshift('--no-sandbox');
-    const output = await new Promise((resolve, reject) => {
-      const child = spawn(electron, args, { env, stdio: ['ignore', 'pipe', 'inherit'] });
-      let text = '';
-      child.stdout.on('data', (chunk) => (text += chunk));
-      const timer = setTimeout(() => child.kill(), 60_000);
-      child.on('error', reject);
-      child.on('exit', () => {
-        clearTimeout(timer);
-        resolve(text);
-      });
-    });
-    fs.rmSync(userData, { recursive: true, force: true });
-    const line = output.split('\n').find((l) => l.startsWith('LEDGER_HID_UTILITY '));
-    expect(line).toBeDefined();
-    const result = JSON.parse(line.slice('LEDGER_HID_UTILITY '.length));
+    const result = await utilityMain('device');
     expect(result).toEqual({ first: '9000', letGo: 'detached', after: '9000', hosts: 2 });
     report.push('Through a utility process: answered, let go (host killed), answered again');
   }, 90_000);

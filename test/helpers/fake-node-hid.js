@@ -31,13 +31,18 @@
  * and `exit-close`s: the OS closing a handle as its process ends.
  *
  * `inProcessHosts(fake)` forks hosts (hid-host.js's `serve`) in this
- * process, for HidHost's `launch`: messages go through JSON both ways, a
- * tick later, as over a process's channel; `kill()` and `crash()` end one at
- * once, its handles closed by the OS and its late messages lost.
+ * process, for HidHost's `launch`, as Electron's utility processes behave:
+ * each spawns a tick after the fork; main's messages go through JSON, a
+ * tick later, and one posted before the spawn is delivered as it spawns,
+ * before main hears of it; the host's reply frames reach main a tick later,
+ * as bytes. `kill()` and `forceKill()` before the spawn do nothing and
+ * return false (Electron's kill can't reach a process without a pid);
+ * after it they, and `crash()`, end the host at once, its handles closed by
+ * the OS and its late replies lost.
  */
 
 const createHIDframing = require('@ledgerhq/hw-transport-node-hid-noevents/hid-framing').default;
-const { serve } = require('../../src/main/wallet/ledger/hid-host');
+const { ReplyReader, serve } = require('../../src/main/wallet/ledger/hid-host');
 
 const VENDOR_ID = 0x2c97;
 const PRODUCT_ID = 0x5011; // a Nano S Plus
@@ -240,38 +245,44 @@ const clone = (message) => JSON.parse(JSON.stringify(message));
 
 /**
  * A HidHost `launch` that serves each host in this process, on `fake`.
- * `launch.hosts` lists them: `{ pid, killed, crashed, terminated, toHost,
- * toMain }`, the last two every message each way.
+ * `launch.hosts` lists them: `{ pid, spawned, alive, killed, forced,
+ * crashed, terminated, reading, toHost, toMain }`, the last two every
+ * message each way (the replies decoded).
  */
 function inProcessHosts(fake, { platform = 'linux' } = {}) {
   let nextPid = 1;
   const hosts = [];
   function launch() {
     const pid = nextPid++;
-    let toMainFn = null;
-    let exitFn = null;
+    const on = {};
     let fromMainFn = null;
+    const early = [];
     const host = {
       pid,
+      spawned: false,
       alive: true,
       killed: false,
+      forced: false,
       crashed: false,
       terminated: false,
+      reading: true,
       toHost: [],
       toMain: [],
     };
+    const decoded = new ReplyReader((reply) => host.toMain.push(reply));
     function end() {
       if (!host.alive) return;
       host.alive = false;
       served.abandon();
       fake.exitProcess(pid);
-      setTimeout(() => exitFn?.(0), 0);
+      setTimeout(() => on.exit?.(0), 0);
     }
     const served = serve(
       {
-        post(message) {
-          host.toMain.push(clone(message));
-          setTimeout(() => host.alive && toMainFn?.(clone(message)), 0);
+        write(frame) {
+          const bytes = Buffer.from(frame);
+          decoded.push(bytes);
+          setTimeout(() => host.alive && host.reading && on.data?.(bytes), 0);
         },
         onMessage(fn) {
           fromMainFn = fn;
@@ -286,6 +297,12 @@ function inProcessHosts(fake, { platform = 'linux' } = {}) {
         },
       }
     );
+    setTimeout(() => {
+      if (!host.alive) return;
+      host.spawned = true;
+      for (const message of early.splice(0)) fromMainFn(message);
+      on.spawn?.();
+    }, 0);
     host.crash = () => {
       host.crashed = true;
       end();
@@ -294,18 +311,29 @@ function inProcessHosts(fake, { platform = 'linux' } = {}) {
     return {
       post(message) {
         host.toHost.push(clone(message));
-        setTimeout(() => host.alive && fromMainFn(clone(message)), 0);
+        if (!host.spawned) early.push(clone(message));
+        else setTimeout(() => host.alive && fromMainFn(clone(message)), 0);
       },
       kill() {
+        if (!host.spawned || !host.alive) return false;
         host.killed = true;
         end();
+        return true;
       },
-      onMessage(fn) {
-        toMainFn = fn;
+      forceKill() {
+        if (!host.spawned) return false;
+        host.forced = true;
+        end();
+        return true;
       },
-      onExit(fn) {
-        exitFn = fn;
+      stopReading() {
+        host.reading = false;
       },
+      pid: () => (host.spawned && host.alive ? pid : undefined),
+      onSpawn: (fn) => (on.spawn = fn),
+      onData: (fn) => (on.data = fn),
+      onStray: (fn) => (on.stray = fn),
+      onExit: (fn) => (on.exit = fn),
     };
   }
   launch.hosts = hosts;

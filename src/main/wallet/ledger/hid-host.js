@@ -9,10 +9,18 @@
  * **Messages.** Main sends `{ op: 'exchange', id, channel, apdu }` (the APDU
  * in hex, on the operation's HID channel; the first opens the device) and
  * `{ op: 'close' }` (the operation ended with no exchange in flight). The
- * host answers each exchange once: `{ op: 'answer', id, answer, dropped }`
- * (hex, the status word last) or `{ op: 'failed', id, failure, dropped }`,
- * `failure` one of `not_found`, `busy`, `disconnected`; `dropped` counts the
- * reports it dropped. Anything else ends the host.
+ * host answers each exchange once: an answer (the status word last) or a
+ * failure, `not_found`, `busy` or `disconnected`, with the number of reports
+ * it dropped. Anything else ends the host.
+ *
+ * **Replies are frames on the host's stdout,** never messages: Electron
+ * deserializes whatever a utility process posts in main before any check
+ * can run, so a faulty host could flood main through its message channel.
+ * Main reads the raw bytes instead, with its own reader (ReplyReader): a
+ * 2-byte length, at most REPLY_FRAME_MAX in all, then one of exactly two
+ * shapes, from which main builds its own reply. The host posts nothing on
+ * its message channel (main kills it if it does), and anything else that
+ * would print to stdout goes to stderr.
  *
  * **Main kills it, never asks it to close mid-read.** A cancel or a deadline
  * reaches main while the host may be waiting on the device, and main then
@@ -66,6 +74,22 @@ const HOST_FAILURES = Object.freeze({
   BUSY: 'busy',
   DISCONNECTED: 'disconnected',
 });
+
+// A reply frame: its length (2 bytes, big-endian), then the kind (1 byte),
+// the exchange's id (6), the reports dropped (4), and the answer (2 to 260
+// bytes) or the failure (1: its place in REPLY_FAILURES, from 1).
+const REPLY_ANSWER = 0x01;
+const REPLY_FAILED = 0x02;
+const REPLY_FAILURES = Object.freeze([
+  HOST_FAILURES.NOT_FOUND,
+  HOST_FAILURES.BUSY,
+  HOST_FAILURES.DISCONNECTED,
+]);
+const REPLY_HEAD = 11;
+const REPLY_FRAME_MAX = 2 + REPLY_HEAD + ANSWER_MAX;
+// Main's exchange ids fit the frame's 6 bytes; the count is capped to its 4.
+const ID_MAX = 2 ** 48 - 1;
+const DROPPED_MAX = 0xffffffff;
 
 // How often an exchange polls: every millisecond while an answer that needs
 // no confirmation is likely, then less often while the device waits for the
@@ -290,7 +314,90 @@ function isHex(text, minBytes, maxBytes) {
 }
 
 /**
- * Serve main's messages from `port` (`{ post(message), onMessage(fn) }`).
+ * One reply as its frame: `{ op: 'answer', id, answer, dropped }` (the
+ * answer a Buffer) or `{ op: 'failed', id, failure, dropped }`.
+ */
+function encodeReply({ op, id, answer, failure, dropped }) {
+  const body = REPLY_HEAD + (op === 'answer' ? answer.length : 1);
+  const frame = Buffer.alloc(2 + body);
+  frame.writeUInt16BE(body, 0);
+  frame[2] = op === 'answer' ? REPLY_ANSWER : REPLY_FAILED;
+  frame.writeUIntBE(id, 3, 6);
+  frame.writeUInt32BE(Math.min(dropped, DROPPED_MAX), 9);
+  if (op === 'answer') answer.copy(frame, 2 + REPLY_HEAD);
+  else frame[2 + REPLY_HEAD] = REPLY_FAILURES.indexOf(failure) + 1;
+  return frame;
+}
+
+/** A frame outside the two shapes: main kills the host. */
+class ReplyError extends Error {
+  constructor(what) {
+    super(`The Ledger HID host sent ${what}`);
+    this.name = 'ReplyError';
+  }
+}
+
+function decodeReply(body) {
+  const id = body.readUIntBE(1, 6);
+  const dropped = body.readUInt32BE(7);
+  // The frame's length bounds the answer above.
+  if (body[0] === REPLY_ANSWER && body.length >= REPLY_HEAD + ANSWER_MIN) {
+    return { op: 'answer', id, answer: Buffer.from(body.subarray(REPLY_HEAD)), dropped };
+  }
+  const failure = REPLY_FAILURES[body[REPLY_HEAD] - 1];
+  if (body[0] === REPLY_FAILED && body.length === REPLY_HEAD + 1 && failure) {
+    return { op: 'failed', id, failure, dropped };
+  }
+  throw new ReplyError('a reply of neither shape');
+}
+
+/**
+ * Main's reader of a host's stdout. `push(chunk)` hands each whole frame in
+ * it, rebuilt, to `onReply`, at once, and keeps at most one partial frame
+ * (under REPLY_FRAME_MAX bytes) for the next chunk; a length out of bounds
+ * or a frame of neither shape throws a ReplyError, before anything after
+ * it is read. After `stop()` it reads nothing more.
+ */
+class ReplyReader {
+  constructor(onReply) {
+    this._onReply = onReply;
+    this._held = null;
+    this._stopped = false;
+  }
+
+  push(chunk) {
+    if (this._stopped) return;
+    const data = this._held ? Buffer.concat([this._held, chunk]) : chunk;
+    this._held = null;
+    let at = 0;
+    while (!this._stopped && data.length - at >= 2) {
+      const body = data.readUInt16BE(at);
+      if (body < REPLY_HEAD + 1 || body > REPLY_HEAD + ANSWER_MAX) {
+        this.stop();
+        throw new ReplyError(`a frame of ${body} bytes`);
+      }
+      if (data.length - at - 2 < body) break;
+      let reply;
+      try {
+        reply = decodeReply(data.subarray(at + 2, at + 2 + body));
+      } catch (err) {
+        this.stop();
+        throw err;
+      }
+      at += 2 + body;
+      this._onReply(reply);
+    }
+    if (!this._stopped && at < data.length) this._held = Buffer.from(data.subarray(at));
+  }
+
+  stop() {
+    this._stopped = true;
+    this._held = null;
+  }
+}
+
+/**
+ * Serve main's messages from `port` (`{ write(frame), onMessage(fn) }`).
  * `terminate` ends the process (a message that breaks the protocol).
  * Returns `{ abandon() }`, for the in-process host of the tests.
  */
@@ -301,7 +408,7 @@ function serve(port, { hid, platform = process.platform, terminate }) {
   const retired = [];
 
   function failed(id, failure) {
-    port.post({ op: 'failed', id, failure, dropped: session?.dropped ?? 0 });
+    port.write(encodeReply({ op: 'failed', id, failure, dropped: session?.dropped ?? 0 }));
   }
 
   async function exchange({ id, channel, apdu }) {
@@ -325,10 +432,10 @@ function serve(port, { hid, platform = process.platform, terminate }) {
     const current = session;
     try {
       const answer = await current.exchange(Buffer.from(apdu, 'hex'));
-      port.post({ op: 'answer', id, answer: answer.toString('hex'), dropped: current.dropped });
+      port.write(encodeReply({ op: 'answer', id, answer, dropped: current.dropped }));
     } catch (err) {
       if (!(err instanceof HostFailure)) throw err;
-      port.post({ op: 'failed', id, failure: err.failure, dropped: current.dropped });
+      port.write(encodeReply({ op: 'failed', id, failure: err.failure, dropped: current.dropped }));
       retired.push(current);
       if (session === current) session = null;
     }
@@ -338,7 +445,9 @@ function serve(port, { hid, platform = process.platform, terminate }) {
     const { op, id, channel, apdu } = message ?? {};
     if (
       op === 'exchange' &&
-      Number.isSafeInteger(id) &&
+      Number.isInteger(id) &&
+      id >= 1 &&
+      id <= ID_MAX &&
       Number.isInteger(channel) &&
       channel >= 0 &&
       channel <= 0xffff &&
@@ -364,17 +473,18 @@ function serve(port, { hid, platform = process.platform, terminate }) {
   };
 }
 
+// Replies go out on stdout, and nothing else does: whatever this process's
+// code or a dependency would print there goes to stderr.
 function processPort() {
-  if (process.parentPort) {
-    return {
-      post: (message) => process.parentPort.postMessage(message),
-      onMessage: (fn) => process.parentPort.on('message', (event) => fn(event.data)),
-    };
-  }
-  // A Node child (the device probe, under ELECTRON_RUN_AS_NODE).
+  const stdout = process.stdout;
+  const write = stdout.write.bind(stdout);
+  stdout.write = process.stderr.write.bind(process.stderr);
   return {
-    post: (message) => process.send(message),
-    onMessage: (fn) => process.on('message', fn),
+    write: (frame) => write(frame),
+    onMessage: process.parentPort
+      ? (fn) => process.parentPort.on('message', (event) => fn(event.data))
+      : // A Node child (the device probe, under ELECTRON_RUN_AS_NODE).
+        (fn) => process.on('message', fn),
   };
 }
 
@@ -396,5 +506,9 @@ module.exports = {
   LEDGER_VENDOR_ID,
   PACKET_SIZE,
   POLL_STEPS,
+  REPLY_FRAME_MAX,
+  ReplyError,
+  ReplyReader,
+  encodeReply,
   serve,
 };

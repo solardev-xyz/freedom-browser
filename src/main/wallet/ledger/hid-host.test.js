@@ -1,13 +1,23 @@
 /**
  * The Ledger HID host's parts (freedom-core design 0016, LDG-3 PR 5)
  * against a fake node-hid (test/helpers/fake-node-hid.js): HidSession's
- * framing, its checks on each report and its open failures, and `serve`'s
- * messages. Every test also checks that nothing broke hidapi's contract: no
+ * framing, its checks on each report and its open failures, `serve`'s
+ * messages, and the reply frames main reads (ReplyReader): bounded, of
+ * exactly two shapes. Every test also checks that nothing broke hidapi's contract: no
  * read or write on a closed handle, no blocking or threadpool read, and no
  * close while a read may be in flight (the LDG-3 plan's R1).
  */
 
-const { HidSession, HostFailure, PACKET_SIZE, serve } = require('./hid-host');
+const {
+  HidSession,
+  HostFailure,
+  PACKET_SIZE,
+  REPLY_FRAME_MAX,
+  ReplyError,
+  ReplyReader,
+  encodeReply,
+  serve,
+} = require('./hid-host');
 const { createFakeNodeHid, APP_ANSWER } = require('../../../../test/helpers/fake-node-hid');
 
 const B001 = Buffer.from('b001000000', 'hex');
@@ -235,16 +245,20 @@ describe('HidSession: an open that fails', () => {
 });
 
 describe("serve: the host's messages", () => {
+  // The host's replies, as main's reader reads its frames.
   function host({ hid = () => fake } = {}) {
     const sent = [];
+    const reader = new ReplyReader((reply) => sent.push(reply));
     let onMessage = null;
     const terminate = jest.fn();
     serve(
-      { post: (message) => sent.push(message), onMessage: (fn) => (onMessage = fn) },
+      { write: (frame) => reader.push(frame), onMessage: (fn) => (onMessage = fn) },
       { hid, platform: 'linux', terminate }
     );
     return { sent, send: (message) => onMessage(message), terminate };
   }
+
+  const hex = (text) => Buffer.from(text, 'hex');
 
   test('opens at the first exchange, answers each, and closes on close', async () => {
     const h = host();
@@ -253,8 +267,8 @@ describe("serve: the host's messages", () => {
     h.send({ op: 'exchange', id: 2, channel: CHANNEL, apdu: 'e006000000' });
     await jest.advanceTimersByTimeAsync(5);
     expect(h.sent).toEqual([
-      { op: 'answer', id: 1, answer: APP_ANSWER, dropped: 0 },
-      { op: 'answer', id: 2, answer: '9000', dropped: 0 },
+      { op: 'answer', id: 1, answer: hex(APP_ANSWER), dropped: 0 },
+      { op: 'answer', id: 2, answer: hex('9000'), dropped: 0 },
     ]);
     expect(fake.handles).toHaveLength(1);
     h.send({ op: 'close' });
@@ -271,7 +285,7 @@ describe("serve: the host's messages", () => {
     await jest.advanceTimersByTimeAsync(5);
     expect(h.sent).toEqual([
       { op: 'failed', id: 1, failure: 'not_found', dropped: 0 },
-      { op: 'answer', id: 2, answer: APP_ANSWER, dropped: 0 },
+      { op: 'answer', id: 2, answer: hex(APP_ANSWER), dropped: 0 },
     ]);
     h.send({ op: 'close' });
   });
@@ -313,6 +327,8 @@ describe("serve: the host's messages", () => {
     ['an APDU of 4 bytes', { op: 'exchange', id: 2, channel: CHANNEL, apdu: 'b0010000' }],
     ['upper-case hex', { op: 'exchange', id: 2, channel: CHANNEL, apdu: 'B001000000' }],
     ['a channel out of range', { op: 'exchange', id: 2, channel: 0x10000, apdu: 'b001000000' }],
+    ['an id of 0', { op: 'exchange', id: 0, channel: CHANNEL, apdu: 'b001000000' }],
+    ['an id past 6 bytes', { op: 'exchange', id: 2 ** 48, channel: CHANNEL, apdu: 'b001000000' }],
     ['an unknown message', { op: 'reset' }],
   ])('%s ends the host', async (_name, message) => {
     fake.ledger.respond = () => ({ hold: true });
@@ -325,5 +341,92 @@ describe("serve: the host's messages", () => {
     fake.ledger.release('9000');
     await jest.advanceTimersByTimeAsync(5);
     h.send({ op: 'close' });
+  });
+});
+
+describe("ReplyReader: main's reader of the host's frames", () => {
+  const answer = Buffer.concat([Buffer.alloc(258, 0x22), Buffer.from('9000', 'hex')]);
+  const replies = [
+    { op: 'answer', id: 2 ** 48 - 1, answer, dropped: 7 },
+    { op: 'answer', id: 1, answer: Buffer.from('6985', 'hex'), dropped: 0 },
+    { op: 'failed', id: 3, failure: 'not_found', dropped: 0 },
+    { op: 'failed', id: 4, failure: 'busy', dropped: 1 },
+    { op: 'failed', id: 5, failure: 'disconnected', dropped: 0xffffffff },
+  ];
+
+  function read(...chunks) {
+    const got = [];
+    const reader = new ReplyReader((reply) => got.push(reply));
+    for (const chunk of chunks) reader.push(chunk);
+    return got;
+  }
+
+  // A frame as the host would write it, with `body` in place of its own.
+  function framed(body) {
+    const frame = Buffer.alloc(2 + body.length);
+    frame.writeUInt16BE(body.length, 0);
+    body.copy(frame, 2);
+    return frame;
+  }
+
+  test('reads both shapes back, whole frames only, however the bytes are split', () => {
+    const frames = Buffer.concat(replies.map(encodeReply));
+    expect(read(frames)).toEqual(replies);
+    expect(read(...[...frames].map((byte) => Buffer.from([byte])))).toEqual(replies);
+    expect(read(frames.subarray(0, 100), frames.subarray(100))).toEqual(replies);
+    expect(read(frames.subarray(0, 1))).toEqual([]);
+    expect(encodeReply(replies[0])).toHaveLength(REPLY_FRAME_MAX);
+  });
+
+  test('builds its own reply: a copy of the answer, and no other member', () => {
+    const frame = encodeReply(replies[1]);
+    const [reply] = read(frame);
+    frame.fill(0);
+    expect(reply).toEqual(replies[1]);
+    expect(Object.keys(reply)).toEqual(['op', 'id', 'answer', 'dropped']);
+  });
+
+  const head = (kind) => {
+    const body = Buffer.alloc(11);
+    body[0] = kind;
+    body.writeUIntBE(1, 1, 6);
+    return body;
+  };
+  test.each([
+    ['an answer of 261 bytes', framed(Buffer.concat([head(1), Buffer.alloc(261)]))],
+    ['an answer of 1 byte', framed(Buffer.concat([head(1), Buffer.from([0x90])]))],
+    ['a failure with a member more', framed(Buffer.concat([head(2), Buffer.from([3, 0])]))],
+    ['an unknown failure', framed(Buffer.concat([head(2), Buffer.from([4])]))],
+    ['an unknown kind', framed(Buffer.concat([head(3), Buffer.from('9000', 'hex')]))],
+    ['a frame of 0 bytes', Buffer.from([0, 0])],
+    [
+      'a frame announcing 65,535 bytes',
+      Buffer.concat([Buffer.from([0xff, 0xff]), Buffer.alloc(64)]),
+    ],
+  ])('%s throws, and nothing after it is read', (_name, bad) => {
+    const got = [];
+    const reader = new ReplyReader((reply) => got.push(reply));
+    const before = encodeReply(replies[1]);
+    expect(() => reader.push(Buffer.concat([before, bad, before]))).toThrow(ReplyError);
+    expect(got).toEqual([replies[1]]);
+    reader.push(before);
+    expect(got).toHaveLength(1);
+  });
+
+  test('a length past the bound throws as soon as its 2 bytes come, before the rest', () => {
+    const reader = new ReplyReader(() => {});
+    reader.push(Buffer.from([0x01]));
+    expect(() => reader.push(Buffer.from([0x20]))).toThrow('a frame of 288 bytes');
+  });
+
+  test('stop() reads nothing more, a partial frame included', () => {
+    const got = [];
+    const reader = new ReplyReader((reply) => got.push(reply));
+    const frame = encodeReply(replies[2]);
+    reader.push(frame.subarray(0, 5));
+    reader.stop();
+    reader.push(frame.subarray(5));
+    reader.push(frame);
+    expect(got).toEqual([]);
   });
 });
