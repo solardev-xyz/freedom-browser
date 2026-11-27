@@ -669,6 +669,10 @@ async function handleCompletion(request, response) {
   }
 
   if (hasUserMarker(messages, 'PRODUCT_AGENT_WALLET_APPROVE')) {
+    // Provider requests resolve asynchronously after a click, so each step
+    // waits for the page's own result. Without the first wait, the page could
+    // ask to sign before it had the connected account, and Freedom refuses a
+    // signature for an empty account before showing any approval (#1102).
     switch (toolResults.length) {
       case 0:
         emitToolCall(response, 1, 'browser_snapshot', {});
@@ -687,23 +691,38 @@ async function handleCompletion(request, response) {
         });
         break;
       case 4:
-        emitToolCall(response, 5, 'browser_snapshot', {});
+        emitToolCall(response, 5, 'browser_wait', { condition: 'text', text: 'Connected 0x' });
         break;
       case 5:
-        emitToolCall(response, 6, 'browser_click', {
+        emitToolCall(response, 6, 'browser_snapshot', {});
+        break;
+      case 6:
+        emitToolCall(response, 7, 'browser_click', {
           ref: requireRef(elements, 'Sign personal message'),
         });
         break;
-      case 6:
-        emitToolCall(response, 7, 'browser_snapshot', {});
-        break;
       case 7:
-        emitToolCall(response, 8, 'browser_click', {
-          ref: requireRef(elements, 'Sign typed data'),
+        emitToolCall(response, 8, 'browser_wait', {
+          condition: 'text',
+          text: 'Personal signature 0x',
         });
         break;
       case 8:
         emitToolCall(response, 9, 'browser_snapshot', {});
+        break;
+      case 9:
+        emitToolCall(response, 10, 'browser_click', {
+          ref: requireRef(elements, 'Sign typed data'),
+        });
+        break;
+      case 10:
+        emitToolCall(response, 11, 'browser_wait', {
+          condition: 'text',
+          text: 'Typed signature 0x',
+        });
+        break;
+      case 11:
+        emitToolCall(response, 12, 'browser_snapshot', {});
         break;
       default:
         emitFinal(
@@ -1826,10 +1845,13 @@ test('privileged capability: wallet connect and signatures use Agent-native appr
     'browser_click',
     'browser_snapshot',
     'browser_click',
+    'browser_wait',
     'browser_snapshot',
     'browser_click',
+    'browser_wait',
     'browser_snapshot',
     'browser_click',
+    'browser_wait',
     'browser_snapshot',
   ]);
 });
@@ -1864,9 +1886,10 @@ test('privileged capability: declining an Agent wallet request is final and reco
 
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
   await expect(window.locator('.agent-tool-item').last()).toContainText('Wallet request declined');
-  expect(
-    await guestValue(window, 'document.querySelector("#connection-status").textContent')
-  ).toBe('Connection rejected 4001');
+  // The page hears of the decline asynchronously, so poll rather than read once.
+  await expect
+    .poll(() => guestValue(window, 'document.querySelector("#connection-status").textContent'))
+    .toBe('Connection rejected 4001');
   expect((await window.locator('#agent-output').textContent()) || '').toContain(
     'left it disconnected'
   );
