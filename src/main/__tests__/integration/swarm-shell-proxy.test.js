@@ -7,8 +7,26 @@
  * node at `ant.example.test` on the default session's stack, a SOCKS proxy
  * on the session and the real Ant API guard: every form, the ready probe,
  * and the streamed uploads, which PR 6 left to this probe for a remote
- * node. It also pins what Chromium's stack does when a node hangs up on a
- * reused connection.
+ * node.
+ *
+ * It also holds design 0015's point 6 (one dial per admitted call, a POST
+ * never sent twice; #1344) where Chromium's stack would break it: when a
+ * reused keep-alive connection closes before a request's headers, Chromium
+ * sends the request again, below the guard, and a streamed body's second
+ * attempt crashes its network service (electron/electron#56077). Main
+ * sends each write on a write session of its own, its connections closed
+ * first (`swarm/ant-write-sessions.js`). Over HTTP and through the SOCKS
+ * proxy, a node keeps connections open, takes the next write whole and
+ * closes without headers: every write the executor sends, whole or
+ * streamed, reaches it once, on a new connection, through the proxy, and
+ * the call answers its failure, with no crash. A write session sends
+ * nothing else: its own guard admits only its lease's write, and its spell
+ * checker never fetches a dictionary (#1358). A whole body sent on the
+ * session's kept connection, as main sent one before, is the control:
+ * Chromium sends it twice. A read may be sent twice, which is idempotent
+ * (design 0015's amendment of 2026-11-27). Four streamed uploads go at
+ * once, and a write to a `.onion` node follows Tor's routing as
+ * `tor-proxy.js` sets it on the session.
  *
  * Like `swarm-post-proxy.test.js`, only a real Electron main process can
  * show it: this spawns Electron on `swarm-shell-proxy-electron-probe.js`
@@ -145,17 +163,17 @@ describeWithElectron("main's Swarm executor on a remote node behind a session pr
     }
     const forms = new Set(results.originSeen.map((seen) => seen.form));
     expect([...forms].sort()).toEqual([...FORMS, 'ready'].sort());
-    // The proxy was asked for the node by its name, never an address.
-    // Electron's own background fetches (its spell checker's dictionary,
-    // started before the probe can turn it off) may use the session's
-    // proxy too: only the connections to the node's port count.
-    const toNode = results.socksSeen.filter((seen) => seen.endsWith(`:${port}`));
-    expect(toNode).toEqual([`ant.example.test:${port}`]);
+    // The proxy was asked for the node by its name, never an address, and
+    // for nothing else: the session sends only the node's host through it,
+    // a write session everything it sends (#1358).
+    expect(results.socksSeen).toEqual([`ant.example.test:${port}`]);
     expect(results.stamp).toEqual({ ok: true });
   });
 
-  test('the guard saw each dial as main its own (frameless, other) and cancelled none', () => {
+  // Writes go on write sessions, which run no guard: the guard saw the reads.
+  test('the guard saw each read as main its own (frameless, other), no write, and cancelled none', () => {
     expect(results.guardKinds).toEqual(['other:false']);
+    expect(results.guardMethods).toEqual(['GET']);
     expect(results.cancelled).toEqual([]);
   });
 
@@ -175,28 +193,256 @@ describeWithElectron("main's Swarm executor on a remote node behind a session pr
     expect(Math.max(...results.uploads.map((upload) => upload.bytes))).toBeGreaterThan(50 * 1e6);
   });
 
-  // Measured, not designed: design 0015's point 6 is one dial per admitted
-  // call and no retry. On the session's stack, when a node closes a reused
-  // keep-alive connection before it answers, Chromium sends the request
-  // again on a new one, below the webRequest guard, a POST with a whole body
-  // too (`pss_send`). A streamed body can't be sent again, and undici on
-  // loopback doesn't. Every other call is one dial.
-  test("a node that hangs up: Chromium's stack sends the call once more, below the guard; every other call is one dial", () => {
+  // Point 6 in the grammar's plays: a node that hangs up on a read may get
+  // it twice; every write, the hang-up's `pss_send` among them, and every
+  // other call reaches it once.
+  test('a node that hangs up: a read reaches it at most twice, below the guard; every write and every other call once', () => {
     const hangsUp = new Set(
       grammar.honest
         .filter((s) => s.calls.some((c) => c.reply && c.reply.status === null))
         .map((s) => s.id)
     );
+    expect(hangsUp.has('send-pss-node-hangs-up')).toBe(true);
     for (const extra of results.dials) {
       expect(hangsUp.has(extra.id)).toBe(true);
-      expect(extra.dials).toBeLessThanOrEqual(2);
+      expect(extra).toMatchObject({ method: 'GET', dials: 2 });
     }
-    // The guard saw one request a dial: the resends never reached it.
+    // The guard saw one request a read's dial: a read sent again never
+    // reached it, and a write never does.
+    const reads = results.originSeen.filter((seen) => seen.method === 'GET').length;
     const resent = results.dials.reduce((sum, extra) => sum + extra.dials - 1, 0);
-    expect(results.guardSaw).toBe(results.originSeen.length - resent);
+    expect(results.guardSaw).toBe(reads - resent);
     expect(results.failures).toBe(hangsUp.size);
+    expect(results.networkGone).toEqual([]);
     process.stdout.write(
-      `[swarm-shell proxy] calls the node saw twice: ${JSON.stringify(results.dials)}\n`
+      `[swarm-shell proxy] reads the node saw twice: ${JSON.stringify(results.dials)}\n`
     );
+  });
+
+  describe.each(['http', 'socks'])(
+    'a node keeps connections open, takes the next call whole and closes without headers (%s)',
+    (route) => {
+      let leg;
+      beforeAll(() => {
+        leg = results.resend[route];
+      });
+
+      test(route === 'socks' ? 'through the SOCKS proxy' : 'straight to the node', () => {
+        const { port } = new URL(results.remote);
+        if (route === 'socks') {
+          expect(leg.resolveProxy).toMatch(/^SOCKS5 127\.0\.0\.1:\d+$/);
+          expect(leg.via).toEqual([true]);
+          expect(leg.socks).toEqual([`ant.example.test:${port}`]);
+        } else {
+          expect(leg.resolveProxy).toBe('DIRECT');
+          expect(leg.via).toEqual([false]);
+          expect(leg.socks).toEqual([]);
+        }
+      });
+
+      // The control: the condition holds, and Chromium sends a whole body
+      // again on a new connection, its second delivery answered as a success.
+      test('a whole body sent on the session, as main sent one before #1344, reaches the node twice', () => {
+        const { control } = leg;
+        expect(control.warm).toEqual({ ok: true });
+        expect(control.delivered).toEqual([
+          expect.objectContaining({ reused: true, contentLength: String(control.bytes) }),
+          expect.objectContaining({ reused: false, contentLength: String(control.bytes) }),
+        ]);
+        expect(control.answer).toEqual({ status: 201 });
+        expect(control.networkGone).toEqual([]);
+      });
+
+      test('every write reaches the node once, on a new connection, whole or streamed; the call answers its failure, with no crash', () => {
+        expect(leg.writes.map((w) => w.form).sort()).toEqual(
+          [
+            'bytes_up',
+            'bzz_file',
+            'bzz_file',
+            'bzz_tar',
+            'chunk_up',
+            'feed_manifest',
+            'pss_send',
+            'pss_send',
+            'soc_up',
+          ].sort()
+        );
+        for (const write of leg.writes) {
+          // A read and a write each left a connection the node kept.
+          expect({ id: write.id, warm: write.warm }).toEqual({
+            id: write.id,
+            warm: { read: { ok: true }, write: { status: 201, conn: expect.any(Number) } },
+          });
+          const framing =
+            write.body === 'stream'
+              ? { transferEncoding: 'chunked', contentLength: null }
+              : { transferEncoding: null, contentLength: String(write.bytes) };
+          expect({ id: write.id, delivered: write.delivered }).toEqual({
+            id: write.id,
+            delivered: [
+              expect.objectContaining({
+                reused: false,
+                method: 'POST',
+                ...framing,
+                bytes: write.bytes,
+                digest: write.digest,
+              }),
+            ],
+          });
+          // Not on the connection the warm write left on its session.
+          expect(write.delivered[0].conn).not.toBe(write.warm.write.conn);
+          expect({ id: write.id, answer: write.answer }).toEqual({
+            id: write.id,
+            answer: { failed: 'error' },
+          });
+          expect({ id: write.id, networkGone: write.networkGone, closed: write.closed }).toEqual({
+            id: write.id,
+            networkGone: [],
+            closed: true,
+          });
+        }
+        const bodies = Object.fromEntries(leg.writes.map((w) => [w.id, [w.body, w.bytes]]));
+        expect(bodies).toMatchObject({
+          'send-pss-node-hangs-up': ['whole', 2],
+          'send-pss-sent-empty': ['none', 0],
+          'publish-chunk-4096': ['whole', 4104],
+          'create-feed-name-64': ['none', 0],
+          'publish-files-one-file': ['stream', 2048],
+          'write-feed-4097': ['stream', 4097],
+          'publish-data-10mib': ['stream', 10485760],
+        });
+      });
+
+      // No crash, so nothing in flight fails with it: the session's next
+      // call goes, once, and is answered.
+      test("the session's next call after each write is sent once and answered", () => {
+        for (const write of leg.writes) {
+          expect({ id: write.id, after: write.after }).toEqual({
+            id: write.id,
+            after: { answer: { ok: true }, delivered: 1 },
+          });
+        }
+      });
+
+      // Measured: a read has no body, so Chromium may send it again, which
+      // is idempotent (design 0015's amendment of 2026-11-27).
+      test('a read reaches the node at most twice; its second delivery answers it', () => {
+        for (const read of leg.reads) {
+          expect(read.warm.read).toEqual({ ok: true });
+          expect(read.delivered.length).toBeGreaterThanOrEqual(1);
+          expect(read.delivered.length).toBeLessThanOrEqual(2);
+          expect(read.delivered[0]).toMatchObject({ reused: true, method: 'GET' });
+          if (read.delivered.length === 2) expect(read.answer).toEqual({ ok: true });
+          else expect(read.answer).toEqual({ failed: 'error' });
+        }
+        process.stdout.write(
+          `[swarm-shell proxy] ${route}: a read the node hung up on: ${JSON.stringify(
+            leg.reads.map((r) => ({ id: r.id, delivered: r.delivered.length, answer: r.answer }))
+          )}\n`
+        );
+      });
+
+      // The node answers none of them until all four bodies are in: writes
+      // that waited for each other would time out.
+      test('four streamed uploads go at once, each once, on a connection of its own', () => {
+        const { together } = leg;
+        expect(together.answers).toEqual(Array(4).fill({ status: 201 }));
+        expect(together.networkGone).toEqual([]);
+        expect(together.delivered).toHaveLength(4);
+        for (const upload of together.delivered) {
+          expect(upload).toMatchObject({
+            reused: false,
+            transferEncoding: 'chunked',
+            bytes: 8 * 1024 * 1024,
+          });
+        }
+        expect(new Set(together.delivered.map((upload) => upload.conn)).size).toBe(4);
+        expect(together.delivered.map((upload) => upload.digest).sort()).toEqual(
+          [...together.digests].sort()
+        );
+        process.stdout.write(
+          `[swarm-shell proxy] ${route}: four 8 MiB uploads at once in ${together.ms} ms\n`
+        );
+      });
+    }
+  );
+
+  // The write session takes the session's proxy as Chromium resolves it
+  // there: Tor's SOCKS5 for the onion host while Tor runs, DIRECT once it
+  // stops, which the onion gate refuses before anything is sent.
+  test("a write to a .onion node: through Tor's proxy, by name, while Tor runs; refused unsent once it stops", () => {
+    const { node, running, stopped } = results.onion;
+    const { host } = new URL(node);
+    expect(running.resolveProxy).toMatch(/^SOCKS5 127\.0\.0\.1:\d+$/);
+    expect(running.answer).toEqual({ status: 201 });
+    expect(running.socks).toEqual([host]);
+    expect(running.delivered).toEqual([
+      { viaProxy: true, reused: false, method: 'POST', bytes: 8 },
+    ]);
+    expect(stopped.resolveProxy).toBe('DIRECT');
+    expect(stopped.answer).toEqual({
+      thrown: expect.stringMatching(
+        /^OnionGateRefusal: \.onion gateway is not routed through a proxy/
+      ),
+    });
+    expect(stopped.socks).toEqual([]);
+    expect(stopped.delivered).toEqual([]);
+  });
+
+  // #1358: a write session carries its lease's write and nothing else. Its
+  // spell checker's dictionary is never fetched, and its own guard, armed
+  // for the one write, had nothing to refuse.
+  // The NetLog has every request of every session, through webRequest or
+  // not (a spell checker's dictionary isn't): over HTTP and through SOCKS,
+  // the app requested the node and nothing else.
+  test("the app's network stack requested nothing but the node, over HTTP and through SOCKS", () => {
+    const nodes = [results.remote, results.onion.node].map((node) => new URL(node).origin);
+    expect(results.netLogOrigins.sort()).toEqual(nodes.sort());
+  });
+
+  test('the write sessions sent their writes and nothing else, each a POST to the node', () => {
+    const { made, sent, sentAs, refused } = results.writeSessions;
+    expect(made).toBeGreaterThanOrEqual(4);
+    expect(made).toBeLessThanOrEqual(8);
+    const nodes = [results.remote, results.onion.node].map(
+      (node) => `POST ${new URL(node).origin}`
+    );
+    expect(sentAs.sort()).toEqual(nodes.sort());
+    // One a write: every POST the node saw but the control's, which went
+    // on the session.
+    const plays = results.originSeen.filter((seen) => seen.method === 'POST').length;
+    const legs = Object.values(results.resend);
+    const control = legs.reduce((sum, leg) => sum + leg.control.delivered.length, 0);
+    expect(sent).toBe(
+      plays + results.resendOriginSeen.POST - control + results.onion.running.delivered.length
+    );
+    expect(refused).toEqual([]);
+  });
+
+  // In a real session: with no write armed, its own guard refuses the
+  // node's URLs and any other, and nothing reaches the node.
+  test("a write session's own guard refuses anything it wasn't armed for", () => {
+    const blocked = { error: 'net::ERR_BLOCKED_BY_CLIENT' };
+    expect(results.writeGuard).toEqual({
+      read: blocked,
+      write: blocked,
+      elsewhere: blocked,
+      delivered: 0,
+    });
+  });
+
+  test('the resend leg: the guard saw each read once and the control, no write, and cancelled none', () => {
+    const legs = Object.values(results.resend);
+    const resent = legs.reduce(
+      (sum, leg) => sum + leg.reads.reduce((n, r) => n + r.delivered.length - 1, 0),
+      0
+    );
+    expect(results.resendGuardSaw).toEqual({
+      GET: results.resendOriginSeen.GET - resent,
+      // The control's POST, once a route: its second delivery never passed.
+      POST: legs.length,
+    });
+    expect(results.cancelled).toEqual([]);
+    expect(results.networkGone).toEqual([]);
   });
 });
