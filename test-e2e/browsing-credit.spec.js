@@ -131,6 +131,18 @@ async function openNodesTab(window) {
       })
     )
     .toBe(true);
+  // sidebar.isVisible() is true from the moment the sidebar starts its 0.2 s
+  // width transition (sidebar.css), and the tab buttons are flex children that
+  // move and grow with it: a click sent mid-transition can land on the tab bar
+  // beside the Nodes tab and switch nothing (#1346). Let it finish opening.
+  await window.evaluate(() =>
+    Promise.allSettled(
+      document
+        .getElementById('sidebar')
+        .getAnimations()
+        .map((a) => a.finished)
+    )
+  );
   await window.evaluate(async () => {
     const { walletState } = await import('./lib/wallet/wallet-state.js');
     walletState.viewMode = 'identity';
@@ -553,15 +565,24 @@ const fakeAnt = (electronApp) =>
     };
   });
 
-test.describe('Nodes tab: browsing credit on an Ant with freedom-hq/ant#126', () => {
-  test.beforeEach(async ({ electronApp, window }) => {
-    await startFakeAnt(electronApp);
-    await wireRealServices(electronApp);
-    await openNodesTab(window);
-    await window.click('.sidebar-tab[data-tab="wallet"]');
-    await window.click('.sidebar-tab[data-tab="nodes"]');
-  });
+// The fake node with the real services behind the Nodes tab. Showing the
+// card starts the node's account read (wallet balances, deposit); opening the
+// deposit screen reuses that read and the next one is up to 15 s away. So the
+// node wallet is seeded before anything reads it, and the tab counts as loaded
+// once the card shows what the read found (#1346).
+async function openOnFakeAnt(electronApp, window, { walletXdaiWei = '0', xdai = '0' } = {}) {
+  await startFakeAnt(electronApp);
+  await electronApp.evaluate((_electron, wei) => {
+    globalThis.__fakeAnt.state.walletXdaiWei = BigInt(wei);
+  }, walletXdaiWei);
+  await wireRealServices(electronApp);
+  await openNodesTab(window);
+  await window.click('.sidebar-tab[data-tab="wallet"]');
+  await window.click('.sidebar-tab[data-tab="nodes"]');
+  await expect(window.locator('#swarm-balance-xdai')).toHaveText(xdai);
+}
 
+test.describe('Nodes tab: browsing credit on an Ant with freedom-hq/ant#126', () => {
   test.afterEach(async ({ electronApp }) => {
     await electronApp.evaluate(() => {
       globalThis.__realServices?.setup.dispose?.();
@@ -574,6 +595,7 @@ test.describe('Nodes tab: browsing credit on an Ant with freedom-hq/ant#126', ()
     electronApp,
     window,
   }) => {
+    await openOnFakeAnt(electronApp, window);
     await expect(window.locator('#swarm-credit-tier')).toHaveText('Paying peers');
     await expect(window.locator('#swarm-credit-switch')).toBeEnabled();
     await expect(window.locator('#swarm-credit-switch')).toBeChecked();
@@ -603,6 +625,7 @@ test.describe('Nodes tab: browsing credit on an Ant with freedom-hq/ant#126', ()
     electronApp,
     window,
   }) => {
+    await openOnFakeAnt(electronApp, window);
     await expect(window.locator('#swarm-credit-topup-cta')).toBeVisible();
     await window.click('#swarm-credit-topup');
     await expect(window.locator('#chequebook-amount')).toBeVisible();
@@ -653,8 +676,9 @@ test.describe('Nodes tab: browsing credit on an Ant with freedom-hq/ant#126', ()
     electronApp,
     window,
   }) => {
-    await electronApp.evaluate(() => {
-      globalThis.__fakeAnt.state.walletXdaiWei = 90_000_000_000_000_000n;
+    await openOnFakeAnt(electronApp, window, {
+      walletXdaiWei: '90000000000000000',
+      xdai: '0.09',
     });
     await window.click('#swarm-credit-topup');
     await expect(window.locator('#chequebook-wallet-xdai')).toHaveText('0.09 xDAI');
