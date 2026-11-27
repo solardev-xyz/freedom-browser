@@ -197,6 +197,10 @@ jobs:
       # freedom-core's stream vectors (design 0009, amendment 5, design
       # 0014's service connections that take main's bodies, and design
       # 0015's Swarm streams), which `stream-vectors.test.js` replays, its
+      # x402 vectors (design 0012's `approvals.json`), whose payments
+      # `ledger-authorization.vectors.test.js` holds main's rebuild of a
+      # Ledger payment's authorization to (design 0016, with `ledger.json`
+      # and `ledger-grammar.json` below), its
       # method table (`protocol/schema.json`, with the protocol-2 rows), which
       # `core-deadlines.test.js` checks main's deadline table against, and
       # its Radicle vectors (design 0008), which `radicle-vectors.test.js`
@@ -207,12 +211,14 @@ jobs:
       # Swarm vectors (design 0015's grammar, the reference's recording, and
       # design 0009's file trees), which `swarm-grammar.vectors.test.js` and
       # `swarm-tree.vectors.test.js` hold main's operation grammar, tree
-      # reader and BMT to, at one reviewed commit: moved on purpose when the
-      # protocol's vectors, method table, Radicle vectors, key-store
-      # vectors, layout vectors or Swarm vectors change, never with
-      # freedom-core's main. It is the commit
-      # `cored-v0.30.0` was built from (b4e0cef4). Each suite fails if a
-      # file it is pointed at is missing.
+      # reader and BMT to, and its Ledger vectors (design 0016's APDU grammar
+      # and the reference's recorded exchanges), which
+      # `ledger-grammar.vectors.test.js` holds main's APDU grammar to, at one
+      # reviewed commit: moved on purpose when the protocol's vectors, method
+      # table, Radicle vectors, key-store vectors, layout vectors, Swarm
+      # vectors or Ledger vectors change, never with freedom-core's main. It
+      # is the commit `cored-v0.30.0` was built from (b4e0cef4). Each suite
+      # fails if a file it is pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -221,6 +227,7 @@ jobs:
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
+            vectors/approvals.json
             vectors/streams.json
             vectors/radicle-reads.json
             vectors/radicle-blob.json
@@ -232,6 +239,8 @@ jobs:
             vectors/swarm-grammar.json
             vectors/swarm.json
             vectors/dweb-verify.json
+            vectors/ledger-grammar.json
+            vectors/ledger.json
             protocol/schema.json
           sparse-checkout-cone-mode: false
 
@@ -284,6 +293,7 @@ jobs:
           FREEDOM_CORE_KEYSTORE_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/keystore.json
           FREEDOM_CORE_LAYOUT_VECTORS: ${{ github.workspace }}/.freedom-core/vectors/layout.json
           FREEDOM_CORE_SWARM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
+          FREEDOM_CORE_LEDGER_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
           FREEDOM_CORE_SCHEMA: ${{ github.workspace }}/.freedom-core/protocol/schema.json
           FREEDOM_CORE_COLIBRI_VECTORS: ${{ github.workspace }}/.freedom-core-colibri/vectors/colibri.json
         run: npm run test:coverage
