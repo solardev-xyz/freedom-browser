@@ -1,5 +1,6 @@
 const { configureOllamaAgent, openProviderSettings, closeProviderSettings } = require('./agent-provider-fixture');
 const { test: baseTest, expect } = require('./fixtures');
+const { useWideAgentViewport } = require('./agent-viewport');
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
 const http = require('http');
@@ -39,20 +40,7 @@ const test = baseTest.extend({
 const repositoryRoot = path.resolve(__dirname, '..');
 
 // The run-lifecycle test below covers the wide, three-column Agent-first
-// layout, which only exists above the 1100px compact breakpoint. CI's macOS
-// desktop is 1024px wide and macOS will not size a window past its screen, so
-// the default 1200px window lands at 1024px and Agent-first opens compact
-// (sessions column closed). Zoom the chrome out instead until its CSS viewport
-// is wide: layout and every geometry assertion stay in CSS pixels, and the
-// result is the same on every host.
-const WIDE_AGENT_VIEWPORT = 1280;
-async function useWideAgentViewport(app, page) {
-  await app.evaluate(({ BrowserWindow }, width) => {
-    const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    win.webContents.setZoomFactor(Math.min(1, win.getContentBounds().width / width));
-  }, WIDE_AGENT_VIEWPORT);
-  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBeGreaterThan(1100);
-}
+// layout; see agent-viewport.js for why it zooms out on narrow hosts.
 
 test('Agent stays hidden throughout startup and opens only on request', async ({ window }) => {
   await window.addInitScript(() => {

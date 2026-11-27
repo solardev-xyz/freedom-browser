@@ -472,6 +472,7 @@ async function loadAgentUi(options = {}) {
   const openLinkInNewTab = jest.fn();
   const openStartPage = jest.fn();
   const setTabStripProjection = jest.fn();
+  const releasePendingProjectedTabs = jest.fn();
   const setWorkspaceNavigationProjection = jest.fn();
   const setWorkspaceNavigationEditable = jest.fn();
   const getOpenTabs =
@@ -499,6 +500,7 @@ async function loadAgentUi(options = {}) {
     setAgentTabCustody,
     setAgentTabClaimHandler,
     setTabStripProjection,
+    releasePendingProjectedTabs,
     setWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable,
     subscribeTabPresentation: (listener) => {
@@ -525,6 +527,7 @@ async function loadAgentUi(options = {}) {
     setAgentTabClaimHandler,
     switchTab,
     setTabStripProjection,
+    releasePendingProjectedTabs,
     setWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable,
     emitTabs: (tabs) => tabPresentationListener(tabs),
@@ -3661,6 +3664,8 @@ describe('Agent UI', () => {
       },
       { id: 9, kind: 'workspace-viewer', conversationId: 'conversation_restored', title: 'Changes', url: '' },
       { id: 10, kind: 'workspace-viewer', conversationId: 'conversation_other', title: 'Other changes', url: '' },
+      { id: 11, title: 'This conversation popup', url: 'https://example.com/popup' },
+      { id: 12, title: 'Other conversation popup', url: 'https://example.com/other' },
     ];
     const ctx = await loadAgentUi({
       getOpenTabs,
@@ -3693,6 +3698,10 @@ describe('Agent UI', () => {
               },
             ],
             taskTabs: [{ rendererTabId: 8, agentActive: true }],
+            agentTabs: [
+              { rendererTabId: 11, custody: 'agent', conversationId: 'conversation_restored' },
+              { rendererTabId: 12, custody: 'agent', conversationId: 'conversation_other' },
+            ],
           },
         }),
       },
@@ -3712,10 +3721,10 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-session-list'].children[0].classList.contains('active')).toBe(true);
     expect(ctx.elements['agent-first-title'].textContent).toBe('Compare agent definitions');
     expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
-    expect(ctx.elements['agent-task-page-count'].textContent).toBe('2');
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('3');
     expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
       container: ctx.elements['agent-task-page-list'],
-      tabIds: [8, 9],
+      tabIds: [8, 11, 9],
     });
     expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith(
       ctx.elements['agent-workspace-address-host']
@@ -3733,6 +3742,67 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
     expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
     expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith();
+  });
+
+  test('releases pending full-view pages that belong to another conversation or none', async () => {
+    let agentTabs = [];
+    const getAgentState = jest.fn(async () => ({
+      ok: true,
+      state: {
+        status: 'ready',
+        conversationId: 'conversation_restored',
+        rendererTabId: 7,
+        approvalMode: 'every_interaction',
+        transcript: [],
+        taskTabs: [{ rendererTabId: 8, agentActive: true }],
+        agentTabs,
+      },
+    }));
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => [
+        { id: 7, url: 'https://example.com/start', title: 'Start', isActive: false },
+        { id: 8, url: 'https://task.example/', title: 'Task', isActive: true },
+        { id: 11, url: 'https://example.com/same', title: 'Same chat popup', isActive: false },
+        { id: 12, url: 'https://example.com/other', title: 'Other chat page', isActive: false },
+        { id: 13, url: 'https://example.com/orphan', title: 'Unowned popup', isActive: false },
+      ],
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [{ conversationId: 'conversation_restored', title: 'Task', status: 'ready', turnCount: 1 }],
+        }),
+        getAgentState,
+      },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    agentTabs = [
+      { rendererTabId: 11, custody: 'agent', conversationId: 'conversation_restored' },
+      { rendererTabId: 12, custody: 'agent', conversationId: 'conversation_other' },
+      { rendererTabId: 13, custody: 'agent', conversationId: null },
+    ];
+    // Main's IPC layer never forwards another conversation's run events here;
+    // the custody broadcast (sent to every chrome owner) is what repaints the
+    // projection and releases those pages.
+    const calls = getAgentState.mock.calls.length;
+    ctx.emit({ type: 'agent_tabs_changed' });
+    await flush();
+    expect(getAgentState.mock.calls.length).toBe(calls + 1);
+    expect(ctx.releasePendingProjectedTabs).toHaveBeenLastCalledWith([12, 13]);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [8, 11],
+    });
+    // The released page, once activated, leaves full view as it did before.
+    ctx.emitTabs([
+      { id: 7, url: 'https://example.com/start', title: 'Start', isActive: false },
+      { id: 8, url: 'https://task.example/', title: 'Task', isActive: false },
+      { id: 12, url: 'https://example.com/other', title: 'Other chat page', isActive: true },
+    ]);
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
   });
 
   test('collapses an empty conversation pane and remembers manual hiding per conversation', async () => {
