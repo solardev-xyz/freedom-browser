@@ -94,6 +94,109 @@ describe('vaultBackend', () => {
     ).rejects.toMatchObject({ name: 'VaultBackendError', code: 'requirement_unmet' });
   });
 
+  // freedom-core design 0016, D7: a request that drives a Ledger goes with
+  // the client's device watchdog, from its params (core-deadlines.js
+  // `deviceWatchdogMs`); `call`, whose watchdog takes no params, refuses
+  // it unsent.
+  test("ledgerCall sends a Ledger's request under the device watchdog, and any other under its plain one", async () => {
+    const core = new FakeCore(() => ({}));
+    const { _internal } = load(core);
+    const ledger = { kind: 'ledger', index: 3 };
+    const onSent = () => {};
+    const { signal } = new AbortController();
+    const requires = () => true;
+    const page = {
+      origin: 'https://a.example',
+      top_origin: 'https://a.example',
+      frame: 0,
+      navigation: 1,
+    };
+    await _internal.ledgerCall('sign.transaction', { key: ledger, tx: {} }, null, {
+      onSent,
+      signal,
+    });
+    await _internal.ledgerCall('sign.typed_data', { key: ledger }, page, { requires });
+    await _internal.ledgerCall(
+      'ledger.accounts',
+      { scheme: 'bip44', start: 0, count: 5 },
+      'chrome'
+    );
+    await _internal.ledgerCall('ledger.add', { scheme: 'legacy', index: 1 });
+    await _internal.ledgerCall('x402.settle', { reservation: 'r', typed_data: {} });
+    await _internal.ledgerCall('sign.message', { key: { kind: 'account', index: 0 } });
+    await _internal.ledgerCall('x402.settle', { reservation: 'r', outcome: 'spent' });
+    // SAFE-3's: the classifier's two Safe forms.
+    await _internal.ledgerCall('safe.sign_owner', { safe: 7, owner: 2 }, null, {
+      ledgerOwner: true,
+    });
+    await _internal.ledgerCall('safe.message_sign', { safe: 7, session: 's' });
+    const none = { onSent: null, signal: null, requires: null };
+    expect(core.calls.map(({ method, context, options }) => [method, context, options])).toEqual([
+      [
+        'sign.transaction',
+        { caller: 'shell' },
+        { deviceWatchdogMs: 315_000, onSent, signal, requires: null },
+      ],
+      [
+        'sign.typed_data',
+        { caller: 'page', page },
+        { deviceWatchdogMs: 315_000, ...none, requires },
+      ],
+      ['ledger.accounts', { caller: 'chrome' }, { deviceWatchdogMs: 315_000, ...none }],
+      ['ledger.add', { caller: 'shell' }, { deviceWatchdogMs: 315_000, ...none }],
+      ['x402.settle', { caller: 'shell' }, { deviceWatchdogMs: 315_000, ...none }],
+      ['sign.message', { caller: 'shell' }, { watchdogMs: 15_000, ...none }],
+      ['x402.settle', { caller: 'shell' }, { watchdogMs: 15_000, ...none }],
+      ['safe.sign_owner', { caller: 'shell' }, { deviceWatchdogMs: 435_000, ...none }],
+      ['safe.message_sign', { caller: 'shell' }, { watchdogMs: 135_000, ...none }],
+    ]);
+    // Not a device-class method, or a page it can't send for: unsent.
+    await expect(_internal.ledgerCall('vault.status', {})).rejects.toMatchObject({
+      name: 'VaultBackendError',
+      message: expect.stringMatching(/not a device-class method/),
+    });
+    await expect(_internal.ledgerCall('ledger.add', {}, { origin: null })).rejects.toMatchObject({
+      code: 'invalid_argument',
+    });
+    expect(core.calls).toHaveLength(9);
+  });
+
+  test('call refuses a request that drives a Ledger, unsent: its watchdog would be the immediate 15 s', async () => {
+    const core = new FakeCore(() => ({}));
+    const { vaultBackend, _internal } = load(core);
+    const ledger = { kind: 'ledger', index: 0 };
+    const refused = [
+      _internal.call('sign.transaction', { key: ledger, tx: {} }),
+      _internal.call('x402.settle', { reservation: 'r', typed_data: {} }),
+      vaultBackend.sign.transaction(ledger, {}),
+      vaultBackend.sign.message(ledger, new Uint8Array([1])),
+      vaultBackend.sign.typedData(ledger, {}, '0x' + '00'.repeat(32)),
+      vaultBackend.x402.settle({ reservation: 'r', typed_data: {} }),
+    ];
+    for (const request of refused) {
+      await expect(request).rejects.toMatchObject({
+        name: 'VaultBackendError',
+        code: 'invalid_argument',
+        message: 'A Ledger request goes through ledgerCall',
+      });
+    }
+    // Every ledger.* request drives the device.
+    for (const method of ['ledger.accounts', 'ledger.add']) {
+      await expect(_internal.call(method, {})).rejects.toMatchObject({
+        code: 'invalid_argument',
+        message: 'A Ledger request goes through ledgerCall',
+      });
+    }
+    expect(core.calls).toEqual([]);
+    // The vault's own keys still go, under the immediate 15 s.
+    await vaultBackend.sign.transaction({ kind: 'account', index: 0 }, {});
+    await vaultBackend.x402.settle({ reservation: 'r', outcome: 'spent' });
+    expect(core.calls.map(({ method, options }) => [method, options.watchdogMs])).toEqual([
+      ['sign.transaction', 15_000],
+      ['x402.settle', 15_000],
+    ]);
+  });
+
   // design 0013, "The intent journal" (PRF-6(b)): sixteen shell methods,
   // each with the store's `requires`, whose INTENT_* refusals keep their code.
   test('intents.* go as shell with the intents requirement, and keep the INTENT_* codes', async () => {

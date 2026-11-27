@@ -13,18 +13,25 @@
 const fs = require('fs');
 const path = require('path');
 const {
+  APDU_DEADLINES_MS,
   ASK_IDLE_MS,
   ASK_REPLY_MS,
   DEVICE_ONLY,
   HEAD_DEADLINE_MS,
   IDLE_WATCHDOGS,
+  LANE_QUEUE_MS,
   METHOD_CLASSES,
   PROTOCOL_2_METHODS,
+  SAFE_OWNER_METHODS,
   SESSION_DEADLINE_MS,
   SWARM_DEADLINE_MS,
   VAULT_DEADLINE_MS,
   WATCHDOG_MARGIN_MS,
+  apduWatchdogMs,
+  deviceWatchdogMs,
+  drivesDevice,
   idleWatchdogMs,
+  isDeviceMethod,
   isIdleMethod,
   watchdogMs,
 } = require('./core-deadlines');
@@ -183,12 +190,12 @@ describe('core deadlines', () => {
   });
 
   // cored-v0.30.0's (design 0016, D7): the `device` class has no total
-  // deadline. A request that doesn't drive the device keeps the immediate
-  // 15 s, and main sends no other until LDG-3: its own keys' `sign.*`, and
-  // x402's settle by outcome or by signature. A `ledger.*` request always
-  // drives it, so asking for its watchdog throws until LDG-3 adds the
-  // lane's.
-  test("a device-class method that doesn't drive the device gets 15 s; a Ledger's own isn't sent yet", () => {
+  // deadline. `watchdogMs` takes no params, so it gives the watchdog of a
+  // request that doesn't drive the device, the immediate 15 s: its own
+  // keys' `sign.*`, and x402's settle by outcome or by signature. A
+  // `ledger.*` request always drives it, so asking for its watchdog here
+  // throws: its watchdog is `deviceWatchdogMs`'s (below).
+  test("a device-class method's watchdogMs is 15 s, and a Ledger's own throws", () => {
     const device = Object.keys(METHOD_CLASSES).filter((m) => METHOD_CLASSES[m] === 'device');
     expect(device).toEqual([
       'sign.transaction',
@@ -204,7 +211,9 @@ describe('core deadlines', () => {
     }
     expect(DEVICE_ONLY).toEqual(device.filter((m) => m.startsWith('ledger.')));
     for (const method of DEVICE_ONLY) {
-      expect(() => watchdogMs(method)).toThrow(/drives the device: main sends none before LDG-3/);
+      expect(() => watchdogMs(method)).toThrow(
+        /drives the device: its watchdog is deviceWatchdogMs/
+      );
       expect(() => watchdogMs(method, 10_000)).toThrow(/drives the device/);
     }
     for (const method of ['safe.pending', 'safe.discard']) expect(watchdogMs(method)).toBe(15_000);
@@ -221,6 +230,120 @@ describe('core deadlines', () => {
     for (const driver of [naming, chain]) {
       expect(driver.DEADLINE_MS).toBe(SESSION_DEADLINE_MS);
       expect(driver.WATCHDOG_MARGIN_MS).toBe(WATCHDOG_MARGIN_MS);
+    }
+  });
+});
+
+const LEDGER = { kind: 'ledger', index: 3 };
+const VAULT_KEY = { kind: 'account', index: 0 };
+const TX = { to: '0x' + '11'.repeat(20), value: '0x0', chain_id: 1 };
+
+/**
+ * Design 0016's device watchdog (D7, "The device lane"), as main picks it
+ * from a request's method and params: the lane's for a request that drives
+ * the device, 5 minutes and 15 s until its first `shell.ledger_apdu`, and
+ * then each APDU's `deadline_ms` plus 15 s; 0001's immediate 15 s for any
+ * other. The client's timing of it is core-client-device.test.js's.
+ */
+describe("the device watchdog's classifier (design 0016, D7)", () => {
+  test("which requests drive the device: a Ledger key's sign.*, every ledger.*, x402's settle by typed data, a Ledger owner's Safe signature", () => {
+    for (const method of ['sign.transaction', 'sign.message', 'sign.typed_data']) {
+      expect(drivesDevice(method, { key: LEDGER, tx: TX })).toBe(true);
+      expect(drivesDevice(method, { key: { ...LEDGER, path: "m/44'/60'/0'/0/3" } })).toBe(true);
+      for (const key of [VAULT_KEY, { kind: 'bee_wallet' }, { kind: 'publisher', index: 1 }]) {
+        expect(drivesDevice(method, { key, tx: TX })).toBe(false);
+      }
+      for (const params of [{}, { key: 'ledger' }, { key: null }, { kind: 'ledger' }, null]) {
+        expect(drivesDevice(method, params)).toBe(false);
+      }
+      // `ledgerOwner` is the Safe methods' alone.
+      expect(drivesDevice(method, { key: VAULT_KEY, owner: 1 }, { ledgerOwner: true })).toBe(false);
+    }
+    for (const method of ['ledger.accounts', 'ledger.add']) {
+      expect(drivesDevice(method, {})).toBe(true);
+      expect(drivesDevice(method, { scheme: 'bip44', start: 0, count: 5 })).toBe(true);
+    }
+    expect(drivesDevice('x402.settle', { reservation: 'r', typed_data: {} })).toBe(true);
+    expect(drivesDevice('x402.settle', { reservation: 'r', outcome: 'withheld' })).toBe(false);
+    expect(drivesDevice('x402.settle', { reservation: 'r', signature: '0x' })).toBe(false);
+    for (const method of SAFE_OWNER_METHODS) {
+      expect(drivesDevice(method, { safe: 7, owner: 2 }, { ledgerOwner: true })).toBe(true);
+      expect(drivesDevice(method, { safe: 7, owner: 0 }, { ledgerOwner: true })).toBe(true);
+      expect(drivesDevice(method, { safe: 7, owner: 2 }, { ledgerOwner: false })).toBe(false);
+      expect(drivesDevice(method, { safe: 7, owner: 2 })).toBe(false);
+      expect(drivesDevice(method, { safe: 7, owner: 2 }, { ledgerOwner: 'yes' })).toBe(false);
+      // No `owner`: the vault owners sign, whatever `ledgerOwner` says.
+      expect(drivesDevice(method, { safe: 7 }, { ledgerOwner: true })).toBe(false);
+      expect(drivesDevice(method, { safe: 7, owner: null }, { ledgerOwner: true })).toBe(false);
+    }
+  });
+
+  test("the methods it classifies are the device class's and the two Safe owner methods; every other throws", () => {
+    const device = Object.keys(METHOD_CLASSES).filter((m) => METHOD_CLASSES[m] === 'device');
+    expect(SAFE_OWNER_METHODS).toEqual(['safe.sign_owner', 'safe.message_sign']);
+    // cored-v0.30.0's table has no row for them: the schema check stays
+    // exact (below).
+    for (const method of SAFE_OWNER_METHODS)
+      expect(Object.hasOwn(METHOD_CLASSES, method)).toBe(false);
+    for (const method of [...device, ...SAFE_OWNER_METHODS])
+      expect(isDeviceMethod(method)).toBe(true);
+    const others = [
+      ...Object.keys(METHOD_CLASSES).filter((m) => !device.includes(m)),
+      'safe.unknown',
+      'toString',
+      'constructor',
+      '',
+      undefined,
+    ];
+    for (const method of others) {
+      expect(isDeviceMethod(method)).toBe(false);
+      expect(() => drivesDevice(method, {})).toThrow(/is not a device-class method/);
+      expect(() => deviceWatchdogMs(method, {})).toThrow(/is not a device-class method/);
+    }
+  });
+
+  test("a vault key's sign.* gets 15 s, and a Ledger key's the lane's 5 minutes and 15 s", () => {
+    expect(LANE_QUEUE_MS).toBe(300_000);
+    for (const method of ['sign.transaction', 'sign.message', 'sign.typed_data']) {
+      expect(deviceWatchdogMs(method, { key: VAULT_KEY, tx: TX })).toBe(15_000);
+      expect(deviceWatchdogMs(method, { key: LEDGER, tx: TX })).toBe(315_000);
+      expect(deviceWatchdogMs(method, { key: LEDGER })).toBe(LANE_QUEUE_MS + WATCHDOG_MARGIN_MS);
+    }
+    for (const method of DEVICE_ONLY) expect(deviceWatchdogMs(method, {})).toBe(315_000);
+    expect(deviceWatchdogMs('x402.settle', { reservation: 'r', typed_data: {} })).toBe(315_000);
+    expect(deviceWatchdogMs('x402.settle', { reservation: 'r', outcome: 'spent' })).toBe(15_000);
+    expect(deviceWatchdogMs('x402.settle', { reservation: 'r', signature: '0x' })).toBe(15_000);
+  });
+
+  // Their setup reads come first, under the chain machine's 120 s: 135 s
+  // for vault owners, and 120 s + the lane's 5 minutes + 15 s for a Ledger
+  // owner until its first APDU. 0.30.0 has no rows for them, so only the
+  // classifier is tested here; their live watchdog tests are SAFE-3's
+  // (0016, Steps).
+  test('safe.sign_owner and safe.message_sign: 135 s for vault owners, 7 minutes and 15 s for a Ledger owner', () => {
+    for (const method of SAFE_OWNER_METHODS) {
+      expect(deviceWatchdogMs(method, { safe: 7 })).toBe(135_000);
+      expect(deviceWatchdogMs(method, { safe: 7 }, { ledgerOwner: true })).toBe(135_000);
+      expect(deviceWatchdogMs(method, { safe: 7, owner: 2 })).toBe(135_000);
+      expect(deviceWatchdogMs(method, { safe: 7, owner: 2 }, { ledgerOwner: false })).toBe(135_000);
+      expect(deviceWatchdogMs(method, { safe: 7, owner: 2 }, { ledgerOwner: true })).toBe(435_000);
+      expect(deviceWatchdogMs(method, { safe: 7, owner: 2 }, { ledgerOwner: true })).toBe(
+        7 * 60_000 + 15_000
+      );
+      // The vault owners' is the chain reads' watchdog, as `chain.request`'s.
+      expect(deviceWatchdogMs(method, { safe: 7 })).toBe(watchdogMs('chain.request'));
+    }
+  });
+
+  test("each APDU's watchdog is its deadline_ms plus 15 s: 30 s, or 5 minutes and 15 s for the one the user confirms", () => {
+    expect(APDU_DEADLINES_MS).toEqual([15_000, 300_000]);
+    expect(apduWatchdogMs(15_000)).toBe(30_000);
+    expect(apduWatchdogMs(300_000)).toBe(315_000);
+    for (const odd of [0, 14_999, 15_001, 60_000, 299_999, 300_001, -15_000, 15_000.5, NaN]) {
+      expect(() => apduWatchdogMs(odd)).toThrow(/deadline_ms is 15000 or 300000/);
+    }
+    for (const odd of ['15000', null, undefined, {}, [15_000]]) {
+      expect(() => apduWatchdogMs(odd)).toThrow(TypeError);
     }
   });
 });

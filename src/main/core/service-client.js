@@ -142,6 +142,12 @@
  * terminal and main's credit for that body are its progress. A service's
  * idle methods (`service.idleMethod`) are sent only with one.
  *
+ * **Device watchdogs** (freedom-core design 0016, "The device lane"): a
+ * request that drives a Ledger goes with `deviceWatchdogMs`, a hang
+ * watchdog whose deadline main sets again, earlier or later, at each of
+ * the process's `shell.ledger_apdu` naming it and at each answer to one
+ * (`watchdogReset`), never held. It ends at the response.
+ *
  * **Logs** carry fixed categories and validated public fields only: never
  * request or response bodies, peer-supplied IDs, types or error text.
  */
@@ -1032,6 +1038,8 @@ class ServiceClient extends EventEmitter {
    *   (see requestTo), from when it is sent; none if null
    * @param {number|null} [options.idleWatchdogMs] - an idle method's
    *   watchdog instead (see requestTo)
+   * @param {number|null} [options.deviceWatchdogMs] - a device request's
+   *   resettable watchdog instead (see requestTo)
    * @param {object|null} [options.pool] - the pool its fragmented response
    *   is charged to (see requestTo)
    * @param {AbortSignal|null} [options.signal] - cancels it (see requestTo)
@@ -1050,6 +1058,7 @@ class ServiceClient extends EventEmitter {
     {
       watchdogMs = null,
       idleWatchdogMs = null,
+      deviceWatchdogMs = null,
       pool = null,
       signal = null,
       onSent = null,
@@ -1083,6 +1092,7 @@ class ServiceClient extends EventEmitter {
     return this.send(this.current, method, params, context, {
       watchdogMs,
       idleWatchdogMs,
+      deviceWatchdogMs,
       pool,
       signal,
       onSent,
@@ -1135,6 +1145,28 @@ class ServiceClient extends EventEmitter {
   }
 
   /**
+   * Sets the deadline of main's device request `id` to process
+   * `generation` (the number `onSent` reported) to now + `ms`, earlier or
+   * later than it was (freedom-core design 0016, "The device lane"): one
+   * of the process's `shell.ledger_apdu` naming it, or main's answer to
+   * one, gives it that APDU's `deadline_ms` plus the margin
+   * (core-deadlines.js `apduWatchdogMs`). Returns whether it had one: a
+   * request that has ended, or has no device watchdog, has nothing to set.
+   * @param {number} generation
+   * @param {number} id
+   * @param {number} ms
+   * @returns {boolean}
+   */
+  watchdogReset(generation, id, ms) {
+    if (!Number.isSafeInteger(ms) || ms <= 0) {
+      throw new TypeError('A watchdog bound is a positive number of ms');
+    }
+    const gen = this.current;
+    const entry = gen && gen.number === generation ? gen.pending.get(id) : undefined;
+    return entry?.deviceWatchdog ? entry.deviceWatchdog.reset(ms) : false;
+  }
+
+  /**
    * Sends a request to one process, the ready one `gen` names (the
    * client's `current` when it emitted 'ready'), without waiting: once that
    * process has ended it fails `unavailable`, so it never reaches another.
@@ -1150,6 +1182,15 @@ class ServiceClient extends EventEmitter {
    * A service's idle method (`service.idleMethod`) goes only with it, and
    * no other method takes it: either way round, nothing is sent and the
    * request fails `invalid_argument`.
+   *
+   * `deviceWatchdogMs` is a device request's instead (freedom-core design
+   * 0016, "The device lane"; core-deadlines.js `deviceWatchdogMs`): the
+   * watchdog fires `deviceWatchdogMs` after the request is sent unless
+   * `watchdogReset` sets its deadline again, earlier or later, and nothing
+   * holds it. It ends at the response, a cancelled request's included, as
+   * the hang watchdog does. It goes alone, never with another watchdog, and
+   * never for an idle method: nothing is sent otherwise, and the request
+   * fails `invalid_argument`.
    *
    * `pool` charges the request's fragmented response, twice the size its
    * begin declares, before its buffer is made, until the caller has it
@@ -1200,6 +1241,7 @@ class ServiceClient extends EventEmitter {
     {
       watchdogMs = null,
       idleWatchdogMs = null,
+      deviceWatchdogMs = null,
       pool = null,
       signal = null,
       untilResponse = false,
@@ -1213,6 +1255,7 @@ class ServiceClient extends EventEmitter {
     return this.send(gen, method, params, context, {
       watchdogMs,
       idleWatchdogMs,
+      deviceWatchdogMs,
       pool,
       signal,
       untilResponse,
@@ -1810,6 +1853,7 @@ class ServiceClient extends EventEmitter {
       onReply = null,
       watchdogMs = null,
       idleWatchdogMs = null,
+      deviceWatchdogMs = null,
       pool = null,
       signal = null,
       untilResponse = false,
@@ -1830,13 +1874,25 @@ class ServiceClient extends EventEmitter {
     // one (design 0015, D13): main never sends one unwatched.
     const idle = this.service.idleMethod?.(method) === true;
     const idleForm = Number.isSafeInteger(idleWatchdogMs) && idleWatchdogMs > 0;
-    if (idle ? !idleForm || watchdogMs !== null : idleWatchdogMs !== null) {
+    if (
+      idle ? !idleForm || watchdogMs !== null || deviceWatchdogMs !== null : idleWatchdogMs !== null
+    ) {
       return refuse(
         new CoreError(
           'invalid_argument',
           idle
             ? 'An idle method is sent with its idle watchdog'
             : 'An idle watchdog is only for an idle method'
+        )
+      );
+    }
+    // A device request's watchdog (design 0016) is its only one.
+    const deviceForm = Number.isSafeInteger(deviceWatchdogMs) && deviceWatchdogMs > 0;
+    if (deviceWatchdogMs !== null && (!deviceForm || watchdogMs !== null)) {
+      return refuse(
+        new CoreError(
+          'invalid_argument',
+          "A device watchdog is a positive number of ms, and the request's only watchdog"
         )
       );
     }
@@ -1977,6 +2033,7 @@ class ServiceClient extends EventEmitter {
         settle(outcome);
       };
     }
+    if (deviceWatchdogMs !== null) this.deviceWatchdog(gen, id, entry, method, deviceWatchdogMs);
     gen.pending.set(id, entry);
     gen.writeBytes += frame.length;
     const written = (err) => {
@@ -1999,6 +2056,49 @@ class ServiceClient extends EventEmitter {
     // before this returns.
     onSent?.(id, gen.number);
     return promise;
+  }
+
+  /**
+   * The device watchdog of main's request `id` (freedom-core design 0016,
+   * "The device lane"): the process is hung once its deadline passes, and
+   * is killed, which fails what it holds, and restarted. The deadline is
+   * `ms` from now, and each `watchdogReset` sets it again, earlier or
+   * later, with a timer of its own. It ends at the response, as the hang
+   * watchdog does: a cancelled request's runs on until the process answers
+   * it.
+   */
+  deviceWatchdog(gen, id, entry, method, ms) {
+    const settle = entry.settle;
+    const dog = { timer: null, done: false };
+    const arm = (after) => {
+      this.cancelTimer(gen, dog.timer);
+      dog.timer = this.timer(
+        gen,
+        () => {
+          dog.timer = null;
+          if (gen.pending.get(id) !== entry) return;
+          this.log.error(`${this.label} request hung; restarting the ${this.service.noun}`, {
+            method,
+          });
+          this.end(gen, 'hang');
+        },
+        after
+      );
+    };
+    arm(ms);
+    entry.deviceWatchdog = {
+      reset: (after) => {
+        if (dog.done) return false;
+        arm(after);
+        return true;
+      },
+    };
+    entry.settle = (outcome) => {
+      dog.done = true;
+      this.cancelTimer(gen, dog.timer);
+      dog.timer = null;
+      settle(outcome);
+    };
   }
 
   /**

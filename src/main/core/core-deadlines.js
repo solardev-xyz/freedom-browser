@@ -26,11 +26,11 @@
  * instead (`idleWatchdogMs`). A device-class method's watchdog depends
  * on whether its request drives the device (design 0016, D7): one that
  * doesn't, a vault key's `sign.*` and x402's settle by outcome or by
- * signature, keeps the immediate 15 s, and the one that does needs the
- * lane's watchdog, which LDG-3 adds. Until then main sends only the first
- * kind. The table is kept whole, but `core.hello` and `core.shutdown` are
- * the client's own: its 10 s handshake timeout and 3 s shutdown grace
- * bound them instead.
+ * signature, keeps the immediate 15 s, and the one that does gets the
+ * lane's watchdog, which each APDU resets (`deviceWatchdogMs`,
+ * `apduWatchdogMs`). The table is kept whole, but `core.hello` and
+ * `core.shutdown` are the client's own: its 10 s handshake timeout and 3 s
+ * shutdown grace bound them instead.
  *
  * Main's copy, checked against the core's file when it is found
  * (core-deadlines.test.js). It holds the rows the file marks
@@ -338,6 +338,108 @@ function idleWatchdogMs(method, after = 'progress') {
  * 0016, D7): main has no form of them that keeps the immediate watchdog. */
 const DEVICE_ONLY = Object.freeze(['ledger.accounts', 'ledger.add']);
 
+/** The device lane's longest wait in its queue (design 0016, "The device
+ * lane"; the core's `MAX_QUEUE_WAIT`): no request waits longer for its
+ * first `shell.ledger_apdu`. */
+const LANE_QUEUE_MS = 300_000;
+
+/** The two exchange deadlines a `shell.ledger_apdu` carries as
+ * `deadline_ms` (design 0016, `shell.ledger_apdu`): 15 s, or 5 minutes for
+ * the APDU that waits for the user to confirm. */
+const APDU_DEADLINES_MS = Object.freeze([15_000, 300_000]);
+
+/** The Safe methods that sign with an owner, and so may drive the device
+ * for a Ledger owner (design 0016, D7): `device` in the design, after the
+ * verified setup reads, under the chain machine's 120 s, that come before
+ * each owner's signature. cored-v0.30.0's table has no row for either yet
+ * (SAFE-2's S5 and S6), so they aren't in METHOD_CLASSES, and main sends
+ * neither before SAFE-3. */
+const SAFE_OWNER_METHODS = Object.freeze(['safe.sign_owner', 'safe.message_sign']);
+
+/** Whether `method` may drive the device (design 0016, D7): one of the
+ * `device` class, or one of the two Safe methods 0016 gives it before the
+ * table has their rows. Its watchdog is `deviceWatchdogMs`'s, from its
+ * params. */
+function isDeviceMethod(method) {
+  return (
+    (Object.hasOwn(METHOD_CLASSES, method) && METHOD_CLASSES[method] === DEVICE) ||
+    SAFE_OWNER_METHODS.includes(method)
+  );
+}
+
+/**
+ * Whether a request drives the device (design 0016, "The device lane"), as
+ * main sees from its method and params: a `sign.*` whose `key.kind` is
+ * `"ledger"`; every `ledger.accounts` and `ledger.add`; `x402.settle`'s
+ * Ledger form, `{ reservation, typed_data }`; and a `safe.sign_owner` or
+ * `safe.message_sign` whose `owner` is a Ledger's, which main tells from
+ * its record (`ledgerOwner`), since the params name only the owner's index.
+ * Without an `owner` those sign with the vault owners, whatever
+ * `ledgerOwner` says. Any other request of these methods doesn't. Throws
+ * for any other method: it is never a device request.
+ * @param {string} method
+ * @param {object} params - the request's params, as main sends them
+ * @param {{ ledgerOwner?: boolean }} [options]
+ * @returns {boolean}
+ */
+function drivesDevice(method, params, { ledgerOwner = false } = {}) {
+  if (!isDeviceMethod(method)) {
+    throw new Error(`${method} is not a device-class method: its watchdog is watchdogMs's`);
+  }
+  if (SAFE_OWNER_METHODS.includes(method)) return ledgerOwner === true && params?.owner != null;
+  if (DEVICE_ONLY.includes(method)) return true;
+  if (method === 'x402.settle') return params?.typed_data !== undefined;
+  return params?.key?.kind === 'ledger';
+}
+
+/**
+ * A device-class request's hang watchdog as it is sent, in ms, picked from
+ * its method and params (design 0016, D7, "Deadlines, cancel and
+ * unplugging"):
+ * - a request that drives the device (`drivesDevice`): the lane's longest
+ *   wait in the queue plus the margin, 5 minutes and 15 s, until a
+ *   `shell.ledger_apdu` first names it; for a Ledger owner's
+ *   `safe.sign_owner` or `safe.message_sign`, its setup reads' 120 s more,
+ *   7 minutes and 15 s. It goes as the client's resettable watchdog
+ *   (service-client.js `deviceWatchdogMs`), and from each
+ *   `shell.ledger_apdu` on, each APDU and each answer to one resets it to
+ *   that APDU's `apduWatchdogMs`;
+ * - any other: the immediate 15 s, a vault key's `sign.*` and x402's
+ *   settle by outcome or by signature, or for `safe.sign_owner` and
+ *   `safe.message_sign` with vault owners, the chain machine's 120 s plus
+ *   the margin, 135 s. It goes as the client's plain watchdog.
+ *
+ * Throws for a method outside the device class and those two Safe
+ * methods, whose watchdog is `watchdogMs`'s.
+ * @param {string} method
+ * @param {object} params - the request's params, as main sends them
+ * @param {{ ledgerOwner?: boolean }} [options] - whether a Safe method's
+ *   `owner` is a Ledger's, from main's record of it
+ * @returns {number}
+ */
+function deviceWatchdogMs(method, params, { ledgerOwner = false } = {}) {
+  const device = drivesDevice(method, params, { ledgerOwner });
+  const reads = SAFE_OWNER_METHODS.includes(method) ? SESSION_DEADLINE_MS : 0;
+  return reads + (device ? LANE_QUEUE_MS : 0) + WATCHDOG_MARGIN_MS;
+}
+
+/**
+ * The watchdog a device request's `shell.ledger_apdu` gives it, in ms: the
+ * APDU's `deadline_ms` plus the margin, 30 s, or 5 minutes and 15 s for
+ * the APDU that waits for the user (design 0016, "The device lane"). Main
+ * resets the request's watchdog to it when the APDU arrives and again when
+ * main answers it (service-client.js `watchdogReset`). Throws for a
+ * `deadline_ms` that is neither of the two.
+ * @param {number} deadlineMs - the APDU's `deadline_ms`
+ * @returns {number}
+ */
+function apduWatchdogMs(deadlineMs) {
+  if (!APDU_DEADLINES_MS.includes(deadlineMs)) {
+    throw new TypeError("An APDU's deadline_ms is 15000 or 300000");
+  }
+  return deadlineMs + WATCHDOG_MARGIN_MS;
+}
+
 /** `longest`, or the caller's own `deadline_ms` where it is shorter. */
 function ownDeadline(deadlineMs, longest) {
   const own = Number.isSafeInteger(deadlineMs) && deadlineMs >= 0;
@@ -354,12 +456,12 @@ function ownDeadline(deadlineMs, longest) {
  * (`idleWatchdogMs`), and the client refuses to send it without that.
  *
  * A device-class method (design 0016, D7) gets the immediate 15 s, the
- * watchdog of a request that doesn't drive the device: the only form main
- * sends until LDG-3 (its own keys' `sign.*`, x402's settle by outcome or
- * by signature). A `ledger.*` request always drives it, and needs the
- * lane's watchdog, 5 minutes and 15 s until its first `shell.ledger_apdu`
- * and then each APDU's own, which LDG-3 adds: until then asking for its
- * watchdog throws, so none goes out under 15 s.
+ * watchdog of a request that doesn't drive the device (its own keys'
+ * `sign.*`, x402's settle by outcome or by signature): this takes no
+ * params, so it can't tell the other kind. A request that drives the
+ * device gets `deviceWatchdogMs` instead, from its params. A `ledger.*`
+ * request always drives it, so asking for its watchdog here throws, and
+ * none goes out under 15 s.
  * @param {string} method
  * @param {number} [deadlineMs] - a session or Swarm request's own
  *   `deadline_ms`
@@ -382,7 +484,7 @@ function watchdogMs(method, deadlineMs) {
     case DEVICE:
       if (DEVICE_ONLY.includes(method)) {
         throw new Error(
-          `${method} drives the device: main sends none before LDG-3's device watchdog (design 0016, D7)`
+          `${method} drives the device: its watchdog is deviceWatchdogMs's (design 0016, D7)`
         );
       }
       return IMMEDIATE_WATCHDOG_MS;
@@ -404,7 +506,14 @@ module.exports = {
   PROTOCOL_2_METHODS,
   IDLE_WATCHDOGS,
   DEVICE_ONLY,
+  LANE_QUEUE_MS,
+  APDU_DEADLINES_MS,
+  SAFE_OWNER_METHODS,
   isIdleMethod,
   idleWatchdogMs,
   watchdogMs,
+  isDeviceMethod,
+  drivesDevice,
+  deviceWatchdogMs,
+  apduWatchdogMs,
 };
