@@ -2,3 +2,4 @@
   - An IPFS fault no longer takes the browser down, and the node restarts by itself
   - IPFS doesn't start when its data is on a network drive
   - On Linux and macOS the IPFS process runs in a sandbox, writing only its own data and starting no programs, on Windows in a partial one, and the IPFS panel's Sandbox row shows how much of it the system allows
+  - On Linux and Windows the IPFS process is held to 2 GiB of memory, and restarts if it runs out

@@ -3,3 +3,4 @@
   - Randomly generated Radicle identities end, and their work can no longer be edited
   - The `rad` command line can't attach to Freedom's Radicle node
   - Size caps: 16 MiB to view a file, 64 MiB to download one, 32 MiB per answer
+  - On Linux and Windows the Radicle process is held to 2 GiB of memory, and restarts if it runs out
