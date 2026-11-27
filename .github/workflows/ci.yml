@@ -2081,14 +2081,21 @@ jobs:
       # behind one. `publish-text-shortcut.spec.js` (#720) pins the page's
       # Cmd/Ctrl+Enter text publish. `dapp-background-tab.spec.js` (#764) keeps a
       # background tab's wallet requests attributed to its own site, with a real
-      # vault and the real main-side signing check. The anvil-backed Safe specs
-      # run in `e2e-safe` below.
+      # vault and the real main-side signing check. On the core's Ledger
+      # backend (FREEDOM_LEDGER_BACKEND=core, freedom-core design 0016, LDG-3's
+      # PR 10), against the real freedom-cored and a fake HID device behind
+      # main's relay: `send-ledger-confirm`'s last test cancels a send while
+      # the Ledger waits (the device let go, nothing sent, the nonce
+      # released), and `dapp-tx-ledger-confirm.spec.js` rejects a page's
+      # transaction and message from the approvals document's waiting state.
+      # The anvil-backed Safe specs run in `e2e-safe` below.
       - name: Run wallet approval E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-wallet \
             test-e2e/dapp-background-tab.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
+            test-e2e/dapp-tx-ledger-confirm.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
             test-e2e/wallet-toggle-early-start.spec.js \

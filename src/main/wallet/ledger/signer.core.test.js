@@ -821,17 +821,50 @@ describe('on the core backend', () => {
     expect(reached().filter((apdu) => apdu.startsWith('e00c0000'))).toHaveLength(1);
   });
 
-  test("main's own cancel while the device waits: the core is told, the device let go at once, the caller hears cancelled", async () => {
+  test("main's own cancel while the device waits: the core is told, the device let go at once, the caller hears LEDGER_CANCELLED (point 18's text)", async () => {
     const devices = mockRuntime.started.devices;
     devices.respond = (apdu) => (hex(apdu).startsWith('e008') ? { hold: true } : answerer.current(apdu));
     const controller = new AbortController();
     const pending = getSigner(LEDGER_INDEX, { signal: controller.signal }).signMessage('hi');
     await until(() => devices.held.length === 1, 'the device waiting');
+    const sent = reached().length;
     controller.abort();
-    await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+    await expect(pending).rejects.toMatchObject({
+      code: 'LEDGER_CANCELLED',
+      message: 'Cancelled. If your Ledger still shows the request, reject it there.',
+    });
     const [request] = core().requests('sign.message');
     expect(core().cancels()).toEqual([request.id]);
     expect(devices.of('detach')).toEqual([expect.objectContaining({ inFlight: true })]);
+    // The parent has ended in the relay: a later APDU for it is refused
+    // `ended`, and nothing more reaches the device.
+    const late = core().apdu(request.id, '8008000005' + '0000000068', 300_000);
+    await until(() => core().raw(late), 'the late reply');
+    expect(core().reply(late)).toMatchObject({ refused: 'ended' });
+    expect(reached()).toHaveLength(sent);
+  });
+
+  test("a signature whose reply came in after the user's Cancel is dropped: LEDGER_CANCELLED, nothing returned", async () => {
+    const { vaultBackend } = require('../../core/vault-backend');
+    const controller = new AbortController();
+    const actual = vaultBackend.sign.message;
+    const spy = jest.spyOn(vaultBackend.sign, 'message').mockImplementationOnce(async (...args) => {
+      const signature = await actual(...args);
+      // The device answered and the core replied; the Cancel came just
+      // after, before the signer took the reply.
+      controller.abort();
+      return signature;
+    });
+    try {
+      await expect(getSigner(LEDGER_INDEX, { signal: controller.signal }).signMessage('hi')).rejects.toMatchObject({
+        code: 'LEDGER_CANCELLED',
+      });
+      expect(signingReached()).toBe(true);
+      // Nothing was kept of it either.
+      expect(mockRecordLedgerAddressCheck).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test('on main\'s real HID device layer, over a fake node-hid: one handle for the operation, the signature checked', async () => {

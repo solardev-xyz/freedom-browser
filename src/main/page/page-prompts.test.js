@@ -99,7 +99,7 @@ function promptingDispatchers(effects) {
   };
 }
 
-function setup() {
+function setup({ dispatchers = {}, approvals = null } = {}) {
   const guests = new Map();
   const documents = createPageDocuments({
     isPrivateWebContents: () => false,
@@ -116,8 +116,9 @@ function setup() {
   const requests = createPageRequests({
     documents,
     webContentsFromId: (id) => guests.get(id),
-    dispatchers: promptingDispatchers(effects),
+    dispatchers: { ...promptingDispatchers(effects), ...dispatchers },
     hooks: { onTrace: (entry) => trace.push(entry) },
+    approvals,
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
     chromeWindowOf: (contents) => (Number.isInteger(contents?.id) && contents.id >= 500 ? contents.id - 500 : null),
@@ -685,5 +686,128 @@ describe('the prompt budget', () => {
     add(2, { n: 3 });
     api.forgetWindow(1);
     expect(api.usage()).toEqual({ count: 1, bytes: sizeOf({ n: 3 }), windows: { 2: { count: 1, bytes: sizeOf({ n: 3 }) } } });
+  });
+});
+
+// LDG-3's PR 10 (freedom-core design 0016, deviation `cancel`): on the core's
+// Ledger backend, an approved request whose device step says it can be
+// cancelled (`context.deviceWait()`) keeps Reject on the surface that
+// decided it, and that Reject answers it rejected, aborting its signal.
+describe('Reject while a Ledger waits (LDG-3 PR 10)', () => {
+  const NOTICE = 'Cancelled. If your Ledger still shows the request, reject it there.';
+  const REJECTED = { error: { code: 4001, message: 'User rejected the request' } };
+
+  // A signature's device step: once approved, it says whether it can be
+  // cancelled, and waits for the device or the request's signal.
+  function deviceStep() {
+    const step = { cancellable: true, started: false, aborted: false, answer: null, context: null };
+    step.dispatcher = async (context) => {
+      const decision = await context.prompt({ kind: 'eth.sign', view: { note: 'sign' }, choices: () => ({}) });
+      if (decision.closed || !decision.approve) return REJECTED;
+      step.context = context;
+      step.started = true;
+      step.waits = step.cancellable ? context.deviceWait() : false;
+      return new Promise((resolve) => {
+        step.answer = resolve;
+        context.signal.addEventListener(
+          'abort',
+          () => {
+            step.aborted = true;
+            resolve({ error: { code: -32603, message: 'The device step heard the cancel late' } });
+          },
+          { once: true }
+        );
+      });
+    };
+    return step;
+  }
+
+  async function approvedSignature(env, page) {
+    const answer = page.ask('personal_sign');
+    await flush();
+    const [handle] = env.handleOf(page.guest);
+    const decided = env.decide(1, handle);
+    await flush();
+    return { answer, handle, decided };
+  }
+
+  const cancel = (env, windowId, payload) => env.requests.cancel({ sender: chromeOf(windowId) }, payload);
+
+  test('the device step says so: the chrome hears page:prompt-waiting, and its Reject answers the page 4001 and aborts the step', async () => {
+    const step = deviceStep();
+    const env = setup({ dispatchers: { 'ethereum:personal_sign': step.dispatcher } });
+    const page = env.tab();
+    env.front(1, page.guest);
+    const { answer, handle, decided } = await approvedSignature(env, page);
+    expect(step.started).toBe(true);
+    expect(step.waits).toBe(true);
+    expect(env.messages('page:prompt-waiting')).toEqual([{ handle }]);
+    // Another window, and a malformed payload, reach nothing.
+    expect(cancel(env, 2, { handle })).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(cancel(env, 1, { handle, extra: 1 })).toEqual({ ok: false, reason: 'invalid' });
+    expect(cancel(env, 1, { handle: 7 })).toEqual({ ok: false, reason: 'invalid' });
+    expect(step.aborted).toBe(false);
+
+    expect(cancel(env, 1, { handle })).toEqual({ ok: true, notice: NOTICE });
+    expect(step.aborted).toBe(true);
+    expect(await answer).toEqual(REJECTED);
+    // The decision is answered once its request is.
+    expect(await decided).toEqual({ ok: true });
+    // Answered: a second Reject reaches nothing.
+    expect(cancel(env, 1, { handle })).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(env.trace.filter((e) => e.kind === 'cancel' && e.ok)).toEqual([
+      expect.objectContaining({ window: 1, from: 'chrome', ok: true }),
+    ]);
+  });
+
+  test('a device step that never says so (the JS backend) is never cancelled: the device answers the page', async () => {
+    const step = deviceStep();
+    step.cancellable = false;
+    const env = setup({ dispatchers: { 'ethereum:personal_sign': step.dispatcher } });
+    const page = env.tab();
+    env.front(1, page.guest);
+    const { answer, handle, decided } = await approvedSignature(env, page);
+    expect(env.messages('page:prompt-waiting')).toEqual([]);
+    expect(cancel(env, 1, { handle })).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(step.aborted).toBe(false);
+    step.answer({ result: '0xsigned' });
+    expect(await answer).toEqual({ result: '0xsigned' });
+    expect(await decided).toEqual({ ok: true });
+  });
+
+  test('once the device answered, Reject reaches nothing', async () => {
+    const step = deviceStep();
+    const env = setup({ dispatchers: { 'ethereum:personal_sign': step.dispatcher } });
+    const page = env.tab();
+    env.front(1, page.guest);
+    const { answer, handle } = await approvedSignature(env, page);
+    step.answer({ result: '0xsigned' });
+    expect(await answer).toEqual({ result: '0xsigned' });
+    expect(cancel(env, 1, { handle })).toEqual({ ok: false, reason: 'not-waiting' });
+    // And an unanswered prompt that was never decided can't be waited on.
+    expect(step.context.deviceWait()).toBe(false);
+  });
+
+  test('with the approvals document on, the document hears it and decides the Reject; the chrome\'s is refused', async () => {
+    const step = deviceStep();
+    const toDocument = [];
+    const approvals = { send: (windowId, channel, payload) => toDocument.push([windowId, channel, payload]) };
+    const env = setup({ dispatchers: { 'ethereum:personal_sign': step.dispatcher }, approvals });
+    const page = env.tab();
+    env.front(1, page.guest);
+    const answer = page.ask('personal_sign');
+    await flush();
+    const [handle] = env.handleOf(page.guest);
+    const decided = env.requests.decideInWindow(1, { handle, approve: true, choices: {} });
+    await flush();
+    expect(toDocument.filter(([, channel]) => channel === 'page:prompt-waiting')).toEqual([
+      [1, 'page:prompt-waiting', { handle }],
+    ]);
+    expect(env.messages('page:prompt-waiting')).toEqual([]);
+    expect(cancel(env, 1, { handle })).toEqual({ ok: false, reason: 'approvals-document' });
+    expect(env.requests.cancelInWindow(2, { handle })).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(env.requests.cancelInWindow(1, { handle })).toEqual({ ok: true, notice: NOTICE });
+    expect(await answer).toEqual(REJECTED);
+    expect(await decided).toEqual({ ok: true });
   });
 });

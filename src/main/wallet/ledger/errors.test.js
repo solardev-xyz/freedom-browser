@@ -4,6 +4,7 @@ const {
   mapLedgerError,
   isLedgerUserRejection,
   fromCoreError,
+  ledgerCancelledNotice,
 } = require('./errors');
 
 function statusError(statusCode) {
@@ -147,5 +148,16 @@ describe('fromCoreError', () => {
     expect(fromCoreError(Object.assign(new Error('x'), { code: 'invalid_argument', data: { ledger: 'LEDGER_BUSY' } }))).toBeNull();
     expect(fromCoreError(new Error('x'))).toBeNull();
     expect(fromCoreError(null)).toBeNull();
+  });
+});
+
+// LDG-3's PR 10 and its point 18 (the user's decision pending: option (a)
+// built): after a Cancel or Reject while the Ledger waited, every surface
+// shows this one text, kept here alone.
+describe('the cancel notice', () => {
+  test('LEDGER_CANCELLED says the Ledger may still show the request', () => {
+    const text = 'Cancelled. If your Ledger still shows the request, reject it there.';
+    expect(ledgerCancelledNotice()).toBe(text);
+    expect(createLedgerError(LEDGER_ERROR_CODES.CANCELLED)).toMatchObject({ code: 'LEDGER_CANCELLED', message: text });
   });
 });

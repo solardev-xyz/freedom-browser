@@ -43,6 +43,7 @@ const restoreIdentityData = () => {
 };
 
 const LOCKED = 'Ledger is locked. Unlock it with your PIN.';
+const BUSY = 'Ledger is busy with another request. Finish or dismiss it on the device.';
 const MAIN = {
   index: 0,
   name: 'Main Wallet',
@@ -146,6 +147,8 @@ const loadScreen = async ({ world = null } = {}) => {
   const successView = createElement('div', { classes: ['hidden'] });
   const resultName = createElement('div');
   const resultAddress = createElement('div');
+  const confirmEl = createElement('div', { classes: ['connect-ledger-status', 'hidden'] });
+  const confirmText = createElement('span');
 
   const elementsById = {
     'sidebar-connect-ledger': screen,
@@ -165,6 +168,8 @@ const loadScreen = async ({ world = null } = {}) => {
     'connect-ledger-result-name': resultName,
     'connect-ledger-result-address': resultAddress,
     'connect-ledger-done': createElement('button'),
+    'connect-ledger-confirm': confirmEl,
+    'connect-ledger-confirm-text': confirmText,
   };
 
   const bridge = world
@@ -173,6 +178,8 @@ const loadScreen = async ({ world = null } = {}) => {
         getAccounts: jest.fn(async () => ({ success: true, accounts: [] })),
         addAccount: jest.fn(),
       };
+  // preload.js's switch: the core drives the Ledger (LDG-3).
+  bridge.coreBackend = Boolean(world);
   global.window = { ledger: bridge };
   global.document = createDocument({ elementsById });
 
@@ -218,6 +225,8 @@ const loadScreen = async ({ world = null } = {}) => {
     successView,
     resultName,
     resultAddress,
+    confirmEl,
+    confirmText,
     getAccounts: bridge.getAccounts,
     addAccount: bridge.addAccount,
     inFlight: bridge.inFlight,
@@ -250,6 +259,8 @@ const BACKENDS = {
         code: 'LEDGER_DEVICE_LOCKED',
       }),
     waits: (ctx) => ctx.getAccounts.mockReturnValue(new Promise(() => {})),
+    failsBusy: (ctx) =>
+      ctx.getAccounts.mockResolvedValue({ success: false, error: BUSY, code: 'LEDGER_BUSY' }),
     ready: (ctx) =>
       ctx.getAccounts.mockResolvedValue({
         success: true,
@@ -268,6 +279,9 @@ const BACKENDS = {
     },
     waits: (ctx) => {
       ctx.world.device.script = () => ({ hold: true });
+    },
+    failsBusy: (ctx) => {
+      ctx.world.device.script = () => ({ fail: 'busy' });
     },
     ready: (ctx) => {
       ctx.world.device.script = null;
@@ -346,6 +360,25 @@ describe.each(Object.keys(BACKENDS))('connect ledger on the %s backend', (backen
       expect(ctx.statusText.textContent).toBe('Looking for your Ledger…');
       expect(ctx.statusSpinner.classList.contains('hidden')).toBe(false);
       expect(ctx.statusEl.classList.contains('connect-ledger-status-failed')).toBe(false);
+    });
+
+    // LDG-3's PR 10 (design 0016, deviation `discovery-busy`): on the
+    // core's backend discovery answers LEDGER_BUSY at once while another
+    // request holds the device (a signature waiting): a wait, not a failure.
+    test('a busy Ledger keeps the spinner, says so, and polls on until it is free', async () => {
+      await open();
+      driver.failsBusy(ctx);
+
+      await ctx.mod.openConnectLedger();
+      await driver.settled(ctx);
+      expect(ctx.statusText.textContent).toBe(BUSY);
+      expect(ctx.statusSpinner.classList.contains('hidden')).toBe(false);
+      expect(ctx.statusEl.classList.contains('connect-ledger-status-failed')).toBe(false);
+
+      driver.ready(ctx);
+      await jest.advanceTimersByTimeAsync(1500);
+      await driver.settled(ctx);
+      expect(ctx.accountsView.classList.contains('hidden')).toBe(false);
     });
 
     test('detection keeps polling after a failure and clears the error state on reopen', async () => {
@@ -499,6 +532,17 @@ describe.each(Object.keys(BACKENDS))('connect ledger on the %s backend', (backen
         await until(() => ctx.world.devices.held.length === 1, 'the add on the device');
       await flushMicrotasks();
 
+      // On the core's backend the device shows the address: the screen says
+      // to confirm it there (LDG-3's PR 10). The JS backend shows nothing.
+      const chosen = ctx.listed()[0].address;
+      if (backend === 'core') {
+        expect(ctx.submitBtn.textContent).toBe('Confirm on your Ledger…');
+        expect(ctx.confirmEl.classList.contains('hidden')).toBe(false);
+        expect(ctx.confirmText.textContent).toBe(`Check that your Ledger shows ${chosen}, and approve it there.`);
+      } else {
+        expect(ctx.submitBtn.textContent).toBe('Adding…');
+        expect(ctx.confirmEl.classList.contains('hidden')).toBe(true);
+      }
       expect(ctx.schemeSelect.disabled).toBe(true);
       expect(ctx.loadMoreBtn.disabled).toBe(true);
       ctx.schemeSelect.dispatch('change');
@@ -523,6 +567,7 @@ describe.each(Object.keys(BACKENDS))('connect ledger on the %s backend', (backen
       await flushMicrotasks();
       expect(ctx.successView.classList.contains('hidden')).toBe(false);
       expect(ctx.resultAddress.textContent).toBe(address);
+      expect(ctx.confirmEl.classList.contains('hidden')).toBe(true);
 
       // Nothing polls behind the success step.
       await jest.advanceTimersByTimeAsync(10 * 1500);

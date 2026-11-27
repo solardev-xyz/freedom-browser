@@ -849,7 +849,7 @@ describe('register', () => {
     const handle = new Map();
     requests.register({ on: (channel, fn) => on.set(channel, fn), handle: (channel, fn) => handle.set(channel, fn) });
     expect([...on.keys()]).toEqual(['page:hello', 'page:bind-name', 'page:foreground']);
-    expect([...handle.keys()]).toEqual(['page:reserve', 'page:request', 'page:decide']);
+    expect([...handle.keys()]).toEqual(['page:reserve', 'page:request', 'page:decide', 'page:cancel']);
 
     const guest = new Guest();
     guests.set(guest.id, guest);

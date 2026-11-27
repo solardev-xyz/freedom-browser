@@ -39,6 +39,7 @@ const {
   CSP,
   CHANNELS,
   INPUT_DELAY_MS,
+  NOTICE_MS,
   MAX_VIEW_BYTES,
   MAX_PARTED_VIEW_BYTES,
   VIEW_PART_UNITS,
@@ -171,8 +172,10 @@ function fakeSession() {
   return ses;
 }
 
-function setup({ theme = 'system' } = {}) {
+function setup({ theme = 'system', cancel = async () => ({ ok: false, reason: 'unavailable' }) } = {}) {
   let clock = 0;
+  // The panel's notice timers, fired by the test.
+  const timers = [];
   const ses = fakeSession();
   const partitions = [];
   const views = [];
@@ -198,6 +201,15 @@ function setup({ theme = 'system' } = {}) {
       return ses;
     },
     decide,
+    cancel,
+    setTimer: (fn, ms) => {
+      const timer = { fn, ms, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => {
+      if (timer) timer.cleared = true;
+    },
     chromeWindowOf: (contents) => (contents?.id >= 500 && contents.id < 600 ? contents.id - 500 : null),
     readFile: async (file) => Buffer.from(`contents of ${path.basename(file)}`),
     now: () => clock,
@@ -215,7 +227,7 @@ function setup({ theme = 'system' } = {}) {
     while (deferred.length) deferred.shift()();
     for (let i = 0; i < 3; i += 1) await Promise.resolve();
   };
-  return { docs, ses, partitions, views, decide, decisions, trace, advance, themeListeners, ipc, runDeferred };
+  return { docs, ses, partitions, views, decide, decisions, trace, advance, themeListeners, ipc, runDeferred, timers };
 }
 
 /** An IPC event from `contents`' main frame, or the frame given. */
@@ -790,7 +802,11 @@ describe('main\'s prompts in the document', () => {
     expect(env.ipc.on.mock.calls.map(([channel]) => channel).sort()).toEqual(
       [CHANNELS.READY, CHANNELS.SHOWN, CHANNELS.ANCHOR].sort()
     );
-    expect(env.ipc.handle.mock.calls.map(([channel]) => channel)).toEqual([CHANNELS.DECIDE, CHANNELS.VIEW_PART]);
+    expect(env.ipc.handle.mock.calls.map(([channel]) => channel)).toEqual([
+      CHANNELS.DECIDE,
+      CHANNELS.VIEW_PART,
+      CHANNELS.CANCEL,
+    ]);
   });
 });
 
@@ -1369,6 +1385,110 @@ describe('APS-3: an approval for a device\'s account keeps the panel up while it
     answer({ ok: true });
     await first;
     expect(view.visible).toBe(true);
+  });
+});
+
+// LDG-3's PR 10 (freedom-core design 0016, deviation `cancel`): Reject
+// while a Ledger waits, once main says its device step can be cancelled.
+describe('LDG-3: Reject while the Ledger waits', () => {
+  const deviceView = (type) => ({ account: { index: 1, name: 'Ledger', address: null, type } });
+  const NOTICE = 'Cancelled. If your Ledger still shows the request, reject it there.';
+
+  /** A Ledger approval waiting on the device: the decision unanswered. */
+  function waitingOnLedger({ cancel } = {}) {
+    let answer;
+    const cancels = [];
+    const env = setup({
+      cancel: jest.fn(async (windowId, payload) => {
+        cancels.push([windowId, payload]);
+        return cancel ? cancel(answer) : { ok: true, notice: NOTICE };
+      }),
+    });
+    const attachedWindow = attached(env);
+    const { contents } = attachedWindow;
+    env.decide.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, deviceView('ledger')));
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
+    env.advance(INPUT_DELAY_MS);
+    const decided = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true });
+    env.docs.send(1, CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' });
+    return { env, ...attachedWindow, decided, cancels, answer: (value) => answer(value) };
+  }
+
+  test("main's word reaches the document for the approval it waits on, and only then does Reject reach main", async () => {
+    const { env, contents, view, decided, cancels, answer } = waitingOnLedger();
+    // Not yet cancellable: refused here, never asked of main.
+    expect(await env.docs.cancel(eventFrom(contents), { handle: HANDLE })).toEqual({ ok: false, reason: 'not-waiting' });
+    // Another handle's word is no word for this wait.
+    env.docs.send(1, CHANNELS.WAITING, { handle: OTHER_HANDLE });
+    expect(contents.sent.some(([channel]) => channel === CHANNELS.WAITING)).toBe(false);
+    env.docs.send(1, CHANNELS.WAITING, { handle: HANDLE });
+    expect(contents.sent.at(-1)).toEqual([CHANNELS.WAITING, { handle: HANDLE }]);
+    expect(env.docs.state()[1]).toMatchObject({ waiting: 'ledger', cancellable: true });
+    // A malformed or other handle's Reject, and another view's, reach nothing.
+    expect(await env.docs.cancel(eventFrom(contents), { handle: OTHER_HANDLE })).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(await env.docs.cancel(eventFrom(contents), { handle: 1 })).toEqual({ ok: false, reason: 'invalid' });
+    expect(await env.docs.cancel(eventFrom({ id: 999, mainFrame: {} }), { handle: HANDLE })).toMatchObject({ ok: false });
+    expect(cancels).toEqual([]);
+
+    // No input delay for a rejection.
+    expect(await env.docs.cancel(eventFrom(contents), { handle: HANDLE })).toEqual({ ok: true, notice: NOTICE });
+    expect(cancels).toEqual([[1, { handle: HANDLE }]]);
+    answer({ ok: true });
+    expect(await decided).toEqual({ ok: true });
+    // The panel keeps the notice a moment after the request is answered.
+    expect(view.visible).toBe(true);
+    expect(env.docs.state()[1]).toMatchObject({ waiting: null, notice: HANDLE });
+    const [timer] = env.timers.filter((t) => !t.cleared);
+    expect(timer.ms).toBe(NOTICE_MS);
+    timer.fn();
+    expect(view.visible).toBe(false);
+    expect(env.docs.state()[1]).toMatchObject({ notice: null });
+  });
+
+  test('a prompt that shows meanwhile takes the panel from the notice', async () => {
+    const { env, view, contents, decided, answer } = waitingOnLedger();
+    env.docs.send(1, CHANNELS.WAITING, { handle: HANDLE });
+    await env.docs.cancel(eventFrom(contents), { handle: HANDLE });
+    answer({ ok: true });
+    await decided;
+    env.docs.send(1, CHANNELS.PROMPT, prompt(OTHER_HANDLE));
+    expect(env.docs.state()[1]).toMatchObject({ notice: null, shown: OTHER_HANDLE, visible: true });
+    expect(env.timers.every((t) => t.cleared)).toBe(true);
+    expect(view.visible).toBe(true);
+  });
+
+  test("the document keeps the notice as long as main keeps the panel (approvals-core.js's NOTICE_MS)", () => {
+    expect(require('../../renderer/approvals/approvals-core').NOTICE_MS).toBe(NOTICE_MS);
+  });
+
+  test('a Reject that meets the device answering at the same moment leaves no panel up', async () => {
+    // Main answers the request as the Reject reaches it: the decision ends
+    // first, and main finds nothing waiting.
+    const { env, view, contents, decided } = waitingOnLedger({
+      cancel: (answer) => {
+        answer({ ok: true });
+        return { ok: false, reason: 'not-waiting' };
+      },
+    });
+    env.docs.send(1, CHANNELS.WAITING, { handle: HANDLE });
+    const cancelled = env.docs.cancel(eventFrom(contents), { handle: HANDLE });
+    expect(await decided).toEqual({ ok: true });
+    expect(await cancelled).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(view.visible).toBe(false);
+    expect(env.docs.state()[1]).toMatchObject({ waiting: null, notice: null });
+    expect(env.timers.every((t) => t.cleared)).toBe(true);
+  });
+
+  test("main's refusal (the device answered first) holds no notice: the panel goes with the answer", async () => {
+    const { env, view, contents, decided, answer } = waitingOnLedger({ cancel: () => ({ ok: false, reason: 'not-waiting' }) });
+    env.docs.send(1, CHANNELS.WAITING, { handle: HANDLE });
+    expect(await env.docs.cancel(eventFrom(contents), { handle: HANDLE })).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(env.docs.state()[1].notice).toBeNull();
+    answer({ ok: true });
+    await decided;
+    expect(view.visible).toBe(false);
+    expect(env.timers).toEqual([]);
   });
 });
 

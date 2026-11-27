@@ -164,7 +164,13 @@ describe('isSenderAllowed', () => {
   // chrome, which must not be able to decide. Main then checks the exact
   // view (approvals-document.js).
   test('the approvals channels take the approvals document\'s top frame and refuse the chrome', () => {
-    expect(APPROVALS_CHANNELS).toEqual(['approvals:ready', 'approvals:shown', 'approvals:decide', 'approvals:view-part']);
+    expect(APPROVALS_CHANNELS).toEqual([
+      'approvals:ready',
+      'approvals:shown',
+      'approvals:decide',
+      'approvals:view-part',
+      'approvals:cancel',
+    ]);
     expect(APPROVALS_HTML).toBe(path.join(path.dirname(CHROME_INDEX), 'approvals', 'approvals.html'));
     const approvalsDoc = (extra = {}) => makeEvent({ type: 'window', url: fileUrl(APPROVALS_HTML), ...extra });
     for (const channel of APPROVALS_CHANNELS) {
@@ -188,7 +194,7 @@ describe('isSenderAllowed', () => {
       expect(isSenderAllowed(channel, throwing)).toBe(false);
     }
     // The document reaches nothing else, the chrome's channels included.
-    for (const channel of ['page:decide', 'page:foreground', 'page:approvals-anchor', 'wallet:confirm-signing', 'settings:get']) {
+    for (const channel of ['page:decide', 'page:cancel', 'page:foreground', 'page:approvals-anchor', 'wallet:confirm-signing', 'wallet:cancel-send', 'settings:get']) {
       expect(isSenderAllowed(channel, approvalsDoc())).toBe(false);
     }
     // Where the content area starts: the chrome's to say.

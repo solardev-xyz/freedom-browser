@@ -62,12 +62,16 @@ async function loadDappTx() {
 
   // Main quotes, checks and sends a page's transaction: the screen asks
   // none of these (the tests check that it doesn't).
+  // `page:prompt-waiting` listeners (preload.js `pagePrompts.onWaiting`),
+  // which the screen registers as it starts.
+  const waiting = [];
   global.window = {
     wallet: {
       estimateGas: jest.fn().mockResolvedValue({ success: true, gasLimit: '21000' }),
       feeCheck: jest.fn(),
       confirmSigning: jest.fn(),
     },
+    pagePrompts: { onWaiting: jest.fn((listener) => waiting.push(listener)) },
   };
 
   // The Ledger account bypasses the vault-unlock gate, the same as in the app.
@@ -96,7 +100,10 @@ async function loadDappTx() {
   // The screen hider this module registered (another screen opening).
   const hideForOtherScreen = () => require('./wallet-state.js').registerScreenHider.mock.calls[0][0]();
 
-  return { mod, elements: elementsById, hideForOtherScreen };
+  // Main says a decided prompt waits on a Ledger Reject still reaches.
+  const deviceWaits = (handle) => waiting.forEach((listener) => listener({ handle }));
+
+  return { mod, elements: elementsById, hideForOtherScreen, deviceWaits };
 }
 
 describe("dapp-tx: main's prompt (0011 PRQ-5b)", () => {
@@ -122,12 +129,12 @@ describe("dapp-tx: main's prompt (0011 PRQ-5b)", () => {
     const env = await loadDappTx(options);
     const decisions = [];
     let answer = deferred();
-    global.window.pagePrompts = {
+    Object.assign(global.window.pagePrompts, {
       decide: jest.fn((handle, approve, choices) => {
         decisions.push({ handle, approve, choices });
         return answer.promise;
       }),
-    };
+    });
     const renderer = require('../page-prompt-renderers.js').pagePromptRenderer('eth.send');
     const prompt = (view = {}, handle = 'h1') => ({ handle, guest: 3, kind: 'eth.send', site: SITE, view: { ...VIEW, ...view } });
     const show = (view, handle) => renderer.show(prompt(view, handle));
@@ -179,6 +186,104 @@ describe("dapp-tx: main's prompt (0011 PRQ-5b)", () => {
     await flush();
     expect(env.showing()).toBe(false);
     expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
+  // LDG-3's PR 10 (freedom-core design 0016, deviation `cancel`): on the
+  // core's Ledger backend main says when Reject still reaches the device.
+  test("main's word brings Reject back while the Ledger waits; Reject is main's cancel, and its notice stays a moment", async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+    try {
+      const env = await loadPage();
+      const notice = 'Cancelled. If your Ledger still shows the request, reject it there.';
+      const answer = env.answer();
+      window.pagePrompts.cancel = jest.fn(async () => {
+        // Main answers the page at once, which answers the decision too.
+        answer.resolve({ ok: true });
+        return { ok: true, notice };
+      });
+      env.show();
+      await flush();
+      env.elements['dapp-tx-approve'].dispatch('click');
+      await flush();
+      env.renderer.close('h1');
+      expect(env.elements['dapp-tx-reject'].disabled).toBe(true);
+      // Another handle's word changes nothing.
+      env.deviceWaits('h2');
+      expect(env.elements['dapp-tx-reject'].disabled).toBe(true);
+      env.deviceWaits('h1');
+      expect(env.elements['dapp-tx-reject'].disabled).toBe(false);
+      // Back stays off: only Reject reaches the device.
+      expect(env.elements['dapp-tx-back'].disabled).toBe(true);
+      env.elements['dapp-tx-reject'].dispatch('click');
+      await flush();
+      await flush();
+      expect(window.pagePrompts.cancel).toHaveBeenCalledWith('h1');
+      // No second decision went to main.
+      expect(env.decisions).toHaveLength(1);
+      expect(env.showing()).toBe(true);
+      expect(env.elements['dapp-tx-error'].textContent).toBe(notice);
+      expect(env.elements['dapp-tx-reject'].disabled).toBe(true);
+      expect(env.elements['dapp-tx-approve'].disabled).toBe(true);
+      expect(require('./signature-flight.js').isSignatureInFlight()).toBe(false);
+      jest.advanceTimersByTime(6000);
+      expect(env.showing()).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('Back closes the notice sooner; a Cancel main refused gives Reject back while the device waits', async () => {
+    const env = await loadPage();
+    const answer = env.answer();
+    window.pagePrompts.cancel = jest.fn(async () => ({ ok: false, reason: 'not-waiting' }));
+    env.show();
+    await flush();
+    env.elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    env.deviceWaits('h1');
+    env.elements['dapp-tx-reject'].dispatch('click');
+    await flush();
+    expect(env.elements['dapp-tx-reject'].disabled).toBe(false);
+    expect(env.showing()).toBe(true);
+    // The device answers after all: the screen goes with main's answer.
+    answer.resolve({ ok: true });
+    await flush();
+    expect(env.showing()).toBe(false);
+
+    // A Cancel that went through, and Back right after its notice.
+    const again = await loadPage();
+    const second = again.answer();
+    window.pagePrompts.cancel = jest.fn(async () => {
+      second.resolve({ ok: true });
+      return { ok: true, notice: 'Cancelled.' };
+    });
+    again.show();
+    await flush();
+    again.elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    again.deviceWaits('h1');
+    again.elements['dapp-tx-reject'].dispatch('click');
+    await flush();
+    await flush();
+    expect(again.showing()).toBe(true);
+    expect(again.elements['dapp-tx-back'].disabled).toBe(false);
+    again.elements['dapp-tx-back'].dispatch('click');
+    expect(again.showing()).toBe(false);
+  });
+
+  test('with no word from main (the JS backend), Reject stays off while the device signs', async () => {
+    const env = await loadPage();
+    window.pagePrompts.cancel = jest.fn();
+    env.show();
+    await flush();
+    env.elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    env.elements['dapp-tx-reject'].dispatch('click');
+    await flush();
+    expect(window.pagePrompts.cancel).not.toHaveBeenCalled();
+    expect(env.decisions).toHaveLength(1);
+    env.answer().resolve({ ok: true });
+    await flush();
   });
 
   // Design 0012, PHN-2 ("A phone payment's rule"): a phone send's "Always
