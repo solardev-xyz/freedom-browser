@@ -898,6 +898,68 @@ describe('identity-manager ledger accounts', () => {
     ).resolves.toMatchObject({ success: false, code: 'LEDGER_ADDRESS_MISMATCH' });
   });
 
+  describe('on the core’s backend (FREEDOM_LEDGER_BACKEND=core, design 0016 `ledger.add`)', () => {
+    const coreRecord = (name, index) => ({
+      index: HARDWARE_INDEX_BASE,
+      name,
+      address: LEDGER_ADDRESS,
+      type: 'ledger',
+      path: `44'/60'/${index}'/0/0`,
+      addressCheck: 'matched',
+    });
+
+    function loadOnCore(addAccount) {
+      const backend = makeVaultBackendMock({ unlocked: false });
+      const addLedger = jest.spyOn(backend.accounts, 'addLedger');
+      const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+        userDataDir: tmpDir,
+        extraMocks: {
+          ...vaultBackendMocks(backend),
+          [require.resolve('./wallet/ledger/transport')]: () => ({
+            readAddresses: device.readAddresses,
+          }),
+          [require.resolve('./wallet/ledger/ledger-backend-kind')]: () => ({
+            ledgerBackendKind: () => 'core',
+          }),
+          [require.resolve('./wallet/ledger/core-accounts')]: () => ({ addAccount }),
+        },
+      });
+      mod.registerIdentityIpc();
+      return { ipcMain, addLedger };
+    }
+
+    test('the add takes (name, scheme, index) and answers the core’s record; main writes nothing', async () => {
+      seedMainWallet();
+      const addAccount = jest.fn(async ({ name, index }) => coreRecord(name, index));
+      const { ipcMain, addLedger } = loadOnCore(addAccount);
+
+      await expect(ipcMain.invoke('wallet:add-ledger-wallet', 'My Stax', 'live', 2)).resolves.toEqual({
+        success: true,
+        wallet: coreRecord('My Stax', 2),
+      });
+      expect(addAccount).toHaveBeenCalledWith({ name: 'My Stax', scheme: 'live', index: 2 });
+      // No address read or compared here, and no accounts.add_ledger.
+      expect(device.readAddresses).not.toHaveBeenCalled();
+      expect(addLedger).not.toHaveBeenCalled();
+      expect(readVaultMeta().derivedWallets).toHaveLength(1);
+    });
+
+    test('a refusal carries its code', async () => {
+      seedMainWallet();
+      const rejected = Object.assign(new Error('Request rejected on the Ledger device.'), {
+        code: 'LEDGER_USER_REJECTED',
+      });
+      const { ipcMain, addLedger } = loadOnCore(jest.fn(async () => Promise.reject(rejected)));
+
+      await expect(ipcMain.invoke('wallet:add-ledger-wallet', 'No', 'legacy', 0)).resolves.toEqual({
+        success: false,
+        error: 'Request rejected on the Ledger device.',
+        code: 'LEDGER_USER_REJECTED',
+      });
+      expect(addLedger).not.toHaveBeenCalled();
+    });
+  });
+
   test('a record added before the device check starts unchecked and is never deleted (#1065)', async () => {
     writeVaultMeta({
       activeWalletIndex: 0,

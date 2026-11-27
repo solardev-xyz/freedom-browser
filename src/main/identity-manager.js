@@ -1377,7 +1377,8 @@ function assertDeviceWalletAddable(type, address) {
  * asks the attached device for the address at that path (without showing
  * it on the device) and refuses the account unless the two are the same
  * (#1065), so a compromised chrome can't list an address the user's
- * Ledger doesn't hold.
+ * Ledger doesn't hold. This is the JS backend's path; on the core's
+ * (FREEDOM_LEDGER_BACKEND=core) the add is `addLedgerWalletFromDevice`.
  *
  * @param {string} name - Display name ('' → auto "Ledger N")
  * @param {string} address - Checksummed address read from the device
@@ -1400,6 +1401,27 @@ async function addLedgerWallet(name, address, path) {
   // The core adds the record main checked, `matched`, at its next hardware
   // index (refusing a duplicate or a missing vault).
   return vaultBackend.accounts.addLedger({ name, address, path });
+}
+
+/**
+ * Add a Ledger account through the core (FREEDOM_LEDGER_BACKEND=core;
+ * freedom-core design 0016, `ledger.add`, LDG-3).
+ *
+ * The chrome names the account by its derivation scheme and index, never
+ * by an address: the core reads the address at that path from the device
+ * with the display on, the user confirms it on the Ledger, and the core
+ * writes the record (`matched`) with the device's address
+ * (wallet/ledger/core-accounts.js). Main doesn't call `accounts.add_ledger`
+ * here, and takes no address from the chrome.
+ *
+ * @param {string} name - Display name ('' → auto "Ledger N")
+ * @param {string} scheme - 'live' or 'legacy' (transport.js PATH_SCHEMES)
+ * @param {number} index - The account's index in that scheme
+ * @returns {Promise<{index: number, name: string, address: string, type: string, path: string, addressCheck: string}>}
+ */
+async function addLedgerWalletFromDevice(name, scheme, index) {
+  const { addAccount } = require('./wallet/ledger/core-accounts');
+  return addAccount({ name, scheme, index });
 }
 
 /**
@@ -1948,10 +1970,18 @@ function registerIdentityIpc() {
     }
   });
 
-  // Add a Ledger hardware-wallet account (address read from the device)
-  ipcMain.handle('wallet:add-ledger-wallet', async (_event, name, address, path) => {
+  // Add a Ledger hardware-wallet account (address read from the device).
+  // On the core's backend (FREEDOM_LEDGER_BACKEND=core, design 0016) the
+  // chrome sends (name, scheme, index) and the core reads and writes the
+  // address; on the JS backend, (name, address, path), checked against the
+  // device here.
+  ipcMain.handle('wallet:add-ledger-wallet', async (_event, name, ...account) => {
     try {
-      const wallet = await addLedgerWallet(name, address, path);
+      const { ledgerBackendKind } = require('./wallet/ledger/ledger-backend-kind');
+      const wallet =
+        ledgerBackendKind() === 'core'
+          ? await addLedgerWalletFromDevice(name, ...account)
+          : await addLedgerWallet(name, ...account);
       return { success: true, wallet };
     } catch (err) {
       return { success: false, error: err.message, code: err.code };
@@ -2055,6 +2085,7 @@ module.exports = {
   setActiveWalletIndex,
   createDerivedWallet,
   addLedgerWallet,
+  addLedgerWalletFromDevice,
   getLedgerRecordsToCheck,
   recordLedgerAddressCheck,
   addRemoteWallet,

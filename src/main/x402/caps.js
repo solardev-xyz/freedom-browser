@@ -127,6 +127,25 @@ function reread(key) {
 }
 
 /**
+ * The caps of `origin` read again: resolves once that read has landed in
+ * the mirror (or failed, when the mirror drops the key until the core
+ * answers again); never rejects.
+ */
+function rereadCaps(origin) {
+  const key = normalizeOrigin(origin);
+  if (!key) return Promise.resolve();
+  try {
+    return Promise.resolve(mirror().reread(key)).then(
+      () => {},
+      () => {}
+    );
+  } catch {
+    // No mirror (a test without the core): nothing to wait for.
+    return Promise.resolve();
+  }
+}
+
+/**
  * `x402.authorize`: the core checks the token or the cap, charges a cap
  * before it signs, and builds and signs the payment. The mirror reads the
  * seller's caps again afterwards, whatever the outcome.
@@ -243,6 +262,77 @@ async function settleSignature(reservation, signature, origin = null) {
   }
 }
 
+function refusal(code, message, data) {
+  return Object.assign(new Error(message), { code, ...(data ? { data } : {}) });
+}
+
+/**
+ * `x402.settle { reservation, typed_data }` (freedom-core design 0016,
+ * "x402 from a Ledger account", D2, and LDG-2's L5 as built): a Ledger
+ * payment made with `now_s`, `typedData` main's own frozen rebuild of its
+ * authorization (ledger-authorization.js), which the core requires to equal
+ * the one it reserved and signs on its device lane. Main's relay for the
+ * core's `shell.ledger_apdu` (core/ledger-relay.js) carries each APDU to
+ * the device once it is admitted against the stream main derives here,
+ * before the settle is sent, from that same copy, the account's `path`
+ * from main's record snapshot and main's own `expectedHash` of the copy
+ * (`prepare`). A stream main can't derive is refused unsent
+ * (`invalid_argument`, with the relay's rule and reason). Otherwise the
+ * settle goes under the device watchdog (vault-backend.js
+ * `x402.settleOnLedger`) and is opened in the relay from its `onSent`,
+ * before the core can ask anything for it; its end, whatever it is, closes
+ * it there.
+ *
+ * `track` is filled as the settle goes: `track.sent` once it is written to
+ * the core (from then on the reservation is the core's to spend, however
+ * the settle ends), and `track.signed` once it ends, the relay's
+ * `handle.signed` (whether the device's signature may have left main).
+ * Resolves
+ * `{ payload, charged, grant?, durable? }` (the reservation then waits for
+ * `sent` or `withheld`); rejects with the core's error, whose `data.refunded`
+ * says whether the charge's room is back on its cap (`cancelled` carries
+ * none). The mirror reads the seller's caps again either way.
+ */
+async function settleTypedData(reservation, typedData, { path, expectedHash, origin = null, track = {} } = {}) {
+  try {
+    const relay = require('../core/core-process').getLedgerRelay();
+    if (!relay) throw refusal('core_unavailable', 'The identity core is not running');
+    const params = { reservation, typed_data: typedData };
+    const prepared = relay.prepare({ method: 'x402.settle', params, path, expectedHash });
+    if (!prepared.ok) {
+      throw refusal('invalid_argument', "A Ledger can't sign this payment", {
+        rule: prepared.rule,
+        reason: prepared.reason,
+      });
+    }
+    const controller = new AbortController();
+    let handle = null;
+    let unopened = null;
+    try {
+      return await vault().x402.settleOnLedger(params, {
+        signal: controller.signal,
+        onSent: (id, generation) => {
+          track.sent = true;
+          try {
+            handle = relay.open({ id, generation }, { prepared, controller });
+          } catch (err) {
+            // Every APDU of it would be refused: main cancels it at once.
+            unopened = err;
+            controller.abort();
+          }
+        },
+      });
+    } catch (err) {
+      throw unopened ?? err;
+    } finally {
+      track.signed = handle?.signed === true;
+      handle?.close();
+    }
+  } finally {
+    reread(origin);
+  }
+}
+
 module.exports = {
   getPermission,
   getAllPermissions,
@@ -252,6 +342,8 @@ module.exports = {
   settle,
   settleSent,
   settleSignature,
+  settleTypedData,
+  rereadCaps,
   narrow,
   NARROW_ONLY,
   capKeyOf,
