@@ -1,9 +1,9 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/1198",
   "totals": {
-    "legacyClasses": 188,
+    "legacyClasses": 190,
     "oldTokens": 244,
-    "literalSizes": 238,
+    "literalSizes": 240,
     "bareOutlines": 16
   },
   "legacyClasses": {
@@ -114,6 +114,10 @@
       "ghb-copy-btn",
       "ghb-import-btn",
       "github-bridge-panel"
+    ],
+    "styles/markdown-toggle.css": [
+      "gateway-offer-pill",
+      "markdown-toggle-btn"
     ],
     "styles/menus.css": [
       "fullscreen-btn",
@@ -767,6 +771,10 @@
       "font-size: 13px"
     ],
     "styles/link-status.css": [
+      "font-size: 12px"
+    ],
+    "styles/markdown-toggle.css": [
+      "border-radius: 12px",
       "font-size: 12px"
     ],
     "styles/menus.css": [
