@@ -120,13 +120,15 @@
  *     order asked, with nothing opened or read, and takes it once the other
  *     has left (its last frame written, or its reply dropped). The core
  *     asks a part only once the last one ended, so an honest core never
- *     waits. Once the call's reply is written or dropped (the node's
- *     answer, a node error, a body fault, the core's cancel, the parent's
- *     end), a part still waiting fails without opening anything and the
- *     one holding the room is ended `body_stream_error`, without waiting
- *     for the core to cancel either; the room goes back once the call and
- *     that part have both left. Without room the call is `busy`, before
- *     any `swarm.body`, so a part never meets a full pool;
+ *     waits. Once the call's answer is in the pipe, or its reply dropped
+ *     (the node's answer, a node error, a body fault, the core's cancel,
+ *     the parent's end), a part still waiting fails without opening
+ *     anything, and the one holding the room is ended `body_stream_error`,
+ *     what the sender holds of it purged, so none of its data and no
+ *     normal end follows the answer; neither waits for the core's cancel.
+ *     The room goes back once the call and that part have both left.
+ *     Without room the call is `busy`, before any `swarm.body`, so a part
+ *     never meets a full pool;
  *   - `readData`'s walk, its occurrence map (2,562 slots at 256 bytes),
  *     before the root's answer may fill it; without room the map stays
  *     empty, and the parent's later calls are `busy`;
@@ -536,10 +538,13 @@ function uploadBody(source, length, onFault) {
  *   stops waiting, gives the room to the next.
  * - `hold()`: the call is over (the node answered, failed, or the core's
  *   body broke): no part takes the room from now on.
- * - `end()`: the call's reply is written or dropped: a part still waiting
- *   never takes the room, and the one holding it is ended (`onEnd`), so
- *   no part outlives its call by more than its abort. The room goes back
- *   once the call and the part holding it have both left.
+ * - `end()`: the call's answer is handed to the pipe (`onAnswer`), or its
+ *   reply dropped: a part still waiting never takes the room, and the one
+ *   holding it is ended (`onEnd`: its source, and what the service
+ *   client's sender still holds of its stream, `abortStream`), so none of
+ *   its data and no normal end follows the answer, only its abort. The
+ *   room goes back once the call and the part holding it have both left
+ *   (the holder's abort written).
  */
 function partRoom(reservation) {
   let call = true;
@@ -1270,7 +1275,7 @@ class SwarmShell {
   // ---- shell.swarm_api ----
 
   /** The handler: one `shell.swarm_api`. */
-  async api(params, { id, signal, charge, shrink, onRelease, generation }) {
+  async api(params, { id, signal, charge, shrink, onRelease, onAnswer = null, generation }) {
     const read = readCall(params);
     const found = this.parentOf(generation, read.for);
     if (read.rule) return this.refuse('shell.swarm_api', found.entry, read.rule);
@@ -1331,7 +1336,9 @@ class SwarmShell {
         return { failed: 'busy' };
       }
       parts = partRoom(room);
-      // The call's reply written or dropped: its parts are over too.
+      // The call's answer in the pipe, or its reply dropped: its parts are
+      // over too, and none of theirs follows the answer.
+      onAnswer?.(() => parts.end());
       onRelease(() => parts.end());
     }
     try {
@@ -1512,7 +1519,7 @@ class SwarmShell {
    * opened nothing. The core's cancel of a waiting part takes it out of
    * the line; the service client answers that cancel.
    */
-  async part(params, { generation, signal, onRelease }) {
+  async part(params, { generation, signal, onRelease, abortStream = null }) {
     const ask = readPart(params);
     const found = this.parentOf(generation, ask.for);
     if (ask.rule) return this.refuse('shell.swarm_part', found.entry, ask.rule);
@@ -1537,10 +1544,15 @@ class SwarmShell {
       this.parts -= 1;
       turn.leave();
     });
-    // Its stream fails once the parent ends, or once its call is over
-    // while it holds the room (`end()`).
+    // Its stream fails once the parent ends, or once its call is answered
+    // while it holds the room (`end()`): its source, and at the sender what
+    // it holds of the stream, its last data and an `end` its source has
+    // already given among them.
     const stop = new AbortController();
-    turn.onEnd(() => stop.abort());
+    turn.onEnd(() => {
+      stop.abort();
+      abortStream?.(new PartError("the part's call ended"));
+    });
     const life = AbortSignal.any([entry.life.signal, stop.signal]);
     // The core's cancel, or the parent's end, while it waits: it leaves
     // the line. Once it holds the room, only its release gives it back.

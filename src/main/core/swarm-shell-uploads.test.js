@@ -54,6 +54,7 @@ const {
   KIND_STREAM_CREDIT,
   WINDOW,
   encodeData,
+  encodeEnd,
 } = require('./frame');
 const { SwarmShell, BODY_PROGRESS_MS, STREAM_CHARGE, wholeCharge } = require('./swarm-shell');
 const { SwarmIoPool } = require('./swarm-io-pool');
@@ -198,11 +199,15 @@ function takingNode() {
 
 let nextAsk = 5000;
 
-/** The context the client calls a handler with; `release()` lets go of its
- * lease as the client does once its reply is written or dropped. */
+/** The context the client calls a handler with: `answer()` runs its
+ * `onAnswer` hooks, as the client does once its answer is in the pipe;
+ * `release()` (after `answer()`, as ever) lets go of its lease, as the
+ * client does once its reply is written or dropped; `aborts` keeps what
+ * `abortStream` was asked. */
 function context({ generation = 1, pool = null } = {}) {
   const controller = new AbortController();
   const released = [];
+  const answered = [];
   const ctx = {
     id: nextAsk++,
     controller,
@@ -221,7 +226,14 @@ function context({ generation = 1, pool = null } = {}) {
       ctx.held = bytes;
     },
     onRelease: (fn) => released.push(fn),
+    onAnswer: (fn) => answered.push(fn),
+    aborts: [],
+    abortStream: (err) => ctx.aborts.push(err),
+    answer: () => {
+      for (const fn of answered.splice(0)) fn();
+    },
     release: () => {
+      ctx.answer();
       ctx.shrink(0);
       for (const fn of released.splice(0)) fn();
     },
@@ -378,12 +390,14 @@ function pickedFile(name, bytes) {
   return { file, source: { path: file, bytes: bytes.length } };
 }
 
-/** `openFile` for the shell, counting the handles open at once. */
+/** `openFile` for the shell: `opened` lists each file it was asked to
+ * open, as it is asked; `open` counts the handles open, `most` the most at
+ * once, and `closed` those closed. */
 function countedFiles() {
-  const files = { opened: [], open: 0, most: 0 };
+  const files = { opened: [], open: 0, most: 0, closed: 0 };
   files.openFile = async (file) => {
-    const handle = await fs.promises.open(file, 'r');
     files.opened.push(file);
+    const handle = await fs.promises.open(file, 'r');
     files.open += 1;
     files.most = Math.max(files.most, files.open);
     const close = handle.close.bind(handle);
@@ -392,6 +406,7 @@ function countedFiles() {
       if (!closed) {
         closed = true;
         files.open -= 1;
+        files.closed += 1;
       }
       return close();
     };
@@ -1031,7 +1046,7 @@ describe("an upload's part room: its parts hold it one at a time, in the order a
       await waitFor(() => holding.failure && second.settled, 'both parts ended');
       expect(holding.failure).toMatchObject({ name: 'PartError' });
       expect(holding.failure.errorCode).toBeUndefined();
-      await waitFor(() => files.open === 0, "the first part's file closed");
+      await waitFor(() => files.closed === 1, "the first part's file closed");
       // The second never took the room: its head, then a failure naming
       // no code, with nothing opened.
       expect(second.settled.result.result).toEqual({ bytes: sizes[1] });
@@ -1105,7 +1120,7 @@ describe("an upload's part room: its parts hold it one at a time, in the order a
     await asks[0].settled.result.body.cancel();
     await sleep(20);
     expect(asks[2].settled).toBeNull();
-    await waitFor(() => files.open === 0, "the first part's file closed");
+    await waitFor(() => files.closed === 1, "the first part's file closed");
     asks[0].ctx.release();
     // The third takes it, never the cancelled second.
     await waitFor(() => asks[2].settled, 'the third head');
@@ -1705,9 +1720,70 @@ describe('through the core client, over loopback HTTP: streamed uploads', () => 
     expect(headOf(asks[3])).toBeGreaterThan(answer);
     expect(core().dataOf(asks[3])).toHaveLength(0);
     expect(files.opened).toHaveLength(3);
-    await until(() => files.open === 0, 'every file closed');
+    await until(() => files.closed === 3, 'every file closed');
     // The core ends its body, as it reads main's cancel of it.
     abortBody(core(), body.id, 'cancelled');
+    await settledAtZero();
+  });
+
+  test("a part within one window, read to its end but its data and end still in main's sender when the call is answered: purged, so only its abort follows the answer, and the room goes back", async () => {
+    await uploadNode();
+    const files = countedFiles();
+    await start({ openFile: files.openFile });
+    const core = () => harness.core();
+    const size = 100 * KIB;
+    const { file, source } = pickedFile('wire-queued.bin', patterned(size, 90));
+    const params = { files: [{ path: 'f0.bin', bytes: partData(0, size) }] };
+    const q = parentOf(harness.client, harness.shell, {
+      row: 'publishFiles',
+      params,
+      key: KEY,
+      backend: antBackend(),
+      parts: new Map([[0, source]]),
+    });
+    await until(() => q.id !== null, 'the collection sent');
+    const ready = core().ready(q.id, 'publish');
+    await until(() => core().reply(ready), 'its ready answer');
+    const stamps = core().api(q.id, calls.stamps());
+    await until(() => core().reply(stamps), 'its stamps');
+    // A core that builds the body from its own bytes alone.
+    const total = 4 * KIB;
+    const { id, body } = await uploadCall(q, calls.bzzTar({ stream: total }));
+    core().respond(body.id, { bytes: total });
+    // The core stops reading its pipe, then asks the part: main writes its
+    // head, reads the file to its end into its sender, and holds the rest.
+    core().stuck = true;
+    const ask = core().part(q.id, 0);
+    // Its source read to its end and closed (no piece read any more), its
+    // bytes queued, unwritten.
+    await until(
+      () => files.closed === 1 && harness.client.streamStats().pieces === 0,
+      'the file read and closed'
+    );
+    expect(harness.client.streamStats().held).toBeGreaterThan(0);
+    // The node takes the core's body and answers: main's answer goes into
+    // the pipe while the part's last data and its end still wait.
+    core().write(encodeData(body.id, Buffer.alloc(total)));
+    core().write(encodeEnd(body.id));
+    await until(() => nodes[0].uploads[0]?.digest, 'the node took the body');
+    // Main's answer in the pipe: its onAnswer hooks have run.
+    await until(() => !harness.client.current.answers.has(id), "main's answer handed over");
+    core().release();
+    const reply = await answered(id);
+    expect(reply.result.status).toBe(201);
+    await until(() => core().terminal(ask), "the part's terminal");
+    const answer = indexOf((w) => w.message?.type === 'response' && w.message.id === id);
+    const after = core()
+      .wire.slice(answer + 1)
+      .filter((w) => w.frame?.id === ask)
+      .map((w) => w.frame.kind);
+    expect(after).toEqual([KIND_ABORT]);
+    const terminal = core().terminal(ask);
+    expect(terminal.code).toBe('body_stream_error');
+    expect(terminal.errorCode).toBeUndefined();
+    expect(core().framesOf(KIND_END, ask)).toHaveLength(0);
+    expect(core().dataOf(ask).length).toBeLessThan(size);
+    expect(fs.existsSync(file)).toBe(true);
     await settledAtZero();
   });
 

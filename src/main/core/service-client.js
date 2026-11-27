@@ -740,6 +740,8 @@ class Generation {
     // A streamed reply's `onProgress`, to its terminal: main's frames of
     // its stream as they are written, and the process's credit for it.
     this.streamProgress = new Map(); // id -> () => void
+    // A handler's `onAnswer`, until main hands its answer to the pipe.
+    this.answers = new Map(); // id -> [() => void]
     // Main's requests' idle watchdogs (`idleWatchdogMs`), to their response,
     // or to their body's terminal.
     this.idleWatchdogs = new Map(); // id -> { deadline, idleMs }
@@ -928,11 +930,15 @@ class ServiceClient extends EventEmitter {
    * methods has one set.
    *
    * Every handler is called as `handler(params, { id, signal, charge,
-   * shrink, onRelease, streams, generation, private, privateSession })`:
-   * `id` is the process's ID for the request (which main's own requests
-   * about it name: design 0015's `swarm.body { for }`); `shrink(bytes)`
-   * gives back all it charged but `bytes`; `onRelease(fn)` runs `fn` once
-   * everything it charged is released (`leaseOf`); `generation` is the
+   * shrink, onRelease, onAnswer, abortStream, streams, generation, private,
+   * privateSession })`: `id` is the process's ID for the request (which
+   * main's own requests about it name: design 0015's `swarm.body { for }`);
+   * `shrink(bytes)` gives back all it charged but `bytes`; `onRelease(fn)`
+   * runs `fn` once everything it charged is released (`leaseOf`);
+   * `onAnswer(fn)` runs `fn` once its answer is handed to the pipe, ahead
+   * of any later frame of main's (`onAnswer`); `abortStream(err)` ends the
+   * stream its reply opened as its body's failure `err` would, what the
+   * sender still holds of it included (`abortStream`); `generation` is the
    * number of the process that asked, as `onSent` (requestTo) reports it
    * for main's own requests. `private` is whether the request may serve a
    * private window, and `privateSession` the private session it would
@@ -2353,6 +2359,8 @@ class ServiceClient extends EventEmitter {
             charge: lease.charge,
             shrink: lease.shrink,
             onRelease: lease.onRelease,
+            onAnswer: (fn) => this.onAnswer(gen, id, fn),
+            abortStream: (err) => this.abortStream(gen, id, err),
             streams,
             generation: gen.number,
             private: forPrivate.private,
@@ -2440,6 +2448,7 @@ class ServiceClient extends EventEmitter {
   fence(gen) {
     const incoming = [...gen.incoming.values()];
     gen.incoming.clear();
+    gen.answers.clear();
     this.dropBulk(gen);
     for (const piece of [...gen.pieces.values()]) this.dropPiece(gen, piece);
     for (const controller of incoming) controller.abort();
@@ -2663,6 +2672,7 @@ class ServiceClient extends EventEmitter {
     } catch {
       written(true);
     }
+    this.answerGiven(gen, id);
   }
 
   /** A reply over one frame waits for the process's credit, in order. */
@@ -2738,6 +2748,7 @@ class ServiceClient extends EventEmitter {
     } catch {
       written(true);
     }
+    if (last) this.answerGiven(gen, sending.id);
   }
 
   /** Drops the replies waiting to begin, and the rest of the one being
@@ -3279,15 +3290,68 @@ class ServiceClient extends EventEmitter {
    * alone.
    */
   abortPiece(gen, piece, err) {
+    this.dropPiece(gen, piece);
+    this.abortSent(gen, piece.id, err);
+  }
+
+  /** Stream `id`'s abort for `err`, as `abortPiece` names it, in the
+   * sender: what it holds of the stream and hasn't written (its data, an
+   * `end` after them) goes. Nothing once its terminal is written. */
+  abortSent(gen, id, err) {
     const named = err?.abortCode === 'stalled' || err?.abortCode === 'too_large';
     const code = named ? err.abortCode : 'body_stream_error';
     const errorCode = named ? null : (err?.errorCode ?? null);
-    this.dropPiece(gen, piece);
     const sender = gen.duplex?.sender;
-    if (sender?.abort(piece.id, code, PIECE_ABORTS[code], errorCode).refused === 'code') {
-      sender.abort(piece.id, 'body_stream_error', PIECE_ABORTS.body_stream_error);
+    if (sender?.abort(id, code, PIECE_ABORTS[code], errorCode).refused === 'code') {
+      sender.abort(id, 'body_stream_error', PIECE_ABORTS.body_stream_error);
     }
     this.flushStreams(gen);
+  }
+
+  /**
+   * A handler's `abortStream(err)`: ends the stream its reply opened as
+   * the body's failure `err` would (`abortPiece`), until its terminal is
+   * written. A body still being read is let go of; one read to its end may
+   * still have its last bytes and its `end` waiting in the sender, and
+   * they go too, so neither is written after the abort is asked for.
+   * Nothing before the reply has opened a stream, or once its terminal is
+   * written.
+   */
+  abortStream(gen, id, err) {
+    if (!gen.duplex) return;
+    const piece = gen.pieces.get(id);
+    if (piece) this.dropPiece(gen, piece);
+    this.abortSent(gen, id, err);
+  }
+
+  /**
+   * A handler's `onAnswer(fn)`: `fn` runs once, when main hands request
+   * `id`'s answer to the pipe, so any frame main writes after it follows
+   * the answer: a whole reply as its write is issued (its `cancelled` for
+   * the process's cancel among them), a fragmented one with its last
+   * fragment, and one through the duplex's sender (a streams handler's)
+   * once its frame is written. An answer never handed over (its generation
+   * fenced) runs none. A throw in `fn` is dropped.
+   */
+  onAnswer(gen, id, fn) {
+    if (typeof fn !== 'function') throw new TypeError('onAnswer takes a function');
+    const hooks = gen.answers.get(id);
+    if (hooks) hooks.push(fn);
+    else gen.answers.set(id, [fn]);
+  }
+
+  /** Request `id`'s answer is in the pipe: its `onAnswer` hooks run. */
+  answerGiven(gen, id) {
+    const hooks = gen.answers.get(id);
+    if (!hooks) return;
+    gen.answers.delete(id);
+    for (const fn of hooks) {
+      try {
+        fn();
+      } catch {
+        // The answer stands.
+      }
+    }
   }
 
   /** Lets go of a body main sends: its reader is cancelled, unless it
@@ -3362,6 +3426,10 @@ class ServiceClient extends EventEmitter {
     if (wrote.type === 'credit' || wrote.type === 'cancel') {
       this.idleProgress(gen, wrote.id);
       return;
+    }
+    // The answer to one of the process's requests, through the sender.
+    if (wrote.type === 'head' || wrote.type === 'reply' || wrote.type === 'cancelled') {
+      this.answerGiven(gen, wrote.id);
     }
     // One of main's frames of a body it sends: a streamed reply's progress,
     // to its terminal.

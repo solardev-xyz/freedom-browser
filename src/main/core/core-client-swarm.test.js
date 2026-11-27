@@ -49,6 +49,7 @@ const {
   KIND_FRAGMENT,
   KIND_LAST,
   KIND_STREAM_CREDIT,
+  SWARM_PART_ABORT_CODES,
   WINDOW,
 } = require('./frame');
 const { idleWatchdogMs, watchdogMs } = require('./core-deadlines');
@@ -903,6 +904,100 @@ describe("main's Swarm I/O pool (design 0015)", () => {
     core().write(encodeStreamCredit(1, 10));
     await settle();
     expect(progress).toHaveLength(6);
+  });
+
+  test("onAnswer runs as main hands a whole reply to the pipe; abortStream then purges the data and end a stream's sender still holds, so only its abort follows the answer", async () => {
+    let streamsAtReply = null;
+    makeClient(
+      coreWith((message, core) => {
+        if (message.type === 'response' && message.id === 2) streamsAtReply = core.streams.length;
+      })
+    );
+    const part = source(10 * KIB);
+    let abortPart = null;
+    client.handle(
+      'shell.swarm_part',
+      (_params, { abortStream }) => {
+        abortPart = abortStream;
+        return new StreamedReply({ bytes: 10 * KIB }, part.stream, { bodyFlag: false });
+      },
+      { streams: true, race: true }
+    );
+    let answer;
+    const ready = new Promise((resolve) => {
+      answer = resolve;
+    });
+    const hooks = [];
+    client.handle(
+      'shell.swarm_api',
+      async (_params, { onAnswer }) => {
+        onAnswer(() => {
+          hooks.push(client.current.answers.has(2));
+          abortPart(new Error('its call is over'));
+        });
+        await ready;
+        return { status: 201 };
+      },
+      { failure: FAILED, race: true }
+    );
+    await client.start();
+    // The core stops reading: the part's head is in flight, and its bytes,
+    // read to their end, and its end wait in the sender.
+    core().stuck = true;
+    core().send({ type: 'request', id: 1, method: 'shell.swarm_part', params: {} });
+    core().send({ type: 'request', id: 2, method: 'shell.swarm_api', params: {} });
+    for (let i = 0; i < 100 && client.streamStats()?.held !== 10 * KIB; i++) await settle();
+    expect(part.read).toBe(10 * KIB);
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 10 * KIB });
+    answer();
+    for (let i = 0; i < 100 && hooks.length === 0; i++) await settle();
+    // The hook ran once, as the reply went into the pipe.
+    expect(hooks).toEqual([false]);
+    core().release();
+    for (let i = 0; i < 100 && core().framesOf(KIND_ABORT, 1).length === 0; i++) await settle();
+    expect(
+      core()
+        .replies()
+        .map((r) => r.id)
+    ).toEqual([1, 2]);
+    expect(
+      core()
+        .streams.slice(streamsAtReply)
+        .map((f) => [f.kind, f.id])
+    ).toEqual([[KIND_ABORT, 1]]);
+    expect(core().framesOf(KIND_ABORT, 1)[0].code).toBe('body_stream_error');
+    expect(core().dataOf(1).length + core().framesOf(KIND_END, 1).length).toBe(0);
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, sending: 0 });
+    // Once its terminal is written, abortStream does nothing.
+    abortPart(new Error('late'));
+    await settle();
+    expect(core().framesOf(KIND_ABORT, 1)).toHaveLength(1);
+  });
+
+  test('abortStream lets go of a body still being read: its source cancelled, its abort sent', async () => {
+    makeClient(coreWith());
+    const part = source(WINDOW + 10);
+    let abortPart = null;
+    client.handle(
+      'shell.swarm_part',
+      (_params, { abortStream }) => {
+        abortPart = abortStream;
+        return new StreamedReply({ bytes: WINDOW + 10 }, part.stream, { bodyFlag: false });
+      },
+      { streams: true, sends: SWARM_PART_ABORT_CODES, race: true }
+    );
+    await client.start();
+    core().send({ type: 'request', id: 1, method: 'shell.swarm_part', params: {} });
+    for (let i = 0; i < 100 && core().dataOf(1).length < WINDOW; i++) await settle();
+    // The window sent; the rest waits for credit.
+    expect(core().dataOf(1).length).toBe(WINDOW);
+    abortPart(Object.assign(new Error('unreadable'), { errorCode: 'EIO' }));
+    for (let i = 0; i < 100 && core().framesOf(KIND_ABORT, 1).length === 0; i++) await settle();
+    expect(part.cancelled).toBe(true);
+    const [abort] = core().framesOf(KIND_ABORT, 1);
+    expect(abort.code).toBe('body_stream_error');
+    expect(abort.errorCode).toBe('EIO');
+    expect(client.streamStats()).toMatchObject({ pieces: 0, held: 0, sending: 0 });
   });
 
   test("swarm.body's head { bytes } opens its body with no body flag; another stream request's head still needs one", async () => {
