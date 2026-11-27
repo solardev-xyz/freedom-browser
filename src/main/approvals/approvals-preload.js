@@ -17,9 +17,13 @@ contextBridge.exposeInMainWorld(
     onClosed: listen('page:prompt-closed'),
     onMoved: listen('approvals:moved'),
     onTheme: listen('approvals:theme'),
+    // The approved request waits on a Ledger, and Reject still reaches it.
+    onWaiting: listen('page:prompt-waiting'),
     ready: () => ipcRenderer.send('approvals:ready'),
     shown: (handle, revision) => ipcRenderer.send('approvals:shown', { handle, revision }),
     decide: (handle, approve, choices) => ipcRenderer.invoke('approvals:decide', { handle, approve, choices }),
+    // Reject while that Ledger waits: main cancels the device's request.
+    cancel: (handle) => ipcRenderer.invoke('approvals:cancel', { handle }),
     // A part of a view over 256 KiB (APS-4), for the prompt main shows.
     viewPart: (handle, revision, index) => ipcRenderer.invoke('approvals:view-part', { handle, revision, index }),
     // The hash-only warning in a Ledger's waiting state (freedom-core design

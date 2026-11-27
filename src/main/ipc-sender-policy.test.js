@@ -169,6 +169,7 @@ describe('isSenderAllowed', () => {
       'approvals:shown',
       'approvals:decide',
       'approvals:view-part',
+      'approvals:cancel',
       'approvals:hash-only-shown',
     ]);
     expect(APPROVALS_HTML).toBe(path.join(path.dirname(CHROME_INDEX), 'approvals', 'approvals.html'));
@@ -196,9 +197,11 @@ describe('isSenderAllowed', () => {
     // The document reaches nothing else, the chrome's channels included.
     for (const channel of [
       'page:decide',
+      'page:cancel',
       'page:foreground',
       'page:approvals-anchor',
       'wallet:confirm-signing',
+      'wallet:cancel-send',
       'settings:get',
       // The chrome's hash-only notice is the chrome's to report and cancel.
       'ledger:hash-only-notice-shown',

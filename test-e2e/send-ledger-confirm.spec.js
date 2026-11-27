@@ -16,7 +16,9 @@
 // only with the panel off (FREEDOM_APPROVALS_DOCUMENT=0, the rollback): they
 // still must not take the sidebar from a live device confirmation.
 
-const { test, expect, approvalsPage, decideInPanel } = require('./approvals-fixtures');
+const { Wallet } = require('ethers');
+const { test, expect, approvalsPage, decideInPanel, repoRoot } = require('./approvals-fixtures');
+const { fakeLedgerHid, ledgerHidEvents, ledgerHidHeld } = require('./ledger-hid-fixture');
 
 const LEDGER = {
   index: 1000000,
@@ -73,7 +75,7 @@ function sendPagePrompt(electronApp, prompt) {
 
 // Opens the send screen on a Ledger account with a recipient and amount
 // pre-filled, exactly as the `ethereum:` tip-link entry point does.
-async function openSendOnLedger(window, recipient) {
+async function openSendOnLedger(window, recipient, ledger = LEDGER) {
   await window.evaluate(async ({ ledger, recipient }) => {
     const { walletState } = await import('./lib/wallet/wallet-state.js');
     const sidebar = await import('./lib/sidebar.js');
@@ -104,7 +106,7 @@ async function openSendOnLedger(window, recipient) {
     };
 
     send.openSend({ recipient, chainId: 8453 });
-  }, { ledger: LEDGER, recipient });
+  }, { ledger, recipient });
 
   await expect(window.locator('#sidebar-send')).toBeVisible();
   await window.fill('#send-amount', '0.001');
@@ -134,6 +136,8 @@ test.describe('with the Ledger account in main\'s wallet list', () => {
     await expect(window.locator('#send-pending-view .send-pending-title'))
       .toHaveText('Confirm on your Ledger');
     await expect(window.locator('#send-back')).toBeDisabled();
+    // On the JS backend the device can't be stopped: no Cancel, as before.
+    await expect(window.locator('#send-pending-cancel')).toBeHidden();
     await window.screenshot({ path: 'test-results/send-ledger-in-flight.png' });
 
     // Main now shows a page's signature, then its connect, while the device
@@ -253,4 +257,117 @@ test('the send screen refuses to open over another surface\'s device confirmatio
   await expect(window.locator('#sidebar-dapp-tx')).toBeVisible();
   await expect(window.locator('#dapp-tx-approve')).toHaveText('Confirm on your Ledger…');
   await window.screenshot({ path: 'test-results/send-open-refused-during-dapp-confirm.png' });
+});
+
+// LDG-3's PR 10 (freedom-core design 0016, "Deadlines, cancel and
+// unplugging", deviation `cancel`): on the core's Ledger backend the send
+// screen's Ledger state gains a Cancel. Here the send is real from the
+// screen to the device: main's own `wallet:send-transaction`, the nonce
+// reservation, the core Ledger backend's signer, the real freedom-cored's
+// `sign.transaction` on its device lane, main's relay, and a fake HID
+// device behind it (ledger-hid-fixture.js) that waits for the user at the
+// transaction's last piece. Only the account's pending nonce is read from a
+// stand-in, so nothing reaches a network.
+const LEDGER_KEY = '0x' + '4c'.repeat(32); // a test key, never funded
+const CORE_LEDGER = {
+  index: 1000000,
+  name: 'Ledger 1',
+  address: new Wallet(LEDGER_KEY).address,
+  type: 'ledger',
+  path: "44'/60'/0'/0/0",
+};
+const NOTICE = 'Cancelled. If your Ledger still shows the request, reject it there.';
+
+// The renderer's quotes, as the other tests here stub them, but the send
+// left to main; and in main, the account's pending nonce (7) and a record
+// of the nonce each Ledger signature was asked with.
+function stubQuotesAndNonce(electronApp) {
+  return electronApp.evaluate(({ ipcMain }, args) => {
+    const replace = (channel, handler) => {
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, handler);
+    };
+    replace('wallet:parse-amount', () => ({ success: true, value: '1000000000000000' }));
+    replace('wallet:estimate-gas', () => ({ success: true, gasLimit: '21000' }));
+    replace('wallet:get-gas-price', () => ({
+      success: true,
+      type: 'legacy',
+      gasPrice: '1000000000',
+      effectiveGasPrice: '1000000000',
+    }));
+    replace('ens:resolve-reverse', () => ({ success: false }));
+    replace('identity:get-status', () => ({ isUnlocked: true }));
+    const chainData = process.mainModule.require(`${args.root}/src/main/networks/chain-data`);
+    const read = chainData.request;
+    chainData.request = (chainId, method, params, options) =>
+      method === 'eth_getTransactionCount'
+        ? Promise.resolve({ result: '0x7', source: 'e2e' })
+        : read(chainId, method, params, options);
+    const { vaultBackend } = process.mainModule.require(`${args.root}/src/main/core/vault-backend`);
+    const sign = vaultBackend.sign.transaction;
+    globalThis.__ledgerNonces = [];
+    vaultBackend.sign.transaction = function (key, tx, options) {
+      if (key?.kind === 'ledger') globalThis.__ledgerNonces.push(tx.nonce);
+      return sign.call(this, key, tx, options);
+    };
+  }, { root: repoRoot });
+}
+
+test.describe("on the core's Ledger backend (LDG-3)", () => {
+  test.use({
+    vaultWallets: { wallets: [CORE_LEDGER], activeWalletIndex: CORE_LEDGER.index },
+    ledgerBackend: 'core',
+  });
+
+  test('Cancel while the Ledger waits: the device let go, nothing sent, the nonce released', async ({
+    electronApp,
+    window,
+  }) => {
+    test.setTimeout(120_000);
+    await stubQuotesAndNonce(electronApp);
+    await fakeLedgerHid(electronApp, LEDGER_KEY);
+    await openSendOnLedger(window, RECIPIENT, CORE_LEDGER);
+
+    await window.click('#send-confirm-btn');
+    const panel = await approvalsPage(electronApp);
+    await expect(panel.locator('#heading')).toHaveText('Confirm Send');
+    await decideInPanel(electronApp, { panel });
+
+    // The device waits for the user: the screen says so, and offers Cancel.
+    await expect(window.locator('#send-pending-view .send-pending-title')).toHaveText('Confirm on your Ledger');
+    await expect.poll(() => ledgerHidHeld(electronApp), { timeout: 30_000 }).toBe(1);
+    const cancel = window.locator('#send-pending-cancel');
+    await expect(cancel).toBeVisible();
+    await expect(cancel).toHaveText('Cancel');
+    await expect(window.locator('#send-back')).toBeDisabled();
+    await window.screenshot({ path: 'test-results/send-ledger-core-waiting.png' });
+
+    await cancel.click();
+    await expect(window.locator('#send-error-view')).toBeVisible();
+    await expect(window.locator('#send-error-view .send-error-title')).toHaveText('Not sent');
+    await expect(window.locator('#send-error-text')).toHaveText(NOTICE);
+    await expect(window.locator('#send-back')).toBeEnabled();
+    await window.screenshot({ path: 'test-results/send-ledger-core-cancelled.png' });
+
+    // Main let go of the device at once, with the exchange in flight, and
+    // nothing reached it after.
+    const events = await ledgerHidEvents(electronApp);
+    const detach = events.findIndex((e) => e.type === 'detach');
+    expect(events[detach]).toEqual({ type: 'detach', device: 1, inFlight: true });
+    expect(events.slice(detach + 1).filter((e) => e.type === 'exchange')).toEqual([]);
+
+    // The nonce went back: the same send again takes nonce 7 at once (a held
+    // reservation would keep it waiting), on a fresh device; Cancel again.
+    await window.click('#send-retry-btn');
+    await expect(window.locator('#send-input-view')).toBeVisible();
+    await window.click('#send-continue-btn');
+    await expect(window.locator('#send-review-view')).toBeVisible();
+    await window.click('#send-confirm-btn');
+    await decideInPanel(electronApp, { panel });
+    await expect.poll(() => ledgerHidHeld(electronApp), { timeout: 30_000 }).toBe(2);
+    expect((await electronApp.evaluate(() => globalThis.__ledgerNonces.slice())).map(Number)).toEqual([7, 7]);
+    expect((await ledgerHidEvents(electronApp)).filter((e) => e.type === 'open')).toHaveLength(2);
+    await window.locator('#send-pending-cancel').click();
+    await expect(window.locator('#send-error-text')).toHaveText(NOTICE);
+  });
 });

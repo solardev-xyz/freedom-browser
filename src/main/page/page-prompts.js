@@ -22,8 +22,17 @@
  *   page:prompt          main -> chrome  { handle, guest, kind, site, view }
  *   page:prompt-hidden   main -> chrome  { handle }
  *   page:prompt-closed   main -> chrome  { handle, reason }
+ *   page:prompt-waiting  main -> chrome  { handle }: the decided prompt now waits
+ *                                        on a Ledger the user can still reject
  *   page:decide          chrome -> main  { handle, approve, choices } -> { ok } | { ok: false, reason }
+ *   page:cancel          chrome -> main  { handle } -> { ok, notice } | { ok: false, reason }
  *   page:foreground      chrome -> main  { guest }
+ *
+ * The last two of these, `page:prompt-waiting` and `page:cancel`, are the
+ * core's Ledger backend's (freedom-core design 0016, "Deadlines, cancel
+ * and unplugging", deviation `cancel`; LDG-3's PR 10): `page-requests.js`
+ * sends the first once a decided request's device step can be cancelled,
+ * and the second rejects that request while the device waits.
  *
  * `site` is main's, from the request's attested key. Nothing the chrome
  * sends names a site, a guest's key or a payload: a decision is an answer
@@ -55,7 +64,9 @@ const CHANNELS = Object.freeze({
   PROMPT: 'page:prompt',
   HIDDEN: 'page:prompt-hidden',
   CLOSED: 'page:prompt-closed',
+  WAITING: 'page:prompt-waiting',
   DECIDE: 'page:decide',
+  CANCEL: 'page:cancel',
   FOREGROUND: 'page:foreground',
 });
 

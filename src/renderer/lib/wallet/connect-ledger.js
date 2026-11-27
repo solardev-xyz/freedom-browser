@@ -5,6 +5,13 @@
  * Ethereum app open, lists device accounts per derivation scheme, and
  * adds the chosen one to the wallet list. No vault unlock involved —
  * the key never leaves the device.
+ *
+ * On the core's Ledger backend (freedom-core design 0016, `ledger.add`,
+ * deviation `discovery-busy`; LDG-3's PRs 8 and 10) the add reads the
+ * address with the device's display on, and the screen says to confirm it
+ * there while it waits; and discovery answers LEDGER_BUSY at once while
+ * another request holds the device (a signature waiting, say), which the
+ * detect step shows as a wait, not a failure, polling on.
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
@@ -17,6 +24,9 @@ import { renderDeviceAccountList, existingWalletAddresses } from './device-accou
 const ACCOUNTS_PER_PAGE = 5;
 const DETECT_POLL_MS = 1500;
 const DETECT_STATUS = 'Looking for your Ledger…';
+// Another request holds the device (main's code; its text is main's).
+const LEDGER_BUSY = 'LEDGER_BUSY';
+const CONFIRM_LABEL = 'Confirm on your Ledger…';
 
 // DOM references
 let screen;
@@ -32,6 +42,8 @@ let loadMoreBtn;
 let nameInput;
 let submitBtn;
 let errorEl;
+let confirmEl;
+let confirmText;
 let successView;
 let resultName;
 let resultAddress;
@@ -60,6 +72,8 @@ export function initConnectLedger() {
   nameInput = document.getElementById('connect-ledger-name-input');
   submitBtn = document.getElementById('connect-ledger-submit');
   errorEl = document.getElementById('connect-ledger-error');
+  confirmEl = document.getElementById('connect-ledger-confirm');
+  confirmText = document.getElementById('connect-ledger-confirm-text');
   successView = document.getElementById('connect-ledger-success');
   resultName = document.getElementById('connect-ledger-result-name');
   resultAddress = document.getElementById('connect-ledger-result-address');
@@ -108,6 +122,7 @@ function resetFlowState() {
   selectedAccount = null;
   accountAdded = false;
   setDiscoveryControlsDisabled(adding);
+  showConfirmOnDevice(null);
   if (nameInput) nameInput.value = '';
   if (accountList) accountList.innerHTML = '';
   if (submitBtn) {
@@ -139,7 +154,7 @@ async function detectTick() {
   // No poll while an add waits on the device (handleAddAccount).
   if (adding) return;
 
-  const loaded = await loadAccountsPage(true, setStatusError);
+  const loaded = await loadAccountsPage(true, setDetectFailure);
   if (loaded) {
     showStep('accounts');
   } else {
@@ -168,6 +183,17 @@ function setStatus(message, { error = false } = {}) {
 
 const setStatusError = (message) => setStatus(message, { error: true });
 
+/**
+ * A detection attempt that failed. A busy Ledger (on the core's backend,
+ * another request holds it: a signature waiting, say) is a wait, not a
+ * failure: the line says so with its spinner, and the next poll moves on
+ * once the device is free.
+ */
+function setDetectFailure(message, code) {
+  if (code === LEDGER_BUSY) setStatus(message);
+  else setStatusError(message);
+}
+
 // --- Step 2: account selection ----------------------------------------
 
 async function reloadAccounts() {
@@ -193,8 +219,9 @@ async function reloadAccounts() {
  * Fetch one page of device accounts.
  *
  * @param {boolean} replace - true replaces the list (first page), false appends
- * @param {(message: string) => void} [onFailure] - where a failure message goes
- *   (detect step: status line; accounts step: error box)
+ * @param {(message: string, code?: string) => void} [onFailure] - where a
+ *   failure message goes, with main's code (detect step: status line;
+ *   accounts step: error box)
  * @returns {Promise<boolean>} whether the page loaded
  */
 async function loadAccountsPage(replace, onFailure = showError) {
@@ -210,7 +237,7 @@ async function loadAccountsPage(replace, onFailure = showError) {
     // is dropped: the list the user chose from stays as it was.
     if (adding) return true;
     if (!result.success) {
-      onFailure(result.error || 'Failed to read accounts from the device');
+      onFailure(result.error || 'Failed to read accounts from the device', result.code);
       return false;
     }
     discoveredAccounts = replace ? result.accounts : [...discoveredAccounts, ...result.accounts];
@@ -273,6 +300,19 @@ function accountToAdd(account) {
     : [account.address, account.path];
 }
 
+/**
+ * The add waits for the user to confirm `account`'s address on the Ledger
+ * (the core's backend), or no longer (null).
+ */
+function showConfirmOnDevice(account) {
+  confirmEl?.classList.toggle('hidden', !account);
+  if (confirmText) {
+    confirmText.textContent = account
+      ? `Check that your Ledger shows ${account.address}, and approve it there.`
+      : '';
+  }
+}
+
 /** The scheme picker and Load More, which ask for discovery, while an add waits. */
 function setDiscoveryControlsDisabled(disabled) {
   if (schemeSelect) schemeSelect.disabled = disabled;
@@ -288,11 +328,15 @@ async function handleAddAccount() {
   adding = true;
   stopDetectLoop();
   setDiscoveryControlsDisabled(true);
+  // The core reads the address with the display on: the user confirms it
+  // on the device. On the JS backend the add shows nothing there.
+  const onDevice = window.ledger?.coreBackend === true;
   if (submitBtn) {
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Adding…';
+    submitBtn.textContent = onDevice ? CONFIRM_LABEL : 'Adding…';
   }
   hideError();
+  if (onDevice) showConfirmOnDevice(selectedAccount);
 
   try {
     const result = await window.ledger.addAccount(
@@ -318,6 +362,7 @@ async function handleAddAccount() {
     }
   } finally {
     adding = false;
+    showConfirmOnDevice(null);
     setDiscoveryControlsDisabled(false);
     // Reopened while the add waited: its detection starts now.
     if (detectView && !detectView.classList.contains('hidden')) detectTick();

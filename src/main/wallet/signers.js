@@ -262,6 +262,12 @@ function createVaultBackend(walletIndex, authorized = {}) {
  *   caller's entry point.
  * - `signal` (main's own cancel, PR 10) goes to the relay when the caller
  *   gives it.
+ * - **The user's Cancel** (`signal`, LDG-3's PR 10 and its point 5): once it
+ *   aborts, the core is told and the relay lets go of the device at once
+ *   (vault-backend.js `deviceCall`), and the call fails LEDGER_CANCELLED,
+ *   whatever the core then answers: a signature whose reply came in after
+ *   the Cancel is dropped too, so nothing signed leaves after it (a send
+ *   releases its nonce, nonce-reservations.js).
  */
 function createCoreLedgerBackend(walletIndex, record, authorized = {}) {
   const key = { kind: 'ledger', index: walletIndex, path: record.path, address: record.address };
@@ -296,11 +302,14 @@ function createCoreLedgerBackend(walletIndex, record, authorized = {}) {
         typeof authorized.hashOnlySurface === 'function' ? authorized.hashOnlySurface : currentHashOnlySurface(),
       ...(authorized.signal ? { signal: authorized.signal } : {}),
     };
+    // The user's Cancel: its own error, whatever came of the request after.
+    const cancelled = () => authorized.signal?.aborted === true;
     let reply;
     try {
       reply = await sign({ ...options, ...device });
     } catch (err) {
       if (refused) throw refused.err;
+      if (cancelled()) throw createLedgerError(LEDGER_ERROR_CODES.CANCELLED);
       const failure = fromCoreError(err);
       if (failure) {
         if (failure.code === LEDGER_ERROR_CODES.WRONG_DEVICE) keep(false);
@@ -308,6 +317,7 @@ function createCoreLedgerBackend(walletIndex, record, authorized = {}) {
       }
       throw refusal(err) || err;
     }
+    if (cancelled()) throw createLedgerError(LEDGER_ERROR_CODES.CANCELLED);
     let result;
     try {
       result = check(reply);

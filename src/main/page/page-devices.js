@@ -49,6 +49,19 @@
  * Ledger's `sign.*` on the core's backend), is never logged or put in an
  * error, and never reaches a renderer. Main discards it
  * once the step ends, spent or not.
+ *
+ * On the core's Ledger backend a Ledger's signature can be cancelled
+ * (freedom-core design 0016, "Deadlines, cancel and unplugging", deviation
+ * `cancel`; LDG-3's PR 10): the step says so as it starts
+ * (`context.deviceWait()`, so the surface that approved it keeps Reject),
+ * and signs with the request's `signal`, which aborts once main answers
+ * the request (that Reject, its document gone, its deadline): main then
+ * cancels the core's `sign.*` and the relay lets go of the device. The
+ * page hears a rejection, as for the device's own. A signature has no
+ * commit to guard (a send's, `page-core-sends.js`): it leaves main only in
+ * the request's answer, which main gives once (`page-requests.js`
+ * `answer`), so a Reject that wins drops a signature that came in after
+ * it, and a Reject after the answer is refused `not-waiting`.
  */
 
 const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
@@ -56,8 +69,14 @@ const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
 const INTERNAL_ERROR_CODE = -32603;
 const NO_ADDRESS = Object.freeze({ code: 4100, message: 'This page has no address to connect from yet' });
 const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
-// A device's own "declined" is the user's rejection.
-const DEVICE_REJECTIONS = new Set(['LEDGER_USER_REJECTED', 'REMOTE_USER_REJECTED', 'REMOTE_USER_CANCELLED']);
+// A device's own "declined" is the user's rejection, and so is their
+// Cancel while a Ledger waits (LEDGER_CANCELLED).
+const DEVICE_REJECTIONS = new Set([
+  'LEDGER_USER_REJECTED',
+  'LEDGER_CANCELLED',
+  'REMOTE_USER_REJECTED',
+  'REMOTE_USER_CANCELLED',
+]);
 // Custody ended after the sheet's approve (A7-6), in the agent route's words.
 const CUSTODY_LOST = 'Signing was not confirmed: the Agent no longer holds this tab';
 
@@ -81,6 +100,8 @@ function defaultDeviceDependencies() {
     cancelSafeMessage: (safeIndex, token) => require('../wallet/safe/safe-messages').cancelSafeMessage(safeIndex, token),
     // The boards main runs in the approvals document (APS-3b).
     safeBoards: () => require('../approvals/safe-boards').getSafeBoards(),
+    // Whether a Ledger's wait can be cancelled: the core's Ledger backend.
+    ledgerCancels: () => require('../wallet/ledger/ledger-backend-kind').ledgerBackendKind() === 'core',
   };
 }
 
@@ -97,6 +118,7 @@ function createDeviceSigning(deps = {}) {
     completeSafeMessage,
     cancelSafeMessage,
     safeBoards,
+    ledgerCancels,
   } = { ...defaultDeviceDependencies(), ...deps };
 
   const discard = (token) => {
@@ -133,8 +155,15 @@ function createDeviceSigning(deps = {}) {
   // user approved, where it waits on it, else over the tab
   // (wallet/ledger/hash-only-warning.js; LDG-3's PR 11).
   function deviceSignature(context, device, confirmation, beforeSign) {
+    const authorized = beforeSign ? { confirmation, beforeSign } : { confirmation };
+    // A Ledger on the core's backend: cancellable until main answers the
+    // request, whose signal is main's own cancel of the core's `sign.*`.
+    if (device.type === 'ledger' && ledgerCancels()) {
+      context.deviceWait?.();
+      authorized.signal = context.signal;
+    }
     return withHashOnlyTarget({ handle: device.handle }, () => {
-      const signer = getSigner(device.account, beforeSign ? { confirmation, beforeSign } : { confirmation });
+      const signer = getSigner(device.account, authorized);
       if (device.kind === 'sign-message') return signer.signMessage(device.payload.message);
       // The page's typed data, which the core hashes again: it must hash to
       // what the token bound, or nothing is spent or signed.

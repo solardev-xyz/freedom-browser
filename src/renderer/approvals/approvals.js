@@ -26,6 +26,14 @@
  *     Reject, Enter does nothing anywhere, and approving by keyboard is
  *     Space on a focused Approve.
  *
+ * An approval for an account that signs on a device keeps the panel up,
+ * saying where to confirm, until main answers it. On the core's Ledger
+ * backend (freedom-core design 0016, deviation `cancel`; LDG-3's PR 10),
+ * once main says the device step can be cancelled (`onWaiting`), Reject
+ * stays enabled: it cancels the device's request (`bridge.cancel`), the
+ * page hears a rejection, and the panel shows main's notice (point 18) for
+ * a moment, unless another prompt comes first.
+ *
  * While an approval waits on a Ledger that can show only two hashes, main
  * sends the hash-only warning with them (freedom-core design 0016, Q23;
  * LDG-3's PR 11): it shows in the waiting state, the hashes as the device
@@ -43,7 +51,7 @@
   const bridge = root.approvals;
   const doc = root.document;
   if (!core || !kinds || !bridge || !doc) return;
-  const { INPUT_DELAY_MS, INPUT_EVENTS, visible, createInputGate, createBuilders } = core;
+  const { INPUT_DELAY_MS, NOTICE_MS, MAX_NOTICE_CHARS, INPUT_EVENTS, visible, createInputGate, createBuilders } = core;
 
   const el = {
     panel: doc.getElementById('panel'),
@@ -64,9 +72,13 @@
   let current = null;
   let form = null; // what its template reads the user's choices from
   let deciding = false;
-  // An approval for an account that signs on a device: `{ handle, closed }`
-  // while the panel says where to confirm, until main answers it.
+  // An approval for an account that signs on a device: `{ handle, closed,
+  // cancellable, cancelling, over }` while the panel says where to confirm,
+  // until main answers it. `cancellable` once main says Reject reaches the
+  // device step; `over` once main answered the approval.
   let waiting = null;
+  // `{ handle, timer }`: the notice after a Reject cancelled that wait.
+  let notice = null;
   // The hash-only warning shown in the waiting state: `{ handle, warning }`.
   let hashOnly = null;
   let hashOnlyFrame = null;
@@ -78,10 +90,13 @@
   // revision it shows.
   let turn = 0;
 
+  // Whether Reject now cancels the device's request the panel waits on.
+  const rejectCancels = () => Boolean(waiting && waiting.cancellable && !waiting.cancelling && !notice);
+
   function setButtons() {
     el.approve.hidden = !current || !current.valid;
     el.approve.disabled = !current || !current.valid || deciding;
-    el.reject.disabled = !current || deciding;
+    el.reject.disabled = !current || (deciding && !rejectCancels());
   }
 
   function stopArming() {
@@ -138,6 +153,8 @@
 
   function stopWaiting() {
     waiting = null;
+    if (notice) root.clearTimeout(notice.timer);
+    notice = null;
     el.waiting.hidden = true;
     el.waiting.textContent = '';
     stopHashOnly();
@@ -184,6 +201,15 @@
         bridge.hashOnlyShown(handle, warning);
       });
     });
+  }
+
+  // The wait for `handle` is over: the panel goes if its prompt closed.
+  // Returns whether it went.
+  function endWait(handle) {
+    const closed = Boolean(waiting && waiting.handle === handle && waiting.closed);
+    stopWaiting();
+    if (closed) clear(handle);
+    return closed;
   }
 
   function render(prompt) {
@@ -318,18 +344,56 @@
       answer = null;
     }
     if (waiting && waiting.handle === handle) {
-      const closed = waiting.closed;
-      stopWaiting();
-      if (closed) {
-        clear(handle);
-        return;
-      }
+      waiting.over = true;
+      // A Reject under way ends the wait itself, after its notice.
+      if (waiting.cancelling || notice) return;
+      if (endWait(handle)) return;
     }
     // Refused (too soon for main, say): the user can try again.
     if (current?.handle === handle && answer?.ok !== true) {
       deciding = false;
       setButtons();
     }
+  }
+
+  /**
+   * Reject while the Ledger waits: main cancels the device's request and
+   * answers the page rejected. The panel then shows main's notice (its
+   * text, never a page's) until NOTICE_MS have passed, or another prompt
+   * shows. Not cancelled (the device answered first), it goes on waiting.
+   */
+  async function cancelWait() {
+    const handle = waiting.handle;
+    waiting.cancelling = true;
+    setButtons();
+    let answer;
+    try {
+      answer = await bridge.cancel(handle);
+    } catch {
+      answer = null;
+    }
+    if (!waiting || waiting.handle !== handle) return;
+    waiting.cancelling = false;
+    if (answer?.ok === true) {
+      const text = typeof answer.notice === 'string' ? answer.notice.slice(0, MAX_NOTICE_CHARS) : '';
+      el.waiting.textContent = visible(text);
+      el.waiting.hidden = false;
+      notice = {
+        handle,
+        timer: root.setTimeout(() => {
+          if (notice?.handle !== handle) return;
+          notice = null;
+          endWait(handle);
+        }, NOTICE_MS),
+      };
+      setButtons();
+      return;
+    }
+    if (waiting.over) {
+      endWait(handle);
+      return;
+    }
+    setButtons();
   }
 
   const controlOf = (target) => (target === el.approve ? 'approve' : target === el.reject ? 'reject' : 'other');
@@ -359,7 +423,9 @@
     if (gate.activates('approve', event)) decide(true);
   });
   el.reject.addEventListener('click', (event) => {
-    if (gate.activates('reject', event)) decide(false);
+    if (!gate.activates('reject', event)) return;
+    if (rejectCancels()) cancelWait();
+    else decide(false);
   });
 
   bridge.onPrompt((message) => {
@@ -368,6 +434,13 @@
     turn += 1;
     if (prompt.parts) load(message, prompt);
     else render(prompt);
+  });
+  // The approval waits on a Ledger whose request Reject can still cancel.
+  bridge.onWaiting?.((message) => {
+    const handle = message?.handle;
+    if (!waiting || typeof handle !== 'string' || waiting.handle !== handle) return;
+    waiting.cancellable = true;
+    setButtons();
   });
   bridge.onHidden((message) => clear(message?.handle));
   bridge.onClosed((message) => clear(message?.handle));

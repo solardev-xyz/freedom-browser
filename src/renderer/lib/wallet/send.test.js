@@ -223,7 +223,7 @@ const SEND_ELEMENT_IDS = [
   'send-password-input', 'send-password-submit', 'send-unlock-error',
   'send-review-error', 'send-explorer-link', 'send-done-btn', 'send-error-text',
   'send-retry-btn', 'wallet-send-btn', 'send-review-fee-max', 'send-review-fee-note',
-  'send-fee-warning', 'send-fee-warning-text',
+  'send-fee-warning', 'send-fee-warning-text', 'send-pending-cancel',
 ];
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -264,7 +264,12 @@ const deferred = () => {
 // Drives the real send screen against the real wallet-state/signature-flight
 // modules, so the shared sidebar lock under test is the same instance every
 // other approval surface would see.
-async function loadSendScreen({ chains = [{ chainId: 100, name: 'Gnosis' }], reverseLookup = null } = {}) {
+async function loadSendScreen({
+  chains = [{ chainId: 100, name: 'Gnosis' }],
+  reverseLookup = null,
+  ledgerCore = false,
+  cancelSend = async () => ({ success: true }),
+} = {}) {
   jest.resetModules();
   // The screen arms focus/balance-refresh timers we don't care about here;
   // faking them keeps no handles alive past the test.
@@ -274,7 +279,7 @@ async function loadSendScreen({ chains = [{ chainId: 100, name: 'Gnosis' }], rev
   // that showing/hiding them is observable.
   const startsHidden = new Set([
     'sidebar-send', 'send-input-view', 'send-review-view', 'send-pending-view',
-    'send-success-view', 'send-error-view',
+    'send-success-view', 'send-error-view', 'send-pending-cancel',
   ]);
   const elements = Object.fromEntries(
     SEND_ELEMENT_IDS.map((id) => [
@@ -301,7 +306,10 @@ async function loadSendScreen({ chains = [{ chainId: 100, name: 'Gnosis' }], rev
         feeCheck: { maxCost: '21000', comparable: true, ratio: '1', above: false, autoApprove: true },
       }),
       formatUnits: jest.fn(() => '0.000021'),
+      cancelSend: jest.fn(cancelSend),
     },
+    // Which drives the Ledger (preload.js `ledger.coreBackend`).
+    ledger: { coreBackend: ledgerCore },
     dispatchEvent: jest.fn(),
     CustomEvent: class {},
   };
@@ -361,6 +369,57 @@ describe('send screen sidebar ownership', () => {
     send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
     await flush();
     expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
+  // LDG-3's PR 10 (freedom-core design 0016, deviation `cancel`).
+  test("on the core's Ledger backend the device's wait offers Cancel: main cancels, and the send says so, not sent", async () => {
+    const { mod, flight, elements, send } = await loadSendScreen({ ledgerCore: true });
+    const cancelBtn = elements['send-pending-cancel'];
+
+    await confirmFromReview(mod, elements);
+    await flush();
+    expect(cancelBtn.classList.contains('hidden')).toBe(false);
+    expect(cancelBtn.textContent).toBe('Cancel');
+    cancelBtn.dispatch('click');
+    await flush();
+    expect(window.wallet.cancelSend).toHaveBeenCalledTimes(1);
+    expect(cancelBtn.disabled).toBe(true);
+    expect(cancelBtn.textContent).toBe('Cancelling…');
+    // The send's own answer ends the flight, in main's words.
+    const notice = 'Cancelled. If your Ledger still shows the request, reject it there.';
+    send.resolve({ success: false, error: notice, code: 'LEDGER_CANCELLED' });
+    await flush();
+    expect(flight.isSignatureInFlight()).toBe(false);
+    expect(elements['send-error-view'].classList.contains('hidden')).toBe(false);
+    expect(elements['send-error-text'].textContent).toBe(notice);
+    // Nothing was sent: Try Again goes back to the form.
+    expect(elements['send-retry-btn'].textContent).toBe('Try Again');
+  });
+
+  test('a Cancel main refused (the device answered first) gives Cancel back while the send still waits', async () => {
+    const { mod, elements, send } = await loadSendScreen({
+      ledgerCore: true,
+      cancelSend: async () => ({ success: false, error: 'No send is waiting on a Ledger here' }),
+    });
+    const cancelBtn = elements['send-pending-cancel'];
+    await confirmFromReview(mod, elements);
+    await flush();
+    cancelBtn.dispatch('click');
+    await flush();
+    expect(cancelBtn.disabled).toBe(false);
+    expect(cancelBtn.textContent).toBe('Cancel');
+    send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
+    await flush();
+    expect(elements['send-success-view'].classList.contains('hidden')).toBe(false);
+  });
+
+  test('on the JS backend the device\'s wait offers no Cancel, as before', async () => {
+    const { mod, elements, send } = await loadSendScreen();
+    await confirmFromReview(mod, elements);
+    await flush();
+    expect(elements['send-pending-cancel'].classList.contains('hidden')).toBe(true);
+    send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
+    await flush();
   });
 
   test('a confirmed send reports what it paid, and close tells the opener', async () => {

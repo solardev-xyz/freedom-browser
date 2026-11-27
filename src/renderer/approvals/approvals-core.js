@@ -27,6 +27,11 @@
   'use strict';
 
   const INPUT_DELAY_MS = 500;
+  // How long the panel keeps a cancel's notice once the Ledger's request is
+  // answered (LDG-3; approvals-document.js NOTICE_MS).
+  const NOTICE_MS = 6000;
+  // The most of main's notice the panel shows.
+  const MAX_NOTICE_CHARS = 300;
   const MAX_VIEW_BYTES = 256 * 1024;
   // A view main sends in parts, each within 256 KiB (APS-4;
   // approvals-document.js MAX_PARTED_VIEW_BYTES).
@@ -352,6 +357,8 @@
 
   return Object.freeze({
     INPUT_DELAY_MS,
+    NOTICE_MS,
+    MAX_NOTICE_CHARS,
     MAX_VIEW_BYTES,
     MAX_PARTED_VIEW_BYTES,
     CUT_AT,

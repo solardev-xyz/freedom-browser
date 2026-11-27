@@ -109,12 +109,17 @@ describe('preload', () => {
       ['onPending', 'page:prompt-pending'],
       ['onHidden', 'page:prompt-hidden'],
       ['onClosed', 'page:prompt-closed'],
+      // A decided prompt waits on a Ledger Reject still reaches (LDG-3).
+      ['onWaiting', 'page:prompt-waiting'],
     ]) {
       exposures.pagePrompts[name](() => {});
       expect(ipcRenderer.on.mock.calls.map(([name]) => name)).toContain(expected);
     }
     await exposures.pagePrompts.decide('h', true, { walletIndex: 1 });
     expect(ipcRenderer.invoke).toHaveBeenCalledWith('page:decide', { handle: 'h', approve: true, choices: { walletIndex: 1 } });
+    // Reject while that Ledger waits: a handle, nothing else.
+    await exposures.pagePrompts.cancel('h');
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith('page:cancel', { handle: 'h' });
     exposures.pagePrompts.foreground(7);
     expect(ipcRenderer.send).toHaveBeenCalledWith('page:foreground', { guest: 7 });
     // Where the content area starts, for the approvals panel (APS-1).
@@ -545,6 +550,8 @@ describe('preload', () => {
       // A Ledger account by its scheme and index (design 0016, `ledger.add`).
       [exposures.ledger, 'addAccount', ['My Stax', 'live', 3], 'wallet:add-ledger-wallet', ['My Stax', 'live', 3]],
       [exposures.ledger, 'getAccounts', [{ scheme: 'live', start: 0, count: 5 }], 'ledger:get-accounts', [{ scheme: 'live', start: 0, count: 5 }]],
+      // The send screen's Cancel while a Ledger waits (LDG-3): no arguments.
+      [exposures.wallet, 'cancelSend', [], 'wallet:cancel-send', []],
       [exposures.remoteSigner, 'addAccount', ['My Phone', '0xabc'], 'wallet:add-remote-wallet', ['My Phone', '0xabc']],
       [exposures.remoteSigner, 'checkAccount', [1000001], 'wallet:check-remote-wallet', [1000001]],
       // Quick Setup (0013 PRF-2b): the mnemonic only; main makes the password.
@@ -1068,6 +1075,28 @@ describe('preload', () => {
       expect(loadPreloadModule().exposures.pagePrompts.approvalsDocument).toBe(true);
       process.argv = originalArgv.filter((arg) => arg !== APPROVALS_RENDERER_ARG);
       expect(loadPreloadModule().exposures.pagePrompts.approvalsDocument).toBe(false);
+    });
+  });
+
+  // freedom-core design 0016, LDG-3: the chrome offers a Ledger's Cancel
+  // only when main put the core backend's switch on its command line.
+  describe("the core Ledger backend's switch", () => {
+    const { LEDGER_CORE_RENDERER_ARG } = require('./wallet/ledger/ledger-backend-kind');
+    const originalArgv = process.argv;
+    afterEach(() => {
+      process.argv = originalArgv;
+    });
+
+    test('keys on the same renderer argument ledger-backend-kind.js names', () => {
+      const source = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+      expect(source).toContain(`process.argv.includes('${LEDGER_CORE_RENDERER_ARG}')`);
+    });
+
+    test('on with the argument, off without it', () => {
+      process.argv = [...originalArgv, LEDGER_CORE_RENDERER_ARG];
+      expect(loadPreloadModule().exposures.ledger.coreBackend).toBe(true);
+      process.argv = originalArgv.filter((arg) => arg !== LEDGER_CORE_RENDERER_ARG);
+      expect(loadPreloadModule().exposures.ledger.coreBackend).toBe(false);
     });
   });
 

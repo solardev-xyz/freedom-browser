@@ -66,7 +66,11 @@ const test = base.extend({
   // More accounts for main's wallet list after it (a Ledger, a phone), and
   // the active one: `seedVault`'s options. Implies a vault.
   vaultWallets: [null, { option: true }],
-  electronApp: async ({ userDataDir, withVault, vaultWallets }, use) => {
+  // FREEDOM_LEDGER_BACKEND for the launch (freedom-core design 0016, LDG-3):
+  // 'core' drives a Ledger through the identity core and main's relay; the
+  // default leaves the switch as the environment has it.
+  ledgerBackend: [null, { option: true }],
+  electronApp: async ({ userDataDir, withVault, vaultWallets, ledgerBackend }, use) => {
     const env = {
       ...process.env,
       FREEDOM_TEST_MODE: '1',
@@ -74,6 +78,7 @@ const test = base.extend({
       FREEDOM_APPROVALS_DOCUMENT: '1',
       ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
       LANG: 'en_US.UTF-8',
+      ...(ledgerBackend ? { FREEDOM_LEDGER_BACKEND: ledgerBackend } : {}),
     };
     let identityDir = null;
     if (withVault || vaultWallets) {

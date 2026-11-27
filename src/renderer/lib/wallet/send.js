@@ -40,6 +40,7 @@ let sendBackBtn;
 let sendInputView;
 let sendReviewView;
 let sendPendingView;
+let sendPendingCancelBtn;
 let sendSuccessView;
 let sendErrorView;
 let sendRecipientInput;
@@ -135,6 +136,7 @@ export function initSend() {
   sendInputView = document.getElementById('send-input-view');
   sendReviewView = document.getElementById('send-review-view');
   sendPendingView = document.getElementById('send-pending-view');
+  sendPendingCancelBtn = document.getElementById('send-pending-cancel');
   sendSuccessView = document.getElementById('send-success-view');
   sendErrorView = document.getElementById('send-error-view');
   sendRecipientInput = document.getElementById('send-recipient');
@@ -290,6 +292,10 @@ function setupSendScreen() {
 
   if (sendRetryBtn) {
     sendRetryBtn.addEventListener('click', handleSendRetry);
+  }
+
+  if (sendPendingCancelBtn) {
+    sendPendingCancelBtn.addEventListener('click', handleSendCancel);
   }
 }
 
@@ -494,10 +500,51 @@ function showSendPendingView() {
   const text = sendPendingView?.querySelector('.send-pending-text');
   if (title) title.textContent = pendingCopy.title;
   if (text) text.textContent = pendingCopy.text;
+  if (sendPendingCancelBtn) {
+    sendPendingCancelBtn.classList.toggle('hidden', !ledgerSendCancels());
+    sendPendingCancelBtn.disabled = false;
+    sendPendingCancelBtn.textContent = 'Cancel';
+  }
+}
+
+/**
+ * Whether the send in flight can be cancelled from here: a Ledger's, when
+ * the identity core drives the Ledger (freedom-core design 0016, deviation
+ * `cancel`; development builds with FREEDOM_LEDGER_BACKEND=core until
+ * LDG-3 is done). On the JS backend the device can't be stopped, and the
+ * screen stays as it was.
+ */
+function ledgerSendCancels() {
+  return accountType(walletState.activeWalletIndex) === 'ledger' && window.ledger?.coreBackend === true;
+}
+
+/**
+ * The pending view's Cancel: main cancels the Ledger's request at once and
+ * lets go of the device. The send's own answer then ends the flight, with
+ * main's text for it (wallet/ledger/errors.js), and the send's nonce is
+ * released. If the device answered first, the send goes on as answered.
+ */
+async function handleSendCancel() {
+  if (!sendFlight || !sendPendingCancelBtn || sendPendingCancelBtn.disabled) return;
+  sendPendingCancelBtn.disabled = true;
+  sendPendingCancelBtn.textContent = 'Cancelling…';
+  let result = null;
+  try {
+    result = await window.wallet.cancelSend();
+  } catch (err) {
+    console.error('[WalletUI] The cancel did not reach main:', err);
+  }
+  if (!result?.success && sendFlight && sendPendingCancelBtn) {
+    sendPendingCancelBtn.disabled = false;
+    sendPendingCancelBtn.textContent = 'Cancel';
+  }
 }
 
 // The success view's line under its title, as index.html has it.
 const SENT_TEXT = 'Your transaction has been broadcast to the network.';
+// The user's Cancel while the Ledger waited (main's code; its text is
+// main's, wallet/ledger/errors.js): nothing was sent.
+const LEDGER_CANCELLED = 'LEDGER_CANCELLED';
 
 /**
  * @param {string} [explorerUrl]
@@ -556,6 +603,8 @@ function showSendErrorView(message, failure = {}) {
   if (title) {
     title.textContent = unknown
       ? RESULT_TITLES.unknown
+      : failure.code === LEDGER_CANCELLED
+        ? RESULT_TITLES.notSent
       : failure.outcome === 'rejected'
         ? RESULT_TITLES.refused
         : failure.outcome === 'not_sent'

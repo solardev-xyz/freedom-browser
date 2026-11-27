@@ -852,6 +852,10 @@ contextBridge.exposeInMainWorld('wallet', {
   feeCheck: (tx) => ipcRenderer.invoke('wallet:fee-check', tx),
   sendTransaction: (params, context, authorization) =>
     ipcRenderer.invoke('wallet:send-transaction', params, context, authorization),
+  // The send screen's Cancel while a Ledger waits: main's own cancel of
+  // that window's send in flight (core Ledger backend only, see
+  // `ledger.coreBackend`). The send's own answer says how it ended.
+  cancelSend: () => ipcRenderer.invoke('wallet:cancel-send'),
   // Held payments (the wallet's intent records). A resend sends the same
   // signed bytes again; `authorization` is an 'intent-resend' confirmation
   // of that intent (see confirmSigning).
@@ -927,6 +931,13 @@ contextBridge.exposeInMainWorld('ledger', {
   // has no index, is sent as (name, address, path) instead.
   addAccount: (name, scheme, index) =>
     ipcRenderer.invoke('wallet:add-ledger-wallet', name, scheme, index),
+  // Whether the identity core drives the Ledger (FREEDOM_LEDGER_BACKEND=core,
+  // development builds only, LDG-3): only then can a Ledger's wait be
+  // cancelled, and `ledger.add` asks the user to confirm the address on
+  // the device. Keep the switch in sync with LEDGER_CORE_RENDERER_ARG in
+  // wallet/ledger/ledger-backend-kind.js (a sandboxed preload cannot
+  // require it; preload.test.js pins the two together).
+  coreBackend: process.argv.includes('--freedom-ledger-core'),
   // The hash-only warning over a tab, on the core's Ledger backend
   // (freedom-core design 0016, Q23; LDG-3's PR 11): main sends it with the
   // two hashes the device will show, the chrome reports it on screen, and
@@ -1109,7 +1120,13 @@ contextBridge.exposeInMainWorld('pagePrompts', {
   onPrompt: onPagePrompt('page:prompt'),
   onHidden: onPagePrompt('page:prompt-hidden'),
   onClosed: onPagePrompt('page:prompt-closed'),
+  // A decided prompt now waits on a Ledger the user can still reject from
+  // the screen (core Ledger backend; `cancel` then answers the page).
+  onWaiting: onPagePrompt('page:prompt-waiting'),
   decide: (handle, approve, choices) => ipcRenderer.invoke('page:decide', { handle, approve, choices }),
+  // Reject while the Ledger waits: main cancels the device's request and
+  // answers the page rejected -> { ok, notice } | { ok: false, reason }.
+  cancel: (handle) => ipcRenderer.invoke('page:cancel', { handle }),
   // A send, so it reaches main in order with the tab switches around it.
   foreground: (guest) => ipcRenderer.send('page:foreground', { guest }),
   // Where the content area starts, so main places the approvals panel below
