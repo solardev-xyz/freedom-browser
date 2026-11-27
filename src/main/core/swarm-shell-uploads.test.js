@@ -532,8 +532,10 @@ describe('a streamed upload: one swarm.body for its call alone, piped as the nod
     shell.client.bodies[0].respond({ bytes: 128 * KIB }, part.result.body);
     expect(parsed((await upload).result).status).toBe(201);
     expect(atDial).toBe(REPLY_ROOM + 2 * STREAM_CHARGE);
-    // After the node's answer: the reply's own sum, and the part room.
-    expect(pool.held).toBe(wholeCharge('{"reference":"x"}'.length) + STREAM_CHARGE);
+    // After the node's answer: the reply's own sum (its body in one 4 KiB
+    // block, with no declared length), and the part room.
+    const reply = '{"reference":"x"}'.length;
+    expect(pool.held).toBe(wholeCharge(reply) - reply + 4 * KIB + STREAM_CHARGE);
     // The call's reply written: the part's stream still holds its room.
     ctx.release();
     expect(pool.held).toBe(STREAM_CHARGE);
