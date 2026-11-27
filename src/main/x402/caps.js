@@ -243,6 +243,73 @@ async function settleSignature(reservation, signature, origin = null) {
   }
 }
 
+function refusal(code, message, data) {
+  return Object.assign(new Error(message), { code, ...(data ? { data } : {}) });
+}
+
+/**
+ * `x402.settle { reservation, typed_data }` (freedom-core design 0016,
+ * "x402 from a Ledger account", D2, and LDG-2's L5 as built): a Ledger
+ * payment made with `now_s`, `typedData` main's own frozen rebuild of its
+ * authorization (ledger-authorization.js), which the core requires to equal
+ * the one it reserved and signs on its device lane. Main's relay for the
+ * core's `shell.ledger_apdu` (core/ledger-relay.js) carries each APDU to
+ * the device once it is admitted against the stream main derives here,
+ * before the settle is sent, from that same copy, the account's `path`
+ * from main's record snapshot and main's own `expectedHash` of the copy
+ * (`prepare`). A stream main can't derive is refused unsent
+ * (`invalid_argument`, with the relay's rule and reason). Otherwise the
+ * settle goes under the device watchdog (vault-backend.js
+ * `x402.settleOnLedger`) and is opened in the relay from its `onSent`,
+ * before the core can ask anything for it; its end, whatever it is, closes
+ * it there.
+ *
+ * `onSent()` hears the settle written to the core: from then on the
+ * reservation is the core's to spend, however the settle ends. Resolves
+ * `{ payload, charged, grant?, durable? }` (the reservation then waits for
+ * `sent` or `withheld`); rejects with the core's error, whose `data.refunded`
+ * says whether the charge's room is back on its cap (`cancelled` carries
+ * none). The mirror reads the seller's caps again either way.
+ */
+async function settleTypedData(reservation, typedData, { path, expectedHash, origin = null, onSent = null } = {}) {
+  try {
+    const relay = require('../core/core-process').getLedgerRelay();
+    if (!relay) throw refusal('core_unavailable', 'The identity core is not running');
+    const params = { reservation, typed_data: typedData };
+    const prepared = relay.prepare({ method: 'x402.settle', params, path, expectedHash });
+    if (!prepared.ok) {
+      throw refusal('invalid_argument', "A Ledger can't sign this payment", {
+        rule: prepared.rule,
+        reason: prepared.reason,
+      });
+    }
+    const controller = new AbortController();
+    let handle = null;
+    let unopened = null;
+    try {
+      return await vault().x402.settleOnLedger(params, {
+        signal: controller.signal,
+        onSent: (id, generation) => {
+          onSent?.();
+          try {
+            handle = relay.open({ id, generation }, { prepared, controller });
+          } catch (err) {
+            // Every APDU of it would be refused: main cancels it at once.
+            unopened = err;
+            controller.abort();
+          }
+        },
+      });
+    } catch (err) {
+      throw unopened ?? err;
+    } finally {
+      handle?.close();
+    }
+  } finally {
+    reread(origin);
+  }
+}
+
 module.exports = {
   getPermission,
   getAllPermissions,
@@ -252,6 +319,7 @@ module.exports = {
   settle,
   settleSent,
   settleSignature,
+  settleTypedData,
   narrow,
   NARROW_ONLY,
   capKeyOf,
