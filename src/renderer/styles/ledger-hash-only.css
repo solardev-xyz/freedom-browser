@@ -1,0 +1,87 @@
+/* The hash-only warning over a tab (freedom-core design 0016, Q23; LDG-3's
+   PR 11): a Ledger that will show only two hashes, before it asks. Over the
+   content area, at its top, until the operation ends. Amber, as an approval
+   callout's consequence (ui-consistency.md). */
+.ledger-hash-only-notice {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  width: min(460px, calc(100% - 32px));
+  box-sizing: border-box;
+  padding: 12px 14px;
+  background: var(--menu-bg);
+  border: 1px solid var(--warning-fg);
+  border-radius: 10px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.ledger-hash-only-notice[hidden] {
+  display: none;
+}
+
+.ledger-hash-only-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.ledger-hash-only-site {
+  margin: 4px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.ledger-hash-only-site[hidden] {
+  display: none;
+}
+
+.ledger-hash-only-body {
+  margin: 6px 0 0;
+}
+
+.ledger-hash-only-row {
+  margin-top: 10px;
+}
+
+.ledger-hash-only-label {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.ledger-hash-only-hash {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.ledger-hash-only-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.ledger-hash-only-cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ledger-hash-only-cancel:hover {
+  border-color: var(--muted);
+}
+
+.ledger-hash-only-cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

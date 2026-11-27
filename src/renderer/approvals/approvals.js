@@ -26,6 +26,13 @@
  *     Reject, Enter does nothing anywhere, and approving by keyboard is
  *     Space on a focused Approve.
  *
+ * While an approval waits on a Ledger that can show only two hashes, main
+ * sends the hash-only warning with them (freedom-core design 0016, Q23;
+ * LDG-3's PR 11): it shows in the waiting state, the hashes as the device
+ * will show them, and is reported on screen after two animation frames,
+ * with the document visible and the warning laid out. Main's relay holds
+ * the device until that report.
+ *
  * A classic script, loaded last of the three.
  */
 (function approvalsDocument(root) {
@@ -45,6 +52,7 @@
     body: doc.getElementById('body'),
     error: doc.getElementById('error'),
     waiting: doc.getElementById('waiting'),
+    hashOnly: doc.getElementById('hash-only'),
     reject: doc.getElementById('reject'),
     approve: doc.getElementById('approve'),
   };
@@ -59,6 +67,9 @@
   // An approval for an account that signs on a device: `{ handle, closed }`
   // while the panel says where to confirm, until main answers it.
   let waiting = null;
+  // The hash-only warning shown in the waiting state: `{ handle, warning }`.
+  let hashOnly = null;
+  let hashOnlyFrame = null;
   let armTimer = null;
   let armFrame = null;
   // Each prompt message's turn: a view's parts still arriving for an older
@@ -117,10 +128,62 @@
     return device !== null && Object.prototype.hasOwnProperty.call(WAITING_COPY, device) ? device : null;
   };
 
+  function stopHashOnly() {
+    hashOnly = null;
+    if (hashOnlyFrame !== null) root.cancelAnimationFrame(hashOnlyFrame);
+    hashOnlyFrame = null;
+    el.hashOnly.hidden = true;
+    el.hashOnly.replaceChildren();
+  }
+
   function stopWaiting() {
     waiting = null;
     el.waiting.hidden = true;
     el.waiting.textContent = '';
+    stopHashOnly();
+  }
+
+  // Laid out: an element with a box (an ancestor hidden leaves it none).
+  const laidOut = (node) =>
+    typeof node.checkVisibility === 'function' ? node.checkVisibility() : node.getClientRects().length > 0;
+
+  /**
+   * Main's hash-only warning (`approvals:hash-only`) for the approval this
+   * panel waits on: shown with the two hashes as the device shows them, and
+   * reported once it is on screen; `warning: null` takes it down.
+   */
+  function showHashOnly(message) {
+    const checked = kinds.checkHashOnly(message);
+    if (!checked) return;
+    if (checked.warning === null) {
+      if (hashOnly?.handle === checked.handle) stopHashOnly();
+      return;
+    }
+    if (!waiting || waiting.handle !== checked.handle || current?.handle !== checked.handle) return;
+    stopHashOnly();
+    const { handle, warning } = checked;
+    const copy = kinds.HASH_ONLY_COPY;
+    const row = (label, hash) => {
+      const field = ui.own(label, kinds.deviceHash(hash));
+      field.lastChild.classList.add('mono');
+      return field;
+    };
+    el.hashOnly.replaceChildren(
+      ui.note(copy.title, 'hash-only-title'),
+      ui.note(copy.body, 'hash-only-body'),
+      row(copy.domain, checked.domainSeparator),
+      row(copy.message, checked.structHash)
+    );
+    el.hashOnly.hidden = false;
+    hashOnly = { handle, warning };
+    hashOnlyFrame = root.requestAnimationFrame(() => {
+      hashOnlyFrame = root.requestAnimationFrame(() => {
+        hashOnlyFrame = null;
+        if (hashOnly?.handle !== handle || hashOnly.warning !== warning) return;
+        if (doc.visibilityState !== 'visible' || !laidOut(el.hashOnly)) return;
+        bridge.hashOnlyShown(handle, warning);
+      });
+    });
   }
 
   function render(prompt) {
@@ -309,6 +372,7 @@
   bridge.onHidden((message) => clear(message?.handle));
   bridge.onClosed((message) => clear(message?.handle));
   bridge.onMoved(() => rearm());
+  if (typeof bridge.onHashOnly === 'function') bridge.onHashOnly((message) => showHashOnly(message));
   root.addEventListener('resize', () => rearm());
   doc.addEventListener('visibilitychange', () => {
     if (doc.visibilityState === 'visible') rearm();

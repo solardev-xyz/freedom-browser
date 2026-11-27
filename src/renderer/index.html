@@ -1565,6 +1565,47 @@
           <div class="content-page">
             <div id="webview-container" class="webview-container">
               <!-- Webviews inserted dynamically by tabs.js -->
+              <!-- The hash-only warning over a tab (freedom-core design 0016,
+                   Q23): a Ledger that will show only two hashes. Its copy is
+                   set by lib/wallet/ledger-hash-only-notice.js. -->
+              <section
+                id="ledger-hash-only-notice"
+                class="ledger-hash-only-notice"
+                role="alert"
+                aria-labelledby="ledger-hash-only-title"
+                data-test="ledger-hash-only-notice"
+                hidden
+              >
+                <p id="ledger-hash-only-title" class="ledger-hash-only-title"></p>
+                <p id="ledger-hash-only-site" class="ledger-hash-only-site" hidden></p>
+                <p id="ledger-hash-only-body" class="ledger-hash-only-body"></p>
+                <div class="ledger-hash-only-row">
+                  <div id="ledger-hash-only-domain-label" class="ledger-hash-only-label"></div>
+                  <div
+                    id="ledger-hash-only-domain"
+                    class="ledger-hash-only-hash"
+                    data-test="ledger-hash-only-domain"
+                  ></div>
+                </div>
+                <div class="ledger-hash-only-row">
+                  <div id="ledger-hash-only-message-label" class="ledger-hash-only-label"></div>
+                  <div
+                    id="ledger-hash-only-message"
+                    class="ledger-hash-only-hash"
+                    data-test="ledger-hash-only-message"
+                  ></div>
+                </div>
+                <div class="ledger-hash-only-actions">
+                  <button
+                    id="ledger-hash-only-cancel"
+                    class="ledger-hash-only-cancel"
+                    type="button"
+                    data-test="ledger-hash-only-cancel"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </section>
               <div
                 id="agent-page-interlock"
                 class="agent-page-interlock"

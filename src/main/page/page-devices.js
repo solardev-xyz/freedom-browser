@@ -51,6 +51,8 @@
  * once the step ends, spent or not.
  */
 
+const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
+
 const INTERNAL_ERROR_CODE = -32603;
 const NO_ADDRESS = Object.freeze({ code: 4100, message: 'This page has no address to connect from yet' });
 const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
@@ -126,13 +128,18 @@ function createDeviceSigning(deps = {}) {
   // A Ledger's or a phone's signature, with the core's token (presented to
   // the core's `sign.*` for a Ledger on the core's backend, spent first on
   // the JS one), and the caller's last check, if any, right before the
-  // device is asked.
-  async function deviceSignature(context, device, confirmation, beforeSign) {
-    const signer = getSigner(device.account, beforeSign ? { confirmation, beforeSign } : { confirmation });
-    if (device.kind === 'sign-message') return signer.signMessage(device.payload.message);
-    // The page's typed data, which the core hashes again: it must hash to
-    // what the token bound, or nothing is spent or signed.
-    return signer.signTypedData(context.params?.[1], { expectedHash: device.expectedHash });
+  // device is asked. On the core's Ledger backend, the hash-only warning
+  // shows in the approvals document's waiting state for the handle the
+  // user approved, where it waits on it, else over the tab
+  // (wallet/ledger/hash-only-warning.js; LDG-3's PR 11).
+  function deviceSignature(context, device, confirmation, beforeSign) {
+    return withHashOnlyTarget({ handle: device.handle }, () => {
+      const signer = getSigner(device.account, beforeSign ? { confirmation, beforeSign } : { confirmation });
+      if (device.kind === 'sign-message') return signer.signMessage(device.payload.message);
+      // The page's typed data, which the core hashes again: it must hash to
+      // what the token bound, or nothing is spent or signed.
+      return signer.signTypedData(context.params?.[1], { expectedHash: device.expectedHash });
+    });
   }
 
   /**

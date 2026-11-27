@@ -164,7 +164,13 @@ describe('isSenderAllowed', () => {
   // chrome, which must not be able to decide. Main then checks the exact
   // view (approvals-document.js).
   test('the approvals channels take the approvals document\'s top frame and refuse the chrome', () => {
-    expect(APPROVALS_CHANNELS).toEqual(['approvals:ready', 'approvals:shown', 'approvals:decide', 'approvals:view-part']);
+    expect(APPROVALS_CHANNELS).toEqual([
+      'approvals:ready',
+      'approvals:shown',
+      'approvals:decide',
+      'approvals:view-part',
+      'approvals:hash-only-shown',
+    ]);
     expect(APPROVALS_HTML).toBe(path.join(path.dirname(CHROME_INDEX), 'approvals', 'approvals.html'));
     const approvalsDoc = (extra = {}) => makeEvent({ type: 'window', url: fileUrl(APPROVALS_HTML), ...extra });
     for (const channel of APPROVALS_CHANNELS) {
@@ -188,12 +194,27 @@ describe('isSenderAllowed', () => {
       expect(isSenderAllowed(channel, throwing)).toBe(false);
     }
     // The document reaches nothing else, the chrome's channels included.
-    for (const channel of ['page:decide', 'page:foreground', 'page:approvals-anchor', 'wallet:confirm-signing', 'settings:get']) {
+    for (const channel of [
+      'page:decide',
+      'page:foreground',
+      'page:approvals-anchor',
+      'wallet:confirm-signing',
+      'settings:get',
+      // The chrome's hash-only notice is the chrome's to report and cancel.
+      'ledger:hash-only-notice-shown',
+      'ledger:hash-only-notice-cancel',
+    ]) {
       expect(isSenderAllowed(channel, approvalsDoc())).toBe(false);
     }
     // Where the content area starts: the chrome's to say.
     expect(isSenderAllowed('page:approvals-anchor', chrome())).toBe(true);
     expect(isSenderAllowed('page:approvals-anchor', web())).toBe(false);
+    // So are the hash-only notice's report and Cancel (LDG-3's PR 11): no page reaches them.
+    for (const channel of ['ledger:hash-only-notice-shown', 'ledger:hash-only-notice-cancel']) {
+      expect(isSenderAllowed(channel, chrome())).toBe(true);
+      expect(isSenderAllowed(channel, web())).toBe(false);
+      expect(isSenderAllowed(channel, page('settings.html'))).toBe(false);
+    }
   });
 
   test('public bootstrap channels answer any sender and frame', () => {
