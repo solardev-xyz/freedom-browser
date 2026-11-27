@@ -216,6 +216,9 @@ describe('WebContentsPageAdapter', () => {
       .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
       .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
       .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, seen: ['mousedown', 'mouseup'], focused: true })
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true })
       .mockResolvedValueOnce({ ok: true });
     const adapter = new WebContentsPageAdapter(webContents, {
       referenceIdFactory: () => 'ref_test',
@@ -238,7 +241,7 @@ describe('WebContentsPageAdapter', () => {
       characters: 5,
     });
     expect(webContents.insertText).toHaveBeenCalledWith('hello');
-    const typeCode = webContents.executeJavaScriptInIsolatedWorld.mock.calls[3][1][0].code;
+    const typeCode = webContents.executeJavaScriptInIsolatedWorld.mock.calls[6][1][0].code;
     expect(typeCode).toContain('const inspectReferencedElement');
   });
 
@@ -432,6 +435,139 @@ describe('WebContentsPageAdapter', () => {
       [{ type: 'char', keyCode: 'Enter' }],
       [{ type: 'keyUp', keyCode: 'Enter' }],
     ]);
+  });
+
+  // sendInputEvent() only queues the input; an observation right after the
+  // call can run before the page handled it (#1347). A press or click returns
+  // once the gesture's last event has reached the page.
+  describe('waits for trusted input to reach the page', () => {
+    const probeCalls = (webContents) =>
+      webContents.executeJavaScriptInIsolatedWorld.mock.calls
+        .map(([, [{ code }]]) => code)
+        .filter((code) => code.includes('__FREEDOM_AUTOMATION_INPUT_PROBE__'))
+        .map((code) => code.match(/\("ref_test_0","(arm|read|disarm)"/)?.[1]);
+
+    // Answers the probe with `reads` in turn and everything else with `ok`.
+    function scriptedPage(reads, other = () => ({ ok: true })) {
+      const webContents = new FakeWebContents();
+      let snapshotTaken = false;
+      const queue = [...reads];
+      webContents.executeJavaScriptInIsolatedWorld.mockImplementation(async (_world, [{ code }]) => {
+        if (!snapshotTaken) {
+          snapshotTaken = true;
+          return snapshotResult();
+        }
+        if (code.includes('__FREEDOM_AUTOMATION_INPUT_PROBE__')) {
+          if (/,"read",/.test(code)) {
+            const next = queue.shift();
+            if (typeof next === 'function') return next();
+            return next;
+          }
+          return { ok: true };
+        }
+        return other(code);
+      });
+      return webContents;
+    }
+
+    async function adapterFor(webContents) {
+      const adapter = new WebContentsPageAdapter(webContents, {
+        referenceIdFactory: () => 'ref_test',
+      });
+      await adapter.snapshot();
+      return adapter;
+    }
+
+    test('a press returns only after its keyup was dispatched', async () => {
+      const webContents = scriptedPage([
+        { ok: true, seen: [], focused: true },
+        { ok: true, seen: ['keydown'], focused: true },
+        { ok: true, seen: ['keydown', 'keyup'], focused: true },
+        { ok: true, seen: ['keydown', 'keyup'], focused: true },
+      ]);
+      const adapter = await adapterFor(webContents);
+
+      await expect(adapter.press('ref_test_0', 'Enter')).resolves.toEqual({
+        pressed: true,
+        ref: 'ref_test_0',
+        key: 'Enter',
+      });
+      expect(probeCalls(webContents)).toEqual(['arm', 'read', 'read', 'read', 'disarm']);
+      // Armed before the first key event was sent.
+      const armOrder = webContents.executeJavaScriptInIsolatedWorld.mock.invocationCallOrder.find(
+        (_order, index) =>
+          /,"arm",/.test(webContents.executeJavaScriptInIsolatedWorld.mock.calls[index][1][0].code)
+      );
+      expect(armOrder).toBeLessThan(webContents.sendInputEvent.mock.invocationCallOrder[0]);
+      expect(webContents.sendInputEvent.mock.calls).toEqual([
+        [{ type: 'keyDown', keyCode: 'Enter' }],
+        [{ type: 'char', keyCode: 'Enter' }],
+        [{ type: 'keyUp', keyCode: 'Enter' }],
+      ]);
+    });
+
+    test('a click returns only after its mouseup was dispatched', async () => {
+      const webContents = scriptedPage(
+        [
+          { ok: true, seen: [], focused: false },
+          { ok: true, seen: ['mousedown'], focused: true },
+          { ok: true, seen: ['mousedown', 'mouseup'], focused: true },
+        ],
+        () => ({ ok: true, point: { x: 20, y: 30 } })
+      );
+      const adapter = await adapterFor(webContents);
+
+      await expect(adapter.click('ref_test_0')).resolves.toEqual({
+        clicked: true,
+        ref: 'ref_test_0',
+      });
+      expect(probeCalls(webContents)).toEqual(['arm', 'read', 'read', 'read', 'disarm']);
+    });
+
+    test('a key whose keydown moved focus away does not wait for a keyup it cannot see', async () => {
+      const webContents = scriptedPage([{ ok: true, seen: ['keydown'], focused: false }]);
+      const adapter = await adapterFor(webContents);
+
+      await expect(adapter.press('ref_test_0', 'Tab')).resolves.toMatchObject({ pressed: true });
+      expect(probeCalls(webContents)).toEqual(['arm', 'read', 'disarm']);
+    });
+
+    test('stops waiting when the key navigates the page, without failing the sent press', async () => {
+      const webContents = scriptedPage([
+        () => {
+          webContents.emit('did-start-navigation', {}, 'https://example.test/next', false, true);
+          return { ok: true, seen: ['keydown'], focused: true };
+        },
+      ]);
+      const adapter = await adapterFor(webContents);
+
+      await expect(adapter.press('ref_test_0', 'Enter')).resolves.toMatchObject({ pressed: true });
+      expect(probeCalls(webContents)).toEqual(['arm', 'read', 'disarm']);
+    });
+
+    test('does not fail or resend a press when the probe cannot be read', async () => {
+      const webContents = scriptedPage([
+        () => Promise.reject(new Error('dialog opened')),
+      ]);
+      const adapter = await adapterFor(webContents);
+
+      await expect(adapter.press('ref_test_0', 'Enter')).resolves.toMatchObject({ pressed: true });
+      expect(webContents.sendInputEvent).toHaveBeenCalledTimes(3);
+    });
+
+    test('still sends the input when the probe cannot be armed', async () => {
+      const webContents = new FakeWebContents();
+      webContents.executeJavaScriptInIsolatedWorld
+        .mockResolvedValueOnce(snapshotResult())
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce({ ok: false, reason: 'changed' });
+      const adapter = await adapterFor(webContents);
+
+      await expect(adapter.press('ref_test_0', 'Enter')).resolves.toMatchObject({ pressed: true });
+      expect(probeCalls(webContents)).toEqual(['arm']);
+      expect(webContents.sendInputEvent).toHaveBeenCalledTimes(3);
+    });
   });
 
   test('revalidates click targets after moving the trusted pointer', async () => {

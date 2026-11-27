@@ -537,3 +537,37 @@ test('typing and keys work while chrome retains keyboard focus', async ({ electr
   expect(await executeAutomation(electronApp, 'browser_snapshot', { tabId: tab.tabId })).toMatchObject({ ok: true, result: { text: expect.stringContaining('Submitted hello') } });
   expect(await window.evaluate(() => ({ active: document.activeElement.id, value: document.querySelector('#review-focus-fixture').value }))).toEqual({ active: 'review-focus-fixture', value: '' });
 });
+
+// webContents.sendInputEvent() only queues input. On the macOS CI runner a
+// press reported ok and the snapshot right after it still read the page from
+// before the keydown handler ran (#1347). Delaying the tab's input delivery
+// makes that reproducible anywhere: a press or click must not report before
+// the page has handled it.
+test('a press or click reports only after the page handled it, even when input arrives late', async ({ electronApp, window, harness }) => {
+  const url = 'https://automation.example.test/late-input';
+  await harness.setContentFixture(url, { body: `<!doctype html><title>Late input fixture</title>
+    <input aria-label="Message"><label><input type="checkbox">Remember</label><p id="output">Waiting</p><script>
+    document.querySelector('input').addEventListener('keydown', e => {
+      if(e.key === 'Enter') document.querySelector('#output').textContent = 'Submitted ' + e.target.value;
+    });</script>` });
+  const address = window.locator('[data-test="address-input"]');
+  await address.fill(url); await address.press('Enter');
+  await expect.poll(() => tabForUrl(electronApp, url)).toBeTruthy();
+  const tab = await tabForUrl(electronApp, url);
+  const delayed = await electronApp.evaluate(({ webContents }, pageUrl) => {
+    const page = webContents.getAllWebContents().find((candidate) => candidate.getURL() === pageUrl);
+    if (!page) return false;
+    const send = page.sendInputEvent.bind(page);
+    page.sendInputEvent = (event) => setTimeout(() => { if (!page.isDestroyed()) send(event); }, 300);
+    return true;
+  }, url);
+  expect(delayed).toBe(true);
+  const snapshot = await executeAutomation(electronApp, 'browser_snapshot', { tabId: tab.tabId });
+  const ref = (name) => snapshot.result.elements.find(element => element.name === name).ref;
+  expect(await executeAutomation(electronApp, 'browser_type', { tabId: tab.tabId, ref: ref('Message'), text: 'hello' })).toMatchObject({ ok: true });
+  expect(await executeAutomation(electronApp, 'browser_press', { tabId: tab.tabId, ref: ref('Message'), key: 'Enter' })).toMatchObject({ ok: true });
+  expect(await executeAutomation(electronApp, 'browser_snapshot', { tabId: tab.tabId })).toMatchObject({ ok: true, result: { text: expect.stringContaining('Submitted hello') } });
+  expect(await executeAutomation(electronApp, 'browser_click', { tabId: tab.tabId, ref: ref('Remember') })).toMatchObject({ ok: true });
+  const after = await executeAutomation(electronApp, 'browser_snapshot', { tabId: tab.tabId });
+  expect(after.result.elements.find(element => element.name === 'Remember')).toMatchObject({ checked: true });
+});
