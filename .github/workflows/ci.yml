@@ -1272,12 +1272,50 @@ jobs:
       # same core throughout. LDG-3's PR 8: discovery and adding as
       # wallet/ledger/core-accounts.js sends them, main's unmatched records
       # checked and kept by the core, the record the core writes holding the
-      # device's address. The rest of LDG-3's gates are its PR 12's.
+      # device's address. The rest of LDG-3's gates are its PR 12's, below.
       - name: Main's Ledger relay with the switch on (real freedom-cored)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/core/ledger-relay.integration.test.js src/main/wallet/ledger/core-accounts.integration.test.js
         env:
           FREEDOM_CORED_LEDGER_TEST: '1'
+
+      # freedom-core design 0016, LDG-3's gates (the plan's PR 12): every
+      # Ledger path main drives with the switch on, end to end through the
+      # pinned core, main's relay and main's HID layer over a fake node-hid,
+      # whose Ledger answers each APDU with the answer freedom-core's
+      # `vectors/ledger.json` recorded for it (so a byte of the core's
+      # stream the recording doesn't hold fails the case). Discovery with
+      # records, adding an account, `sign.transaction` type 0 and type 2,
+      # `sign.message` and `sign.typed_data` (each result the reference's),
+      # the hash-only flow with main's own warning, an x402 payment from the
+      # detector to the header, a rejection on the device, Cancel and Reject
+      # while the device waits, both deadlines and an unplug. The core ends
+      # the connection (exit 76) on any reply of main's its strict reader
+      # doesn't take, so every case checks it is the core it started.
+      # Nothing waits on the clock: main's deadlines are fired by the test
+      # while the device waits, and the core's own timers (1 s later) are
+      # never reached. The vectors are those of the commit cored-v0.30.0 was
+      # built from, the `test` job's pin.
+      - name: Check out freedom-core's Ledger vectors (LDG-3's gates)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: b4e0cef4f24f4e80aaa9df6568c7c9737ade9589
+          path: .freedom-core-ledger
+          persist-credentials: false
+          sparse-checkout: |
+            vectors/ledger.json
+            vectors/ledger-grammar.json
+          sparse-checkout-cone-mode: false
+
+      - name: LDG-3's gates, the Ledger on the core (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 10
+        run: npx jest src/main/wallet/ledger/ledger-gates.integration.test.js src/main/x402/sign-flow-ledger.integration.test.js
+        env:
+          FREEDOM_CORED_LEDGER_TEST: '1'
+          FREEDOM_CORE_LEDGER_VECTORS: ${{ github.workspace }}/.freedom-core-ledger/vectors
 
       # The key store through main (freedom-core design 0013, PRF-2): main's
       # `shell.keystore` executor and the drain of the forget file, against
