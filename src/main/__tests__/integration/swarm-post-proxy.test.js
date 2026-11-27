@@ -93,8 +93,14 @@ describeWithElectron("main's Swarm POSTs in a real Electron process", () => {
   test('with a session proxy, a streamed and a whole POST go through it, by name', () => {
     const leg = results.viaSessionProxy;
     expect(leg.resolveProxy).toMatch(/^SOCKS5 127\.0\.0\.1:\d+$/);
-    expect(leg.socksSeen.length).toBeGreaterThan(0);
-    for (const seen of leg.socksSeen) expect(seen).toMatch(/^ant\.example\.test:\d+$/);
+    // Only the connections to the node's port count: a fetch of Electron's
+    // own on the session (the probe turns its spell checker off) would take
+    // the proxy too. Each goes by the node's name, never by an address
+    // (127.0.0.1, which the resolver rules map it to, or any other).
+    const { port } = new URL(results.remote);
+    const toNode = leg.socksSeen.filter((seen) => seen.endsWith(`:${port}`));
+    expect(toNode.length).toBeGreaterThan(0);
+    for (const seen of toNode) expect(seen).toBe(`ant.example.test:${port}`);
 
     expect(leg.stream).toMatchObject({ status: 201, swarmTag: '7', json: { bytes: MIB } });
     expect(leg.bytes).toMatchObject({ status: 201, json: { bytes: 4104 } });
