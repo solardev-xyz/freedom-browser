@@ -759,6 +759,41 @@ const vaultBackend = {
   },
 
   /**
+   * The Ledger's account methods (design 0016, Accounts; LDG-3's PR 8),
+   * main's own (`shell`), each one operation on the core's device lane:
+   * sent through `ledgerCall`, under the device watchdog, with `onSent` and
+   * `signal` the relay's (wallet/ledger/core-accounts.js opens the parent
+   * from `onSent`). Both go with `requires: vault_meta`: `ledger.add`
+   * writes its record through the core's accounts store, and
+   * `ledger.accounts` checks the core's own unmatched records (D1), which
+   * the core reads only once the store is moved, so the stream main
+   * expects is the one that process sends. A refusal of the record's write
+   * (`invalid_argument` with `data.code`) takes that code, as an
+   * `accounts.*` request's does.
+   */
+  ledger: {
+    /** `ledger.accounts { scheme, start, count }` → `{ accounts, mismatched }`. */
+    async accounts(params, { onSent = null, signal = null } = {}) {
+      return ledgerCall('ledger.accounts', params, null, { onSent, signal, requires: VAULT_META });
+    },
+    /** `ledger.add { scheme, index, name? }` → `{ path, address, wallet, durable? }`. */
+    async add(params, { onSent = null, signal = null } = {}) {
+      try {
+        return await ledgerCall('ledger.add', params, null, {
+          onSent,
+          signal,
+          requires: VAULT_META,
+        });
+      } catch (err) {
+        if (err.code === 'invalid_argument' && typeof err.data?.code === 'string') {
+          throw new VaultBackendError(err.data.code, err.message, err.data);
+        }
+        throw err;
+      }
+    },
+  },
+
+  /**
    * The pending Safe transactions, `safe-pending.json` (design 0013,
    * "Pending Safe transactions"; cored 0.23.0), which the core keeps once
    * the hello names `safe_pending` (wallet/safe/pending-store.js is main's

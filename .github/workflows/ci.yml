@@ -1269,10 +1269,13 @@ jobs:
       # with the recorded device answer, the account the core checked), a
       # refusal with its rule (`ledger.add` at a path main's record doesn't
       # hold, refused before the device) and a `{ failed }` (no device), the
-      # same core throughout. The rest of LDG-3's gates are its PR 12's.
+      # same core throughout. LDG-3's PR 8: discovery and adding as
+      # wallet/ledger/core-accounts.js sends them, main's unmatched records
+      # checked and kept by the core, the record the core writes holding the
+      # device's address. The rest of LDG-3's gates are its PR 12's.
       - name: Main's Ledger relay with the switch on (real freedom-cored)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        run: npx jest src/main/core/ledger-relay.integration.test.js
+        run: npx jest src/main/core/ledger-relay.integration.test.js src/main/wallet/ledger/core-accounts.integration.test.js
         env:
           FREEDOM_CORED_LEDGER_TEST: '1'
 

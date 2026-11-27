@@ -42,6 +42,9 @@ let detectTimer = null;
 let discoveredAccounts = [];
 let selectedAccount = null;
 let accountAdded = false;
+// An add in flight: on the core's backend `ledger.add` waits for the user
+// to confirm the address on the Ledger, and no discovery runs meanwhile.
+let adding = false;
 
 export function initConnectLedger() {
   screen = document.getElementById('sidebar-connect-ledger');
@@ -104,6 +107,7 @@ function resetFlowState() {
   discoveredAccounts = [];
   selectedAccount = null;
   accountAdded = false;
+  setDiscoveryControlsDisabled(adding);
   if (nameInput) nameInput.value = '';
   if (accountList) accountList.innerHTML = '';
   if (submitBtn) {
@@ -132,6 +136,8 @@ function stopDetectLoop() {
 async function detectTick() {
   // The screen may have been closed while an IPC call was in flight.
   if (!screen || screen.classList.contains('hidden')) return;
+  // No poll while an add waits on the device (handleAddAccount).
+  if (adding) return;
 
   const loaded = await loadAccountsPage(true, setStatusError);
   if (loaded) {
@@ -165,6 +171,7 @@ const setStatusError = (message) => setStatus(message, { error: true });
 // --- Step 2: account selection ----------------------------------------
 
 async function reloadAccounts() {
+  if (adding) return;
   discoveredAccounts = [];
   selectedAccount = null;
   if (submitBtn) submitBtn.disabled = true;
@@ -191,6 +198,7 @@ async function reloadAccounts() {
  * @returns {Promise<boolean>} whether the page loaded
  */
 async function loadAccountsPage(replace, onFailure = showError) {
+  if (adding) return true;
   if (loadMoreBtn) loadMoreBtn.disabled = true;
   try {
     const result = await window.ledger.getAccounts({
@@ -198,6 +206,9 @@ async function loadAccountsPage(replace, onFailure = showError) {
       start: replace ? 0 : discoveredAccounts.length,
       count: ACCOUNTS_PER_PAGE,
     });
+    // A page asked for before an add started and answered while it waits
+    // is dropped: the list the user chose from stays as it was.
+    if (adding) return true;
     if (!result.success) {
       onFailure(result.error || 'Failed to read accounts from the device');
       return false;
@@ -217,7 +228,7 @@ async function loadAccountsPage(replace, onFailure = showError) {
     onFailure(err.message);
     return false;
   } finally {
-    if (loadMoreBtn) loadMoreBtn.disabled = false;
+    if (loadMoreBtn) loadMoreBtn.disabled = adding;
   }
 }
 
@@ -248,9 +259,35 @@ function renderAccountList() {
   );
 }
 
-async function handleAddAccount() {
-  if (!selectedAccount) return;
+/**
+ * How the add names the chosen account. Main lists an account it found on
+ * the core's backend with its scheme and index (freedom-core design 0016,
+ * `ledger.add`): the chrome sends those, never an address, and the core
+ * reads the address from the device for the user to confirm there. An
+ * account the JS backend found keeps today's address and path, which main
+ * checks against the device.
+ */
+function accountToAdd(account) {
+  return Number.isSafeInteger(account.index) && typeof account.scheme === 'string'
+    ? [account.scheme, account.index]
+    : [account.address, account.path];
+}
 
+/** The scheme picker and Load More, which ask for discovery, while an add waits. */
+function setDiscoveryControlsDisabled(disabled) {
+  if (schemeSelect) schemeSelect.disabled = disabled;
+  if (loadMoreBtn) loadMoreBtn.disabled = disabled;
+}
+
+async function handleAddAccount() {
+  if (!selectedAccount || adding) return;
+
+  // The add can wait minutes on the device (the core's backend shows the
+  // address there to confirm), and the core answers discovery LEDGER_BUSY
+  // meanwhile: the screen stops polling until the add settles.
+  adding = true;
+  stopDetectLoop();
+  setDiscoveryControlsDisabled(true);
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.textContent = 'Adding…';
@@ -260,8 +297,7 @@ async function handleAddAccount() {
   try {
     const result = await window.ledger.addAccount(
       nameInput?.value?.trim() || '',
-      selectedAccount.address,
-      selectedAccount.path
+      ...accountToAdd(selectedAccount)
     );
     if (!result.success) {
       throw new Error(result.error);
@@ -280,6 +316,11 @@ async function handleAddAccount() {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Add Account';
     }
+  } finally {
+    adding = false;
+    setDiscoveryControlsDisabled(false);
+    // Reopened while the add waited: its detection starts now.
+    if (detectView && !detectView.classList.contains('hidden')) detectTick();
   }
 }
 

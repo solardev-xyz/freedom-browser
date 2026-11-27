@@ -3,10 +3,14 @@ const { createIpcMainMock } = require('../../../../test/helpers/main-process-tes
 const mockIpcMain = createIpcMainMock();
 const mockListAccounts = jest.fn();
 const mockCheckLedgerAccounts = jest.fn();
+const mockDiscoverAccounts = jest.fn();
+const mockBackend = { kind: 'js' };
 
 jest.mock('electron', () => ({ ipcMain: mockIpcMain }));
 jest.mock('./transport', () => ({ listAccounts: (...args) => mockListAccounts(...args) }));
 jest.mock('./account-checks', () => ({ checkLedgerAccounts: (...args) => mockCheckLedgerAccounts(...args) }));
+jest.mock('./ledger-backend-kind', () => ({ ledgerBackendKind: () => mockBackend.kind }));
+jest.mock('./core-accounts', () => ({ discoverAccounts: (...args) => mockDiscoverAccounts(...args) }));
 
 const { registerLedgerIpc } = require('./ipc');
 
@@ -15,8 +19,10 @@ const ACCOUNTS = [{ path: "44'/60'/0'/0/0", address: '0x209693Bc6afc0C5328bA36Fa
 beforeAll(() => registerLedgerIpc());
 
 beforeEach(() => {
+  mockBackend.kind = 'js';
   mockListAccounts.mockReset().mockResolvedValue(ACCOUNTS);
   mockCheckLedgerAccounts.mockReset().mockResolvedValue([]);
+  mockDiscoverAccounts.mockReset();
 });
 
 describe('ledger:get-accounts', () => {
@@ -50,5 +56,39 @@ describe('ledger:get-accounts', () => {
       code: 'LEDGER_DEVICE_NOT_FOUND',
     });
     expect(mockCheckLedgerAccounts).not.toHaveBeenCalled();
+  });
+});
+
+describe('ledger:get-accounts on the core’s backend (FREEDOM_LEDGER_BACKEND=core, design 0016)', () => {
+  beforeEach(() => {
+    mockBackend.kind = 'core';
+  });
+
+  test('discovery is the core’s ledger.accounts, its check the core’s: account-checks.js is not run', async () => {
+    const mismatched = [{ index: 1000001, name: 'Planted', address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', path: "44'/60'/1'/0/0" }];
+    const accounts = ACCOUNTS.map((account) => ({ ...account, scheme: 'live', index: 0 }));
+    mockDiscoverAccounts.mockResolvedValue({ accounts, mismatched });
+
+    await expect(mockIpcMain.invoke('ledger:get-accounts', { scheme: 'live', start: 0, count: 1 })).resolves.toEqual({
+      success: true,
+      accounts,
+      mismatched,
+    });
+    expect(mockDiscoverAccounts).toHaveBeenCalledWith({ scheme: 'live', start: 0, count: 1 });
+    expect(mockListAccounts).not.toHaveBeenCalled();
+    expect(mockCheckLedgerAccounts).not.toHaveBeenCalled();
+  });
+
+  test('a failure carries its LEDGER_* code, as on the JS backend', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockDiscoverAccounts.mockRejectedValue(
+      Object.assign(new Error('Ledger is busy with another request. Finish or dismiss it on the device.'), { code: 'LEDGER_BUSY' })
+    );
+    await expect(mockIpcMain.invoke('ledger:get-accounts')).resolves.toEqual({
+      success: false,
+      error: 'Ledger is busy with another request. Finish or dismiss it on the device.',
+      code: 'LEDGER_BUSY',
+    });
+    expect(mockListAccounts).not.toHaveBeenCalled();
   });
 });

@@ -542,6 +542,9 @@ describe('preload', () => {
       [exposures.publishSetup, 'restartNode', [], IPC.SWARM_SETUP_RESTART_NODE, []],
       [exposures.browsingCredit, 'getState', [], IPC.SWARM_CREDIT_GET_STATE, []],
       [exposures.browsingCredit, 'setSwapEnable', [false], IPC.SWARM_CREDIT_SET_SWAP_ENABLE, [false]],
+      // A Ledger account by its scheme and index (design 0016, `ledger.add`).
+      [exposures.ledger, 'addAccount', ['My Stax', 'live', 3], 'wallet:add-ledger-wallet', ['My Stax', 'live', 3]],
+      [exposures.ledger, 'getAccounts', [{ scheme: 'live', start: 0, count: 5 }], 'ledger:get-accounts', [{ scheme: 'live', start: 0, count: 5 }]],
       [exposures.remoteSigner, 'addAccount', ['My Phone', '0xabc'], 'wallet:add-remote-wallet', ['My Phone', '0xabc']],
       [exposures.remoteSigner, 'checkAccount', [1000001], 'wallet:check-remote-wallet', [1000001]],
       // Quick Setup (0013 PRF-2b): the mnemonic only; main makes the password.
