@@ -610,13 +610,28 @@ describe('a streamed upload: one swarm.body for its call alone, piped as the nod
   test("point 12: a node that answers before it has taken the body: the body is withdrawn before main's answer, which is the node's, and nothing more of it is read", async () => {
     const shell = makeShell();
     let transport = null;
+    let pulls = 0;
+    let duringAnswer = null;
     const node = scriptedNode(async (init) => {
       // The node takes two chunks, then answers: the transport still holds
-      // the body, and would read on.
+      // the body, and reads on while main reads the answer.
       transport = init.body.getReader();
       await transport.read();
       await transport.read();
-      return new Response('{"code":413,"message":"too large"}', {
+      const answer = new ReadableStream({
+        async pull(controller) {
+          // Main has the node's head by now.
+          await sleep(10);
+          const read = await Promise.race([
+            transport.read().then(() => 'read'),
+            sleep(30).then(() => 'waiting'),
+          ]);
+          duringAnswer = { read, pulls };
+          controller.enqueue(Buffer.from('{"code":413,"message":"too large"}'));
+          controller.close();
+        },
+      });
+      return new Response(answer, {
         status: 413,
         statusText: 'Payload Too Large',
         headers: { 'content-type': 'application/json' },
@@ -625,7 +640,6 @@ describe('a streamed upload: one swarm.body for its call alone, piped as the nod
     const p = await publishing(shell, { node, size: 4 * MIB });
     const upload = p.api(calls.bzzFile({ body: { stream: 4 * MIB } }));
     await waitFor(() => shell.client.bodies.length === 1, 'the swarm.body');
-    let pulls = 0;
     const body = new ReadableStream(
       {
         pull(controller) {
@@ -650,8 +664,10 @@ describe('a streamed upload: one swarm.body for its call alone, piped as the nod
     expect(Buffer.from(out.body_base64, 'base64').toString()).toBe(
       '{"code":413,"message":"too large"}'
     );
-    // The transport reads on: its read waits for good, and nothing more of
-    // the core's body is pulled for it.
+    // From the node's head on, the transport's read waits for good, and
+    // nothing more of the core's body is pulled for it: while main reads
+    // the answer, and after.
+    expect(duringAnswer).toEqual({ read: 'waiting', pulls: 2 });
     const at = pulls;
     expect(at).toBe(2);
     const more = transport.read();
@@ -794,6 +810,49 @@ describe('shell.swarm_part: a part as its stream', () => {
     const read = await readByob(result.body);
     expect(read.error.errorCode).toBe(code);
     p.handle.close();
+  });
+
+  test("a picked file under swarm.publish (freedom://publish): its part from main's own params, read whole into the node's request", async () => {
+    const bytes = patterned(200 * KIB, 13);
+    const { source } = pickedFile('publish.bin', bytes);
+    const shell = makeShell();
+    let took = null;
+    const node = scriptedNode(async (init) => {
+      const reader = init.body.getReader();
+      const parts = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(Buffer.from(value));
+      }
+      took = Buffer.concat(parts);
+      return new Response('{"reference":"x"}', { status: 201 });
+    });
+    const params = {
+      kind: 'file',
+      parts: [{ bytes: bytes.length, part: 4 }],
+      name: 'publish.bin',
+      pin: true,
+      deferred: true,
+    };
+    const p = parent(shell, 'swarm.publish:data,file', params, {
+      node,
+      key: null,
+      parts: new Map([[4, source]]),
+    });
+    expect((await p.api(calls.stamps())).rule).toBeUndefined();
+    const call = calls.bzzFile({
+      name: 'publish.bin',
+      deferred: 'true',
+      body: { stream: bytes.length },
+    });
+    const upload = p.api(call);
+    await waitFor(() => shell.client.bodies.length === 1, 'the swarm.body');
+    // The params' own part number streams.
+    const { result } = await p.part(4);
+    shell.client.bodies[0].respond({ bytes: bytes.length }, result.body);
+    expect(parsed((await upload).result).status).toBe(201);
+    expect(took).toEqual(bytes);
   });
 
   test("the parent's end fails an open part body_stream_error, naming no code", async () => {
@@ -1259,6 +1318,46 @@ describe('through the core client, over loopback HTTP: streamed uploads', () => 
     // The core ends its body and cancels its part, as it reads the answer.
     abortBody(core(), body.id, 'cancelled');
     if (ask !== null) core().cancel(ask);
+    await settledAtZero();
+  });
+
+  test("the core's cancel of an upload mid-body: answered cancelled at once, the body withdrawn in the same turn, and no credit for it after the answer (D4)", async () => {
+    await uploadNode({ pause: true });
+    await start();
+    const core = () => harness.core();
+    const size = 8 * MIB;
+    const p = await publishing(patterned(size), size);
+    const { id, body } = await uploadCall(p, calls.bzzFile({ body: { stream: size } }));
+    let ask = null;
+    let stopped = false;
+    const serving = serveUpload(core(), body.id, {
+      parent: p.id,
+      pieces: [{ part: 0, bytes: size }],
+      onPart: (partAsk) => {
+        ask = partAsk;
+      },
+      stop: () => stopped,
+    });
+    // Mid-body: main has credited some of it.
+    await until(() => core().creditOf(body.id) > 0, "main's credit for the body");
+    core().cancel(id);
+    expect((await answered(id)).error).toEqual({ code: 'cancelled', message: 'Cancelled' });
+    stopped = true;
+    await serving;
+    await sleep(30);
+    const answer = indexOf((w) => w.message?.type === 'response' && w.message.id === id);
+    const cancel = indexOf((w) => w.message?.type === 'cancel' && w.message.id === body.id);
+    expect(cancel).toBeGreaterThan(answer);
+    const lastCredit = core().wire.reduce(
+      (at, w, i) => (w.frame?.kind === KIND_STREAM_CREDIT && w.frame.id === body.id ? i : at),
+      -1
+    );
+    expect(lastCredit).toBeGreaterThanOrEqual(0);
+    expect(lastCredit).toBeLessThan(answer);
+    // The core ends its body and its part.
+    abortBody(core(), body.id, 'cancelled');
+    if (ask !== null) core().cancel(ask);
+    nodes[0].uploads[0].req.resume();
     await settledAtZero();
   });
 
