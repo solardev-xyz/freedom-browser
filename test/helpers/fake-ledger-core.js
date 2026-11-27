@@ -20,8 +20,12 @@
  * `batch(fn)` writes everything `fn` sends in one chunk, as the core's
  * writer does with frames written back to back (a cancel and the next
  * operation's first APDU). Main's own requests (the parents) stay
- * unanswered until `respond()` or `fail()`; its cancels of them are in
- * `messages`.
+ * unanswered until `respond()` or `fail()`, but for a method `serve(method,
+ * fn)` answers (`fn(message)` gives the result, or a promise of it, or
+ * throws `{ code, message, data? }` for the error); its cancels of them are
+ * in `messages`.
+ * The hello's answer echoes the stores main named in `store_moved`, as
+ * cored 0.30.0's does.
  *
  * **The device** (`fakeLedgerDevices()`): `openDevice()` is the relay's
  * seam, one device per operation, with hid-device.js's interface:
@@ -180,6 +184,8 @@ class FakeLedgerCore extends EventEmitter {
     // Replies the core would take as a protocol error, by category.
     this.faults = [];
     this.batched = null;
+    // Main's requests answered at once, by method (`serve`).
+    this.served = new Map();
     // Main's frames of any other kind than JSON (none are expected).
     this.frames = [];
     this.decoder = new FrameDecoder({ kinds: CORE_KINDS });
@@ -217,12 +223,39 @@ class FakeLedgerCore extends EventEmitter {
           protocol: 2,
           core_version: '0.30.0',
           capabilities: ['vault.status', 'fragments', 'streams', 'ledger.accounts', 'ledger.add'],
+          ...(Array.isArray(message.params?.store_moved)
+            ? { store_moved: [...message.params.store_moved] }
+            : {}),
         },
       });
       this.decoder.setKinds(CORE_STREAM_KINDS);
     } else if (message?.method === 'core.shutdown') {
       this.send({ type: 'response', id: message.id, result: {} });
+    } else if (message?.type === 'request' && this.served.has(message.method)) {
+      const fn = this.served.get(message.method);
+      new Promise((resolve) => resolve(fn(message))).then(
+        (result) => this.send({ type: 'response', id: message.id, result }),
+        (error) =>
+          this.send({
+            type: 'response',
+            id: message.id,
+            error: {
+              code: error.code,
+              message: error.message,
+              ...(error.data ? { data: error.data } : {}),
+            },
+          })
+      );
     }
+  }
+
+  /**
+   * Answers main's requests of `method` with `fn(message)`: its result, or
+   * a promise of it (the core may ask main for the request meanwhile), or
+   * its throw `{ code, message, data? }` as the error.
+   */
+  serve(method, fn) {
+    this.served.set(method, fn);
   }
 
   /** Main's response to one of its asks, read as the core reads it. */

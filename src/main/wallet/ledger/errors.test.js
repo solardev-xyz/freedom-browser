@@ -1,4 +1,10 @@
-const { LEDGER_ERROR_CODES, createLedgerError, mapLedgerError, isLedgerUserRejection } = require('./errors');
+const {
+  LEDGER_ERROR_CODES,
+  createLedgerError,
+  mapLedgerError,
+  isLedgerUserRejection,
+  fromCoreError,
+} = require('./errors');
 
 function statusError(statusCode) {
   const err = new Error(`status ${statusCode.toString(16)}`);
@@ -91,5 +97,55 @@ describe('isLedgerUserRejection', () => {
     expect(isLedgerUserRejection(statusError(0x6985))).toBe(true);
     expect(isLedgerUserRejection(statusError(0x6511))).toBe(false);
     expect(isLedgerUserRejection(new Error('x'))).toBe(false);
+  });
+});
+
+/**
+ * The core's backend (freedom-core design 0016, API, "Errors"): a device's
+ * failure is `device_failed` with `data.ledger`, and main shows this
+ * table's text for it; 0016's five new codes have their texts here.
+ */
+describe('fromCoreError', () => {
+  const failed = (ledger) =>
+    Object.assign(new Error('Ledger device failed'), { code: 'device_failed', data: { ledger } });
+
+  test.each([
+    ['LEDGER_UNRESPONSIVE', 'The Ledger stopped answering. Reconnect it and try again.'],
+    [
+      'LEDGER_TIMEOUT',
+      "The Ledger wasn't confirmed in 5 minutes. If it still shows the request, reject it there.",
+    ],
+    ['LEDGER_TOO_LARGE', 'This request is too large for a Ledger to sign. Nothing was sent.'],
+    ['LEDGER_EMPTY_MESSAGE', "A Ledger can't sign an empty message. Nothing was sent."],
+    [
+      'LEDGER_TYPE_NOT_CANONICAL',
+      "This request writes a type in a form a Ledger can't sign. Nothing was sent.",
+    ],
+  ])("0016's new code %s has its own text", (code, text) => {
+    expect(Object.values(LEDGER_ERROR_CODES)).toContain(code);
+    expect(createLedgerError(code)).toMatchObject({ code, message: text });
+    const mapped = fromCoreError(failed(code));
+    expect(mapped).toMatchObject({ code, message: text });
+    expect(mapped.cause).toMatchObject({ code: 'device_failed' });
+  });
+
+  test("today's codes keep today's texts", () => {
+    for (const code of ['LEDGER_WRONG_DEVICE', 'LEDGER_BUSY', 'LEDGER_USER_REJECTED', 'LEDGER_BAD_SIGNATURE']) {
+      expect(fromCoreError(failed(code))).toMatchObject({ code, message: createLedgerError(code).message });
+    }
+  });
+
+  test('a code the table does not name is LEDGER_UNKNOWN, and any other error is none', () => {
+    expect(fromCoreError(failed('LEDGER_SOMETHING_NEW'))).toMatchObject({
+      code: 'LEDGER_UNKNOWN',
+      message: 'Ledger error. Reconnect the device and try again.',
+    });
+    expect(fromCoreError(failed(7))).toMatchObject({ code: 'LEDGER_UNKNOWN' });
+    expect(fromCoreError(Object.assign(new Error('x'), { code: 'device_failed' }))).toMatchObject({
+      code: 'LEDGER_UNKNOWN',
+    });
+    expect(fromCoreError(Object.assign(new Error('x'), { code: 'invalid_argument', data: { ledger: 'LEDGER_BUSY' } }))).toBeNull();
+    expect(fromCoreError(new Error('x'))).toBeNull();
+    expect(fromCoreError(null)).toBeNull();
   });
 });

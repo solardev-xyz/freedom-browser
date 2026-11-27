@@ -1236,6 +1236,9 @@ function payments() {
     afterCommit: null,
     recorded: true,
     rule: null,
+    // A Ledger on the core's backend (design 0016): its signer hears the
+    // core's rule reply, as a vault send's does, and gets no receipt.
+    ledgerOnCore: null,
   };
   paid.deps = {
     takeSiteTurn: async (site, { wait }) => {
@@ -1249,8 +1252,10 @@ function payments() {
       const presented = toCoreTransaction(buildTransaction({ ...tx, nonce: 7 })).tx;
       if (paid.refuse) throw paid.refuse;
       const { authorized } = signer;
-      // A Ledger's spend of a flagged token gives a receipt.
-      if (authorized.confirmation?.account === LEDGER) authorized.onReceipt({ receipt: RECEIPT, page: authorized.confirmation.page });
+      // A Ledger's spend of a flagged token gives a receipt; on the core's
+      // backend the core writes the rule as it signs, and says so.
+      if (authorized.confirmation?.account === LEDGER && paid.ledgerOnCore) authorized.onRule(paid.ledgerOnCore.rule);
+      else if (authorized.confirmation?.account === LEDGER) authorized.onReceipt({ receipt: RECEIPT, page: authorized.confirmation.page });
       paid.signed.push({ index: signer.index, authorized, presented, tx, context });
       await paid.during?.();
       if (paid.failAfterSign) throw paid.failAfterSign;
@@ -1674,6 +1679,29 @@ describe('sends through the relay (0012 APB-4c)', () => {
     expect((await approveSend(env, page, { alwaysAllow: true })).answer).toEqual({ result: SEND_HASH });
     expect(paid.remembered).toEqual([{ receipt: RECEIPT, page: env.core.sent.at(-1).context.page }]);
     expect(env.state.discarded).toEqual([TOKEN, TOKEN, TOKEN]);
+  });
+
+  test('a Ledger\'s send with "Always allow" on the core\'s Ledger backend: the rule the core wrote as it signed is reported, and no receipt is presented', async () => {
+    const { env, paid } = sendSetup();
+    const page = env.tab();
+    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnings = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      env.state.grants.set('*', { walletIndex: LEDGER });
+      sending(env, (id, pc) => sendAsk(id, pc, { account: LEDGER }), deviceSendOf('ledger', LEDGER));
+      paid.ledgerOnCore = { rule: { added: true, durable: false } };
+      expect((await approveSend(env, page, { alwaysAllow: true })).answer).toEqual({ result: SEND_HASH });
+      expect(paid.remembered).toEqual([]);
+      expect(warnings.mock.calls.flat().join(' ')).toMatch(/contract rule saved for .*may not survive/);
+      paid.ledgerOnCore = { rule: { added: false, reason: 'not_flagged' } };
+      expect((await approveSend(env, page, { alwaysAllow: true })).answer).toEqual({ result: SEND_HASH });
+      expect(paid.remembered).toEqual([]);
+      expect(errors.mock.calls.flat().join(' ')).toMatch(/contract rule not saved for .*: not_flagged/);
+      expect(errors.mock.calls.flat().join(' ')).not.toMatch(/no receipt/);
+    } finally {
+      errors.mockRestore();
+      warnings.mockRestore();
+    }
   });
 
   test('a device\'s send answered for another type than main\'s wallet record (a Ledger\'s as a phone\'s, a phone\'s as a Ledger\'s, the vault\'s as a Ledger\'s): no turn, no spend, no device, its token discarded', async () => {
