@@ -15,12 +15,8 @@ const dispatch = (app, event) =>
   app.evaluate((_electron, ev) => globalThis.__FREEDOM_TEST_HARNESS__.dispatchUpdate(ev), event);
 const requests = (app) => app.evaluate(() => globalThis.__FREEDOM_TEST_HARNESS__.updaterRequests());
 
-async function openSettingsUpdates(window, electronApp) {
-  const input = window.locator('[data-test="address-input"]');
-  await input.click();
-  // Updates is a panel of About Freedom since #268.
-  await input.fill('freedom://settings/about/updates');
-  await input.press('Enter');
+// The Settings guest page, once it has loaded the Updates panel.
+async function settingsPage(electronApp) {
   let page;
   await expect
     .poll(() => {
@@ -31,6 +27,28 @@ async function openSettingsUpdates(window, electronApp) {
   await page.waitForSelector('#update-status-row');
   return page;
 }
+
+async function openSettingsUpdates(window, electronApp) {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  // Updates is a panel of About Freedom since #268.
+  await input.fill('freedom://settings/about/updates');
+  await input.press('Enter');
+  return settingsPage(electronApp);
+}
+
+// Same as tabs.spec.js: click an application-menu item by id in main.
+const clickMenuItem = (electronApp, id) =>
+  electronApp.evaluate(({ Menu }, itemId) => {
+    const item = Menu.getApplicationMenu()?.getMenuItemById(itemId);
+    if (!item) throw new Error(`Menu item not found: ${itemId}`);
+    item.click();
+  }, id);
+
+// A New Tab starts with the address bar focused; take focus off it before a
+// menu click, as the first test does.
+const blurAddressBar = (window) =>
+  window.locator('[data-test="address-input"]').evaluate((el) => el.blur());
 
 async function openMenu(window) {
   await window.click('#menu-button');
@@ -65,6 +83,67 @@ test('without a running updater both surfaces say so instead of offering a dead 
   await expect(settings.locator('.nav-item.active')).toHaveAttribute('data-target', 'about');
   await expect(settings.locator('#update-status-row')).toBeInViewport();
   expect(await requests(electronApp)).toEqual([]);
+});
+
+// #918: "Check for Updates…" lands on Settings → About Freedom → Updates with
+// the check started, where its result stays in view, and a second one goes
+// back to that Settings tab instead of opening another.
+async function expectCheckOnUpdatesPanel(window, electronApp, expectedRequests) {
+  await expect(window.locator('[data-test="address-input"]')).toHaveValue(
+    'freedom://settings/about/updates'
+  );
+  await expect.poll(() => requests(electronApp)).toEqual(expectedRequests);
+  const settings = await settingsPage(electronApp);
+  await expect(settings.locator('.nav-item.active')).toHaveAttribute('data-target', 'about');
+  await expect(settings.locator('#update-status-row')).toBeInViewport();
+  await expect(window.locator('.tab', { hasText: 'Settings' })).toHaveCount(1);
+  return settings;
+}
+
+test('the hamburger "Check for Updates…" starts a check on Settings → About Freedom → Updates', async ({
+  window,
+  electronApp,
+}) => {
+  await dispatch(electronApp, { type: 'supported' });
+  const row = window.locator('#check-updates-btn');
+
+  await blurAddressBar(window);
+  await openMenu(window);
+  await expect(row).toHaveAttribute('data-update-status', 'idle');
+  await row.click();
+  await expect(window.locator('#menu-dropdown')).not.toHaveClass(/open/);
+  const settings = await expectCheckOnUpdatesPanel(window, electronApp, ['check']);
+
+  // The panel shows the check and its result (main's broadcasts).
+  await dispatch(electronApp, { type: 'checking' });
+  await expect(settings.locator('#update-check-now')).toHaveText('Checking…');
+  await dispatch(electronApp, { type: 'not-available' });
+  await expect(settings.locator('#update-status-message')).toHaveText('Freedom is up to date.');
+
+  // From another tab, the next one goes back to the same Settings tab.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await blurAddressBar(window);
+  await openMenu(window);
+  await expect(row).toHaveAttribute('data-update-status', 'up-to-date');
+  await row.click();
+  await expectCheckOnUpdatesPanel(window, electronApp, ['check', 'check']);
+});
+
+test('the macOS app menu "Check for Updates…" starts a check on the same panel', async ({
+  window,
+  electronApp,
+}) => {
+  test.skip(process.platform !== 'darwin', 'Check for Updates… is in the macOS app menu only');
+  await dispatch(electronApp, { type: 'supported' });
+
+  await blurAddressBar(window);
+  await clickMenuItem(electronApp, 'check-for-updates');
+  await expectCheckOnUpdatesPanel(window, electronApp, ['check']);
+
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await blurAddressBar(window);
+  await clickMenuItem(electronApp, 'check-for-updates');
+  await expectCheckOnUpdatesPanel(window, electronApp, ['check', 'check']);
 });
 
 test('check → download → ready walks both surfaces, and the actions reach the updater', async ({

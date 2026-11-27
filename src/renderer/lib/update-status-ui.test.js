@@ -168,20 +168,36 @@ describe('initUpdateStatusUi', () => {
     expect(els.button.dataset.updateStatus).toBe('ready');
   });
 
-  test('click: idle checks, ready installs, unsupported opens Settings → About Freedom → Updates', async () => {
-    const { electronAPI, closeMenus, openSettings, push } = await setup(STATES.idle);
-    els.button.handlers.click();
-    expect(electronAPI.checkForUpdates).toHaveBeenCalledTimes(1);
-    expect(closeMenus).toHaveBeenCalledTimes(1);
+  // #918: "Check for Updates…" lands on Settings → About Freedom → Updates
+  // with the check running, so its result stays in view.
+  test.each(['idle', 'upToDate', 'error'])(
+    'click (%s): checks, then opens Settings → About Freedom → Updates',
+    async (key) => {
+      const { electronAPI, closeMenus, openSettings } = await setup(STATES[key]);
+      els.button.handlers.click();
+      expect(closeMenus).toHaveBeenCalledTimes(1);
+      expect(electronAPI.checkForUpdates).toHaveBeenCalledTimes(1);
+      expect(openSettings).toHaveBeenCalledTimes(1);
+      expect(electronAPI.checkForUpdates.mock.invocationCallOrder[0]).toBeLessThan(
+        openSettings.mock.invocationCallOrder[0]
+      );
+      expect(electronAPI.restartAndInstallUpdate).not.toHaveBeenCalled();
+    }
+  );
 
-    push(STATES.ready);
+  test('click: ready installs without opening Settings', async () => {
+    const { electronAPI, openSettings } = await setup(STATES.ready);
     els.button.handlers.click();
     expect(electronAPI.restartAndInstallUpdate).toHaveBeenCalledTimes(1);
+    expect(electronAPI.checkForUpdates).not.toHaveBeenCalled();
+    expect(openSettings).not.toHaveBeenCalled();
+  });
 
-    push(STATES.unsupported);
+  test('click: unsupported only opens Settings → About Freedom → Updates, which says why', async () => {
+    const { electronAPI, openSettings } = await setup(STATES.unsupported);
     els.button.handlers.click();
     expect(openSettings).toHaveBeenCalledTimes(1);
-    expect(electronAPI.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(electronAPI.checkForUpdates).not.toHaveBeenCalled();
   });
 
   test('click while checking or downloading does nothing', async () => {

@@ -146,6 +146,8 @@ function loadMenuModule(platform, options = {}) {
     getMenuItemById: jest.fn(),
   };
   const openOrFocusProfile = options.openOrFocusProfile || jest.fn();
+  const checkForUpdates = jest.fn();
+  const createMainWindow = jest.fn();
   // History rows newest first, as history.getRecentHistory returns them.
   const historyRows = options.historyRows || [];
   const historyMock = {
@@ -208,10 +210,10 @@ function loadMenuModule(platform, options = {}) {
         isMainBrowserWindow: (win) => mainWindows.includes(win),
         getMainWindows: () => [...mainWindows],
         getLastFocusedMainWindow: () => mainWindows[mainWindows.length - 1] || null,
-        createMainWindow: jest.fn(),
+        createMainWindow,
       }),
       [require.resolve('./updater')]: () => ({
-        checkForUpdates: jest.fn(),
+        checkForUpdates,
         getInstallRelaunchMode: () => ({ menuLabel: 'Install Update and Restart…' }),
         isUpdateReady: () => false,
         installUpdate: jest.fn(),
@@ -278,6 +280,8 @@ function loadMenuModule(platform, options = {}) {
     mod,
     dialog,
     openOrFocusProfile,
+    checkForUpdates,
+    createMainWindow,
     emitSettingsChanged,
     restorePlatform,
     historyMock,
@@ -614,6 +618,37 @@ describe('menu', () => {
 
     expect(labels).toContain('Check for Updates…');
     expect(labels.filter((label) => label.includes('...'))).toEqual([]);
+  });
+
+  // #918: like the hamburger row, the native item starts the check and shows
+  // it on Settings → About Freedom → Updates, through the internal-page
+  // singleton so an open Settings tab is reused.
+  test('macOS "Check for Updates…" checks, then opens Settings → About Freedom → Updates', () => {
+    const send = jest.fn();
+    const { capturedTemplate, checkForUpdates, createMainWindow } = loadMenuModule('darwin', {
+      targetWindow: { webContents: { send } },
+    });
+    const appMenu = capturedTemplate.find((item) => item.role === 'appMenu');
+    appMenu.submenu.find((item) => item.id === 'check-for-updates').click();
+
+    expect(checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith('tab:new-with-url', 'freedom://settings/about/updates');
+    expect(checkForUpdates.mock.invocationCallOrder[0]).toBeLessThan(
+      send.mock.invocationCallOrder[0]
+    );
+    expect(createMainWindow).not.toHaveBeenCalled();
+  });
+
+  test('macOS "Check for Updates…" with every window closed opens one on the Updates panel', () => {
+    const { capturedTemplate, checkForUpdates, createMainWindow } = loadMenuModule('darwin', {
+      mainWindows: [],
+      focusedWindow: null,
+    });
+    const appMenu = capturedTemplate.find((item) => item.role === 'appMenu');
+    appMenu.submenu.find((item) => item.id === 'check-for-updates').click();
+
+    expect(checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(createMainWindow).toHaveBeenCalledWith('freedom://settings/about/updates');
   });
 
   test('Edit menu carries Find in Page with CmdOrCtrl+F on every platform', () => {
