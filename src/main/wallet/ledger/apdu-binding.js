@@ -11,49 +11,49 @@
  * module is that encoder, written from the design, not taken from
  * hw-app-eth, and pure: no device, no core, no state.
  *
- * **The interface** (for PR 6's relay, beside PR 1's per-parent Admission,
- * `src/main/core/ledger-grammar.js`):
+ * **The interface** is the one PR 1's per-parent Admission
+ * (`core/ledger-grammar.js`) takes as its `typedData`, so PR 6's relay joins
+ * the two as they are:
  *
- *     typedDataApdus({ typedData, expectedHash, path, hashOnly })
- *       → { apdus, hashes: { domainSeparator, structHash } }
+ *     bindTypedData({ typedData, expectedHash })
+ *       → { apdus: Buffer[], domainSeparator: Buffer, structHash: Buffer }
  *       | { rule: 'payload', reason, bound? }
+ *
+ *     const binding = bindTypedData({ typedData, expectedHash });
+ *     if (binding.rule) → every APDU of the parent refused binding.rule
+ *     else new Admission({ operation, params, path, typedData: binding })
  *
  * - `typedData`: the request's `typed_data` in the core's form, as main
  *   sent it (`{ domain, types, message }`, `types` without `EIP712Domain`;
  *   anything else on it, a `primaryType` among them, is not read: the
  *   primary type is ethers' inference, as the core's is fc-evm's).
  * - `expectedHash`: the request's `expected_hash`, the EIP-712 hash the user
- *   confirmed, `0x` and 64 hex digits.
- * - `path`: `P`, the record's path as the grammar encodes it (one byte `n`,
- *   then `n` elements of 4 bytes, big-endian), in lowercase hex: the
- *   Admission's own encoding of the record's path, which this module puts
- *   in the signing APDU without reading it. Anything but `1 + 4n` bytes that
- *   fit the hash-only APDU throws a TypeError (a caller's fault, not input).
- * - `hashOnly`: false for the stream field by field; true for the branch Q23
- *   takes after the device answered `6D00` to the operation's first `E0 1A`
- *   and main's answer said `hash_only: "shown"`.
- *
- * `apdus` is the typed-data part of the operation's stream, each APDU in
- * lowercase hex (`CLA INS P1 P2 Lc data`, the wire's form), in order:
- * - field by field: the definitions (`E0 1A 00 00` each type's name,
+ *   confirmed, `0x` and 64 hex digits (either case).
+ * - `apdus`: the definitions, then the values, each a whole APDU
+ *   (`CLA INS P1 P2 Lc data`) in order: `E0 1A 00 00` each type's name and
  *   `E0 1A 00 FF` each of its fields' descriptors, the types in ascending
- *   order of their names, `EIP712Domain` among them), the values
- *   (`E0 1C 00 00` "EIP712Domain", the domain's values, `E0 1C 00 00` the
- *   primary type's name, the message's values depth first: an array's
+ *   order of their names, `EIP712Domain` among them (so the first APDU is
+ *   always a type's name, the operation's first `E0 1A`); then
+ *   `E0 1C 00 00` "EIP712Domain", the domain's values, `E0 1C 00 00` the
+ *   primary type's name and the message's values depth first: an array's
  *   `E0 1C 00 0F` length then its entries, a value's `2-byte length ‖ bytes`
  *   in pieces of 255, `E0 1C 01 FF` each but the last, `E0 1C 00 FF` the
- *   last), then `E0 0C 00 01 P`;
- * - hash-only: the first definition (the APDU the device answered `6D00`),
- *   then `E0 0C 00 00 P ‖ domainSeparator ‖ hashStruct(message)`, the two
- *   hashes ethers' (`hashes`, which the hash-only warning shows).
+ *   last.
+ * - `domainSeparator` and `structHash`: ethers' `hashDomain` and
+ *   `hashStruct(message)` of the same typed data, 32 bytes each, whose
+ *   `keccak256(19 01 ‖ both)` is `expectedHash`: the hash-only APDU's data
+ *   after `P` (Q23), and the two hashes the hash-only warning shows.
+ *
  * The Admission puts the address check (`E0 02 00 00 P`) and `B0 01` before
- * it, and holds each APDU of the parent to the next one of the whole, the
- * hash-only branch only past its gate. A typed-data APDU whose header is
- * the expected one but whose data isn't is refused `payload`, the rule
- * `vectors/ledger-grammar.json` gives every changed byte, another schema and
- * message of the same shape, the reference's UTF-16 definitions and a
- * changed SafeTx or SafeMessage. Both branches are encoded whole first, so
- * either refuses what the other would.
+ * `apdus` and `E0 0C 00 01 P` after them, builds the hash-only APDU
+ * (`E0 0C 00 00 P ‖ domainSeparator ‖ structHash`) its gate admits after the
+ * first `E0 1A`'s `6D00`, and holds each APDU of the parent to the next one
+ * of that stream byte for byte. A typed-data APDU with the expected header
+ * but other data is refused `payload`, the rule `vectors/ledger-grammar.json`
+ * gives every changed byte, another schema and message of the same shape,
+ * the reference's UTF-16 definitions and a changed SafeTx or SafeMessage.
+ * The binding is encoded whole before either branch, so the hash-only one
+ * refuses what the stream field by field would.
  *
  * **A refusal** is `{ rule: 'payload', reason }`: main has no stream for the
  * parent, so every APDU of it is refused `payload`, the first before any
@@ -75,8 +75,8 @@
  *   (a definition APDU's data): a name over 255 bytes, a definition over 255,
  *   more than 255 dimensions, a fixed size or an array over 255 entries, a
  *   value over 65,535 bytes, or more than 2,048 APDUs in the operation (the
- *   address check, `B0 01` and the signing APDU counted), checked in the
- *   core's order (`fc-ledger`'s `TypedStream::new`).
+ *   address check, `B0 01` and `E0 0C` counted, as the Admission counts
+ *   them), checked in the core's order (`fc-ledger`'s `TypedStream::new`).
  * The core refuses each of these itself before its first APDU; main's
  * refusal is its own check, and where the two would differ on an input the
  * core accepts, main refuses: nothing is signed, and the case is a vector
@@ -112,7 +112,7 @@ const BOUNDS = Object.freeze({
   name_bytes: 255,
 });
 
-/** The rows' headers, `CLA INS P1 P2`. */
+/** The typed-data rows' headers, `CLA INS P1 P2`. */
 const HEADER = Object.freeze({
   TYPE_NAME: 'e01a0000',
   TYPE_FIELD: 'e01a00ff',
@@ -120,8 +120,6 @@ const HEADER = Object.freeze({
   ARRAY: 'e01c000f',
   VALUE_MORE: 'e01c01ff',
   VALUE_LAST: 'e01c00ff',
-  SIGN_FIELDS: 'e00c0001',
-  SIGN_HASHES: 'e00c0000',
 });
 
 /** The operation's APDUs around the typed-data stream: `E0 02`, `B0 01`, `E0 0C`. */
@@ -139,7 +137,6 @@ const DIMENSION = /\[(0|[1-9][0-9]*)?\]/y;
 const ADDRESS_HEX = /^0x[0-9a-f]{40}$/;
 const BYTES_HEX = /^0x(?:[0-9a-f]{2})*$/;
 const HASH_HEX = /^0x[0-9a-fA-F]{64}$/;
-const PATH_HEX = /^(?:[0-9a-f]{2})+$/;
 
 /** hw-app-eth's `EIP712_TYPE_PROPERTIES` keys (`EIP712/utils.js:28–56`). */
 const TYPE_KEY = Object.freeze({
@@ -178,17 +175,12 @@ function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
 }
 
-function byteHex(n) {
-  return n.toString(16).padStart(2, '0');
-}
-
-/** One APDU, `CLA INS P1 P2 Lc data`, in hex; `data` at most 255 bytes. */
+/** One APDU, `CLA INS P1 P2 Lc data`; `data` at most 255 bytes. */
 function apdu(header, data) {
-  const bytes = Buffer.from(data);
-  if (bytes.length > BOUNDS.apdu_data_bytes) {
+  if (data.length > BOUNDS.apdu_data_bytes) {
     throw new Error('an APDU over 255 bytes of data');
   }
-  return header + byteHex(bytes.length) + bytes.toString('hex');
+  return Buffer.concat([Buffer.from(header, 'hex'), Buffer.from([data.length]), Buffer.from(data)]);
 }
 
 /** A name with its one-byte length, the name ASCII (checked before). */
@@ -428,18 +420,7 @@ function checkNameBounds(types) {
   }
 }
 
-function checkPath(path) {
-  if (typeof path !== 'string' || !PATH_HEX.test(path)) {
-    throw new TypeError('path: the encoded path, in lowercase hex');
-  }
-  const bytes = path.length / 2;
-  const n = parseInt(path.slice(0, 2), 16);
-  if (n === 0 || bytes !== 1 + 4 * n || bytes + 64 > BOUNDS.apdu_data_bytes) {
-    throw new TypeError('path: one byte n, then n elements of 4 bytes');
-  }
-}
-
-function bind({ typedData, expectedHash, path, hashOnly }) {
+function bind({ typedData, expectedHash }) {
   if (typeof expectedHash !== 'string' || !HASH_HEX.test(expectedHash)) refuse('hash-mismatch');
   if (!isRecord(typedData)) refuse('typed-data');
   const { domain, types, message } = typedData;
@@ -485,32 +466,25 @@ function bind({ typedData, expectedHash, path, hashOnly }) {
   if (keccak256(concat(['0x1901', domainSeparator, structHash])) !== expectedHash.toLowerCase()) {
     refuse('hash-mismatch');
   }
-  const hashes = { domainSeparator, structHash };
-  const apdus = hashOnly
-    ? [
-        builder.apdus[0],
-        apdu(
-          HEADER.SIGN_HASHES,
-          Buffer.concat([Buffer.from(path, 'hex'), getBytes(domainSeparator), getBytes(structHash)])
-        ),
-      ]
-    : [...builder.apdus, apdu(HEADER.SIGN_FIELDS, Buffer.from(path, 'hex'))];
-  return { apdus, hashes };
+  return {
+    apdus: builder.apdus,
+    domainSeparator: Buffer.from(getBytes(domainSeparator)),
+    structHash: Buffer.from(getBytes(structHash)),
+  };
 }
 
 /**
- * The typed-data part of a Ledger operation's expected APDU stream, or the
- * refusal of it (the interface is this file's header).
+ * Main's typed-data binding: the definitions and values the device must be
+ * sent for the typed data main holds, with ethers' two hashes of it, or the
+ * refusal of it before the first APDU (the interface is this file's header).
  *
- * @param {{ typedData: object, expectedHash: string, path: string, hashOnly?: boolean }} request
- * @returns {{ apdus: string[], hashes: { domainSeparator: string, structHash: string } }
+ * @param {{ typedData: object, expectedHash: string }} request
+ * @returns {{ apdus: Buffer[], domainSeparator: Buffer, structHash: Buffer }
  *   | { rule: 'payload', reason: string, bound?: { name: string, size: number } }}
  */
-function typedDataApdus({ typedData, expectedHash, path, hashOnly = false } = {}) {
-  checkPath(path);
-  if (typeof hashOnly !== 'boolean') throw new TypeError('hashOnly: a boolean');
+function bindTypedData({ typedData, expectedHash } = {}) {
   try {
-    return bind({ typedData, expectedHash, path, hashOnly });
+    return bind({ typedData, expectedHash });
   } catch (err) {
     if (err instanceof Refusal) return { ...err };
     // ethers' own refusal of the typed data, or a value it lets through
@@ -519,4 +493,4 @@ function typedDataApdus({ typedData, expectedHash, path, hashOnly = false } = {}
   }
 }
 
-module.exports = { BOUNDS, HEADER, typedDataApdus };
+module.exports = { BOUNDS, HEADER, bindTypedData };

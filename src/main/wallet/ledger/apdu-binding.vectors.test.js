@@ -25,8 +25,10 @@
  * What the relay's Admission does with each APDU (PR 1's), main's own here:
  * the APDU at the stream's position equal byte for byte, else `header` for
  * another `CLA INS P1 P2` or an `Lc` that isn't the data's length, else
- * `payload`. The address check and `B0 01` before the stream are the
- * Admission's; this suite builds them from the record's path.
+ * `payload`. Around the binding's definitions and values, the address
+ * check and `B0 01` before them, `E0 0C 00 01 P` after them and the
+ * hash-only APDU from its two hashes are the Admission's; this suite builds
+ * them from the record's path as PR 1's `typedDataStream` does.
  *
  * Skipped unless the vectors are found: FREEDOM_CORE_LEDGER_VECTORS names
  * freedom-core's `vectors` directory, as CI does at the pinned commit, and
@@ -38,7 +40,7 @@
 const fs = require('fs');
 const path = require('path');
 const { TypedDataEncoder } = require('ethers');
-const { BOUNDS, HEADER, typedDataApdus } = require('./apdu-binding');
+const { BOUNDS, HEADER, bindTypedData } = require('./apdu-binding');
 
 function ledgerVectorsDir() {
   if (process.env.FREEDOM_CORE_LEDGER_VECTORS) return process.env.FREEDOM_CORE_LEDGER_VECTORS;
@@ -80,9 +82,24 @@ function encodePath(text) {
   return bytes.toString('hex');
 }
 
+const lc = (hex) => (hex.length / 2).toString(16).padStart(2, '0');
+
 /** The Admission's head: the address check at the record's path, then B0 01. */
 function head(P) {
-  return ['e0020000' + (P.length / 2).toString(16).padStart(2, '0') + P, 'b001000000'];
+  return ['e0020000' + lc(P) + P, 'b001000000'];
+}
+
+/**
+ * The operation's stream around a binding, as the Admission builds it, in
+ * hex: the head, the definitions and values, then `E0 0C 00 01 P`; or, past
+ * Q23's gate, the head, the first `E0 1A` and `E0 0C 00 00 P ‖ both hashes`.
+ */
+function operationStream(binding, P, hashOnly) {
+  const apdus = binding.apdus.map((a) => a.toString('hex'));
+  const hashes = binding.domainSeparator.toString('hex') + binding.structHash.toString('hex');
+  return hashOnly
+    ? [...head(P), apdus[0], 'e00c0000' + lc(P + hashes) + P + hashes]
+    : [...head(P), ...apdus, 'e00c0001' + lc(P) + P];
 }
 
 /** The rule an APDU gets against the one main expects at its place. */
@@ -112,14 +129,17 @@ function takesHashOnly(c) {
  * binding's, in the branch the case's device takes.
  */
 function mainStream(c, { hashOnly = takesHashOnly(c), typedData, expectedHash } = {}) {
-  const P = encodePath(c.record.path);
-  const result = typedDataApdus({
+  const binding = bindTypedData({
     typedData: typedData ?? c.request.typed_data,
     expectedHash: expectedHash ?? c.request.expected_hash,
-    path: P,
-    hashOnly,
   });
-  return result.rule ? result : { ...result, apdus: [...head(P), ...result.apdus] };
+  if (binding.rule) return binding;
+  return { apdus: operationStream(binding, encodePath(c.record.path), hashOnly) };
+}
+
+/** A typed data's own ethers hash, for main holding that typed data. */
+function ownHash(typedData) {
+  return TypedDataEncoder.hash(typedData.domain, typedData.types, typedData.message);
 }
 
 function marksOf(c) {
@@ -156,8 +176,9 @@ describeIfVectors(
         HEADER.VALUE_MORE,
         HEADER.VALUE_LAST,
       ]);
-      expect(headers('sign.typed_data.sign')).toStrictEqual([HEADER.SIGN_FIELDS]);
-      expect(headers('hash-only')).toStrictEqual([HEADER.SIGN_HASHES]);
+      // The two this suite puts around the binding, as the Admission does.
+      expect(headers('sign.typed_data.sign')).toStrictEqual(['e00c0001']);
+      expect(headers('hash-only')).toStrictEqual(['e00c0000']);
       expect(grammar.rules.payload).toBeDefined();
     });
 
@@ -273,18 +294,9 @@ describeIfVectors(
         const rule = at === -1 ? null : ruleFor(ours[at], s.apdus[at]);
         if (rule !== s.rule || !isTypedApdu(s.apdus[at])) wrong.push({ id: s.case, at, rule });
         // And main, holding the other typed data, encodes the core's stream for it.
-        const own = typedDataApdus({
-          typedData: s.typed_data,
-          expectedHash: TypedDataEncoder.hash(
-            s.typed_data.domain,
-            s.typed_data.types,
-            s.typed_data.message
-          ),
-          path: encodePath(c.record.path),
-          hashOnly: takesHashOnly(c),
-        });
-        if (!equal([...head(encodePath(c.record.path)), ...(own.apdus ?? [])], s.apdus)) {
-          wrong.push({ id: s.case, own: own.rule ? own : diff(own.apdus, s.apdus.slice(2)) });
+        const own = mainStream(c, { typedData: s.typed_data, expectedHash: ownHash(s.typed_data) });
+        if (own.rule || !equal(own.apdus, s.apdus)) {
+          wrong.push({ id: s.case, own: own.rule ? own : diff(own.apdus, s.apdus) });
         }
       }
       expect(wrong).toStrictEqual([]);
@@ -315,11 +327,7 @@ describeIfVectors(
         // The changed typed data's own stream leaves main's there, and not before.
         const changed = mainStream(c, {
           typedData: s.typed_data,
-          expectedHash: TypedDataEncoder.hash(
-            s.typed_data.domain,
-            s.typed_data.types,
-            s.typed_data.message
-          ),
+          expectedHash: ownHash(s.typed_data),
         }).apdus;
         if (!changed || changed[at] !== apdu || !equal(changed.slice(0, at), ours.slice(0, at))) {
           wrong.push({ id: s.case, change: s.change, stream: changed && diff(changed, ours) });

@@ -1,13 +1,14 @@
 /**
  * Main's typed-data binding (apdu-binding.js; freedom-core design 0016,
  * Main's typed-data binding, LDG-3 PR 2) without the vectors: the stream's
- * shape on hand-made typed data, each refusal before the first APDU, and the
- * interface's arguments. apdu-binding.vectors.test.js holds the module to
- * every typed-data case and family of the pinned core's vectors.
+ * bytes on hand-made typed data, in both branches as the Admission
+ * assembles them, each refusal before the first APDU, and the binding's
+ * shape as PR 1's Admission takes it. apdu-binding.vectors.test.js holds the
+ * module to every typed-data case and family of the pinned core's vectors.
  */
 
 const { TypedDataEncoder, getIcapAddress, keccak256, concat } = require('ethers');
-const { BOUNDS, HEADER, typedDataApdus } = require('./apdu-binding');
+const { BOUNDS, HEADER, bindTypedData } = require('./apdu-binding');
 
 // 44'/60'/0'/0/0, as the grammar encodes a path: n, then n big-endian elements.
 const P = '058000002c8000003c800000000000000000000000';
@@ -68,6 +69,29 @@ const MAIL_STREAM = [
 
 function hashOf(typedData) {
   return TypedDataEncoder.hash(typedData.domain, typedData.types, typedData.message);
+}
+
+/**
+ * The typed part of an operation as PR 1's Admission (core/ledger-grammar.js)
+ * assembles it around the binding, in hex: the binding's APDUs, then
+ * `E0 0C 00 01 P`; or, past Q23's gate, the first `E0 1A` and
+ * `E0 0C 00 00 P ‖ domainSeparator ‖ structHash`. A refusal as it is.
+ */
+function typedDataApdus({ typedData, expectedHash, path, hashOnly = false }) {
+  const binding = bindTypedData({ typedData, expectedHash });
+  if (binding.rule) return binding;
+  const apdus = binding.apdus.map((a) => a.toString('hex'));
+  const lc = (hex) => (hex.length / 2).toString(16).padStart(2, '0');
+  const hashes = binding.domainSeparator.toString('hex') + binding.structHash.toString('hex');
+  return {
+    apdus: hashOnly
+      ? [apdus[0], 'e00c0000' + lc(path + hashes) + path + hashes]
+      : [...apdus, 'e00c0001' + lc(path) + path],
+    hashes: {
+      domainSeparator: '0x' + binding.domainSeparator.toString('hex'),
+      structHash: '0x' + binding.structHash.toString('hex'),
+    },
+  };
 }
 
 /** The binding of `typedData` under its own ethers hash. */
@@ -529,33 +553,41 @@ describe('refused before the first APDU, rule payload', () => {
   });
 });
 
-describe('the arguments', () => {
-  test('a path that is not 1 + 4n bytes of lowercase hex is a TypeError', () => {
-    const tooLong = '30' + '00'.repeat(4 * 48);
-    for (const path of [undefined, '', '05', P.toUpperCase(), P + '00', '00', 'zz', tooLong, 5]) {
-      expect(() => typedDataApdus({ typedData: MAIL, expectedHash: hashOf(MAIL), path })).toThrow(
-        TypeError
-      );
+describe("the binding's shape, as the Admission takes it", () => {
+  test('framed Buffers, a type name first, the definitions then the values; two 32-byte hashes', () => {
+    const binding = bindTypedData({ typedData: MAIL, expectedHash: hashOf(MAIL) });
+    expect(Object.keys(binding).sort()).toStrictEqual(['apdus', 'domainSeparator', 'structHash']);
+    expect(binding.apdus.map((a) => a.toString('hex'))).toStrictEqual(MAIL_STREAM.slice(0, -1));
+    for (const apdu of binding.apdus) {
+      expect(Buffer.isBuffer(apdu)).toBe(true);
+      expect(apdu[4]).toBe(apdu.length - 5);
     }
-    expect(() => typedDataApdus()).toThrow(TypeError);
-    // Read as bytes only: 44'/60'/0'/0 (4 elements), and 47, the most the
-    // hash-only APDU holds (1 + 188 + 64 bytes).
-    const legacy = '04' + P.slice(2, -8);
-    const short = typedDataApdus({ typedData: MAIL, expectedHash: hashOf(MAIL), path: legacy });
-    expect(short.apdus.at(-1)).toBe('e00c000111' + legacy);
-    const long = '2f' + '00'.repeat(4 * 47);
-    const hashOnly = typedDataApdus({
-      typedData: MAIL,
-      expectedHash: hashOf(MAIL),
-      path: long,
-      hashOnly: true,
-    });
-    expect(hashOnly.apdus[1].slice(8, 10)).toBe('fd');
+    expect(binding.apdus[0].subarray(0, 4).toString('hex')).toBe(HEADER.TYPE_NAME);
+    const kinds = binding.apdus.map((a) => a.subarray(0, 2).toString('hex'));
+    expect(kinds.lastIndexOf('e01a')).toBeLessThan(kinds.indexOf('e01c'));
+    expect(kinds.every((k) => k === 'e01a' || k === 'e01c')).toBe(true);
+    expect(binding.domainSeparator).toStrictEqual(
+      Buffer.from(TypedDataEncoder.hashDomain(MAIL.domain).slice(2), 'hex')
+    );
+    expect(binding.structHash).toHaveLength(32);
   });
 
-  test('hashOnly is a boolean', () => {
-    expect(() =>
-      typedDataApdus({ typedData: MAIL, expectedHash: hashOf(MAIL), path: P, hashOnly: 1 })
-    ).toThrow(TypeError);
+  test('each call gives its own Buffers', () => {
+    const one = bindTypedData({ typedData: MAIL, expectedHash: hashOf(MAIL) });
+    one.apdus[0].fill(0);
+    one.domainSeparator.fill(0);
+    const two = bindTypedData({ typedData: MAIL, expectedHash: hashOf(MAIL) });
+    expect(two.apdus[0].toString('hex')).toBe(MAIL_STREAM[0]);
+    expect(two.domainSeparator).toStrictEqual(
+      Buffer.from(TypedDataEncoder.hashDomain(MAIL.domain).slice(2), 'hex')
+    );
+  });
+
+  test('no arguments, or no typed data, is a refusal, never a throw', () => {
+    expect(bindTypedData()).toStrictEqual({ rule: 'payload', reason: 'hash-mismatch' });
+    expect(bindTypedData({ expectedHash: hashOf(MAIL) })).toStrictEqual({
+      rule: 'payload',
+      reason: 'typed-data',
+    });
   });
 });
