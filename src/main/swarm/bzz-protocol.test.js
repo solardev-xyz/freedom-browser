@@ -42,7 +42,28 @@ jest.mock('../ipfs/gateway-transport', () => ({
 const mockNetRequest = jest.fn(() => {
   throw new Error('no dial expected');
 });
-jest.mock('electron', () => ({ net: { request: (...args) => mockNetRequest(...args) } }));
+// A remote Ant's write goes on a write session (`ant-write-sessions.js`).
+const mockWriteSessions = [];
+jest.mock('electron', () => ({
+  net: { request: (...args) => mockNetRequest(...args) },
+  session: {
+    fromPartition: (partition) => {
+      let proxy = 'DIRECT';
+      const ses = {
+        partition,
+        setProxy: jest.fn(async ({ pacScript }) => {
+          const script = Buffer.from(pacScript.split(',')[1], 'base64').toString('utf-8');
+          proxy = JSON.parse(script.match(/return (".*");/)[1]);
+        }),
+        forceReloadProxyConfig: jest.fn(async () => {}),
+        closeAllConnections: jest.fn(async () => {}),
+        resolveProxy: jest.fn(async () => proxy),
+      };
+      mockWriteSessions.push(ses);
+      return ses;
+    },
+  },
+}));
 
 const {
   handleBzzRequest,
@@ -942,38 +963,138 @@ describe('a non-loopback Ant', () => {
     expect(isMainProcessAntDial(dialled, 'HEAD')).toBe(false);
   });
 
-  // Design 0015, The transport: main's Swarm executor POSTs to a remote node
-  // on the session's stack, its announcement bound to POST.
-  test('a POST is announced as a POST to exactly its URL, only while it dials', async () => {
-    const dialled = `${REMOTE}/bzz?name=site.tar`;
-    const body = new ReadableStream({ pull: (controller) => controller.close() });
-    const seen = {};
-    mockNetGatewayFetch.mockImplementation(async (url, init) => {
-      for (const method of ['GET', 'HEAD', 'POST'])
-        seen[method] = isMainProcessAntDial(url, method);
-      seen.other = isMainProcessAntDial(`${REMOTE}/bzz?name=other.tar`, 'POST');
-      seen.init = init;
-      return new Response('{"reference":"ab"}', { status: 201 });
-    });
-    const fetchImpl = jest.fn();
+  // Design 0015, point 6 (#1344): Chromium sends a request again when a
+  // reused connection closes before its headers, below the guard. A write
+  // goes on a write session of its own, its connections closed first, on the
+  // request session's proxy: it is sent once (swarm-shell-proxy.test.js).
+  describe('a POST goes once, on a write session of its own', () => {
+    const SOCKS = 'SOCKS5 127.0.0.1:9150';
+    const writeSource = () => ({ resolveProxy: jest.fn(async () => SOCKS) });
+    const post = (source, body, extra = {}) =>
+      antBackend({ session: source }).request({
+        path: '/bzz?name=site.tar',
+        method: 'POST',
+        headers: new Headers({ 'content-type': 'application/x-tar' }),
+        body,
+        signal: new AbortController().signal,
+        headersTimeoutMs: null,
+        ...extra,
+      });
 
-    const res = await antBackend({ session, fetchImpl }).request({
-      path: '/bzz?name=site.tar',
-      method: 'POST',
-      headers: new Headers({ 'content-type': 'application/x-tar' }),
-      body,
-      signal: new AbortController().signal,
-      headersTimeoutMs: null,
+    beforeEach(() => {
+      mockWriteSessions.length = 0;
     });
-    expect(res.status).toBe(201);
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(mockNetGatewayFetch.mock.calls[0][0]).toBe(dialled);
-    expect(mockNetGatewayFetch.mock.calls[0][2]).toEqual({ session });
-    expect(seen).toMatchObject({ GET: false, HEAD: false, POST: true, other: false });
-    // The stack writes the stream itself, as it is pulled.
-    expect(seen.init).toMatchObject({ method: 'POST', redirect: 'manual', body });
-    expect(seen.init.duplex).toBeUndefined();
-    expect(isMainProcessAntDial(dialled, 'POST')).toBe(false);
+
+    test("on the request session's proxy, connections closed, unannounced, the stream written by the stack", async () => {
+      const dialled = `${REMOTE}/bzz?name=site.tar`;
+      const source = writeSource();
+      const body = new ReadableStream({ pull: (controller) => controller.close() });
+      const seen = {};
+      mockNetGatewayFetch.mockImplementation(async (url, init, deps) => {
+        for (const method of ['GET', 'HEAD', 'POST'])
+          seen[method] = isMainProcessAntDial(url, method);
+        seen.init = init;
+        seen.proxy = await deps.session.resolveProxy(url);
+        return new Response('{"reference":"ab"}', { status: 201 });
+      });
+      const fetchImpl = jest.fn();
+
+      const res = await antBackend({ session: source, fetchImpl }).request({
+        path: '/bzz?name=site.tar',
+        method: 'POST',
+        headers: new Headers({ 'content-type': 'application/x-tar' }),
+        body,
+        signal: new AbortController().signal,
+        headersTimeoutMs: null,
+      });
+      expect(res.status).toBe(201);
+      await expect(res.json()).resolves.toEqual({ reference: 'ab' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(mockWriteSessions).toHaveLength(1);
+      const [ses] = mockWriteSessions;
+      const [url, init, deps] = mockNetGatewayFetch.mock.calls[0];
+      expect(url).toBe(dialled);
+      expect(deps).toEqual({ session: ses });
+      expect(source.resolveProxy).toHaveBeenCalledWith(dialled);
+      expect(seen.proxy).toBe(SOCKS);
+      expect(ses.closeAllConnections).toHaveBeenCalledTimes(1);
+      // No guard runs on a write session: nothing is announced.
+      expect(seen).toMatchObject({ GET: false, HEAD: false, POST: false });
+      expect(seen.init).toMatchObject({ method: 'POST', redirect: 'manual', body });
+      expect(init.duplex).toBeUndefined();
+    });
+
+    test('whole bytes, or none, go as they are: a new connection is what stops the resend', async () => {
+      const source = writeSource();
+      const bodies = [];
+      mockNetGatewayFetch.mockImplementation(async (_url, init) => {
+        bodies.push(init.body);
+        return new Response(null, { status: 201 });
+      });
+      const bytes = new Uint8Array([1, 2, 3]);
+      await post(source, bytes);
+      await post(source, null);
+      expect(bodies).toEqual([bytes, undefined]);
+      expect(bodies[0]).toBe(bytes);
+    });
+
+    test("it holds its session until its reply's body is over; the next write closes the connection it left", async () => {
+      const source = writeSource();
+      mockNetGatewayFetch.mockImplementation(
+        async () => new Response('{"reference":"ab"}', { status: 201 })
+      );
+      const first = await post(source, new Uint8Array(1));
+      // The first reply is unread: a second write needs a session of its own.
+      const second = await post(source, new Uint8Array(1));
+      expect(mockWriteSessions).toHaveLength(2);
+      await first.text();
+      await second.body.cancel();
+      // Both back: a third write takes one of them, its connections closed again.
+      await post(source, new Uint8Array(1)).then((res) => res.text());
+      expect(mockWriteSessions).toHaveLength(2);
+      const closes = mockWriteSessions.map((ses) => ses.closeAllConnections.mock.calls.length);
+      expect(closes.sort()).toEqual([1, 2]);
+    });
+
+    test('a failed dial hands its session back', async () => {
+      const source = writeSource();
+      mockNetGatewayFetch.mockRejectedValueOnce(new Error('net::ERR_EMPTY_RESPONSE'));
+      await expect(post(source, new Uint8Array(1))).rejects.toThrow('net::ERR_EMPTY_RESPONSE');
+      mockNetGatewayFetch.mockResolvedValueOnce(new Response(null, { status: 201 }));
+      await post(source, new Uint8Array(1));
+      expect(mockWriteSessions).toHaveLength(1);
+    });
+
+    test('a write session that cannot be prepared fails the write undialled, its stream cancelled', async () => {
+      const source = writeSource();
+      let cancelled = null;
+      const body = new ReadableStream({ cancel: (reason) => (cancelled = reason) });
+      const pending = post(source, body);
+      // The write session reads back another proxy than its request session's.
+      while (mockWriteSessions.length === 0) await Promise.resolve();
+      mockWriteSessions[0].resolveProxy.mockResolvedValueOnce('DIRECT');
+      await expect(pending).rejects.toThrow('not dialled');
+      expect(mockNetGatewayFetch).not.toHaveBeenCalled();
+      expect(cancelled).toBeInstanceOf(Error);
+    });
+
+    test('a read stays on the request session, announced as it dials', async () => {
+      let deps = null;
+      let announced = null;
+      mockNetGatewayFetch.mockImplementation(async (url, _init, d) => {
+        deps = d;
+        announced = isMainProcessAntDial(url, 'GET');
+        return new Response('chunk');
+      });
+      await antBackend({ session }).request({
+        path: `/chunks/${HASH}`,
+        method: 'GET',
+        signal: new AbortController().signal,
+      });
+      expect(deps).toEqual({ session });
+      expect(announced).toBe(true);
+      expect(mockWriteSessions).toHaveLength(0);
+    });
   });
 
   test('a body on a GET is refused before anything is announced or dialled', async () => {
