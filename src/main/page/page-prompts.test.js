@@ -2,6 +2,35 @@
 // in front), and takes a decision only for the handle it shows (freedom-core
 // design 0011, "Requests and handles" and "The prompt protocol"; PRQ-4).
 
+// The LDG-3 PR 10 sends at the end run main's own page step
+// (page-core-sends.js) and transaction service; the chain (its nonce and
+// the broadcast) and the intent store are stand-ins, which nothing else
+// here reaches.
+jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }));
+const mockChain = { pending: 5n, broadcasts: [] };
+jest.mock('../networks/chain-data', () => ({
+  request: jest.fn(async (_chainId, method) => {
+    if (method !== 'eth_getTransactionCount') throw new Error(`no ${method} here`);
+    return { result: '0x' + mockChain.pending.toString(16), source: 'test' };
+  }),
+  broadcastRawTransaction: jest.fn(async (_chainId, raw) => {
+    mockChain.broadcasts.push(raw);
+    return { result: require('ethers').keccak256(raw), source: 'test' };
+  }),
+}));
+const mockStore = {
+  ready: Promise.resolve(),
+  heldNonces: jest.fn(async () => []),
+  commit: jest.fn(),
+  handoff: jest.fn(async (intentId) => {
+    const { hash, raw } = mockStore.commit.mock.calls.at(-1)[0];
+    return { handoffId: `handoff-${intentId}`, hash, raw };
+  }),
+  outcome: jest.fn(async () => ({})),
+};
+jest.mock('../wallet/intent-store', () => ({ getIntentStore: () => mockStore, closedText: () => 'closed' }));
+jest.mock('../wallet/chains', () => ({ getTxExplorerUrl: () => null }));
+
 const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
@@ -788,6 +817,30 @@ describe('Reject while a Ledger waits (LDG-3 PR 10)', () => {
     expect(step.context.deviceWait()).toBe(false);
   });
 
+  test('the commit boundary: a step that ended its wait is past Reject; one Reject answered first may not commit', async () => {
+    const step = deviceStep();
+    const env = setup({ dispatchers: { 'ethereum:personal_sign': step.dispatcher } });
+    const page = env.tab();
+    env.front(1, page.guest);
+    const { answer, handle } = await approvedSignature(env, page);
+    expect(step.context.endDeviceWait()).toBe(true);
+    expect(cancel(env, 1, { handle })).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(step.aborted).toBe(false);
+    // Past it, the step can't say it waits again.
+    expect(step.context.deviceWait()).toBe(false);
+    step.answer({ result: '0xsigned' });
+    expect(await answer).toEqual({ result: '0xsigned' });
+
+    const first = deviceStep();
+    const again = setup({ dispatchers: { 'ethereum:personal_sign': first.dispatcher } });
+    const tab = again.tab();
+    again.front(1, tab.guest);
+    const rejected = await approvedSignature(again, tab);
+    expect(cancel(again, 1, { handle: rejected.handle })).toEqual({ ok: true, notice: NOTICE });
+    expect(await rejected.answer).toEqual(REJECTED);
+    expect(first.context.endDeviceWait()).toBe(false);
+  });
+
   test('with the approvals document on, the document hears it and decides the Reject; the chrome\'s is refused', async () => {
     const step = deviceStep();
     const toDocument = [];
@@ -809,5 +862,191 @@ describe('Reject while a Ledger waits (LDG-3 PR 10)', () => {
     expect(env.requests.cancelInWindow(1, { handle })).toEqual({ ok: true, notice: NOTICE });
     expect(await answer).toEqual(REJECTED);
     expect(await decided).toEqual({ ok: true });
+  });
+});
+
+// The commit boundary (LDG-3 PR 10): a page's Ledger send on the core's
+// backend stops being cancellable in the same run as its signed bytes are
+// committed (page-core-sends.js, `context.endDeviceWait()`), so exactly one
+// of the signature and the Reject wins. Main's own page step and
+// transaction service run; the Ledger is a stand-in that behaves as
+// signers.js's core backend does.
+describe('Reject and the commit of a Ledger send (LDG-3 PR 10)', () => {
+  const { Transaction, Wallet } = require('ethers');
+  const { createCoreSends } = require('./page-core-sends');
+  const { signAndSendTransaction } = require('../wallet/transaction-service');
+
+  const NOTICE = 'Cancelled. If your Ledger still shows the request, reject it there.';
+  const REJECTED = { error: { code: 4001, message: 'User rejected the request' } };
+  const LEDGER = 1000000;
+  // Anvil/Hardhat-default test key, well known, never funded on mainnet.
+  const DEVICE = new Wallet('0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a');
+  const PAGE = { origin: 'bzz://a', top_origin: 'bzz://a', frame: 0, navigation: 1 };
+  const CHECKED = {
+    type: 'ledger',
+    kind: 'dapp-send',
+    account: LEDGER,
+    payload: {
+      tx: { to: '0x' + '22'.repeat(20), value: '1000', data: '0x', chain_id: '100', gas_limit: '21000', type: 0, gas_price: '1' },
+    },
+    handle: 'h'.repeat(64),
+    token: 'T'.repeat(43),
+    remember: false,
+  };
+
+  /**
+   * A Ledger on the core's backend, as signers.js's behaves: it waits for
+   * the device (`sign()`), fails LEDGER_CANCELLED once the caller's signal
+   * has aborted, whatever the device answered, and otherwise answers the
+   * transaction signed by the device's key. `afterSigned` runs once the
+   * signature is back, before the caller has it.
+   */
+  function fakeLedger() {
+    const cancelled = () =>
+      Object.assign(new Error(NOTICE), { code: 'LEDGER_CANCELLED' });
+    const ledger = { asked: [], sign: null, afterSigned: null };
+    ledger.getSigner = (index, authorized) => ({
+      getAddress: async () => DEVICE.address,
+      signTransaction: async (tx) => {
+        const signal = authorized?.signal ?? null;
+        ledger.asked.push({ index, nonce: tx.nonce, signal });
+        await new Promise((resolve, reject) => {
+          ledger.sign = resolve;
+          signal?.addEventListener('abort', () => reject(cancelled()), { once: true });
+        });
+        if (signal?.aborted) throw cancelled();
+        const unsigned = Transaction.from(tx);
+        unsigned.signature = DEVICE.signingKey.sign(unsigned.unsignedHash);
+        const after = ledger.afterSigned;
+        ledger.afterSigned = null;
+        await after?.();
+        return unsigned.serialized;
+      },
+    });
+    return ledger;
+  }
+
+  // A page's eth_sendTransaction for the Ledger account: the user approves
+  // it, and main's page step signs, commits and sends it.
+  function sending(ledger) {
+    const steps = createCoreSends(
+      { getPermission: () => ({ walletIndex: LEDGER }), updateLastUsed: () => {}, walletList: async () => [{ index: LEDGER, type: 'ledger' }] },
+      {
+        takeSiteTurn: async () => () => {},
+        sitePaymentWaiting: async () => false,
+        getSigner: ledger.getSigner,
+        signAndRecord: (tx, signer, context, options) =>
+          signAndSendTransaction(tx, signer, {
+            context: { kind: context.kind, origin: context.origin, walletIndex: options.walletIndex },
+            onCommitted: options.onCommitted,
+            guardCommit: options.guardCommit,
+          }),
+        discardToken: () => {},
+        ledgerCancels: () => true,
+      }
+    );
+    return async (context) => {
+      const decision = await context.prompt({ kind: 'eth.send', view: { note: 'send' }, choices: () => ({}) });
+      if (decision.closed || !decision.approve) return REJECTED;
+      return steps.device(context, CHECKED, PAGE);
+    };
+  }
+
+  async function approvedSend(env, page) {
+    const answer = page.ask('eth_sendTransaction');
+    await flush();
+    const handle = env.handleOf(page.guest).at(-1);
+    const decided = env.decide(1, handle);
+    await flush();
+    return { answer, handle, decided };
+  }
+
+  const cancel = (env, windowId, payload) => env.requests.cancel({ sender: chromeOf(windowId) }, payload);
+
+  /** The next commit, held until the test answers it. */
+  function heldCommit() {
+    let answer;
+    const held = new Promise((resolve) => {
+      answer = resolve;
+    });
+    mockStore.commit.mockImplementationOnce(() => held);
+    return answer;
+  }
+
+  let quiet;
+  beforeEach(() => {
+    mockChain.broadcasts = [];
+    mockStore.commit.mockReset();
+    mockStore.commit.mockImplementation(async () => {
+      throw new Error('A cancelled send is never committed');
+    });
+    mockStore.handoff.mockClear();
+    quiet = [jest.spyOn(console, 'log').mockImplementation(() => {}), jest.spyOn(console, 'error').mockImplementation(() => {})];
+  });
+  afterEach(() => quiet.forEach((spy) => spy.mockRestore()));
+
+  test('signed first: a Reject while the commit is pending is not-waiting, and the page hears the hash it sent', async () => {
+    const ledger = fakeLedger();
+    const env = setup({ dispatchers: { 'ethereum:eth_sendTransaction': sending(ledger) } });
+    const page = env.tab();
+    env.front(1, page.guest);
+    const commit = heldCommit();
+    const { answer, handle, decided } = await approvedSend(env, page);
+    expect(env.messages('page:prompt-waiting')).toEqual([{ handle }]);
+    expect(ledger.asked).toEqual([{ index: LEDGER, nonce: 5, signal: expect.any(AbortSignal) }]);
+
+    // The device signs; the bytes go to the commit, which waits.
+    ledger.sign();
+    await flush();
+    expect(mockStore.commit).toHaveBeenCalledTimes(1);
+    const [{ nonce, hash, raw }] = mockStore.commit.mock.calls[0];
+    expect(nonce).toBe(5);
+
+    // Too late: the Reject reaches nothing, and the signal stays as it was.
+    expect(cancel(env, 1, { handle })).toEqual({ ok: false, reason: 'not-waiting' });
+    expect(ledger.asked[0].signal.aborted).toBe(false);
+
+    commit({ intentId: 'intent-1', chainId: 100 });
+    // The page hears what happened: its transaction, sent.
+    expect(await answer).toEqual({ result: hash });
+    expect(await decided).toEqual({ ok: true });
+    expect(mockChain.broadcasts).toEqual([raw]);
+    expect(Transaction.from(raw).from).toBe(DEVICE.address);
+    expect(env.trace.filter((e) => e.kind === 'cancel')).toEqual([
+      expect.objectContaining({ window: 1, from: 'chrome', ok: false, reason: 'not-waiting' }),
+    ]);
+  });
+
+  test('a Reject after the device signed, before the commit: 4001, nothing committed or sent, the nonce released once', async () => {
+    const ledger = fakeLedger();
+    const env = setup({ dispatchers: { 'ethereum:eth_sendTransaction': sending(ledger) } });
+    const page = env.tab();
+    env.front(1, page.guest);
+    const { answer, handle, decided } = await approvedSend(env, page);
+    // The signer has the signature (it saw no Cancel); the Reject comes
+    // before main commits it.
+    let rejected = null;
+    ledger.afterSigned = () => {
+      rejected = cancel(env, 1, { handle });
+    };
+    ledger.sign();
+    expect(await answer).toEqual(REJECTED);
+    await flush();
+    expect(rejected).toEqual({ ok: true, notice: NOTICE });
+    expect(await decided).toEqual({ ok: true });
+    expect(mockStore.commit).not.toHaveBeenCalled();
+    expect(mockChain.broadcasts).toEqual([]);
+
+    // The nonce went back: the page's next send takes it again, at once,
+    // and goes out with it.
+    const next = await approvedSend(env, page);
+    expect(ledger.asked.map((asked) => asked.nonce)).toEqual([5, 5]);
+    mockStore.commit.mockImplementationOnce(async () => ({ intentId: 'intent-2', chainId: 100 }));
+    ledger.sign();
+    const sent = await next.answer;
+    expect(mockStore.commit).toHaveBeenCalledTimes(1);
+    expect(mockStore.commit.mock.calls[0][0]).toMatchObject({ nonce: 5 });
+    expect(sent).toEqual({ result: mockStore.commit.mock.calls[0][0].hash });
+    expect(mockChain.broadcasts).toHaveLength(1);
   });
 });

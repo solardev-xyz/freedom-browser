@@ -104,7 +104,10 @@
  * step's: main cancels the core's `sign.*` and the relay lets go of the
  * device. Before the step says so, or on the JS backend, where the device
  * can't be stopped, nothing is cancellable and the surface keeps Reject
- * off, as before.
+ * off, as before. A send's wait ends at its commit (`context.endDeviceWait()`,
+ * in the same run as the commit of its signed bytes): a Reject that came
+ * first wins and nothing is committed; one after it is refused
+ * `not-waiting`, and the page hears the send's own outcome.
  */
 
 const crypto = require('crypto');
@@ -352,7 +355,8 @@ function createPageRequests({
   const byDocument = new Map(); // `${guest}:${navigation}` -> Set<record>
   const handles = new Map(); // handle -> record
   // A decided handle -> its record, while the record's device step can be
-  // cancelled (`deviceWait`), until main answers the record.
+  // cancelled (`deviceWait`), until main answers the record or its
+  // signature is committed (`endDeviceWait`).
   const waits = new Map();
   const handleListeners = new Set();
 
@@ -704,8 +708,10 @@ function createPageRequests({
       agentPrompt: (spec) => agentPrompt(record, spec),
       leaveWalletSlot: () => leaveWalletSlot(record),
       // The device step of an approved request can be cancelled now (the
-      // core's Ledger backend): Reject reaches it until main answers.
+      // core's Ledger backend): Reject reaches it until main answers, or
+      // until its signature is committed (`endDeviceWait`).
       deviceWait: () => deviceWait(record),
+      endDeviceWait: () => endDeviceWait(record),
       // Aborted when main answers the record: for a dispatcher that waits on
       // something outside main's prompts.
       get signal() {
@@ -1229,17 +1235,38 @@ function createPageRequests({
   /**
    * The record's device step can be cancelled from here on (the core's
    * Ledger backend, LDG-3's PR 10): the approved handle is kept until main
-   * answers the record, and the surface that decided it hears that Reject
-   * still reaches it. Only a prompt the user decided, still unanswered.
-   * Returns whether it can be cancelled.
+   * answers the record or its signature is committed (`endDeviceWait`), and
+   * the surface that decided it hears that Reject still reaches it. Only a
+   * prompt the user decided, still unanswered. Returns whether it can be
+   * cancelled.
    */
   function deviceWait(record) {
     const handle = record.handle;
-    if (record.answered || !handle || record.handleClosed !== CLOSED.DECIDED) return false;
+    if (record.answered || record.deviceSigned) return false;
+    if (!handle || record.handleClosed !== CLOSED.DECIDED) return false;
     if (waits.get(handle) === record) return true;
     waits.set(handle, record);
     trace({ kind: 'device-wait', id: record.id });
     sendPromptMessage(record.window, PROMPT_CHANNELS.WAITING, { handle });
+    return true;
+  }
+
+  /**
+   * The commit boundary of the record's device step (a send's signed bytes
+   * about to enter the intent records, `page-core-sends.js`), run in the
+   * same synchronous step as the commit it guards: exactly one of the
+   * signature and a Reject wins. Unanswered, the record's wait ends here, so
+   * a later Reject is `not-waiting` and the page hears the send's own
+   * outcome; returns true. Answered first (a Reject, its document gone: its
+   * `signal` aborted), returns false, and nothing may be committed.
+   */
+  function endDeviceWait(record) {
+    if (record.answered) return false;
+    record.deviceSigned = true;
+    if (record.handle && waits.get(record.handle) === record) {
+      waits.delete(record.handle);
+      trace({ kind: 'device-signed', id: record.id });
+    }
     return true;
   }
 

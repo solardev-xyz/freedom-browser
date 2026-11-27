@@ -57,7 +57,11 @@
  * and signs with the request's `signal`, which aborts once main answers
  * the request (that Reject, its document gone, its deadline): main then
  * cancels the core's `sign.*` and the relay lets go of the device. The
- * page hears a rejection, as for the device's own.
+ * page hears a rejection, as for the device's own. A signature has no
+ * commit to guard (a send's, `page-core-sends.js`): it leaves main only in
+ * the request's answer, which main gives once (`page-requests.js`
+ * `answer`), so a Reject that wins drops a signature that came in after
+ * it, and a Reject after the answer is refused `not-waiting`.
  */
 
 const INTERNAL_ERROR_CODE = -32603;

@@ -13,14 +13,20 @@
  * cored 0.30.0's reply.rs): it sends the APDUs of the stream main prepared
  * for `sign.transaction`, and a scripted device behind the relay answers
  * the address check and the app, and waits for the user at the
- * transaction's last piece. The chain's nonce and the intent store are
- * stand-ins.
+ * transaction's last piece; once the test answers that piece, the core
+ * replies the transaction signed by the device's key. The chain (its nonce
+ * and the broadcast) and the intent store are stand-ins.
  *
  * The Cancel: the parent's cancel goes to the core and the device is let go
  * of at once; the send fails LEDGER_CANCELLED with point 18's text, before
  * any commit; the nonce is released (the next send takes the same nonce at
  * once); and nothing reaches the device after the Cancel, a later APDU for
  * the cancelled parent refused `ended`.
+ *
+ * The commit boundary: exactly one of the signature and the Cancel wins. A
+ * Cancel after the device signed but before the commit still wins, and
+ * nothing is committed or sent; once the signed bytes are being committed,
+ * a Cancel reaches nothing and the send goes out.
  */
 
 jest.mock('electron', () => ({
@@ -43,10 +49,13 @@ jest.mock('../core/core-process', () => ({
 }));
 
 const LEDGER_INDEX = 1000000;
+// The active account: the Ledger, or a phone (1000001).
+const mockActive = { index: 1000000 };
 jest.mock('../identity-manager', () => ({
-  getActiveWalletIndex: () => 1000000,
-  getWalletRecord: (index) =>
-    index === 1000000
+  getActiveWalletIndex: () => mockActive.index,
+  getWalletRecord: (index) => {
+    if (index === 1000001) return { index, name: 'My phone', address: '0x' + '44'.repeat(20), type: 'remote' };
+    return index === 1000000
       ? {
           index,
           name: 'My Stax',
@@ -55,7 +64,8 @@ jest.mock('../identity-manager', () => ({
           type: 'ledger',
           path: "44'/60'/0'/0/0",
         }
-      : null,
+      : null;
+  },
   recordLedgerAddressCheck: jest.fn(),
   recordRemoteAddressCheck: jest.fn(),
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
@@ -70,6 +80,27 @@ jest.mock('./remote/signer', () => ({
 // The JS backend's Ledger (hw-app-eth in main), for the one test that runs
 // it: its device answers when the test says.
 const mockJsLedger = { answer: null };
+// The signer factory as main builds it; a test may step in once a
+// signature is back from the signer, before the transaction service
+// commits it (`mockSigned.after`).
+const mockSigned = { after: null };
+jest.mock('./signers', () => {
+  const actual = jest.requireActual('./signers');
+  return {
+    ...actual,
+    getSigner: (index, authorized) => {
+      const signer = actual.getSigner(index, authorized);
+      return {
+        ...signer,
+        signTransaction: async (tx) => {
+          const raw = await signer.signTransaction(tx);
+          await mockSigned.after?.();
+          return raw;
+        },
+      };
+    },
+  };
+});
 jest.mock('./ledger/signer', () => ({
   createLedgerBackend: (record) => ({
     getAddress: async () => record.address,
@@ -86,31 +117,44 @@ jest.mock('./chains', () => ({ getTxExplorerUrl: () => null, getChain: () => nul
 jest.mock('./rpc-manager', () => ({ retiredApiKeys: () => [], getEffectiveRpcUrls: () => [] }));
 jest.mock('../networks/network-registry', () => ({ withoutApiKeys: (text) => String(text) }));
 jest.mock('./intent-ipc', () => ({ intentFailure: async () => ({}) }));
-// The account's pending nonce, as the chain answers it.
-const mockChain = { pending: 5n, reads: 0 };
+// The account's pending nonce, as the chain answers it, and the bytes
+// broadcast, each named by its hash.
+const mockChain = { pending: 5n, reads: 0, broadcasts: [] };
 jest.mock('../networks/chain-data', () => ({
   request: jest.fn(async (_chainId, method) => {
     if (method !== 'eth_getTransactionCount') throw new Error(`no ${method} here`);
     mockChain.reads += 1;
     return { result: '0x' + mockChain.pending.toString(16), source: 'test' };
   }),
+  broadcastRawTransaction: jest.fn(async (_chainId, raw) => {
+    mockChain.broadcasts.push(raw);
+    return { result: require('ethers').keccak256(raw), source: 'test' };
+  }),
 }));
-// The intent store: nothing held, and a commit that is never reached.
+// The intent store: nothing held. A cancelled send never reaches the commit
+// (each test that signs answers its own), and a commit's handoff gives its
+// bytes back.
 const mockStore = {
   ready: Promise.resolve(),
   heldNonces: jest.fn(async () => []),
   commit: jest.fn(async () => {
     throw new Error('A cancelled send is never committed');
   }),
-  handoff: jest.fn(),
+  handoff: jest.fn(async (intentId) => {
+    const { hash, raw } = mockStore.commit.mock.calls.at(-1)[0];
+    return { handoffId: `handoff-${intentId}`, hash, raw };
+  }),
+  outcome: jest.fn(async () => ({})),
 };
 jest.mock('./intent-store', () => ({ getIntentStore: () => mockStore, closedText: () => 'closed' }));
-// The send's record: the transaction service's own send, nothing written.
+// The send's record: the transaction service's own send, with the caller's
+// guard on its commit, nothing written.
 jest.mock('./tx-recorder', () => ({
   KINDS: { WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' },
   signAndRecord: (params, signer, context, options) =>
     require('./transaction-service').signAndSendTransaction(params, signer, {
       context: { kind: context.kind, walletIndex: options?.walletIndex },
+      guardCommit: options?.guardCommit ?? null,
     }),
 }));
 // The user's confirmation, as the approvals panel minted it.
@@ -122,12 +166,12 @@ jest.mock('./signing-confirmation', () => {
   };
 });
 
-const { Wallet } = require('ethers');
+const { Transaction, Wallet } = require('ethers');
 const { ipcMain } = require('electron');
 const log = require('../logger');
 const { registerWalletIpc } = require('./wallet-ipc');
 const { LedgerRelay } = require('../core/ledger-relay');
-const { fakeLedgerDevices, startLedgerCore, until } = require('../../../test/helpers/fake-ledger-core');
+const { fakeLedgerDevices, settle, startLedgerCore, until } = require('../../../test/helpers/fake-ledger-core');
 const { APP_ANSWER } = require('../../../test/helpers/fake-node-hid');
 
 // Anvil/Hardhat-default test key, well known, never funded on mainnet.
@@ -142,6 +186,9 @@ const SEND = {
   chainId: 8453,
 };
 const CONFIRMED = { confirmation: 'T'.repeat(43) };
+const NOT_WAITING = { success: false, error: 'No send is waiting on a Ledger here' };
+// The device's answer to the last piece once the user approves: v, r, s.
+const SIGNED = '1c' + 'aa'.repeat(32) + 'bb'.repeat(32) + '9000';
 const hex = (bytes) => Buffer.from(bytes).toString('hex');
 
 /** The address check's answer: the device key and address text, then 9000. */
@@ -151,10 +198,27 @@ function addressAnswer(wallet) {
   return Buffer.concat([Buffer.from([key.length]), key, Buffer.from([text.length]), text, Buffer.from('9000', 'hex')]);
 }
 
+/** The core's transaction (`sign.transaction`'s `tx`), signed by the device's key. */
+function signedRaw(tx) {
+  const unsigned = Transaction.from({
+    type: tx.type,
+    chainId: BigInt(tx.chain_id),
+    nonce: Number(tx.nonce),
+    gasLimit: BigInt(tx.gas_limit),
+    gasPrice: BigInt(tx.gas_price),
+    to: tx.to,
+    value: BigInt(tx.value),
+    data: tx.data,
+  });
+  unsigned.signature = deviceWallet.signingKey.sign(unsigned.unsignedHash);
+  return unsigned.serialized;
+}
+
 /**
  * The core's `sign.transaction` for a Ledger key: the stream main prepared,
  * one `shell.ledger_apdu` at a time, until main's cancel; the device waits
- * at the last piece (the one the user confirms).
+ * at the last piece (the one the user confirms). Once it answers that
+ * piece, the core replies the signed transaction.
  */
 async function playSign(message) {
   const { id, method, params } = message;
@@ -168,7 +232,7 @@ async function playSign(message) {
     if (core.cancels().includes(id)) throw Object.assign(new Error('Cancelled'), { code: 'cancelled' });
     if (!core.reply(ask)?.answer) throw Object.assign(new Error('Ledger device failed'), { code: 'device_failed', data: { ledger: 'LEDGER_UNKNOWN' } });
   }
-  throw new Error('The device signed: this suite never lets it');
+  return { raw: signedRaw(params.tx) };
 }
 
 let handlers;
@@ -186,9 +250,13 @@ beforeAll(() => {
 
 beforeEach(async () => {
   mockBackend = 'core';
+  mockActive.index = LEDGER_INDEX;
   mockChain.pending = 5n;
   mockChain.reads = 0;
+  mockChain.broadcasts = [];
+  mockSigned.after = null;
   mockStore.commit.mockClear();
+  mockStore.handoff.mockClear();
   const ledger = fakeLedgerDevices({
     respond: (apdu) => {
       const text = hex(apdu);
@@ -278,6 +346,14 @@ test('with no send in flight, a Cancel reaches nothing', async () => {
   expect(signs()).toEqual([]);
 });
 
+test("a phone's send has no Cancel here: nothing in main could stop it", async () => {
+  mockActive.index = 1000001;
+  const pending = send();
+  expect(await cancel()).toEqual(NOT_WAITING);
+  expect(await pending).toMatchObject({ success: false, error: 'No phone here' });
+  expect(signs()).toEqual([]);
+});
+
 test('on the JS backend no send is cancellable: the Cancel reaches nothing, and the device decides, as before', async () => {
   mockBackend = 'js';
   mockJsLedger.answer = null;
@@ -288,4 +364,92 @@ test('on the JS backend no send is cancellable: the Cancel reaches nothing, and 
   mockJsLedger.answer.reject(Object.assign(new Error('Request rejected on the Ledger device.'), { code: 'LEDGER_USER_REJECTED' }));
   expect(await pending).toEqual({ success: false, error: 'Request rejected on the Ledger device.' });
   expect(signs()).toEqual([]);
+});
+
+// The commit boundary: in the same run as the commit of the signed bytes,
+// the window's Cancel stops reaching its send (wallet-ipc.js `signed()`).
+describe('the commit boundary: exactly one of the signature and the Cancel wins', () => {
+  /** The next commit, held until the test answers it. */
+  function heldCommit() {
+    let answer;
+    const held = new Promise((resolve) => {
+      answer = resolve;
+    });
+    mockStore.commit.mockImplementationOnce(() => held);
+    return answer;
+  }
+
+  test('signed first: a Cancel while the commit is pending reaches nothing, and the send is committed and broadcast', async () => {
+    const commit = heldCommit();
+    const pending = send();
+    await until(() => devices().held.length === 1, 'the Ledger waiting for the user');
+    // The user approves on the device: the core replies the signature.
+    devices().release(SIGNED);
+    await until(() => mockStore.commit.mock.calls.length === 1, 'the commit');
+    const [{ nonce, hash, raw }] = mockStore.commit.mock.calls[0];
+    expect(nonce).toBe(5);
+    expect(Transaction.from(raw).from).toBe(deviceWallet.address);
+
+    // The Cancel comes while the commit is pending: not waiting, and nothing
+    // is cancelled.
+    expect(await cancel()).toEqual(NOT_WAITING);
+    expect(core().cancels()).toEqual([]);
+    expect(devices().of('detach').filter((e) => e.inFlight)).toEqual([]);
+
+    commit({ intentId: 'intent-1', chainId: SEND.chainId });
+    // The screen hears the send's own outcome: sent.
+    expect(await pending).toMatchObject({
+      success: true,
+      hash,
+      nonce: 5,
+      from: deviceWallet.address,
+      intentId: 'intent-1',
+      outcome: 'sent',
+    });
+    expect(mockChain.broadcasts).toEqual([raw]);
+    expect(mockStore.handoff.mock.calls).toEqual([['intent-1']]);
+    // After it too, the Cancel reaches nothing.
+    expect(await cancel()).toEqual(NOT_WAITING);
+  });
+
+  test('a Cancel after the device signed, before the commit: nothing committed or sent, Not sent, the nonce released once', async () => {
+    const pending = send(event(41));
+    await until(() => devices().held.length === 1, 'the Ledger waiting for the user');
+    const [request] = signs();
+    // The signer has the signature (signers.js saw no Cancel); the Cancel
+    // comes before the transaction service commits it.
+    let cancelled = null;
+    mockSigned.after = async () => {
+      mockSigned.after = null;
+      cancelled = await cancel(event(41));
+    };
+    devices().release(SIGNED);
+
+    expect(await pending).toEqual({ success: false, error: NOTICE, code: 'LEDGER_CANCELLED' });
+    expect(cancelled).toEqual({ success: true });
+    expect(mockStore.commit).not.toHaveBeenCalled();
+    expect(mockStore.handoff).not.toHaveBeenCalled();
+    expect(mockChain.broadcasts).toEqual([]);
+    // The core's request had ended: no cancel went to it.
+    expect(core().cancels()).toEqual([]);
+    expect(core().requests('approval.discard')).toHaveLength(1);
+
+    // The nonce went back once: the next send takes it again at once, and
+    // holds the account while it waits, so a send from another window waits
+    // its turn rather than taking the nonce too.
+    const again = send(event(41));
+    await until(() => devices().held.length === 1, 'the Ledger waiting again');
+    const other = send(event(42));
+    await settle();
+    expect(signs().map((sign) => Number(sign.params.tx.nonce))).toEqual([Number(request.params.tx.nonce), 5]);
+    expect(await cancel(event(41))).toEqual({ success: true });
+    expect(await again).toMatchObject({ success: false, code: 'LEDGER_CANCELLED' });
+    // Its turn now: the same nonce, the account's lock handed on once.
+    await until(() => signs().length === 3, 'the other window signing');
+    expect(Number(signs()[2].params.tx.nonce)).toBe(5);
+    await until(() => devices().held.length === 1, 'the Ledger waiting for the other window');
+    expect(await cancel(event(42))).toEqual({ success: true });
+    expect(await other).toMatchObject({ success: false, code: 'LEDGER_CANCELLED' });
+    expect(mockStore.commit).not.toHaveBeenCalled();
+  });
 });

@@ -62,15 +62,18 @@
  * signature, is never logged or put in an error, and never reaches a
  * renderer. Main discards it once the step ends, spent or not.
  *
- * On the core's Ledger backend a Ledger's send can be cancelled until it is
- * signed (freedom-core design 0016, "Deadlines, cancel and unplugging",
- * deviation `cancel`; LDG-3's PR 10): the step says so as it starts
- * (`context.deviceWait()`, so the surface that approved it keeps Reject),
- * and its signer gets the request's `signal`, which aborts once main
- * answers the request (that Reject, its document gone, its deadline): main
- * cancels the core's `sign.transaction`, the relay lets go of the device,
- * and the send fails before its commit, its nonce released. The page hears
- * a rejection, as for the device's own.
+ * On the core's Ledger backend a Ledger's send can be cancelled until its
+ * signature is committed (freedom-core design 0016, "Deadlines, cancel and
+ * unplugging", deviation `cancel`; LDG-3's PR 10): the step says so as it
+ * starts (`context.deviceWait()`, so the surface that approved it keeps
+ * Reject), and its signer gets the request's `signal`, which aborts once
+ * main answers the request (that Reject, its document gone, its deadline):
+ * main cancels the core's `sign.transaction`, the relay lets go of the
+ * device, and the send fails before its commit, its nonce released. The
+ * page hears a rejection, as for the device's own. The commit of the signed
+ * bytes ends the wait in the same run (`context.endDeviceWait()`), unless
+ * the signal aborted first: exactly one of the two wins, and a Reject after
+ * the commit is refused `not-waiting` while the send goes out.
  *
  * The send's steps after the decision (`sendDappPayment`) and the
  * transaction's form checks (`txOf`, which `page-ethereum.js` and
@@ -520,12 +523,23 @@ function createCoreSends(shared, deps = {}) {
         return false;
       }
     };
+    // A Ledger on the core's backend: cancellable until its signature is
+    // committed, the request's signal being main's own cancel of the core's
+    // signature.
+    const cancellable = type === 'ledger' && d.ledgerCancels();
     const stillHeld = (spending) => async (run) => {
       if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
       if (!grantExposes(requester.key, account)) throw withdrawn(error(NOT_CONNECTED));
       if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
       if (agent && !agentHolds()) throw withdrawn(error(CUSTODY_LOST));
       if (spending) context.traceCoreToken?.('spent', confirmation.kind);
+      // The commit boundary, in the same run as the commit: from here
+      // Reject no longer reaches the request, and the page hears the send's
+      // own outcome. A Reject that came first (the request answered, its
+      // signal aborted) wins: nothing is committed or sent.
+      if (!spending && cancellable && (signal.aborted || context.endDeviceWait?.() === false)) {
+        throw withdrawn(error(USER_REJECTED));
+      }
       return run();
     };
     // The signer's last step, after its own waits (the fee, the nonce, a
@@ -555,9 +569,6 @@ function createCoreSends(shared, deps = {}) {
       receipt = null;
     };
     signal.addEventListener('abort', eraseReceipt, { once: true });
-    // A Ledger on the core's backend: cancellable until main answers the
-    // request, whose signal is main's own cancel of the core's signature.
-    const cancellable = type === 'ledger' && d.ledgerCancels();
     if (cancellable) context.deviceWait?.();
     try {
       let sent;
