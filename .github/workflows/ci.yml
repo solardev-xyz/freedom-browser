@@ -1262,6 +1262,20 @@ jobs:
         env:
           FREEDOM_CORED_SWARM_TEST: '1'
 
+      # freedom-core design 0016, LDG-3's PR 6: main's Ledger relay with the
+      # switch on, a scripted device behind it, against the pinned core,
+      # whose strict reader of `shell.ledger_apdu`'s replies ends the
+      # connection on any it doesn't take: an `{ answer }` (`ledger.accounts`
+      # with the recorded device answer, the account the core checked), a
+      # refusal with its rule (`ledger.add` at a path main's record doesn't
+      # hold, refused before the device) and a `{ failed }` (no device), the
+      # same core throughout. The rest of LDG-3's gates are its PR 12's.
+      - name: Main's Ledger relay with the switch on (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/core/ledger-relay.integration.test.js
+        env:
+          FREEDOM_CORED_LEDGER_TEST: '1'
+
       # The key store through main (freedom-core design 0013, PRF-2): main's
       # `shell.keystore` executor and the drain of the forget file, against
       # the same binary. On macOS, the helper against a temporary keychain
