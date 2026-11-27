@@ -17,6 +17,11 @@
  *   core's APDUs for it are refused `parent`; only a changed nonce passes,
  *   as another nonce the core could have drawn. So is a core's hash that
  *   isn't main's.
+ * - **The entry is main's:** a core that names another of the 402's
+ *   entries, with typed data and a hash that match it, is refused before
+ *   the first APDU, the reservation withheld: a payment the user approved
+ *   pays only the entry its token binds, and an auto-pay only an entry
+ *   main's own mirror shows a cap covering (else CAP_NOT_COVERED).
  * - **A settled payment:** `now_s` sent with the Ledger's `device`, main's
  *   own frozen copy settled as `{ reservation, typed_data }` under the
  *   device watchdog, the honest stream carried to the device byte for byte,
@@ -40,6 +45,8 @@ const mockState = {
   records: new Map(),
   addressChecks: [],
   tabs: new Map(),
+  // The caps' mirror main reads (core/grants.js), by origin.
+  caps: new Map(),
 };
 
 jest.mock('electron', () => ({
@@ -68,8 +75,11 @@ jest.mock('../core/core-process', () => ({
   getCoreClient: () => mockState.client,
   getLedgerRelay: () => mockState.relay,
 }));
-// The caps' mirror: read again after each payment, which this suite doesn't follow.
-jest.mock('../core/grants', () => ({ grantStore: () => ({ reread: () => {} }) }));
+// The caps' mirror, as the core last reported it: read again after each
+// payment, which this suite doesn't follow.
+jest.mock('../core/grants', () => ({
+  grantStore: () => ({ reread: () => {}, get: (key) => mockState.caps.get(key) ?? [] }),
+}));
 jest.mock('../wallet/ledger/ledger-backend-kind', () => ({ ledgerBackendKind: () => 'core' }));
 jest.mock('../identity-manager', () => ({
   getActiveWalletIndex: () => 100,
@@ -98,7 +108,9 @@ jest.mock('./intercept', () => ({
 const log = require('../logger');
 const { setPendingPayment, sendToHost } = require('./intercept');
 const { vaultBackend } = require('../core/vault-backend');
-const { signAndQueueRetry } = require('./sign-flow');
+const { TypedDataEncoder } = require('ethers');
+const { signAndQueueRetry, CAP_NOT_COVERED } = require('./sign-flow');
+const { rebuildLedgerAuthorization } = require('./ledger-authorization');
 const { ledgerVectors, ledgerVectorsRequired } = require('../../../test/helpers/ledger-vectors');
 const { fakeLedgerDevices, startLedgerCore, until, settle } = require('../../../test/helpers/fake-ledger-core');
 
@@ -124,18 +136,34 @@ const x402Cases = found ? ledger.cases.filter((c) => c.family === 'x402') : [];
 const honest = found ? new Map(grammar.honest.map((h) => [h.case, h.apdus])) : new Map();
 const FORMS = x402Cases.map((c) => [c.id, c]);
 
-/** The 402 a site answered for a case: its one accept entry, as main parsed it. */
-function detectionOf(c) {
-  const url = 'https://paid.example/a';
+const ORIGIN = 'https://paid.example';
+
+/** The 402 a site answered for a case: its accept entries (the case's alone by default), as main parsed them. */
+function detectionOf(c, accepts = [c.x402.requirements]) {
+  const url = `${ORIGIN}/a`;
   const requirements =
     c.x402.version === 1
-      ? { x402Version: 1, accepts: [c.x402.requirements] }
-      : { x402Version: 2, resource: { url }, accepts: [c.x402.requirements] };
+      ? { x402Version: 1, accepts }
+      : { x402Version: 2, resource: { url }, accepts };
   return { url, requirements, detectionId: `req-${c.id}`, resourceType: 'xhr' };
 }
 
-/** The confirmation x402:approve holds for the case's entry: its token, as the core minted it. */
-const confirmationOf = (token = 'token-1') => ({ token, payload: { accept_index: 0 } });
+/** The confirmation x402:approve holds for an entry: its token, as the core minted it. */
+const confirmationOf = (acceptIndex = 0, token = 'token-1') => ({ token, payload: { accept_index: acceptIndex } });
+
+/** A cap in main's mirror for the case's chain and asset, with `capAmount` of room. */
+function capFor(c, capAmount = '50000') {
+  mockState.caps.set(ORIGIN, [
+    {
+      chainId: 8453,
+      asset: c.x402.requirements.asset.toLowerCase(),
+      capAmount,
+      spentAmount: '0',
+      createdAt: c.x402.now_s - 60,
+      expiresAt: c.x402.now_s + 3600,
+    },
+  ]);
+}
 
 let started;
 let reservations;
@@ -165,10 +193,13 @@ function serveX402({ authorize, settle: onSettle = () => {} }) {
 }
 
 /** The core's reply to `x402.authorize` for a Ledger's payment: the case's typed data and hash, unless changed. */
-function authorizeReply(c, { typedData = c.request.typed_data, hash = c.request.expected_hash, charged = false } = {}) {
+function authorizeReply(
+  c,
+  { typedData = c.request.typed_data, hash = c.request.expected_hash, charged = false, acceptIndex = 0 } = {}
+) {
   const reservation = `${String(reservations.length + 1).padStart(2, '0')}${'ab'.repeat(15)}`;
   reservations.push(reservation);
-  return { device: { typed_data: typedData, hash }, reservation, accept_index: 0, charged };
+  return { device: { typed_data: typedData, hash }, reservation, accept_index: acceptIndex, charged };
 }
 
 /** The device answers each APDU of the case's honest stream as ledger.json recorded it. */
@@ -202,9 +233,11 @@ async function playLane(fc, parentId, apdus) {
 /** Runs one payment to its end: `{ result }` or `{ error }`. */
 async function pay(c, opts = {}) {
   const outcome = await signAndQueueRetry(TAB, {
-    detection: detectionOf(c),
+    detection: detectionOf(c, opts.accepts),
     walletIndex: ACCOUNT,
-    ...(opts.authorizedBy === 'cap' ? { authorizedBy: 'cap' } : { confirmation: confirmationOf() }),
+    ...(opts.authorizedBy === 'cap'
+      ? { authorizedBy: 'cap' }
+      : { confirmation: confirmationOf(opts.acceptIndex) }),
   }).then(
     (result) => ({ result }),
     (error) => ({ error })
@@ -227,6 +260,7 @@ beforeEach(async () => {
   reservations = [];
   mockState.addressChecks = [];
   mockState.tabs.clear();
+  mockState.caps.clear();
   setPendingPayment.mockClear();
   sendToHost.mockClear();
   log.warn.mockClear();
@@ -313,6 +347,131 @@ describeIfVectors('a Ledger payment on the core: the core changes the authorizat
   });
 });
 
+describeIfVectors('a Ledger payment on the core: the core names another entry', () => {
+  // A 402 with two entries main's rebuild can build: the case's, and one
+  // that pays twice the amount to another recipient.
+  const twoEntries = (c) => [
+    c.x402.requirements,
+    { ...c.x402.requirements, amount: '20000', payTo: `0x${'42'.repeat(20)}` },
+  ];
+
+  /** The typed data and hash a faulty core gives for `accept`: exactly what main would build for that entry. */
+  function authorizationFor(c, accept) {
+    const built = rebuildLedgerAuthorization({
+      x402Version: 2,
+      accept,
+      from: c.record.address,
+      nowS: c.x402.now_s,
+      nonce: `0x${c.x402.nonce}`,
+    });
+    const typedData = JSON.parse(JSON.stringify(built.typedData));
+    return { typedData, hash: TypedDataEncoder.hash(typedData.domain, typedData.types, typedData.message) };
+  }
+
+  /** The faulty core's reply naming entry `acceptIndex` (its own typed data for it, when it has one). */
+  function replyNaming(c, acceptIndex, accepts) {
+    const accept = accepts[acceptIndex];
+    return accept ? authorizeReply(c, { ...authorizationFor(c, accept), acceptIndex }) : authorizeReply(c, { acceptIndex });
+  }
+
+  function expectRefusedUnsent(fc) {
+    expect(ledgerSettles()).toEqual([]);
+    expect(outcomeSettles()).toEqual([{ reservation: reservations[0], outcome: 'withheld' }]);
+    expect(started.devices.events).toEqual([]);
+    expect(fc.faults).toEqual([]);
+    expect(setPendingPayment).not.toHaveBeenCalled();
+  }
+
+  test("the user approved the first entry; the core pays the second, its typed data matching it: refused before the first APDU, withheld", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    const accepts = twoEntries(c);
+    const fc = serveX402({ authorize: () => replyNaming(c, 1, accepts) });
+
+    const { error } = await pay(c, { accepts, acceptIndex: 0 });
+
+    expect(requests('x402.authorize')[0]).toMatchObject({ accept_index: 0 });
+    expect(error.message).toMatch(/isn't the one you approved: nothing was paid/);
+    expectRefusedUnsent(fc);
+  });
+
+  test.each([
+    ['out of range', 2],
+    ['negative', -1],
+    ['text', '0'],
+    ['missing', undefined],
+  ])("an accept_index %s: refused before the first APDU, withheld", async (_what, acceptIndex) => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    const accepts = twoEntries(c);
+    const fc = serveX402({ authorize: () => ({ ...authorizeReply(c), accept_index: acceptIndex }) });
+
+    const { error } = await pay(c, { accepts, acceptIndex: 0 });
+
+    expect(error.message).toMatch(/nothing was paid/);
+    expectRefusedUnsent(fc);
+  });
+
+  test('the second entry approved and named: settled around it', async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    const accepts = twoEntries(c);
+    const fc = serveX402({
+      authorize: () => replyNaming(c, 1, accepts),
+      settle: (message) => fc.fail(message.id, { code: 'cancelled', message: 'Cancelled' }),
+    });
+
+    await pay(c, { accepts, acceptIndex: 1 });
+
+    expect(ledgerSettles()).toEqual([
+      { reservation: reservations[0], typed_data: authorizationFor(c, accepts[1]).typedData },
+    ]);
+    expect(outcomeSettles()).toEqual([]);
+  });
+
+  test("an auto-pay: the core picks an entry main's mirror shows no cap covering: CAP_NOT_COVERED before the first APDU, withheld", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    // Room for the first entry's 10000, not the second's 20000.
+    capFor(c, '15000');
+    const accepts = twoEntries(c);
+    const fc = serveX402({ authorize: () => replyNaming(c, 1, accepts) });
+
+    const { error } = await pay(c, { accepts, authorizedBy: 'cap' });
+
+    expect(error.code).toBe(CAP_NOT_COVERED);
+    expectRefusedUnsent(fc);
+  });
+
+  test('an auto-pay with no cap in main\'s mirror: CAP_NOT_COVERED before the first APDU, withheld', async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    const fc = serveX402({ authorize: () => authorizeReply(c) });
+
+    const { error } = await pay(c, { authorizedBy: 'cap' });
+
+    expect(error.code).toBe(CAP_NOT_COVERED);
+    expectRefusedUnsent(fc);
+  });
+
+  test("an auto-pay: the core's pick among entries main's mirror shows covered is settled around it", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    capFor(c, '50000');
+    const accepts = twoEntries(c);
+    const fc = serveX402({
+      authorize: () => replyNaming(c, 1, accepts),
+      settle: (message) => fc.fail(message.id, { code: 'cancelled', message: 'Cancelled' }),
+    });
+
+    await pay(c, { accepts, authorizedBy: 'cap' });
+
+    expect(ledgerSettles()).toEqual([
+      { reservation: reservations[0], typed_data: authorizationFor(c, accepts[1]).typedData },
+    ]);
+  });
+});
+
 describeIfVectors('a Ledger payment on the core: settled', () => {
   test.each(FORMS)(
     "%s: now_s, main's copy settled under the device watchdog, the honest stream on the device, the payment stashed",
@@ -378,6 +537,7 @@ describeIfVectors('a Ledger payment on the core: settled', () => {
   test("a cap's auto-pay: the hold charged at authorize, the payment signed on the device and stashed", async () => {
     const [, c] = FORMS[0];
     recordFor(c);
+    capFor(c);
     started.devices.respond = answersOf(c);
     const fc = serveX402({
       authorize: () => authorizeReply(c, { charged: true }),
@@ -395,7 +555,7 @@ describeIfVectors('a Ledger payment on the core: settled', () => {
       now_s: c.x402.now_s,
       authorization: { cap: { agent: false, attributable: true } },
     });
-    expect(sendToHost).toHaveBeenCalledWith(TAB, 'x402:cap-consumed', { origin: 'https://paid.example' });
+    expect(sendToHost).toHaveBeenCalledWith(TAB, 'x402:cap-consumed', { origin: ORIGIN });
     expect(setPendingPayment.mock.calls[0][2]).toMatchObject({ reservation: reservations[0], charged: true });
     expect(outcomeSettles()).toEqual([]);
   });

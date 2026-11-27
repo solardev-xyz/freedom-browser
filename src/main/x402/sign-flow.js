@@ -55,7 +55,7 @@ const {
   settleTypedData,
 } = require('./caps');
 const { checkLedgerAuthorization, nonceOf } = require('./ledger-authorization');
-const { tupleFromAccept } = require('./payment-utils');
+const { tupleFromAccept, coverageForAccept } = require('./payment-utils');
 const { ledgerBackendKind } = require('../wallet/ledger/ledger-backend-kind');
 const { createLedgerError } = require('../wallet/ledger/errors');
 const { isUserPageId, isAgentPageId } = require('../wallet/agent-tab-custody');
@@ -350,6 +350,12 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
     params.accept_index = confirmation.payload?.accept_index;
     if (confirmation.payload?.grant) params.grant = confirmation.payload.grant;
   }
+  // The entry a Ledger's payment may pay (`ledgerEntry`): a cap's, or the
+  // one the token binds.
+  if (ledger) {
+    ledger.byCap = authorizedBy === AUTHORIZED_BY.CAP;
+    ledger.acceptIndex = ledger.byCap ? null : params.accept_index;
+  }
 
   const ask = () => {
     // Only a token sent to the core is spent there: one the payment
@@ -554,15 +560,41 @@ function ledgerPaymentError(err) {
 }
 
 /**
+ * The entry a Ledger's payment is rebuilt from (`settledByLedger`): main's
+ * own copy of the `accepts[]` entry the core's reply names, only if it is
+ * one main asked the core to pay; null otherwise. A payment the user
+ * approved pays the entry its token binds, the `accept_index` main sent:
+ * the reply must name that very index. An auto-pay pays the entry the core
+ * picked under a cap (the first a cap covers, in the seller's order), which
+ * main's own mirror of the caps must show covered as main's auto-pay
+ * selector reads it (payment-utils.js `coverageForAccept`: the site's cap
+ * for that entry's chain and asset answers now and has room for its
+ * amount). So a core can't move a payment onto another entry: another
+ * amount, asset, chain or recipient.
+ */
+function ledgerEntry(detected, reply, ledger, origin) {
+  const index = reply?.accept_index;
+  if (!Number.isSafeInteger(index) || index < 0) return null;
+  const accepts = detected.requirements?.accepts;
+  const accept = Array.isArray(accepts) && index < accepts.length ? accepts[index] : null;
+  if (!accept) return null;
+  if (ledger.byCap) return coverageForAccept(origin, accept)?.covers === true ? accept : null;
+  return index === ledger.acceptIndex ? accept : null;
+}
+
+/**
  * A Ledger's payment on the core's backend (freedom-core design 0016, "x402
  * from a Ledger account", D2 option A, and LDG-2's L5 as built; the LDG-3
  * plan's point 13), after `x402.authorize { device, now_s }` answered `{
  * device: { typed_data, hash }, reservation, accept_index, charged }`.
  * Returns the authorize reply with the payment in it, as `signedByDevice`.
  *
- * - **Checked before the device:** main rebuilds the authorization from
- *   what it holds (its parsed requirements' entry the reply names, the
- *   record's address, the `now_s` it sent) and the core's nonce, and
+ * - **Checked before the device:** the reply must name an entry main asked
+ *   for (`ledgerEntry`: the token's, or one a cap covers in main's own
+ *   view; an auto-pay's that isn't is CAP_NOT_COVERED, for the card). Main
+ *   rebuilds the authorization from what it holds (its parsed requirements'
+ *   copy of that entry, the record's address, the `now_s` it sent) and the
+ *   core's nonce, and
  *   requires the core's typed data, and its hash, to equal its own
  *   (ledger-authorization.js `checkLedgerAuthorization`). A refusal throws
  *   before anything is sent to the device, with the reservation untouched,
@@ -585,9 +617,15 @@ async function settledByLedger(webContentsId, detected, reply, held, ledger) {
   if (!typed || typeof typed.hash !== 'string' || !typed.typed_data || !held.reservation) {
     throw new Error('The identity core gave no payment for the device to sign');
   }
+  const accept = ledgerEntry(detected, reply, ledger, held.origin);
+  if (!accept) {
+    log.warn("[x402:sign] the identity core's payment for a Ledger names an entry main didn't ask for: nothing reaches the device");
+    if (ledger.byCap) throw capNotCoveredError();
+    throw new Error("The payment the identity core prepared isn't the one you approved: nothing was paid");
+  }
   const checked = checkLedgerAuthorization({
     x402Version: detected.requirements?.x402Version,
-    accept: detected.requirements?.accepts?.[reply.accept_index],
+    accept,
     from: ledger.address,
     nowS: ledger.nowS,
     nonce: nonceOf(typed.typed_data),
