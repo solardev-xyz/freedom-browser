@@ -601,6 +601,26 @@
               data-test="address-input"
             />
             <button
+              id="markdown-toggle-btn"
+              class="markdown-toggle-btn hidden"
+              type="button"
+              aria-label="Markdown source"
+              aria-pressed="false"
+              title="Show Markdown source"
+              data-test="markdown-toggle-btn"
+            >
+              <!-- The Markdown mark (Dustin Curtis, CC0): this tab shows a Markdown file -->
+              <svg viewBox="0 0 208 128" fill="currentColor" aria-hidden="true">
+                <path
+                  d="M15 10h178a5 5 0 0 1 5 5v98a5 5 0 0 1-5 5H15a5 5 0 0 1-5-5V15a5 5 0 0 1 5-5zm0-10A15 15 0 0 0 0 15v98a15 15 0 0 0 15 15h178a15 15 0 0 0 15-15V15A15 15 0 0 0 193 0z"
+                />
+                <path
+                  d="M30 98V30h20l20 25 20-25h20v68H90V59L70 84 50 59v39zm125 0-30-33h20V30h20v35h20z"
+                />
+              </svg>
+              <span class="markdown-toggle-label">Source</span>
+            </button>
+            <button
               id="gateway-offer-pill"
               class="gateway-offer-pill hidden"
               type="button"
@@ -3146,6 +3166,58 @@
                   autocomplete="off"
                 />
 
+                <details id="create-wallet-path" class="create-wallet-path">
+                  <summary>Advanced</summary>
+
+                  <div class="connect-ledger-scheme-row">
+                    <label for="create-wallet-path-scheme">Derivation path</label>
+                    <select id="create-wallet-path-scheme" class="connect-ledger-scheme-select">
+                      <option value="next">Next account</option>
+                      <option value="live">Ledger Live</option>
+                      <option value="metamask">MetaMask</option>
+                      <option value="legacy">Legacy (MEW / MyCrypto)</option>
+                      <option value="custom">Custom path</option>
+                    </select>
+                  </div>
+
+                  <div id="create-wallet-path-index-row" class="connect-ledger-scheme-row hidden">
+                    <label for="create-wallet-path-index">Account index</label>
+                    <input
+                      type="number"
+                      id="create-wallet-path-index"
+                      class="create-wallet-input create-wallet-path-index"
+                      min="0"
+                      step="1"
+                      value="0"
+                    />
+                  </div>
+
+                  <input
+                    type="text"
+                    id="create-wallet-path-input"
+                    class="create-wallet-input create-wallet-path-input hidden"
+                    aria-label="Custom derivation path"
+                    placeholder="m/44'/60'/0'/0/0"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+
+                  <div id="create-wallet-path-preview" class="create-wallet-result hidden">
+                    <code id="create-wallet-path-preview-path" class="create-wallet-result-address"></code>
+                    <code
+                      id="create-wallet-path-preview-address"
+                      class="create-wallet-result-address"
+                    ></code>
+                  </div>
+
+                  <div id="create-wallet-path-error" class="unlock-error hidden"></div>
+
+                  <p id="create-wallet-path-note" class="create-wallet-path-note hidden">
+                    Each path gives a different address from the same seed. Check this is the
+                    address you expect before relying on it.
+                  </p>
+                </details>
+
                 <button type="button" id="create-wallet-submit" class="create-wallet-submit-btn">
                   Create Wallet
                 </button>
@@ -3168,6 +3240,10 @@
                   <code
                     class="create-wallet-result-address"
                     id="create-wallet-result-address"
+                  ></code>
+                  <code
+                    class="create-wallet-result-address hidden"
+                    id="create-wallet-result-path"
                   ></code>
                 </div>
 

@@ -420,6 +420,25 @@ describe('handleBzzRequest', () => {
     expect(init.headers.get('Swarm-Chunk-Retrieval-Timeout')).toBe('30s');
   });
 
+  // bee-js uploads a `.md` file as application/octet-stream, which Chromium
+  // would download; a navigation to one opens as Markdown instead (#1035).
+  test('a .md navigation served as octet-stream opens as Markdown', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      new Response(new TextEncoder().encode('# Notes\n'), {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+      })
+    );
+    const res = await handleBzzRequest(
+      makeRequest(`bzz://${HASH}/notes/post.md`, {
+        headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
+      }),
+      { fetchImpl }
+    );
+    expect(res.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(await res.text()).toBe('# Notes\n');
+  });
+
   test('does not retry 404 — fails fast so SPAs can fall back', async () => {
     // 404 used to be retryable to absorb cold-Bee transient misses, but the
     // navigation probe in swarm-probe.js now handles cold-start upstream,

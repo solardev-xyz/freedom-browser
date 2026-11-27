@@ -44,6 +44,7 @@ import {
   setAgentTabClaimHandler,
   isTabAgentOwned,
   setTabStripProjection,
+  releasePendingProjectedTabs,
   subscribeTabPresentation,
   getTabPresentation,
   createWorkspaceViewerTab,
@@ -80,6 +81,7 @@ import { initLinkStatus } from './lib/link-status.js';
 import { initSitePermissionsUi, closePermissionPopover } from './lib/site-permissions-ui.js';
 import { initPopupBlockerUi, closePopupBlockedPopover } from './lib/popup-blocker-ui.js';
 import { initGatewayOfferUi, closeGatewayOfferPopover } from './lib/gateway-offer-ui.js';
+import { initMarkdownViewUi } from './lib/markdown-view-ui.js';
 import { initFindBar } from './lib/find-bar.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import {
@@ -186,10 +188,15 @@ electronAPI.onAutomationStopLoading?.(({ rendererTabId }) => {
   const tab = getTabById(rendererTabId);
   if (tab?.webview) stopPageLoading(tab.webview);
 });
-electronAPI.onAutomationCreateTab?.(({ url }) => createTab(url)?.id || null);
+electronAPI.onAutomationCreateTab?.(({ url }) => {
+  // Main registers the new page with its conversation after creation. Keep it
+  // backgrounded until that projection arrives instead of leaving full view.
+  const deferUntilProjected = document.body.classList.contains('agent-first-mode');
+  return createTab(url, { background: deferUntilProjected, deferUntilProjected })?.id || null;
+});
 electronAPI.onAutomationCloseTab?.(({ rendererTabId }) => {
   if (!getTabById(rendererTabId)) return false;
-  closeTab(rendererTabId);
+  closeTab(rendererTabId, { focus: false });
   return !getTabById(rendererTabId);
 });
 electronAPI.onAutomationFocusTab?.(({ rendererTabId }) => {
@@ -838,14 +845,14 @@ function initUpdateNotifications() {
     electronAPI.restartAndInstallUpdate?.();
   });
 
-  // Listen for update notifications from main process
+  // Listen for update notifications from main process. updater.js only sends
+  // `ready` (a downloaded update to install); checking, progress and
+  // up-to-date results show in Settings → About Freedom → Updates, not as a
+  // toast (#918), so any other type is ignored here.
   electronAPI.onUpdateNotification?.((data) => {
     pushDebug(`[update] Received notification: ${data.type}`);
     if (data.type === 'ready') {
       showToast(data.message, true, data.actionLabel || 'Install now');
-    } else {
-      // checking, downloading, up-to-date
-      showToast(data.message, false);
     }
   });
 }
@@ -913,6 +920,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     navigate: (url, webview, { auto }) =>
       loadTarget(url, null, webview, auto ? { pageInitiated: true } : {}),
   });
+  // Markdown button (#1035). Before initTabs too, for the first tab.
+  initMarkdownViewUi();
   initLinkStatus();
   initFindBar({
     getActiveWebview,
@@ -941,6 +950,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     setAgentTabCustody,
     setAgentTabClaimHandler,
     setTabStripProjection,
+    releasePendingProjectedTabs,
     setWorkspaceNavigationProjection: setAgentWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable: setAgentWorkspaceNavigationEditable,
     subscribeTabPresentation,

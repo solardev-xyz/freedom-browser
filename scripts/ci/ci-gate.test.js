@@ -328,7 +328,7 @@ describe('the triggers', () => {
     // puts every `-rc.N` version bump straight onto it, §8 expects same-cycle
     // `fix(build): …` commits there, and a fix that does arrive as a pull
     // request still lands as a merge commit whose tree no `pull_request` run
-    // saw. §4 gates the pre-tag "CI is green" check on these runs off the
+    // saw. §5 gates every pre-tag "CI is green" check on these runs off the
     // Actions tab precisely because §8 makes the pull request into `main`
     // optional, so there is often no `gh pr checks` to ask instead.
     // Counted 2026-09-22 over the runs still in Actions retention,

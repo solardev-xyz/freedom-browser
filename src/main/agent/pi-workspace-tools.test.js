@@ -749,6 +749,31 @@ describe('Pi managed workspace tools', () => {
     );
   });
 
+  test.each([
+    ['WORKSPACE_STARTUP_BUSY', 'did not start', 'refresh_state'],
+    ['WORKSPACE_STARTUP_TIMEOUT', 'may have started', 'inspect_outcome'],
+    ['WORKSPACE_FILE_OPERATION_TIMEOUT', 'Inspect the file before retrying', 'inspect_outcome'],
+  ])('a Windows file write reports %s instead of a generic start failure', async (code, text, action) => {
+    const controller = createController();
+    controller.writeFile.mockRejectedValueOnce(Object.assign(new Error('C:\\Users\\private\\project'), { code }));
+    const tools = await createWorkspaceTools({ sdk: createSdk(), controller, conversationId: 'conversation_one', requestApproval: jest.fn() });
+    const failure = await tools[2].execute('write_one', { path: 'src/new.js', content: 'new text' }).catch(error => error);
+    expect(failure).toMatchObject({ code, recovery: { action } });
+    expect(failure.message).toContain(text);
+    expect(failure.message).not.toContain('WORKSPACE_EXECUTION_FAILED');
+    expect(failure.message).not.toContain('could not start the workspace command');
+    expect(failure.message).not.toContain('private');
+  });
+
+  test('only an explicit startup-busy refusal is described as not started', () => {
+    expect(safeWorkspaceError(new Error('SDK failure'), { operation: 'bash',
+      receipt: { state: 'failed', exitCode: null, error: { code: 'WORKSPACE_STARTUP_BUSY' } } }).message)
+      .toContain('did not start');
+    for (const code of ['WORKSPACE_STARTUP_TIMEOUT', 'WORKSPACE_FILE_OPERATION_TIMEOUT']) {
+      expect(safeWorkspaceError({ code }).message).not.toMatch(/did not start|could not start/);
+    }
+  });
+
   test('delegates grep, glob discovery, and directory listing without host tools', async () => {
     const controller = createController();
     const tools = await createWorkspaceTools({

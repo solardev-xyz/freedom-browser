@@ -56,6 +56,7 @@ const {
   CACHE_ONLY_HEADER,
   CACHE_UNAVAILABLE,
 } = require('../ipfs-manager');
+const { isDocumentRequest, labelMarkdownDocument } = require('../lib/gateway-response-headers');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
@@ -543,22 +544,6 @@ function jsonErrorResponse(status, message) {
   });
 }
 
-// Is this request a document load (top-level or frame navigation) rather
-// than a subresource fetch? `protocol.handle` gives us no `Sec-Fetch-Dest`
-// (Chromium does not send the Sec-Fetch-* family for custom schemes) and
-// both `Request.destination` and `Request.mode` are useless here —
-// empirically, on the Electron we ship, `destination` is always `''` and
-// `mode` is always `'cors'`, for navigations and subresources alike. What
-// does survive is Chromium's fixed navigation `Accept` header, whose first
-// media type is `text/html`; every subresource sends its own type-specific
-// Accept instead (`*/*` for scripts and fetch/XHR, `text/css,*/*;q=0.1`
-// for stylesheets, `image/…` for images). So Accept is the navigation
-// signal available, and it is the one used here.
-function isDocumentRequest(request) {
-  const accept = request?.headers?.get('accept') || '';
-  return accept.split(',')[0].trim().toLowerCase() === 'text/html';
-}
-
 // IPFS off (#30) leaves a cache-only node serving `ipfs://`. A page it can't
 // serve from the store gets a page that says so, instead of the gateway's
 // bare "502 Bad Gateway". Plain markup under the content's own origin: no
@@ -835,7 +820,7 @@ async function handleRequest(
         signal: request.signal,
       });
       return await renderSmallTextResponse(
-        cacheOnlyResponse(response, gatewayPath, method, request),
+        labelMarkdownDocument(cacheOnlyResponse(response, gatewayPath, method, request), request),
         method,
         request
       );
@@ -868,7 +853,11 @@ async function handleRequest(
   const init = { method, headers, signal: attemptCtl.signal, redirect: 'follow' };
 
   try {
-    return await renderSmallTextResponse(await fetchImpl(built.url, init), method, request);
+    return await renderSmallTextResponse(
+      labelMarkdownDocument(await fetchImpl(built.url, init), request),
+      method,
+      request
+    );
   } catch (err) {
     // Translate our attempt-level abort into a 504 with a useful message
     // (rather than letting the raw AbortError surface as a 502). If the

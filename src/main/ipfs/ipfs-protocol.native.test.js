@@ -490,6 +490,25 @@ describe('ipfs: IPFS off serves saved content (#30)', () => {
     expect(await res.text()).toBe('saved');
   });
 
+  // A saved Markdown file still opens as a page with IPFS off (#1035): the
+  // cache-only marker comes off and the relabelling runs on what is left.
+  test('a saved .md file opens as Markdown from the cache-only node', async () => {
+    await stack.manager.stopIpfs();
+    fake.onRequest((request) =>
+      fake.serve(request, {
+        headers: { 'content-type': 'application/octet-stream' },
+        body: '# Notes\n',
+      })
+    );
+
+    const res = await ipfs('/README.md', { headers: { Accept: NAVIGATION_ACCEPT } });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(res.headers.has('x-freedom-ipfs-cache-only')).toBe(false);
+    expect(await res.text()).toBe('# Notes\n');
+  });
+
   test('a path the saved content does not have stays a 404', async () => {
     await stack.manager.stopIpfs();
     fake.onRequest((request) =>

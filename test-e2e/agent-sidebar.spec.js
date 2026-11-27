@@ -1,5 +1,6 @@
 const { configureOllamaAgent, openProviderSettings, closeProviderSettings } = require('./agent-provider-fixture');
 const { test: baseTest, expect } = require('./fixtures');
+const { useWideAgentViewport } = require('./agent-viewport');
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
 const http = require('http');
@@ -16,7 +17,9 @@ const test = baseTest.extend({
       response.setHeader('Content-Type', 'application/json');
       if (request.method === 'GET' && request.url === '/api/tags') {
         response.end(JSON.stringify({ models: [{ name: 'freedom-e2e-no-server' }] }));
-      } else {
+      } else if (request.method === 'POST' && request.url === '/api/show') {
+        response.end(JSON.stringify({ capabilities: ['completion', 'tools'] }));
+      } else if (request.method === 'POST' && request.url === '/v1/chat/completions') {
         // Ollama answers a chat request for a model it does not have with
         // HTTP 500 (#849), which generic retry policies treat as transient.
         ollamaChatRequests.count += 1;
@@ -24,6 +27,9 @@ const test = baseTest.extend({
         response.end(JSON.stringify({
           error: { message: 'model "freedom-e2e-no-server" not found, try pulling it first' },
         }));
+      } else {
+        response.writeHead(404);
+        response.end('{}');
       }
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -39,20 +45,7 @@ const test = baseTest.extend({
 const repositoryRoot = path.resolve(__dirname, '..');
 
 // The run-lifecycle test below covers the wide, three-column Agent-first
-// layout, which only exists above the 1100px compact breakpoint. CI's macOS
-// desktop is 1024px wide and macOS will not size a window past its screen, so
-// the default 1200px window lands at 1024px and Agent-first opens compact
-// (sessions column closed). Zoom the chrome out instead until its CSS viewport
-// is wide: layout and every geometry assertion stay in CSS pixels, and the
-// result is the same on every host.
-const WIDE_AGENT_VIEWPORT = 1280;
-async function useWideAgentViewport(app, page) {
-  await app.evaluate(({ BrowserWindow }, width) => {
-    const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    win.webContents.setZoomFactor(Math.min(1, win.getContentBounds().width / width));
-  }, WIDE_AGENT_VIEWPORT);
-  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBeGreaterThan(1100);
-}
+// layout; see agent-viewport.js for why it zooms out on narrow hosts.
 
 test('Agent stays hidden throughout startup and opens only on request', async ({ window }) => {
   await window.addInitScript(() => {

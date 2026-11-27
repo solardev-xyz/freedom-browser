@@ -46,7 +46,9 @@ let enabled = false;
 let revision = 0;
 // "Show the banner again" (#881): offered while the start page hides its
 // Freedom Agent banner because the user dismissed the step the profile is on.
-const { aiInvitationStep, dismissedAiInvitationStep } = window.freedomAiInvitation;
+const { aiInvitationStep, dismissedAiInvitationStep, AI_PRIVACY_GUIDE_URL } = window.freedomAiInvitation;
+const privacyGuide = document.getElementById('ai-privacy-guide-settings');
+if (privacyGuide) { privacyGuide.href = AI_PRIVACY_GUIDE_URL; privacyGuide.hidden = false; }
 const invitationRow = document.getElementById('ai-invitation-reset-row');
 const invitationReset = document.getElementById('ai-invitation-reset');
 let currentSettings = null;

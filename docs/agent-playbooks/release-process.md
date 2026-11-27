@@ -8,9 +8,9 @@ It complements `changelog-process.md` — that playbook covers the mechanics of 
 
 The flow at a glance:
 
-1. Branch `release/<version>` off `main` (§0), set the version to `<version>-rc.1` (§1), refresh dependencies (§2), draft the changelog (§3), verify (§4).
-2. Tag `v<version>-rc.1` and push (§5). CI publishes a pre-release. Smoke-test it on every platform (§6). Fix on the release branch, bump to `rc.2`, tag again — until a candidate is clean.
-3. Set the bare `<version>`, finalize the changelog, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
+1. Branch `release/<version>` off `main` (§0), set the version to `<version>-rc.1` (§1), refresh dependencies (§2), draft the changelog (§3), check licenses and UI consistency (§4).
+2. Once CI is green on the branch head, tag `v<version>-rc.1` and push (§5). CI publishes a pre-release. Smoke-test it on every platform (§6). Fix on the release branch, bump to `rc.2`, wait for CI to go green on the bump, tag again — until a candidate is clean.
+3. Set the bare `<version>`, finalize the changelog, and once CI is green on that commit, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
 4. Upload the draft's assets to `freedom.baby`, update the website, publish the draft (§7). Merge the branch into `main` (§8) and open the next dev cycle (§9).
 
 An Electron security fix with a deadline does not wait for this cycle: it takes the [Security release (Electron)](#security-release-electron) fast path below, which reuses §1 and §4–§9 and skips the rest.
@@ -173,7 +173,7 @@ Follow `changelog-process.md` in full. Key points for release branches:
 - **Two phases.** During the candidate loop the section stays under `## [Unreleased]`: write and review it early (ideally before `rc.1`, at the latest while `rc.1` is being tested) so testers read the same notes the release will ship. When the bare version is cut, replace the heading with `## [<version>] - <YYYY-MM-DD> "<Codename>"` (date from `git show -s --format="%ad" --date=short HEAD`) in the same commit as the version bump or right after it.
 - **Codename.** Since 0.8.8 a release can carry a one-word codename (0.8.8 is "Goa"). The releaser picks it before the final is cut; how to pick one is in the [org runbook](https://github.com/solardev-xyz/freedom-org/blob/main/releases/RELEASING.md). It appears in exactly two places: the version heading above, and the GitHub Release title in §7 (`Freedom <version> "<Codename>"`). Never in the version string, a tag or an artifact name (`0.8.8`, `v0.8.8` stay plain), and never as an entry in the notes. A release without one keeps the plain `## [<version>] - <YYYY-MM-DD>` heading; the tooling that reads the heading (the release dashboard, `changelog:assemble`) matches on the `## [<version>]` prefix and accepts either.
 - Do **not** leave an empty `## [Unreleased]` section behind, and do not expect the next feature PR to bring it back: under the fragment flow no pull request edits `CHANGELOG.md` at all, so nothing re-introduces the heading until the next release assembles. `changelog-process.md` step 9 is where it comes back — add it above the latest released version before assembling, or `npm run changelog:assemble` exits 1 (dry run and `--write` alike) with `CHANGELOG.md has no '## [Unreleased]' heading to assemble into`.
-- `CHANGELOG.md` is not read by §4 (verify) or by candidate builds (§5, `rc.N` tags), so those run in parallel with the review. The **final** tag (§5) and the website update (§7) freeze the changelog state visible to end users and must wait until the reviewed text is on the release branch.
+- `CHANGELOG.md` is not read by §4 (license and UI checks) or by candidate builds (§5, `rc.N` tags), so those run in parallel with the review. The **final** tag (§5) and the website update (§7) freeze the changelog state visible to end users and must wait until the reviewed text is on the release branch.
 
 Commit style:
 
@@ -188,7 +188,7 @@ docs(changelog): add user-facing <version> release notes
 
 Either way, run the side-by-side comparison in `changelog-process.md` § Review gate against the previous shipped section before presenting, and again after each fix round; the rules there were written from what the 0.8.5 draft got wrong.
 
-## 4. Verify before tagging
+## 4. Check licenses and UI consistency
 
 CI covers what `npm test` and `npm run lint` used to cover here: every push to the release branch runs the full CI matrix (macOS and Windows included, unlike a pull request into `main` without the `full-ci` label — see "The merge queue" below), and the release workflow runs `check-binaries` itself before packaging. What remains manual:
 
@@ -214,11 +214,11 @@ NODE_PATH=$PWD/node_modules xvfb-run -a -s "-screen 0 1440x900x24" \
 
 It writes `<d|l>-<nn>-<surface>.png` for every chrome surface, settings section and internal page into `/tmp/freedom-shots` (override with `SHOTS_DIR`), takes about four minutes per theme, and exits non-zero listing any step that failed — a failed step contaminates the shots after it, so re-run rather than reading past it. Then walk the shots against `ui-consistency.md`: each surface next to its nearest sibling, in both themes, plus that playbook's checklist (heading sizes, button style and verb, input fonts, focus rings, empty states, counters, shortcut label format). File what you find as issues on the milestone; fix on the release branch what is worth holding the release for and let the rest ride to the next cycle. Skipping this step is how a cycle ships with no light-theme coverage at all.
 
-**CI is green** on the release branch head you are about to tag (`gh pr checks` on the branch's PR, or the Actions tab). The release workflow does not gate on CI, so a red branch produces a red release. Green on **attempt 2** counts as green: `.github/workflows/auto-retry.yml` re-runs a failed run's failed jobs once, automatically (Appendix B). Green on attempt 1 after a red attempt is not a thing — the retry only ever moves a run from red towards green, never the reverse — but a run that is *still* red on attempt 2 has failed twice and is a real failure to investigate, not a flake to re-run a third time.
-
 ## 5. Build with CI: candidates and the final
 
 Every build is triggered by pushing an annotated tag from the release branch. The tag must equal `v` + the `package.json` version, or the workflow fails in its first minute.
+
+**Before every tag, CI is green** on the release branch head you are about to tag (`gh pr checks` on the branch's PR, or the Actions tab). The release workflow does not gate on CI, so a red branch produces a red release. This holds for each candidate and for the final, not once per cycle: every cut commits to the branch (the version bump, at the final also the changelog and audit stamp), and CI starts over on that commit. Green on **attempt 2** counts as green: `.github/workflows/auto-retry.yml` re-runs a failed run's failed jobs once, automatically (Appendix B). Green on attempt 1 after a red attempt is not a thing — the retry only ever moves a run from red towards green, never the reverse — but a run that is *still* red on attempt 2 has failed twice and is a real failure to investigate, not a flake to re-run a third time.
 
 ```
 git tag -a v<version>-rc.1 -m "Release candidate <version>-rc.1"
@@ -241,7 +241,7 @@ What `.github/workflows/release.yml` then does:
 | `smoke-windows-x64` | `windows-latest`   | §6 steps 1/2/6 + site permissions against the silently installed NSIS package and the portable zip, a runner each             |
 | `release`           | `ubuntu-latest`    | after **all four builds and all four smoke jobs** succeeded: one GitHub Release with every file above and the `.blockmap`s    |
 
-- **Candidate tag** (`v<version>-rc.N`, anything with a hyphen): the release is created as a draft, the assets are uploaded, then it is flipped to a published **Pre-release**. Public, direct download links, excluded from "Latest release". Hand these to testers.
+- **Candidate tag** (`v<version>-rc.N`, anything with a hyphen): the release is created as a draft, the assets are uploaded, then it is flipped to a published **Pre-release**. Public, direct download links, excluded from "Latest release". Hand these to testers. Once the next candidate's pre-release is published, delete this one's release (`gh release delete v<version>-rc.N --yes`), keeping the tag: only the candidate under test stays on the Releases page.
 - **Final tag** (`v<version>`): the release stays a **draft** until you publish it in §7. Drafts are visible and downloadable only to people with write access to the repo.
 - A failed leg means no release. Fix the cause, then "Re-run failed jobs" on that run: the successful legs' artifacts are kept and the `release` job runs again. If the fix needs a code change, it lands on the release branch as a PR and the next candidate (`rc.N+1`) picks it up; never move a tag.
 - Re-running onto a tag whose release is already published fails on purpose rather than overwriting files people may have downloaded.
@@ -253,7 +253,7 @@ What `.github/workflows/release.yml` then does:
 
 Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no Myotis addon), so no Windows ARM64 artifact bundles Tor either — it would need the same Arti build step on an ARM64 Windows runner. No Windows code-signing certificate exists, so the installer is unsigned and SmartScreen prompts on first run. The installer is named `Freedom-Setup-<v>.exe` (`build.nsis.artifactName`), not electron-builder's default with spaces, because GitHub rewrites spaces in release-asset names to dots, which would break the `url:` in `latest-win-x64.yml`.
 
-**The candidate loop.** Cut `rc.1` as soon as the branch is set up (§1–§4). Fix issues with PRs against `release/<version>` (or land them on `main` and cherry-pick), bump to `rc.2`, tag, push. Repeat until a candidate passes §6 with nothing left to fix. Only then set the bare version (§1), finalize the changelog commit (§3), and tag `v<version>` from that commit. The final build is then the same tree as the last candidate plus the version and changelog commits, which is the point: a final that fails §6 becomes the next patch version, not a retag.
+**The candidate loop.** Cut `rc.1` as soon as the branch is set up (§1–§4). Fix issues with PRs against `release/<version>` (or land them on `main` and cherry-pick), bump to `rc.2`, wait for CI to go green on the bump, tag, push. Repeat until a candidate passes §6 with nothing left to fix. Only then set the bare version (§1), finalize the changelog commit (§3), wait for CI to go green on it, and tag `v<version>` from that commit. The final build is then the same tree as the last candidate plus the version and changelog commits, which is the point: a final that fails §6 becomes the next patch version, not a retag.
 
 **Manual runs** (Actions → "Release" → Run workflow) build every platform from any branch and upload one workflow artifact per platform, without creating a release. Untick `signed` for a macOS pipeline test that needs no secrets; untick `bundle_tor` to skip the Arti build. A **signed** run only starts from `main` or `release/*`: from any other branch the `mac-arm64` job is rejected by the `release-signing` environment before it runs a step (Appendix B), so use `signed: false` there. Workflow artifacts are zipped, need a GitHub login, and expire — they are for your own checks, not for handing out.
 
@@ -327,9 +327,9 @@ FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" \
   FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged
 ```
 
-If any platform fails: fix on the release branch (PR), bump to the next `rc.N`, tag, push, and re-test that candidate. Do not proceed to §7 until every platform you intend to ship passes on the **same** candidate — one green build, not a patchwork of legs from different runs.
+If any platform fails: fix on the release branch (PR), bump to the next `rc.N`, wait for CI to go green on the bump (§5), tag, push, and re-test that candidate. Do not proceed to §7 until every platform you intend to ship passes on the **same** candidate — one green build, not a patchwork of legs from different runs.
 
-This step is intentionally separate from §4 — §4 verifies the source tree; §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
+This step is intentionally separate from the source-tree checks — CI (gated before every tag in §5) and §4's license and UI checks verify the source tree; §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
 
 ## 7. Publish
 
@@ -345,7 +345,7 @@ Order matters: `freedom.baby/downloads` is what existing installs poll for updat
    - The weekly re-push (`deploy/freedom-swarm-repush.service` in the website repo) needs no change after a deploy. It runs with `--expect-feed`: it re-pushes the content, the feed manifest and the latest feed update, and fails rather than publish anything if `dist/` no longer matches what the feed points at.
 4. Publish the draft GitHub Release (`gh release edit v<version> --draft=false`, or the Publish button). Give it the release notes from the changelog section; the workflow only wrote a one-line placeholder. If the release has a codename (§3), set the title to `Freedom <version> "<Codename>"` (`gh release edit v<version> --title 'Freedom <version> "<Codename>"'`). Confirm the page lists every artifact from the table in §5.
 
-Candidate pre-releases can stay on the Releases page; they are marked Pre-release and sort below the final. Delete them only if they are known-broken and you do not want anyone to keep installing them.
+Once the final is published, delete the last candidate's pre-release (`gh release delete v<version>-rc.N --yes`, without `--cleanup-tag`), so no candidate of a shipped version stays on the Releases page. The release dashboard in freedom-org does this, and the per-candidate deletes of §5, on its own.
 
 ## 8. Merge the release branch into `main`
 

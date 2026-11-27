@@ -103,6 +103,7 @@ let setAgentControlledTab = () => {};
 let setAgentTabCustody = () => {};
 let setAgentTabClaimHandler = () => {};
 let setTabStripProjection = () => {};
+let releasePendingProjectedTabs = () => {};
 let setWorkspaceNavigationProjection = () => {};
 let setWorkspaceNavigationEditable = () => {};
 let providerCatalog = [];
@@ -137,6 +138,7 @@ let providerAuthEventUnsubscribe = null;
 let tabPresentationUnsubscribe = null;
 let openTabs = [];
 let taskTabProjection = [];
+let conversationCustodyTabs = [];
 let workspaceProcesses = [];
 let workspaceProjectionGeneration = 0;
 let workspaceInspector = null;
@@ -966,7 +968,10 @@ async function refreshSessionHistory() {
 
 function workspacePages() {
   const tabById = new Map(openTabs.map((tab) => [tab.id, tab]));
-  const projected = taskTabProjection
+  const projected = [...taskTabProjection, ...conversationCustodyTabs.filter(entry =>
+    entry.conversationId === currentConversationId &&
+    !taskTabProjection.some(task => task.rendererTabId === entry.rendererTabId))
+    .map(entry => ({ rendererTabId: entry.rendererTabId, agentActive: false }))]
     .map((entry) => ({ ...entry, tab: tabById.get(entry.rendererTabId) }))
     .filter((entry) => entry.tab);
   const activeTab = openTabs.find((tab) => tab.isActive);
@@ -1084,6 +1089,13 @@ function requestTakeoverConfirmation(rendererTabId = null) {
 }
 
 function applyWorkspaceProjection(state) {
+  // Display same-chat custody popups without expanding the model's scoped
+  // controller authority. Other conversations' tabs remain excluded.
+  conversationCustodyTabs = Array.isArray(state?.agentTabs)
+    ? state.agentTabs.filter(entry => Number.isSafeInteger(entry?.rendererTabId) &&
+      entry.rendererTabId > 0 &&
+      typeof entry.conversationId === 'string' && entry.custody === 'agent')
+    : [];
   taskTabProjection = Array.isArray(state?.taskTabs)
     ? state.taskTabs.filter(
         (entry) =>
@@ -1098,6 +1110,15 @@ function applyWorkspaceProjection(state) {
   renderWorkspaceProcesses(state?.workspace?.processes, state?.workspace?.servers);
   renderTaskPages();
   ensureWorkspacePageVisible();
+  // A page Agent created or focused in full view waits for this projection.
+  // Pages registered to another conversation (or to none) never join this
+  // strip, so release them rather than leave them waiting.
+  releasePendingProjectedTabs(
+    (Array.isArray(state?.agentTabs) ? state.agentTabs : [])
+      .filter((entry) => !currentConversationId || entry?.conversationId !== currentConversationId)
+      .map((entry) => entry?.rendererTabId)
+      .filter((tabId) => Number.isSafeInteger(tabId) && tabId > 0)
+  );
   renderPageInterlock();
 }
 
@@ -3390,6 +3411,9 @@ function formatToolError(code, operation) {
     WORKSPACE_PROTECTED_PATH: 'Blocked protected workspace path',
     WORKSPACE_RUNTIME_UNAVAILABLE: 'Workspace runtime is unavailable',
     WORKSPACE_SANDBOX_DENIED: 'Blocked by workspace sandbox policy',
+    WORKSPACE_STARTUP_BUSY: 'Project protection was busy starting another command. Nothing ran; retry shortly',
+    WORKSPACE_STARTUP_TIMEOUT: 'Project protection did not become ready in time. Inspect files before retrying',
+    WORKSPACE_FILE_OPERATION_TIMEOUT: 'Project file operation timed out after it started. Inspect the file before retrying',
     WORKSPACE_WRITE_FAILED: 'Workspace file could not be written',
   };
   if (operation === 'attachment_list') return 'Attached sources could not be listed';
@@ -4584,6 +4608,14 @@ async function startRun(options = {}) {
       pendingPromptText = '';
       setRunState('idle', '');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
+      if (response?.error?.code === 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' && !currentConversationId) {
+        await refreshProvider();
+        elements.modelMenuSearch.value = '';
+        providerUi.expandModelProvider('ollama');
+        openModelMenu();
+        elements.modelMenuSearch.focus();
+        return false;
+      }
       focusComposer({ preserveExplicitFocus: true });
       return false;
     }
@@ -4721,6 +4753,7 @@ async function chooseAnotherModel(view) {
     userText: turn.userText,
     assistantText: turn.assistantText,
   })));
+  const providerId = conversationModel?.providerId || providerStatus?.providerId;
   view.outcomeChooseModel.disabled = true;
   if (currentConversationId && !(await clearConversation())) {
     view.outcomeChooseModel.disabled = false;
@@ -4730,10 +4763,11 @@ async function chooseAnotherModel(view) {
     elements.prompt.value = prompt;
     updateSendAvailability();
   }
+  await refreshProvider();
   closeComposerPopovers();
   // Show every model: an earlier search could hide the alternatives.
   elements.modelMenuSearch.value = '';
-  renderModelMenu();
+  providerUi.expandModelProvider(providerId);
   openModelMenu();
   elements.modelMenuSearch.focus();
 }
@@ -5102,6 +5136,10 @@ export function initAgentUi(options = {}) {
       : () => {};
   setTabStripProjection =
     typeof options.setTabStripProjection === 'function' ? options.setTabStripProjection : () => {};
+  releasePendingProjectedTabs =
+    typeof options.releasePendingProjectedTabs === 'function'
+      ? options.releasePendingProjectedTabs
+      : () => {};
   setWorkspaceNavigationProjection =
     typeof options.setWorkspaceNavigationProjection === 'function'
       ? options.setWorkspaceNavigationProjection

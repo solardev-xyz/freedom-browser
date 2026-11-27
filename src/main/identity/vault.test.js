@@ -17,8 +17,9 @@ const {
   changePassword,
   deleteVault,
   exportMnemonic,
+  exportPrivateKey,
 } = require('./vault');
-const { isValidMnemonic } = require('./derivation');
+const { isValidMnemonic, deriveUserWallet, deriveWalletAtPath } = require('./derivation');
 
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -355,6 +356,34 @@ describe('vault', () => {
 
       // Should still be unlocked
       expect(isUnlocked()).toBe(true);
+    });
+  });
+
+  describe('exportPrivateKey', () => {
+    const PATH = "m/44'/60'/0'/0/2";
+
+    beforeEach(async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC);
+      await unlockVault(tempDir, 'password123');
+    });
+
+    test('derives from the account index when there is no stored path', () => {
+      expect(exportPrivateKey(2)).toBe(deriveUserWallet(TEST_MNEMONIC, 2).privateKey);
+    });
+
+    test('derives at the stored path, not the index, when there is one', () => {
+      const key = exportPrivateKey(1000000, PATH);
+      expect(key).toBe(deriveWalletAtPath(TEST_MNEMONIC, PATH).privateKey);
+      expect(key).not.toBe(deriveUserWallet(TEST_MNEMONIC, 1000000).privateKey);
+    });
+
+    test('refuses a reserved path read back from vault-meta', () => {
+      expect(() => exportPrivateKey(1000000, "m/44'/60'/0'/0/1")).toThrow('Swarm node');
+    });
+
+    test('throws while the vault is locked', () => {
+      lockVault();
+      expect(() => exportPrivateKey(1000000, PATH)).toThrow('locked');
     });
   });
 });

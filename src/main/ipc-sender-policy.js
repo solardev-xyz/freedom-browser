@@ -77,6 +77,9 @@ const PUBLIC_CHANNELS = [
   // A digit-row keydown the page did not cancel (tab-switch-keys.js). At
   // most it zooms the sender's own window's active tab.
   'page:unhandled-key',
+  // A Markdown document's renderer: the app's own marked, DOMPurify and
+  // view scripts plus the Appearance theme name (markdown-view.js, #1035).
+  'markdown:get-view',
 ];
 
 // freedomAPI methods wrapped in guardInternal (plus the internal-page theme

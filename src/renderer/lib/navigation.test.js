@@ -149,6 +149,18 @@ const loadNavigationModule = async (options = {}) => {
     }),
     updateActiveTabTitle: jest.fn(),
     updateTabFavicon: jest.fn(),
+    // Mirrors tabs.js#isSameFaviconSite for the http(s) pages these tests
+    // load: same host, same per-site cached icon.
+    isSameFaviconSite: jest.fn((a, b) => {
+      const hostOf = (url) => {
+        try {
+          return new URL(url).host;
+        } catch {
+          return '';
+        }
+      };
+      return hostOf(a) !== '' && hostOf(a) === hostOf(b);
+    }),
     setTabLoading: jest.fn(),
     getTabs: jest.fn(() => tabsRef.list),
     getTabById: jest.fn((tabId) => {
@@ -1099,6 +1111,8 @@ describe('navigation', () => {
 
     ctx.elements.addressInput.value = 'https://recorded.example';
     ctx.activeRef.tab.title = 'Recorded Title';
+    // tabs.js commits the page the tab is on at did-navigate.
+    ctx.activeRef.tab.url = 'https://loaded.example';
 
     ctx.tabsMocks.webviewEventHandler('did-stop-loading', {
       url: 'https://loaded.example',
@@ -1293,6 +1307,67 @@ describe('navigation', () => {
       });
 
       expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    // A slow icon fetch can land after the tab has gone on to another site:
+    // painting it then put the old site's icon on the new site's tab.
+    test('an icon that lands after the tab left for another site is not painted', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      let finishFetch;
+      ctx.electronAPI.fetchFaviconWithKey.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFetch = resolve;
+        })
+      );
+      ctx.activeRef.tab.url = 'https://shop.example/item';
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      ctx.tabsMocks.updateTabFavicon.mockClear();
+      ctx.activeRef.tab.url = 'https://elsewhere.example/';
+      finishFetch('data:image/png;base64,shop');
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.updateTabFavicon).not.toHaveBeenCalled();
+    });
+
+    test('an icon that lands while the tab is on another page of the site is painted', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      let finishFetch;
+      ctx.electronAPI.fetchFaviconWithKey.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFetch = resolve;
+        })
+      );
+      ctx.activeRef.tab.url = 'https://shop.example/item';
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      ctx.tabsMocks.updateTabFavicon.mockClear();
+      ctx.activeRef.tab.url = 'https://shop.example/cart';
+      finishFetch('data:image/png;base64,shop');
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.updateTabFavicon).toHaveBeenCalledWith(
+        ctx.activeRef.tab.id,
+        'https://shop.example/item'
+      );
     });
 
     test('a report for a tab that no longer exists is ignored', async () => {

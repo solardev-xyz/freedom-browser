@@ -17,9 +17,9 @@ on:
     # each `npm version <x>-rc.N` bump straight onto the release branch and §8
     # expects same-cycle `fix(build): …` commits there, and even the fixes that
     # do arrive as pull requests (§0) land as a merge commit whose tree no
-    # `pull_request` run ever saw. §4 then gates the pre-tag "CI is green"
-    # check on exactly these runs — "every push to the release branch runs the
-    # full CI matrix", read off the Actions tab, since §8 makes the pull
+    # `pull_request` run ever saw. §5 then gates every pre-tag "CI is green"
+    # check on exactly these runs (§4: "every push to the release branch runs
+    # the full CI matrix"), read off the Actions tab, since §8 makes the pull
     # request into `main` optional and there is often no `gh pr checks` to ask.
     # Counted 2026-09-22 over the runs still in Actions retention,
     # release/0.8.5 took 13 of these runs and release/0.8.0 took 8. Dropping
@@ -969,8 +969,10 @@ jobs:
       # tab's wallet requests attributed to its own site, with a real vault and
       # the real main-side signing check. `siwe-http-auth.spec.js` (#1152) signs
       # in to the SIWE reference server on localhost through the sign-in card,
-      # with a real vault and the real webRequest hooks. The anvil-backed Safe
-      # specs run in `e2e-safe` below.
+      # with a real vault and the real webRequest hooks.
+      # `wallet-derivation-path.spec.js` (#1039) adds accounts at preset and
+      # custom derivation paths with a real vault, and keeps reserved paths
+      # refused. The anvil-backed Safe specs run in `e2e-safe` below.
       - name: Run wallet approval E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
@@ -986,7 +988,8 @@ jobs:
             test-e2e/browsing-credit.spec.js \
             test-e2e/publish-setup-rediscovery.spec.js \
             test-e2e/publish-page-setup.spec.js \
-            test-e2e/publish-text-shortcut.spec.js
+            test-e2e/publish-text-shortcut.spec.js \
+            test-e2e/wallet-derivation-path.spec.js
 
       # ── was the `e2e-safe` job ──
       # Safe (multi-owner account) lifecycle through the real UI against an anvil
@@ -1301,6 +1304,9 @@ jobs:
       # eth.limo/eth.link/bzz.link pages: the URL is never rewritten, the popover
       # opens the native address with path/query/fragment, and the opt-in
       # "always" redirect leaves a gateway page reached by Back alone.
+      # `markdown-view.spec.js` (#1035) opens Markdown files in a real tab: the
+      # page rendered in place with nothing able to run, and the address bar's
+      # Markdown button switching to the source and back.
       - name: Run address-bar + ENSv2 + name-interstitial E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
@@ -1312,7 +1318,8 @@ jobs:
             test-e2e/tez-unverified.spec.js \
             test-e2e/tez-head-conflict.spec.js \
             test-e2e/ens-trust-popover.spec.js \
-            test-e2e/gateway-offer.spec.js
+            test-e2e/gateway-offer.spec.js \
+            test-e2e/markdown-view.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

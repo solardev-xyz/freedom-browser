@@ -72,7 +72,7 @@ class WindowsWorkspaceExecutor {
     const packet = Buffer.from(JSON.stringify({ script: WORKSPACE_FILE_HELPER, args: request.args }) + '\n');
     if (packet.length > 256 * 1024) return this.receipt(Date.now(), { failure: 'File-helper input is too large' });
     return this.#execute(policy, { command: runtime.executablePath, args: ['-e', WINDOWS_FILE_HELPER_BOOTSTRAP],
-      signal: request.signal, onStdin: input => {
+      signal: request.signal, onReady: request.onReady, onStdin: input => {
         for (let offset = 0; offset < packet.length; offset += 64 * 1024) input.write(packet.subarray(offset, offset + 64 * 1024));
       } }, 'execute-file-helper');
   }
@@ -138,7 +138,7 @@ class WindowsWorkspaceExecutor {
         command, workspace, cwd, writableRoots,
         protectedPaths: policy.filesystem.protectedPaths.map(entry => entry.sourcePath),
         environment, network: policy.network === NETWORK_POSTURES.FULL, timeoutMs: policy.limits.timeoutMs },
-      { ...request, ...policy.limits, timeoutMs: policy.limits.timeoutMs + 15000 });
+      { ...request, ...policy.limits, startupTimeoutMs: 75000, timeoutMs: policy.limits.timeoutMs + 15000 });
     } catch (error) {
       result = { failure: error.message };
     } finally {
@@ -157,19 +157,21 @@ class WindowsWorkspaceExecutor {
   receipt(startedAt, result) {
     const finishedAt = Date.now();
     const reason = result.cancellation || result.terminal?.reason;
-    const failure = result.failure || (result.terminal?.type === 'error' ? 'Windows project protection could not start the command' : null);
+    const startupBusy = result.terminal?.type === 'error' && result.terminal.code === 'WINDOWS_SANDBOX_STARTUP_BUSY';
+    const failure = (startupBusy && 'Windows project protection is busy starting another command. This command did not start.') || result.failure || (result.terminal?.type === 'error' ? 'Windows project protection could not start the command' : null);
     const state = reason === 'cancelled' ? EXECUTION_STATES.CANCELLED
       : reason === 'timed_out' ? EXECUTION_STATES.TIMED_OUT
         : failure ? (result.ready ? EXECUTION_STATES.FAILED : EXECUTION_STATES.SANDBOX_DENIED)
           : result.terminal?.exitCode === 0 ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED;
-    return Object.freeze({ backend: 'windows-elevated', state, startedAt, finishedAt, durationMs: finishedAt - startedAt,
+    return Object.freeze({ backend: 'windows-elevated', state, ready: result.ready === true, startedAt, finishedAt, durationMs: finishedAt - startedAt,
+      startupMs: result.startupMs, startupWaitMs: result.startupWaitMs,
       exitCode: result.terminal?.exitCode ?? null, signal: null, stdout: result.stdout || '', stderr: result.stderr || '',
       stdoutTruncated: result.stdoutTruncated === true, stderrTruncated: result.stderrTruncated === true,
       terminationGuarantee: result.attempted ? 'best_effort' : 'not_applicable',
       terminationScope: result.attempted ? 'unknown' : 'not_applicable', survivorsPossible: result.attempted === true,
       completeDescendantTermination: false, sideEffects: result.attempted ? 'unknown' : 'none',
       ...(result.privateDirectoryCleanupFailed && { privateDirectoryCleanupFailed: true }),
-      error: failure ? { code: result.failureCode || 'WORKSPACE_EXECUTION_FAILED', message: failure } : undefined });
+      error: failure ? { code: startupBusy ? 'WORKSPACE_STARTUP_BUSY' : result.failureCode || 'WORKSPACE_EXECUTION_FAILED', message: failure } : undefined });
   }
 }
 

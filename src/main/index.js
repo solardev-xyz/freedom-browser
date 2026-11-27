@@ -406,6 +406,7 @@ const { dropPartition: dropPrivateDownloads } = require('./downloads/private-dow
 const { registerFaviconsIpc } = require('./favicons');
 const { registerEnsIpc } = require('./ens-resolver');
 const { registerGatewayOfferIpc } = require('./gateway-offer');
+const { registerMarkdownViewIpc, installMarkdownDocumentHeaders } = require('./markdown-view');
 const myotisManager = require('./myotis/myotis-manager');
 const { registerTezosDomainsIpc } = require('./tezos-domains-resolver');
 const {
@@ -645,6 +646,7 @@ async function bootstrap() {
   registerFaviconsIpc();
   registerEnsIpc();
   registerGatewayOfferIpc();
+  registerMarkdownViewIpc();
   registerTezosDomainsIpc();
   registerAntIpc();
   registerIpfsIpc();
@@ -769,6 +771,8 @@ async function bootstrap() {
   // harness owns the `web3:` bytes in test mode, but the guard is browser
   // policy either way.
   installOnchainProvenanceCapture();
+  // A Markdown document's charset and sandbox, before Chromium reads it (#1035).
+  installMarkdownDocumentHeaders();
   installX402Interception();
   // Sign-In with Ethereum over HTTP auth (#1152): asks, never signs alone.
   installSiweInterception();
