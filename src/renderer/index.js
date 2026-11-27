@@ -79,6 +79,7 @@ import { initDownloadsUi, setOnOpenDownloadsPage } from './lib/downloads-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
 import { initSitePermissionsUi, closePermissionPopover } from './lib/site-permissions-ui.js';
+import { initScreenSharePicker } from './lib/screen-share-picker.js';
 import { initPopupBlockerUi, closePopupBlockedPopover } from './lib/popup-blocker-ui.js';
 import { initGatewayOfferUi, closeGatewayOfferPopover } from './lib/gateway-offer-ui.js';
 import { initMarkdownViewUi } from './lib/markdown-view-ui.js';
@@ -911,6 +912,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   }); // Full screen hides the chrome (#78)
   initNavigation(); // Sets up event handler with tabs module
   initSitePermissionsUi(); // Permission prompt + address-bar indicator
+  initScreenSharePicker(); // Screen sharing picker (#951)
   initPopupBlockerUi(); // Pop-up-blocked address-bar icon (#442)
   // "Open without gateway" pill (#70). Before initTabs, so the first tab's
   // webview is watched too. The pill's open is a chrome action on the active

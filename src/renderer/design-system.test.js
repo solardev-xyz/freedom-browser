@@ -248,6 +248,7 @@ describe('shared blocks (#1198)', () => {
       'ui-sheet',
       'ui-page-header',
       'ui-empty-state',
+      'ui-tabs',
     ]) {
       expect(catalog).toMatch(new RegExp(`class="${block}[ "]`));
     }

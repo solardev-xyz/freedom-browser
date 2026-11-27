@@ -5,7 +5,7 @@ The chrome and the internal pages paint from one set of tokens and draw their co
 | File                                        | What it holds                                                                                                                        |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `src/renderer/pages/styles/tokens.css`      | Colours for both themes and the private window, plus the spacing, radius, type and control-height scales                             |
-| `src/renderer/pages/styles/ui.css`          | The twelve `ui-` blocks                                                                                                              |
+| `src/renderer/pages/styles/ui.css`          | The thirteen `ui-` blocks                                                                                                            |
 | `src/renderer/pages/ui-catalog.html`        | Every block and variant in both themes, side by side. `npm run ui:catalog`, or open the file in any browser. Not in packaged builds. |
 | `src/renderer/design-system-inventory.json` | What the renderer still does outside the system, per file; it may only shrink                                                        |
 
@@ -49,7 +49,7 @@ Every class starts with `ui-`; variants are `--modifier`, parts are `__part`. Th
 | `ui-button`      | `--primary` (filled accent, one per screen), `--danger` (outlined), `--ghost`; `--sm`, `--lg`, `--block`. The bare class is the secondary button.                              |
 | `ui-button-row`  | `--end`. Secondary first, primary last; equal widths unless `--end`.                                                                                                           |
 | `ui-icon-button` | `--sm` (24px), default (28px), `--lg` (36px); `--round`, `--danger`. Always with an `aria-label`.                                                                              |
-| `ui-card`        | `--inset`, `--interactive`; `__title`                                                                                                                                          |
+| `ui-card`        | `--inset`, `--interactive`, `--selected` (the chosen one of a set of interactive cards); `__title`                                                                             |
 | `ui-detail-list` | a `<dl>` of label and value rows; `--mono`, or `<code>` in a value                                                                                                             |
 | `ui-callout`     | `--info`, `--warning`, `--danger`, `--success`; `__icon`, `__body`, `__title`, `__action`                                                                                      |
 | `ui-badge`       | `--accent`, `--success`, `--warning`, `--danger`                                                                                                                               |
@@ -58,6 +58,7 @@ Every class starts with `ui-`; variants are `--modifier`, parts are `__part`. Th
 | `ui-sheet`       | a sidebar sub-screen's content under `.subscreen-header`: `__body`, `__footer`; `--approval` (44px buttons, `__origin` with `__origin-icon`, `__origin-name`, `__origin-note`) |
 | `ui-page-header` | `__title` (the shared 28px accent title with its icon), `__count`, `__actions`, `__subtitle`. A Clear action is disabled while there is nothing to clear.                      |
 | `ui-empty-state` | `__icon`, `__title`, `__text`, and an optional button                                                                                                                          |
+| `ui-tabs`        | `__tab` buttons in a `role="tablist"` row; the one with `aria-selected="true"` is underlined in the accent                                                                     |
 
 ## Rules
 
