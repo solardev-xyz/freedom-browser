@@ -23,7 +23,12 @@
  *   `presentHashOnly`), when the document runs and waits, in the target's
  *   window, on that very approval: a page prompt's approve (`handle`, the
  *   handle the core's `{ device }` names) or a Safe board's owner row
- *   (`owner`, the owner the board's decision picked).
+ *   (`handle`, the board prompt's the decision was made on, and `owner`,
+ *   the owner it picked). Every identity the target names must match the
+ *   waiting approval's: another approval waiting in the window (another
+ *   board with the same owner, another prompt) never shows a request's
+ *   warning, nor reports it on screen. A target with no handle names no
+ *   approval, and gets the notice.
  * - **Otherwise the chrome's notice over the tab** (`guest`, the tab's
  *   webContents id, and `site`, both what the chrome shows): a request no
  *   surface waits on, one a standing rule approved, an x402 payment, an
@@ -42,10 +47,13 @@
  * `withHashOnlyTarget`, which adds to what the outer one set (a page's
  * request its tab and site, page-requests.js; a page's device signature
  * the approve's handle, page-devices.js; a Safe board's owner row its
- * owner and window, safe-boards.js; an x402 payment its tab, x402/sign-flow.js),
- * and `currentHashOnlySurface()` captures it, with the request's window,
- * when the signer is asked: the relay calls the hook later, from the
- * core's APDU, outside every entry point.
+ * prompt's handle, its owner and its window, safe-boards.js; an x402
+ * payment its tab, x402/sign-flow.js). The approval's identity (`handle`,
+ * `owner`) comes whole from the one entry point that names it, and an
+ * outer approval's never carries into another's. `currentHashOnlySurface()`
+ * captures the target, with the request's window, when the signer is
+ * asked: the relay calls the hook later, from the core's APDU, outside
+ * every entry point.
  *
  * **Cancel** (point 19, a user decision still open; the recommended option
  * is built): the notice over a tab has a Cancel button, which cancels the
@@ -74,6 +82,8 @@ const CHANNELS = Object.freeze({
 const HASH = /^0x[0-9a-f]{64}$/;
 /** A notice's id: 16 random bytes, as 32 lowercase hex digits. */
 const NOTICE_ID = /^[0-9a-f]{32}$/;
+/** The members that name one approval (the approvals document's `waitsFor`). */
+const IDENTITY = Object.freeze(['handle', 'owner']);
 /** The most of a site's text a notice carries. */
 const MAX_SITE = 300;
 
@@ -104,10 +114,16 @@ function cleanTarget(target) {
 
 /**
  * Run `fn` with `target` added to the hash-only target its caller set:
- * `{ windowId?, handle?, owner?, guest?, site? }`.
+ * `{ windowId?, handle?, owner?, guest?, site? }`. A target that names an
+ * approval (`handle` or `owner` among its keys, even unset) names all of
+ * it: the caller's handle and owner go, so one approval's handle never
+ * pairs with another's owner.
  */
 function withHashOnlyTarget(target, fn) {
-  const outer = storage.getStore() || {};
+  const outer = { ...(storage.getStore() || {}) };
+  if (isPlainObject(target) && IDENTITY.some((key) => Object.hasOwn(target, key))) {
+    for (const key of IDENTITY) delete outer[key];
+  }
   return storage.run(Object.freeze({ ...outer, ...cleanTarget(target) }), fn);
 }
 
@@ -236,7 +252,9 @@ function createHashOnlyWarnings({
       return false;
     }
     const hashes = { domainSeparator, structHash };
-    if ((clean.handle || clean.owner !== undefined) && safely(documentEnabled, false)) {
+    // Only a target naming its approval's handle can be shown in that
+    // approval's waiting state (an owner alone is no approval's identity).
+    if (clean.handle && safely(documentEnabled, false)) {
       const waiting = safely(() => documents()?.presentHashOnly?.(windowId, clean, hashes, signal), null);
       if (waiting) return waiting;
     }

@@ -112,6 +112,7 @@ const { createPageDocuments, transportKeyOf } = require('./page-documents');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { runInWindow } = require('../windows/request-window');
 const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
+const { BOARD_KIND_SET } = require('../approvals/safe-boards');
 const {
   CHANNELS: PROMPT_CHANNELS,
   KIND_SET,
@@ -156,6 +157,13 @@ const MAX_PASSWORD_LENGTH = 1024;
 
 // A handle: 32 random bytes, made by main.
 const HANDLE_BYTES = 32;
+
+// A Safe board's decision names the handle it was made on: a Ledger owner's
+// hash-only warning shows on that very approval in the approvals document,
+// never on another board waiting there with the same owner
+// (approvals/safe-boards.js; LDG-3's PR 11).
+const namingHandle = (kind, decision, handle) =>
+  BOARD_KIND_SET.has(kind) ? decision.then((settled) => Object.freeze({ ...settled, handle })) : decision;
 
 // The reasons a handle closes (design 0011, "The prompt protocol").
 const CLOSED = Object.freeze({
@@ -918,7 +926,7 @@ function createPageRequests({
         if (handle) closeHandle(record, CLOSED.CANCELLED);
       }
     }
-    if (record.corePrompt === null) return entry.decision;
+    if (record.corePrompt === null) return namingHandle(kind, entry.decision, handle);
     // A core's prompt: the decision names the handle it was made on and the
     // prompt id that handle's record kept, for main's answer to the core.
     const named = Object.freeze({ handle, prompt: record.corePrompt });
@@ -978,7 +986,7 @@ function createPageRequests({
         if (handle) prompts.closed(handle, CLOSED.CANCELLED);
       }
     }
-    return entry.decision;
+    return namingHandle(kind, entry.decision, handle);
   }
 
   /**

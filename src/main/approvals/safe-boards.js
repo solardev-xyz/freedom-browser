@@ -279,7 +279,9 @@ function createSafeBoards({
    * One board, from its first view to its end. `ask({ view, choices,
    * released })` shows the board and settles with the decision; `unlock`
    * asks for the vault unlocked and resolves whether it is; `confirmFee`
-   * asks for the executor's fee. Resolves with the board's outcome:
+   * asks for the executor's fee. The decision names the handle of the
+   * prompt it was made on (`page-requests.js`), for a Ledger owner's
+   * hash-only warning. Resolves with the board's outcome:
    * `complete` (a message whose threshold is met), `executed`, `parked`,
    * `discarded`, `rejected` (a message), `closed`, `gone` (nothing left to
    * show, or another SafeTx pending than the board's), or `{ error }`.
@@ -359,16 +361,19 @@ function createSafeBoards({
       }
     };
 
-    async function signOwner(owner) {
+    // `handle`: the board prompt's the decision was made on (`ask` names it).
+    async function signOwner(owner, handle) {
       notes.delete(owner);
       let confirmation = null;
       let confirmed = false;
       for (let attempt = 0; ; attempt += 1) {
         try {
           // A Ledger owner's hash-only warning shows in this board's
-          // waiting state, for the owner row the user picked
-          // (wallet/ledger/hash-only-warning.js; LDG-3's PR 11).
-          await withHashOnlyTarget({ windowId, owner }, () => api.sign(owner, confirmation));
+          // waiting state: for that very approval (the prompt's handle) and
+          // the owner row the user picked, never another board's with the
+          // same owner (wallet/ledger/hash-only-warning.js; LDG-3's PR 11).
+          const target = { windowId, owner, handle: typeof handle === 'string' ? handle : undefined };
+          await withHashOnlyTarget(target, () => api.sign(owner, confirmation));
           return;
         } catch (err) {
           confirmation = null;
@@ -530,7 +535,7 @@ function createSafeBoards({
           error = null;
           continue;
         }
-        if (choice.action === 'sign') await signOwner(choice.owner);
+        if (choice.action === 'sign') await signOwner(choice.owner, decision.handle);
       }
     } finally {
       releasePrevious();

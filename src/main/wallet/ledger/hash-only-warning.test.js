@@ -4,9 +4,9 @@
  * and 19; LDG-3's PR 11), on the core's Ledger backend.
  *
  * - **Where it shows:** the approvals document's waiting state for the
- *   approval a request names (a prompt's handle, a board's owner), else the
- *   chrome's notice over the tab; under FREEDOM_APPROVALS_DOCUMENT=0 the
- *   notice always. A notice's report counts only from its window's own
+ *   approval a request names (a prompt's handle, a board prompt's handle and
+ *   owner, every one matching), else the chrome's notice over the tab;
+ *   under FREEDOM_APPROVALS_DOCUMENT=0 the notice always. A notice's report counts only from its window's own
  *   chrome, for that notice, while the window shows; its Cancel is main's
  *   own cancel (point 19); it goes when the operation ends.
  * - **The hash-only warning comes first** (LDG-3's row), end to end through
@@ -21,7 +21,10 @@
  *   `6D00` and no `E0 0C 00 00` reaches the device; then the answer carries
  *   `hash_only: "shown"`, and the two hashes the warning shows are the
  *   APDU's. A hidden window and a slow paint give LEDGER_UNKNOWN with
- *   nothing signed. (x402's case is in x402/sign-flow-ledger.test.js.)
+ *   nothing signed. Two boards sharing a Ledger owner in one window, two
+ *   prompts, and a request no approval names beside a board: a request's
+ *   warning never shows in another's waiting state, and no report of
+ *   another's releases it. (x402's case is in x402/sign-flow-ledger.test.js.)
  */
 
 jest.mock(
@@ -99,6 +102,7 @@ const mockWindows = new Map();
 const deviceWallet = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
 const LEDGER_INDEX = 1000000;
 const SAFE_INDEX = 1000005;
+const OTHER_SAFE_INDEX = 1000006;
 const PATH = "44'/60'/0'/0/0";
 const RECORD = { index: LEDGER_INDEX, name: 'My Nano S', address: deviceWallet.address, type: 'ledger', path: PATH };
 const PAGE = { origin: 'https://dapp.example', top_origin: 'https://dapp.example', frame: 0, navigation: 4 };
@@ -213,24 +217,25 @@ describe('where the warning shows', () => {
   }
   const notices = (sent) => sent.filter(([channel]) => channel === CHANNELS.NOTICE).map(([, m]) => m);
 
-  test("a prompt's handle or a board's owner goes to the approvals document when it waits on that approval", async () => {
+  test("a prompt's handle, or a board prompt's handle and owner, goes to the approvals document when it waits on that approval", async () => {
     const shown = Promise.resolve(true);
     const { warnings, sent, documents } = env({ waiting: shown });
     const life = new AbortController();
     const args = { domainSeparator: DOMAIN, structHash: STRUCT, signal: life.signal };
     await expect(warnings.present({ windowId: 1, handle: 'h', guest: TAB }, args)).resolves.toBe(true);
-    await expect(warnings.present({ windowId: 1, owner: 4 }, args)).resolves.toBe(true);
+    await expect(warnings.present({ windowId: 1, handle: 'b', owner: 4 }, args)).resolves.toBe(true);
     expect(documents.presentHashOnly.mock.calls.map(([w, target, hashes]) => [w, target, hashes])).toEqual([
       [1, { windowId: 1, handle: 'h', guest: TAB }, { domainSeparator: DOMAIN, structHash: STRUCT }],
-      [1, { windowId: 1, owner: 4 }, { domainSeparator: DOMAIN, structHash: STRUCT }],
+      [1, { windowId: 1, handle: 'b', owner: 4 }, { domainSeparator: DOMAIN, structHash: STRUCT }],
     ]);
     expect(notices(sent)).toEqual([]);
   });
 
-  test('no approval waiting there, no handle or owner, or FREEDOM_APPROVALS_DOCUMENT=0: the notice over the tab', async () => {
+  test('no approval waiting there, no handle (an owner alone, or an x402 payment\'s tab), or FREEDOM_APPROVALS_DOCUMENT=0: the notice over the tab', async () => {
     for (const [options, target] of [
       [{ waiting: null }, { windowId: 1, handle: 'h', guest: TAB, site: SITE }],
       [{ waiting: Promise.resolve(true) }, { windowId: 1, guest: TAB, site: SITE }],
+      [{ waiting: Promise.resolve(true) }, { windowId: 1, owner: 4, guest: TAB, site: SITE }],
       [{ enabled: false, waiting: Promise.resolve(true) }, { windowId: 1, handle: 'h', guest: TAB, site: SITE }],
     ]) {
       const { warnings, sent, documents } = env(options);
@@ -311,6 +316,26 @@ describe('where the warning shows', () => {
         })
       )
     );
+  });
+
+  test("an approval's identity comes whole from the entry point that names it: never one's handle with another's owner", () => {
+    withHashOnlyTarget({ guest: TAB, site: SITE, handle: 'page' }, () => {
+      // A board's owner row, its decision naming no handle: the page's handle goes.
+      withHashOnlyTarget({ windowId: 2, owner: 7, handle: undefined }, () => {
+        expect(currentHashOnlyTarget()).toEqual({ windowId: 2, guest: TAB, site: SITE, owner: 7 });
+      });
+      withHashOnlyTarget({ windowId: 2, owner: 7, handle: 'board' }, () => {
+        expect(currentHashOnlyTarget()).toEqual({ windowId: 2, guest: TAB, site: SITE, owner: 7, handle: 'board' });
+        // A prompt's handle inside it: the board's owner goes.
+        withHashOnlyTarget({ handle: 'prompt' }, () => {
+          expect(currentHashOnlyTarget()).toEqual({ windowId: 2, guest: TAB, site: SITE, handle: 'prompt' });
+        });
+      });
+      // A target naming no approval keeps the caller's.
+      withHashOnlyTarget({ windowId: 2 }, () => {
+        expect(currentHashOnlyTarget()).toEqual({ windowId: 2, guest: TAB, site: SITE, handle: 'page' });
+      });
+    });
   });
 });
 
@@ -403,6 +428,7 @@ const realTimers = (hashOnlyWaitMs) => ({
 const reached = () => mockRuntime.started.devices.bytes();
 const hashOnlyReached = () => reached().filter((apdu) => apdu.startsWith('e00c0000'));
 const signingReached = () => reached().some((apdu) => apdu.startsWith('e00c'));
+const signingCount = () => reached().filter((apdu) => apdu.startsWith('e00c')).length;
 
 // --- The window: a chrome and an approvals document over fake views ------
 
@@ -521,10 +547,12 @@ const reportNotice = (win, { id }) => getHashOnlyWarnings().noticeShown({ sender
 
 /**
  * The warning first: once it is up (`up()` gives what it shows), the held
- * `6D00` has no answer and no E0 0C 00 00 has reached the device, however
- * long the report takes; then the report, and the lane goes on.
+ * `6D00` has no answer and no E0 0C 00 00 has reached the device (none
+ * since this operation's start), however long the report takes; then the
+ * report, and the lane goes on.
  */
 async function heldThenReported(up, report) {
+  const signedBefore = signingCount();
   await until(() => up(), 'the warning up', 10_000);
   const shown = up();
   // Held: give the lane every chance to move on its own.
@@ -532,7 +560,7 @@ async function heldThenReported(up, report) {
   const fc = mockRuntime.started.core();
   expect(lane.sixD).toBeDefined();
   expect(fc.raw(lane.sixD)).toBeNull();
-  expect(signingReached()).toBe(false);
+  expect(signingCount()).toBe(signedBefore);
   expect(report(shown)).toEqual(expect.anything());
   await until(() => fc.raw(lane.sixD), 'the answer to the 6D00');
   expect(fc.raw(lane.sixD).result).toEqual({ answer: '6d00', hash_only: 'shown' });
@@ -656,9 +684,10 @@ describe('the hash-only warning comes first', () => {
   /**
    * A Safe board in window 1's document (safe-boards.js `runBoard`), its
    * one owner the Ledger, threshold 1: the user picks the owner's row and
-   * approves; main signs `data` with the owner's Safe approval.
+   * approves; main signs `data` with the owner's Safe approval, once `gate`
+   * settles (the device operation queued until then).
    */
-  function safeBoard(win, data) {
+  function safeBoard(win, data, { gate = null, safeIndex = SAFE_INDEX } = {}) {
     let signed = false;
     const state = () => ({
       safeTxHash: '0x' + '5a'.repeat(32),
@@ -673,21 +702,23 @@ describe('the hash-only warning comes first', () => {
     const signatures = [];
     const sign = async (_safeIndex, owner) => {
       if (owner === undefined) return;
+      await gate;
       signatures.push(await getSigner(owner, { safe: { id: 'f'.repeat(32), page: null } }).signTypedData(data));
       signed = true;
     };
-    // Each turn's prompt in the document; its decision answered once the board moved on.
+    // Each turn's prompt in the document; its decision (naming its handle,
+    // as page-requests.js names a board's) answered once the board moved on.
     const ask = (kind, guest) => ({ view, released }) =>
       new Promise((resolve) => {
         const handle = nextHandle();
         decisions.push((payload) => {
-          resolve({ approve: payload.approve, choices: payload.choices });
+          resolve({ approve: payload.approve, choices: payload.choices, handle });
           return released.then(() => ({ ok: true }));
         });
         win.docs.send(1, DOC.PROMPT, { handle, guest, kind, site: { key: SITE, label: SITE }, view });
       });
     const boards = createSafeBoards({
-      getDerivedWallets: async () => [RECORD, { index: SAFE_INDEX, name: 'Team Safe', address: '0x' + 'aa'.repeat(20) }],
+      getDerivedWallets: async () => [RECORD, { index: safeIndex, name: 'Team Safe', address: '0x' + 'aa'.repeat(20) }],
       sends: {
         state,
         tx: () => ({ to: SAFE_TX.message.to, value: '1000', data: '0x' }),
@@ -703,10 +734,11 @@ describe('the hash-only warning comes first', () => {
     return { boards, ask, signatures };
   }
 
-  /** The board shown: the Ledger owner's row picked and approved in the document. */
-  async function pickOwner(win) {
-    await until(() => win.doc.sent.some(([channel]) => channel === DOC.PROMPT), 'the board shown');
-    const shown = win.doc.sent.filter(([channel]) => channel === DOC.PROMPT).at(-1)[1];
+  /** The `count`th prompt shown, a board: the Ledger owner's row picked and approved in the document. */
+  async function pickOwner(win, count = 1) {
+    const prompts = () => win.doc.sent.filter(([channel]) => channel === DOC.PROMPT);
+    await until(() => prompts().length >= count, 'the board shown');
+    const shown = prompts().at(-1)[1];
     const revision = shown.revision;
     win.docs.shown({ sender: win.doc, senderFrame: win.doc.mainFrame }, { handle: shown.handle, revision });
     clock += INPUT_DELAY_MS;
@@ -759,6 +791,148 @@ describe('the hash-only warning comes first', () => {
       verifyTypedData(SAFE_DOMAIN, withoutDomain(SAFE_MESSAGE.types), SAFE_MESSAGE.message, signatures[0])
     ).toBe(deviceWallet.address);
     expect(chromeNotices(win)).toEqual([]);
+  });
+
+  /** Held: the 6D00 unanswered and nothing signing on the device, after every chance to move. */
+  async function expectHeld() {
+    await flush(20);
+    expect(lane.sixD).toBeDefined();
+    expect(mockRuntime.started.core().raw(lane.sixD)).toBeNull();
+    expect(signingReached()).toBe(false);
+  }
+
+  /** Every report the document could send, for these handles: none counts. */
+  function expectNoDocumentReportCounts(win, handles) {
+    for (let warning = 0; warning < 4; warning += 1) {
+      for (const handle of handles) {
+        expect(reportDocument(win, { handle, warning })).toEqual({ ok: false, reason: 'not-shown' });
+      }
+    }
+  }
+
+  // The crossing (Codex, #1364): Safe A's and Safe B's boards in one window
+  // share the Ledger owner. A is approved while its device operation is
+  // queued; B's board takes the panel and is approved for the same owner;
+  // then A's device answers 6D00.
+  test("two queued boards in one window sharing a Ledger owner: A's warning never shows in B's board, and B's report never releases A", async () => {
+    await startCore();
+    const win = openWindow();
+    let openA;
+    let openB;
+    const a = safeBoard(win, SAFE_MESSAGE, { gate: new Promise((resolve) => (openA = resolve)) });
+    const b = safeBoard(win, SAFE_TX, {
+      gate: new Promise((resolve) => (openB = resolve)),
+      safeIndex: OTHER_SAFE_INDEX,
+    });
+    const context = { prompt: a.ask('eth.safe_message', TAB), requester: { window: 1, guest: TAB, key: SITE } };
+    const outcomeA = asPageRequest(() => a.boards.runMessageBoard(context, { safeIndex: SAFE_INDEX, token: 'session' }));
+    const pickedA = await pickOwner(win, 1);
+    // B's board takes the panel (A's prompt gone from it, A's operation
+    // queued), and the user approves it for the same owner.
+    const outcomeB = b.boards.openWalletBoard(1, OTHER_SAFE_INDEX);
+    const pickedB = await pickOwner(win, 2);
+    expect(pickedB.handle).not.toBe(pickedA.handle);
+
+    // A's operation reaches the device: 6D00. B waits with the same owner,
+    // but it is not A's approval: A's warning goes to A's own notice.
+    openA();
+    await until(() => chromeNotices(win).some((m) => !m.closed), "A's notice up", 10_000);
+    const [notice] = chromeNotices(win);
+    expect(notice).toMatchObject({ site: SITE, ...hashesOf(SAFE_MESSAGE) });
+    await expectHeld();
+    // Nothing of A's in B's board, and no report of B's document releases A.
+    expect(docWarnings(win)).toEqual([]);
+    expectNoDocumentReportCounts(win, [pickedA.handle, pickedB.handle]);
+    await expectHeld();
+
+    // A's own surface reports: A goes on, with A's hashes.
+    expect(reportNotice(win, notice)).toBe(true);
+    const fc = mockRuntime.started.core();
+    await until(() => fc.raw(lane.sixD), 'the answer to the 6D00');
+    expect(fc.raw(lane.sixD).result).toEqual({ answer: '6d00', hash_only: 'shown' });
+    expect(await outcomeA).toEqual({ outcome: 'complete' });
+    expectHashesOfApdu(notice, SAFE_MESSAGE);
+    expect(verifyTypedData(SAFE_DOMAIN, withoutDomain(SAFE_MESSAGE.types), SAFE_MESSAGE.message, a.signatures[0])).toBe(
+      deviceWallet.address
+    );
+    expect(await pickedA.decided).toEqual({ ok: true });
+    expect(docWarnings(win)).toEqual([]);
+
+    // Then B's own operation: its warning in B's board, for B's handle.
+    openB();
+    const shownB = await heldThenReported(
+      () => docWarnings(win).find((m) => m.warning !== null),
+      (message) => reportDocument(win, message)
+    );
+    expect(shownB).toMatchObject({ handle: pickedB.handle, ...hashesOf(SAFE_TX) });
+    expect(await outcomeB).toMatchObject({ outcome: 'executed' });
+    expect(await pickedB.decided).toEqual({ ok: true });
+    expect(chromeNotices(win).filter((m) => !m.closed)).toEqual([notice]);
+  });
+
+  test("two prompts in one window: A's warning never shows in B's waiting state; with no report of A's own, LEDGER_UNKNOWN, nothing signed", async () => {
+    await startCore(realTimers(300));
+    const win = openWindow();
+    const view = { account: { index: LEDGER_INDEX, name: 'My Nano S', address: deviceWallet.address, type: 'ledger' } };
+    const site = { key: SITE, label: SITE };
+    const handleA = nextHandle();
+    const handleB = nextHandle();
+    const answers = [];
+    decisions.push(() => new Promise((resolve) => answers.push(resolve)));
+    const decidedA = approveInDocument(win, { handle: handleA, guest: TAB, kind: 'eth.sign', site, view });
+    // B's prompt takes the panel and is approved: B waits on the same Ledger.
+    decisions.push(() => new Promise((resolve) => answers.push(resolve)));
+    const decidedB = approveInDocument(win, { handle: handleB, guest: TAB + 1, kind: 'eth.sign', site, view });
+    expect(win.docs.state()[1].waiting).toBe('ledger');
+
+    // A's operation reaches the device.
+    const signed = asPageRequest(() => signing().sign(pageContext, typedDevice(handleA), PAGE));
+    await until(() => chromeNotices(win).some((m) => !m.closed), "A's notice up", 10_000);
+    const [notice] = chromeNotices(win);
+    expect(docWarnings(win)).toEqual([]);
+    expectNoDocumentReportCounts(win, [handleA, handleB]);
+    // Nobody reports A's notice: main stops waiting, and nothing is signed.
+    const answer = await signed;
+    expect(answer.error).toMatchObject({ code: -32603 });
+    expect(mockRuntime.started.core().raw(lane.sixD).result).toEqual({ answer: '6d00' });
+    expect(signingReached()).toBe(false);
+    expect(chromeNotices(win).at(-1)).toEqual({ id: notice.id, closed: true });
+    expect(docWarnings(win)).toEqual([]);
+    for (const resolve of answers) resolve({ ok: true });
+    await decidedA;
+    await decidedB;
+  });
+
+  test("a request no approval names (a standing rule's; x402's target is the same, its tab and site) beside a board waiting on the same Ledger: the notice, and the board's reports never release it", async () => {
+    await startCore();
+    const win = openWindow();
+    let openB;
+    const b = safeBoard(win, SAFE_TX, { gate: new Promise((resolve) => (openB = resolve)) });
+    const outcomeB = b.boards.openWalletBoard(1, SAFE_INDEX);
+    const pickedB = await pickOwner(win);
+
+    const signed = asPageRequest(() =>
+      getSigner(LEDGER_INDEX, { page: PAGE, standing: { paused: false }, chainId: 1 }).signTypedData(MAIL)
+    );
+    await until(() => chromeNotices(win).some((m) => !m.closed), 'the notice up', 10_000);
+    const [notice] = chromeNotices(win);
+    expect(notice).toMatchObject({ site: SITE, ...hashesOf(MAIL) });
+    await expectHeld();
+    expect(docWarnings(win)).toEqual([]);
+    expectNoDocumentReportCounts(win, [pickedB.handle]);
+    await expectHeld();
+    expect(reportNotice(win, notice)).toBe(true);
+    expect(verifyTypedData(MAIL.domain, MAIL.types, MAIL.message, await signed)).toBe(deviceWallet.address);
+    expectHashesOfApdu(notice, MAIL);
+
+    openB();
+    const shownB = await heldThenReported(
+      () => docWarnings(win).find((m) => m.warning !== null),
+      (message) => reportDocument(win, message)
+    );
+    expect(shownB).toMatchObject({ handle: pickedB.handle, ...hashesOf(SAFE_TX) });
+    expect(await outcomeB).toMatchObject({ outcome: 'executed' });
+    expect(await pickedB.decided).toEqual({ ok: true });
   });
 
   test('a hidden window: its report counts for nothing, LEDGER_UNKNOWN, nothing signed', async () => {

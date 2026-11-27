@@ -46,12 +46,13 @@
  * hold the device's `6D00` until the warning that the device shows only
  * two hashes is on screen (`presentHashOnly`, for the approval
  * wallet/ledger/hash-only-warning.js names: a page prompt's handle, or a
- * Safe board's owner). Main sends the two hashes with a warning number of
- * its own; the document shows them in the waiting state and reports after
- * two animation frames with the warning laid out in a visible document,
- * and main counts the report only for that warning, while that approval
- * still waits and the panel and its window show. It stays until the
- * operation ends (`{ warning: null }`).
+ * Safe board prompt's handle and the owner it signs with; every identity
+ * named must match, `waitsFor`). Main sends the two hashes with a warning
+ * number of its own; the document shows them in the waiting state and
+ * reports after two animation frames with the warning laid out in a
+ * visible document, and main counts the report only for that warning,
+ * while that same approval still waits and the panel and its window show.
+ * It stays until the operation ends (`{ warning: null }`).
  *
  * A view over 256 KiB (very large transaction data, typed data or a
  * message; APS-4) doesn't go in one message: `page:prompt` then carries
@@ -385,13 +386,18 @@ const deviceOf = (prompt, choices) => {
 };
 
 /**
- * Whether a waiting approval is the one a hash-only target names: a page
- * prompt's approve by its handle, a Safe board's by the owner it signs with.
+ * Whether a waiting approval is the one a hash-only target names: that very
+ * approval, by its handle (main's 32 random bytes, one per prompt), and a
+ * Safe board's also by the owner it signs with. Every identity must match:
+ * a target with no handle names no approval, and another approval waiting
+ * in the window (another board with the same owner, for another Safe,
+ * SafeTx or message; another prompt) never matches.
  */
 const waitsFor = (waiting, target) => {
   if (!waiting || waiting.device !== 'ledger') return false;
-  if (Number.isSafeInteger(target?.owner)) return waiting.owner === target.owner;
-  return typeof target?.handle === 'string' && waiting.handle === target.handle;
+  if (typeof target?.handle !== 'string' || waiting.handle !== target.handle) return false;
+  const owner = Number.isSafeInteger(target.owner) ? target.owner : null;
+  return (waiting.owner ?? null) === owner;
 };
 
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -627,8 +633,8 @@ function createApprovalsDocuments({
       // `{ handle, device, owner }` while an approval for a device's account
       // signs (`owner`: a Safe board's, the owner it signs with).
       waiting: null,
-      // The hash-only warning up in the waiting state: `{ handle, warning,
-      // report }` (LDG-3's PR 11).
+      // The hash-only warning up in the waiting state: `{ handle, target,
+      // warning, report }`, `target` the approval it is for (LDG-3's PR 11).
       hashOnly: null,
       armedAt: -Infinity,
       top: DEFAULT_TOP,
@@ -896,7 +902,15 @@ function createApprovalsDocuments({
     if (!HASH.test(domainSeparator ?? '') || !HASH.test(structHash ?? '')) return null;
     endHashOnly(record);
     lastWarning += 1;
-    const entry = { handle: record.waiting.handle, warning: lastWarning, settle: null };
+    // The approval it is for, as the target named it: its report counts
+    // only while that same approval waits.
+    const owner = Number.isSafeInteger(target.owner) ? { owner: target.owner } : {};
+    const entry = {
+      handle: record.waiting.handle,
+      target: Object.freeze({ handle: target.handle, ...owner }),
+      warning: lastWarning,
+      settle: null,
+    };
     const shown = new Promise((resolve) => {
       entry.settle = resolve;
     });
@@ -934,8 +948,9 @@ function createApprovalsDocuments({
 
   /**
    * `approvals:hash-only-shown { handle, warning }` from a window's own
-   * document: the warning main sent last is on screen, while its approval
-   * still waits and the panel and its window show.
+   * document: the warning main sent last is on screen, while the approval
+   * it was sent for still waits (`waitsFor`, every identity its target
+   * named) and the panel and its window show.
    */
   function hashOnlyShown(event, payload) {
     const { record, reason } = senderOf(event);
@@ -947,7 +962,7 @@ function createApprovalsDocuments({
       !entry ||
       payload.handle !== entry.handle ||
       payload.warning !== entry.warning ||
-      record.waiting?.handle !== entry.handle
+      !waitsFor(record.waiting, entry.target)
     ) {
       trace({ kind: 'hash-only-ignored', window: record.windowId });
       return { ok: false, reason: 'not-shown' };
