@@ -129,13 +129,18 @@ function marksOf(c) {
 describeIfVectors(
   "main's typed-data binding against vectors/ledger.json and ledger-grammar.json",
   () => {
-    const typedCases = ledger.cases.filter((c) => c.operation === 'sign.typed_data');
+    // jest reads a skipped describe's body too: nothing here without the files.
+    const typedCases = (ledger?.cases ?? []).filter((c) => c.operation === 'sign.typed_data');
     const caseById = new Map(typedCases.map((c) => [c.id, c]));
     const honest = new Map(
-      grammar.honest.filter((h) => h.operation === 'sign.typed_data').map((h) => [h.case, h.apdus])
+      (grammar?.honest ?? [])
+        .filter((h) => h.operation === 'sign.typed_data')
+        .map((h) => [h.case, h.apdus])
     );
     const refused = new Map(
-      grammar.refused.filter((r) => r.operation === 'sign.typed_data').map((r) => [r.case, r])
+      (grammar?.refused ?? [])
+        .filter((r) => r.operation === 'sign.typed_data')
+        .map((r) => [r.case, r])
     );
 
     test("BOUNDS and the typed-data rows' headers are the file's", () => {
