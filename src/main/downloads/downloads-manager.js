@@ -4,9 +4,10 @@
  * DownloadItem lifecycle: save-path selection, progress, pause / resume /
  * cancel, and the completed / cancelled / interrupted terminal states.
  *
- * `protocol.handle`-served custom schemes (bzz:, ipfs:, ipns:) route their
- * downloads through the Chromium download manager too, so decentralized
- * downloads land here alongside http(s) ones — verified by hand against
+ * `protocol.handle`-served custom schemes (bzz:, ipfs:, ipns:, and pubky:
+ * through the same mechanism) route their downloads through the Chromium
+ * download manager too, so decentralized downloads land here alongside
+ * http(s) ones — verified by hand for bzz:/ipfs:/ipns: against
  * Electron 43 for attachment dispositions, `download`-attribute clicks,
  * data: URIs, and non-renderable main-frame navigations. The Electron 43 -> 44
  * bump re-ran only `test-e2e/downloads.spec.js` (the shelf and
@@ -85,7 +86,7 @@ function sourceOrigin(value) {
   if (typeof value !== 'string') return '';
   try {
     const url = new URL(value);
-    if (!['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:'].includes(url.protocol)) return '';
+    if (!['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:', 'pubky:'].includes(url.protocol)) return '';
     const host = `${url.hostname.toLowerCase()}${url.port ? `:${url.port}` : ''}`;
     return `${url.protocol}//${host}`;
   } catch {

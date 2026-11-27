@@ -449,6 +449,25 @@ describe('webcontents-setup', () => {
     expect(ctx.log.info).toHaveBeenCalledWith(
       expect.stringContaining('intercepted new window request')
     );
+
+    // pubky:// is Freedom's own scheme: a Ctrl/middle-click or _blank open
+    // becomes a Freedom tab, never an OS handler launch.
+    const pubkyUrl = 'pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/';
+    const pubkyResult = contents.windowOpenHandler({
+      url: pubkyUrl,
+      frameName: '_blank',
+      disposition: 'background-tab',
+    });
+    expect(pubkyResult).toEqual({ action: 'deny' });
+    expect(parentWindow.webContents.send).toHaveBeenLastCalledWith(
+      'tab:new-with-url',
+      pubkyUrl,
+      null,
+      { background: true, newWindow: false, openerGuestId: contents.id }
+    );
+    expect(ctx.log.info).toHaveBeenCalledWith(
+      expect.stringContaining('intercepted new window request: pubky://<redacted>')
+    );
   });
 
   // #406: `target="_blank"` / `window.open` to an external scheme must not
@@ -606,6 +625,23 @@ describe('webcontents-setup', () => {
       'navigate-to-url',
       'ethereum:vitalik.eth@1?value=1e16', contents.id
     );
+
+    // A pubky:// link routes through the chrome like the other dweb schemes,
+    // and the log line names the scheme, never the key.
+    const pubkyUrl = 'pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/next.html';
+    const pubkyEvent = {
+      preventDefault: jest.fn(),
+    };
+    contents.emit('will-navigate', pubkyEvent, pubkyUrl);
+    expect(pubkyEvent.preventDefault).toHaveBeenCalled();
+    expect(parentWindow.webContents.send).toHaveBeenCalledWith(
+      'navigate-to-url',
+      pubkyUrl, contents.id
+    );
+    expect(ctx.log.info).toHaveBeenCalledWith(
+      expect.stringContaining('intercepted custom protocol navigation: pubky://<redacted>')
+    );
+    expect(ctx.log.info.mock.calls.flat().join('\n')).not.toContain('gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo');
 
     const httpEvent = {
       preventDefault: jest.fn(),

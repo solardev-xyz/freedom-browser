@@ -70,7 +70,7 @@ const POPUPS_PERMISSION_KEY = 'popups';
 // What the preload may ask to open: the schemes `getHostRoutedHref` routes
 // to the host (dweb links, plus everything an onchain `web3:` document's
 // links may reach). Anything else is not a link the preload intercepts.
-const CLAIMABLE_URL = /^(?:ipfs|ipns|web3|bzz|https?|rad|ens|freedom|ethereum):/i;
+const CLAIMABLE_URL = /^(?:ipfs|ipns|pubky|web3|bzz|https?|rad|ens|freedom|ethereum):/i;
 const MAX_URL_LENGTH = 8192;
 const MAX_TARGET_NAME_LENGTH = 256;
 

@@ -10,6 +10,9 @@
  * worker claim a wider scope than its script path. Content served by Swarm or
  * IPFS has no business setting either, so they are dropped whichever node
  * answered.
+ *
+ * The pubky: handler drops them too: there the upstream is a homeserver the
+ * key's owner chose.
  */
 const PAGE_STATE_RESPONSE_HEADERS = ['set-cookie', 'set-cookie2', 'service-worker-allowed'];
 

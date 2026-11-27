@@ -19,6 +19,7 @@ describe('launch URLs (#597)', () => {
       'bzz://ab12cd34/index.html',
       'ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
       'ipns://docs.ipfs.tech',
+      'pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/',
       'ens://vitalik.eth',
       'web3://0x1234567890123456789012345678901234567890',
       'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5',

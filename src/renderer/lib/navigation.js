@@ -415,7 +415,7 @@ const gatewayUrlToBzzUrl = (gatewayUrl) => {
 // `scheme:…` with no whitespace (so a query like "rad: what is it" still
 // searches).
 const EXPLICIT_DWEB_ADDRESS_RE =
-  /^(?:(?:bzz|ipfs|ipns|ens|web3|freedom):\/\/|(?:bzz|ipfs|ipns|ens|web3|freedom|rad|ethereum):\S*$)/i;
+  /^(?:(?:bzz|ipfs|ipns|ens|web3|freedom|pubky):\/\/|(?:bzz|ipfs|ipns|ens|web3|freedom|rad|ethereum|pubky):\S*$)/i;
 
 // Build a file:// URL for error.html. `targetUrl` is the user-facing URL
 // shown in the address bar and on the page. `extras` can include:
@@ -1445,7 +1445,7 @@ const parseInternalPageTarget = (value) => {
 // itself (main would answer `not-external` for them anyway).
 const EXTERNAL_PROTOCOL_INPUT = /^[a-z][a-z0-9+.-]*:\S+$/i;
 const BROWSER_HANDLED_INPUT =
-  /^(?:https?|bzz|ipfs|ipns|web3|ens|rad|freedom|ethereum|file|about|data|blob|javascript|view-source|chrome|devtools):/i;
+  /^(?:https?|bzz|ipfs|ipns|pubky|web3|ens|rad|freedom|ethereum|file|about|data|blob|javascript|view-source|chrome|devtools):/i;
 
 export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
   if (!targetWebview && !options.pageInitiated && !options.continuesNavigation &&
@@ -2246,6 +2246,31 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     webview.loadURL(errorUrl);
     syncTargetBzzBase(null);
   };
+
+  // Pubky: `pubky://<key>/pub/...`, or the SDK's display form
+  // `pubky<key>/pub/...`. The main-process handler validates the address.
+  // Ahead of the Swarm branch: `formatBzzUrl` claims any parseable URL
+  // (`pubky://…` included) and would load it unnormalized.
+  // The key ends at a `/`, `?`, `#` or the end of the input.
+  const pubkyMatch = value.trim().match(/^pubky(?::\/\/)?([a-z0-9]{52})([/?#]\S*)?$/i);
+  if (pubkyMatch) {
+    // A bare key (with or without a trailing `/`, a query or a fragment),
+    // or `/pub` without its slash, opens the listing of the key's public
+    // files (the handler serves only paths under `/pub/`).
+    const rest = pubkyMatch[2] || '';
+    const pubkyPath = /^\/?(?=$|[?#])/.test(rest)
+      ? `/pub/${rest.replace(/^\//, '')}`
+      : rest.replace(/^\/pub(?=$|[?#])/, '/pub/');
+    const pubkyUrl = `pubky://${pubkyMatch[1].toLowerCase()}${pubkyPath}`;
+    setAddressDisplayForTab(displayOverride || pubkyUrl, targetTabId);
+    pushDebug(`[AddressBar] Loading Pubky target: ${pubkyUrl}`);
+    navState.pendingTitleForUrl = pubkyUrl;
+    navState.pendingNavigationUrl = pubkyUrl;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(pubkyUrl);
+    syncTargetBzzBase(null);
+    return;
+  }
 
   // Try Swarm/bzz
   const target = formatBzzUrl(value, state.bzzRoutePrefix);

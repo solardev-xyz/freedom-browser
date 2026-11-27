@@ -1815,6 +1815,7 @@ describe('navigation', () => {
 
       ctx.mod.loadTarget('https://example.com/', null, null, { commitsAddressBar: true });
       ctx.mod.loadTarget('about:blank', null, null, { commitsAddressBar: true });
+      ctx.mod.loadTarget('pubky://gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo/pub/', null, null, { commitsAddressBar: true });
 
       expect(global.window.externalProtocol.openFromAddressBar).not.toHaveBeenCalled();
     });
@@ -2590,6 +2591,43 @@ describe('navigation', () => {
       expect(ctx.navigationUtilsMocks.buildRadicleDisabledUrl).not.toHaveBeenCalled();
       const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
       expect(loadedUrl).toContain('rad-browser.html?rid=zrepo123');
+    });
+
+    test.each([
+      ['pubky://KEY/pub/app/index.html', 'pubky://KEY/pub/app/index.html'],
+      ['pubkyKEY/pub/a.txt', 'pubky://KEY/pub/a.txt'],
+      ['pubky://KEY', 'pubky://KEY/pub/'],
+      ['pubky://KEY/', 'pubky://KEY/pub/'],
+      ['pubky://KEY/pub', 'pubky://KEY/pub/'],
+      ['pubkyKEY/pub', 'pubky://KEY/pub/'],
+      ['pubky://KEY/pub?sort=name', 'pubky://KEY/pub/?sort=name'],
+      ['pubky://KEY/public/x', 'pubky://KEY/public/x'],
+      ['pubky://KEY/pub/docs', 'pubky://KEY/pub/docs'],
+      ['pubky://KEY?sort=name', 'pubky://KEY/pub/?sort=name'],
+      ['pubky://KEY#top', 'pubky://KEY/pub/#top'],
+      ['pubky://KEY/?sort=name', 'pubky://KEY/pub/?sort=name'],
+      ['pubky://KEY/#top', 'pubky://KEY/pub/#top'],
+      ['pubkyKEY?sort=name', 'pubky://KEY/pub/?sort=name'],
+    ])('Pubky: %s loads %s', async (input, expected) => {
+      const key = 'gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo';
+      const ctx = await loadNavigationModule();
+      // Like the real url-utils, which hands any parseable URL back as its
+      // own target: the pubky branch must claim the input first.
+      ctx.urlUtilsMocks.formatBzzUrl.mockImplementation((raw) => {
+        try {
+          const url = new URL(raw);
+          return { targetUrl: url.toString(), displayValue: url.toString(), baseUrl: null };
+        } catch {
+          return null;
+        }
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(input.replace('KEY', key.toUpperCase()));
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toBe(expected.replace('KEY', key));
     });
 
     test('IPNS: error page carries protocol=ipns', async () => {

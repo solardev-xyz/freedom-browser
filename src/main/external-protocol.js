@@ -84,6 +84,7 @@ const INTERNAL_SCHEMES = [
   'bzz',
   'ipfs',
   'ipns',
+  'pubky',
   'web3',
   'ens',
   'rad',

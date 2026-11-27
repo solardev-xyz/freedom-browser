@@ -14,7 +14,7 @@ Radicle is available on macOS, Linux, and Windows (x64 and ARM64). The release w
 
 ## What Freedom supports
 
-- Native `bzz://`, `ipfs://`, `ipns://`, `web3://`, and `rad://` navigation, plus optional `.onion` routing through Tor.
+- Native `bzz://`, `ipfs://`, `ipns://`, `web3://`, `rad://`, and `pubky://` navigation, plus optional `.onion` routing through Tor.
 - Contract-hosted applications (draft ERC-8244) loaded straight from an Ethereum-compatible chain, with no HTTP gateway.
 - Integrated Ant (Swarm), freedom-ipfs, Radicle, experimental Myotis, and Tor components with per-profile configuration.
 - ENS, WNS, GNS, and Tezos Domains resolution, including `.eth`, `.box`, `.wei`, `.gwei`, and `.tez` names.
@@ -80,6 +80,7 @@ Do not post credentials, seed phrases, private keys, or sensitive logs in public
 - [Swarm content retrieval and migration](docs/protocols/swarm.md)
 - [IPFS/IPNS content retrieval and migration](docs/protocols/ipfs.md)
 - [Contract-hosted applications (ERC-8244)](docs/protocols/onchain-apps.md)
+- [Pubky public files](docs/protocols/pubky.md)
 - [Swarm provider API](docs/swarm-provider-api.md)
 - [Radicle provider API](docs/radicle-provider-api.md)
 - [Native IPFS desktop integration](docs/freedom-ipfs-native-desktop.md)

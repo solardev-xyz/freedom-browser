@@ -1,0 +1,40 @@
+# Pubky public files
+
+Freedom opens public files stored on [Pubky](https://pubky.org) homeservers. A Pubky user is an Ed25519 public key, and their files live on a homeserver that the key names in a signed [Pkarr](https://pkarr.org) record. The address stays the same when the user moves to another homeserver.
+
+## Addresses
+
+| You enter                                     | Freedom loads                                                   |
+| --------------------------------------------- | --------------------------------------------------------------- |
+| `pubky://<public-key>/pub/<path>`             | The file at `/pub/<path>`                                       |
+| `pubky<public-key>/pub/<path>`                | The same file. This is the Pubky SDK's display form.            |
+| `pubky://<public-key>` or `pubky<public-key>` | `pubky://<public-key>/pub/`, the list of the key's public files |
+| `pubky://<public-key>/pub`                    | `pubky://<public-key>/pub/`, the same list                      |
+
+`<public-key>` is 52 z-base-32 characters. The address bar always shows the `pubky://` form, and Pubky addresses are never sent to the search provider. These forms follow [Pubky Chromium's identifier grammar](https://github.com/pubky/pubky-chromium/blob/pubky/pubky/IDENTIFIERS.md).
+
+## How a request is served
+
+`pubky` is registered in `src/main/index.js` as a privileged standard scheme, like `ipfs` and `bzz`. Each public key is its own origin, so relative links, sub-resources and `fetch()` in a page served from `pubky://<public-key>/` work without a gateway.
+
+The handler in `src/main/pubky/pubky-protocol.js` uses the [Pubky JS SDK](https://www.npmjs.com/package/@synonymdev/pubky) to resolve the key's homeserver through Pkarr relays and fetch the file. The homeserver's status, headers and body go back to the page, so a missing file returns `404` and an HTML file renders as a page. As for `bzz:` and `ipfs:`, `Set-Cookie` and `Service-Worker-Allowed` are dropped, along with `Content-Encoding`, `Content-Length` and hop-by-hop headers, which describe the compressed upstream body rather than the decoded one the page gets.
+
+Of the page's request headers only `Range`, `If-Range`, `If-None-Match` and `If-Modified-Since` go to the homeserver; cookies, credentials and `Referer` don't. The reference homeserver ([pubky-core](https://github.com/pubky/pubky-core) as of `d95161af`) answers `If-None-Match`/`If-Modified-Since` with `304`, so cached files revalidate, but it ignores `Range` and returns the whole file with `200`. A `<video>` or `<audio>` there still plays, but Chromium treats a source that won't serve ranges as non-seekable, so seeking is limited to what it has already buffered. A homeserver that does answer `206` gets the page's range through.
+
+The key's owner chooses the homeserver address, so every request the SDK makes for a `pubky://` page is checked first:
+
+- Only `https://` is dialled.
+- Redirects are never followed. A homeserver that answers with a redirect gets the page a `502`.
+- The host must resolve only to public addresses. Loopback, private (LAN), link-local, carrier-grade NAT and other reserved ranges are refused, so a `pubky://` page can't read the local Ant API or a router's admin page. A DNS answer that changes between this check and the connection (DNS rebinding) is not caught, but because only `https://` is dialled and the certificate is validated, a rebound address also needs a certificate valid for the attacker's hostname. That keeps rebinding from reaching plain-`http` loopback and LAN services.
+
+Loading the SDK replaces Node's global `fetch` with a cookie-storing wrapper. The handler puts the original back as soon as the SDK has loaded, so no cookie jar is kept for Pubky or for any other main-process request. The SDK's own requests are routed through the checks above; every other caller reaches the original `fetch` unchanged.
+
+## Limits
+
+- Only `GET` and `HEAD` under `/pub/` are served. Other methods return `405`, and other paths return `400`.
+- Freedom never signs in to a homeserver, so it can't write files or read private data.
+- If the homeserver can't be resolved or reached, or a check above refuses it, the handler returns `502` with a fixed message. SDK error text never reaches the page.
+- A homeserver that hasn't sent its response headers within 30 seconds gets the page a `504`, and the request to it is aborted. The same happens, without a response, when the page cancels the request. Once the headers have arrived the body has no deadline.
+- The handler doesn't log request URLs, because they name the key being read.
+- The Agent can't open or act on `pubky://` pages yet. `pubky:` is not among the schemes it may navigate to (`ALLOWED_NAVIGATION_SCHEMES` in `src/main/automation/contract/operations.js`) or scope a page approval to (`SCOPED_SCHEMES` in `src/main/automation/origin-scoped-controller.js`), so asking it to open a `pubky://` address is refused, and on a `pubky://` tab the user opened every page operation is refused. This fails closed. A download's source is already recorded as `pubky://<public-key>`, ready for when the Agent gains the scheme.
+- Site permissions (notifications, camera, microphone and the like) aren't offered to `pubky://` pages. Such a request is denied without a prompt, because the permission store has no key form for a `pubky://` origin yet.

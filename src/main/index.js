@@ -319,6 +319,7 @@ const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
 const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs/ipfs-protocol');
 const { registerRadProtocol } = require('./radicle/rad-protocol');
+const { registerPubkyProtocol } = require('./pubky/pubky-protocol');
 const {
   installOnchainProvenanceCapture,
   registerOnchainAppProtocol,
@@ -352,6 +353,9 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'bzz', privileges: DWEB_PROTOCOL_PRIVILEGES },
   { scheme: 'ipfs', privileges: DWEB_PROTOCOL_PRIVILEGES },
   { scheme: 'ipns', privileges: DWEB_PROTOCOL_PRIVILEGES },
+  // Public files on Pubky homeservers (pubky/pubky-protocol.js). Keys are
+  // lowercase z-base-32, so host lowercasing is harmless.
+  { scheme: 'pubky', privileges: DWEB_PROTOCOL_PRIVILEGES },
   // ERC-8244 documents are single onchain HTML responses. They need a
   // standard, secure origin and Fetch-compatible Response handling, but
   // deliberately do not get service-worker privileges: their response CSP
@@ -748,6 +752,7 @@ async function bootstrap() {
     registerIpfsProtocol(defaultSession);
     registerIpnsProtocol(defaultSession);
     registerRadProtocol(defaultSession);
+    registerPubkyProtocol(defaultSession);
     // Before attachWebRequestDispatcher() below: this also installs the
     // process-wide `radapi-guard` onBeforeRequest handler.
     registerRadicleApiProtocol(defaultSession);
@@ -806,6 +811,8 @@ async function bootstrap() {
       registerIpfsProtocol(privateSession, { privatePartition: partition });
       registerIpnsProtocol(privateSession, { privatePartition: partition });
       registerRadProtocol(privateSession, { privatePartition: partition });
+      // Logs no request URLs, so private windows need no redaction.
+      registerPubkyProtocol(privateSession);
       registerRadicleApiProtocol(privateSession, { privatePartition: partition });
       registerOnchainAppProtocol(privateSession, { privatePartition: partition });
     }

@@ -27,6 +27,7 @@ const sanitizeUrlForLog = (rawUrl) => {
       parsed.protocol === 'bzz:' ||
       parsed.protocol === 'ipfs:' ||
       parsed.protocol === 'ipns:' ||
+      parsed.protocol === 'pubky:' ||
       parsed.protocol === 'web3:' ||
       parsed.protocol === 'freedom:' ||
       parsed.protocol === 'freedom-preview:'
@@ -39,6 +40,7 @@ const sanitizeUrlForLog = (rawUrl) => {
       rawUrl.startsWith('bzz://') ||
       rawUrl.startsWith('ipfs://') ||
       rawUrl.startsWith('ipns://') ||
+      rawUrl.startsWith('pubky://') ||
       rawUrl.startsWith('web3://') ||
       rawUrl.startsWith('freedom://') ||
       rawUrl.startsWith('freedom-preview://')
@@ -397,7 +399,7 @@ function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
       });
 
       // Intercept navigation to custom protocols (freedom://, bzz://, ipfs://,
-      // ipns://, web3://, rad:, ethereum:, ens://). `ens://` is included so legacy
+      // ipns://, pubky://, web3://, rad:, ethereum:, ens://). `ens://` is included so legacy
       // links inside pages route through the renderer's ENS resolver instead
       // of failing as an unknown scheme — bookmarks created before the
       // transport-aware migration still carry the legacy prefix.
@@ -433,6 +435,7 @@ function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
           url.startsWith('bzz://') ||
           url.startsWith('ipfs://') ||
           url.startsWith('ipns://') ||
+          url.startsWith('pubky://') ||
           url.startsWith('web3://') ||
           url.startsWith('ens://') ||
           url.startsWith('rad:') ||

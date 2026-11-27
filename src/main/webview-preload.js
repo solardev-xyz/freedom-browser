@@ -896,6 +896,7 @@ const getHostRoutedHref = (anchor) => {
           'bzz:',
           'ipfs:',
           'ipns:',
+          'pubky:',
           'rad:',
           'ens:',
           'freedom:',
