@@ -207,14 +207,14 @@ jobs:
       # Swarm vectors (design 0015's grammar, the reference's recording, and
       # design 0009's file trees), which `swarm-grammar.vectors.test.js` and
       # `swarm-tree.vectors.test.js` hold main's operation grammar, tree
-      # reader and BMT to, and its Ledger vectors (design 0016's recorded
-      # exchanges and APDU grammar), which `apdu-binding.vectors.test.js`
-      # holds main's typed-data binding to, at one reviewed commit: moved on
-      # purpose when the protocol's vectors, method table, Radicle vectors,
-      # key-store vectors, layout vectors, Swarm vectors or Ledger vectors
-      # change, never with freedom-core's main. It is the commit
-      # `cored-v0.30.0` was built from (b4e0cef4). Each suite fails if a
-      # file it is pointed at is missing.
+      # reader and BMT to, and its Ledger vectors (design 0016's APDU grammar
+      # and the reference's recorded exchanges), which
+      # `ledger-grammar.vectors.test.js` holds main's APDU grammar to, at one
+      # reviewed commit: moved on purpose when the protocol's vectors, method
+      # table, Radicle vectors, key-store vectors, layout vectors, Swarm
+      # vectors or Ledger vectors change, never with freedom-core's main. It
+      # is the commit `cored-v0.30.0` was built from (b4e0cef4). Each suite
+      # fails if a file it is pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -234,8 +234,8 @@ jobs:
             vectors/swarm-grammar.json
             vectors/swarm.json
             vectors/dweb-verify.json
-            vectors/ledger.json
             vectors/ledger-grammar.json
+            vectors/ledger.json
             protocol/schema.json
           sparse-checkout-cone-mode: false
 
