@@ -42,7 +42,8 @@
  *   which must be `bytes_up`'s reference; and `readData`'s tree, read with
  *   swarm-tree.js from the intermediate chunks main returned.
  *
- * Nothing calls this yet: the Swarm shell's executor (SWM-5) is its caller.
+ * Its caller is main's executor for the core's Swarm asks
+ * (core/swarm-shell.js), one Admission per parent it opens.
  */
 
 const { SwarmData, isNullish, param, truthy } = require('./swarm-typed');
@@ -551,6 +552,8 @@ const MAX_PROBED_INDEX = 2 ** 40;
 /** A SOC's header before the chunk it wraps: identifier and signature. */
 const SOC_HEADER = 32 + 65;
 const INLINE_BODY = 64 * 1024;
+/** The longest base64 an inline body may be: 64 KiB's, 4⌈65,536 / 3⌉. */
+const INLINE_BASE64 = 4 * Math.ceil(INLINE_BODY / 3);
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -836,8 +839,13 @@ function dataBody(data, body) {
 function spanBody(data, span, body) {
   const bytes = inline(data);
   if (!bytes || !body.bytes) return 'body';
-  const expected = Buffer.concat([spanBytes(span === undefined ? bytes.length : span), bytes]);
-  return body.bytes.equals(expected) ? null : 'body';
+  // Compared in place: no copy of the body is made to compare it.
+  const head = spanBytes(span === undefined ? bytes.length : span);
+  return body.bytes.length === head.length + bytes.length &&
+    body.bytes.subarray(0, head.length).equals(head) &&
+    body.bytes.subarray(head.length).equals(bytes)
+    ? null
+    : 'body';
 }
 
 /** `params.span` as core-sdk's chunk takes it: a number or BigInt, and a span of 0, or none, is the data's length. */
@@ -1456,6 +1464,24 @@ function parsePath(form, path) {
   return values;
 }
 
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const BASE64_TEXT = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * Whether `text` is base64 exactly as its bytes encode: the standard
+ * alphabet in groups of four, padded to the end, and the bits a padded
+ * group leaves unused all zero. The same test as decoding it and writing it
+ * back (what `bytes.toString('base64') === text` asks), without making that
+ * second string.
+ */
+function canonicalBase64(text) {
+  if (!BASE64_TEXT.test(text)) return false;
+  const end = text.length;
+  if (text.endsWith('==')) return (BASE64_ALPHABET.indexOf(text[end - 3]) & 0x0f) === 0;
+  if (text.endsWith('=')) return (BASE64_ALPHABET.indexOf(text[end - 2]) & 0x03) === 0;
+  return true;
+}
+
 /** The body as the call carries it: `{ bytes }` for base64, `{ stream }`, or null; `invalid` when malformed. */
 function readBody(body) {
   if (body === undefined || body === null) return null;
@@ -1463,9 +1489,12 @@ function readBody(body) {
   const keys = Object.keys(body);
   if (keys.length !== 1) return 'invalid';
   if (keys[0] === 'base64') {
-    if (typeof body.base64 !== 'string') return 'invalid';
+    // Past the inline bound by its length alone: refused undecoded. And
+    // canonical by its text, so no second string is written to compare.
+    if (typeof body.base64 !== 'string' || body.base64.length > INLINE_BASE64) return 'invalid';
+    if (!canonicalBase64(body.base64)) return 'invalid';
     const bytes = Buffer.from(body.base64, 'base64');
-    if (bytes.toString('base64') !== body.base64 || bytes.length > INLINE_BODY) return 'invalid';
+    if (bytes.length > INLINE_BODY) return 'invalid';
     return { kind: 'base64', bytes };
   }
   if (keys[0] === 'stream') {
@@ -1501,6 +1530,26 @@ function readPairs(headers) {
   return pairs;
 }
 
+/**
+ * A reply's body as the handlers read it: the bytes, given whole or as the
+ * transport's chunks of them, copied once into a fresh Buffer. A copy, not
+ * a view: nothing that holds the answer's backing store (a
+ * SharedArrayBuffer, a worker) can change the bytes under a handler (Codex,
+ * round 4 on #1336). Main's executor charges that one copy
+ * (`readsReply`).
+ */
+function bodyOf(body) {
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  if (!Array.isArray(body)) return undefined;
+  const parts = [];
+  for (let i = 0; i < body.length; i++) {
+    const part = body[i];
+    if (!(part instanceof Uint8Array)) return undefined;
+    parts.push(part);
+  }
+  return Buffer.concat(parts);
+}
+
 function readAnswer(reply) {
   try {
     if (!reply || typeof reply !== 'object') return null;
@@ -1509,10 +1558,7 @@ function readAnswer(reply) {
     return {
       status,
       headers: Array.isArray(headers) ? readPairs(headers) : [],
-      // A copy, not a view: nothing that holds the answer's backing store
-      // (a SharedArrayBuffer, a worker) can change the bytes under a
-      // handler (Codex, round 4 on #1336).
-      body: body instanceof Uint8Array ? Buffer.from(body) : undefined,
+      body: bodyOf(body),
     };
   } catch {
     // A getter that throws: no answer.
@@ -1598,7 +1644,9 @@ class Admission {
    * @param {object} call - `{ form, method, path, query, headers, body,
    *   max_bytes, stream?, feed?, tree? }`, the core's, with `headers`
    *   without main's own
-   * @returns {{ ticket: object }|{ rule: string }}
+   * @returns {{ ticket: object }|{ rule: string }} - the ticket carries
+   *   `bytes`, an inline (`{ base64 }`) body as the check decoded it, so it
+   *   is decoded once, for the check and the dial alike
    */
   admit(call) {
     if (this.ended || this.refused) return { rule: 'ended' };
@@ -1610,13 +1658,31 @@ class Admission {
     this.counts[rule.step] += 1;
     this.position = rule.step;
     this.open += 1;
-    return { ticket: { step: rule.step, form: call.form, onReply: rule.onReply, settled: false } };
+    return {
+      ticket: {
+        step: rule.step,
+        form: call.form,
+        onReply: rule.onReply,
+        bytes: rule.bytes,
+        settled: false,
+      },
+    };
+  }
+
+  /**
+   * Whether settling `ticket` reads main's answer: only then is its body
+   * copied (once, `readAnswer`), and only then does a handler see it. The
+   * other calls' answers are never read, so never copied.
+   */
+  readsReply(ticket) {
+    return typeof ticket?.onReply === 'function';
   }
 
   /**
    * Main answered an admitted call: `reply` is `{ status, headers, body? }`
    * (`headers` as `[name, value]` pairs, `body` the bytes of a whole reply
-   * main returned), or null for `{ failed }` or a call cancelled unanswered.
+   * main returned, whole or as the transport's chunks of them), or null for
+   * `{ failed }` or a call cancelled unanswered.
    */
   settle(ticket, reply) {
     if (!ticket || ticket.settled) return;
@@ -1654,7 +1720,7 @@ class Admission {
     if (value) return value;
     const refused = this.checkBody(form, call, ctx);
     if (refused) return refused;
-    return { step, onReply: ctx.onReply };
+    return { step, onReply: ctx.onReply, bytes: body?.kind === 'base64' ? body.bytes : null };
   }
 
   /** The row's step the call takes: the next whose forms have it, past only steps taken or not needed. */
@@ -1791,6 +1857,7 @@ module.exports = {
   FAILED,
   FORMS,
   HeadProbe,
+  INLINE_BASE64,
   IndexLookup,
   MAIN_HEADERS,
   MAX_PROBE_READS,
@@ -1800,6 +1867,7 @@ module.exports = {
   ROWS,
   RULES,
   VALUES,
+  canonicalBase64,
   feedIdentifier,
   feedUpdateAddress,
   pageTopic,

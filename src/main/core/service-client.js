@@ -409,19 +409,29 @@ class JsonText {
  * otherwise, naming the error's `errorCode` (an errno name) where they
  * take one (a `shell.swarm_part` part's). The core's cancel, or the
  * generation's end, cancels it.
+ *
+ * `bodyFlag: false` sends the head's result as it is, with no `body`
+ * member: design 0015's Swarm heads (`shell.swarm_api`'s `{ status,
+ * status_text, headers }`), which the core reads strictly, refusing any
+ * other member (freedom-cored's `swarm/wire.rs`, `api_reply`), and whose
+ * stream it opens by its own ask, not by a flag.
  */
 class StreamedReply {
   /**
    * @param {object} result - the head's result, e.g. `{ status, headers }`
    * @param {ReadableStream} body
+   * @param {object} [options]
+   * @param {boolean} [options.bodyFlag] - false to leave `body: true` out
+   *   of the head (design 0015's Swarm heads)
    */
-  constructor(result, body) {
+  constructor(result, body, { bodyFlag = true } = {}) {
     if (!isObject(result)) throw new TypeError('A streamed reply needs a result object');
     if (typeof body?.getReader !== 'function') {
       throw new TypeError('A streamed reply needs a ReadableStream body');
     }
     this.result = result;
     this.body = body;
+    this.bodyFlag = bodyFlag !== false;
   }
 
   /** Lets go of a body that was never read. */
@@ -2535,20 +2545,17 @@ class ServiceClient extends EventEmitter {
     } else if (whole || (gen.fragments && size <= MAX_MESSAGE)) {
       const release = this.charged(gen, lease, size);
       if (release) {
-        const payload = Buffer.allocUnsafe(size);
-        const at = text.writeInto(payload, payload.write(head, 0, 'latin1'));
-        payload.write('}', at, 'latin1');
-        if (whole) {
-          this.writeReply(
-            gen,
-            id,
-            controller,
-            Buffer.concat([frameHeader(KIND_JSON, size), payload]),
-            release
-          );
-        } else {
-          this.queueBulk(gen, { id, controller, payload, release });
-        }
+        // A whole reply is written into its frame, after the frame's
+        // header, in one buffer: never assembled once and copied again
+        // (a Swarm reply's charge counts one serialized copy, design 0015).
+        const header = whole ? frameHeader(KIND_JSON, size) : null;
+        const offset = header ? header.length : 0;
+        const buffer = Buffer.allocUnsafe(offset + size);
+        if (header) header.copy(buffer, 0);
+        const at = text.writeInto(buffer, offset + buffer.write(head, offset, 'latin1'));
+        buffer.write('}', at, 'latin1');
+        if (whole) this.writeReply(gen, id, controller, buffer, release);
+        else this.queueBulk(gen, { id, controller, payload: buffer, release });
         return;
       }
       code = 'busy';
@@ -2998,7 +3005,7 @@ class ServiceClient extends EventEmitter {
     let code = null;
     try {
       if (streamed) {
-        const result = { ...streamed.result, body: true };
+        const result = streamed.bodyFlag ? { ...streamed.result, body: true } : streamed.result;
         json = Buffer.from(JSON.stringify({ type: 'response', id, result }), 'utf8');
       } else if (outcome.result instanceof JsonText) {
         const head = `{"type":"response","id":${id},"result":`;
@@ -3066,7 +3073,16 @@ class ServiceClient extends EventEmitter {
         this.flushStreams(gen);
         return;
       }
-      const piece = { id, reader, byob, pending: null, eof: false, reading: false, claimed: 0 };
+      const piece = {
+        id,
+        reader,
+        byob,
+        pending: null,
+        eof: false,
+        reading: false,
+        claimed: 0,
+        scratch: null,
+      };
       gen.pieces.set(id, piece);
       // The body's failure ends the stream as it happens, a read pending or
       // not: an abort goes ahead of the data and needs no credit, and the
@@ -3134,6 +3150,15 @@ class ServiceClient extends EventEmitter {
     }
   }
 
+  /** A byte stream's view to read `claimed` bytes into: its piece's one
+   * buffer of MAX_READ_AHEAD, made once and handed back by each read
+   * (BYOB reads transfer it), never one a read. */
+  scratchView(piece, claimed) {
+    const scratch = piece.scratch ?? new ArrayBuffer(MAX_READ_AHEAD);
+    piece.scratch = null;
+    return new Uint8Array(scratch, 0, claimed);
+  }
+
   /** One read of a body, into the `claimed` room of `sender`'s cap: its
    * bytes keep as much of it as they take, and the rest goes back. */
   readPiece(gen, piece, sender, claimed) {
@@ -3149,7 +3174,7 @@ class ServiceClient extends EventEmitter {
     };
     let read;
     try {
-      read = piece.byob ? piece.reader.read(new Uint8Array(claimed)) : piece.reader.read();
+      read = piece.byob ? piece.reader.read(this.scratchView(piece, claimed)) : piece.reader.read();
     } catch (err) {
       read = Promise.reject(err);
     }
@@ -3174,6 +3199,11 @@ class ServiceClient extends EventEmitter {
           // The claim passes to the bytes read; what they didn't take goes.
           sender.release(held - byteLength);
           if (byteLength) piece.pending = Buffer.from(buffer, byteOffset, byteLength);
+          // The read's buffer comes back: the next read reuses it, once
+          // these bytes have gone to the sender (`pumpPiece` reads only
+          // with nothing pending), so a source of small chunks costs no
+          // buffer a read.
+          if (piece.byob && buffer.byteLength === MAX_READ_AHEAD) piece.scratch = buffer;
         } else {
           sender.release(held);
           this.abortPiece(gen, piece, null);

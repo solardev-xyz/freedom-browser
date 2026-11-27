@@ -44,6 +44,7 @@ const guard = require('./node-identity-guard');
 const { attachNaming, detachNaming } = require('./naming');
 const { attachChain, detachChain } = require('./chain');
 const { registerDwebShell } = require('./dweb-shell');
+const { registerSwarmShell } = require('./swarm-shell');
 const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 const { attachGrants, detachGrants } = require('./grants');
 const { registerKeystoreShell } = require('./keystore-shell');
@@ -57,6 +58,8 @@ let client = null;
 // `shell.dweb_get`'s executor (design 0009) on the client; null before
 // startCore() and after stopCore().
 let dwebShell = null;
+// The Swarm asks' executor (design 0015, SWM-5), likewise.
+let swarmShell = null;
 // Set once app wind-down has stopped the core; nothing starts it again.
 let shutDown = false;
 
@@ -260,6 +263,11 @@ async function startCore() {
   // `{ verify }` plans' `dweb.verify`, and `dweb.forget` as a private
   // partition closes.
   attachDwebVerify(client, dwebShell);
+  // The core's Swarm asks (`shell.swarm_ready`, `shell.swarm_api`), whichever
+  // backend serves Swarm: on the JS backend (FREEDOM_SWARM_BACKEND, design
+  // 0015's switch) no parent is admitted, and a stray ask is answered
+  // `ended`, where no handler would end the connection.
+  swarmShell = registerSwarmShell(client);
   // The dApp grants, which the core writes (design 0012, APB-2): main's
   // copy read at each handshake, and again for each change the core sends.
   require('../wallet/dapp-permissions').attachCore(client);
@@ -303,6 +311,7 @@ async function stopCore() {
   detachDwebVerify();
   detachGrants();
   dwebShell = null;
+  swarmShell = null;
   if (!client) return;
   const stopping = client;
   client = null;
@@ -319,6 +328,12 @@ function getDwebShell() {
   return dwebShell;
 }
 
+/** The Swarm asks' executor, whose `open()` a Swarm request calls from its
+ * `onSent`; null while no core client runs. */
+function getSwarmShell() {
+  return swarmShell;
+}
+
 module.exports = {
   RADICLE_PREPARE_WAIT_MS,
   // For tests: the bounded wait's parts.
@@ -331,4 +346,5 @@ module.exports = {
   stopCore,
   getCoreClient,
   getDwebShell,
+  getSwarmShell,
 };

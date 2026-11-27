@@ -607,4 +607,7 @@ module.exports = {
   CAR_ACCEPT,
   RAW_ACCEPT,
   RECORD_ACCEPT,
+  // Main's Swarm executor streams its node bodies the same way
+  // (swarm-shell.js).
+  pieceBody,
 };
