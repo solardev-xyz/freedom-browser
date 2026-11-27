@@ -72,8 +72,10 @@
  * - **`shell.swarm_part { for, part }`** streams one of the parent's parts
  *   while one of its streaming calls is open: its head `{ bytes }`, the
  *   length its params give, then its bytes under the core's credit. A held
- *   buffer goes as views of itself; a picked file is read as the core's
- *   credit allows, into the service client's own views. The part rules
+ *   buffer goes as views of itself, which the sender copies into its window
+ *   as the credit takes them, keeping none; a picked file is read as the
+ *   credit allows, straight into the one read buffer the service client
+ *   keeps for the piece. Neither is copied here. The part rules
  *   (point 5): another parent's part, or one the params don't have, is
  *   `value`; a part asked twice `count`; one with no streaming call open
  *   `order`; one after the parent ended `ended`. After its head a part
@@ -100,19 +102,22 @@
  *   before it exists:
  *   - a whole call `m + 2 × b64(m) + 16 KiB`, `m` the larger of its
  *     `max_bytes` and 8 KiB, shrunk to the same sum over the body it read
- *     (kept as the transport's chunks, never copied whole), and that body's
- *     length more when the grammar reads the answer (its one copy);
+ *     (copied as it comes into owned blocks, `m` their storage, never a
+ *     view of the transport's chunks), and that body's length more when the
+ *     grammar reads the answer (its one copy);
  *   - a streaming call 256 KiB, to its terminal;
  *   - a base64 POST's body, before the grammar decodes it (once, for its
- *     check and the dial): its bytes, the base64 the check writes back and
- *     the transport's copy, to the dial's end;
+ *     check and the dial): the core's base64 of it, its bytes and the
+ *     transport's copy, to the dial's end;
  *   - a streamed upload's `swarm.body` 256 KiB beside its reply's room,
- *     before it is sent, to the node's answer (its ring, the chunk the
+ *     before it is sent, to the node's answer (its 128 KiB ring, the chunk
+ *     pulled from it, which goes straight to the transport, and the one the
  *     transport holds); and, when the parent has parts, one part's 256 KiB
- *     (its window, the read in flight), which the upload's parts take in
- *     turn, until the call and each part that took it are over (their
- *     last frame written, or dropped). Without room the call is `busy`,
- *     before any `swarm.body`, so a part never meets a full pool;
+ *     (the sender's window of it, the bytes read ahead, the piece's one
+ *     read buffer), which the upload's parts take in turn, until the call
+ *     and each part that took it are over (their last frame written, or
+ *     dropped). Without room the call is `busy`, before any `swarm.body`,
+ *     so a part never meets a full pool;
  *   - `readData`'s walk, its occurrence map (2,562 slots at 256 bytes),
  *     before the root's answer may fill it; without room the map stays
  *     empty, and the parent's later calls are `busy`;
@@ -332,8 +337,10 @@ function failOnEnd(life, fail) {
 
 /**
  * A held buffer's part: views of it, at most PART_READ each, as the service
- * client pulls them (never copied here: the sender copies what the core's
- * credit takes into its window). Fails once `life` aborts.
+ * client pulls them. Nothing is copied here, and no view is kept: the
+ * sender copies what the core's credit takes into its own blocks, and the
+ * one view it may hold meanwhile is of a buffer main holds anyway (0011's
+ * charge). Fails once `life` aborts.
  */
 function heldPart(bytes, life) {
   let at = 0;
@@ -369,9 +376,9 @@ function heldPart(bytes, life) {
 
 /**
  * A picked file's part, `length` bytes: a byte stream, each read straight
- * into the view the service client asks with (what the core's credit and
- * its writer allow), at the file's offset, so main holds no copy of its
- * own. It is opened when the stream is made and closed at its end, its
+ * into the view the service client asks with (its one read buffer for the
+ * piece, as far as the core's credit and its writer allow), at the file's
+ * offset, so main holds no copy of its own. It is opened when the stream is made and closed at its end, its
  * failure or its cancel. A read that fails names its errno; a file that
  * ends short of `length`, or has a byte past it, changed size while it was
  * read (point 13) and names none. Fails, naming none, once `life` aborts.
