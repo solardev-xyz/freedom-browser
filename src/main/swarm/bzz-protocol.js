@@ -77,10 +77,11 @@ let abandonedDials = 0;
  *     Chromium may send a read again when a reused connection closes before
  *     its headers, which is idempotent.
  *   - A write (POST) goes on a write session of its own, on the request
- *     session's proxy, with no connection open before it
- *     (`ant-write-sessions.js`): Chromium sends it once, whole or streamed,
- *     and it fails when the node hangs up (freedom-core design 0015, point
- *     6; #1344). It holds that session until its reply is over.
+ *     session's proxy, with no connection open before it, whose own guard
+ *     admits that write and nothing else (`ant-write-sessions.js`):
+ *     Chromium sends it once, whole or streamed, and it fails when the node
+ *     hangs up (freedom-core design 0015, point 6; #1344). It holds that
+ *     session until its reply is over.
  *
  * The remote dial is waited on only while the attempt lives: its header
  * deadline, the page's abort or the session's close ends the wait at once,
@@ -131,7 +132,7 @@ async function dialAnt(url, init, { session, fetchImpl }) {
 async function dialWrite(url, init, source) {
   let lease;
   try {
-    lease = await leaseWriteSession(source, url, init.signal);
+    lease = await leaseWriteSession(source, url, init.method, init.signal);
   } catch (err) {
     if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
     throw err;

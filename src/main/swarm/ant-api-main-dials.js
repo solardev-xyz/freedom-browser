@@ -15,8 +15,9 @@
  * (freedom-core design 0015, The transport). An announced GET lets no HEAD,
  * POST or any other method of the same URL through, nor an announced POST a
  * GET. Main's Swarm executor reads a remote node on this path; its writes go
- * on write sessions of their own, which run no guard and announce nothing
- * (`ant-write-sessions.js`, #1344).
+ * on write sessions of their own, each with its own guard, armed for the one
+ * write it carries, and announce nothing here (`ant-write-sessions.js`,
+ * #1344).
  *
  * Kept free of dependencies so both the guard and its callers can load it.
  */
@@ -98,6 +99,7 @@ function _resetMainProcessAntDialsForTests() {
 
 module.exports = {
   announceMainProcessAntDial,
+  dialKey,
   isMainProcessAntDial,
   _resetMainProcessAntDialsForTests,
 };

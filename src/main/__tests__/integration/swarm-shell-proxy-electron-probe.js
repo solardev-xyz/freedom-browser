@@ -19,8 +19,14 @@
  *   - an HTTP origin on 127.0.0.1 standing in for a remote Ant node at
  *     `ant.example.test`, recording what came through the proxy, and on
  *     which of its connections;
- *   - a SOCKS5 proxy on the session, recording the hostname:port Chromium
- *     asked it for and splicing the tunnel to the origin.
+ *   - a SOCKS5 proxy on the session for the node's host only (DIRECT for
+ *     any other), recording the hostname:port Chromium asked it for and
+ *     splicing the tunnel to the origin. A write session answers the node's
+ *     proxy for every URL, so anything else it sent would reach this proxy
+ *     too: the session's own background fetches (its spell checker's
+ *     dictionary) don't;
+ *   - every session made while it runs (main's write sessions), each
+ *     request it sent and each its guard refused.
  *
  * Then the resend leg (design 0015, point 6: one dial per admitted call, a
  * POST never sent twice; #1344), over HTTP and through the SOCKS proxy: the
@@ -42,7 +48,7 @@
  * `PROBE-RESULT `, or `PROBE-SKIPPED <reason>`.
  */
 
-const { app, session } = require('electron');
+const { app, net: electronNet, netLog, session } = require('electron');
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
@@ -56,6 +62,10 @@ const BATCH = 'a1'.repeat(32);
 app.commandLine.appendSwitch('host-resolver-rules', `MAP ${NODE_HOST} 127.0.0.1`);
 const PROBE_USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-swarm-shell-probe-'));
 app.setPath('userData', PROBE_USER_DATA);
+// No spell-checker dictionary can be kept, so every session made would fetch
+// one, as on a first start: the NetLog would show a write session's.
+fs.writeFileSync(path.join(PROBE_USER_DATA, 'Dictionaries'), '');
+const NET_LOG = path.join(PROBE_USER_DATA, 'net-log.json');
 
 const { antBackend } = require('../../swarm/bzz-protocol');
 const { announceMainProcessAntDial } = require('../../swarm/ant-api-main-dials');
@@ -193,6 +203,11 @@ function startSocks(originPort) {
     });
     server.listen(0, '127.0.0.1', () => resolve(server.address().port));
   });
+}
+
+/** The probe's PAC: the node's host through the SOCKS proxy, anything else DIRECT. */
+function nodePac(socksPort) {
+  return `function FindProxyForURL(u, h) { return h === "${NODE_HOST}" ? "SOCKS5 127.0.0.1:${socksPort}" : "DIRECT"; }`;
 }
 
 async function setPac(targetSession, script) {
@@ -671,6 +686,43 @@ async function onionLeg(ses, socksPort, originPort) {
   return out;
 }
 
+/**
+ * A write session's own guard, with no lease armed (every write is over):
+ * the code's requests are refused, a read and a write of the node and an
+ * unrelated URL alike, and none reaches the node.
+ */
+async function writeGuardLeg(writeSession, remote) {
+  const attempt = (method, url) =>
+    new Promise((resolve) => {
+      const request = electronNet.request({
+        method,
+        url,
+        session: writeSession,
+        credentials: 'omit',
+        useSessionCookies: false,
+        cache: 'no-store',
+        bypassCustomProtocolHandlers: true,
+      });
+      request.on('response', (response) => {
+        response.resume();
+        resolve({ status: response.statusCode });
+      });
+      request.on('error', (err) => resolve({ error: String(err?.message || err) }));
+      request.end();
+    });
+  const from = originSeen.length;
+  const out = {
+    read: await attempt('GET', `${remote}/stamps`),
+    write: await attempt('POST', `${remote}/bytes`),
+    elsewhere: await attempt(
+      'GET',
+      'https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic'
+    ),
+  };
+  out.delivered = originSeen.length - from;
+  return out;
+}
+
 // The resend leg's cases: [scenario, call], every form that carries a body
 // or none, whole and streamed, and a read.
 const RESEND_WRITES = [
@@ -692,12 +744,10 @@ async function resendLeg(ses, backend, files, socksPort) {
   for (const route of ['http', 'socks']) {
     if (route === 'http') await ses.setProxy({ mode: 'direct' });
     else {
-      await setPac(
-        ses,
-        `function FindProxyForURL(u, h) { return "SOCKS5 127.0.0.1:${socksPort}"; }`
-      );
+      await setPac(ses, nodePac(socksPort));
     }
     const from = originSeen.length;
+    const socksFrom = socksSeen.length;
     const leg = { resolveProxy: await ses.resolveProxy(`${backend.url}/bzz`), writes: [] };
     leg.control = await wholeBodyControl(ses, backend);
     for (const [id, at] of RESEND_WRITES) {
@@ -708,8 +758,10 @@ async function resendLeg(ses, backend, files, socksPort) {
       leg.reads.push(await hangUpCase(ses, byId.get(id), at, backend, files));
     }
     leg.together = await togetherLeg(backend);
-    // Every request of the leg, the writes' among them, through the route.
+    // Every request of the leg, the writes' among them, through the route,
+    // and nothing else through the proxy.
     leg.via = [...new Set(originSeen.slice(from).map((e) => e.viaProxy))];
+    leg.socks = [...new Set(socksSeen.slice(socksFrom))];
     routes[route] = leg;
   }
   await closeConnections(ses);
@@ -722,6 +774,9 @@ const guardSaw = [];
 const cancelled = [];
 
 async function main() {
+  // First, before the default session can fetch its spell checker's
+  // dictionary (the probe's own session; a write session's is the code's).
+  session.defaultSession.setSpellCheckerLanguages([]);
   if (!vectors.swarmVectors('swarm-grammar.json')) {
     process.stdout.write(`PROBE-SKIPPED no Swarm vectors at ${vectors.swarmVectorsDir}\n`);
     app.exit(0);
@@ -732,6 +787,9 @@ async function main() {
     swarm: vectors.swarmVectors('swarm.json'),
     dwebVerify: vectors.swarmVectors('dweb-verify.json'),
   };
+  // Everything the app's network stack requests from here on, every
+  // session's, whether or not it passes webRequest.
+  await netLog.startLogging(NET_LOG, { captureMode: 'default' });
   const originPort = await startOrigin();
   const socksPort = await startSocks(originPort);
   const ses = session.defaultSession;
@@ -759,7 +817,22 @@ async function main() {
   });
   attachWebRequestDispatcher(ses);
   await ses.cookies.set({ url: remote, name: 'session', value: 'must-not-travel' });
-  await setPac(ses, `function FindProxyForURL(u, h) { return "SOCKS5 127.0.0.1:${socksPort}"; }`);
+  await setPac(ses, nodePac(socksPort));
+  // Each session made from here on is a write session: what it sends, and
+  // what its guard refuses.
+  const writeSessions = { made: 0, sent: [], refused: [], list: [] };
+  app.on('session-created', (made) => {
+    writeSessions.made += 1;
+    writeSessions.list.push(made);
+    made.webRequest.onSendHeaders((details) => {
+      writeSessions.sent.push({ method: details.method, url: details.url });
+    });
+    made.webRequest.onErrorOccurred((details) => {
+      if (details.error === 'net::ERR_BLOCKED_BY_CLIENT') {
+        writeSessions.refused.push({ method: details.method, url: details.url });
+      }
+    });
+  });
 
   const results = {
     remote,
@@ -849,10 +922,31 @@ async function main() {
     cookie,
   }));
   results.socksSeen = [...new Set(socksSeen.slice(0, socksBeforeOnion))];
+  // Each request a write session sent, as its method and origin, and how many.
+  results.writeSessions = {
+    made: writeSessions.made,
+    sent: writeSessions.sent.length,
+    sentAs: [...new Set(writeSessions.sent.map((r) => `${r.method} ${new URL(r.url).origin}`))],
+    refused: [...writeSessions.refused],
+  };
   results.guardSaw = guardSawPlayed;
   results.guardMethods = [...new Set(guardSaw.slice(0, guardSawPlayed).map((g) => g.method))];
   results.guardKinds = [...new Set(guardSaw.map((g) => `${g.resourceType}:${g.frame}`))];
   results.cancelled = cancelled;
+
+  // Every origin the network stack requested, `data:` PAC scripts aside.
+  await netLog.stopLogging();
+  const { events } = JSON.parse(fs.readFileSync(NET_LOG, 'utf8'));
+  results.netLogOrigins = [
+    ...new Set(
+      events
+        .map((e) => e.params?.url)
+        .filter((url) => typeof url === 'string' && !url.startsWith('data:'))
+        .map((url) => new URL(url).origin)
+    ),
+  ];
+  // After the NetLog, which would list the refused requests' URLs too.
+  results.writeGuard = await writeGuardLeg(writeSessions.list[0], remote);
 
   await ses.setProxy({ mode: 'direct' });
   try {
@@ -860,8 +954,9 @@ async function main() {
   } catch {
     /* cleaned up with the temp dir */
   }
-  process.stdout.write(`PROBE-RESULT ${JSON.stringify(results)}\n`);
-  app.exit(0);
+  // Exits once the line is out: the report is over 128 KiB, and on a pipe
+  // an exit straight after the write can cut it.
+  process.stdout.write(`PROBE-RESULT ${JSON.stringify(results)}\n`, () => app.exit(0));
 }
 
 app.whenReady().then(() =>

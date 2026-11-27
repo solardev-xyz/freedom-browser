@@ -19,7 +19,9 @@
  * proxy, a node keeps connections open, takes the next write whole and
  * closes without headers: every write the executor sends, whole or
  * streamed, reaches it once, on a new connection, through the proxy, and
- * the call answers its failure, with no crash. A whole body sent on the
+ * the call answers its failure, with no crash. A write session sends
+ * nothing else: its own guard admits only its lease's write, and its spell
+ * checker never fetches a dictionary (#1358). A whole body sent on the
  * session's kept connection, as main sent one before, is the control:
  * Chromium sends it twice. A read may be sent twice, which is idempotent
  * (design 0015's amendment of 2026-11-27). Four streamed uploads go at
@@ -161,12 +163,10 @@ describeWithElectron("main's Swarm executor on a remote node behind a session pr
     }
     const forms = new Set(results.originSeen.map((seen) => seen.form));
     expect([...forms].sort()).toEqual([...FORMS, 'ready'].sort());
-    // The proxy was asked for the node by its name, never an address.
-    // Electron's own background fetches (its spell checker's dictionary,
-    // started before the probe can turn it off) may use the session's
-    // proxy too: only the connections to the node's port count.
-    const toNode = results.socksSeen.filter((seen) => seen.endsWith(`:${port}`));
-    expect(toNode).toEqual([`ant.example.test:${port}`]);
+    // The proxy was asked for the node by its name, never an address, and
+    // for nothing else: the session sends only the node's host through it,
+    // a write session everything it sends (#1358).
+    expect(results.socksSeen).toEqual([`ant.example.test:${port}`]);
     expect(results.stamp).toEqual({ ok: true });
   });
 
@@ -228,12 +228,15 @@ describeWithElectron("main's Swarm executor on a remote node behind a session pr
       });
 
       test(route === 'socks' ? 'through the SOCKS proxy' : 'straight to the node', () => {
+        const { port } = new URL(results.remote);
         if (route === 'socks') {
           expect(leg.resolveProxy).toMatch(/^SOCKS5 127\.0\.0\.1:\d+$/);
           expect(leg.via).toEqual([true]);
+          expect(leg.socks).toEqual([`ant.example.test:${port}`]);
         } else {
           expect(leg.resolveProxy).toBe('DIRECT');
           expect(leg.via).toEqual([false]);
+          expect(leg.socks).toEqual([]);
         }
       });
 
@@ -384,6 +387,48 @@ describeWithElectron("main's Swarm executor on a remote node behind a session pr
     });
     expect(stopped.socks).toEqual([]);
     expect(stopped.delivered).toEqual([]);
+  });
+
+  // #1358: a write session carries its lease's write and nothing else. Its
+  // spell checker's dictionary is never fetched, and its own guard, armed
+  // for the one write, had nothing to refuse.
+  // The NetLog has every request of every session, through webRequest or
+  // not (a spell checker's dictionary isn't): over HTTP and through SOCKS,
+  // the app requested the node and nothing else.
+  test("the app's network stack requested nothing but the node, over HTTP and through SOCKS", () => {
+    const nodes = [results.remote, results.onion.node].map((node) => new URL(node).origin);
+    expect(results.netLogOrigins.sort()).toEqual(nodes.sort());
+  });
+
+  test('the write sessions sent their writes and nothing else, each a POST to the node', () => {
+    const { made, sent, sentAs, refused } = results.writeSessions;
+    expect(made).toBeGreaterThanOrEqual(4);
+    expect(made).toBeLessThanOrEqual(8);
+    const nodes = [results.remote, results.onion.node].map(
+      (node) => `POST ${new URL(node).origin}`
+    );
+    expect(sentAs.sort()).toEqual(nodes.sort());
+    // One a write: every POST the node saw but the control's, which went
+    // on the session.
+    const plays = results.originSeen.filter((seen) => seen.method === 'POST').length;
+    const legs = Object.values(results.resend);
+    const control = legs.reduce((sum, leg) => sum + leg.control.delivered.length, 0);
+    expect(sent).toBe(
+      plays + results.resendOriginSeen.POST - control + results.onion.running.delivered.length
+    );
+    expect(refused).toEqual([]);
+  });
+
+  // In a real session: with no write armed, its own guard refuses the
+  // node's URLs and any other, and nothing reaches the node.
+  test("a write session's own guard refuses anything it wasn't armed for", () => {
+    const blocked = { error: 'net::ERR_BLOCKED_BY_CLIENT' };
+    expect(results.writeGuard).toEqual({
+      read: blocked,
+      write: blocked,
+      elsewhere: blocked,
+      delivered: 0,
+    });
   });
 
   test('the resend leg: the guard saw each read once and the control, no write, and cancelled none', () => {

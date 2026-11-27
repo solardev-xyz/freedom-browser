@@ -37,9 +37,22 @@
  * script that returns exactly that list, and read back from the write
  * session before the dial: a mismatch fails the write, undialled. The onion
  * gate (`ipfs/gateway-transport.js`) asks the write session, which answers
- * as the request's would. Nothing on a write session listens to
- * `webRequest`: the write is main's own, so it isn't announced to the Ant
- * guard (`ant-api-main-dials.js`), which runs on the request's session only.
+ * as the request's would.
+ *
+ * NOTHING ELSE GOES OUT
+ *
+ * A write session carries its lease's write and nothing else. It has a
+ * guard of its own (`webRequest.onBeforeRequest`), installed as the session
+ * is made, before it can send anything: it refuses every request but one,
+ * the leased write's method to its exact URL (`dialKey`, as the Ant guard
+ * matches announcements), armed once the session is ready and spent by the
+ * request it admits; the lease's end disarms it. The write isn't announced
+ * to the request session's Ant guard (`ant-api-main-dials.js`), which it
+ * never meets. A new partition also starts downloading the spell checker's
+ * dictionary when `userData/Dictionaries` has none yet, and that download
+ * doesn't pass `webRequest` (measured on Electron 45.2.1, #1358): its
+ * languages are emptied as the session is made, which stops it at the
+ * source, and its spell checker is turned off.
  *
  * THE POOL
  *
@@ -49,6 +62,8 @@
  * HTTP cache, which the pool keeps, since Electron never frees a session. A
  * write past that waits for one, in turn, or until its abort.
  */
+
+const { dialKey } = require('./ant-api-main-dials');
 
 /** Concurrent writes a request session sends at once; more wait their turn. */
 const MAX_WRITE_SESSIONS = 8;
@@ -60,6 +75,37 @@ const PREPARE_TIMEOUT_MS = 10_000;
 
 const pools = new WeakMap(); // request session -> { idle, made, waiting }
 let partitions = 0;
+
+/**
+ * Admits `details` when it is the request `slot`'s lease armed its guard
+ * for, which the admission spends; refuses anything else.
+ */
+function admits(slot, details) {
+  const armed = slot.armed;
+  if (!armed || details.method !== armed.method || dialKey(details.url) !== armed.key) {
+    return false;
+  }
+  slot.armed = null;
+  return true;
+}
+
+/**
+ * A new write session: an in-memory partition with no HTTP cache, its spell
+ * checker's dictionary never fetched, and its guard on before it can send
+ * anything (see NOTHING ELSE GOES OUT).
+ */
+function makeSlot() {
+  const { session } = require('electron');
+  partitions += 1;
+  const ses = session.fromPartition(`freedom-ant-write-${partitions}`, { cache: false });
+  ses.setSpellCheckerLanguages?.([]);
+  ses.setSpellCheckerEnabled?.(false);
+  const slot = { session: ses, proxy: null, armed: null };
+  ses.webRequest.onBeforeRequest((details, callback) =>
+    callback({ cancel: !admits(slot, details) })
+  );
+  return slot;
+}
 
 function abortError() {
   return new DOMException('This operation was aborted', 'AbortError');
@@ -79,12 +125,7 @@ function take(pool, signal) {
   if (signal?.aborted) return Promise.reject(abortError());
   if (pool.idle.length) return Promise.resolve(pool.idle.pop());
   if (pool.made < MAX_WRITE_SESSIONS) {
-    const { session } = require('electron');
-    partitions += 1;
-    const slot = {
-      session: session.fromPartition(`freedom-ant-write-${partitions}`, { cache: false }),
-      proxy: null,
-    };
+    const slot = makeSlot();
     pool.made += 1;
     return Promise.resolve(slot);
   }
@@ -141,19 +182,21 @@ async function prepare(slot, source, url) {
 }
 
 /**
- * A write session for one write to `url`, on `source`'s proxy for it, with
- * no connection open: its first request takes a new one. `release()`
- * (idempotent) hands it back once the write is over, its reply's body
- * included. Rejects when `signal` aborts the wait for a free one, or the
- * session couldn't be prepared (nothing was dialled).
+ * A write session for one write of `method` to `url`, on `source`'s proxy
+ * for it, with no connection open: its first request takes a new one. Its
+ * guard admits that one request and nothing else. `release()` (idempotent)
+ * disarms the guard and hands the session back once the write is over, its
+ * reply's body included. Rejects when `signal` aborts the wait for a free
+ * one, or the session couldn't be prepared (nothing was dialled).
  *
  * @param {Electron.Session|null} source - the request's session (the
  *   default session when null)
  * @param {string} url
+ * @param {string} method - the write's, as its dial sends it
  * @param {AbortSignal} [signal]
  * @returns {Promise<{ session: Electron.Session, release: () => void }>}
  */
-async function leaseWriteSession(source, url, signal) {
+async function leaseWriteSession(source, url, method, signal) {
   const from = source || require('electron').session.defaultSession;
   const pool = poolOf(from);
   const slot = await take(pool, signal);
@@ -161,6 +204,7 @@ async function leaseWriteSession(source, url, signal) {
   const release = () => {
     if (released) return;
     released = true;
+    slot.armed = null;
     giveBack(pool, slot);
   };
   const preparing = prepare(slot, from, url);
@@ -181,6 +225,7 @@ async function leaseWriteSession(source, url, signal) {
   } finally {
     clearTimeout(timer);
   }
+  slot.armed = { method, key: dialKey(url) };
   return { session: slot.session, release };
 }
 

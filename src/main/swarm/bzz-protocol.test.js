@@ -51,6 +51,10 @@ jest.mock('electron', () => ({
       let proxy = 'DIRECT';
       const ses = {
         partition,
+        guard: null,
+        webRequest: { onBeforeRequest: (listener) => (ses.guard = listener) },
+        setSpellCheckerLanguages: jest.fn(),
+        setSpellCheckerEnabled: jest.fn(),
         setProxy: jest.fn(async ({ pacScript }) => {
           const script = Buffer.from(pacScript.split(',')[1], 'base64').toString('utf-8');
           proxy = JSON.parse(script.match(/return (".*");/)[1]);
@@ -985,16 +989,25 @@ describe('a non-loopback Ant', () => {
       mockWriteSessions.length = 0;
     });
 
-    test("on the request session's proxy, connections closed, unannounced, the stream written by the stack", async () => {
+    test("on the request session's proxy, connections closed, its own guard admitting it alone, the stream written by the stack", async () => {
       const dialled = `${REMOTE}/bzz?name=site.tar`;
       const source = writeSource();
       const body = new ReadableStream({ pull: (controller) => controller.close() });
       const seen = {};
+      // What the write session's guard lets through, asked as Chromium would.
+      const sends = (ses, method, url) =>
+        new Promise((resolve) => ses.guard({ method, url }, ({ cancel }) => resolve(!cancel)));
       mockNetGatewayFetch.mockImplementation(async (url, init, deps) => {
         for (const method of ['GET', 'HEAD', 'POST'])
           seen[method] = isMainProcessAntDial(url, method);
         seen.init = init;
         seen.proxy = await deps.session.resolveProxy(url);
+        seen.guard = {
+          get: await sends(deps.session, 'GET', url),
+          other: await sends(deps.session, 'POST', `${REMOTE}/bzz?name=other.tar`),
+          write: await sends(deps.session, 'POST', url),
+          again: await sends(deps.session, 'POST', url),
+        };
         return new Response('{"reference":"ab"}', { status: 201 });
       });
       const fetchImpl = jest.fn();
@@ -1018,7 +1031,10 @@ describe('a non-loopback Ant', () => {
       expect(source.resolveProxy).toHaveBeenCalledWith(dialled);
       expect(seen.proxy).toBe(SOCKS);
       expect(ses.closeAllConnections).toHaveBeenCalledTimes(1);
-      // No guard runs on a write session: nothing is announced.
+      // Its own guard admits the write once, and nothing else; nothing is
+      // announced to the request session's Ant guard.
+      expect(seen.guard).toEqual({ get: false, other: false, write: true, again: false });
+      expect(ses.setSpellCheckerLanguages).toHaveBeenCalledWith([]);
       expect(seen).toMatchObject({ GET: false, HEAD: false, POST: false });
       expect(seen.init).toMatchObject({ method: 'POST', redirect: 'manual', body });
       expect(init.duplex).toBeUndefined();
