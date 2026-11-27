@@ -114,6 +114,33 @@ FREEDOM_CORE_SWARM_VECTORS=../freedom-core/vectors \
   npx jest src/main/__tests__/integration/swarm-shell-proxy.test.js
 ```
 
+### Ledger through the core (freedom-cored)
+
+The Ledger moves into freedom-cored (freedom-core design 0016, LDG-3): the core builds and checks every APDU, and main carries each one to the device. Main's HID device (`src/main/wallet/ledger/hid-device.js`) is built; nothing calls it until LDG-3's relay, and `src/main/wallet/ledger/transport.js` still serves every Ledger request.
+
+- **One per operation.** It opens at the operation's first APDU, exchanges one APDU at a time under the APDU's `deadline_ms` (no answer in 15 s is `unresponsive`; in 5 minutes, for the APDU the user confirms, `timeout`), and closes the handle at once on `detach()`, on the core's cancel and on any failure, without waiting for the exchange in flight. It fails only as `not_found`, `busy`, `disconnected`, `unresponsive` or `timeout`.
+- **node-hid's close during a read (the LDG-3 plan's R1).** node-hid 2.1.2's `read(cb)` reads on a libuv threadpool thread while `close()` frees the device on the main thread, with no lock between them, which is unsafe on every OS (hidapi 0.10.1 isn't thread-safe per device; the module's header has the lines). So the device never calls `read(cb)`. It polls hidapi's non-blocking `readTimeout(0)` from a timer on the main thread (every 1 ms for 100 ms after the write, every 5 ms up to 1 s, then every 20 ms), so `close()` always runs between two polls, on the thread that issued them, and no threadpool thread is held. It frames APDUs with `@ledgerhq/hw-transport-node-hid-noevents`' HID framing and drops any report on another channel, such as a closed handle's late answer (no handle gets any of the last 16 handles' channels).
+- **Its unit suite** (`hid-device.test.js`) runs against `test/helpers/fake-node-hid.js`, which records any read or write on a closed handle, any blocking read and any threadpool read.
+- **The device probe** (`hid-device.probe.test.js`, gated by `LEDGER_DEVICE_E2E=1`) skips when no Ledger is plugged in. Run it on Linux, macOS and Windows with a Ledger unlocked in the Ethereum app, Ledger Live closed and, on Linux, Ledger's udev rules installed. Run it under Electron's Node, where main loads node-hid. `LEDGER_DEVICE_E2E_INTERACTIVE=1` adds the steps that need hands on the device. It sends `B0 01` and, with hands, `E0 02 01 00` (show an address), and signs nothing.
+
+```bash
+LEDGER_DEVICE_E2E=1 ELECTRON_RUN_AS_NODE=1 npx electron node_modules/jest/bin/jest.js \
+  --runInBand src/main/wallet/ledger/hid-device.probe.test.js
+# PowerShell
+$env:LEDGER_DEVICE_E2E=1; $env:ELECTRON_RUN_AS_NODE=1
+npx electron node_modules/jest/bin/jest.js --runInBand src/main/wallet/ledger/hid-device.probe.test.js
+```
+
+On each OS the probe must show the following. It prints what it saw at the end:
+
+1. One operation opens at its first APDU, gets the Ethereum app's `B0 01` answer, and closes at its end.
+2. The time per APDU over 50 exchanges (R3).
+3. 200 closes mid-exchange, 0 to 13 ms after the write, each followed by a fresh handle that gets its own `B0 01` answer, with no crash and no hang. Late answers count as dropped frames and are never taken as an answer. On macOS this reopens the seized device right after each close (R5). On Windows it closes while hidapi's overlapped read is pending, which `CancelIo` cancels because the same thread issued it.
+4. With hands: a cancel while the device shows an address closes the handle at once. The next APDU while that prompt shows gets an error status or nothing in 15 s (0016's `LEDGER_BUSY` or `LEDGER_UNRESPONSIVE`; record which). After you reject the prompt on the device, the next operation works.
+5. With hands: an unplug mid-read is `disconnected` right away, not at the deadline. Plugged back in, the next operation works.
+
+A crash, a hang or any other outcome means R1 isn't settled on that OS. The plan's fallback is node-hid 3's async API with the same framing, which is a new dependency.
+
 ### Experimental Windows Agent workspace backend
 
 On the Agent Windows branch, build the native workspace helpers on Windows with
