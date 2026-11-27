@@ -7,25 +7,35 @@ the same operations without an Agent conversation.
 
 ## Supported operations
 
-Ethereum mainnet `.eth` (qualified ENSv1), `.wei` (WNS) and `.gwei` (GNS):
+Ethereum mainnet `.eth` (ENSv2, including legacy-name renewals), `.wei` (WNS) and `.gwei` (GNS):
 
 - Inspect availability, ownership, expiry and supported records.
 - Register a top-level name to the selected local, Ledger or remote wallet, with
   separate commit/reveal approvals and a chain-time commitment wait.
-- Renew a top-level name. ENS wrapped names use their distinct renewal controller;
+- Renew a top-level name. Legacy ENS names use the ENSv2 legacy renewer,
+  including synchronization of wrapped expiry; v2 names use the new registrar.
   WNS/GNS add one 365-day year per transaction. Renewal does not transfer ownership.
 - Point an active name at a completed, retrieval-verified Freedom Swarm website
   publication from the current conversation; remove its website on explicit request.
 - Set one ETH-address or text record, preserving other records.
 
-Existing ENS names must use the qualified public resolver; Freedom never replaces
-a resolver as an implicit prerequisite. Changed/unrecognized contract runtimes
-are refused. ENSv2 mainnet deployments do not imply v2 registration qualification.
-The current ENS deployment documentation says v1 remains in use until the v2 launch;
-deployment/controller/ABI checks remain mandatory when updating this adapter.
+Fresh `.eth` registrations use the current ENSv2 registrar and a wallet-owned
+instance of the official permissioned resolver, deployed through ENS's verifiable
+factory. Resolver deployment requires its own wallet approval and is reused for
+later registrations by that wallet. The wallet controls its records and upgrades;
+those permissions do not automatically follow a future name transfer. Transfers
+are outside this slice.
+
+Existing names can be renewed without changing their resolver. Direct record
+writes support the pinned legacy public resolver, PublicResolverV2 where it
+recognizes the wallet, and verified permissioned resolvers with the required
+wallet role. Custom resolvers are never replaced automatically; unread records
+are reported as unknown, not empty. Changed/unrecognized write deployments are
+refused. Read-only ownership inspection still works when a current price quote
+cannot be qualified, with an explicit quote-unavailable explanation.
 
 Transfers, primary names, subnames, other-chain addresses, delegate changes,
-resolver migration, ENSv2 writes, marketplace/storefront/passport flows and bulk
+resolver migration, marketplace/storefront/passport flows and bulk
 work remain later slices. The research call matrix is not a claim these shipped.
 Legacy WNS/GNS Unicode whose registered bytes differ from the conservative
 normalization policy is refused rather than silently converted to another name.
@@ -53,20 +63,20 @@ fee is refused like a missing or zero quote, never re-quoted at signing.
 `domain_inspect` labels its result as untrusted data for the model: records are
 set by whoever controls the name.
 
-Registration (reveal) and renewal send the quoted price plus a disclosed 2%
-buffer, the same margin the ENS manager app uses
-([`CURRENCY_FLUCTUATION_BUFFER_PERCENTAGE`](https://github.com/ensdomains/ens-app-v2/blob/ffd39877139528cf54fc4df2a4db5e6c8cc6b2a5/src/utils/constants.ts)),
-so an ETH/USD oracle update between signing and mining does not revert the
-payment. The approval's amount is the buffered value and a separate row names the
-price and the buffer. Every supported contract refunds the excess to the sender in
-the same transaction: the pinned ENS
-[ETHRegistrarController](https://github.com/ensdomains/ens-contracts/blob/2a00e564caf5cf676cec66c9d13c322fb734a7f5/contracts/ethregistrar/ETHRegistrarController.sol)
-`register`/`renew` and the wrapped renewal controller's `renew` (its pinned
-`solcInputs` source) via `transfer`, and WNS/GNS `NameNFT.reveal`/`renew` via
-`safeTransferETH`. The ENS refund uses a 2,300-gas `transfer`; the pre-approval
-simulation from the real sender refuses a wallet that cannot receive it.
-The renewal amount is fixed when the operation is prepared: a lower current price
-still sends the approved amount (refunding the rest), a higher one is refused.
+ENS registration and renewal default to **USDC**, with **DAI** available through
+`paymentToken`. Both need ETH separately for network fees. Freedom checks token
+balance before paying commit gas and does not swap currencies automatically.
+The registrar takes the current token price. A separate ERC20 approval sets an
+explicit spending ceiling, never an unlimited allowance. A pre-existing larger
+allowance is reduced with a disclosed transaction. The purchase card shows the
+quote and ceiling separately; another wallet action changing that allowance can
+change the ceiling. Unused allowance remains until consumed or revoked, rather
+than being refunded. A returned quote is not a claim about the settled token cost.
+
+`.wei`/`.gwei` registration and renewal still pay ETH with a disclosed 2% price
+buffer. Their pinned NameNFT contracts refund unused ETH in the same transaction.
+Their renewal amount is fixed when prepared: a lower current price still sends
+the approved buffered amount, while a higher price requires a new plan.
 
 Reads use Freedom's existing Ethereum chain-data policy. There is no independent
 public-RPC fallback, indexer or new connection. Candidate-name queries can disclose
@@ -104,7 +114,10 @@ in the trusted wallet approval; after broadcast those bytes are public chain dat
 private fork, never by sending a real private preimage to a public RPC.
 
 State progression is `ready` → `pending` → `waiting_commitment` → `ready` (reveal)
-→ `pending` → `completed`. Record updates/renewals skip commitment stages.
+→ `pending` → `completed`. ENS may insert separately approved token-allowance
+and resolver-deployment stages before reveal; renewal may need token approval.
+They remain steps in the same operation and are never reported as a completed
+purchase or renewal. Record updates and renewals skip commitment stages.
 Additional outcomes include `declined`, `stale`, `expired`, `dispatch_unknown`,
 `verification_needed` and `failed`. Known operation IDs survive conversation
 deletion and can be used from a later conversation. Default listing is scoped
@@ -132,6 +145,17 @@ neither the commitment nor the price. Within the commitment's maximum age the
 operation returns to `ready` on the same commitment, and the next `domain_execute`
 requotes it for a fresh wallet approval; after that age it is `expired`.
 
+ENS setup confirmation checks the canonical receipt’s exact token Approval or
+factory ProxyDeployed event. It needs no archive-state reads: another name’s
+payment or a later allowance revocation cannot strand a successfully approved
+operation. Later steps always recheck current state. Earlier setup receipts,
+exact transaction digests and nonce evidence are rechecked before continuing;
+missing canonical evidence blocks another send until reconciled. A reverted
+setup can be resumed explicitly on the same operation, retaining any paid commit.
+An old unsent ENSv1 purchase plan is retired with an explanation; old commitments
+cannot be replayed on v2. Pending and uncertain dispatches remain blocked for
+reconciliation rather than being discarded or repurchased.
+
 A crash during dispatch is uncertain, even with no returned transaction hash.
 Preparing another operation for that name is blocked until reconciled. A recovery
 hash from wallet history is accepted only after sender, destination, value and
@@ -141,14 +165,14 @@ delayed/mismatched resolution are verification problems, not permission to pay t
 
 ## Qualification and smoke testing
 
-Local macOS evidence (October 22, production source through `9195e432`): lint
-passes; the full suite passes **10,906
-tests / 129 skipped** across 486 suites. All **50 domain tests** pass after the
-fresh-block and saved-commit recovery fixes, including rejected receipts,
-restart recovery and protection against repeating uncertain reveals.
-The existing real Electron startup/open/close test also passes using a
-disposable profile. These are source-build checks, not packaged Windows/Linux
-or physical wallet-device qualification.
+The ENSv2 repair (#1005, November 9) has focused domain/service/tool/wallet/UI
+unit coverage, native macOS approval-card checks in light/dark at 1000px/600px,
+and isolated Anvil forks of deployed mainnet and Sepolia contracts. The forks
+exercise USDC and DAI registration/renewal, record writes and website clearing,
+restart recovery, commitment encoding and completed-operation replay. Mainnet
+qualification also covers legacy unwrapped/wrapped renewals and `.wei`/`.gwei`
+regressions. These are not paid mainnet, physical wallet-device or packaged
+Windows/Linux qualification. See [ENSv2 evidence](ensv2-implementation-notes.md).
 
 The maintainer live-tested `.gwei` registration, binding to a verified Swarm
 publication and manually opening the named site. `.wei` and `.eth` remain
@@ -169,10 +193,24 @@ node scripts/qualify-domains-fork.js
 It exercises all three namespaces: commit, restart during the chain-age wait,
 reveal, renewal, address/text/website/clear writes, preservation of other records,
 receipt verification and completed-operation replay without another send.
-It also creates a wrapped ENS fixture with the legacy controller and verifies
-that the product's distinct renewal path extends base and wrapper expiries while
-preserving ownership. These local-fork results are not live Swarm retrieval,
-wallet-device or packaged-platform qualification.
+It also wraps a legacy name only inside the local fork to exercise ENS's legacy
+renewal route. It never calls a deauthorized v1 registration controller. These
+local results do not establish live Swarm retrieval or packaged-platform support.
+
+To repeat against Sepolia's official test deployments, run a **local fork** on
+chain ID 1 (the adapter's fixed network) and use test-only constructor overrides:
+
+```sh
+anvil --fork-url <your-read-only-Sepolia-RPC> --host 127.0.0.1 --port 18551 --chain-id 1
+FREEDOM_DOMAIN_FORK_URL=http://127.0.0.1:18551 \
+FREEDOM_DOMAIN_FORK_DEPLOYMENTS=scripts/fixtures/ensv2-sepolia.json \
+node scripts/qualify-domains-fork.js
+```
+
+The fixture pins official Sepolia deployments, including its mock stablecoins.
+It is not a production network selection or an Agent-supplied contract override.
+Use a recent fork block on RPCs without archive state access. Both qualifiers
+refuse non-loopback endpoints and verify Anvil before local state changes.
 
 For a safe first user smoke: “Check whether freedom-example-name.eth is available
 and show its current domain information. Don’t register it or send a transaction.”

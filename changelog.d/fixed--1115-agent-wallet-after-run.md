@@ -1,0 +1,1 @@
+- Wallet requests from tabs still controlled by Agent no longer open an unrelated dApp approval after a task ends; continue the Agent task or take control of the tab first ([#1115](https://github.com/solardev-xyz/freedom-browser/issues/1115))

@@ -164,3 +164,13 @@ test('counts encrypted answering and the subsequent native tool request separate
   expect(ledger.snapshot().routes[0]).toMatchObject({ requests: 2,
     binding: { attempts: 2, pending: 0 }, encryption: { encrypted: 1, unencrypted: 1, reasons: ['tools'] } });
 });
+
+test.each(['TDRelaunchAdvised', 'TDRelaunchAdvisedConfigurationNeeded'])(
+  'persists the current verifier and %s without upgrading its advisory', tcb => {
+    const saved = normalizePrivacy({ version: 1, routes: [{ hardware: {
+      status: 'advisory', verifier: 'dcap-qvl/0.7.1', reports: [{ status: 'advisory', tcb }],
+    } }] });
+    expect(saved.routes[0].hardware).toMatchObject({ status: 'advisory', verifier: 'dcap-qvl/0.7.1',
+      reports: [{ status: 'advisory', tcb }] });
+  }
+);

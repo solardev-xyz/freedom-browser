@@ -20,6 +20,7 @@ import { initDappConnect, showDappConnect, updateConnectionBanner } from './wall
 import { initDappTx, showDappTxApproval } from './wallet/dapp-tx.js';
 import { initDappSign, showDappSignApproval } from './wallet/dapp-sign.js';
 import { initDappX402, updateX402ConnectionBanner } from './wallet/dapp-x402.js';
+import { initSiweSignin } from './wallet/siwe-signin.js';
 import { initRecentPayments, refreshRecentPayments } from './wallet/recent-payments.js';
 import { initSend, openSend, closeSend } from './wallet/send.js';
 import { initExportMnemonic, closeExportMnemonic } from './wallet/export-mnemonic.js';
@@ -104,6 +105,7 @@ export function initWalletUi() {
   initDappX402();
   initRecentPayments();
   initDappSign();
+  initSiweSignin();
   initSend();
   initExportMnemonic(switchTab);
   initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone, openCreateSafe);

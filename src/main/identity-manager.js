@@ -2106,11 +2106,15 @@ async function deleteDerivedWallet(index) {
   // a later account that reuses the index must neither inherit nor be
   // blocked by the deleted Safe's leftovers. Cleanup precedes the meta
   // write so a failure never leaves a deleted record with live state.
+  // The pending store goes first: clearPending can refuse (an unreadable
+  // store throws SAFE_PENDING_UNREADABLE), and a refused delete must keep
+  // the Safe whole, including a live session's collected signatures.
+  // discardSession cannot fail, so it runs only once the store is clear.
   // (Lazy requires — both modules are dependency-light — keep the Safe
   // stack out of ordinary wallet operations.)
   if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
-    require('./wallet/safe/message-sessions').discardSession(index);
     require('./wallet/safe/pending-store').clearPending(index);
+    require('./wallet/safe/message-sessions').discardSession(index);
   }
 
   // Remove from list
@@ -2227,23 +2231,6 @@ function repairIdentityFiles() {
  */
 function registerIdentityIpc() {
   repairIdentityFiles();
-  // Check if vault exists
-  ipcMain.handle(IPC.IDENTITY_HAS_VAULT, async () => {
-    try {
-      return { hasVault: await hasVault() };
-    } catch (err) {
-      return { hasVault: false, error: err.message };
-    }
-  });
-
-  // Check if vault is unlocked
-  ipcMain.handle(IPC.IDENTITY_IS_UNLOCKED, async () => {
-    try {
-      return { isUnlocked: await isVaultUnlocked() };
-    } catch (err) {
-      return { isUnlocked: false, error: err.message };
-    }
-  });
 
   // Generate mnemonic (without saving vault)
   ipcMain.handle(IPC.IDENTITY_GENERATE_MNEMONIC, async (_event, strength) => {

@@ -43,6 +43,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUrlInNewWindow: (url) => ipcRenderer.send('window:new-with-url', url),
   showAbout: () => ipcRenderer.send('app:show-about'),
   getPlatform: () => ipcRenderer.invoke('window:get-platform'),
+  // { twoFinger } — whether a two-finger swipe past a page's edge navigates (#980).
+  getSwipeNavigation: () => ipcRenderer.invoke('window:get-swipe-navigation'),
+  awaitSwipeScrollEnd: (webContentsId) =>
+    ipcRenderer.invoke('window:await-swipe-scroll-end', webContentsId),
   // Synchronous copy of process.platform for renderer/platform-init.js, which
   // must tag <html> before first paint (getPlatform() resolves too late for
   // layout that differs per OS, e.g. the macOS traffic-light spacer).
@@ -130,6 +134,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   x402RevokePermission: (args) => ipcRenderer.invoke('x402:revoke-permission', args),
   x402RevokeAllForOrigin: (args) => ipcRenderer.invoke('x402:revoke-all-for-origin', args),
   x402UpdatePermission: (args) => ipcRenderer.invoke('x402:update-permission', args),
+  // Sign-In with Ethereum over HTTP auth (#1152): the sidebar's sign-in card.
+  siweGetChallenge: (args) => ipcRenderer.invoke('siwe:get-challenge', args),
+  siwePrepare: (args) => ipcRenderer.invoke('siwe:prepare', args),
+  siweComplete: (args) => ipcRenderer.invoke('siwe:complete', args),
+  siweCancel: (args) => ipcRenderer.invoke('siwe:cancel', args),
+  onSiweChallenge: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('siwe:challenge', handler);
+    return () => ipcRenderer.removeListener('siwe:challenge', handler);
+  },
+  onSiweChallengeClosed: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('siwe:challenge-closed', handler);
+    return () => ipcRenderer.removeListener('siwe:challenge-closed', handler);
+  },
   // Main fires this when an unsupervised 402 needs approval (no active
   // cap covers the charge). Returns a disposer.
   onX402ApprovalNeeded: (callback) => {
@@ -735,8 +754,6 @@ contextBridge.exposeInMainWorld('serviceRegistry', {
 });
 
 contextBridge.exposeInMainWorld('identity', {
-  hasVault: () => ipcRenderer.invoke('identity:has-vault'),
-  isUnlocked: () => ipcRenderer.invoke('identity:is-unlocked'),
   getStatus: () => ipcRenderer.invoke('identity:get-status'),
   getVaultMeta: () => ipcRenderer.invoke('identity:get-vault-meta'),
   generateMnemonic: (strength = 256) => ipcRenderer.invoke('identity:generate-mnemonic', strength),

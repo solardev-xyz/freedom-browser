@@ -13,6 +13,8 @@ import { openSafeSigningBoard, summaryLine } from './safe-signing.js';
 
 let row;
 let countBadge;
+let storeNotice;
+let storeNoticeText;
 let screen;
 let backBtn;
 let listEl;
@@ -20,6 +22,8 @@ let listEl;
 export function initSafePendingList() {
   row = document.getElementById('safe-pending-row');
   countBadge = document.getElementById('safe-pending-count');
+  storeNotice = document.getElementById('safe-pending-store-notice');
+  storeNoticeText = document.getElementById('safe-pending-store-notice-text');
   screen = document.getElementById('sidebar-safe-pending');
   backBtn = document.getElementById('safe-pending-back');
   listEl = document.getElementById('safe-pending-list');
@@ -31,6 +35,9 @@ export function initSafePendingList() {
   // Pendings change when a send flow or a signing board closes.
   window.addEventListener('wallet:send-closed', () => refreshSafePendingRow());
   window.addEventListener('wallet:safe-signing-closed', () => refreshSafePendingRow());
+  // Re-read on every open too: an unreadable store (a transient lock at
+  // startup) heals on the next read, and its notice must go with it.
+  document.addEventListener('sidebar-opened', () => refreshSafePendingRow());
 
   refreshSafePendingRow();
 }
@@ -42,6 +49,26 @@ export async function refreshSafePendingRow() {
   const count = result.success ? result.states.length : 0;
   row.classList.toggle('hidden', count === 0);
   if (countBadge) countBadge.textContent = String(count);
+  showStoreNotice(storeNoticeMessage(result));
+}
+
+/**
+ * What the user must hear about the pending-transactions file itself: it
+ * could not be read (nothing changed, retried on the next refresh), or a
+ * damaged copy was set aside. Null when there is nothing to say.
+ */
+export function storeNoticeMessage(result) {
+  if (!result) return null;
+  if (!result.success) {
+    return result.code === 'SAFE_PENDING_UNREADABLE' ? result.error : null;
+  }
+  return result.storeNotice?.message || null;
+}
+
+function showStoreNotice(message) {
+  if (!storeNotice) return;
+  storeNotice.classList.toggle('hidden', !message);
+  if (storeNoticeText) storeNoticeText.textContent = message || '';
 }
 
 export async function openSafePendingList() {

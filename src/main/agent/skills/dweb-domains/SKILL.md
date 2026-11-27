@@ -52,8 +52,10 @@ Freedom generates and protects secrets: never request, read, print or invent one
 Use domain_operation_status while waiting; a ready reveal uses domain_execute on
 the same operation. Do not end a task while its normal confirmation/commitment
 wait is active. Freedom keeps waiting operations alive and returns receipts.
-Registration and renewal send the price plus a disclosed 2% buffer that the
-contract refunds. A reverted reveal returns to ready on the same commitment while
+For .wei/.gwei, registration and renewal send the price plus a disclosed 2% ETH
+buffer that the contract refunds. ENSv2 pays USDC (default) or DAI, with separate
+bounded token-approval and resolver-setup steps when needed. Those steps require
+wallet approval and do not buy a name. Unused token allowance is not a refund. A reverted reveal returns to ready on the same commitment while
 it is valid; tell the user, and run domain_execute again only on their request.
 An expired commitment requires a new user-directed operation, not an automatic
 second purchase. Renewing changes expiry, not ownership or records.

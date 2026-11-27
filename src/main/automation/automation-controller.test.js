@@ -597,3 +597,17 @@ test('page tool discovery handles an adapter without WebMCP, including workspace
   const result = await controller.execute(OPERATIONS.LIST_PAGE_TOOLS, { tabId });
   expect(result).toMatchObject({ ok: true, result: { available: false, tools: [] } });
 });
+
+test('custody remains attached to the actual guest across controller instances until explicit takeover', () => {
+  const first = createController().controller;
+  const next = createController().controller;
+  const adapter = new FakePageAdapter(); adapter.webContents = { id: 12 };
+  const firstId = first.registerPage(adapter);
+  const nextId = next.registerPage(adapter);
+  first.setPageAgentCustody(firstId, true);
+  expect(next.isPageAgentCustody(nextId)).toBe(true);
+  next.setPageAgentCustody(nextId, false);
+  expect(first.isPageAgentCustody(firstId)).toBe(false);
+  first.unregisterPage(firstId);
+  expect(first.isPageAgentCustody(firstId)).toBe(false);
+});

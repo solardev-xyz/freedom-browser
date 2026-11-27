@@ -1,0 +1,1 @@
+- Unfinished Safe transactions are no longer lost when their file is damaged or briefly unreadable: writes go through an atomic temporary swap with fsync, a file that cannot be read is left untouched and the wallet says so, and a damaged file is set aside under a name the wallet shows ([#1068](https://github.com/solardev-xyz/freedom-browser/issues/1068))

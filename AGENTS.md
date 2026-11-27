@@ -12,7 +12,7 @@ This file defines mandatory constraints for automated agents and contributors. I
 6. Do not change top-level package boundaries or module responsibilities described in `README.md` unless explicitly instructed.
 7. Match existing naming and file conventions in nearby code. Do not reformat or change behavior outside the requested scope.
 8. Run `npm test` after modifying files that have corresponding `.test.js` files.
-9. Do not add or upgrade dependencies without user approval.
+9. Do not add or upgrade dependencies without user approval. Before installing any new or upgraded dependency (npm package, bundled node binary or pinned upstream data), complete the security review in `docs/agent-playbooks/dependency-updates.md`; an advisory scan alone is not sufficient.
 10. Before opening a GitHub issue, search open and closed issues and PRs with several synonyms (for example `gh issue list --state all --search "<term>"`). If one already covers the topic, comment there instead of filing a new one; if a duplicate was already filed, close it and move its content to the older issue.
 11. Process rules for agents live in this file, `docs/agent-playbooks/`, or repo-side automation (CI, GitHub Actions). Do not put them in vendor-specific agent configuration such as hooks or per-tool settings files; every agent and contributor must be bound by the same rules.
 
@@ -21,12 +21,13 @@ This file defines mandatory constraints for automated agents and contributors. I
 Before executing task-specific work, read the corresponding playbook:
 
 - Architecture-sensitive changes _(adding files to `src/main/` or `src/renderer/`, creating new IPC channels, moving logic between processes)_: `docs/agent-playbooks/architecture-boundaries.md`
-- Renderer/UI changes _(anything under `src/renderer/`: chrome, sidebar, settings, internal pages; and reviewing such changes)_: `docs/agent-playbooks/ui-consistency.md`
+- Renderer/UI changes _(anything under `src/renderer/`: chrome, sidebar, settings, internal pages; reviewing such changes; and attaching screenshots to a pull request or issue)_: `docs/agent-playbooks/ui-consistency.md`
 - Settings placement _(adding, moving or renaming a setting, or a feature that needs a user-facing preference; and reviewing such changes)_: `docs/agent-playbooks/settings-placement.md`
 - Commit message conventions _(any git commit)_: `docs/agent-playbooks/commit-messages.md`
 - Merging approved pull requests _(landing one or a batch on `main`)_: `docs/agent-playbooks/merge-process.md`
 - Changelog entries _(any user-visible change: add a `changelog.d/` fragment on the pull request that makes it, never a `CHANGELOG.md` edit; also version bumps and release prep)_: `docs/agent-playbooks/changelog-process.md`
 - Cutting a release _(release branch, version bump, tag, build, publish)_: `docs/agent-playbooks/release-process.md`
+- Electron security release _(an open `security-release` issue, or the `electron-watch/electron-*` bump pull request)_: `docs/agent-playbooks/release-process.md` § Security release (Electron), plus `docs/agent-playbooks/dependency-updates.md` for the bump pull request's format
 - Dependency updates _(npm refreshes, Electron bumps, "update all dependencies"; scope, pitfalls and the pull request format)_: `docs/agent-playbooks/dependency-updates.md`
 - Bundled node binaries (Ant, freedom-ipfs, Radicle, Arti) _(bumping a pinned release, debugging a download/checksum failure, or anything a task calls "ant"/"antd")_: `docs/agent-playbooks/bundled-binaries.md`
 - Security checklist _(before commit or PR)_: `docs/agent-playbooks/security-checklist.md`

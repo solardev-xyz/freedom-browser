@@ -1,0 +1,1 @@
+- Updated Agent runtime and document dependencies with upstream security fixes: Pi 1.0.2 to 1.5.0, DCAP quote verification 0.6.5 to 0.7.1, and PDF.js 6.3.289 to 6.5.438 ([#831](https://github.com/solardev-xyz/freedom-browser/issues/831))
