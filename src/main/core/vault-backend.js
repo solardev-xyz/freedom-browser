@@ -22,11 +22,14 @@
  *   past it is killed and restarted, which fails the request
  *   `core_unavailable`, so a mutation reconciles as after a crash. A
  *   request that drives a Ledger (design 0016) goes only through
- *   `ledgerCall`, under the device watchdog its params give it.
+ *   `ledgerCall`, under the device watchdog its params give it. A Ledger
+ *   key's `sign.*` (LDG-3, on the core's Ledger backend) is sent so by
+ *   `deviceCall`, opened in main's relay for the core's `shell.ledger_apdu`
+ *   (ledger-relay.js) as it is written.
  */
 
 const log = require('../logger');
-const { getCoreClient } = require('./core-process');
+const { getCoreClient, getLedgerRelay } = require('./core-process');
 const { deviceWatchdogMs, drivesDevice, isDeviceMethod, watchdogMs } = require('./core-deadlines');
 const { keyStoreMessage } = require('./key-store-messages');
 const { requiresStore } = require('./core-client');
@@ -153,6 +156,99 @@ async function call(method, params = {}, page = null, { requires = null } = {}) 
     });
   } catch (err) {
     throw backendError(err);
+  }
+}
+
+/**
+ * Why main can't derive a Ledger's stream for a request (ledger-relay.js
+ * `prepare`'s `reason`), as the core refuses the same before its first
+ * APDU (design 0016, "Bounds", API, "Errors"): what a Ledger can't carry is
+ * `device_failed` with its `LEDGER_*` code; anything else is invalid.
+ */
+const UNPREPARED_CODES = Object.freeze({
+  'device-bounds': 'LEDGER_TOO_LARGE',
+  'empty-message': 'LEDGER_EMPTY_MESSAGE',
+  'not-canonical': 'LEDGER_TYPE_NOT_CANONICAL',
+});
+
+function unprepared({ rule, reason }) {
+  const ledger = Object.hasOwn(UNPREPARED_CODES, reason) ? UNPREPARED_CODES[reason] : null;
+  if (ledger) return new VaultBackendError('device_failed', 'Ledger device failed', { ledger });
+  const message =
+    reason === 'hash-mismatch'
+      ? 'The typed data changed after it was confirmed'
+      : "A Ledger can't sign this request";
+  return new VaultBackendError('invalid_argument', message, { rule, reason });
+}
+
+/**
+ * A Ledger key's `sign.*` (freedom-core design 0016, "Accounts", API;
+ * LDG-3's PR 7), on the core's Ledger backend: `params.key` is `{ kind:
+ * 'ledger', index, path, address }`, `path` the account's path from main's
+ * own record snapshot (`getWalletRecord`, the LDG-3 plan's point 2). The
+ * core builds every APDU and sends each to main as one `shell.ledger_apdu`;
+ * main's relay (ledger-relay.js) admits each against the stream main
+ * derives here itself, before the request is sent (`prepare`), and carries
+ * it to the device:
+ * - **Refused unsent** when main can't derive the stream (`unprepared`):
+ *   what a Ledger can't carry (`LEDGER_TOO_LARGE`, `LEDGER_EMPTY_MESSAGE`,
+ *   `LEDGER_TYPE_NOT_CANONICAL`, as the core's `device_failed` would name
+ *   it), typed data that isn't the confirmed hash's, or a path that isn't
+ *   one of the schemes'. Nothing is presented, so a token stays unspent
+ *   (its caller discards it).
+ * - **Sent with `ledgerCall`**, under the device watchdog (point 3) and
+ *   with `requires: vault_meta` (D9: the core reads the Ledger's record
+ *   only once `vault-meta.json` is its own, `not_moved` otherwise), and
+ *   opened in the relay from its `onSent`, before the core can ask
+ *   anything for it.
+ * - `beforeSign`, the caller's last check, is held by the relay before the
+ *   first APDU after `B0 01` (point 7); its refusal is main's own cancel,
+ *   and the caller gets that refusal, not the cancel. `hashOnlySurface` is
+ *   the hash-only warning's (point 12; LDG-3's PR 11). `signal` is main's
+ *   own cancel (the user's Cancel, point 5): the core is told, and the
+ *   relay closes the device at once.
+ * - The parent's end closes it in the relay, whatever the response.
+ *
+ * `page` is `call`'s.
+ */
+async function deviceCall(
+  method,
+  params,
+  page = null,
+  { beforeSign = null, hashOnlySurface = null, signal = null } = {}
+) {
+  const relay = getLedgerRelay();
+  if (!relay) throw new VaultBackendError(CORE_UNAVAILABLE, 'The identity core is not running');
+  const prepared = relay.prepare({ method, params, path: params?.key?.path });
+  if (!prepared.ok) throw unprepared(prepared);
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  if (signal?.aborted) cancel();
+  else signal?.addEventListener('abort', cancel, { once: true });
+  let handle = null;
+  let unopened = null;
+  try {
+    return await ledgerCall(method, params, page, {
+      signal: controller.signal,
+      requires: VAULT_META,
+      onSent: (id, generation) => {
+        try {
+          handle = relay.open({ id, generation }, { prepared, controller, beforeSign, hashOnlySurface });
+        } catch (err) {
+          // Its APDUs would all be refused: main cancels it at once.
+          unopened = err;
+          controller.abort();
+        }
+      },
+    });
+  } catch (err) {
+    // The caller's last check refused it: its own error, not the cancel.
+    if (handle?.stopped) throw handle.stopped;
+    if (unopened) throw unopened;
+    throw err;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    handle?.close();
   }
 }
 
@@ -308,6 +404,21 @@ function named(params, name) {
  */
 function signed(params, { authorization = null } = {}) {
   return authorization ? { ...params, authorization } : params;
+}
+
+/**
+ * A `sign.*` request: a Ledger key's through the relay (`deviceCall`),
+ * any other key's as `call` sends it.
+ */
+function signCall(method, params, options) {
+  if (params.key?.kind === 'ledger') {
+    return deviceCall(method, params, options.page || null, {
+      beforeSign: options.beforeSign || null,
+      hashOnlySurface: options.hashOnlySurface || null,
+      signal: options.signal || null,
+    });
+  }
+  return call(method, params, options.page);
 }
 
 // ---- lock tracking (for reconciliation's `install`) ----
@@ -807,23 +918,26 @@ const vaultBackend = {
   /**
    * Signing in the core (freedom-core design 0002). `key` is a reference:
    * `{ kind: 'account', index }` here; Swarm adds `bee_wallet` and
-   * `publisher`. Inputs are already in the core's wire form.
+   * `publisher`; design 0016 adds a Ledger's, `{ kind: 'ledger', index,
+   * path, address }`, which signs on the core's device lane through main's
+   * relay (`deviceCall`; LDG-3, on the core's Ledger backend). Inputs are
+   * already in the core's wire form.
    */
   sign: {
     /**
      * `options`: `{ authorization, page }`, the confirmation the core checks
-     * and the PageContext of a page's request (`signed`).
+     * and the PageContext of a page's request (`signed`); for a Ledger key
+     * also `deviceCall`'s `beforeSign`, `hashOnlySurface` and `signal`.
      * @returns {{ raw: string, hash: string, rule?: object }} `rule`: what
      *   became of a flagged `dapp-send`'s "Always allow" (design 0012)
      */
     transaction(key, tx, options = {}) {
-      return call('sign.transaction', signed({ key, tx }, options), options.page);
+      return signCall('sign.transaction', signed({ key, tx }, options), options);
     },
     /** @param {Uint8Array} bytes @returns {string} 65-byte signature, v 27/28 */
     async message(key, bytes, options = {}) {
       const message = '0x' + Buffer.from(bytes).toString('hex');
-      return (await call('sign.message', signed({ key, message }, options), options.page))
-        .signature;
+      return (await signCall('sign.message', signed({ key, message }, options), options)).signature;
     },
     /**
      * Signs only if the data's digest is `expectedHash`, the hash the user
@@ -839,7 +953,7 @@ const vaultBackend = {
       const params = { key, typed_data: typedData, expected_hash: expectedHash };
       if (options.primaryType !== undefined) params.primary_type = options.primaryType;
       if (options.chainId !== undefined) params.chain_id = options.chainId;
-      return (await call('sign.typed_data', signed(params, options), options.page)).signature;
+      return (await signCall('sign.typed_data', signed(params, options), options)).signature;
     },
     /**
      * A Swarm single-owner chunk; the core computes the chunk address from
@@ -1291,6 +1405,7 @@ module.exports = {
   _internal: {
     call,
     ledgerCall,
+    deviceCall,
     wordsFor,
     reset() {
       locks = 0;

@@ -484,7 +484,9 @@ function createCoreSends(shared, deps = {}) {
   /**
    * A send the user approved on the core's prompt, with the core's token:
    * a vault account's, a Ledger's or a phone's (its signer picks the path:
-   * the core's signature, a spend then the device, the core's phone job).
+   * the core's signature, a spend then the device, the core's phone job;
+   * on the core's Ledger backend, a Ledger's is the core's signature on its
+   * device lane, design 0016).
    * The site's turn is waited for; just before the signature, and after a
    * signer's wait, the name, the grant and the document's key, in the same
    * run as the effect. `agent`: the Agent's sheet approved it, so custody
@@ -520,8 +522,12 @@ function createCoreSends(shared, deps = {}) {
         }
       : null;
     let coreRule = null;
-    // A Ledger's finalize receipt, erased when the request ends before the
-    // flow does, as on main's own route.
+    // Whether the signer heard the core's `rule` reply: a vault send's, and
+    // on the core's Ledger backend a Ledger's (design 0016), which the core
+    // wrote as it signed, so no receipt is presented for it.
+    let ruleHeard = false;
+    // A Ledger's finalize receipt (its JS backend), erased when the request
+    // ends before the flow does, as on main's own route.
     let receipt = null;
     const eraseReceipt = () => {
       if (receipt) {
@@ -547,6 +553,7 @@ function createCoreSends(shared, deps = {}) {
               ...(beforeSign ? { beforeSign } : {}),
               onRule: (rule) => {
                 coreRule = rule;
+                ruleHeard = true;
               },
               onReceipt: (held) => {
                 receipt = held;
@@ -562,7 +569,7 @@ function createCoreSends(shared, deps = {}) {
         // Spent at its presentation; one a send ended before is burnt.
         discard(confirmation.token);
       }
-      if (remember && type === 'ledger') await rememberDeviceSend(context, account, sent, () => receipt);
+      if (remember && type === 'ledger' && !ruleHeard) await rememberDeviceSend(context, account, sent, () => receipt);
       else if (remember && type === 'remote' && !coreRule) reportPhoneRuleWaits(requester.key, sent);
       else if (remember) reportRule(requester.key, coreRule);
       // The payment's record, for the Agent's receipt only: main's relay

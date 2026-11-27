@@ -355,8 +355,12 @@ async function buildSafeTransaction({ chainId, safe, tx, provider }) {
  *
  * A vault owner's signature presents the Safe approval (`approval`, `{ id,
  * page }`: freedom-core design 0012, APB-1c) under the caller it was
- * recorded for; the core signs no SafeTx or SafeMessage without it. A
- * device owner signs as before.
+ * recorded for; the core signs no SafeTx or SafeMessage without it. So does
+ * a Ledger owner's on the core's Ledger backend (design 0016, "Approvals:
+ * enforced"; the LDG-3 plan's point 11): its SafeTx goes as
+ * `sign.typed_data` with the Ledger key, signed on the core's device lane,
+ * never as `safe.sign_owner` before SAFE-3 (main's relay opens no such
+ * parent). Any other device owner signs as before.
  *
  * @param {Object} params
  * @param {Object} params.typedData - From buildSafeTransaction
