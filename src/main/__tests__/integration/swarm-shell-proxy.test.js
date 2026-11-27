@@ -146,7 +146,11 @@ describeWithElectron("main's Swarm executor on a remote node behind a session pr
     const forms = new Set(results.originSeen.map((seen) => seen.form));
     expect([...forms].sort()).toEqual([...FORMS, 'ready'].sort());
     // The proxy was asked for the node by its name, never an address.
-    expect(results.socksSeen).toEqual([`ant.example.test:${port}`]);
+    // Electron's own background fetches (its spell checker's dictionary,
+    // started before the probe can turn it off) may use the session's
+    // proxy too: only the connections to the node's port count.
+    const toNode = results.socksSeen.filter((seen) => seen.endsWith(`:${port}`));
+    expect(toNode).toEqual([`ant.example.test:${port}`]);
     expect(results.stamp).toEqual({ ok: true });
   });
 
