@@ -2186,6 +2186,7 @@ class ServiceClient extends EventEmitter {
       for (let next = gen.duplex.nextControl(); next; next = gen.duplex.nextControl()) {
         frames.push(next.bytes);
         wrote.push(next.wrote);
+        this.frameTaken(gen, next.wrote);
       }
     } else {
       for (let frame = gen.outbox.next(); frame; frame = gen.outbox.next()) frames.push(frame);
@@ -3329,15 +3330,29 @@ class ServiceClient extends EventEmitter {
    * `id`'s answer to the pipe, so any frame main writes after it follows
    * the answer: a whole reply as its write is issued (its `cancelled` for
    * the process's cancel among them), a fragmented one with its last
-   * fragment, and one through the duplex's sender (a streams handler's)
-   * once its frame is written. An answer never handed over (its generation
-   * fenced) runs none. A throw in `fn` is dropped.
+   * fragment, and one through the duplex's sender (a streams handler's
+   * head or reply, or the sender's `cancelled`) as its frame is taken for
+   * a write, before any other frame is (`frameTaken`). It runs once. An
+   * answer never handed over (its generation fenced) runs none. A throw in
+   * `fn` is dropped.
    */
   onAnswer(gen, id, fn) {
     if (typeof fn !== 'function') throw new TypeError('onAnswer takes a function');
     const hooks = gen.answers.get(id);
     if (hooks) hooks.push(fn);
     else gen.answers.set(id, [fn]);
+  }
+
+  /**
+   * One of the sender's frames, taken for a write (in the order the pipe
+   * gets them): an answer (a head, a reply, a `cancelled`) runs its
+   * request's `onAnswer` hooks now, before another frame is taken, so what
+   * they purge never goes and what they queue goes after it.
+   */
+  frameTaken(gen, wrote) {
+    if (wrote.type === 'head' || wrote.type === 'reply' || wrote.type === 'cancelled') {
+      this.answerGiven(gen, wrote.id);
+    }
   }
 
   /** Request `id`'s answer is in the pipe: its `onAnswer` hooks run. */
@@ -3390,15 +3405,21 @@ class ServiceClient extends EventEmitter {
     const frames = [];
     const wrote = [];
     let bytes = 0;
+    // Held while the frames are taken: what an answer's hook asks to be
+    // written (`frameTaken`) joins this write, or the next, never one ahead.
+    gen.outboxWriting = true;
     while (bytes < STREAM_WRITE_BYTES) {
       const next = gen.duplex.nextFrame();
       if (!next) break;
       frames.push(next.bytes);
       wrote.push(next.wrote);
       bytes += next.bytes.length;
+      this.frameTaken(gen, next.wrote);
     }
-    if (!frames.length) return;
-    gen.outboxWriting = true;
+    if (!frames.length) {
+      gen.outboxWriting = false;
+      return;
+    }
     const written = (err) => {
       gen.outboxWriting = false;
       if (err) {
@@ -3426,10 +3447,6 @@ class ServiceClient extends EventEmitter {
     if (wrote.type === 'credit' || wrote.type === 'cancel') {
       this.idleProgress(gen, wrote.id);
       return;
-    }
-    // The answer to one of the process's requests, through the sender.
-    if (wrote.type === 'head' || wrote.type === 'reply' || wrote.type === 'cancelled') {
-      this.answerGiven(gen, wrote.id);
     }
     // One of main's frames of a body it sends: a streamed reply's progress,
     // to its terminal.
