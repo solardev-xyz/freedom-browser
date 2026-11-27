@@ -758,12 +758,13 @@ describe('netGatewayFetch with a stream body', () => {
     expect(body.cancelled).toBeNull();
   });
 
-  test('an empty stream goes as no body, unchunked', async () => {
+  // Chunked, so Chromium can't send it twice, as a body-less request can be.
+  test('an empty stream goes chunked with no data: one empty write starts it', async () => {
     const body = source({ empty: true });
     const dial = startStreaming(body.stream);
     await flush();
-    expect(dial.request.chunkedEncoding).toBe(false);
-    expect(dial.request.written).toEqual([]);
+    expect(dial.request.chunkedEncoding).toBe(true);
+    expect(dial.request.written).toEqual([Buffer.alloc(0)]);
     expect(dial.request.ended).toBe(true);
   });
 

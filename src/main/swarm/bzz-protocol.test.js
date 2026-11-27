@@ -976,6 +976,88 @@ describe('a non-loopback Ant', () => {
     expect(isMainProcessAntDial(dialled, 'POST')).toBe(false);
   });
 
+  // Design 0015, point 6: a POST is never sent twice. Chromium sends a
+  // request again when a reused connection closes before its headers, but
+  // can't send a chunked body twice (swarm-shell-proxy.test.js measures it),
+  // so a remote POST always goes as a stream.
+  describe('a remote POST goes as a stream, so Chromium cannot send it twice', () => {
+    async function post(body) {
+      let init = null;
+      mockNetGatewayFetch.mockImplementation(async (_url, sent) => {
+        init = sent;
+        return new Response('{}', { status: 201 });
+      });
+      const res = await antBackend({ session }).request({
+        path: '/pss/send/topic/ab',
+        method: 'POST',
+        headers: new Headers({ 'content-type': 'application/octet-stream' }),
+        ...(body !== undefined && { body }),
+        signal: new AbortController().signal,
+        headersTimeoutMs: null,
+      });
+      expect(res.status).toBe(201);
+      return init;
+    }
+
+    async function pieces(stream) {
+      const out = [];
+      const reader = stream.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return out;
+        out.push(value);
+      }
+    }
+
+    test('whole bytes go as views of 64 KiB of the same buffer, never copied', async () => {
+      const bytes = new Uint8Array(150 * 1024).map((_, i) => i & 0xff);
+      const init = await post(bytes);
+      expect(init).toMatchObject({ method: 'POST', redirect: 'manual' });
+      expect(init.body).toBeInstanceOf(ReadableStream);
+      const got = await pieces(init.body);
+      expect(got.map((view) => view.byteLength)).toEqual([65536, 65536, 22528]);
+      for (const view of got) expect(view.buffer).toBe(bytes.buffer);
+      expect(Buffer.concat(got)).toEqual(Buffer.from(bytes));
+    });
+
+    test('a POST with no body, or an empty one, goes as an empty stream', async () => {
+      for (const body of [undefined, null, new Uint8Array(0)]) {
+        const init = await post(body);
+        expect(init.body).toBeInstanceOf(ReadableStream);
+        expect(await pieces(init.body)).toEqual([]);
+      }
+    });
+
+    test('a read is dialled as it is, with no body', async () => {
+      let init = null;
+      mockNetGatewayFetch.mockImplementation(async (_url, sent) => {
+        init = sent;
+        return new Response('chunk');
+      });
+      await antBackend({ session }).request({
+        path: `/chunks/${HASH}`,
+        method: 'GET',
+        signal: new AbortController().signal,
+      });
+      expect(init.method).toBe('GET');
+      expect('body' in init).toBe(false);
+    });
+
+    test("a loopback Ant's POST keeps its whole body (undici)", async () => {
+      getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      const bytes = new Uint8Array([1, 2, 3]);
+      const fetchImpl = jest.fn(async () => new Response('{}', { status: 201 }));
+      await antBackend({ session, fetchImpl }).request({
+        path: '/chunks',
+        method: 'POST',
+        body: bytes,
+        signal: new AbortController().signal,
+      });
+      expect(fetchImpl.mock.calls[0][1].body).toBe(bytes);
+      expect(mockNetGatewayFetch).not.toHaveBeenCalled();
+    });
+  });
+
   test('a body on a GET is refused before anything is announced or dialled', async () => {
     await expect(
       antBackend({ session }).request({

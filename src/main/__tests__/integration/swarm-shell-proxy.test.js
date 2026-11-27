@@ -7,8 +7,17 @@
  * node at `ant.example.test` on the default session's stack, a SOCKS proxy
  * on the session and the real Ant API guard: every form, the ready probe,
  * and the streamed uploads, which PR 6 left to this probe for a remote
- * node. It also pins what Chromium's stack does when a node hangs up on a
- * reused connection.
+ * node.
+ *
+ * It also holds design 0015's point 6 (one dial per admitted call, a POST
+ * never sent twice) where Chromium's stack would break it: when a reused
+ * keep-alive connection closes before a request's headers, Chromium sends
+ * the request again, below the guard. Over HTTP and through the SOCKS
+ * proxy, a node keeps a connection open, takes the next write whole and
+ * closes without headers: every write the executor sends reaches it once,
+ * and the call answers its failure. A whole body, as main sent one before,
+ * is the control: Chromium sends it twice. A read may be sent twice, which
+ * is idempotent and can't be stopped from Electron.
  *
  * Like `swarm-post-proxy.test.js`, only a real Electron main process can
  * show it: this spawns Electron on `swarm-shell-proxy-electron-probe.js`
@@ -171,28 +180,137 @@ describeWithElectron("main's Swarm executor on a remote node behind a session pr
     expect(Math.max(...results.uploads.map((upload) => upload.bytes))).toBeGreaterThan(50 * 1e6);
   });
 
-  // Measured, not designed: design 0015's point 6 is one dial per admitted
-  // call and no retry. On the session's stack, when a node closes a reused
-  // keep-alive connection before it answers, Chromium sends the request
-  // again on a new one, below the webRequest guard, a POST with a whole body
-  // too (`pss_send`). A streamed body can't be sent again, and undici on
-  // loopback doesn't. Every other call is one dial.
-  test("a node that hangs up: Chromium's stack sends the call once more, below the guard; every other call is one dial", () => {
+  // Point 6 in the grammar's plays: a node that hangs up on a read may get
+  // it twice; every write, the hang-up's `pss_send` among them, and every
+  // other call reaches it once.
+  test('a node that hangs up: a read reaches it at most twice, below the guard; every write and every other call once', () => {
     const hangsUp = new Set(
       grammar.honest
         .filter((s) => s.calls.some((c) => c.reply && c.reply.status === null))
         .map((s) => s.id)
     );
+    expect(hangsUp.has('send-pss-node-hangs-up')).toBe(true);
     for (const extra of results.dials) {
       expect(hangsUp.has(extra.id)).toBe(true);
-      expect(extra.dials).toBeLessThanOrEqual(2);
+      expect(extra).toMatchObject({ method: 'GET', dials: 2 });
     }
-    // The guard saw one request a dial: the resends never reached it.
+    // The guard saw one request a dial: a read sent again never reached it.
     const resent = results.dials.reduce((sum, extra) => sum + extra.dials - 1, 0);
     expect(results.guardSaw).toBe(results.originSeen.length - resent);
     expect(results.failures).toBe(hangsUp.size);
     process.stdout.write(
-      `[swarm-shell proxy] calls the node saw twice: ${JSON.stringify(results.dials)}\n`
+      `[swarm-shell proxy] reads the node saw twice: ${JSON.stringify(results.dials)}\n`
     );
+  });
+
+  describe.each(['http', 'socks'])(
+    'a node keeps a connection open, takes the next call whole and closes without headers (%s)',
+    (route) => {
+      let leg;
+      beforeAll(() => {
+        leg = results.resend[route];
+      });
+
+      test(route === 'socks' ? 'through the SOCKS proxy' : 'straight to the node', () => {
+        if (route === 'socks') expect(leg.resolveProxy).toMatch(/^SOCKS5 127\.0\.0\.1:\d+$/);
+        else expect(leg.resolveProxy).toBe('DIRECT');
+      });
+
+      // The control: the condition holds, and Chromium sends a whole body
+      // again on a new connection, its second delivery answered as a success.
+      test('a whole body, as main sent one before, reaches the node twice', () => {
+        const { control } = leg;
+        expect(control.warm).toEqual({ ok: true });
+        expect(control.delivered).toEqual([
+          expect.objectContaining({ reused: true, contentLength: String(control.bytes) }),
+          expect.objectContaining({ reused: false, contentLength: String(control.bytes) }),
+        ]);
+        expect(control.answer).toEqual({ status: 201 });
+      });
+
+      test('every write reaches the node once, on the kept connection, chunked and whole; the call answers its failure', () => {
+        expect(leg.writes.map((w) => w.form).sort()).toEqual(
+          ['bzz_file', 'chunk_up', 'feed_manifest', 'pss_send', 'pss_send', 'soc_up'].sort()
+        );
+        for (const write of leg.writes) {
+          expect(write.warm).toEqual({ ok: true });
+          expect({ id: write.id, delivered: write.delivered }).toEqual({
+            id: write.id,
+            delivered: [
+              expect.objectContaining({
+                reused: true,
+                method: 'POST',
+                transferEncoding: 'chunked',
+                contentLength: null,
+                bytes: write.bytes,
+                digest: write.digest,
+              }),
+            ],
+          });
+          expect({ id: write.id, answer: write.answer }).toEqual({
+            id: write.id,
+            answer: { failed: 'error' },
+          });
+        }
+        // A message, an empty one (no body), a chunk's 4104 bytes, a feed
+        // manifest (no body).
+        const bytes = Object.fromEntries(leg.writes.map((w) => [w.id, w.bytes]));
+        expect(bytes).toMatchObject({
+          'send-pss-node-hangs-up': 2,
+          'send-pss-sent-empty': 0,
+          'publish-chunk-4096': 4104,
+          'create-feed-name-64': 0,
+        });
+      });
+
+      // Measured: Chromium's second attempt at a chunked write fails before
+      // it sends anything, and leaves the session's next request to the
+      // node failing once, unsent. Never a second delivery.
+      test("the session's next call after a write: never sent twice", () => {
+        for (const write of leg.writes) expect(write.after.delivered).toBeLessThanOrEqual(1);
+        process.stdout.write(
+          `[swarm-shell proxy] ${route}: the call after each write: ${JSON.stringify(
+            leg.writes.map((w) => ({ id: w.id, ...w.after }))
+          )}\n`
+        );
+      });
+
+      // Measured: a read has no body, so Chromium may send it again, which
+      // is idempotent and can't be stopped from Electron.
+      test('a read reaches the node at most twice; its second delivery answers it', () => {
+        for (const read of leg.reads) {
+          expect(read.warm).toEqual({ ok: true });
+          expect(read.delivered.length).toBeGreaterThanOrEqual(1);
+          expect(read.delivered.length).toBeLessThanOrEqual(2);
+          expect(read.delivered[0]).toMatchObject({ reused: true, method: 'GET' });
+          if (read.delivered.length === 2) expect(read.answer).toEqual({ ok: true });
+          else expect(read.answer).toEqual({ failed: 'error' });
+        }
+        process.stdout.write(
+          `[swarm-shell proxy] ${route}: a read the node hung up on: ${JSON.stringify(
+            leg.reads.map((r) => ({ id: r.id, delivered: r.delivered.length, answer: r.answer }))
+          )}\n`
+        );
+      });
+    }
+  );
+
+  test('the resend leg: the guard saw one request a dial, and cancelled none', () => {
+    // Every request the guard saw reached the node, or failed unsent (the
+    // call after a write); a resend the node got never passed the guard.
+    const legs = Object.values(results.resend);
+    const resent = legs.reduce(
+      (sum, leg) =>
+        sum +
+        (leg.control.delivered.length - 1) +
+        leg.reads.reduce((n, r) => n + r.delivered.length - 1, 0),
+      0
+    );
+    const unsent = legs.reduce(
+      (sum, leg) => sum + leg.writes.filter((w) => w.after.delivered === 0).length,
+      0
+    );
+    expect(results.resendGuardSaw).toBe(results.resendOriginSeen - resent + unsent);
+    expect(results.cancelled).toEqual([]);
   });
 });

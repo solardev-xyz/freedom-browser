@@ -67,10 +67,12 @@ let abandonedDials = 0;
  *   request's session (`ipfs/gateway-transport.js`): manual redirects, the
  *   onion refusal before dialling when the session would resolve the host
  *   DIRECT, credentials omitted and no HTTP cache, and a stream body written
- *   as it is pulled. That dial passes the session's `webRequest` with no
- *   frame, where `ant-api-guard.js` cancels anything on the node's origin, so
- *   this exact URL and the one method the dial sends are announced to the
- *   guard (`ant-api-main-dials.js`) and released once the dial settles.
+ *   as it is pulled. A POST always goes as a stream, its bytes or no body
+ *   at all (`oneShotBody`), so Chromium can't send it twice. That dial
+ *   passes the session's `webRequest` with no frame, where
+ *   `ant-api-guard.js` cancels anything on the node's origin, so this exact
+ *   URL and the one method the dial sends are announced to the guard
+ *   (`ant-api-main-dials.js`) and released once the dial settles.
  *
  * The remote dial is waited on only while the attempt lives: its header
  * deadline, the page's abort or the session's close ends the wait at once,
@@ -88,8 +90,9 @@ async function dialAnt(url, init, { session, fetchImpl }) {
     throw err;
   }
   const release = announceMainProcessAntDial(url, init.method);
+  const sent = init.method === 'GET' || init.method === 'HEAD' ? init : oneShotBody(init);
   const dialling = Promise.resolve().then(() =>
-    netGatewayFetch(url, init, session ? { session } : {})
+    netGatewayFetch(url, sent, session ? { session } : {})
   );
   try {
     return await unlessAborted(dialling, init.signal);
@@ -114,6 +117,51 @@ async function dialAnt(url, init, { session, fetchImpl }) {
 // A web `ReadableStream` request body (an upload streamed from the core).
 function isStreamBody(body) {
   return typeof body?.getReader === 'function';
+}
+
+// The views a whole body is written in on a remote node's stream, as the
+// core's own stream bodies come.
+const ONE_SHOT_VIEW = 64 * 1024;
+
+/**
+ * A remote POST's init with its body as a stream: bytes in views of 64 KiB,
+ * never copied, and no body as an empty stream, which the transport sends
+ * chunked with no data (`ipfs/gateway-transport.js`). A stream stays as it
+ * is.
+ *
+ * Why (freedom-core design 0015, point 6: one dial per admitted call, a
+ * POST never sent twice): when a request on a reused keep-alive connection
+ * gets no headers before the connection closes, Chromium's network
+ * transaction sends it again on a new one. That happens below Electron's
+ * `webRequest`, so the guard never sees it, and it covers a POST whose body
+ * Chromium holds whole, or which has none. A node, or anything on the path,
+ * that keeps a connection open, takes a write and closes without answering
+ * would have main send `pss_send`, `soc_up`, `chunk_up`, a base64
+ * `bzz_file` or a feed manifest twice. A chunked body is read from main
+ * once and can't be read again: Chromium's second attempt fails, so the
+ * call fails (`failed: error`) and the node got the write once (measured in
+ * `swarm-shell-proxy.test.js`, over HTTP and through a SOCKS proxy). Reads
+ * carry no body: Chromium may still send one twice, which is idempotent.
+ */
+function oneShotBody(init) {
+  const { body } = init;
+  if (isStreamBody(body)) return init;
+  let at = 0;
+  const stream = new ReadableStream(
+    {
+      pull(controller) {
+        if (!body || at >= body.byteLength) {
+          controller.close();
+          return;
+        }
+        const end = Math.min(at + ONE_SHOT_VIEW, body.byteLength);
+        controller.enqueue(body.subarray(at, end));
+        at = end;
+      },
+    },
+    { highWaterMark: 0 }
+  );
+  return { ...init, body: stream };
 }
 
 /**

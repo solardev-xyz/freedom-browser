@@ -447,7 +447,7 @@ async function main() {
     originComplete: originSeen[0]?.complete ?? null,
   };
 
-  // ---- An empty stream goes as no body ----------------------------------
+  // ---- An empty stream goes chunked, with no data ------------------------
   reset();
   results.empty = {
     answer: await swarmCall(backend(), {

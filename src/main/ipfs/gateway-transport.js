@@ -70,8 +70,16 @@
  * `SlurpStream`), so a stream body is sent chunked, and each chunk is
  * written only once Chromium has taken the last (the write's callback): a
  * node that stops reading stops the pulls, and main holds one chunk of the
- * body meanwhile. An empty stream goes as no body at all, since Electron's
- * chunked body can't end before its first write.
+ * body meanwhile. An empty stream goes chunked too, with no data: Electron
+ * starts a chunked body at its first write, so one empty write starts it.
+ *
+ * Chromium reads a chunked body from main once and can't read it again. So
+ * when a request on a reused keep-alive connection gets no headers before
+ * the connection closes, Chromium's attempt to send it again, which a
+ * request with a whole body or none gets, fails instead, and the request
+ * fails (measured on Electron 45, over HTTP and through a SOCKS proxy:
+ * `swarm-shell-proxy.test.js`). Main's Swarm executor sends every POST to a
+ * remote node as a stream for that reason (`swarm/bzz-protocol.js`).
  *
  * WHY AN `.onion` GATEWAY IS CHECKED BEFORE IT IS DIALLED
  *
@@ -665,6 +673,11 @@ async function writeStreamBody(request, body, over) {
         return;
       }
       if (next.done) {
+        // An empty body: one empty write starts it, chunked.
+        if (!chunked) {
+          request.chunkedEncoding = true;
+          request.write(Buffer.alloc(0));
+        }
         request.end();
         return;
       }

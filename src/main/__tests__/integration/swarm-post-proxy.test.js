@@ -179,10 +179,11 @@ describeWithElectron("main's Swarm POSTs in a real Electron process", () => {
     expect(leg.originComplete).toBe(false);
   });
 
-  test('an empty stream goes as no body', () => {
+  // Chunked, so Chromium can't send it twice (swarm-shell-proxy.test.js).
+  test('an empty stream goes chunked, with no data', () => {
     expect(results.empty.answer).toMatchObject({ status: 201, json: { bytes: 0 } });
     expect(results.empty.origin).toEqual([
-      { contentLength: '0', transferEncoding: null, bytes: 0 },
+      { contentLength: null, transferEncoding: 'chunked', bytes: 0 },
     ]);
   });
 
