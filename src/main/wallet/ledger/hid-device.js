@@ -14,51 +14,41 @@
  *   under the APDU's `deadline_ms`: 15 s for one the user doesn't confirm,
  *   5 minutes for the one they do (0016, *Deadlines, cancel and
  *   unplugging*).
- * - **It closes the handle at once,** without waiting for the exchange in
- *   flight: on `detach()` (the parent ended, main's own cancel, a refused
- *   APDU), on the exchange's signal (the core cancelled the APDU), and on
- *   any failure. A late answer then has no reader.
+ * - **It lets go at once,** without waiting for the exchange in flight: on
+ *   `detach()` (the parent ended, main's own cancel, a refused APDU), on the
+ *   exchange's signal (the core cancelled the APDU), and on any failure.
  * - **It fails only as `{ failed }` names them:** `not_found`, `busy`,
  *   `disconnected`, `unresponsive` and `timeout` (HidDeviceError's
  *   `failure`).
  *
- * **Not TransportNodeHid:** its `close()` awaits the exchange in flight
- * (`await this.exchangeBusyPromise`), so it can't cancel. Main frames the
- * APDU with `@ledgerhq/hw-transport-node-hid-noevents`' HID framing and
- * drives node-hid itself (the plan's point 15).
+ * **node-hid runs in a utility process** (hid-host.js says why: node-hid
+ * 2.1.2's and 3.4.0's close can free memory a Windows read still owns, the
+ * plan's R1). Main never loads node-hid. HidHost forks the host at an
+ * operation's first APDU and keeps it for the next; one operation's handle
+ * is open in it at a time.
  *
- * **Why it polls (the plan's R1).** node-hid 2.1.2's `read(cb)` runs
- * hidapi's `hid_read_timeout` on a libuv threadpool thread (`ReadWorker`,
- * HID.cc:146–157) while `close()` frees the `hid_device` on the main thread
- * (HID.cc:123–129, 328–334), with no lock between them; hidapi 0.10.1 is
- * not thread-safe per device, and each OS's read touches what `hid_close`
- * frees (in node-hid's hidapi/: Linux: the device's error string and its fd, linux/hid.c:961–997
- * against 1055–1068; macOS: the mutex and condition the read waits on,
- * mac/hid.c:1021–1093 against 1123–1175; Windows: an overlapped read issued
- * on the worker thread, which the main thread's `CancelIo` doesn't cancel,
- * written into freed memory, windows/hid.c:724–799 against 921–927). So
- * node-hid's close is not safe while its `read(cb)` is in flight, and this
- * layer never calls `read(cb)`: it polls `readTimeout(0)`, hidapi's
- * non-blocking read, from a timer on the main thread, so `close()` always
- * runs between two polls, on the thread that issued them. An abandoned
- * `read(cb)` would also hold one of libuv's four threadpool threads until a
- * report arrived (possibly never); a poll holds none. LDG-3's device probe
- * (`hid-device.probe.test.js`, docs/development.md) checks it on each OS.
+ * - **Letting go with an exchange in flight kills the host:** the OS closes
+ *   the handle and ends the read, and the late answer has no reader. The
+ *   next operation's host is forked only once the old one has exited, so
+ *   the old handle is closed before the new one opens (R5).
+ * - **With none in flight, the host closes the handle** (no read is pending
+ *   then) and stays for the next operation, until a minute idle.
+ * - **The host's `disconnected` kills it too** (it leaves its handle
+ *   unclosed then), and **its exit** fails the exchange in flight
+ *   `disconnected`, and the operation with it; the next operation forks a
+ *   fresh host.
+ * - **Channels:** each operation's HID channel is drawn by main, and one
+ *   whose exchange was let go of mid-flight is never drawn again while main
+ *   runs, since the device may answer on it at any time later (a prompt
+ *   rejected minutes on); the host drops every report on another channel.
  */
 
 const crypto = require('crypto');
+const path = require('path');
 const log = require('../../logger');
+const { HOST_FAILURES, LEDGER_VENDOR_ID } = require('./hid-host');
 
-// @ledgerhq/devices' ledgerUSBVendorId (hid-device.test.js checks it).
-const LEDGER_VENDOR_ID = 0x2c97;
-// The APDU interface: by usage page where hidapi reports one, by interface
-// number on Linux (noevents' `getDevices` filter).
-const LEDGER_USAGE_PAGE = 0xffa0;
-const PACKET_SIZE = 64;
-const TAG_APDU = 0x05;
-// Each write starts with the report ID: 0, since the device numbers no
-// reports (hidapi strips it).
-const REPORT_ID = 0x00;
+const HOST_ENTRY = path.join(__dirname, 'hid-host.js');
 
 /** 0016's APDU and answer bounds (`shell.ledger_apdu`). */
 const APDU_MIN = 5;
@@ -71,35 +61,29 @@ const DEADLINE_MS = Object.freeze({ DEVICE: 15_000, USER: 300_000 });
 
 /** `{ failed }`'s values (0016, `shell.ledger_apdu`). */
 const HID_FAILURES = Object.freeze({
-  NOT_FOUND: 'not_found',
-  BUSY: 'busy',
-  DISCONNECTED: 'disconnected',
+  ...HOST_FAILURES,
   UNRESPONSIVE: 'unresponsive',
   TIMEOUT: 'timeout',
 });
+const HOST_FAILURE_VALUES = new Set(Object.values(HOST_FAILURES));
 
-// How often a waiting exchange polls: every millisecond while an answer
-// that needs no confirmation is likely, then less often while the device
-// waits for the user. Up to FRAMES_PER_POLL reports are read per poll (an
-// answer of 260 bytes is 5), so a flood from another channel can't hold the
-// main thread. PR 13's recordings measure the time per APDU (R3).
-const POLL_STEPS = Object.freeze([
-  Object.freeze({ untilMs: 100, everyMs: 1 }),
-  Object.freeze({ untilMs: 1_000, everyMs: 5 }),
-  Object.freeze({ untilMs: Infinity, everyMs: 20 }),
-]);
-const FRAMES_PER_POLL = 8;
-// A new handle's channel is none of the last few, so a closed handle's late
-// answer, which carries its channel, is never read as the new one's.
-const RECENT_CHANNELS = 16;
+// An idle host (no operation holds the device) exits after this.
+const IDLE_MS = 60_000;
+// A killed utility process that hasn't exited by then gets SIGKILL (POSIX;
+// Windows' kill already terminates it).
+const KILL_GRACE_MS = 2_000;
+// Channels let go of mid-flight, kept unused. Each is a cancel, a deadline
+// or a lost host, so this is never reached in practice; past it the oldest
+// is drawn again.
+const ABANDONED_MAX = 32_768;
 
 /**
  * An exchange that failed. `failure` is one of HID_FAILURES. `detached`:
- * main closed the handle under it (`detach()` or the exchange's signal),
- * with `failure` `disconnected`; the relay answers it `{ failed }` (the
- * plan's point 5: the core has ended the operation and drops it as late),
- * and for an APDU the core cancelled its race has answered `cancelled`
- * first. Holds no APDU or answer byte.
+ * main let go of it (`detach()` or the exchange's signal), with `failure`
+ * `disconnected`; the relay answers it `{ failed }` (the plan's point 5:
+ * the core has ended the operation and drops it as late), and for an APDU
+ * the core cancelled its race has answered `cancelled` first. Holds no APDU
+ * or answer byte.
  */
 class HidDeviceError extends Error {
   constructor(failure, { detached = false, cause } = {}) {
@@ -113,66 +97,243 @@ class HidDeviceError extends Error {
   }
 }
 
-// Lazy-required, as transport.js does: node-hid's native module loads at the
-// first APDU, never at startup.
-let nodeHid = null;
-function loadNodeHid() {
-  if (!nodeHid) nodeHid = require('node-hid');
-  return nodeHid;
-}
-let hidFraming = null;
-function framingFor(channel) {
-  if (!hidFraming) {
-    hidFraming = require('@ledgerhq/hw-transport-node-hid-noevents/hid-framing').default;
-  }
-  return hidFraming(channel, PACKET_SIZE);
+function isHex(text, minBytes, maxBytes) {
+  return (
+    typeof text === 'string' &&
+    text.length % 2 === 0 &&
+    text.length >= minBytes * 2 &&
+    text.length <= maxBytes * 2 &&
+    /^[0-9a-f]*$/.test(text)
+  );
 }
 
-// Per node-hid module: the device holding its open handle, and the recent
-// channels. One handle at a time (R5: close before open).
-const ports = new WeakMap();
-function portOf(hid) {
-  let port = ports.get(hid);
-  if (!port) {
-    port = { holder: null, channels: [] };
-    ports.set(hid, port);
+const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * Fork the host: an Electron utility process in main, a Node child on the
+ * same runtime elsewhere (the device probe, under ELECTRON_RUN_AS_NODE).
+ * Returns `{ post, kill, onMessage, onExit }`.
+ */
+function launchHost() {
+  if (process.type === 'browser') {
+    const { utilityProcess } = require('electron');
+    const child = utilityProcess.fork(HOST_ENTRY, [], { serviceName: 'Freedom Ledger HID' });
+    let exited = false;
+    child.once('exit', () => {
+      exited = true;
+    });
+    return {
+      post: (message) => child.postMessage(message),
+      kill: () => {
+        const pid = child.pid;
+        child.kill();
+        if (process.platform === 'win32' || !pid) return;
+        const timer = setTimeout(() => {
+          if (exited) return;
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // Gone already.
+          }
+        }, KILL_GRACE_MS);
+        timer.unref?.();
+        child.once('exit', () => clearTimeout(timer));
+      },
+      onMessage: (fn) => child.on('message', fn),
+      onExit: (fn) => child.once('exit', fn),
+    };
   }
-  return port;
+  const { fork } = require('child_process');
+  const child = fork(HOST_ENTRY, [], { stdio: 'inherit' });
+  return {
+    post: (message) => child.send(message),
+    kill: () => child.kill('SIGKILL'),
+    onMessage: (fn) => child.on('message', fn),
+    onExit: (fn) => child.once('exit', fn),
+  };
 }
 
-function isApduInterface(platform) {
-  return platform === 'win32' || platform === 'darwin'
-    ? (info) => info.usagePage === LEDGER_USAGE_PAGE
-    : (info) => info.interface === 0;
+/**
+ * The host process, one at a time, and what outlives an operation: the
+ * operation holding the device, and the channels let go of mid-flight.
+ */
+class HidHost {
+  /**
+   * @param {object} [options]
+   * @param {() => object} [options.launch] - forks a host (launchHost)
+   * @param {number|null} [options.idleMs] - an idle host exits after it;
+   *   null keeps it
+   */
+  constructor({ launch = launchHost, idleMs = IDLE_MS } = {}) {
+    this._launch = launch;
+    this._idleMs = idleMs;
+    this._child = null;
+    this._exiting = null;
+    this._generation = 0;
+    this._nextId = 1;
+    this._waiters = new Map();
+    this._abandoned = new Set();
+    this._idle = null;
+    /** The HidDevice whose operation holds the device. */
+    this.holder = null;
+  }
+
+  /** The live host's number, or null. */
+  get generation() {
+    return this._child ? this._child.generation : null;
+  }
+
+  /** False while a killed host is still exiting: wait before forking. */
+  get ready() {
+    return this._exiting === null;
+  }
+
+  whenReady() {
+    return this._exiting ?? Promise.resolve();
+  }
+
+  nextId() {
+    return this._nextId++;
+  }
+
+  /** A channel no exchange let go of mid-flight has used. */
+  drawChannel(randomInt) {
+    let channel;
+    do {
+      channel = randomInt(0x10000);
+    } while (this._abandoned.has(channel));
+    return channel;
+  }
+
+  /** The device may still answer on `channel`: never draw it again. */
+  abandon(channel) {
+    if (channel === null) return;
+    this._abandoned.delete(channel);
+    this._abandoned.add(channel);
+    if (this._abandoned.size > ABANDONED_MAX) {
+      this._abandoned.delete(this._abandoned.values().next().value);
+    }
+  }
+
+  /**
+   * Post a message, forking a host if none runs (only once `ready`).
+   * `onReply` gets the host's answer to it, or `{ op: 'exit' }`. Returns
+   * the host's generation.
+   */
+  send(message, onReply = null) {
+    if (this._exiting) throw new Error('A killed host is still exiting');
+    clearTimeout(this._idle);
+    this._idle = null;
+    const child = this._child ?? this._fork();
+    if (onReply) this._waiters.set(message.id, { generation: child.generation, onReply });
+    child.proc.post(message);
+    return child.generation;
+  }
+
+  /** Ask the live host to close the handle (no exchange is in flight). */
+  close() {
+    this._child?.proc.post({ op: 'close' });
+  }
+
+  /** Kill the live host; the next fork waits for its exit. */
+  kill() {
+    const child = this._child;
+    if (!child) return;
+    this._child = null;
+    const exiting = child.exited.then(() => {
+      if (this._exiting === exiting) this._exiting = null;
+    });
+    this._exiting = exiting;
+    child.proc.kill();
+  }
+
+  /** The operation holding the device ended. */
+  release(device) {
+    if (this.holder !== device) return;
+    this.holder = null;
+    if (this._idleMs === null || !this._child) return;
+    clearTimeout(this._idle);
+    this._idle = setTimeout(() => {
+      this._idle = null;
+      if (!this.holder) this.kill();
+    }, this._idleMs);
+    this._idle.unref?.();
+  }
+
+  _fork() {
+    const generation = ++this._generation;
+    const proc = this._launch();
+    let exited;
+    const child = { proc, generation, exited: new Promise((resolve) => (exited = resolve)) };
+    proc.onMessage((message) => this._onMessage(child, message));
+    proc.onExit(() => {
+      if (this._child === child) this._child = null;
+      exited();
+      for (const [id, waiter] of this._waiters) {
+        if (waiter.generation !== generation) continue;
+        this._waiters.delete(id);
+        waiter.onReply({ op: 'exit' });
+      }
+    });
+    this._child = child;
+    return child;
+  }
+
+  _onMessage(child, message) {
+    if (this._child !== child) return;
+    const { op, id, answer, failure, dropped } = message ?? {};
+    const waiter = this._waiters.get(id);
+    const valid =
+      waiter?.generation === child.generation &&
+      isCount(dropped) &&
+      ((op === 'answer' && isHex(answer, ANSWER_MIN, ANSWER_MAX)) ||
+        (op === 'failed' && HOST_FAILURE_VALUES.has(failure)));
+    if (!valid) {
+      // The host broke the protocol: it ends, and its exchanges with it.
+      log.warn('[Ledger] The HID host sent a message outside its protocol; ending it');
+      this.kill();
+      return;
+    }
+    this._waiters.delete(id);
+    waiter.onReply(message);
+  }
+}
+
+let sharedHost = null;
+function defaultHost() {
+  if (!sharedHost) sharedHost = new HidHost();
+  return sharedHost;
 }
 
 class HidDevice {
   /**
    * @param {object} [options]
-   * @param {object} [options.hid] - node-hid's API (`devices`, `HID`); node-hid
-   *   itself, loaded at the first APDU, unless a test passes a fake
-   * @param {string} [options.platform] - process.platform
+   * @param {HidHost} [options.host] - the process's shared host
    * @param {(max: number) => number} [options.randomInt] - crypto.randomInt
    */
-  constructor({ hid = null, platform = process.platform, randomInt = crypto.randomInt } = {}) {
-    this._hid = hid;
-    this._platform = platform;
+  constructor({ host = defaultHost(), randomInt = crypto.randomInt } = {}) {
+    this._host = host;
     this._randomInt = randomInt;
-    this._handle = null;
     this._channel = null;
+    this._generation = null;
     this._pending = null;
+    this._sent = false;
     this._ended = false;
-    this._droppedFrames = 0;
+    this._dropped = 0;
   }
 
-  /** Whether the node-hid handle is open. */
+  /** Whether this operation holds an open handle (or is opening one). */
   get isOpen() {
-    return this._handle !== null;
+    return (
+      this._sent &&
+      !this._ended &&
+      (this._generation === null || this._host.generation === this._generation)
+    );
   }
 
-  /** Reports read and dropped: another channel's or another tag's. */
+  /** Reports the host read and dropped: another channel's or another tag's. */
   get droppedFrames() {
-    return this._droppedFrames;
+    return this._dropped;
   }
 
   /**
@@ -182,12 +343,12 @@ class HidDevice {
    * @param {number} ms - its `deadline_ms`: DEADLINE_MS.DEVICE (no answer
    *   in it is `unresponsive`) or DEADLINE_MS.USER (`timeout`), counted
    *   from this call
-   * @param {AbortSignal} [signal] - the core's cancel of the APDU: closes
-   *   the handle, as `detach()` does
+   * @param {AbortSignal} [signal] - the core's cancel of the APDU: lets go,
+   *   as `detach()` does
    * @returns {Promise<Buffer>} the answer, 2 to 260 bytes, its status word
    *   last. Rejects with a HidDeviceError; or, for a call the relay must
    *   never make (bounds, a second exchange in flight, after the end), with
-   *   a TypeError or an Error, before any byte is written.
+   *   a TypeError or an Error, before anything is sent.
    */
   exchange(apdu, ms, signal = null) {
     return new Promise((resolve, reject) => {
@@ -200,19 +361,15 @@ class HidDevice {
       if (this._ended) throw new Error('This operation has ended: the next opens a new device');
       if (this._pending) throw new Error('One exchange at a time');
 
-      const pending = {
-        resolve,
-        reject,
-        ms,
-        signal,
-        onAbort: null,
-        deadline: null,
-        poll: null,
-        framing: null,
-        acc: null,
-        writtenAt: 0,
-      };
+      const host = this._host;
+      const pending = { resolve, reject, signal, onAbort: null, deadline: null, sent: false };
       this._pending = pending;
+      if (this._generation !== null && host.generation !== this._generation) {
+        // The host this operation opened in has exited: so has its handle.
+        this._end();
+        this._settle(pending, new HidDeviceError(HID_FAILURES.DISCONNECTED));
+        return;
+      }
       if (signal) {
         if (signal.aborted) {
           this.detach();
@@ -221,194 +378,120 @@ class HidDevice {
         pending.onAbort = () => this.detach();
         signal.addEventListener('abort', pending.onAbort, { once: true });
       }
+      if (host.holder && host.holder !== this) {
+        // The relay ends an operation before it starts the next; this is
+        // the backstop (close before open).
+        log.warn('[Ledger] Let go of a device an ended operation still held');
+        host.holder.detach();
+      }
+      host.holder = this;
+      if (this._channel === null) this._channel = host.drawChannel(this._randomInt);
       pending.deadline = setTimeout(
         () =>
-          this._fail(ms === DEADLINE_MS.USER ? HID_FAILURES.TIMEOUT : HID_FAILURES.UNRESPONSIVE),
+          this._abandon(ms === DEADLINE_MS.USER ? HID_FAILURES.TIMEOUT : HID_FAILURES.UNRESPONSIVE),
         ms
       );
-      if (!this._handle && !this._open()) return;
-      if (!this._write(pending, apdu)) return;
-      this._schedulePoll(pending);
+      this._sent = true;
+      const message = {
+        op: 'exchange',
+        id: host.nextId(),
+        channel: this._channel,
+        apdu: Buffer.from(apdu).toString('hex'),
+      };
+      const send = () => {
+        if (this._pending !== pending) return;
+        let generation;
+        try {
+          generation = host.send(message, (reply) => this._onReply(pending, reply));
+        } catch (err) {
+          this._end();
+          this._settle(pending, new HidDeviceError(HID_FAILURES.DISCONNECTED, { cause: err }));
+          return;
+        }
+        pending.sent = true;
+        if (this._generation === null) this._generation = generation;
+      };
+      // A killed host is exiting: fork the next only once it has.
+      const whenReady = () => (host.ready ? send() : host.whenReady().then(whenReady));
+      whenReady();
     });
   }
 
   /**
-   * End the operation: close the handle now, whatever is in flight. The
-   * exchange in flight rejects (`detached`); its answer has no reader. Safe
-   * to call again, and before any APDU (nothing was opened).
+   * End the operation now, whatever is in flight: an exchange in flight
+   * rejects (`detached`) and its host is killed; otherwise the host closes
+   * the handle. Safe to call again, and before any APDU.
    */
   detach() {
     const pending = this._pending;
-    this._close();
+    if (!this._ended) this._letGo(pending);
     if (pending) {
-      this._settle(pending);
-      pending.reject(new HidDeviceError(HID_FAILURES.DISCONNECTED, { detached: true }));
+      this._settle(pending, new HidDeviceError(HID_FAILURES.DISCONNECTED, { detached: true }));
     }
   }
 
-  _open() {
-    let hid;
-    let info;
-    try {
-      hid = this._hid ?? loadNodeHid();
-      this._hid = hid;
-      const port = portOf(hid);
-      if (port.holder && port.holder !== this) {
-        // The relay closes before it opens; this is the backstop, as on
-        // macOS, which seizes the device, the open would fail.
-        log.warn('[Ledger] Closed a device handle an ended operation left open');
-        port.holder.detach();
-      }
-      info = hid.devices(LEDGER_VENDOR_ID, 0).find(isApduInterface(this._platform));
-    } catch (err) {
-      this._fail(HID_FAILURES.NOT_FOUND, err);
-      return false;
+  // An exchange the host has: kill it, since its read may be in flight, and
+  // never draw the channel again. Otherwise no read is in flight, and the
+  // host closes the handle.
+  _letGo(pending) {
+    if (pending?.sent) {
+      this._host.abandon(this._channel);
+      this._host.kill();
+    } else if (this.isOpen && this._generation !== null) {
+      this._host.close();
     }
-    if (!info || typeof info.path !== 'string') {
-      this._fail(HID_FAILURES.NOT_FOUND);
-      return false;
-    }
-    let handle;
-    try {
-      handle = new hid.HID(info.path);
-    } catch (err) {
-      // Listed but not opened. On macOS (hidapi seizes the device) and
-      // Windows, another app holds it, Ledger Live most often (R8). Linux's
-      // hidraw takes any number of handles, so there it's the device node's
-      // permissions (Ledger's udev rules) or the device going away.
-      this._fail(this._platform === 'linux' ? HID_FAILURES.NOT_FOUND : HID_FAILURES.BUSY, err);
-      return false;
-    }
-    const port = portOf(hid);
-    this._handle = handle;
-    this._channel = this._pickChannel(port);
-    port.holder = this;
-    return true;
+    this._end();
   }
 
-  _pickChannel(port) {
-    let channel;
-    do {
-      channel = this._randomInt(0x10000);
-    } while (port.channels.includes(channel));
-    port.channels.push(channel);
-    if (port.channels.length > RECENT_CHANNELS) port.channels.shift();
-    return channel;
-  }
-
-  // node-hid's write is synchronous on the main thread, as noevents'
-  // writeHID is under today's transport.
-  _write(pending, apdu) {
-    pending.framing = framingFor(this._channel);
-    const blocks = pending.framing.makeBlocks(Buffer.from(apdu));
-    try {
-      for (const block of blocks) this._handle.write([REPORT_ID, ...block]);
-    } catch (err) {
-      this._fail(HID_FAILURES.DISCONNECTED, err);
-      return false;
-    }
-    pending.writtenAt = Date.now();
-    return true;
-  }
-
-  _schedulePoll(pending) {
-    const waited = Date.now() - pending.writtenAt;
-    const { everyMs } = POLL_STEPS.find((step) => waited < step.untilMs);
-    pending.poll = setTimeout(() => this._poll(pending), everyMs);
-  }
-
-  _poll(pending) {
-    // Settled, detached or failed since it was scheduled: the handle may be
-    // closed, and readTimeout on a closed node-hid handle reads freed memory.
+  _onReply(pending, reply) {
     if (this._pending !== pending) return;
-    pending.poll = null;
-    for (let i = 0; i < FRAMES_PER_POLL; i++) {
-      let report;
-      try {
-        report = this._handle.readTimeout(0);
-      } catch (err) {
-        // hidapi's read failed: the device went away (0016: unplugged).
-        this._fail(HID_FAILURES.DISCONNECTED, err);
-        return;
-      }
-      if (!report || report.length === 0) break;
-      this._take(pending, Buffer.from(report));
-      // The answer is whole, or the stream broke: read nothing more, so no
-      // read is left pending on the handle (Windows' overlapped read).
-      if (this._pending !== pending) return;
+    this._dropped += reply.dropped ?? 0;
+    if (reply.op === 'answer') {
+      this._settle(pending, null, Buffer.from(reply.answer, 'hex'));
+      return;
     }
-    this._schedulePoll(pending);
+    if (reply.op !== 'failed' || reply.failure === HID_FAILURES.DISCONNECTED) {
+      // The device went away or broke its stream, or the host exited. A
+      // host that failed keeps its handle unclosed (a failed write can still
+      // be pending): it's killed, as for a cancel.
+      this._host.abandon(this._channel);
+      if (reply.op === 'failed') this._host.kill();
+    }
+    // not_found and busy: nothing was opened.
+    this._end();
+    this._settle(
+      pending,
+      new HidDeviceError(reply.op === 'failed' ? reply.failure : HID_FAILURES.DISCONNECTED)
+    );
   }
 
-  _take(pending, frame) {
-    if (frame.length < 5 || frame.readUInt16BE(0) !== this._channel || frame[2] !== TAG_APDU) {
-      // Another channel's (a closed handle's late answer, or another app's
-      // on Linux and Windows, which deliver every report to every handle).
-      this._droppedFrames++;
-      return;
-    }
-    const first = !pending.acc;
-    const sequence = frame.readUInt16BE(3);
-    if (sequence !== (first ? 0 : pending.acc.sequence)) {
-      this._fail(HID_FAILURES.DISCONNECTED);
-      return;
-    }
-    if (first) {
-      const length = frame.length >= 7 ? frame.readUInt16BE(5) : -1;
-      if (length < ANSWER_MIN || length > ANSWER_MAX) {
-        this._fail(HID_FAILURES.DISCONNECTED);
-        return;
-      }
-    }
-    try {
-      pending.acc = pending.framing.reduceResponse(pending.acc, frame);
-    } catch (err) {
-      this._fail(HID_FAILURES.DISCONNECTED, err);
-      return;
-    }
-    const answer = pending.framing.getReducedResult(pending.acc);
-    if (!answer) return;
-    this._settle(pending);
-    pending.resolve(Buffer.from(answer));
-  }
-
-  /** Close the handle (failing the exchange in flight) and end the operation. */
-  _fail(failure, cause) {
+  /** A deadline: let go mid-flight, as detach() does, with `failure`. */
+  _abandon(failure) {
     const pending = this._pending;
-    this._close();
-    if (pending) {
-      this._settle(pending);
-      pending.reject(new HidDeviceError(failure, { cause }));
-    }
+    if (!pending) return;
+    this._letGo(pending);
+    this._settle(pending, new HidDeviceError(failure));
   }
 
-  _settle(pending) {
+  _end() {
+    this._ended = true;
+    this._host.release(this);
+  }
+
+  _settle(pending, err, answer) {
     clearTimeout(pending.deadline);
-    clearTimeout(pending.poll);
     if (pending.onAbort) pending.signal.removeEventListener('abort', pending.onAbort);
     if (this._pending === pending) this._pending = null;
-  }
-
-  _close() {
-    this._ended = true;
-    const handle = this._handle;
-    if (!handle) return;
-    this._handle = null;
-    const port = portOf(this._hid);
-    if (port.holder === this) port.holder = null;
-    try {
-      handle.close();
-    } catch {
-      // node-hid's close doesn't throw; a handle that did is gone either way.
-    }
+    if (err) pending.reject(err);
+    else pending.resolve(answer);
   }
 }
 
 module.exports = {
   HidDevice,
   HidDeviceError,
+  HidHost,
   HID_FAILURES,
   DEADLINE_MS,
   LEDGER_VENDOR_ID,
-  POLL_STEPS,
 };
