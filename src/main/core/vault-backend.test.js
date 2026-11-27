@@ -25,9 +25,9 @@ function coreError(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
-function load(core) {
+function load(core, relay = null) {
   jest.resetModules();
-  jest.doMock('./core-process', () => ({ getCoreClient: () => core }));
+  jest.doMock('./core-process', () => ({ getCoreClient: () => core, getLedgerRelay: () => relay }));
   const mod = require('./vault-backend');
   mod._internal.reset();
   return mod;
@@ -168,9 +168,6 @@ describe('vaultBackend', () => {
     const refused = [
       _internal.call('sign.transaction', { key: ledger, tx: {} }),
       _internal.call('x402.settle', { reservation: 'r', typed_data: {} }),
-      vaultBackend.sign.transaction(ledger, {}),
-      vaultBackend.sign.message(ledger, new Uint8Array([1])),
-      vaultBackend.sign.typedData(ledger, {}, '0x' + '00'.repeat(32)),
       vaultBackend.x402.settle({ reservation: 'r', typed_data: {} }),
     ];
     for (const request of refused) {
@@ -195,6 +192,164 @@ describe('vaultBackend', () => {
       ['sign.transaction', 15_000],
       ['x402.settle', 15_000],
     ]);
+  });
+
+  // freedom-core design 0016, LDG-3's PR 7: a Ledger key's sign.* goes
+  // through main's relay (`deviceCall`), never through `call`.
+  describe("a Ledger key's sign.* (deviceCall)", () => {
+    const LEDGER = { kind: 'ledger', index: 1000000, path: "44'/60'/0'/0/0", address: '0x' + '11'.repeat(20) };
+    const PAGE = { origin: 'https://a.example', top_origin: 'https://a.example', frame: 0, navigation: 1 };
+
+    /** A relay double: `prepare` gives `prepared`, `open` the handle (or throws `openError`). */
+    function fakeRelay({ prepared = { ok: true, operation: 'sign.message' }, openError = null } = {}) {
+      const handle = { close: jest.fn(), stopped: null };
+      const relay = {
+        handle,
+        prepare: jest.fn(() => prepared),
+        open: jest.fn(() => {
+          if (openError) throw openError;
+          return handle;
+        }),
+      };
+      return relay;
+    }
+
+    /** A core that reports the request written (`onSent`), then answers with `answer(options)`. */
+    function sendingCore(answer = () => ({ signature: '0xsig' })) {
+      return new FakeCore((_method, _params, self) => {
+        const { options } = self.calls.at(-1);
+        options.onSent?.(9, 2);
+        return answer(options);
+      });
+    }
+
+    test("prepared from main's params and the key's path, sent under the device watchdog with requires vault_meta, opened from onSent, closed at its end", async () => {
+      const core = sendingCore();
+      const relay = fakeRelay();
+      const { vaultBackend } = load(core, relay);
+      const beforeSign = async () => {};
+      const hashOnlySurface = async () => true;
+      const authorization = { token: 'T', handle: 'h' };
+      await expect(
+        vaultBackend.sign.message(LEDGER, Buffer.from('hi'), { authorization, page: PAGE, beforeSign, hashOnlySurface })
+      ).resolves.toBe('0xsig');
+      const params = { key: LEDGER, message: '0x6869', authorization };
+      expect(relay.prepare).toHaveBeenCalledWith({ method: 'sign.message', params, path: LEDGER.path });
+      expect(core.calls).toHaveLength(1);
+      const [{ method, params: sent, context, options }] = core.calls;
+      expect([method, sent, context]).toEqual(['sign.message', params, { caller: 'page', page: PAGE }]);
+      expect(options).toMatchObject({ deviceWatchdogMs: 315_000, signal: expect.any(AbortSignal) });
+      expect(options.requires({ store_moved: ['vault_meta'] })).toBe(true);
+      expect(options.requires({ store_moved: ['intents'] })).toBe(false);
+      expect(relay.open).toHaveBeenCalledTimes(1);
+      const [sentAs, capture] = relay.open.mock.calls[0];
+      expect(sentAs).toEqual({ id: 9, generation: 2 });
+      expect(capture).toEqual({
+        prepared: relay.prepare.mock.results[0].value,
+        controller: expect.any(AbortController),
+        beforeSign,
+        hashOnlySurface,
+      });
+      // Its signal is the one main sent the request with: aborting it is main's own cancel.
+      expect(capture.controller.signal).toBe(options.signal);
+      expect(relay.handle.close).toHaveBeenCalledTimes(1);
+      // The other two go the same way, under shell without a page.
+      await vaultBackend.sign.transaction(LEDGER, { type: 2 });
+      await vaultBackend.sign.typedData(LEDGER, { domain: {} }, '0x' + 'ab'.repeat(32), { primaryType: 'Mail' });
+      expect(core.calls.map((c) => [c.method, c.context, c.options.deviceWatchdogMs])).toEqual([
+        ['sign.message', { caller: 'page', page: PAGE }, 315_000],
+        ['sign.transaction', { caller: 'shell' }, 315_000],
+        ['sign.typed_data', { caller: 'shell' }, 315_000],
+      ]);
+      expect(core.calls[2].params).toEqual({
+        key: LEDGER,
+        typed_data: { domain: {} },
+        expected_hash: '0x' + 'ab'.repeat(32),
+        primary_type: 'Mail',
+      });
+      expect(relay.handle.close).toHaveBeenCalledTimes(3);
+    });
+
+    test.each([
+      ['device-bounds', 'device_failed', { ledger: 'LEDGER_TOO_LARGE' }, 'Ledger device failed'],
+      ['empty-message', 'device_failed', { ledger: 'LEDGER_EMPTY_MESSAGE' }, 'Ledger device failed'],
+      ['not-canonical', 'device_failed', { ledger: 'LEDGER_TYPE_NOT_CANONICAL' }, 'Ledger device failed'],
+      ['hash-mismatch', 'invalid_argument', { rule: 'payload', reason: 'hash-mismatch' }, 'The typed data changed after it was confirmed'],
+      ['path-strict', 'invalid_argument', { rule: 'payload', reason: 'path-strict' }, "A Ledger can't sign this request"],
+      ['typed-data', 'invalid_argument', { rule: 'payload', reason: 'typed-data' }, "A Ledger can't sign this request"],
+    ])("a stream main can't derive (%s): refused unsent, as the core would", async (reason, code, data, message) => {
+      const core = sendingCore();
+      const relay = fakeRelay({ prepared: { ok: false, rule: 'payload', reason } });
+      const { vaultBackend } = load(core, relay);
+      await expect(vaultBackend.sign.message(LEDGER, Buffer.from('x'), { authorization: { token: 'T' } })).rejects.toMatchObject({
+        name: 'VaultBackendError',
+        code,
+        data,
+        message,
+      });
+      expect(core.calls).toEqual([]);
+      expect(relay.open).not.toHaveBeenCalled();
+    });
+
+    test("the caller's last check refused it: the caller gets that refusal, not the cancel", async () => {
+      const refusal = Object.assign(new Error('custody lost'), { code: 'SIGNING_NOT_CONFIRMED' });
+      const relay = fakeRelay();
+      const core = sendingCore(() => {
+        relay.handle.stopped = refusal;
+        throw coreError('cancelled', 'Cancelled');
+      });
+      const { vaultBackend } = load(core, relay);
+      await expect(vaultBackend.sign.message(LEDGER, Buffer.from('x'), { beforeSign: async () => {} })).rejects.toBe(refusal);
+      expect(relay.handle.close).toHaveBeenCalledTimes(1);
+    });
+
+    test("the caller's signal is main's own cancel: the request's controller aborts", async () => {
+      let sentSignal = null;
+      const core = sendingCore(
+        (options) =>
+          new Promise((_resolve, reject) => {
+            sentSignal = options.signal;
+            const cancelled = () => reject(coreError('cancelled', 'Cancelled'));
+            if (options.signal.aborted) cancelled();
+            else options.signal.addEventListener('abort', cancelled);
+          })
+      );
+      const relay = fakeRelay();
+      const { vaultBackend } = load(core, relay);
+      const controller = new AbortController();
+      const pending = vaultBackend.sign.message(LEDGER, Buffer.from('x'), { signal: controller.signal });
+      await Promise.resolve();
+      expect(sentSignal.aborted).toBe(false);
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+      expect(sentSignal.aborted).toBe(true);
+      expect(relay.handle.close).toHaveBeenCalledTimes(1);
+      // Aborted before it is sent: the request goes out already cancelled.
+      const late = vaultBackend.sign.message(LEDGER, Buffer.from('x'), { signal: controller.signal });
+      await expect(late).rejects.toMatchObject({ code: 'cancelled' });
+      expect(core.calls.at(-1).options.signal.aborted).toBe(true);
+    });
+
+    test("a parent the relay won't open is cancelled at once, with the relay's error", async () => {
+      const openError = new Error('The Ledger runs on its JS backend: the relay opens no parent');
+      let sentSignal = null;
+      const core = sendingCore((options) => {
+        sentSignal = options.signal;
+        throw coreError('cancelled', 'Cancelled');
+      });
+      const { vaultBackend } = load(core, fakeRelay({ openError }));
+      await expect(vaultBackend.sign.message(LEDGER, Buffer.from('x'))).rejects.toBe(openError);
+      expect(sentSignal.aborted).toBe(true);
+    });
+
+    test('no relay (no core client): core_unavailable, unsent', async () => {
+      const core = sendingCore();
+      const { vaultBackend } = load(core, null);
+      await expect(vaultBackend.sign.message(LEDGER, Buffer.from('x'))).rejects.toMatchObject({
+        code: 'core_unavailable',
+      });
+      expect(core.calls).toEqual([]);
+    });
   });
 
   // design 0013, "The intent journal" (PRF-6(b)): sixteen shell methods,
@@ -1347,7 +1502,7 @@ describe('vaultBackend', () => {
     // Every method vault-backend.js sends was sent above.
     const source = fs.readFileSync(path.join(__dirname, 'vault-backend.js'), 'utf8');
     const named = new Set(
-      [...source.matchAll(/(?:call|mutate|accountsCall|safePendingCall)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
+      [...source.matchAll(/(?:call|mutate|accountsCall|safePendingCall|signCall)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
     );
     expect([...named].sort()).toEqual([...sent].sort());
     // vault-meta.json's requests, and the create and import that write it

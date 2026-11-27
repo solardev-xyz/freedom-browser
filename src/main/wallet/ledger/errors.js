@@ -26,6 +26,20 @@ const LEDGER_ERROR_CODES = {
   // An account no Ledger has yet shown to hold its address at its path.
   ACCOUNT_UNCHECKED: 'LEDGER_ACCOUNT_UNCHECKED',
   UNKNOWN: 'LEDGER_UNKNOWN',
+  // The core's backend (design 0016, API, "Errors"): no answer in 15 s to
+  // an APDU the user doesn't confirm.
+  UNRESPONSIVE: 'LEDGER_UNRESPONSIVE',
+  // No confirmation in 5 minutes to the one the user confirms.
+  TIMEOUT: 'LEDGER_TIMEOUT',
+  // Typed data, a message or a transaction a Ledger can't carry (deviation
+  // `device-bounds`), refused before the first APDU.
+  TOO_LARGE: 'LEDGER_TOO_LARGE',
+  // An empty `personal_sign` (deviation `empty-message`), refused before
+  // the first APDU.
+  EMPTY_MESSAGE: 'LEDGER_EMPTY_MESSAGE',
+  // An array suffix written in a form the device wouldn't rebuild from its
+  // descriptor (`uint8[02]`), refused before the first APDU.
+  TYPE_NOT_CANONICAL: 'LEDGER_TYPE_NOT_CANONICAL',
 };
 
 const MESSAGES = {
@@ -46,7 +60,19 @@ const MESSAGES = {
   [LEDGER_ERROR_CODES.ACCOUNT_UNCHECKED]:
     "This Ledger account hasn't been checked on its Ledger yet. Connect that Ledger and open Connect Hardware Wallet, then try again.",
   [LEDGER_ERROR_CODES.UNKNOWN]: 'Ledger error. Reconnect the device and try again.',
+  // UNRESPONSIVE, TIMEOUT and TYPE_NOT_CANONICAL are 0016's own texts
+  // ("Deadlines, cancel and unplugging", "Bounds"); 0016 names TOO_LARGE
+  // and EMPTY_MESSAGE without one, so theirs follow BAD_SIGNATURE's form.
+  [LEDGER_ERROR_CODES.UNRESPONSIVE]: 'The Ledger stopped answering. Reconnect it and try again.',
+  [LEDGER_ERROR_CODES.TIMEOUT]:
+    "The Ledger wasn't confirmed in 5 minutes. If it still shows the request, reject it there.",
+  [LEDGER_ERROR_CODES.TOO_LARGE]: 'This request is too large for a Ledger to sign. Nothing was sent.',
+  [LEDGER_ERROR_CODES.EMPTY_MESSAGE]: "A Ledger can't sign an empty message. Nothing was sent.",
+  [LEDGER_ERROR_CODES.TYPE_NOT_CANONICAL]:
+    "This request writes a type in a form a Ledger can't sign. Nothing was sent.",
 };
+
+const KNOWN_CODES = new Set(Object.values(LEDGER_ERROR_CODES));
 
 /**
  * Mint an error from the code registry — the only way LEDGER_* errors
@@ -139,4 +165,29 @@ function isLedgerUserRejection(err) {
   return mapLedgerError(err).code === LEDGER_ERROR_CODES.USER_REJECTED;
 }
 
-module.exports = { LEDGER_ERROR_CODES, createLedgerError, mapLedgerError, isLedgerUserRejection };
+/**
+ * A device's failure as the identity core reports it on its backend
+ * (freedom-core design 0016, API, "Errors"): `device_failed` with
+ * `data.ledger`, a LEDGER_* code, becomes an Error with that code and this
+ * table's text, the core's error kept as its cause; a code this table
+ * doesn't name is LEDGER_UNKNOWN. Null for any other error.
+ *
+ * @param {unknown} err
+ * @returns {(Error & {code: string})|null}
+ */
+function fromCoreError(err) {
+  if (!err || typeof err !== 'object' || err.code !== 'device_failed') return null;
+  const named = err.data?.ledger;
+  const code = KNOWN_CODES.has(named) ? named : LEDGER_ERROR_CODES.UNKNOWN;
+  const mapped = new Error(MESSAGES[code], { cause: err });
+  mapped.code = code;
+  return mapped;
+}
+
+module.exports = {
+  LEDGER_ERROR_CODES,
+  createLedgerError,
+  mapLedgerError,
+  isLedgerUserRejection,
+  fromCoreError,
+};

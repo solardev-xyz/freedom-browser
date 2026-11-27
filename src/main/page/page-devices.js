@@ -11,11 +11,21 @@
  * `eip1193.request` with `{ device: { type, kind, account, payload,
  * expected_hash?, handle, token } }` for main to spend as before:
  *
- *   - **A Ledger** (`ledger`): the token is spent through the core
+ *   - **A Ledger** (`ledger`): on the core's Ledger backend
+ *     (FREEDOM_LEDGER_BACKEND=core; freedom-core design 0016, D8 and
+ *     "Approvals: enforced"; the LDG-3 plan's point 10), the token is
+ *     presented to `sign.message` or `sign.typed_data` with the Ledger key,
+ *     under `page` with the request's PageContext, as a vault account's
+ *     signature presents its own: the core spends it as it is presented,
+ *     before the first APDU, and signs on its device lane, whose APDUs
+ *     main's relay carries to the device (`signers.js`
+ *     `createCoreLedgerBackend`). `eip1193.request` itself never drives
+ *     the device (L6 is a later step, and main declares no hello field for
+ *     it). On the JS backend the token is spent through the core first
  *     (`approval.spend`, under `page` with the request's PageContext), and
- *     the device asked only after. A typed-data request is hashed by the
- *     core again first, and must hash to the `expected_hash` the token
- *     bound (`signers.js`).
+ *     the device asked only after. Either way, a typed-data request must
+ *     hash to the `expected_hash` the token bound, or nothing is signed
+ *     (`signers.js`).
  *   - **A phone** (`remote`): the token goes with the core's job
  *     (`phone.job`, PHN-2), which spends it, and the core checks the phone's
  *     answer against what the job bound.
@@ -35,8 +45,9 @@
  * presented, and as the signer's last step, right before the device is
  * asked (`beforeSign`). A Safe's is never the sheet's (A7-3).
  *
- * The token is a bearer secret: it goes only to the core's spend, is never
- * logged or put in an error, and never reaches a renderer. Main discards it
+ * The token is a bearer secret: it goes only to the core (its spend, or a
+ * Ledger's `sign.*` on the core's backend), is never logged or put in an
+ * error, and never reaches a renderer. Main discards it
  * once the step ends, spent or not.
  */
 
@@ -112,8 +123,10 @@ function createDeviceSigning(deps = {}) {
     return found && found.type === type ? found : null;
   }
 
-  // A Ledger's or a phone's signature, with the core's token, and the
-  // caller's last check, if any, right before the device is asked.
+  // A Ledger's or a phone's signature, with the core's token (presented to
+  // the core's `sign.*` for a Ledger on the core's backend, spent first on
+  // the JS one), and the caller's last check, if any, right before the
+  // device is asked.
   async function deviceSignature(context, device, confirmation, beforeSign) {
     const signer = getSigner(device.account, beforeSign ? { confirmation, beforeSign } : { confirmation });
     if (device.kind === 'sign-message') return signer.signMessage(device.payload.message);

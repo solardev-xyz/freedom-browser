@@ -5,7 +5,11 @@
  * private keys. The account's `type` (from vault-meta, see
  * identity-manager's WALLET_TYPES) picks the backend: vault-backed
  * mnemonic accounts sign locally with a borrowed key, Ledger accounts
- * sign on the device.
+ * sign on the device. Which drives a Ledger is FREEDOM_LEDGER_BACKEND's
+ * (freedom-core design 0016, LDG-3; ledger/ledger-backend-kind.js): `js`,
+ * main's own hw-app-eth path (ledger/signer.js), or `core`, the identity
+ * core's device lane, whose APDUs main's relay carries to the device
+ * (`createCoreLedgerBackend`). Packaged builds always run `js`.
  *
  * Input normalization (0x-hex personal messages → raw bytes, JSON-string
  * typed data → object) happens once in the factory, so backends always
@@ -31,6 +35,8 @@ const {
 } = require('../identity-manager');
 const { vaultBackend } = require('../core/vault-backend');
 const { createLedgerBackend } = require('./ledger/signer');
+const { ledgerBackendKind } = require('./ledger/ledger-backend-kind');
+const { LEDGER_ERROR_CODES, createLedgerError, fromCoreError } = require('./ledger/errors');
 const { createRemoteBackend } = require('./remote/signer');
 const {
   normalizeMessage,
@@ -216,6 +222,154 @@ function createVaultBackend(walletIndex, authorized = {}) {
 }
 
 /**
+ * A Ledger account on the core's backend (freedom-core design 0016,
+ * "Accounts", "Approvals: enforced"; LDG-3's PR 7; FREEDOM_LEDGER_BACKEND
+ * is `core`): the identity core signs with the Ledger key `{ kind:
+ * 'ledger', index, path, address }`, the path and address main's record's
+ * (the core refuses a key that isn't its record's), on its device lane,
+ * through main's relay (vault-backend.js `deviceCall`). It is treated as a
+ * vault account is:
+ * - **The authorization** goes to `sign.*` itself (`signOptions`): a
+ *   confirmation's token, which the core spends as it is presented, before
+ *   the first APDU (a page's `{ device }` token under `page` with its
+ *   PageContext, page-devices.js; the plan's point 10); a standing rule's
+ *   `{ standing }` under `page`, which skips the browser's prompt, never
+ *   the device's; a Safe owner's Safe approval under the caller it was
+ *   recorded for (point 11: a Ledger owner's SafeTx or SafeMessage goes as
+ *   `sign.typed_data`, never `safe.sign_owner`); main's own, none.
+ *   Nothing is spent through `approval.spend` first.
+ * - **`beforeSign`**, the caller's last check, is held by the relay before
+ *   the first APDU after `B0 01` (point 7): after the lane's queue, the
+ *   device's open and the address check. Its refusal reaches the caller
+ *   as it is, and nothing is signed.
+ * - **The device's failures** are the core's `device_failed` with its
+ *   `LEDGER_*` code, shown with ledger/errors.js's text.
+ * - **The address check** (point 8): the core's `sign.*` checks the record's
+ *   address on the device first but doesn't keep the result, so main keeps
+ *   it (`keepAddressCheck`), as the JS backend does: `matched` after a good
+ *   signature, `mismatched` on LEDGER_WRONG_DEVICE.
+ * - **Every result is checked again** here before it leaves, as a vault
+ *   signature is (the core already recovered the device's): a transaction's
+ *   unsigned hash and sender, a message's EIP-191 signer, typed data's
+ *   signer over the confirmed digest. Anything else is LEDGER_BAD_SIGNATURE.
+ * - `hashOnlySurface` (the hash-only warning's, LDG-3's PR 11) and `signal`
+ *   (main's own cancel, PR 10) go to the relay when the caller gives them.
+ */
+function createCoreLedgerBackend(walletIndex, record, authorized = {}) {
+  const key = { kind: 'ledger', index: walletIndex, path: record.path, address: record.address };
+  const options = signOptions(authorized);
+  const badSignature = () => createLedgerError(LEDGER_ERROR_CODES.BAD_SIGNATURE);
+  const ownAddress = () => getAddress(record.address);
+  const keep = (matched) => keepAddressCheck(recordLedgerAddressCheck, walletIndex, matched);
+  /**
+   * One signature through the core: `sign(device)` gets the device's
+   * options (the caller's last check wrapped, so its refusal is told apart
+   * from the core's errors, the hash-only surface and the signal) and
+   * returns the core's reply; `check(reply)` returns the result, or null
+   * (or throws) for one that isn't the request's; `after(reply)` runs once
+   * it passed.
+   */
+  const viaCore = async (sign, check, after = null) => {
+    let refused = null;
+    const device = {
+      ...(typeof authorized.beforeSign === 'function'
+        ? {
+            beforeSign: async () => {
+              try {
+                await authorized.beforeSign();
+              } catch (err) {
+                refused = { err };
+                throw err;
+              }
+            },
+          }
+        : {}),
+      ...(typeof authorized.hashOnlySurface === 'function'
+        ? { hashOnlySurface: authorized.hashOnlySurface }
+        : {}),
+      ...(authorized.signal ? { signal: authorized.signal } : {}),
+    };
+    let reply;
+    try {
+      reply = await sign({ ...options, ...device });
+    } catch (err) {
+      if (refused) throw refused.err;
+      const failure = fromCoreError(err);
+      if (failure) {
+        if (failure.code === LEDGER_ERROR_CODES.WRONG_DEVICE) keep(false);
+        throw failure;
+      }
+      throw refusal(err) || err;
+    }
+    let result;
+    try {
+      result = check(reply);
+    } catch (err) {
+      throw badSignature(err);
+    }
+    if (result === null) throw badSignature();
+    keep(true);
+    after?.(reply);
+    return result;
+  };
+  return {
+    getAddress: async () => record.address,
+    signTransaction: async (request) => {
+      const { tx, unsigned, from } = toCoreTransaction(request);
+      const expected = ownAddress();
+      // Wallet.signTransaction's check, as a vault account's.
+      if (from != null && getAddress(from) !== expected) {
+        throw new Error('transaction from address mismatch');
+      }
+      return viaCore(
+        (device) => vaultBackend.sign.transaction(key, tx, device),
+        (reply) => {
+          const signed = Transaction.from(reply.raw);
+          if (signed.unsignedHash !== unsigned.unsignedHash || signed.from !== expected) return null;
+          return reply.raw;
+        },
+        // What became of a flagged dApp send's "Always allow" (design
+        // 0012): the core writes it once the device's signature passed its
+        // checks, as it does a vault send's.
+        (reply) => {
+          if (typeof authorized.onRule === 'function') authorized.onRule(reply.rule ?? null);
+        }
+      );
+    },
+    signMessage: async (message) => {
+      // Strings sign as UTF-8, as ethers' signMessage does.
+      const bytes = typeof message === 'string' ? Buffer.from(message, 'utf8') : Buffer.from(message);
+      const expected = ownAddress();
+      return viaCore(
+        (device) => vaultBackend.sign.message(key, bytes, device),
+        (signature) => (verifyMessage(bytes, signature) === expected ? signature : null)
+      );
+    },
+    signTypedData: async (typedData, { expectedHash } = {}) => {
+      const data = toCoreTypedData(typedData);
+      const expected = ownAddress();
+      // The digest the core signs only if the data hashes to it (#88): the
+      // hash the user confirmed, or, for main's own typed data (SafeTx,
+      // SafeMessage, x402), the core's own hash of it, taken now.
+      const digest = expectedHash ?? (await vaultBackend.typedDataHash(data));
+      // The view a typed-data token binds, made again from what the core
+      // was told beside the data when it was minted; a standing rule's is
+      // the page's.
+      const bound = authorized.confirmation?.payload ?? standingView(typedData, authorized);
+      return viaCore(
+        (device) =>
+          vaultBackend.sign.typedData(key, data, digest, {
+            ...device,
+            ...(bound.primary_type !== undefined ? { primaryType: bound.primary_type } : {}),
+            ...(bound.chain_id !== undefined ? { chainId: bound.chain_id } : {}),
+          }),
+        (signature) => (recoverAddress(digest, signature) === expected ? signature : null)
+      );
+    },
+  };
+}
+
+/**
  * A phone send no token binds (a standing rule's, main's own), as the core
  * reads `sign.transaction`'s `tx` with no nonce (design 0012, PHN-1): the
  * phone picks its own gas, fees and nonce, so a fee or gas limit main
@@ -261,14 +415,17 @@ function phoneJobTx({
  *
  * A signer for a confirmed request carries its confirmation (freedom-core
  * design 0012, APB-1): a vault account's signature presents it to the core,
- * which spends it there; a Ledger's spends it through the core first
- * (`approval.spend`), and the device signs only after; a phone's opens a
- * core job (`phone.job`, PHN-1/PHN-2) with it, and the core checks the
- * phone's answer against what the job bound. A page's request a site's
+ * which spends it there; a Ledger's, on the JS backend, spends it through
+ * the core first (`approval.spend`), and the device signs only after, and
+ * on the core's backend presents it to `sign.*` with the Ledger key, as a
+ * vault account's does (design 0016, `createCoreLedgerBackend`); a phone's
+ * opens a core job (`phone.job`, PHN-1/PHN-2) with it, and the core checks
+ * the phone's answer against what the job bound. A page's request a site's
  * standing rule answers carries the page's PageContext and `{ standing }`,
- * so it is sent under `page`, never as main's own: a vault signature and a
- * phone job are judged by the core against the site's rule; a Ledger signs
- * it as today (the core's `approval.check` advised the choice).
+ * so it is sent under `page`, never as main's own: a vault signature, a
+ * Ledger's on the core's backend and a phone job are judged by the core
+ * against the site's rule; a Ledger on the JS backend signs it as before
+ * (the core's `approval.check` advised the choice).
  *
  * `beforeSign`, the caller's last check, is awaited whenever the caller
  * gives one: a page's standing rule read again, with custody, for a
@@ -280,26 +437,35 @@ function phoneJobTx({
  * signer was built. It is awaited after every other wait of the signer's
  * (the address, the core's hash, a token's spend), right before the device
  * is asked or the core signs, and throws to refuse: nothing is signed, and
- * the caller hears its own error. A Ledger's backend awaits it inside its
- * device session, after the device queue, the transport's open and the
- * address check, right before each signing APDU (`ledger/signer.js`).
+ * the caller hears its own error. A Ledger's JS backend awaits it inside
+ * its device session, after the device queue, the transport's open and the
+ * address check, right before each signing APDU (`ledger/signer.js`); on
+ * the core's backend the relay holds the first APDU after `B0 01` for it,
+ * after the lane's queue, the device's open and the address check
+ * (core/ledger-relay.js).
  *
  * @param {number} walletIndex
  * A Safe's owner or executor carries the Safe approval (`safe`: `{ id,
  * page }`, `safe/safe-approvals.js`): a vault signature presents it to the
- * core (design 0012, APB-1c). A device owner signs as before: the core
- * doesn't make its signature, and has no check of a Safe approval for it
- * (advised until 0016).
+ * core (design 0012, APB-1c), and so does a Ledger owner's on the core's
+ * backend, its SafeTx or SafeMessage as `sign.typed_data` with the Ledger
+ * key (design 0016, "Approvals: enforced"; until SAFE-3). On the JS backend
+ * a device owner signs as before: the core doesn't make its signature, and
+ * has no check of a Safe approval for it.
  *
  * @param {{confirmation?: object, page?: object, standing?: {paused?: boolean},
  *   chainId?: number, onRule?: (rule: object|null) => void,
  *   onReceipt?: (held: {receipt: string, page: object}|null) => void,
- *   beforeSign?: () => Promise<void>, safe?: object}} [authorized]
+ *   beforeSign?: () => Promise<void>, safe?: object,
+ *   hashOnlySurface?: Function, signal?: AbortSignal}} [authorized]
  *   the confirmation (`signing-confirmation.js`), or a page's PageContext
  *   with, for a rule's answer, `standing` and the page's chain (typed
- *   data's view); `onRule` hears a vault send's `rule` reply, and
- *   `onReceipt` a device's spend's finalize receipt, with the PageContext
- *   it was spent under (null when it gave none); or a Safe approval
+ *   data's view); `onRule` hears a vault send's `rule` reply (and a
+ *   Ledger's on the core's backend), and `onReceipt` a device's spend's
+ *   finalize receipt, with the PageContext it was spent under (null when
+ *   it gave none); or a Safe approval. `hashOnlySurface` and `signal` are
+ *   a Ledger's on the core's backend: the hash-only warning's surface
+ *   (core/ledger-relay.js) and main's own cancel
  * @returns {Signer}
  */
 /**
@@ -344,7 +510,11 @@ function getSigner(walletIndex, authorized = {}) {
     throw new Error('Safe accounts cannot sign directly — execute through the Safe flow');
   }
   let backend;
-  let vaultSigned = false;
+  // The core signs, and checks and spends the authorization as it does: a
+  // vault account's signature, and on the core's Ledger backend a Ledger's
+  // (design 0016), whose last check the relay holds before the device is
+  // asked (`createCoreLedgerBackend`).
+  let coreSigned = false;
   // A phone's signature is an identity core job (design 0012, PHN-2): the
   // core checks and spends its authorization as it opens the job, as
   // `sign.*` would, and runs nothing here first.
@@ -353,7 +523,10 @@ function getSigner(walletIndex, authorized = {}) {
   // session (after the queue, the transport and the address check), right
   // before each signing APDU (`ledger/signer.js`).
   let backendChecks = false;
-  if (record && record.type === WALLET_TYPES.LEDGER) {
+  if (record && record.type === WALLET_TYPES.LEDGER && ledgerBackendKind() === 'core') {
+    backend = createCoreLedgerBackend(walletIndex, record, authorized || {});
+    coreSigned = true;
+  } else if (record && record.type === WALLET_TYPES.LEDGER) {
     backend = createLedgerBackend(record, {
       // What the device said about a record no device has matched yet
       // (#1065): kept on the record by the identity core, without holding
@@ -371,12 +544,13 @@ function getSigner(walletIndex, authorized = {}) {
     phoneJob = true;
   } else {
     backend = createVaultBackend(walletIndex, authorized);
-    vaultSigned = true;
+    coreSigned = true;
   }
-  // A Ledger signs what it shows, so the core can only advise: its
-  // confirmation is spent first, and the device asked only after. A
-  // phone's confirmation goes with its core job instead (`phone.job`).
-  const confirmation = vaultSigned || phoneJob ? null : authorized?.confirmation || null;
+  // On the JS backend a Ledger signs what it shows, so the core can only
+  // advise: its confirmation is spent first, and the device asked only
+  // after. A phone's confirmation goes with its core job instead
+  // (`phone.job`), and one the core signs with goes to `sign.*`.
+  const confirmation = coreSigned || phoneJob ? null : authorized?.confirmation || null;
   // The caller's last check (`beforeSign`), after the token's spend: a
   // device's signature is never judged by the core, so it is awaited right
   // before the device is asked, after every other wait of the signer's,
@@ -384,7 +558,7 @@ function getSigner(walletIndex, authorized = {}) {
   // the same run as it is called; a Ledger's waits on its device session
   // first, so its backend runs the check there, right before the APDU.
   const beforeSign =
-    vaultSigned || backendChecks || phoneJob ? null : authorized?.beforeSign || null;
+    coreSigned || backendChecks || phoneJob ? null : authorized?.beforeSign || null;
   // A phone job's authorization and PageContext (`signOptions`, as a vault
   // signature presents them), `payload` the `sign.*` params without the
   // key, and the caller's last check, which the bridge awaits once the core
@@ -440,7 +614,7 @@ function getSigner(walletIndex, authorized = {}) {
       const normalized = normalizeTypedData(typedData);
       // Every backend: the Ledger and phone ones walk the types with ethers.
       assertBoundedTypeGraph(normalized?.types);
-      if (vaultSigned) {
+      if (coreSigned) {
         return backend.signTypedData(normalized, { expectedHash });
       }
       const hash = await vaultBackend.typedDataHash(toCoreTypedData(normalized));
