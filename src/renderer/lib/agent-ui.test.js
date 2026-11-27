@@ -184,8 +184,6 @@ function createAgentElements() {
     'agent-attach-folder',
     'agent-open-project',
     'agent-attachment-contexts',
-    'agent-scope-help',
-    'agent-scope-help-text',
     'agent-float-title',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
@@ -327,6 +325,7 @@ function createAgentElements() {
 async function loadAgentUi(options = {}) {
   jest.resetModules();
   const elements = createAgentElements();
+  options.prepareElements?.(elements);
   elements['agent-workspace-view'].style.setProperty = jest.fn((name, value) => {
     elements['agent-workspace-view'].style[name] = value;
   });
@@ -1034,6 +1033,48 @@ describe('Agent UI', () => {
     expect(view.children.filter(child => child === strip)).toHaveLength(1);
   });
 
+  test("sizes the floating sheet from layout heights, not the open animation's scaled box", async () => {
+    const observers = [];
+    global.ResizeObserver = class {
+      constructor(callback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      observe() {}
+      disconnect() {}
+    };
+    try {
+      const ctx = await loadAgentUi({
+        prepareElements: (elements) => {
+          const inner = createElement('div', { classes: ['agent-sidebar-inner'] });
+          elements['agent-sidebar'].appendChild(inner);
+          // Mid open-animation: the transform scales the visual box, so
+          // getBoundingClientRect() under-reports while layout is settled.
+          const wrap = elements['agent-composer-wrap'];
+          wrap.offsetHeight = 120;
+          wrap.setRect({ height: 117 });
+          inner.offsetHeight = 400;
+          inner.setRect({ height: 390 });
+        },
+      });
+      const body = ctx.document.body;
+      expect(ctx.elements['agent-workspace-view'].style['--agent-composer-height']).toBe('120px');
+      expect(body.style['--agent-floating-composer-height']).toBe('120px');
+      expect(body.style['--agent-floating-panel-height']).toBe('400px');
+      // A later ResizeObserver tick keeps reading layout, never the scaled box.
+      const inner = ctx.elements['agent-sidebar'].querySelector('.agent-sidebar-inner');
+      ctx.elements['agent-composer-wrap'].offsetHeight = 140;
+      inner.offsetHeight = 420;
+      expect(observers.length).toBeGreaterThan(0);
+      observers[observers.length - 1].callback([]);
+      expect(ctx.elements['agent-workspace-view'].style['--agent-composer-height']).toBe('140px');
+      expect(body.style['--agent-floating-composer-height']).toBe('140px');
+      expect(body.style['--agent-floating-panel-height']).toBe('420px');
+    } finally {
+      delete global.ResizeObserver;
+    }
+  });
+
   test('restores the sessions column the compact layout closed once the window widens again', async () => {
     const ctx = await loadAgentUi({ windowGlobals: { innerWidth: 1280 } });
     const resize = () => window.addEventListener.mock.calls
@@ -1085,58 +1126,22 @@ describe('Agent UI', () => {
     expect(closed()).toBe(true);
   });
 
-  test('keeps the scope explanation as help that follows the conversation and never lingers', async () => {
-    const ctx = await loadAgentUi({
-      electronAPI: {
-        listAgentSessions: jest.fn().mockResolvedValue({
-          ok: true,
-          sessions: [{ conversationId: 'conversation_saved', title: 'Saved', status: 'ready', turnCount: 1 }],
-        }),
-        openAgentSession: jest.fn().mockResolvedValue({
-          ok: true,
-          state: {
-            status: 'ready',
-            conversationId: 'conversation_saved',
-            title: 'Saved',
-            rendererTabId: 1,
-            transcript: [{ runId: 'run_saved', userText: 'Read it', assistantText: 'Done.', status: 'completed', activity: [] }],
-            taskTabs: [],
-          },
-        }),
-      },
-    });
-    const help = ctx.elements['agent-scope-help'];
-    const note = ctx.elements['agent-scope-help-text'];
-    ctx.elements['agent-toggle-btn'].dispatch('click');
-    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
-    expect(help.hidden).toBe(false);
-    expect(ctx.elements['agent-run-message'].textContent).toBe('');
-
-    help.dispatch('click');
-    expect(note.hidden).toBe(false);
-    expect(help.getAttribute('aria-expanded')).toBe('true');
-    // Escape closes the note first and leaves the surface open.
-    ctx.document.handlers.keydown({ key: 'Escape', target: ctx.document.body, preventDefault: jest.fn() });
-    expect(note.hidden).toBe(true);
-    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
-
-    // An open note never follows Agent into provider settings.
-    help.dispatch('click');
-    ctx.elements['agent-manage-providers'].dispatch('click');
-    expect(note.hidden).toBe(true);
-    expect(help.getAttribute('aria-expanded')).toBe('false');
-
-    // New chat clears it; a reopened conversation shows its own shared-page state.
-    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
-    ctx.elements['agent-new-chat'].dispatch('click');
-    await flush();
-    expect(help.hidden).toBe(true);
-    expect(note.textContent).toBe('');
-    ctx.elements['agent-session-list'].children[0].children[0].dispatch('click');
-    await flush();
-    expect(help.hidden).toBe(false);
-    expect(note.textContent).toContain('page you shared');
-  });
+  test.each([[false, false], [false, true], [true, false], [true, true]])(
+    'scope copy stays inline only in Agent-first (Agent-first %s, shared page %s)', async (agentFirst, sharedPage) => {
+      const ctx = await loadAgentUi(sharedPage ? {} : { getOpenTabs: () => [] });
+      ctx.elements['agent-toggle-btn'].dispatch('click');
+      if (agentFirst) ctx.elements['agent-first-toggle'].dispatch('click');
+      ctx.elements['agent-prompt'].value = 'Research a topic';
+      ctx.elements['agent-run'].dispatch('click');
+      await flush();
+      ctx.emit({ type: 'run_started', runId: 'run_test' });
+      expect(ctx.elements['agent-run-message'].textContent).toBe(agentFirst
+        ? sharedPage
+          ? 'Agent can use the page you shared and any tabs it opens.'
+          : 'Agent can use only the tabs it opens for this conversation.'
+        : '');
+    }
+  );
 
   test('examples start immediately once and never replace an existing draft', async () => {
     const ctx = await loadAgentUi();
@@ -4112,12 +4117,8 @@ describe('Agent UI', () => {
     await flush();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
 
-    // In the floating column the scope explanation is help, not a status line.
+    // The floating conversation keeps the status line free of static scope copy.
     expect(ctx.elements['agent-run-message'].textContent).toBe('');
-    expect(ctx.elements['agent-scope-help-text'].textContent).toContain(
-      'page you shared and any tabs it opens'
-    );
-    expect(ctx.elements['agent-scope-help'].hidden).toBe(false);
     expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
     expect(ctx.elements['agent-run'].disabled).toBe(false);
     ctx.elements['agent-run'].dispatch('click');

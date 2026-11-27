@@ -103,8 +103,8 @@ describe('swarm-permissions', () => {
       grantPermission('myapp.eth');
 
       revokePermission('myapp.eth');
-      expect(listener).toHaveBeenCalledWith('myapp.eth');
-      expect(secondListener).toHaveBeenCalledWith('myapp.eth');
+      expect(listener).toHaveBeenCalledWith('myapp.eth', { scope: 'connection' });
+      expect(secondListener).toHaveBeenCalledWith('myapp.eth', { scope: 'connection' });
 
       listener.mockClear();
       revokePermission('myapp.eth');
@@ -119,7 +119,7 @@ describe('swarm-permissions', () => {
       grantMessaging('myapp.eth');
 
       expect(revokeMessaging('myapp.eth')).toBe(true);
-      expect(listener).toHaveBeenCalledWith('myapp.eth');
+      expect(listener).toHaveBeenCalledWith('myapp.eth', { scope: 'messaging' });
       expect(getPermission('myapp.eth')).not.toBeNull();
       expect(hasMessagingGrant('myapp.eth')).toBe(false);
       onRevoke(null);

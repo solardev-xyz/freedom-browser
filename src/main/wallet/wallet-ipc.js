@@ -611,9 +611,11 @@ function registerWalletIpc() {
   ipcMain.handle('wallet:safe-pending-list', async () => {
     try {
       const { getAllSafeSendStates } = require('./safe/safe-transactions');
-      return { success: true, states: getAllSafeSendStates() };
+      const { getStoreNotice } = require('./safe/pending-store');
+      const states = getAllSafeSendStates();
+      return { success: true, states, storeNotice: getStoreNotice() };
     } catch (err) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, code: err.code };
     }
   });
 

@@ -13,6 +13,8 @@ The flow at a glance:
 3. Set the bare `<version>`, finalize the changelog, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
 4. Upload the draft's assets to `freedom.baby`, update the website, publish the draft (§7). Merge the branch into `main` (§8) and open the next dev cycle (§9).
 
+An Electron security fix with a deadline does not wait for this cycle: it takes the [Security release (Electron)](#security-release-electron) fast path below, which reuses §1 and §4–§9 and skips the rest.
+
 Myotis packaging also builds the checked-in native supervisor before binary
 preflight (`scripts/build.js`). Native macOS builds compile every requested
 architecture; Linux builds use the target host compiler; Windows release CI
@@ -168,7 +170,8 @@ Per `changelog-process.md` § Categorising dependency updates, dependency update
 Follow `changelog-process.md` in full. Key points for release branches:
 
 - **Baseline is the previous release's tag** (`git rev-list -n 1 v<prev>`), not "the last version bump commit" — on a release branch the last bump is the `cut <version>-rc.N` commit and would yield an empty range. Sweep merged PRs in that window as well as commits; read PR descriptions, not titles.
-- **Two phases.** During the candidate loop the section stays under `## [Unreleased]`: write and review it early (ideally before `rc.1`, at the latest while `rc.1` is being tested) so testers read the same notes the release will ship. When the bare version is cut, replace the heading with `## [<version>] - <YYYY-MM-DD>` (date from `git show -s --format="%ad" --date=short HEAD`) in the same commit as the version bump or right after it.
+- **Two phases.** During the candidate loop the section stays under `## [Unreleased]`: write and review it early (ideally before `rc.1`, at the latest while `rc.1` is being tested) so testers read the same notes the release will ship. When the bare version is cut, replace the heading with `## [<version>] - <YYYY-MM-DD> "<Codename>"` (date from `git show -s --format="%ad" --date=short HEAD`) in the same commit as the version bump or right after it.
+- **Codename.** Since 0.8.8 a release can carry a one-word codename (0.8.8 is "Goa"). The releaser picks it before the final is cut; how to pick one is in the [org runbook](https://github.com/solardev-xyz/freedom-org/blob/main/releases/RELEASING.md). It appears in exactly two places: the version heading above, and the GitHub Release title in §7 (`Freedom <version> "<Codename>"`). Never in the version string, a tag or an artifact name (`0.8.8`, `v0.8.8` stay plain), and never as an entry in the notes. A release without one keeps the plain `## [<version>] - <YYYY-MM-DD>` heading; the tooling that reads the heading (the release dashboard, `changelog:assemble`) matches on the `## [<version>]` prefix and accepts either.
 - Do **not** leave an empty `## [Unreleased]` section behind, and do not expect the next feature PR to bring it back: under the fragment flow no pull request edits `CHANGELOG.md` at all, so nothing re-introduces the heading until the next release assembles. `changelog-process.md` step 9 is where it comes back — add it above the latest released version before assembling, or `npm run changelog:assemble` exits 1 (dry run and `--write` alike) with `CHANGELOG.md has no '## [Unreleased]' heading to assemble into`.
 - `CHANGELOG.md` is not read by §4 (verify) or by candidate builds (§5, `rc.N` tags), so those run in parallel with the review. The **final** tag (§5) and the website update (§7) freeze the changelog state visible to end users and must wait until the reviewed text is on the release branch.
 
@@ -187,7 +190,7 @@ Either way, run the side-by-side comparison in `changelog-process.md` § Review 
 
 ## 4. Verify before tagging
 
-CI covers what `npm test` and `npm run lint` used to cover here: every push to the release branch runs the full CI matrix, and the release workflow runs `check-binaries` itself before packaging. What remains manual:
+CI covers what `npm test` and `npm run lint` used to cover here: every push to the release branch runs the full CI matrix (macOS and Windows included, unlike a pull request into `main` without the `full-ci` label — see "The merge queue" below), and the release workflow runs `check-binaries` itself before packaging. What remains manual:
 
 **License check.** `NOTICES`, `LICENSE_AUDIT.md`, and `licenses-audit.json` must describe what the artifacts actually contain. Most of that is now enforced: `licenses-audit.test.js` derives the bundled-component inventory from `package.json`'s `build.extraResources` (every scope) and from everything `build.files`' `src/**/*` pattern commits into `app.asar` — `src/renderer/vendor/` and the assets beside it — fails on any component that ships without being classified and attributed, holds the audit's baseline to `package.json`'s version, cross-checks each recorded version against its pin (`fetch-ant.js`, `fetch-myotis.js`, `fetch-arti.js`, `fetch-freedom-ipfs-native.js`, `radicle-addon-version.js`, the lockfile), and rejects any GPL/AGPL-licensed vendor file or production package. It runs in the normal `npm test` matrix, so a red branch tells you before you tag.
 
@@ -340,7 +343,7 @@ Order matters: `freedom.baby/downloads` is what existing installs poll for updat
    - Once that PR is merged, on the fra1 host bring its `freedom-website` checkout up to the merged `main` (`git checkout main && git pull --ff-only`) and confirm `src/site.json` carries the new `version` before building — a stale checkout builds the previous version's site, which would then go to both `freedom.baby` and Swarm. Then build there (`npm run build`) and rsync `dist/` into the `freedom.baby` docroot (no `--delete`: the docroot also holds `downloads/`), then click every download link.
    - Publish the same `dist/` to Swarm with `npm run deploy:swarm`, on fra1 (it uploads through the node there that holds the site's postage batch). It reads the upload back, refuses to go on unless it serves the built index, and then points the site's feed at the new reference. That is the whole Swarm step: since website PRs #25 and #27 (November 2026), `freedombrowser.eth`'s content hash is the feed manifest, which always resolves to the latest update, so a release needs no ENS transaction. `eth.limo` caches for about five minutes, so give it a moment before checking `freedombrowser.eth.limo`.
    - The weekly re-push (`deploy/freedom-swarm-repush.service` in the website repo) needs no change after a deploy. It runs with `--expect-feed`: it re-pushes the content, the feed manifest and the latest feed update, and fails rather than publish anything if `dist/` no longer matches what the feed points at.
-4. Publish the draft GitHub Release (`gh release edit v<version> --draft=false`, or the Publish button). Give it the release notes from the changelog section; the workflow only wrote a one-line placeholder. Confirm the page lists every artifact from the table in §5.
+4. Publish the draft GitHub Release (`gh release edit v<version> --draft=false`, or the Publish button). Give it the release notes from the changelog section; the workflow only wrote a one-line placeholder. If the release has a codename (§3), set the title to `Freedom <version> "<Codename>"` (`gh release edit v<version> --title 'Freedom <version> "<Codename>"'`). Confirm the page lists every artifact from the table in §5.
 
 Candidate pre-releases can stay on the Releases page; they are marked Pre-release and sort below the final. Delete them only if they are known-broken and you do not want anyone to keep installing them.
 
@@ -386,6 +389,76 @@ Why a `-dev` suffix rather than a bare `<next>`:
 - The About dialog (`app.getVersion()`) and the updater User-Agent in `src/main/updater.js` are the only surfaces that show the version. With the suffix, a screenshot or bug report from a local build self-identifies as unreleased, instead of falsely claiming the previous release.
 - Per semver, `<next>-dev` sorts strictly below `<next>`, so the eventual release will always look like an upgrade to a dev install (never a downgrade).
 - Note: a `-dev` suffix does **not** rescue dev installs from missing a hotfix on the previous line. By semver, `0.8.0-dev > 0.7.1` (major/minor/patch dominate; pre-release tags only break ties within the same triple). This is acceptable here because dev builds are run by developers from source, not via `electron-updater`. If you ever hand pre-release builds to non-developer testers, revisit this.
+
+## Security release (Electron)
+
+The fast path for Freedom's security-release rule for Electron, decided 2026-10-23 ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644), roadmap item 0.2):
+
+- a Chromium/Electron security fix on the current major reaches the stable release within **7 days** of its npm publish;
+- within **72 hours** when the bug is exploited in the wild: Chrome's release notes say "an exploit … exists in the wild", or the CVE is in CISA's [Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) catalog;
+- never ship an end-of-life Electron major (Electron supports the latest three);
+- adopt each new major within 8 weeks of its first stable release.
+
+### What starts it
+
+`.github/workflows/electron-watch.yml` runs `scripts/electron-watch.js` every 6 hours (and on demand from the Actions tab, with a `dry_run` option). It reads the Electron that `main`'s lockfile pins and the one the latest stable release's lockfile ships, and keeps one issue per finding, labelled `security-release`:
+
+- **`Ship Electron <x.y.z> (security release), due <date>`** — `<x.y.z>` is the newest patch on the shipped major. The issue lists every release since the shipped version that carries a security fix, why it counts, its own deadline and its CVEs; the earliest deadline is the issue's. It is updated in place as the evidence changes, closed as superseded when a newer patch on the same major becomes the target (the new issue carries the deadline forward), and closed as shipped once the latest stable release's lockfile has the target.
+- **`Adopt Electron <N>, due <date>`** — opened when a new major's first stable release is on npm, due 8 weeks later. Not a fast-path bump: a major goes through §2's checks and a release of its own.
+- **`Electron <N> reaches end of life on <date>`** / **`… is past end of life`** — the pinned major is the oldest supported one (or its EOL date in [Electron's schedule](https://releases.electronjs.org/schedule) is within a release cycle), or no longer supported at all.
+
+A release counts as a security release when any of these says so; `scripts/lib/electron-watch.js` documents the phrasings, observed over 1,000 Electron releases:
+
+- its GitHub release notes: a `Security: …` line, a CVE id, a `Backported fixes from upstream …` line (Electron's cherry-pick batches since 2026-06, which name no CVEs), a `Backported fix for <bug id>` line, or a link to one of Electron's advisories;
+- one of Electron's [security advisories](https://github.com/electron/electron/security/advisories) names it as the patched version for the shipped one; these often appear weeks after the release;
+- it rolls Chromium past a build whose post on [Chrome's release blog](https://chromereleases.googleblog.com/) lists security fixes.
+
+The 72-hour window applies when one of the release's CVEs is in KEV, Chrome's release notes say it is exploited in the wild, or the notes do. Electron's cherry-pick batches name no CVEs, so an exploited Chromium bug can be fixed without any source tying it to a release: the issue then lists the Chromium CVEs CISA added since the shipped version came out, with the deadline the 72-hour rule would give, and a person checks the backport PRs. The script does not guess.
+
+**While `main` is on a newer major than the latest release** (it has adopted the next major, which has not shipped yet), the security issue stays on the shipped major. Users run that major, and the 8-week adoption window never replaces a 7-day or 72-hour deadline. No bump goes to `main` for those fixes. One of two releases settles them:
+
+- a fast-path release on the shipped major (step 3 applies the bump on the release branch with `node scripts/electron-watch.js bump --version <x.y.z>`); or
+- a release from `main` whose Electron of the new major was published to npm strictly after the target. Electron releases each security fix on every supported major together, so such a release carries the fixes. Once it is out, the issue closes on that basis, and any later fix on the new major is tracked from that release. Nothing else closes it: a release on a new-major Electron published before the target, or an open security issue for the new major, leaves it open with its own, earlier deadline.
+
+`main`'s own major is still watched in that state. When its newest patch carries security fixes, the bump pull request below keeps `main` current, and it points at the deadline issue, or at the adoption issue when nothing is owed on the shipped major.
+
+Text from upstream (release notes, advisories, CISA) is written into the issues as inert text, and they link only to Electron's GitHub releases, pull requests and advisories and to Chrome's release blog. Values from releases.electronjs.org reach the changelog fragment only in their exact numeric formats.
+
+For each security target newer than `main`'s pin on `main`'s own major, the workflow also opens the bump pull request, `chore(deps): Electron <x.y.z> (security release)`, from `electron-watch/electron-<x.y.z>` against `main`. It changes exactly what an Electron bump changes (§2, "An Electron bump is never lockfile-only"): `package.json` and `package-lock.json` (resolved with `npm install --package-lock-only --ignore-scripts`, so no package code runs in the job that can push), `licenses-audit.json`, `LICENSE_AUDIT.md`, and the Electron line of a `changelog.d/` fragment (an unreleased one is moved forward, as the 44.5.1 to 44.6.0 to 44.7.0 bumps did; otherwise a new `security--deps-electron-<x.y.z>.md`). A major is never bumped this way.
+
+The bump job runs the same Node as `ci.yml`, so the lockfile is resolved by the npm CI's `npm ci` runs (see §2 on optional entries), and it stops if `package-lock.json` lost any entry or any entry other than the root and Electron's own changed its `os`, `cpu`, `libc` or dependency-type flags (npm 9.2, for one, strips every `libc` line). The pull request description opens with the npm version table from [`dependency-updates.md`](dependency-updates.md) § Pull request format; it has no bundled-binary table, since the bump touches none. Any other Electron update (a refresh, a major) follows `dependency-updates.md` in full.
+
+Two GitHub rules shape what happens next:
+
+- **CI.** A pull request or push made with a workflow's `GITHUB_TOKEN` starts no `pull_request` or `push` workflow, by GitHub's design. `workflow_dispatch` is the exception, so the same run dispatches `ci.yml` on the bump branch; its `ci-ok` lands on the pull request's head commit, which is what branch protection reads. If it is missing, start it from Actions > CI > Run workflow on the branch, or push a commit to the branch yourself.
+- **Opening the pull request** needs the repository setting _Allow GitHub Actions to create and approve pull requests_ (Settings > Actions > General). With it off (`gh api repos/<owner>/<repo>/actions/permissions/workflow` reports `can_approve_pull_request_reviews: false`), the workflow pushes the branch, warns, and the issue links a ready compare page: open the pull request from there, which also starts CI normally.
+
+### Who ships
+
+The releaser ships: a repository admin, because only admins can create `release/**` branches and `v*` tags (Appendix B). Assign the issue to yourself when you pick it up. The issue's due date is the deadline, not the next planned release. If it cannot be met, say so in a comment with the reason and the date you expect; the body is rewritten by every run, so edits there are lost.
+
+### Steps
+
+1. **Merge the bump into `main`.** Review the pull request like any other, with the Electron release notes the issue links. The diff is Electron-only; check the changelog line reads well, and the NODE_MODULE_VERSION note in the description (a patch release within a major has never changed it, which is what lets this path skip §2's native-module check). Merge per `merge-process.md` once `ci-ok` is green.
+2. **Branch from the last release tag, not from `main`**, which carries unreleased work:
+
+   ```
+   git fetch origin --tags
+   git switch -c release/<version> v<last>
+   git push -u origin release/<version>
+   ```
+
+   `<version>` is the next patch after `<last>` (`v0.8.7` gives `0.8.8`), even when `main` is already on `<version>-dev`: §1 allows the release to take the number, and `main` moves to the patch after it in step 7.
+
+3. **Electron-only change.** `git cherry-pick -x <merge commit's bump commit>`. If `package-lock.json` conflicts because `main`'s lockfile moved since the tag, abort the pick and regenerate on the release branch instead: `node scripts/electron-watch.js bump --version <x.y.z>` makes the same edits on any checkout. Use the npm CI resolves with (§2), then commit as `chore(deps): Electron <x.y.z> (security release)`. Nothing else lands on this branch: no other dependency, no feature, no §2 refresh.
+4. **One release candidate.** Set `<version>-rc.1` (§1), re-stamp the audit baseline (§4; the Electron line is the only re-derivation), assemble the changelog from the one fragment (`changelog-process.md` step 9: add `## [Unreleased]`, `npm run changelog:assemble -- --write`, `git rm` the fragment), and tag `v<version>-rc.1` (§5). §4's UI consistency audit and §3's sweep of the whole cycle do not apply: nothing but Electron changed.
+5. **The automated smoke legs.** The candidate's release run must be green, all of it: the four builds and the four smoke jobs, `smoke-mac-arm64`, `smoke-linux-x64`, `smoke-linux-arm64` and `smoke-windows-x64`. Each runs the `packaged` and `packaged-live` Playwright projects against both artifacts of its platform (§6): launch, version, persistence, an `https://` page with the shield in its default state, the bundled Ant, IPFS, Radicle and Tor, the fuses, site permissions, the history worker and the notices. The push of the release branch runs `ci.yml`'s full matrix as well (§4). By hand, on one real machine: launch, About shows `<version>-rc.1`, an `https://` page renders. Add §6 step 7 (camera and microphone on macOS) when the Electron notes touch media or permissions. A failing leg is fixed on the branch and becomes `rc.2`; one candidate is the plan, not a reason to ship a red one.
+6. **Ship by the due date.** Set the bare `<version>` and the changelog heading (§1, §3), tag `v<version>`, re-check the draft in short form (§6), and publish (§7): upload to `freedom.baby`, update the website, publish the draft.
+7. **Back to `main`.** Merge the release branch into `main` (§8). If `main` was on `<version>-dev`, open `<version+1>-dev` (§9) and rename the milestone. The merge does **not** remove the bump's fragment from `main`: the release branch added and deleted it, so git sees no change there to bring across. `git rm` it in the merge commit, or the next release lists the Electron line a second time. If a later bump moved that fragment on `main` in the meantime, rewrite its line to start at the version just shipped instead. If `main` is on a newer major than the release branch, keep `main`'s `package.json`, `package-lock.json` and license audit in that merge; take only the version, changelog and release-branch fixes.
+
+The next run of the workflow after the GitHub release is published sees the target in the latest release's lockfile and closes the issue.
+
+Not automated yet: the `freedom.baby` upload (§7), and anything about how installs take the update. `src/main/updater.js` downloads it in the background with `autoInstallOnAppQuit` off, so it waits for the user to choose Install now, and a security release prompts no harder than any other.
 
 ## Nightly builds
 
@@ -472,11 +545,13 @@ A separate job, outside GitHub Actions, tests each published nightly after it la
 
 It does not gate anything. Setup, maintenance (the Windows evaluation licence needs a rebuild every ~80 days) and how to run it by hand are in [`scripts/nightly-vm-e2e/README.md`](../../scripts/nightly-vm-e2e/README.md). Tracking issue: #559.
 
-### Next step: a merge queue
+### The merge queue
 
-Nightlies are only as useful as `main` is green. The recommended next step is to turn on a **GitHub merge queue** for `main`: CI then runs on the merged result of a batch of pull requests before any of them land, which both keeps a broken combination out of `main` (and out of the next nightly) and removes the "branch must be up to date" churn of re-running CI on every PR after every merge.
+Nightlies are only as useful as `main` is green, so `main` goes through a **GitHub merge queue**: CI runs on the merged result of a batch of pull requests before any of them land, which both keeps a broken combination out of `main` (and out of the next nightly) and removes the "branch must be up to date" churn of re-running CI on every PR after every merge. As of 2026-11-24 the `main` ruleset requires the queue and the single `ci-ok` check (`gh api repos/<owner>/<repo>/rules/branches/main` shows both).
 
-Enabling it is a repository **settings** change (Settings → Branches → branch protection rule for `main` → "Require merge queue") and needs an admin, so it is deliberately not part of this change. The workflow half, though, is not free: a queue pushes its candidate head to `gh-readonly-queue/<base>/pr-<n>-<sha>`, which the `on: push: branches:` filter in `ci.yml` deliberately does not match, so the workflow also carries an explicit `merge_group:` trigger. Without it a queue run produces no run of `ci.yml` at all on the queue head — no `ci-ok`, no `test` — and every queued pull request waits on checks that cannot arrive until the queue's own timeout evicts it. `scripts/ci/ci-gate.test.js` pins the trigger set so that stays true. Point the queue at `ci-ok`, for the same reason branch protection should: it is the only context that can tell "ran and passed" from "never ran".
+The queue is also where the macOS and Windows end-to-end suites gate a change. On a `pull_request` run into `main`, `ci.yml` skips the Windows and macOS legs of `e2e-desktop` and the macOS-only `e2e-agent` and `e2e-automation` (the macOS security jest suites included), because macOS runners are the bottleneck and every pull request push queued three of them; every Linux job and the `native-addons` build matrix still run. The queue run (`merge_group`), every push to `main`/`release/**`/`hotfix/**` and a manual dispatch run the full matrix, so a macOS- or Windows-only failure is caught before it lands, not at review time. A pull request into `release/**` or `hotfix/**` is not narrowed: those branches have no queue, and `release.yml` does not gate on CI, so the pull request's own run is the last full-matrix check before an rc tag can be cut from the result. To get them on a pull request, add the `full-ci` label and then push a commit or use **Re-run all jobs** on the latest CI run ("Re-run failed jobs" reuses the earlier decision); the label is read live by `code-changed`, so no `labeled` trigger is needed. A manual "Re-run all jobs" makes that run attempt 2, which `auto-retry.yml` never retries.
+
+The queue was a settings change (Settings → Rules → the `main` ruleset → "Require merge queue"). The workflow half, though, is not free: a queue pushes its candidate head to `gh-readonly-queue/<base>/pr-<n>-<sha>`, which the `on: push: branches:` filter in `ci.yml` deliberately does not match, so the workflow also carries an explicit `merge_group:` trigger. Without it a queue run produces no run of `ci.yml` at all on the queue head — no `ci-ok`, no `test` — and every queued pull request waits on checks that cannot arrive until the queue's own timeout evicts it. `scripts/ci/ci-gate.test.js` pins the trigger set so that stays true. Point the queue at `ci-ok`, for the same reason branch protection should: it is the only context that can tell "ran and passed" from "never ran".
 
 ## Appendix A: building locally (fallback)
 

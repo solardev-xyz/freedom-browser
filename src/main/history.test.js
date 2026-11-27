@@ -181,6 +181,23 @@ describe('history', () => {
     await expect(ipcMain.invoke(IPC.HISTORY_REMOVE, created.id)).resolves.toBe(true);
     await expect(ipcMain.invoke(IPC.HISTORY_CLEAR)).resolves.toBe(0);
   });
+
+  test('clearing history runs the clear listeners, even past one that throws', () => {
+    const { mod } = loadHistoryModule({ userDataDir });
+    historyModule = mod;
+    const calls = [];
+    mod.onHistoryCleared(() => {
+      calls.push('first');
+      throw new Error('boom');
+    });
+    const stop = mod.onHistoryCleared(() => calls.push('second'));
+    mod.addHistoryEntry({ url: 'https://example.com', title: 'Example', protocol: 'https' });
+    expect(mod.clearHistory()).toBe(1);
+    expect(calls).toEqual(['first', 'second']);
+    stop();
+    mod.clearHistory();
+    expect(calls).toEqual(['first', 'second', 'first']);
+  });
 });
 
 // #503: the address bar and the History page get bounded queries, answered

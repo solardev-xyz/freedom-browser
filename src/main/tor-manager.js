@@ -368,6 +368,16 @@ function unregisterOnionRoutingSession(key) {
   proxySessions.delete(key);
 }
 
+/**
+ * The SOCKS endpoint `.onion` is routed through (`host:port`), or null while
+ * it goes DIRECT. Sign-in on a plain-HTTP onion service checks a session
+ * routes the page through it (siwe-auth/intercept.js, #1152).
+ * @returns {string | null}
+ */
+function getOnionRoutingEndpoint() {
+  return appliedSocksEndpoint;
+}
+
 async function applyTorProxy(mode, statusMessage, superseded = () => false) {
   try {
     await applyOnionRouting(currentSocksEndpoint);
@@ -869,6 +879,7 @@ module.exports = {
   stopTor,
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
+  getOnionRoutingEndpoint,
   getActivePort,
   getArtiVersion,
   getArtiBinaryPath,

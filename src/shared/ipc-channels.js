@@ -124,6 +124,9 @@ module.exports = {
   // private window before injecting the wallet providers.
   PRIVATE_IS_PRIVATE: 'private:is-private',
   WINDOW_GET_PLATFORM: 'window:get-platform',
+  // chrome → main: whether two-finger swipes go back/forward (#980).
+  WINDOW_GET_SWIPE_NAVIGATION: 'window:get-swipe-navigation',
+  WINDOW_AWAIT_SWIPE_SCROLL_END: 'window:await-swipe-scroll-end',
   WINDOW_GET_BUTTON_LAYOUT: 'window:get-button-layout',
 
   // App
@@ -310,8 +313,6 @@ module.exports = {
   GITHUB_BRIDGE_CHECK_EXISTING: 'github-bridge:check-existing',
 
   // Identity Management
-  IDENTITY_HAS_VAULT: 'identity:has-vault',
-  IDENTITY_IS_UNLOCKED: 'identity:is-unlocked',
   IDENTITY_GENERATE_MNEMONIC: 'identity:generate-mnemonic',
   IDENTITY_CREATE_VAULT: 'identity:create-vault',
   IDENTITY_IMPORT_MNEMONIC: 'identity:import-mnemonic',
@@ -376,6 +377,14 @@ module.exports = {
   X402_REVOKE_ALL_FOR_ORIGIN: 'x402:revoke-all-for-origin',
   X402_UPDATE_PERMISSION: 'x402:update-permission',
   X402_GET_RECEIPTS: 'x402:get-receipts',
+
+  // Sign-In with Ethereum over HTTP auth (#1152) — sign-in card (renderer ↔ main)
+  SIWE_CHALLENGE: 'siwe:challenge',
+  SIWE_CHALLENGE_CLOSED: 'siwe:challenge-closed',
+  SIWE_GET_CHALLENGE: 'siwe:get-challenge',
+  SIWE_PREPARE: 'siwe:prepare',
+  SIWE_COMPLETE: 'siwe:complete',
+  SIWE_CANCEL: 'siwe:cancel',
 
   // Unified payment history (x402 + wallet sends + dapp sends)
   PAYMENTS_GET_RECENT: 'payments:get-recent',
@@ -467,6 +476,7 @@ module.exports = {
   // Swarm Provider (main-process authority)
   SWARM_PROVIDER_EXECUTE: 'swarm:provider-execute',
   SWARM_PROVIDER_EVENT: 'swarm:provider-event',
+  SWARM_ORIGIN_DISCONNECTED: 'swarm:origin-disconnected',
 
   // Swarm publish setup (src/main/swarm/publish-setup-service.js). Chrome
   // only, except the state read and push, which the internal pages also use.
