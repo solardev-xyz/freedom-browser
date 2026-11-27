@@ -57,6 +57,9 @@
  *   policy stays, and IPFS fails closed.
  * - **Exit 77** (design 0010): the service refused its own confinement. It
  *   isn't restarted, and the node fails with a text that says so.
+ * - **Exit 71** (design 0010, "The memory cap"): a native library ran out
+ *   of memory under the service's cap. It is a crash, restarted as any;
+ *   when the third within 60 s is one, the node's failure says so.
  * - **Stop** (0007, "Stopping the process"): the instance is retired, then
  *   `ipfs.shutdown`, which tears down every instance and exits 0; the
  *   process is killed 5 s after it if still there.
@@ -65,7 +68,7 @@
 const fs = require('fs');
 const { spawn: spawnProcess } = require('child_process');
 const defaultLog = require('../logger');
-const { isObject } = require('../core/service-client');
+const { isObject, OUT_OF_MEMORY_EXIT_CODE } = require('../core/service-client');
 const {
   IpfsdClient,
   confinementLog,
@@ -110,6 +113,8 @@ const RETIRED = 'freedom-ipfs instance retired repeatedly';
 const START_FAILED = 'Failed to start freedom-ipfs native node';
 // freedom-core design 0010: exit 77, and main's check before a spawn.
 const CONFINEMENT_REFUSED = 'freedom-ipfs service refused its confinement';
+// Design 0010, "The memory cap": the crash that ended the restarts was exit 71.
+const OUT_OF_MEMORY = 'freedom-ipfs service ran out of memory';
 const GRANT_REFUSED = "freedom-ipfs data directory overlaps another component's directory";
 const GRANT_UNCHECKED = "freedom-ipfs data directory couldn't be checked";
 
@@ -310,6 +315,9 @@ class FreedomIpfsdNode {
     // refused before a spawn, until the client's failure reports it.
     this.failureReason = null;
     this.grantFailure = null;
+    // The process's last exit, `{ code, signal, cause }`: exit 71 names the
+    // failure when it was the crash that ended the restarts.
+    this.lastExit = null;
     this.command = command ?? getIpfsdBinaryPath();
     this.argsFor = (policy) => persistentArgs({ dataDir, lockDir, network: policy });
     this.spawn = spawn;
@@ -746,7 +754,14 @@ class FreedomIpfsdNode {
       this.giveUp(this.grantFailure);
       return;
     }
-    this.giveUp(reason === 'exit code 77' ? CONFINEMENT_REFUSED : EXITED);
+    if (reason === 'exit code 77') {
+      this.giveUp(CONFINEMENT_REFUSED);
+      return;
+    }
+    // The restarts ended on exit 71: out of memory under the cap.
+    const outOfMemory =
+      reason === 'three crashes within a minute' && this.lastExit?.code === OUT_OF_MEMORY_EXIT_CODE;
+    this.giveUp(outOfMemory ? OUT_OF_MEMORY : EXITED);
   }
 
   /**
@@ -847,6 +862,7 @@ module.exports = {
   TIMEOUT,
   EXITED,
   CONFINEMENT_REFUSED,
+  OUT_OF_MEMORY,
   GRANT_REFUSED,
   GRANT_UNCHECKED,
   HEALTH_INTERVAL_MS,

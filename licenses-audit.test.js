@@ -721,6 +721,7 @@ describe('copyleft', () => {
       'ipfsd-v0.4.0': [['attohttpc', '0.30.1']],
       'ipfsd-v0.4.1': [['attohttpc', '0.30.1']],
       'ipfsd-v0.4.2': [['attohttpc', '0.30.1']],
+      'ipfsd-v0.5.0': [['attohttpc', '0.30.1']],
     },
     'freedom-radicled-bin/${os}-${arch}/': {
       'radicled-v0.1.0': [['colored', '2.2.0']],
@@ -728,6 +729,7 @@ describe('copyleft', () => {
       'radicled-v0.1.2': [['colored', '2.2.0']],
       'radicled-v0.1.3': [['colored', '2.2.0']],
       'radicled-v0.1.4': [['colored', '2.2.0']],
+      'radicled-v0.2.0': [['colored', '2.2.0']],
     },
     // None: every crate colibrid-v0.1.1's notices list is permissive.
     'freedom-colibrid-bin/${os}-${arch}/': {

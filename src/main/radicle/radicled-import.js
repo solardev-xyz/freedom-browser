@@ -32,9 +32,12 @@
  *   start every refusal is definitive, and "already exists in storage" is a
  *   repository already imported); or `outcome_unknown` when the process
  *   ends with the import sent and unanswered (a crash, a kill, main's
- *   watchdog, or its own deadline's exit 70): the repository may have been
- *   imported, and the service's next start reconciles the home. The service
- *   answers its own `outcome_unknown` for a libradicle error past the start.
+ *   watchdog, its own deadline's exit 70, or exit 71, a native library out
+ *   of memory under its cap): the repository may have been imported, and
+ *   the service's next start reconciles the home. The service answers its
+ *   own `outcome_unknown` for a libradicle error past the start. An exit
+ *   before the import is sent fails it with the node's text for its code
+ *   (exit 71: "freedom-radicled ran out of memory").
  * - **A stop** (`signal`, the manager's) before the import is sent ends the
  *   process with nothing imported (`stopped`); once it is sent, its answer
  *   is waited for, so its outcome is known.

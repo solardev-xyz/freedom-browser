@@ -20,8 +20,10 @@ jest.mock('../service-grant', () => ({ radicleGrantRefusal: jest.fn(() => null) 
 
 const {
   RadicledNode,
+  clientFailure,
   CRASHED,
   CONFINEMENT_REFUSED,
+  OUT_OF_MEMORY,
   GRANT_REFUSED,
   KEY_FILE_AGAIN,
   KEY_UNAVAILABLE,
@@ -735,6 +737,43 @@ describe('crashes and restarts', () => {
     expect(node.onFailure).toHaveBeenCalledWith(CRASHED, node);
     await clock.advance(60_000);
     expect(service.children).toHaveLength(3);
+  });
+
+  test('exit 71, out of memory under the cap (design 0010), is a crash: restarted, with the whole start again', async () => {
+    const node = await running();
+    child(0).exit(71);
+    await settle();
+    expect(node.state).toBe('restarting');
+    await clock.advance(500);
+    expect(service.children).toHaveLength(2);
+    expect(node.state).toBe('running');
+    expect(methods(child(1))).toContain('rad.start');
+    expect(node.onFailure).not.toHaveBeenCalled();
+  });
+
+  test('restarts that end on exit 71 say the node ran out of memory', async () => {
+    const node = await running();
+    child(0).exit(70);
+    await settle();
+    await clock.advance(500);
+    child(1).exit(71);
+    await settle();
+    await clock.advance(2_000);
+    child(2).exit(71);
+    await settle();
+    expect(node.state).toBe('failed');
+    expect(node.failureReason).toBe(OUT_OF_MEMORY);
+    expect(node.onFailure).toHaveBeenCalledWith(OUT_OF_MEMORY, node);
+    await clock.advance(60_000);
+    expect(service.children).toHaveLength(3);
+  });
+
+  test("exit 71's own text, for an import's exit and a crash loop ending on one", () => {
+    expect(OUT_OF_MEMORY).toBe('freedom-radicled ran out of memory');
+    expect(clientFailure('exit code 71')).toBe(OUT_OF_MEMORY);
+    expect(clientFailure('three crashes within a minute', 71)).toBe(OUT_OF_MEMORY);
+    expect(clientFailure('three crashes within a minute', 70)).toBe(CRASHED);
+    expect(clientFailure('three crashes within a minute')).toBe(CRASHED);
   });
 });
 

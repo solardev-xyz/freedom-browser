@@ -13,7 +13,13 @@
 
 const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
-const { ServiceClient, CoreError, scrubbedEnv } = require('./service-client');
+const {
+  ServiceClient,
+  CoreError,
+  scrubbedEnv,
+  NO_RESTART_EXIT_CODES,
+  OUT_OF_MEMORY_EXIT_CODE,
+} = require('./service-client');
 const { encodeBegin, encodeFrame, FrameDecoder, KIND_JSON, serviceKinds } = require('./frame');
 const { fakeColibrid, testService } = require('../../../test/helpers/fake-colibrid');
 
@@ -210,6 +216,34 @@ describe('what a service configures, and what it shares', () => {
       now = i * 60_000;
       expect(steady.recordCrash()).toBe(500);
     }
+  });
+
+  // Design 0010, "The memory cap": a native library out of memory under the
+  // service's cap ends it with 71, which main restarts as any crash.
+  test('exit 71, out of memory, is a crash: counted, restarted after 0.5 s, and never a failure', async () => {
+    expect(NO_RESTART_EXIT_CODES.has(OUT_OF_MEMORY_EXIT_CODE)).toBe(false);
+    expect(OUT_OF_MEMORY_EXIT_CODE).toBe(71);
+    const { client, children, timers, log } = timedClient(TEST_SERVICE, answering());
+    const failed = jest.fn();
+    client.on('failed', failed);
+    await client.start();
+    const exited = new Promise((resolve) => client.once('exit', resolve));
+    children[0].exit(71);
+    await expect(exited).resolves.toMatchObject({ code: 71 });
+    await tick();
+    expect(client.state).toBe('starting');
+    expect(client.crashTimes).toHaveLength(1);
+    expect(log.warn).toHaveBeenCalledWith(
+      '[Test] exited; restarting',
+      expect.objectContaining({ code: 71, delay_ms: 500 })
+    );
+    const restart = timers.find((timer) => !timer.cleared && timer.ms === 500);
+    restart.fn();
+    await expect(client.start()).resolves.toEqual({ protocol: 3, capabilities: [] });
+    expect(children).toHaveLength(2);
+    expect(client.state).toBe('ready');
+    expect(failed).not.toHaveBeenCalled();
+    await client.stop();
   });
 
   // freedom-ipfsd's ephemeral process comes back only when a private window

@@ -41,7 +41,14 @@ const {
   SOURCE_REFUSED,
 } = require('./radicled-import');
 const { WATCHDOG_MS, SHUTDOWN_GRACE_MS } = require('./radicled-client');
-const { GRANT_REFUSED, KEY_UNAVAILABLE, LOCK_HELD, EXITED, REPAIRING } = require('./radicled-node');
+const {
+  GRANT_REFUSED,
+  KEY_UNAVAILABLE,
+  LOCK_HELD,
+  EXITED,
+  OUT_OF_MEMORY,
+  REPAIRING,
+} = require('./radicled-node');
 const { radicleGrantRefusal } = require('../service-grant');
 const { fakeRadicled, RECIPIENT, IMPORT_RID } = require('../../../test/helpers/fake-radicled');
 
@@ -331,6 +338,18 @@ describe('an end with the import sent: outcome_unknown, never sent again', () =>
     expect(service.children).toHaveLength(1);
   });
 
+  test('exit 71, a native library out of memory under the cap (design 0010)', async () => {
+    const service = fakeRadicled({
+      import_repo: (request, child) => setImmediate(() => child.exit(71)),
+    });
+    await expect(run(service).promise).rejects.toMatchObject({
+      code: 'outcome_unknown',
+      message: IMPORT_OUTCOME_UNKNOWN,
+    });
+    await settle();
+    expect(service.children).toHaveLength(1);
+  });
+
   test("main's watchdog, 300 s + 15 s after the send: the hung process is killed", async () => {
     const service = fakeRadicled({ import_repo: () => {} });
     const { promise } = run(service);
@@ -370,6 +389,18 @@ describe('an end before the import is sent: definitive, nothing imported', () =>
       reconcile: (request, child) => setImmediate(() => child.exit(1)),
     });
     await expect(run(service).promise).rejects.toMatchObject({ code: 'failed', message: EXITED });
+    expect(service.children).toHaveLength(1);
+    expect(service.children[0].sent('rad.import_repo')).toEqual([]);
+  });
+
+  test('out of memory under the cap during reconciliation: exit 71, and its own text', async () => {
+    const service = fakeRadicled({
+      reconcile: (request, child) => setImmediate(() => child.exit(71)),
+    });
+    await expect(run(service).promise).rejects.toMatchObject({
+      code: 'failed',
+      message: OUT_OF_MEMORY,
+    });
     expect(service.children).toHaveLength(1);
     expect(service.children[0].sent('rad.import_repo')).toEqual([]);
   });

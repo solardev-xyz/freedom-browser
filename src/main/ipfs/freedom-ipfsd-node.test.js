@@ -14,6 +14,7 @@ const {
   FreedomIpfsdNode,
   BackendBusy,
   CONFINEMENT_REFUSED,
+  OUT_OF_MEMORY,
   GRANT_REFUSED,
   GRANT_UNCHECKED,
 } = require('./freedom-ipfsd-node');
@@ -450,6 +451,38 @@ describe('confinement (design 0010)', () => {
     expect(service.children).toHaveLength(1);
     expect(node.state).toBe('failed');
     expect(failures).toEqual([CONFINEMENT_REFUSED]);
+  });
+
+  test('exit 71, out of memory under the cap, is a crash: restarted after 0.5 s, and running again', async () => {
+    await started();
+    child().exit(71);
+    await settle();
+    expect(node.state).toBe('restarting');
+    await clock.advance(499);
+    expect(service.children).toHaveLength(1);
+    await clock.advance(1);
+    expect(service.children).toHaveLength(2);
+    expect(node.state).toBe('running');
+    expect(child().sent('ipfs.start')).toHaveLength(1);
+    expect(failures).toEqual([]);
+  });
+
+  test('restarts that end on exit 71 say the service ran out of memory', async () => {
+    await started();
+    child().exit(1);
+    await settle();
+    await clock.advance(500);
+    child().exit(71);
+    await settle();
+    await clock.advance(2_000);
+    expect(service.children).toHaveLength(3);
+    child().exit(71);
+    await settle();
+    await clock.advance(30_000);
+    expect(service.children).toHaveLength(3);
+    expect(node.state).toBe('failed');
+    expect(failures).toEqual([OUT_OF_MEMORY]);
+    expect(OUT_OF_MEMORY).toBe('freedom-ipfs service ran out of memory');
   });
 
   test('a grant the check refuses spawns nothing, and the start fails, saying why', async () => {

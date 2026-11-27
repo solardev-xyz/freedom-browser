@@ -44,7 +44,7 @@ export function formatCount(shown, total, singular, plural = `${singular}s`) {
 // A service's `confinement` (freedom-core design 0010, "Reporting"), for the
 // IPFS and Radicle panels' "Sandbox:" rows: `Enforced` when every property
 // is, `Unavailable` when the OS confines nothing, `Partial` otherwise. The
-// title lists each property.
+// title lists each property, and the memory cap where the report has one.
 const SANDBOX_PROPERTIES = [
   ['files', 'Files'],
   ['exec', 'Programs'],
@@ -59,6 +59,29 @@ export const sandboxLabel = (confinement) => {
   return full ? 'Enforced' : 'Partial';
 };
 
+const BINARY_UNITS = [
+  ['GiB', 2 ** 30],
+  ['MiB', 2 ** 20],
+  ['KiB', 2 ** 10],
+];
+
+// `memory_cap` ("The memory cap"): the cap in bytes, as `2 GiB`; or null,
+// `unavailable` where the OS has none (macOS: its reason says
+// `unsupported`) and `blocked` where something outside refused it. A
+// report without the field (a release before the cap) gets no line.
+const memoryCapText = (confinement) => {
+  const cap = confinement.memory_cap;
+  if (cap === null) {
+    const reason = confinement.reasons?.memory_cap;
+    return typeof reason === 'string' && reason.startsWith('unsupported')
+      ? 'unavailable'
+      : 'blocked';
+  }
+  if (!Number.isSafeInteger(cap) || cap < 0) return null;
+  const unit = BINARY_UNITS.find(([, size]) => cap >= size);
+  return unit ? `${Number((cap / unit[1]).toFixed(1))} ${unit[0]}` : `${cap} B`;
+};
+
 export const sandboxDetail = (confinement) => {
   if (!confinement || typeof confinement !== 'object') return '';
   const properties = SANDBOX_PROPERTIES.map(
@@ -68,5 +91,7 @@ export const sandboxDetail = (confinement) => {
     Array.isArray(confinement.gaps) && confinement.gaps.length
       ? [`Open: ${confinement.gaps.join(', ')}`]
       : [];
-  return [...properties, ...gaps, `Mechanism: ${confinement.mechanism}`].join('\n');
+  const cap = memoryCapText(confinement);
+  const memory = cap === null ? [] : [`Memory cap: ${cap}`];
+  return [...properties, ...gaps, ...memory, `Mechanism: ${confinement.mechanism}`].join('\n');
 };

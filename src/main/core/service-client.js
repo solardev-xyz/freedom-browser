@@ -225,6 +225,10 @@ const MAX_CRASHES_IN_WINDOW = 3;
 // restart would meet again. 76 (protocol) is restarted under the crash
 // policy, unless the handshake reported a protocol mismatch.
 const NO_RESTART_EXIT_CODES = new Set([64, 74, 75, 77]);
+// A native library out of memory under the service's memory cap (design
+// 0010, "The memory cap"): SQLite's or libgit2's allocation failed. It is a
+// crash, restarted under the crash policy; its owner may name it.
+const OUT_OF_MEMORY_EXIT_CODE = 71;
 // Admission limits per generation. Control frames (hello, shutdown) don't
 // count, so they always get through.
 const MAX_PENDING = 256;
@@ -658,7 +662,11 @@ const MAX_REASON = 512;
 /**
  * The public part of `confinement` (freedom-core design 0010, "Reporting"):
  * its mechanism, each property's status, the gaps a `partial` leaves, the
- * reasons and, on Linux in `direct` mode, `resolution`. Null if it isn't one.
+ * reasons, on Linux in `direct` mode `resolution`, and `memory_cap` ("The
+ * memory cap"): the cap in bytes as read back, or null where there is none
+ * (macOS, `unsupported`, or a limit refused from outside), with its reason.
+ * A process whose policy has no cap (the core) leaves `memory_cap` out, and
+ * so does its public part. Null if it isn't one.
  */
 function validConfinement(confinement) {
   if (!isObject(confinement)) return null;
@@ -678,21 +686,27 @@ function validConfinement(confinement) {
   }
   if (!isObject(reasons)) return null;
   const kept = {};
-  for (const name of [...PROPERTIES, 'resolution']) {
+  for (const name of [...PROPERTIES, 'resolution', 'memory_cap']) {
     const reason = reasons[name];
     if (reason === undefined) continue;
     if (typeof reason !== 'string') return null;
     kept[name] = reason.slice(0, MAX_REASON);
   }
   if (resolution !== null && !RESOLUTIONS.has(resolution)) return null;
-  return { mechanism, ...statuses, gaps: [...gaps], reasons: kept, resolution };
+  const report = { mechanism, ...statuses, gaps: [...gaps], reasons: kept, resolution };
+  if (!Object.hasOwn(confinement, 'memory_cap')) return report;
+  const cap = confinement.memory_cap;
+  if (cap !== null && !(Number.isSafeInteger(cap) && cap >= 0)) return null;
+  return { ...report, memory_cap: cap };
 }
 
-/** `confinement` as a log line carries it: the statuses and gaps, without
- * the reasons' text. */
+/** `confinement` as a log line carries it: the statuses, the gaps and the
+ * memory cap where it has one, without the reasons' text. */
 function confinementLog(confinement) {
   const { mechanism, files, exec, ipc, network, gaps, resolution } = confinement;
-  return { mechanism, files, exec, ipc, network, gaps, resolution };
+  const line = { mechanism, files, exec, ipc, network, gaps, resolution };
+  if (confinement.memory_cap !== undefined) line.memory_cap = confinement.memory_cap;
+  return line;
 }
 
 function scrubbedEnv(env = process.env) {
@@ -3609,6 +3623,7 @@ module.exports = {
   confinementLog,
   CONFINEMENT_PROPERTIES: PROPERTIES,
   NO_RESTART_EXIT_CODES,
+  OUT_OF_MEMORY_EXIT_CODE,
   RESTART_DELAYS_MS,
   CRASH_WINDOW_MS,
   MAX_CRASHES_IN_WINDOW,

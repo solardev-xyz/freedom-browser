@@ -307,6 +307,58 @@ describe('ipfs-ui', () => {
     expect(mod.sandboxDetail(null)).toBe('');
   });
 
+  test('the title names the memory cap where the report has one (design 0010)', async () => {
+    const { mod } = await loadIpfsModule();
+    const report = {
+      mechanism: 'landlock-4+seccomp',
+      files: 'enforced',
+      exec: 'enforced',
+      ipc: 'partial',
+      network: 'none',
+      gaps: ['signals'],
+      reasons: {},
+    };
+    const capLine = (extra) =>
+      mod
+        .sandboxDetail({ ...report, ...extra })
+        .split('\n')
+        .filter((line) => line.startsWith('Memory cap:'));
+    // Linux and Windows: 2 GiB, or a lower limit the process inherited.
+    expect(mod.sandboxDetail({ ...report, memory_cap: 2147483648 })).toBe(
+      [
+        'Files: enforced',
+        'Programs: enforced',
+        'Local IPC: partial',
+        'Network: none',
+        'Open: signals',
+        'Memory cap: 2 GiB',
+        'Mechanism: landlock-4+seccomp',
+      ].join('\n')
+    );
+    expect(capLine({ memory_cap: 1073741824 })).toEqual(['Memory cap: 1 GiB']);
+    expect(capLine({ memory_cap: 256 * 1024 * 1024 })).toEqual(['Memory cap: 256 MiB']);
+    expect(capLine({ memory_cap: 1610612736 })).toEqual(['Memory cap: 1.5 GiB']);
+    // macOS has none; a limit refused from outside leaves none either.
+    expect(
+      capLine({
+        memory_cap: null,
+        reasons: { memory_cap: 'unsupported: macOS has no reliable per-process memory cap' },
+      })
+    ).toEqual(['Memory cap: unavailable']);
+    expect(
+      capLine({
+        memory_cap: null,
+        reasons: { memory_cap: 'setting RLIMIT_DATA is refused: Operation not permitted' },
+      })
+    ).toEqual(['Memory cap: blocked']);
+    // A release before the cap reports no field, and gets no line.
+    expect(capLine({})).toEqual([]);
+    // Not a size: no line.
+    expect(capLine({ memory_cap: 'lots' })).toEqual([]);
+    // The label is the properties' alone.
+    expect(mod.sandboxLabel({ ...report, ipc: 'enforced', memory_cap: null })).toBe('Enforced');
+  });
+
   test('updates IPFS status lines, toggle state, and running transitions', async () => {
     const ctx = await loadIpfsModule({
       antMenuOpen: true,
