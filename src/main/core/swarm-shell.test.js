@@ -344,16 +344,26 @@ function without(call, key) {
 const b64Length = (bytes) => 4 * Math.ceil(bytes / 3);
 
 /**
- * Records the Buffers main allocates of at least `min` bytes, by the
- * Buffer function that made them (the outermost call only: `concat`'s own
- * `allocUnsafe` isn't counted twice), with what `at()` gives as each is
- * made (the pool's charge then, say), until `restore()`. A `from` over an
- * ArrayBuffer is a view, and isn't one.
+ * Records what main allocates of at least `min` bytes until `restore()`:
+ * the Buffers, by the Buffer function that made them (the outermost call
+ * only: `concat`'s own `allocUnsafe` isn't counted twice; a `from` over an
+ * ArrayBuffer is a view, and isn't one), and the base64 strings Buffers
+ * write (`toString('base64')`, as `base64`), each with what `at()` gives
+ * as it is made (the pool's charge then, say).
  */
 function trackAllocations(min, at = () => null) {
   const seen = [];
   const originals = {};
   let depth = 0;
+  const record = (name, length) => {
+    if (depth !== 1 || length < min) return;
+    const held = at();
+    seen.push(held === null ? [name, length] : [name, length, held]);
+  };
+  const isArrayBuffer = (value) =>
+    ['[object ArrayBuffer]', '[object SharedArrayBuffer]'].includes(
+      Object.prototype.toString.call(value)
+    );
   for (const name of ['alloc', 'allocUnsafe', 'allocUnsafeSlow', 'concat', 'from']) {
     const original = Buffer[name];
     originals[name] = original;
@@ -361,22 +371,30 @@ function trackAllocations(min, at = () => null) {
       depth += 1;
       try {
         const out = original.apply(this, args);
-        const view =
-          name === 'from' &&
-          (args[0] instanceof ArrayBuffer || args[0] instanceof SharedArrayBuffer);
-        if (depth === 1 && !view && out.length >= min) {
-          const held = at();
-          seen.push(held === null ? [name, out.length] : [name, out.length, held]);
-        }
+        if (!(name === 'from' && isArrayBuffer(args[0]))) record(name, out.length);
         return out;
       } finally {
         depth -= 1;
       }
     };
   }
+  const toString = Buffer.prototype.toString;
+  Buffer.prototype.toString = function tracked(...args) {
+    depth += 1;
+    try {
+      const out = toString.apply(this, args);
+      if (args[0] === 'base64') record('base64', out.length);
+      return out;
+    } finally {
+      depth -= 1;
+    }
+  };
   return {
     seen,
-    restore: () => Object.assign(Buffer, originals),
+    restore: () => {
+      Object.assign(Buffer, originals);
+      Buffer.prototype.toString = toString;
+    },
   };
 }
 
@@ -1572,7 +1590,8 @@ describe('through the core client, over loopback HTTP: the pool, the bodies, the
           streamBody(entry, { total: 200 * KIB });
           return;
         }
-        res.writeHead(200);
+        // A declared length: the body is one exact block.
+        res.writeHead(200, { 'Content-Length': 60 * KIB });
         res.end(Buffer.alloc(60 * KIB, 0x61));
       });
       const replied = wholeCharge(60 * KIB);
@@ -1902,8 +1921,11 @@ describe('through the core client, over loopback HTTP: the pool, the bodies, the
 
     test('after the reply is serialized, before it is written', async () => {
       await httpNode((req, res) => {
-        res.writeHead(200);
-        res.end(req.url === '/stamps' ? Buffer.alloc(900 * KIB, 0x67) : Buffer.alloc(60 * KIB, 1));
+        const body =
+          req.url === '/stamps' ? Buffer.alloc(900 * KIB, 0x67) : Buffer.alloc(60 * KIB, 1);
+        // A declared length: the body is one exact block.
+        res.writeHead(200, { 'Content-Length': body.length });
+        res.end(body);
       });
       await start();
       const small = await open('getUploadStatus', { tagUid: 5 });
@@ -2048,7 +2070,9 @@ describe('through the core client, over loopback HTTP: the pool, the bodies, the
       } finally {
         allocations.restore();
       }
+      // The body's one block (its declared length), and the grammar's copy.
       expect(allocations.seen.filter(([, n]) => n === root.length)).toEqual([
+        ['allocUnsafeSlow', root.length],
         ['concat', root.length],
       ]);
       core.release();
@@ -2138,13 +2162,17 @@ describe("a base64 POST's body: decoded once, charged before it exists, to the d
       allocations.restore();
     }
     expect(parsed(out.result).status).toBe(201);
-    // Decoded once, by the grammar's check, with its charge already taken.
+    // Decoded once, by the grammar's check, with its charge already taken,
+    // and no base64 written back to check it: the core's string is the
+    // only one.
     expect(allocations.seen.filter(([, size]) => size === n)).toEqual([['from', n, postCharge(n)]]);
+    expect(allocations.seen.filter(([name]) => name === 'base64')).toEqual([]);
     expect(Buffer.from(sent)).toEqual(bytes);
     // During the dial: the body's charge and the reply's reservation.
     expect(atDial).toBe(postCharge(n) + ROOM);
     // After it: the reply's alone.
-    expect(pool.held).toBe(wholeCharge('{"reference":"x"}'.length));
+    // (Its 17 bytes, undeclared, in the first 4 KiB block.)
+    expect(pool.held).toBe(4 * KIB + 2 * b64Length(17) + 16 * KIB);
   });
 
   test('released on every path: a failed dial, a refusal, no room for the reply', async () => {
@@ -2210,6 +2238,116 @@ describe("a base64 POST's body: decoded once, charged before it exists, to the d
     expect(allocations.seen).toEqual([]);
     expect(pool.highWater).toBe(0);
   });
+});
+
+describe('bodies in one-byte chunks: O(blocks) held, never O(chunks) (Codex round 2 on #1340)', () => {
+  /** A body of `total` bytes of `byte`, one byte a chunk, pulled only when read. */
+  function oneByteChunks(total, byte = 0x7b) {
+    const state = { sent: 0 };
+    state.stream = new ReadableStream(
+      {
+        pull(controller) {
+          if (state.sent >= total) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(new Uint8Array([byte]));
+          state.sent += 1;
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    return state;
+  }
+
+  test("a whole reply at its form's largest, a 1 MiB /stamps, in one-byte chunks: a bounded count of blocks and runs, and every byte held within the charge", async () => {
+    const total = MIB;
+    const node = scriptedNode((init) =>
+      init.path === '/stamps' ? new Response(oneByteChunks(total).stream) : undefined
+    );
+    const shell = makeShell();
+    const pool = new SwarmIoPool();
+    const p = parent(shell, 'swarm.stamps', {}, { node });
+    const ctx = context({ pool });
+    const tracked = trackAllocations(1);
+    let out;
+    try {
+      out = await p.api(calls.stamps(), ctx);
+    } finally {
+      tracked.restore();
+    }
+    const kinds = (name) => tracked.seen.filter(([kind]) => kind === name);
+    const sum = (list) => list.reduce((bytes, [, n]) => bytes + n, 0);
+    const blocks = kinds('allocUnsafeSlow');
+    const runs = kinds('base64');
+    // About 20 blocks (4 KiB doubling to 64 KiB), never a Buffer a chunk.
+    expect(blocks.length).toBeGreaterThan(0);
+    expect(blocks.length).toBeLessThanOrEqual(24);
+    expect(sum(blocks)).toBe(total);
+    expect(runs.length).toBeLessThanOrEqual(2 * blocks.length);
+    expect(sum(runs)).toBe(b64Length(total));
+    // Each other Buffer is a run's carry, at most a few bytes, one a block.
+    const others = tracked.seen.filter(([kind]) => kind !== 'allocUnsafeSlow' && kind !== 'base64');
+    expect(others.length).toBeLessThanOrEqual(2 * blocks.length);
+    expect(others.every(([, n]) => n <= 3)).toBe(true);
+    // The reply's parts: O(blocks) too.
+    expect(out.result.parts.length).toBeLessThanOrEqual(7 + 2 * blocks.length);
+    // What is held, the blocks and the runs, with the serialized reply still
+    // to come, is within the charge.
+    expect(sum(blocks) + sum(runs) + out.result.length).toBeLessThanOrEqual(ctx.held);
+    expect(ctx.held).toBe(wholeCharge(total));
+    expect(Buffer.from(parsed(out.result).body_base64, 'base64')).toEqual(
+      Buffer.alloc(total, 0x7b)
+    );
+  }, 60_000);
+
+  test('a declared length is one block, exactly that', async () => {
+    const node = scriptedNode((init) =>
+      init.path === '/stamps'
+        ? new Response(oneByteChunks(5000).stream, { headers: { 'content-length': '5000' } })
+        : undefined
+    );
+    const shell = makeShell();
+    const p = parent(shell, 'swarm.stamps', {}, { node });
+    const tracked = trackAllocations(1);
+    try {
+      await p.api(calls.stamps());
+    } finally {
+      tracked.restore();
+    }
+    expect(tracked.seen.filter(([kind]) => kind === 'allocUnsafeSlow')).toEqual([
+      ['allocUnsafeSlow', 5000],
+    ]);
+  });
+
+  test('a streamed reply in one-byte chunks reaches the core intact, through one read buffer reused', async () => {
+    const total = 200 * KIB;
+    const harness = await startSwarmCore({
+      log: quietLog(),
+      deps: { backendKind: () => 'core', nodeUrl: () => LOOPBACK },
+    });
+    try {
+      const node = scriptedNode((init) =>
+        init.path === '/node' ? undefined : new Response(oneByteChunks(total, 0x6c).stream)
+      );
+      const p = parentOf(harness.client, harness.shell, {
+        row: 'readFeedEntry_latest',
+        params: { topic: A, owner: OWNER },
+        key: KEY,
+        backend: node.backend,
+      });
+      await until(() => p.id !== null, 'the parent');
+      const check = harness.core().ready(p.id, 'reachable');
+      await until(() => harness.core().reply(check), 'the ready answer');
+      const id = harness.core().api(p.id, calls.feedLatest(OWNER, A, total));
+      await until(() => harness.core().reply(id), 'the head');
+      await drain(harness.core(), id);
+      expect(harness.core().terminal(id)).toEqual({ end: true });
+      expect(harness.core().dataOf(id)).toEqual(Buffer.alloc(total, 0x6c));
+    } finally {
+      await harness.client.stop();
+    }
+  }, 60_000);
 });
 
 describe('shell.swarm_ready', () => {

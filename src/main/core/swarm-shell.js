@@ -138,9 +138,10 @@ const b64 = (bytes) => 4 * Math.ceil(bytes / 3);
  * the serialized reply, every copy at once, and the reply's rest. */
 const wholeCharge = (m) => m + 2 * b64(m) + REPLY_ROOM;
 /** A base64 POST's charge for its `n`-byte body, to the dial's end: the
- * body decoded once, the base64 the grammar writes back to check it is
- * canonical, and the copy the transport makes to send it (undici's
- * `extractBody`). */
+ * core's base64 of it, which the call holds throughout, the body decoded
+ * once (the grammar checks the base64 is canonical by its text, writing
+ * no second string), and the copy the transport makes to send it
+ * (undici's `extractBody`). */
 const postCharge = (n) => 2 * n + b64(n);
 
 /** A base64 POST's decoded size, from its base64's length alone (nothing
@@ -292,20 +293,71 @@ function tooLargeBody(max) {
   });
 }
 
-/** A chunk the transport gave, as a Buffer over the same bytes: no copy. */
-const viewOf = (chunk) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+/** A body's blocks: the first at most 4 KiB, then doubling to 64 KiB. */
+const BLOCK_FIRST = 4 * KIB;
+const BLOCK_MOST = 64 * KIB;
 
 /**
- * Reads `body` whole, at most `max` bytes: `{ chunks, length }`, the
- * transport's own chunks, never copied into one buffer (that copy would be
- * a second decoded body the reservation doesn't count), or `{ failed }`
- * (its class, or `too_large` past `max`). With `cut`, a longer body is cut
- * at `max` instead (an error status's).
+ * A whole body as main holds it: its bytes copied as they come into owned
+ * blocks (`allocUnsafeSlow`, so none shares a slab), never a view of a
+ * transport buffer, so what is held is the blocks' storage and O(blocks)
+ * objects, however small the chunks the transport gives. The first block is
+ * the declared length when the node gives one (one block for an honest
+ * node), else 4 KiB; each later one doubles what is held, to 64 KiB. No
+ * block passes `cap`, the most the reservation counted.
  */
-async function readWhole(body, max, life, { cut = false } = {}) {
+class Blocks {
+  constructor(cap, declared) {
+    this.cap = cap;
+    this.declared = declared;
+    this.list = [];
+    this.length = 0;
+    this.allocated = 0;
+  }
+
+  push(chunk) {
+    let at = 0;
+    while (at < chunk.byteLength) {
+      let last = this.list[this.list.length - 1];
+      if (!last || last.used === last.buffer.length) last = this.grow();
+      const n = Math.min(chunk.byteLength - at, last.buffer.length - last.used);
+      last.buffer.set(chunk.subarray(at, at + n), last.used);
+      last.used += n;
+      at += n;
+    }
+    this.length += chunk.byteLength;
+  }
+
+  grow() {
+    const first = this.list.length === 0 && this.declared !== null && this.declared > 0;
+    const want = first
+      ? this.declared
+      : Math.min(BLOCK_MOST, Math.max(BLOCK_FIRST, this.allocated));
+    const size = Math.max(1, Math.min(want, this.cap - this.allocated));
+    const block = { buffer: Buffer.allocUnsafeSlow(size), used: 0 };
+    this.list.push(block);
+    this.allocated += size;
+    return block;
+  }
+
+  /** The bytes held, as views of the blocks: O(blocks). */
+  views() {
+    return this.list
+      .filter((block) => block.used)
+      .map((block) => block.buffer.subarray(0, block.used));
+  }
+}
+
+/**
+ * Reads `body` whole, at most `max` bytes, into owned blocks (`Blocks`):
+ * `{ chunks, length, allocated }`, `chunks` the blocks' views, `allocated`
+ * their storage, or `{ failed }` (its class, or `too_large` past `max`).
+ * With `cut`, a longer body is cut at `max` instead (an error status's).
+ * `declared` is the length the node gave, when it is to be believed.
+ */
+async function readWhole(body, max, life, { cut = false, declared = null } = {}) {
   const reader = body.getReader();
-  const chunks = [];
-  let length = 0;
+  const blocks = new Blocks(max, declared !== null && declared <= max ? declared : null);
   for (;;) {
     let chunk;
     try {
@@ -314,25 +366,24 @@ async function readWhole(body, max, life, { cut = false } = {}) {
       return { failed: failureOf(err, life) };
     }
     if (chunk.done) break;
-    const value = viewOf(chunk.value);
-    if (length + value.byteLength > max) {
+    const { value } = chunk;
+    if (blocks.length + value.byteLength > max) {
       reader.cancel().catch(() => {});
       if (!cut) return { failed: 'too_large' };
-      chunks.push(value.subarray(0, max - length));
-      length = max;
+      blocks.push(value.subarray(0, max - blocks.length));
       break;
     }
-    if (value.byteLength) chunks.push(value);
-    length += value.byteLength;
+    blocks.push(value);
   }
-  return { chunks, length };
+  return { chunks: blocks.views(), length: blocks.length, allocated: blocks.allocated };
 }
 
 /**
- * The base64 of `chunks`' bytes, as the strings of their runs: each run a
- * whole number of 3-byte groups but the last, so the strings joined are the
- * bytes' base64, with no copy of the bytes made whole (a carry of at most
- * two bytes moves to the next chunk).
+ * The base64 of `chunks`' bytes (a body's blocks), as the strings of their
+ * runs, at most two a block: each run a whole number of 3-byte groups but
+ * the last, so the strings joined are the bytes' base64, with no copy of
+ * the bytes made whole (a carry of at most two bytes moves to the next
+ * block).
  */
 function base64Runs(chunks) {
   const runs = [];
@@ -376,7 +427,7 @@ function jsonPart(value) {
 }
 
 /** A whole reply, written straight into its frame (`JsonText`): its body's
- * base64 in runs, one per chunk read. */
+ * base64 in runs, at most two a block. */
 function wholeReply(status, statusText, headers, chunks) {
   return new JsonText([
     `{"status":${status},"status_text":`,
@@ -829,14 +880,14 @@ class SwarmShell {
         cancelBody(body);
         return failed('too_large');
       }
-      const whole = await readWhole(body, ok ? max : ERROR_BODY, life, { cut: !ok });
+      const whole = await readWhole(body, ok ? max : ERROR_BODY, life, { cut: !ok, declared });
       if (whole.failed) return failed(whole.failed);
-      const { chunks, length } = whole;
-      // The charge, over the body as read: its chunks, its base64 and the
-      // serialized reply (0015's sum), and the grammar's one copy of it
-      // when the grammar reads this answer.
+      const { chunks, length, allocated } = whole;
+      // The charge, over the body as read: its blocks, its base64 and the
+      // serialized reply (0015's sum, the blocks' storage for `m`), and the
+      // grammar's one copy of it when the grammar reads this answer.
       const reads = entry.admission.readsReply(ticket);
-      const held = wholeCharge(length) + (reads ? length : 0);
+      const held = wholeCharge(length) - length + allocated + (reads ? length : 0);
       if (held <= reserve) shrink(held);
       else if (!charge(held - reserve)) return failed('busy');
       // readData's walk: its map is reserved before its root's answer may
