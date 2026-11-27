@@ -6,8 +6,8 @@
  * built in. CI checks out freedom-core's at a reviewed commit and names
  * it; a file named there that is missing fails the suite rather than
  * skipping it. The check itself runs on files written here as well: one of
- * main's table, with design 0009's and design 0015's `"protocol": 2` rows,
- * and ones that differ from it.
+ * main's table, with design 0009's and design 0015's `"protocol": 2` rows
+ * and design 0016's `"device"` ones, and ones that differ from it.
  */
 
 const fs = require('fs');
@@ -15,6 +15,7 @@ const path = require('path');
 const {
   ASK_IDLE_MS,
   ASK_REPLY_MS,
+  DEVICE_ONLY,
   HEAD_DEADLINE_MS,
   IDLE_WATCHDOGS,
   METHOD_CLASSES,
@@ -69,6 +70,9 @@ const VAULT_QUEUE = [
   'accounts.remove',
   'nodes.write_identity',
   'nodes.op_status',
+  // cored-v0.30.0's (design 0016, SAFE-2's S2): a Safe's record, written
+  // as `accounts.add_safe` writes it.
+  'safe.create',
 ];
 
 describe('core deadlines', () => {
@@ -76,7 +80,7 @@ describe('core deadlines', () => {
     for (const method of VAULT_QUEUE) expect(watchdogMs(method)).toBe(45_000);
     const immediate = Object.keys(METHOD_CLASSES).filter((m) => METHOD_CLASSES[m] === 'immediate');
     expect(immediate).toEqual(
-      expect.arrayContaining(['vault.status', 'vault.lock', 'vault.touch', 'sign.message'])
+      expect.arrayContaining(['vault.status', 'vault.lock', 'vault.touch', 'x402.authorize'])
     );
     for (const method of immediate) expect(watchdogMs(method)).toBe(15_000);
     expect(Object.keys(METHOD_CLASSES).filter((m) => METHOD_CLASSES[m] === 'vault')).toEqual(
@@ -90,6 +94,17 @@ describe('core deadlines', () => {
     // (the core's `Steps`, a session's 120 s until APB-4 pauses it).
     expect(watchdogMs('phone.result')).toBe(135_000);
     expect(watchdogMs('eip1193.request')).toBe(135_000);
+    // cored-v0.30.0's (design 0016, SAFE-2): the Safe methods that read the
+    // chain, under its machine's bound.
+    for (const method of [
+      'safe.status',
+      'safe.deploy',
+      'safe.deployed',
+      'safe.prepare',
+      'safe.propose',
+    ]) {
+      expect(watchdogMs(method)).toBe(135_000);
+    }
     expect(watchdogMs('dweb.open', 10_000)).toBe(25_000);
     expect(watchdogMs('naming.resolve_content', 0)).toBe(15_000);
     for (const odd of [500_000, -1, 1.5, NaN, '10000', null]) {
@@ -167,6 +182,34 @@ describe('core deadlines', () => {
     }
   });
 
+  // cored-v0.30.0's (design 0016, D7): the `device` class has no total
+  // deadline. A request that doesn't drive the device keeps the immediate
+  // 15 s, and main sends no other until LDG-3: its own keys' `sign.*`, and
+  // x402's settle by outcome or by signature. A `ledger.*` request always
+  // drives it, so asking for its watchdog throws until LDG-3 adds the
+  // lane's.
+  test("a device-class method that doesn't drive the device gets 15 s; a Ledger's own isn't sent yet", () => {
+    const device = Object.keys(METHOD_CLASSES).filter((m) => METHOD_CLASSES[m] === 'device');
+    expect(device).toEqual([
+      'sign.transaction',
+      'sign.message',
+      'sign.typed_data',
+      'ledger.accounts',
+      'ledger.add',
+      'x402.settle',
+    ]);
+    for (const method of ['sign.transaction', 'sign.message', 'sign.typed_data', 'x402.settle']) {
+      expect(watchdogMs(method)).toBe(15_000);
+      expect(watchdogMs(method, 300_000)).toBe(15_000);
+    }
+    expect(DEVICE_ONLY).toEqual(device.filter((m) => m.startsWith('ledger.')));
+    for (const method of DEVICE_ONLY) {
+      expect(() => watchdogMs(method)).toThrow(/drives the device: main sends none before LDG-3/);
+      expect(() => watchdogMs(method, 10_000)).toThrow(/drives the device/);
+    }
+    for (const method of ['safe.pending', 'safe.discard']) expect(watchdogMs(method)).toBe(15_000);
+  });
+
   test('a method the core does not serve is refused at once: 15 s', () => {
     expect(watchdogMs('vault.unknown')).toBe(15_000);
     expect(watchdogMs('toString')).toBe(15_000);
@@ -189,7 +232,8 @@ describe('core deadlines', () => {
  * its order (design 0009, amendment 3; design 0015, D5). Main asks for
  * protocol 2 (core-process.js), so a file without those rows (a core
  * before 0009's protocol 2, as 0.9.1) fails. An idle method's deadline is
- * written `"idle"`, apart from an immediate one's `null` (design 0015, D5).
+ * written `"idle"` (design 0015, D5) and a device-class one's `"device"`
+ * (design 0016, D7), apart from an immediate one's `null`.
  */
 function checkSchema(schema) {
   const classOf = {
@@ -199,6 +243,7 @@ function checkSchema(schema) {
     [HEAD_DEADLINE_MS]: 'head',
     [SWARM_DEADLINE_MS]: 'swarm',
     idle: 'idle',
+    device: 'device',
   };
   const theirs = schema.methods.map((m) => [m.name, classOf[m.deadline_ms] ?? m.deadline_ms]);
   expect(Object.entries(METHOD_CLASSES)).toEqual(theirs);
@@ -215,6 +260,7 @@ const DEADLINE_OF = {
   head: HEAD_DEADLINE_MS,
   swarm: SWARM_DEADLINE_MS,
   idle: 'idle',
+  device: 'device',
 };
 
 /** Main's table as the core writes it: the protocol-2 rows marked. */
@@ -307,6 +353,34 @@ describe("the check against the core's file", () => {
           ...methods[at(methods, 'dweb.forget')],
           name: 'dweb.pin',
         }),
+    ];
+    for (const edit of fails) expect(() => checkSchema(edited(edit))).toThrow();
+  });
+
+  test('0016\'s rows: sign.*, ledger.* and x402.settle written "device", and the Safe rows each in its class', () => {
+    const written = schemaOf();
+    expect(written.methods.filter((m) => m.deadline_ms === 'device').map((m) => m.name)).toEqual([
+      'sign.transaction',
+      'sign.message',
+      'sign.typed_data',
+      'ledger.accounts',
+      'ledger.add',
+      'x402.settle',
+    ]);
+    const fails = [
+      // A device-class row written as an immediate one's, or as an idle
+      // one's; an immediate row written as a device-class one's.
+      (methods) => (methods[at(methods, 'sign.message')].deadline_ms = null),
+      (methods) => (methods[at(methods, 'x402.settle')].deadline_ms = null),
+      (methods) => (methods[at(methods, 'ledger.add')].deadline_ms = 'idle'),
+      (methods) => (methods[at(methods, 'x402.authorize')].deadline_ms = 'device'),
+      // A Safe row in another class.
+      (methods) => (methods[at(methods, 'safe.create')].deadline_ms = SESSION_DEADLINE_MS),
+      (methods) => (methods[at(methods, 'safe.status')].deadline_ms = null),
+      (methods) => (methods[at(methods, 'safe.pending')].deadline_ms = 'device'),
+      // A row of 0.30.0's missing (a file before it, as 0.29.0's).
+      (methods) => methods.splice(at(methods, 'ledger.accounts'), 1),
+      (methods) => methods.splice(at(methods, 'safe.propose'), 1),
     ];
     for (const edit of fails) expect(() => checkSchema(edited(edit))).toThrow();
   });

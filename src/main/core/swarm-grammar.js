@@ -11,8 +11,8 @@
  *   they bind, the design's text). They ship here as JavaScript and aren't
  *   read from any file at runtime; `swarm-grammar.vectors.test.js` holds
  *   them, and every honest and forbidden scenario, to the pinned core's
- *   `vectors/swarm-grammar.json`. `FAILED` has `stopped`, as 0015 and the
- *   core's wire.rs have it, which the pinned file leaves out.
+ *   `vectors/swarm-grammar.json`. `FAILED` has `stopped`, as 0015, the
+ *   core's wire.rs and the file have it.
  * - **An `Admission` per parent** decides each call before any dial, from
  *   what main itself knows: the parent's row and the params main sent (a
  *   page's typed form read back with swarm-typed.js, or main's own JSON),
@@ -248,7 +248,7 @@ const ROWS = {
         count: [0, 2563],
         when: "the root's size n is over 4,096 bytes (at most n ≤ B)",
         binds:
-          "bytes at most once: <a> = params.reference, range: bytes=0-<n − 1>, max_bytes = n; every later chunk with tree { length, depth }, an unfetched occurrence of a data child of an intermediate main returned (0009's geometry); chunk at most 2 + 2⌈B / 4,096⌉ = 2,562 in all, 8 open at once",
+          "bytes at most once: <a> = params.reference, range: bytes=0-<n − 1>, max_bytes = n; every later chunk with tree { length, depth }, an unfetched occurrence of a data child of an intermediate main returned (0009's geometry); chunk at most 2 + 2⌈B / 4,096⌉ = 2,562 after the root, 8 open at once",
       },
     ],
   },

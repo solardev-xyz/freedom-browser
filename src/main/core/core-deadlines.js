@@ -11,7 +11,10 @@
  * - head: `dweb.verify`'s time to the head, 360 s (design 0009, Bounds);
  * - swarm: 300 s, or the caller's shorter `deadline_ms` (design 0015, D5);
  * - idle: no total deadline, only idle bounds: the request runs for as long
- *   as its streams and asks make progress (design 0015, D5 and D13).
+ *   as its streams and asks make progress (design 0015, D5 and D13);
+ * - device: a request that may drive a Ledger, with no total deadline: each
+ *   APDU has its own, which its `shell.ledger_apdu` carries (design 0016,
+ *   D7, "The device lane").
  *
  * The core enforces its deadlines and always replies. Main runs only a hang
  * watchdog on every request: the core's deadline + 15 s, or 15 s for an
@@ -20,9 +23,14 @@
  * callers then reconcile (service-client.js, vault-backend.js). An idle
  * method has no total deadline, only the core's idle bounds (design 0015,
  * D13), so it has no total watchdog: its watchdog follows its progress
- * instead (`idleWatchdogMs`). The table is kept whole, but `core.hello`
- * and `core.shutdown` are the client's own: its 10 s handshake timeout and
- * 3 s shutdown grace bound them instead.
+ * instead (`idleWatchdogMs`). A device-class method's watchdog depends
+ * on whether its request drives the device (design 0016, D7): one that
+ * doesn't, a vault key's `sign.*` and x402's settle by outcome or by
+ * signature, keeps the immediate 15 s, and the one that does needs the
+ * lane's watchdog, which LDG-3 adds. Until then main sends only the first
+ * kind. The table is kept whole, but `core.hello` and `core.shutdown` are
+ * the client's own: its 10 s handshake timeout and 3 s shutdown grace
+ * bound them instead.
  *
  * Main's copy, checked against the core's file when it is found
  * (core-deadlines.test.js). It holds the rows the file marks
@@ -54,6 +62,7 @@ const SESSION = 'session';
 const HEAD = 'head';
 const SWARM = 'swarm';
 const IDLE = 'idle';
+const DEVICE = 'device';
 
 /** Every method the core serves, by class, in the core's table order. */
 const METHOD_CLASSES = Object.freeze({
@@ -109,9 +118,19 @@ const METHOD_CLASSES = Object.freeze({
   'keys.validate_mnemonic': IMMEDIATE,
   'keys.addresses': IMMEDIATE,
   'keys.radicle_did': IMMEDIATE,
-  'sign.transaction': IMMEDIATE,
-  'sign.message': IMMEDIATE,
-  'sign.typed_data': IMMEDIATE,
+  // cored-v0.30.0 (design 0016, LDG-2, D7): a `sign.*` request may drive
+  // a Ledger (`key: { kind: 'ledger', index }`), so the rows take the
+  // `device` class. Until LDG-3 main signs only with the vault's keys,
+  // whose requests keep the immediate 15 s (`watchdogMs`).
+  'sign.transaction': DEVICE,
+  'sign.message': DEVICE,
+  'sign.typed_data': DEVICE,
+  // cored-v0.30.0 (design 0016, LDG-2's L3): a Ledger's discovery and the
+  // adding of one of its accounts, each on the device lane, the chrome's
+  // and main's, writing `vault-meta.json` once `vault_meta` is moved. Main
+  // sends neither yet (LDG-3).
+  'ledger.accounts': DEVICE,
+  'ledger.add': DEVICE,
   // A page's SOC and main's own; the chrome's is refused at the table from
   // cored-v0.29.0 (design 0015's amendment to 0002), and the row goes at
   // SWM-9.
@@ -157,7 +176,11 @@ const METHOD_CLASSES = Object.freeze({
   'phone.sent': IMMEDIATE,
   'phone.result': SESSION,
   'x402.authorize': IMMEDIATE,
-  'x402.settle': IMMEDIATE,
+  // cored-v0.30.0 (design 0016, LDG-2's L5): a settle may sign on a Ledger
+  // (`{ reservation, typed_data }`), so it takes the `device` class. Until
+  // LDG-3 main settles only by outcome or with a device's signature, whose
+  // requests keep the immediate 15 s.
+  'x402.settle': DEVICE,
   // cored-v0.19.0 (freedom-core #393): the narrowing of an x402 cap, from
   // the chrome and main (`shell`). Main sends it from X402-2b.
   'x402.update': IMMEDIATE,
@@ -168,6 +191,23 @@ const METHOD_CLASSES = Object.freeze({
   'safe_pending.set': IMMEDIATE,
   'safe_pending.clear': IMMEDIATE,
   'safe_pending.list': IMMEDIATE,
+  // cored-v0.30.0 (design 0016, SAFE-2's S2 and S3): a Safe in the core.
+  // `safe.create` writes its record on the vault queue; `safe.status`,
+  // `safe.deploy` and `safe.deployed` read the chain (the `session` class)
+  // and may mark the record verified or deployed; `safe.pending` and
+  // `safe.discard` are the pending board's, answered at once. All are the
+  // chrome's and main's but `safe.deployed`, main's alone after its
+  // receipt. `safe.prepare` and `safe.propose` build and propose a Safe
+  // transaction from the chain's reads (`session`), a page's, the chrome's
+  // and main's. Main sends none of them yet (SAFE-3).
+  'safe.create': VAULT,
+  'safe.status': SESSION,
+  'safe.deploy': SESSION,
+  'safe.deployed': SESSION,
+  'safe.pending': IMMEDIATE,
+  'safe.discard': IMMEDIATE,
+  'safe.prepare': SESSION,
+  'safe.propose': SESSION,
   'payments.append': IMMEDIATE,
   'payments.update': IMMEDIATE,
   'payments.mark_confirmed': IMMEDIATE,
@@ -294,6 +334,10 @@ function idleWatchdogMs(method, after = 'progress') {
   return bounds[after];
 }
 
+/** The device-class methods whose every request drives the device (design
+ * 0016, D7): main has no form of them that keeps the immediate watchdog. */
+const DEVICE_ONLY = Object.freeze(['ledger.accounts', 'ledger.add']);
+
 /** `longest`, or the caller's own `deadline_ms` where it is shorter. */
 function ownDeadline(deadlineMs, longest) {
   const own = Number.isSafeInteger(deadlineMs) && deadlineMs >= 0;
@@ -308,6 +352,14 @@ function ownDeadline(deadlineMs, longest) {
  * only design 0015's D13 bounds by progress, so it has no total watchdog:
  * asking for one throws. Its watchdog follows its progress
  * (`idleWatchdogMs`), and the client refuses to send it without that.
+ *
+ * A device-class method (design 0016, D7) gets the immediate 15 s, the
+ * watchdog of a request that doesn't drive the device: the only form main
+ * sends until LDG-3 (its own keys' `sign.*`, x402's settle by outcome or
+ * by signature). A `ledger.*` request always drives it, and needs the
+ * lane's watchdog, 5 minutes and 15 s until its first `shell.ledger_apdu`
+ * and then each APDU's own, which LDG-3 adds: until then asking for its
+ * watchdog throws, so none goes out under 15 s.
  * @param {string} method
  * @param {number} [deadlineMs] - a session or Swarm request's own
  *   `deadline_ms`
@@ -327,6 +379,13 @@ function watchdogMs(method, deadlineMs) {
       throw new Error(
         `${method} is an idle method: its watchdog follows its progress (idleWatchdogMs, design 0015, D13)`
       );
+    case DEVICE:
+      if (DEVICE_ONLY.includes(method)) {
+        throw new Error(
+          `${method} drives the device: main sends none before LDG-3's device watchdog (design 0016, D7)`
+        );
+      }
+      return IMMEDIATE_WATCHDOG_MS;
     default:
       return IMMEDIATE_WATCHDOG_MS;
   }
@@ -344,6 +403,7 @@ module.exports = {
   METHOD_CLASSES,
   PROTOCOL_2_METHODS,
   IDLE_WATCHDOGS,
+  DEVICE_ONLY,
   isIdleMethod,
   idleWatchdogMs,
   watchdogMs,

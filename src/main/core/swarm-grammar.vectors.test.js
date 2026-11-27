@@ -7,13 +7,13 @@
  * - the forms, the rows, their values and bounds are the file's, as main
  *   ships them (design 0015's SWM-5 plan, point 1: JavaScript, checked
  *   here, never loaded at runtime);
- * - `failed` is the file's set and `stopped`, the one difference in the
- *   tables, named below (plan point 7: 0015 and the core's wire.rs have
- *   it; the pinned file leaves it out, and the core's vectors are fixed);
+ * - `failed` is the file's set, `stopped` included (plan point 7: 0015, the
+ *   core's wire.rs and, from cored-v0.30.0's commit, the file);
  * - every honest scenario is admitted call by call, every forbidden one
  *   refused at its last call by its rule, all of them, not a sample;
- * - three scenarios of main's own rows are named below where the file
- *   contradicts itself or the design, each held to what main does;
+ * - main's own rows' params are the file's, whole, and a part they name
+ *   (`{ part: k }`) is streamed, its bytes part k's in the scenario's
+ *   `parts`, never inlined;
  * - the head probe's runs, the next index, topics and identifiers are
  *   swarm.json's.
  *
@@ -23,6 +23,7 @@
  */
 
 const {
+  Admission,
   ERROR_REPLY,
   FAILED,
   FORMS,
@@ -37,12 +38,16 @@ const {
   rowFor,
   topicOf,
 } = require('./swarm-grammar');
-const { param } = require('./swarm-typed');
 const {
+  coreCall,
+  partBytes,
   playScenario,
+  replyOf,
   scenarioParams,
+  sha256,
   swarmVectors,
   swarmVectorsRequired,
+  uploadReferences,
 } = require('../../../test/helpers/swarm-vectors');
 
 const grammar = swarmVectors('swarm-grammar.json');
@@ -61,40 +66,6 @@ const files = { grammar, swarm, dwebVerify };
   }
 );
 
-/**
- * The file's scenarios that main can't play as written, each with why and
- * what main does instead. Each applies while the file still has the fault
- * (`applies`), so a fixed file runs the scenario with the rest.
- */
-const KNOWN = {
-  // The reference was called with name 'draft.md' and contentType
-  // 'text/markdown' (mainRows in the generator), but the scenario's params
-  // name neither, so the row binds `<n>` = data and text/plain.
-  'swarm.publish-data-batch-encrypt': {
-    list: 'honest',
-    applies: (s) =>
-      param(s.params, 'name') === undefined && param(s.params, 'content_type') === undefined,
-    refused: { at: 0, rule: 'value' },
-  },
-  // The reference was called with indexDocument 'x.txt', which the params
-  // leave out; with no index.html part the row binds no index document.
-  'swarm.publish-collection-batch-encrypt': {
-    list: 'honest',
-    applies: (s) => param(s.params, 'index_document') === undefined,
-    refused: { at: 0, rule: 'header' },
-  },
-  // "a /stamps when the parent named its batch": the /stamps itself is the
-  // call the row leaves out, so main refuses it, by the scenario's rule,
-  // at its first call rather than its last.
-  'swarm.publish-batch-and-stamps': {
-    list: 'forbidden',
-    applies: (s) => s.calls[0]?.form === 'stamps' && s.calls.length === 2,
-    refused: { at: 0, rule: 'order' },
-  },
-};
-
-const known = (list, s) => KNOWN[s.id]?.list === list && KNOWN[s.id].applies(s);
-
 describeIfVectors("main's grammar against vectors/swarm-grammar.json", () => {
   test("the forms, rows, values and reply bounds are the file's", () => {
     expect(FORMS).toStrictEqual(grammar.forms);
@@ -106,35 +77,28 @@ describeIfVectors("main's grammar against vectors/swarm-grammar.json", () => {
     expect(RULES).toStrictEqual(grammar.rules);
   });
 
-  test("failed is the file's set and stopped: the one known difference (0015 and wire.rs have stopped; the pinned file leaves it out)", () => {
-    if (grammar.failed.includes('stopped')) {
-      expect(FAILED).toStrictEqual(grammar.failed);
-      return;
-    }
-    expect(FAILED).toStrictEqual([...grammar.failed, 'stopped']);
+  test("failed is the file's set, stopped included (0015 and wire.rs have it)", () => {
+    expect(FAILED).toStrictEqual(grammar.failed);
+    expect(FAILED).toContain('stopped');
   });
 
   test('every honest scenario is admitted, call by call', () => {
     const refused = [];
     let played = 0;
     for (const s of grammar.honest) {
-      if (known('honest', s)) continue;
       const verdict = playScenario(s, files);
       if (verdict) refused.push({ id: s.id, row: s.row, ...verdict });
       played += 1;
     }
     expect(refused).toStrictEqual([]);
-    expect(played).toBe(
-      grammar.honest.length - Object.values(KNOWN).filter((k) => k.list === 'honest').length
-    );
-    expect(played).toBeGreaterThanOrEqual(370);
+    expect(played).toBe(grammar.honest.length);
+    expect(played).toBeGreaterThanOrEqual(372);
   });
 
   test('every forbidden scenario is refused at its last call, by its rule', () => {
     const wrong = [];
     let played = 0;
     for (const s of grammar.forbidden) {
-      if (known('forbidden', s)) continue;
       const verdict = playScenario(s, files);
       const want = { at: s.calls.length - 1, rule: s.rule };
       if (!verdict || verdict.at !== want.at || verdict.rule !== want.rule) {
@@ -143,21 +107,89 @@ describeIfVectors("main's grammar against vectors/swarm-grammar.json", () => {
       played += 1;
     }
     expect(wrong).toStrictEqual([]);
+    expect(played).toBe(grammar.forbidden.length);
     expect(played).toBeGreaterThanOrEqual(73);
+  });
+
+  test("main's own swarm.publish params are the file's, whole: pin, deferred, and each part's bytes or its part", () => {
+    const own = [...grammar.honest, ...grammar.forbidden].filter((s) =>
+      s.row.startsWith('swarm.publish:')
+    );
+    expect(own.length).toBeGreaterThan(0);
+    for (const s of own) {
+      const params = scenarioParams(s);
+      expect({ id: s.id, params }).toStrictEqual({ id: s.id, params: s.params });
+      expect({ id: s.id, pin: typeof params.pin, deferred: typeof params.deferred }).toStrictEqual({
+        id: s.id,
+        pin: 'boolean',
+        deferred: 'boolean',
+      });
+      for (const part of params.parts) {
+        const forms = ['base64', 'part'].filter((name) => Object.hasOwn(part, name));
+        // Exactly one: the bytes in the params, or the part that holds them.
+        expect({ id: s.id, forms: forms.length }).toStrictEqual({ id: s.id, forms: 1 });
+      }
+    }
+  });
+
+  // From cored-v0.30.0's commit the file names a picked file's bytes as a
+  // part (`{ bytes, part }`, beside the scenario's `parts`), which the
+  // core streams (`Piece::Part`) however short it is. The Admission takes
+  // it only as a stream of the part's length, so a play that inlined it
+  // would no longer pass.
+  test("a part main's params name is streamed: swarm.publish-file-default keeps { part: 0 } and its upload is { stream: 9 }", () => {
+    const named = [];
+    for (const s of [...grammar.honest, ...grammar.forbidden]) {
+      const params = scenarioParams(s);
+      for (const c of s.calls) {
+        const bytes = partBytes(s, params, c);
+        if (!bytes) continue;
+        named.push(s.id);
+        const part = params.parts[0];
+        expect(coreCall(c, params).body).toStrictEqual({ stream: part.bytes });
+        // Part k's bytes are the ones the node took.
+        expect(bytes.length).toBe(part.bytes);
+        expect(c.body.bytes).toBe(part.bytes);
+        if (c.body.base64 !== undefined) {
+          expect(bytes.toString('base64')).toBe(c.body.base64);
+        } else {
+          expect(sha256(bytes)).toBe(c.body.sha256);
+        }
+      }
+    }
+    expect(named).toStrictEqual(['swarm.publish-file-default']);
+
+    const s = grammar.honest.find((scenario) => scenario.id === 'swarm.publish-file-default');
+    const params = scenarioParams(s);
+    expect(params.parts).toStrictEqual([{ bytes: 9, part: 0 }]);
+    const at = s.calls.findIndex((c) => c.form === 'bzz_file');
+    expect(coreCall(s.calls[at], params).body).toStrictEqual({ stream: 9 });
+
+    // The same upload, its body inlined or another length: refused `body`.
+    const play = (body) => {
+      const admission = new Admission({ row: s.row, params, key: s.key ?? null });
+      if (s.ready) {
+        expect(admission.ready(s.ready.check)).toBeNull();
+        admission.readyAnswered(s.ready.ok);
+      }
+      const references = uploadReferences(s, grammar, swarm);
+      for (const [i, c] of s.calls.entries()) {
+        const call = coreCall(c, params);
+        if (i === at) call.body = body;
+        const verdict = admission.admit(call);
+        if (verdict.rule) return { at: i, rule: verdict.rule };
+        admission.settle(verdict.ticket, replyOf(c, dwebVerify.swarm.chunks, references));
+      }
+      return null;
+    };
+    expect(play({ stream: 9 })).toBeNull();
+    expect(play({ base64: s.calls[at].body.base64 })).toStrictEqual({ at, rule: 'body' });
+    expect(play({ stream: 10 })).toStrictEqual({ at, rule: 'body' });
   });
 
   test("every rule but ended is some forbidden scenario's", () => {
     const rules = new Set(grammar.forbidden.map((s) => s.rule));
     expect([...rules].sort()).toStrictEqual(RULES.filter((r) => r !== 'ended').sort());
-  });
-
-  test('the scenarios named in KNOWN: refused as main binds the rows', () => {
-    for (const [id, { list, refused }] of Object.entries(KNOWN)) {
-      const s = grammar[list].find((scenario) => scenario.id === id);
-      if (!s || !KNOWN[id].applies(s)) continue;
-      const verdict = playScenario(s, files);
-      expect({ id, at: verdict?.at, rule: verdict?.rule }).toStrictEqual({ id, ...refused });
-    }
   });
 
   test("each scenario's row is the one rowFor gives its method and params", () => {

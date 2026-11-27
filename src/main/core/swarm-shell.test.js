@@ -53,6 +53,7 @@ const { swarmBackendKind } = require('../swarm/swarm-backend-kind');
 const { antBackend } = require('../swarm/bzz-protocol');
 const {
   coreCall,
+  partBytes,
   playScenario,
   replyOf,
   scenarioParams,
@@ -1244,14 +1245,18 @@ function nodeAnswer(reply) {
  * answering each dial with the scenario's reply: `{ at, rule }` for the
  * first refusal, or null. Each admitted call is dialled exactly once, a
  * refused one never; a streamed upload sends one `swarm.body` for itself,
- * whose bytes (the core's: zeros here, of its head's length) the node
- * takes whole before it answers. `uploads` counts those played.
+ * whose bytes the node takes whole before it answers: a part's that the
+ * params name (`partBytes`, the scenario's `parts`), which the node must
+ * take byte for byte, else the core's (zeros here, of its head's length).
+ * `uploads` counts those played, and `parts` those of a named part.
  */
-async function playThroughShell(s, played = { uploads: 0 }) {
+async function playThroughShell(s, played = { uploads: 0, parts: 0 }) {
   const params = scenarioParams(s);
   const references = uploadReferences(s, grammar, swarmFile);
   let pending = null;
   let streamed = 0;
+  let source = null;
+  let took = null;
   const node = scriptedNode((init) => {
     if (init.path === '/node') {
       return new Response(s.ready?.ok ? '{}' : '', { status: s.ready?.ok ? 200 : 503 });
@@ -1259,13 +1264,25 @@ async function playThroughShell(s, played = { uploads: 0 }) {
     const reply = pending;
     pending = null;
     if (typeof init.body?.getReader !== 'function') return nodeAnswer(reply);
+    if (source) {
+      return new Response(init.body).arrayBuffer().then((bytes) => {
+        took = Buffer.from(bytes);
+        streamed = took.length;
+        return nodeAnswer(reply);
+      });
+    }
     return drainBody(init.body).then((bytes) => {
       streamed = bytes;
       return nodeAnswer(reply);
     });
   });
   let length = 0;
-  const client = bodyClient({ answer: () => ({ result: { bytes: length }, body: zeros(length) }) });
+  const client = bodyClient({
+    answer: () => ({
+      result: { bytes: length },
+      body: source ? new Response(source).body : zeros(length),
+    }),
+  });
   const shell = makeShell({
     client,
     nodeUrl: () => node.backend.url,
@@ -1296,6 +1313,8 @@ async function playThroughShell(s, played = { uploads: 0 }) {
     const asked = client.bodies.length;
     const upload = call.body?.stream !== undefined;
     length = upload ? call.body.stream : 0;
+    source = partBytes(s, params, c);
+    took = null;
     const ctx = context();
     const out = await outcome(shell.api({ for: id, ...call }, ctx));
     if (out.rule) {
@@ -1313,6 +1332,10 @@ async function playThroughShell(s, played = { uploads: 0 }) {
       expect(streamed).toBe(call.body.stream);
       played.uploads += 1;
     }
+    if (source) {
+      expect(took).toEqual(source);
+      played.parts += 1;
+    }
   }
   return null;
 }
@@ -1327,7 +1350,7 @@ describeIfVectors('every scenario of vectors/swarm-grammar.json through the shel
   async function compare(list) {
     const wrong = [];
     let played = 0;
-    const counts = { uploads: 0 };
+    const counts = { uploads: 0, parts: 0 };
     for (const s of grammar[list]) {
       const expected = playScenario(s, vectorFiles);
       const got = await playThroughShell(s, counts);
@@ -1335,17 +1358,20 @@ describeIfVectors('every scenario of vectors/swarm-grammar.json through the shel
       const want = expected && { at: expected.at, rule: expected.rule };
       if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push({ id: s.id, want, got });
     }
-    return { wrong, played, uploads: counts.uploads };
+    return { wrong, played, uploads: counts.uploads, parts: counts.parts };
   }
 
   test("every honest scenario: the Admission's verdict, call by call, each admitted call dialled once", async () => {
-    const { wrong, played, uploads } = await compare('honest');
+    const { wrong, played, uploads, parts } = await compare('honest');
     expect(wrong).toEqual([]);
     expect(played).toBe(grammar.honest.length);
     expect(played).toBeGreaterThanOrEqual(370);
     // The streamed uploads among them (publishData's 10 MiB, publishFiles'
     // tars up to 50 MiB, writeFeedEntry's bytes_up), each piped whole.
     expect(uploads).toBeGreaterThanOrEqual(5);
+    // Main's own picked file, a part its params name (from cored-v0.30.0's
+    // vectors): streamed, its bytes the part's, byte for byte.
+    expect(parts).toBe(1);
   });
 
   test('every forbidden scenario: refused where the Admission refuses it, by its rule, undialled', async () => {
