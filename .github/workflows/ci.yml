@@ -1002,10 +1002,11 @@ jobs:
       # anvil comes from foundry's own release tarball, checked against a sha256
       # recorded here (re-derived from upstream's `foundry_v1.8.3_linux_amd64.sha256`
       # asset, not trusted from it at run time). The fork itself still reads
-      # https://rpc.gnosischain.com, a public endpoint this job cannot pin; the
-      # harness project's CI retries absorb a blip, and
-      # FREEDOM_SAFE_E2E_REQUIRED=1 turns an outage into a failure rather than a
-      # green skip. `safe-phone.spec.js` stays on the not-in-CI list for #452.
+      # public Gnosis RPCs this job cannot pin; it reads them through a local
+      # proxy that moves a stalled or failed read on to another provider
+      # (test-e2e/gnosis-fork.js, #536), and attaches anvil-fork.log to a failed
+      # test. FREEDOM_SAFE_E2E_REQUIRED=1 turns an outage of every provider into
+      # a failure rather than a green skip. `safe-phone.spec.js` stays on the not-in-CI list for #452.
       #
       # The fixtures read Gnosis from the fork only (a proof source verifies the
       # live chain), so the specs no longer pass through Colibri on chain 100; the
