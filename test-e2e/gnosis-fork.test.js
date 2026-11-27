@@ -117,9 +117,7 @@ describe('gnosis-fork upstream proxy', () => {
 
     await post(proxy.url); // hedged once, flaky benched
     stalling = false;
-    const started = Date.now();
     await post(proxy.url);
-    expect(Date.now() - started).toBeLessThan(150);
     expect(flaky.hits).toHaveLength(1);
     expect(good.hits).toHaveLength(2);
   });

@@ -60,9 +60,11 @@ const ERC20 = new Interface(['function balanceOf(address) view returns (uint256)
 // on. rpc.gnosis.gateway.fm is left out: it runs on the same Tenderly backend
 // as rpc.gnosischain.com (docs/ant-chain-bridge.md, and its x-tdly-* headers).
 //
-// FREEDOM_SAFE_E2E_FORK_UPSTREAMS (comma-separated URLs) replaces the list,
-// e.g. to put a fault-injecting proxy in front of one provider and replay
-// the failover.
+// FREEDOM_SAFE_E2E_FORK_UPSTREAMS (comma-separated URLs) replaces the list
+// and fixes the order (no fastest-first sort), e.g. to put a fault-injecting
+// proxy in front of the provider every read goes to first and replay the
+// failover.
+const FIXED_ORDER = Boolean(process.env.FREEDOM_SAFE_E2E_FORK_UPSTREAMS);
 const GNOSIS_FORK_UPSTREAMS = process.env.FREEDOM_SAFE_E2E_FORK_UPSTREAMS
   ? process.env.FREEDOM_SAFE_E2E_FORK_UPSTREAMS.split(',')
       .map((url) => url.trim())
@@ -129,9 +131,10 @@ function reachableGnosisUpstreams(urls = GNOSIS_FORK_UPSTREAMS) {
         // not a JSON-RPC answer: unreachable for our purposes
       }
     }
+    if (!FIXED_ORDER) timed.sort((a, b) => a.ms - b.ms);
     reachableCache.set(
       key,
-      timed.sort((a, b) => a.ms - b.ms).map(({ url }) => url)
+      timed.map(({ url }) => url)
     );
   }
   return reachableCache.get(key);
@@ -339,6 +342,17 @@ function jsonRpc(url) {
   };
 }
 
+// Every anvil this process started and hasn't seen exit. A fixture set-up
+// that times out (Playwright's 30 s) never reaches its teardown, and the
+// worker then exits; an anvil left behind would keep the fixed port while
+// its upstream proxy, which lived in the worker, is gone, so every retry's
+// anvil would exit with "Address already in use". Checked 2026-11-27: a
+// process exiting without stop() left anvil listening.
+const liveForks = new Set();
+process.once('exit', () => {
+  for (const proc of liveForks) proc.kill('SIGKILL');
+});
+
 /** Resolve once `proc` has exited (SIGKILL if SIGTERM isn't enough). */
 function stopProcess(proc) {
   if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
@@ -391,6 +405,8 @@ async function startGnosisFork({ port, upstreams = reachableGnosisUpstreams(), l
     ],
     { stdio: ['ignore', logFd, logFd] }
   );
+  liveForks.add(proc);
+  proc.once('exit', () => liveForks.delete(proc));
   const stop = async () => {
     await stopProcess(proc);
     await upstream.close();
