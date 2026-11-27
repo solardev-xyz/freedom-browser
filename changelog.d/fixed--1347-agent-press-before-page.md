@@ -1,0 +1,1 @@
+- Agent no longer reads a page from before its own key press or click landed, which could make it retry an action the page had already taken ([#1347](https://github.com/solardev-xyz/freedom-browser/issues/1347))

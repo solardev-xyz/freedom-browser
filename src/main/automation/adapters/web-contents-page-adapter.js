@@ -28,6 +28,10 @@ const SCROLL_SETTLE_LIMIT_MS = 2_500;
 const SCROLL_RESEND_MIN_SETTLE_MS = 1_000;
 // Kept free of a frame action's connection budget for the checks around the wheel.
 const FRAME_SCROLL_BUDGET_MARGIN_MS = 750;
+// How long a trusted key press or click waits for its last event to reach the
+// page before it reports, and how often it looks. See inputProbe.
+const INPUT_DELIVERY_LIMIT_MS = 2_000;
+const INPUT_DELIVERY_POLL_MS = 15;
 
 // Polls the scroll position after a wheel until it has moved and then stayed
 // still for SCROLL_SETTLE_QUIET_MS, or SCROLL_SETTLE_LIMIT_MS have passed.
@@ -159,6 +163,66 @@ function wheelProbe(ref, action) {
   };
   try {
     target.addEventListener('wheel', probe.listener, { capture: true, passive: true });
+  } catch {
+    return { ok: false, reason: 'changed' };
+  }
+  globalThis[key] = probe;
+  return { ok: true };
+}
+
+// Runs in the automation world. Records which trusted input event types reach
+// the reference's document, from a passive capture-phase listener that never
+// delays or blocks them.
+//
+// webContents.sendInputEvent() only queues the input: it returns before the
+// renderer has dispatched it, and the later executeJavaScript of the next
+// observation travels on a different channel, so it can run first. On the
+// macOS CI runner a browser_press of Enter reported ok and the snapshot right
+// after it still read the page before the keydown handler ran, while a
+// screenshot 10 ms later showed it had (issue #1347, run 45992071348). So a
+// trusted press or click arms this probe before sending, then polls until the
+// last event of the gesture (keyup, mouseup) has been dispatched. Any page
+// handler for the earlier events has run by then, because Blink dispatches a
+// gesture's events in order on the page's main thread.
+function inputProbe(ref, action, types) {
+  const key = '__FREEDOM_AUTOMATION_INPUT_PROBE__';
+  const current = globalThis[key];
+  const reference = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__?.refs?.get(ref);
+  if (action === 'read') {
+    if (!current) return { ok: false, reason: 'changed' };
+    const element = reference?.element;
+    let focused = false;
+    try {
+      focused = Boolean(element?.isConnected) && element.getRootNode().activeElement === element;
+    } catch {
+      /* The referenced document may already be gone. */
+    }
+    return { ok: true, seen: [...current.seen], focused };
+  }
+  if (current) {
+    for (const type of current.types) {
+      try {
+        current.target.removeEventListener(type, current.listener, true);
+      } catch {
+        /* The probed document may already be gone. */
+      }
+    }
+    delete globalThis[key];
+  }
+  if (action !== 'arm') return { ok: true };
+  const target = reference?.frameWindow;
+  if (!target) return { ok: false, reason: 'changed' };
+  const probe = {
+    target,
+    types,
+    seen: new Set(),
+    listener: (event) => {
+      if (event.isTrusted) probe.seen.add(event.type);
+    },
+  };
+  try {
+    for (const type of types)
+      target.addEventListener(type, probe.listener, { capture: true, passive: true });
   } catch {
     return { ok: false, reason: 'changed' };
   }
@@ -1950,8 +2014,10 @@ class WebContentsPageAdapter extends EventEmitter {
       y: confirmed.point.y,
       button: 'left',
     };
-    this.webContents.sendInputEvent({ type: 'mouseDown', ...confirmedPointer, clickCount: 1 });
-    this.webContents.sendInputEvent({ type: 'mouseUp', ...confirmedPointer, clickCount: 1 });
+    await this.#deliverInput(ref, ['mousedown', 'mouseup'], () => {
+      this.webContents.sendInputEvent({ type: 'mouseDown', ...confirmedPointer, clickCount: 1 });
+      this.webContents.sendInputEvent({ type: 'mouseUp', ...confirmedPointer, clickCount: 1 });
+    });
     return { clicked: true, ref };
   }
 
@@ -2043,7 +2109,7 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#requireReference(ref);
     this.#requireTrustedKeyInput();
     await this.#confirmFocusedReference(ref);
-    this.#sendKey(key);
+    await this.#deliverInput(ref, ['keydown', 'keyup'], () => this.#sendKey(key));
     return { pressed: true, ref, key };
   }
 
@@ -2254,6 +2320,59 @@ class WebContentsPageAdapter extends EventEmitter {
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
         'Trusted keyboard input is unavailable for this page'
       );
+    }
+  }
+
+  // Sends a trusted gesture and waits, up to INPUT_DELIVERY_LIMIT_MS, until its
+  // last event (`types[1]`) has reached the reference's document, so the next
+  // observation sees what the page did with it (see inputProbe).
+  //
+  // Never throws once the input is sent: an error would invite a retry that
+  // delivers the gesture twice. Waiting stops early, without a verdict, when
+  // the document navigates (Enter submitting a form), a dialog opens or the
+  // probe cannot be read, and for a key when its keydown moved focus off the
+  // reference (Tab, a handler focusing elsewhere), since the keyup then goes
+  // to whatever has focus now, possibly in another frame. Remaining limit: a
+  // page listener registered earlier on the same window that calls
+  // stopImmediatePropagation() hides the event, so the call waits the full
+  // limit; the input itself is unaffected.
+  //
+  // Deadlines use the monotonic clock: a wall-clock step backwards would
+  // otherwise stretch the wait by the size of the step.
+  async #deliverInput(ref, types, send) {
+    const navigationId = this.navigationId;
+    const probe = (action, deadline) => {
+      let timer;
+      return Promise.race([
+        this.#execute(inputProbe, [ref, action, types], false),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, deadline - performance.now()), null);
+        }),
+      ]).finally(() => clearTimeout(timer));
+    };
+    const armed = await probe('arm', performance.now() + INPUT_DELIVERY_LIMIT_MS).then(
+      (result) => result?.ok === true,
+      () => false
+    );
+    send();
+    if (!armed) return;
+    const deadline = performance.now() + INPUT_DELIVERY_LIMIT_MS;
+    try {
+      while (performance.now() < deadline) {
+        if (this.destroyed || this.navigationInProgress || navigationId !== this.navigationId)
+          return;
+        const state = await probe('read', deadline);
+        if (state?.ok !== true || !Array.isArray(state.seen)) return;
+        if (state.seen.includes(types[1])) return;
+        if (types[0] === 'keydown' && state.seen.includes('keydown') && !state.focused) return;
+        await new Promise((resolve) => setTimeout(resolve, INPUT_DELIVERY_POLL_MS));
+      }
+    } catch {
+      // A dialog opened or the document went away: the input was sent.
+    } finally {
+      await Promise.resolve()
+        .then(() => probe('disarm', performance.now() + INPUT_DELIVERY_LIMIT_MS))
+        .catch(() => {});
     }
   }
 
