@@ -16,6 +16,11 @@
  *   its errno;
  * - **the pool and what main holds:** an upload's charges, released once
  *   its call and its parts are over, and no copy of a part or of the body;
+ * - **the part room:** an upload's parts hold it one at a time, in the
+ *   order asked, a waiting one with nothing opened; once the call is
+ *   answered (the node's answer or error, a body fault, the core's cancel,
+ *   the parent's end), the part holding it and any waiting one end without
+ *   the core's cancel, and the room goes back;
  * - **through a real CoreClient** against a scripted core
  *   (test/helpers/fake-swarm-core.js) and over real loopback HTTP: uploads
  *   sent chunked as the node takes them, a node that stops reading holding
@@ -42,7 +47,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { ShellError, StreamedReply } = require('./core-client');
-const { CORE_UPLOAD_ABORT_CODES, KIND_ABORT, KIND_STREAM_CREDIT, WINDOW } = require('./frame');
+const {
+  CORE_UPLOAD_ABORT_CODES,
+  KIND_ABORT,
+  KIND_END,
+  KIND_STREAM_CREDIT,
+  WINDOW,
+  encodeData,
+} = require('./frame');
 const { SwarmShell, BODY_PROGRESS_MS, STREAM_CHARGE, wholeCharge } = require('./swarm-shell');
 const { SwarmIoPool } = require('./swarm-io-pool');
 const { SwarmData } = require('./swarm-typed');
@@ -364,6 +376,28 @@ function pickedFile(name, bytes) {
   const file = path.join(tmp, name);
   fs.writeFileSync(file, bytes);
   return { file, source: { path: file, bytes: bytes.length } };
+}
+
+/** `openFile` for the shell, counting the handles open at once. */
+function countedFiles() {
+  const files = { opened: [], open: 0, most: 0 };
+  files.openFile = async (file) => {
+    const handle = await fs.promises.open(file, 'r');
+    files.opened.push(file);
+    files.open += 1;
+    files.most = Math.max(files.most, files.open);
+    const close = handle.close.bind(handle);
+    let closed = false;
+    handle.close = async () => {
+      if (!closed) {
+        closed = true;
+        files.open -= 1;
+      }
+      return close();
+    };
+    return handle;
+  };
+  return files;
 }
 
 describe('shell.swarm_part: the part rules (point 5), each refused before anything is read', () => {
@@ -868,6 +902,226 @@ describe('shell.swarm_part: a part as its stream', () => {
   });
 });
 
+describe("an upload's part room: its parts hold it one at a time, in the order asked", () => {
+  let nextFile = 0;
+
+  /** A publishFiles parent of picked files of `sizes`, its tar upload open. */
+  async function pickedUpload(shell, pool, sizes, capture = {}) {
+    const picked = sizes.map((n, i) => pickedFile(`room-${nextFile++}.bin`, patterned(n, 50 + i)));
+    const params = {
+      files: sizes.map((size, i) => ({ path: `f${i}.bin`, bytes: partData(i, size) })),
+    };
+    const p = parent(shell, 'publishFiles', params, {
+      parts: new Map(picked.map((f, i) => [i, f.source])),
+      ...capture,
+    });
+    await p.ready('publish');
+    await p.api(calls.stamps());
+    const ctx = context({ pool });
+    const upload = p.api(calls.bzzTar({ stream: 4096 }), ctx);
+    await waitFor(() => shell.stats().uploads === 1, 'the upload open');
+    return { p, picked, ctx, upload };
+  }
+
+  /** The core asks part `n`: `settled` holds its outcome once it has one. */
+  function ask(p, n, pool) {
+    const asked = { ctx: context({ pool }), settled: null };
+    asked.promise = p.part(n, asked.ctx).then((out) => {
+      asked.settled = out;
+      return out;
+    });
+    return asked;
+  }
+
+  /** A part's stream, read as the client reads a byte stream, its failure
+   * watched. */
+  function watchFailure(body) {
+    const reader = body.getReader({ mode: 'byob' });
+    const watched = { reader, failure: null };
+    reader.closed.catch((err) => {
+      watched.failure = err;
+    });
+    return watched;
+  }
+
+  test('distinct parts asked before the first one ends wait, opening nothing, then stream one after another: one part room in the pool, one file open at a time', async () => {
+    const pool = new SwarmIoPool();
+    const files = countedFiles();
+    const shell = makeShell({ pool, openFile: files.openFile });
+    const sizes = [200 * KIB, 100 * KIB, 50 * KIB];
+    const { p, picked, ctx, upload } = await pickedUpload(shell, pool, sizes);
+    const reserved = REPLY_ROOM + 2 * STREAM_CHARGE;
+    expect(pool.held).toBe(reserved);
+    pool.highWater = pool.held;
+    // A core that asks all three before the first one ends.
+    const asks = [0, 1, 2].map((n) => ask(p, n, pool));
+    for (const [n, asked] of asks.entries()) {
+      await waitFor(() => asked.settled, `part ${n}'s head`);
+      expect(asked.settled.result).toBeInstanceOf(StreamedReply);
+      expect(asked.settled.result.result).toEqual({ bytes: sizes[n] });
+      // The parts after it wait, with nothing opened for them.
+      await sleep(20);
+      expect(asks.slice(n + 1).map((a) => a.settled)).toEqual(asks.slice(n + 1).map(() => null));
+      expect(files.opened).toEqual(picked.slice(0, n + 1).map((f) => f.file));
+      expect(shell.stats().parts).toBe(3 - n);
+      const read = await readByob(asked.settled.result.body);
+      expect(read.error).toBeNull();
+      expect(read.bytes).toEqual(fs.readFileSync(picked[n].file));
+      // Its end written: the client lets go of its lease.
+      asked.ctx.release();
+    }
+    expect(files.most).toBe(1);
+    expect(files.open).toBe(0);
+    expect(pool.highWater).toBe(reserved);
+    expect(shell.stats().parts).toBe(0);
+    p.handle.close();
+    expect(await upload).toEqual({ result: { failed: 'aborted' } });
+    ctx.release();
+    expect(pool.held).toBe(0);
+  });
+
+  test.each([
+    [
+      'a node error',
+      { node: () => scriptedNode(() => Promise.reject(new TypeError('fetch failed'))) },
+      async ({ shell }) => shell.client.bodies[0].respond({ bytes: 4096 }, new ReadableStream()),
+      { failed: 'error' },
+    ],
+    [
+      'a body fault (a head of another length)',
+      {},
+      async ({ shell }) => shell.client.bodies[0].respond({ bytes: 4097 }, new ReadableStream()),
+      { failed: 'error' },
+    ],
+    [
+      "the core's cancel of the call",
+      {},
+      async ({ ctx }) => ctx.controller.abort(),
+      { failed: 'aborted' },
+    ],
+    ["the parent's end", {}, async ({ p }) => p.handle.close(), { failed: 'aborted' }],
+  ])(
+    '%s: once the call is answered, the part holding the room fails body_stream_error and the one waiting opens nothing, neither cancelled by the core; the room goes with the last',
+    async (label, setup, end, answer) => {
+      const pool = new SwarmIoPool();
+      const files = countedFiles();
+      const shell = makeShell({ pool, openFile: files.openFile });
+      const node = setup.node ? setup.node() : takingNode();
+      const sizes = [300 * KIB, 100 * KIB];
+      const up = await pickedUpload(shell, pool, sizes, { node });
+      const [first, second] = [0, 1].map((n) => ask(up.p, n, pool));
+      await waitFor(() => first.settled, 'the first head');
+      const holding = watchFailure(first.settled.result.body);
+      // Some of the first part read: its file open, the second waiting.
+      expect((await holding.reader.read(new Uint8Array(64 * KIB))).done).toBe(false);
+      expect(files.open).toBe(1);
+      expect(second.settled).toBeNull();
+
+      await end({ shell, ctx: up.ctx, p: up.p });
+      expect(await up.upload).toEqual({ result: answer });
+      if (label !== "the parent's end") {
+        // Until the call's answer is written, neither part ends: the core
+        // reads the call's failure first, not a part's.
+        await sleep(20);
+        expect(holding.failure).toBeNull();
+        expect(second.settled).toBeNull();
+      }
+      // The call's answer written.
+      up.ctx.release();
+      await waitFor(() => holding.failure && second.settled, 'both parts ended');
+      expect(holding.failure).toMatchObject({ name: 'PartError' });
+      expect(holding.failure.errorCode).toBeUndefined();
+      await waitFor(() => files.open === 0, "the first part's file closed");
+      // The second never took the room: its head, then a failure naming
+      // no code, with nothing opened.
+      expect(second.settled.result.result).toEqual({ bytes: sizes[1] });
+      const read = await second.settled.result.body
+        .getReader()
+        .read()
+        .catch((err) => err);
+      expect(read).toMatchObject({ name: 'PartError' });
+      expect(read.errorCode).toBeUndefined();
+      expect(files.opened).toEqual([up.picked[0].file]);
+      // No cancel of either: their aborts written, the client lets go of
+      // their leases, and the room goes with the last.
+      expect(first.ctx.signal.aborted || second.ctx.signal.aborted).toBe(false);
+      expect(pool.held).toBe(STREAM_CHARGE);
+      second.ctx.release();
+      expect(pool.held).toBe(STREAM_CHARGE);
+      first.ctx.release();
+      expect(pool.held).toBe(0);
+      expect(shell.stats()).toMatchObject({ calls: 0, uploads: 0, parts: 0 });
+    }
+  );
+
+  test('once the call is over, a waiting part never takes the room, even when the one holding it ends before the call is answered', async () => {
+    const pool = new SwarmIoPool();
+    const files = countedFiles();
+    const shell = makeShell({ pool, openFile: files.openFile });
+    const node = scriptedNode(() => Promise.reject(new TypeError('fetch failed')));
+    const sizes = [100 * KIB, 50 * KIB];
+    const { p, picked, ctx, upload } = await pickedUpload(shell, pool, sizes, { node });
+    const [first, second] = [0, 1].map((n) => ask(p, n, pool));
+    await waitFor(() => first.settled, 'the first head');
+    shell.client.bodies[0].respond({ bytes: 4096 }, new ReadableStream());
+    expect(await upload).toEqual({ result: { failed: 'error' } });
+    // The first ends, its end written, before the call's answer is.
+    const read = await readByob(first.settled.result.body);
+    expect(read.bytes).toEqual(fs.readFileSync(picked[0].file));
+    first.ctx.release();
+    await sleep(20);
+    expect(second.settled).toBeNull();
+    expect(files.opened).toEqual([picked[0].file]);
+    // The call's answer written: the second fails, never opened.
+    ctx.release();
+    await waitFor(() => second.settled, 'the second settled');
+    const failed = await second.settled.result.body
+      .getReader()
+      .read()
+      .catch((err) => err);
+    expect(failed).toMatchObject({ name: 'PartError' });
+    expect(files.opened).toEqual([picked[0].file]);
+    second.ctx.release();
+    expect(pool.held).toBe(0);
+  });
+
+  test("the core's cancel of a part: one waiting leaves the line, opening nothing; the one holding the room passes it on only once its cancel is written", async () => {
+    const pool = new SwarmIoPool();
+    const files = countedFiles();
+    const shell = makeShell({ pool, openFile: files.openFile });
+    const sizes = [200 * KIB, 100 * KIB, 50 * KIB];
+    const { p, picked, ctx, upload } = await pickedUpload(shell, pool, sizes);
+    const asks = [0, 1, 2].map((n) => ask(p, n, pool));
+    await waitFor(() => asks[0].settled, 'the first head');
+    // The core cancels the second while it waits: it leaves the line (the
+    // client answers the cancel, and drops this outcome).
+    asks[1].ctx.controller.abort();
+    await waitFor(() => asks[1].settled, 'the cancelled part settled');
+    asks[1].ctx.release();
+    expect(files.opened).toEqual([picked[0].file]);
+    // The core cancels the first, holding the room: the client cancels its
+    // body at once, but the room passes on only once its cancel is written.
+    asks[0].ctx.controller.abort();
+    await asks[0].settled.result.body.cancel();
+    await sleep(20);
+    expect(asks[2].settled).toBeNull();
+    await waitFor(() => files.open === 0, "the first part's file closed");
+    asks[0].ctx.release();
+    // The third takes it, never the cancelled second.
+    await waitFor(() => asks[2].settled, 'the third head');
+    const read = await readByob(asks[2].settled.result.body);
+    expect(read.bytes).toEqual(fs.readFileSync(picked[2].file));
+    asks[2].ctx.release();
+    expect(files.opened).toEqual([picked[0].file, picked[2].file]);
+    expect(files.most).toBe(1);
+    p.handle.close();
+    expect(await upload).toEqual({ result: { failed: 'aborted' } });
+    ctx.release();
+    expect(pool.held).toBe(0);
+    expect(shell.stats()).toMatchObject({ calls: 0, uploads: 0, parts: 0 });
+  });
+});
+
 describe("what main holds of an upload: the pool's charges, and no copy of a part or of the body", () => {
   test('a held part and a picked part of 1 MiB each through one upload: no Buffer of more than 64 KiB is made, and the pool holds the reservations alone', async () => {
     const pool = new SwarmIoPool();
@@ -919,6 +1173,9 @@ describe("what main holds of an upload: the pool's charges, and no copy of a par
                   return;
                 }
                 read = null;
+                // Its end written: the client lets go of its lease, and the
+                // part room passes to the next part.
+                partCtxs.at(-1).release();
               }
               const piece = pieces.shift();
               if (piece === undefined) {
@@ -941,7 +1198,6 @@ describe("what main holds of an upload: the pool's charges, and no copy of a par
       shell.client.bodies[0].respond({ bytes: total }, body);
       out = await upload;
       ctx.release();
-      for (const partCtx of partCtxs) partCtx.release();
     } finally {
       allocations.restore();
     }
@@ -1340,8 +1596,12 @@ describe('through the core client, over loopback HTTP: streamed uploads', () => 
       },
       stop: () => stopped,
     });
-    // Mid-body: main has credited some of it.
-    await until(() => core().creditOf(body.id) > 0, "main's credit for the body");
+    // Mid-body: main has credited some of it, and the node has the
+    // upload's request.
+    await until(
+      () => core().creditOf(body.id) > 0 && nodes[0].uploads.length === 1,
+      "main's credit for the body, and the node's request"
+    );
     core().cancel(id);
     expect((await answered(id)).error).toEqual({ code: 'cancelled', message: 'Cancelled' });
     stopped = true;
@@ -1360,6 +1620,94 @@ describe('through the core client, over loopback HTTP: streamed uploads', () => 
     abortBody(core(), body.id, 'cancelled');
     if (ask !== null) core().cancel(ask);
     nodes[0].uploads[0].req.resume();
+    await settledAtZero();
+  });
+
+  test("parts the core asks at once hold the part room in turn: a part's head comes only once the last one's end is written; a node error then ends the part holding it and the one waiting, neither cancelled by the core", async () => {
+    let failNode = false;
+    await uploadNode({
+      answer: (req) => {
+        // The node fails the upload as its bytes come.
+        req.on('data', () => {
+          if (failNode) req.socket.destroy();
+        });
+      },
+    });
+    const files = countedFiles();
+    await start({ openFile: files.openFile });
+    const core = () => harness.core();
+    // The first two within one window, sent whole without credit; the third
+    // past it, so it holds the room.
+    const sizes = [100 * KIB, 60 * KIB, 300 * KIB, 50 * KIB];
+    const picked = sizes.map((n, i) => pickedFile(`wire-room-${i}.bin`, patterned(n, 70 + i)));
+    const params = {
+      files: sizes.map((size, i) => ({ path: `f${i}.bin`, bytes: partData(i, size) })),
+    };
+    const q = parentOf(harness.client, harness.shell, {
+      row: 'publishFiles',
+      params,
+      key: KEY,
+      backend: antBackend(),
+      parts: new Map(picked.map((f, i) => [i, f.source])),
+    });
+    await until(() => q.id !== null, 'the collection sent');
+    const ready = core().ready(q.id, 'publish');
+    await until(() => core().reply(ready), 'its ready answer');
+    const stamps = core().api(q.id, calls.stamps());
+    await until(() => core().reply(stamps), 'its stamps');
+    await until(() => pool.held === 0, "the stamps' reply written");
+    pool.highWater = 0;
+    const total = sizes.reduce((a, b) => a + b, 0) + 4 * 512 + 1024;
+    const { id, body } = await uploadCall(q, calls.bzzTar({ stream: total }));
+    core().respond(body.id, { bytes: total });
+
+    // Two parts asked at once: the second's head only after the first's end.
+    const asks = [core().part(q.id, 0), core().part(q.id, 1)];
+    await until(() => core().terminal(asks[1]), "the second part's end");
+    const at = (kind, ask) => indexOf((w) => w.frame?.kind === kind && w.frame.id === ask);
+    const headOf = (ask) => indexOf((w) => w.message?.type === 'response' && w.message.id === ask);
+    expect(headOf(asks[0])).toBeGreaterThanOrEqual(0);
+    expect(headOf(asks[1])).toBeGreaterThan(at(KIND_END, asks[0]));
+    for (const n of [0, 1]) {
+      expect(core().reply(asks[n]).result).toEqual({ bytes: sizes[n] });
+      expect(core().terminal(asks[n])).toEqual({ end: true });
+      expect(core().dataOf(asks[n])).toEqual(fs.readFileSync(picked[n].file));
+    }
+
+    // Two more at once: the third holds the room with a window sent, and
+    // the fourth waits, with no head and nothing opened.
+    asks.push(core().part(q.id, 2), core().part(q.id, 3));
+    await until(() => core().dataOf(asks[2]).length === WINDOW, "the third part's window");
+    await sleep(30);
+    expect(core().reply(asks[3])).toBeUndefined();
+    expect(files.opened).toEqual(picked.slice(0, 3).map((f) => f.file));
+    expect(files.most).toBe(1);
+    expect(pool.highWater).toBe(REPLY_ROOM + 2 * STREAM_CHARGE);
+
+    // The node fails as the core's body reaches it.
+    failNode = true;
+    core().write(encodeData(body.id, Buffer.alloc(64 * KIB)));
+    const reply = await answered(id);
+    expect(reply.result).toEqual({ failed: expect.stringMatching(/^(error|unreachable)$/) });
+    // After main's answer, with no cancel from the core: the third ends
+    // body_stream_error naming no code, and the fourth's head is followed
+    // by the same, its file never opened.
+    await until(() => core().terminal(asks[2]) && core().terminal(asks[3]), 'both parts ended');
+    const answer = headOf(id);
+    for (const ask of [asks[2], asks[3]]) {
+      const terminal = core().terminal(ask);
+      expect(terminal.kind).toBe(KIND_ABORT);
+      expect(terminal.code).toBe('body_stream_error');
+      expect(terminal.errorCode).toBeUndefined();
+      expect(at(KIND_ABORT, ask)).toBeGreaterThan(answer);
+    }
+    expect(core().reply(asks[3]).result).toEqual({ bytes: sizes[3] });
+    expect(headOf(asks[3])).toBeGreaterThan(answer);
+    expect(core().dataOf(asks[3])).toHaveLength(0);
+    expect(files.opened).toHaveLength(3);
+    await until(() => files.open === 0, 'every file closed');
+    // The core ends its body, as it reads main's cancel of it.
+    abortBody(core(), body.id, 'cancelled');
     await settledAtZero();
   });
 

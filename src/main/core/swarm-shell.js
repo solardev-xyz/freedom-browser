@@ -70,8 +70,9 @@
  *   credit for it follows the answer (D4); the core's cancel of the call,
  *   or the parent's end, withdraws it at once, in the same turn.
  * - **`shell.swarm_part { for, part }`** streams one of the parent's parts
- *   while one of its streaming calls is open: its head `{ bytes }`, the
- *   length its params give, then its bytes under the core's credit. A held
+ *   while one of its streaming calls is open, one part at a time (the
+ *   upload's part room, below): its head `{ bytes }`, the length its
+ *   params give, then its bytes under the core's credit. A held
  *   buffer goes as views of itself, which the sender copies into its window
  *   as the credit takes them, keeping none; a picked file is read as the
  *   credit allows, straight into the one read buffer the service client
@@ -82,10 +83,10 @@
  *   fails only as its stream's `body_stream_error`: a file that can't be
  *   read names its errno (`error_code`); one whose size changes while it
  *   is read names none (point 13), since a head of another length would
- *   end the core's connection (`swarm_part_length`); the parent's end
- *   names none either. Its frames, and the core's credit on it, are its
- *   upload's `swarm.body` progress (D13's one timer), reported to the
- *   watchdog (`watchdogProgress`).
+ *   end the core's connection (`swarm_part_length`); the parent's end, or
+ *   its call's, names none either. Its frames, and the core's credit on
+ *   it, are its upload's `swarm.body` progress (D13's one timer), reported
+ *   to the watchdog (`watchdogProgress`).
  * - **The reply:** a status outside 200–299 is answered whole, its body
  *   read to 8 KiB and cut there. A 2xx whole call is `{ status,
  *   status_text, headers, body_base64 }`, its body at most `max_bytes`
@@ -114,10 +115,18 @@
  *     pulled from it, which goes straight to the transport, and the one the
  *     transport holds); and, when the parent has parts, one part's 256 KiB
  *     (the sender's window of it, the bytes read ahead, the piece's one
- *     read buffer), which the upload's parts take in turn, until the call
- *     and each part that took it are over (their last frame written, or
- *     dropped). Without room the call is `busy`, before any `swarm.body`,
- *     so a part never meets a full pool;
+ *     read buffer, its file handle), which the upload's parts hold one at a
+ *     time (`partRoom`): a part asked while another holds it waits, in the
+ *     order asked, with nothing opened or read, and takes it once the other
+ *     has left (its last frame written, or its reply dropped). The core
+ *     asks a part only once the last one ended, so an honest core never
+ *     waits. Once the call's reply is written or dropped (the node's
+ *     answer, a node error, a body fault, the core's cancel, the parent's
+ *     end), a part still waiting fails without opening anything and the
+ *     one holding the room is ended `body_stream_error`, without waiting
+ *     for the core to cancel either; the room goes back once the call and
+ *     that part have both left. Without room the call is `busy`, before
+ *     any `swarm.body`, so a part never meets a full pool;
  *   - `readData`'s walk, its occurrence map (2,562 slots at 256 bytes),
  *     before the root's answer may fill it; without room the map stays
  *     empty, and the parent's later calls are `busy`;
@@ -512,22 +521,89 @@ function uploadBody(source, length, onFault) {
 }
 
 /**
- * An upload's part room: one stream's reservation in the pool, shared by
- * its call and its parts in turn, and given back once each has left
- * (`leave()`, from its lease's `onRelease`). The call holds it from the
- * start; each part `join()`s it as it is admitted.
+ * An upload's part room: one stream's reservation in the pool, held by its
+ * call and lent to its parts one at a time, in the order the core asked
+ * them. The core asks a part only once the last one has ended and its
+ * bytes have gone out on the body (fc-swarm-provider's `methods/body.rs`,
+ * "one part at a time, each in its turn"), so an honest core never waits;
+ * a part asked while another holds the room waits its turn with nothing
+ * open, and the room never holds more than one part's stream.
+ *
+ * - `turn()`: a part's place: `ready` resolves true once it holds the
+ *   room, false if it never will (the call ended first, or `leave()`);
+ *   `onEnd(fn)` names how to end its stream; `leave()`, from its lease's
+ *   `onRelease` (its last frame written, or its reply dropped) or when it
+ *   stops waiting, gives the room to the next.
+ * - `hold()`: the call is over (the node answered, failed, or the core's
+ *   body broke): no part takes the room from now on.
+ * - `end()`: the call's reply is written or dropped: a part still waiting
+ *   never takes the room, and the one holding it is ended (`onEnd`), so
+ *   no part outlives its call by more than its abort. The room goes back
+ *   once the call and the part holding it have both left.
  */
 function partRoom(reservation) {
-  let users = 1;
+  let call = true;
+  let giving = true;
+  let owner = null;
+  const waiting = [];
+  const free = () => {
+    if (!call && !owner) reservation.close();
+  };
   return {
-    join() {
-      users += 1;
+    turn() {
+      const turn = { give: null, stop: null, left: false };
+      const ready = new Promise((resolve) => {
+        turn.give = resolve;
+      });
+      if (!giving) turn.give(false);
+      else if (owner) waiting.push(turn);
+      else {
+        owner = turn;
+        turn.give(true);
+      }
+      return {
+        ready,
+        onEnd(fn) {
+          turn.stop = fn;
+        },
+        leave() {
+          if (turn.left) return;
+          turn.left = true;
+          const at = waiting.indexOf(turn);
+          if (at >= 0) waiting.splice(at, 1);
+          turn.give(false);
+          if (owner !== turn) return;
+          owner = null;
+          if (giving && waiting.length) {
+            owner = waiting.shift();
+            owner.give(true);
+          }
+          free();
+        },
+      };
     },
-    leave() {
-      users -= 1;
-      if (users === 0) reservation.close();
+    hold() {
+      giving = false;
+    },
+    end() {
+      giving = false;
+      call = false;
+      for (const turn of waiting.splice(0)) turn.give(false);
+      owner?.stop?.();
+      free();
     },
   };
+}
+
+/** A part that never took its upload's room (its call or its parent ended
+ * while it waited): its stream fails at once, naming no code, with nothing
+ * opened or read. */
+function endedPart() {
+  return new ReadableStream({
+    start(controller) {
+      controller.error(new PartError("the part's request ended"));
+    },
+  });
 }
 
 /** The call's path from the node's root: the form's path and its query,
@@ -897,11 +973,13 @@ class Upload {
   }
 
   /** The call is over: it is no longer the parent's open streaming call,
-   * and a body not taken whole is withdrawn (before main answers). */
+   * a body not taken whole is withdrawn (before main answers), and no part
+   * takes its room from now on (`partRoom`'s `hold()`). */
   close() {
     if (this.closed) return;
     this.closed = true;
     if (!this.body?.ended) this.withdraw();
+    this.parts?.hold();
     this.life.removeEventListener('abort', this.onEnd);
     if (this.entry.upload === this) this.entry.upload = null;
     this.shell.uploads -= 1;
@@ -1253,7 +1331,8 @@ class SwarmShell {
         return { failed: 'busy' };
       }
       parts = partRoom(room);
-      onRelease(() => parts.leave());
+      // The call's reply written or dropped: its parts are over too.
+      onRelease(() => parts.end());
     }
     try {
       return await this.dial(entry, call, verdict.ticket, settle, {
@@ -1424,12 +1503,16 @@ class SwarmShell {
 
   /**
    * The handler: one `shell.swarm_part`, read strictly and held to the part
-   * rules (point 5) before anything is read; then its head `{ bytes }`,
-   * the length its params give, and its bytes as a stream. Past the rules
-   * it never throws: a part that fails after its head ends its stream
-   * `body_stream_error` (design 0015, Error answers).
+   * rules (point 5) before anything is read; then, once it holds its
+   * upload's part room (`partRoom`: one part at a time, in the order asked),
+   * its head `{ bytes }`, the length its params give, and its bytes as a
+   * stream. Past the rules it never throws: a part that fails after its
+   * head ends its stream `body_stream_error` (design 0015, Error answers),
+   * and so does one whose call or parent ended while it waited, having
+   * opened nothing. The core's cancel of a waiting part takes it out of
+   * the line; the service client answers that cancel.
    */
-  part(params, { generation, onRelease }) {
+  async part(params, { generation, signal, onRelease }) {
     const ask = readPart(params);
     const found = this.parentOf(generation, ask.for);
     if (ask.rule) return this.refuse('shell.swarm_part', found.entry, ask.rule);
@@ -1445,18 +1528,37 @@ class SwarmShell {
     const part = entry.parts.get(ask.part);
     part.asked = true;
     const { upload } = entry;
-    // The upload's part room holds its stream, until its last frame is
-    // written or the reply dropped.
-    upload.parts?.join();
+    // Its place in the upload's part room (a parent with parts has one for
+    // each streaming call), held until its last frame is written or its
+    // reply dropped.
+    const turn = upload.parts.turn();
     this.parts += 1;
     onRelease(() => {
       this.parts -= 1;
-      upload.parts?.leave();
+      turn.leave();
     });
-    const life = entry.life.signal;
-    const body = part.held
-      ? heldPart(part.held, life)
-      : pickedPart(part.path, part.length, life, this.openFile);
+    // Its stream fails once the parent ends, or once its call is over
+    // while it holds the room (`end()`).
+    const stop = new AbortController();
+    turn.onEnd(() => stop.abort());
+    const life = AbortSignal.any([entry.life.signal, stop.signal]);
+    // The core's cancel, or the parent's end, while it waits: it leaves
+    // the line. Once it holds the room, only its release gives it back.
+    const quit = () => turn.leave();
+    for (const source of [signal, entry.life.signal]) {
+      source?.addEventListener('abort', quit, { once: true });
+    }
+    let owns;
+    try {
+      if (signal?.aborted || entry.life.signal.aborted) quit();
+      owns = await turn.ready;
+    } finally {
+      for (const source of [signal, entry.life.signal]) source?.removeEventListener('abort', quit);
+    }
+    let body;
+    if (!owns || life.aborted || signal?.aborted) body = endedPart();
+    else if (part.held) body = heldPart(part.held, life);
+    else body = pickedPart(part.path, part.length, life, this.openFile);
     // Its frames and the core's credit on it are its upload's progress
     // (D13's one timer), which the watchdog sees only through them.
     const onProgress = () => {
