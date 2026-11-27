@@ -59,6 +59,9 @@ jest.mock('../wallet/signers', () => ({
   }),
 }));
 jest.mock('../vault-timer', () => ({ resetVaultAutoLockTimer: jest.fn() }));
+// The Ledger's JS backend, as every packaged build runs it: its payments
+// take #392's device path. The core's backend is sign-flow-ledger.test.js's.
+jest.mock('../wallet/ledger/ledger-backend-kind', () => ({ ledgerBackendKind: () => 'js' }));
 
 // Real intercept module: setPendingPayment stashes into the real Map,
 // which the test reads back through the injector.
@@ -587,6 +590,9 @@ describe('signAndQueueRetry — device accounts', () => {
       authorization: { token: confirmation.token },
       accept_index: 0,
     });
+    // On the JS backend no clock goes with it: the core builds #392's
+    // authorization on its own.
+    expect(params).not.toHaveProperty('now_s');
     // The device was asked once, for the typed data the core gave, to sign
     // over the core's hash.
     expect(mockDevice.asked).toHaveLength(1);
@@ -600,6 +606,7 @@ describe('signAndQueueRetry — device accounts', () => {
     expect(header.payload.signature).toBe(settled.signature);
     expect(header.payload.authorization.from).toBe(mockDeviceKey.address);
     expect(settles().at(-1)).toEqual({ reservation: settled.reservation, outcome: 'sent' });
+    expect(settles().filter((p) => Object.hasOwn(p, 'typed_data'))).toEqual([]);
   });
 
   test("a phone's auto-pay: the cap is charged before the phone signs, and a locked vault doesn't stop it", async () => {

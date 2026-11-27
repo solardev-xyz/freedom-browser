@@ -14,6 +14,9 @@
  * - what the relay answers (point 4): every reply here is read by the
  *   core's reader, and none is a protocol error; a throw inside the relay
  *   is `ended`, logged `relay_fault`, the device closed;
+ * - `handle.signed`: latched as the device's 9000 to the last APDU is
+ *   handed to the pipe, a late one included; never for one the core's
+ *   cancel overtook (answered `cancelled` at once), a refusal or a failure;
  * - `deadline_ms` (point 6) enforced from the APDU's arrival, logged when
  *   it isn't the row's, and the device watchdog set by each APDU and each
  *   answer;
@@ -533,6 +536,93 @@ describe('what the relay answers (point 4)', () => {
     devices.release('9000');
     await settle();
     expect(devices.of('late')).toHaveLength(1);
+  });
+
+  // `handle.signed`: the device's 9000 to the last APDU, latched as main
+  // hands it to the pipe (the service client's `onAnswer`).
+  const SIGNATURE = '1b' + 'ab'.repeat(64) + '9000';
+  const holdLast = (more = {}) => (apdu) => (apdu[1] === 0x08 ? { hold: true, ...more } : '9000');
+
+  test("the device's signature latches handle.signed as its answer is handed to the pipe, not before", async () => {
+    await start({ respond: holdLast() });
+    const parent = open('message');
+    await until(() => parent.handle, 'the parent');
+    const stream = message();
+    await play(parent, stream, 2);
+    expect(parent.handle.signed).toBe(false);
+    const id = core().apdu(parent.id, stream[2].apdu, stream[2].ms);
+    await until(() => devices.held.length === 1, 'the user waits');
+    const seen = [];
+    const writeReply = started.client.writeReply.bind(started.client);
+    jest.spyOn(started.client, 'writeReply').mockImplementation((gen, replyId, ...rest) => {
+      if (replyId === id) seen.push(parent.handle.signed);
+      writeReply(gen, replyId, ...rest);
+      if (replyId === id) seen.push(parent.handle.signed);
+    });
+    devices.release(SIGNATURE);
+    await until(() => core().raw(id), 'the reply');
+    expect(core().reply(id).answer.toString('hex')).toBe(SIGNATURE);
+    // Not signed when the device answered; signed as the reply was written.
+    expect(seen).toEqual([false, true]);
+    expect(parent.handle.signed).toBe(true);
+  });
+
+  test("the core's cancel overtakes the device's signature: cancelled alone, nothing signed", async () => {
+    // The device's 9000 reaches the relay after the core's cancel (a device
+    // whose answer outlives main letting go of it).
+    await start({ respond: holdLast({ outlives: true }) });
+    const parent = open('message');
+    await until(() => parent.handle, 'the parent');
+    const stream = message();
+    await play(parent, stream, 2);
+    const id = core().apdu(parent.id, stream[2].apdu, stream[2].ms);
+    await until(() => devices.held.length === 1, 'the user waits');
+    core().cancel(id);
+    await until(() => core().raw(id), 'the reply');
+    expect(core().reply(id)).toEqual({ cancelled: true });
+    devices.release(SIGNATURE);
+    await settle();
+    // The relay had the signature and returned it; the service client
+    // dropped it: the core got cancelled alone, and nothing is signed.
+    expect(devices.of('answer').at(-1)).toEqual({ type: 'answer', device: 1, answer: SIGNATURE });
+    expect(parent.handle.signed).toBe(false);
+    // Nothing else changed: one reply per APDU, the device let go once at
+    // the cancel, mid-exchange, and the parent ends as before.
+    expect(core().messages.filter((m) => m.type === 'response')).toHaveLength(core().asks.size);
+    expect(devices.of('detach')).toEqual([{ type: 'detach', device: 1, inFlight: true }]);
+    core().fail(parent.id);
+    await until(() => parent.outcome, 'the parent answered');
+    expect(parent.handle.signed).toBe(false);
+    expect(started.relay.stats()).toEqual({ parents: 0, open: false });
+  });
+
+  test("main's own cancel, then the device's signature: it goes to the core late, and is signed", async () => {
+    await start({ respond: holdLast({ outlives: true }) });
+    const parent = open('message');
+    await until(() => parent.handle, 'the parent');
+    const stream = message();
+    await play(parent, stream, 2);
+    const id = core().apdu(parent.id, stream[2].apdu, stream[2].ms);
+    await until(() => devices.held.length === 1, 'the user waits');
+    parent.handle.cancel();
+    await until(() => core().cancels().includes(parent.id), "the parent's cancel");
+    expect(parent.handle.signed).toBe(false);
+    devices.release(SIGNATURE);
+    await until(() => core().raw(id), 'the reply');
+    expect(core().reply(id).answer.toString('hex')).toBe(SIGNATURE);
+    expect(parent.handle.signed).toBe(true);
+  });
+
+  test.each([
+    ['refused on the device (6985)', '6985'],
+    ['the device failing at the signature', { fail: 'disconnected' }],
+  ])("%s: the handle isn't signed", async (_what, last) => {
+    await start({ respond: (apdu) => (apdu[1] === 0x08 ? last : '9000') });
+    const parent = open('message');
+    await until(() => parent.handle, 'the parent');
+    const replies = await play(parent, message());
+    expect(replies).toHaveLength(3);
+    expect(parent.handle.signed).toBe(false);
   });
 
   test('a throw inside the relay is refused ended, logged relay_fault, and the device closed', async () => {

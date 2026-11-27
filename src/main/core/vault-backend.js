@@ -988,16 +988,20 @@ const vaultBackend = {
    * cap before it signs, builds the payment byte for byte as `@x402/evm`
    * builds it and signs it with the account's vault key, or, for a Ledger or
    * phone account (`device`, cored 0.19.0), gives the typed data its device
-   * signs and checks that signature at `settle`.
+   * signs and checks that signature at `settle`; a Ledger's payment made
+   * with `now_s` (cored 0.30.0) it signs on its device lane instead, at
+   * `settleOnLedger`.
    */
   x402: {
     /**
-     * `{ account, device?: { kind, address }, detection: { tab, id, url },
-     * requirements, authorization: { token } | { cap: { agent, attributable } },
-     * accept_index?, grant? }` → `{ payload, reservation, accept_index,
-     * charged, grant?, durable? }`, or with `device` `{ device: { typed_data,
-     * hash }, reservation, accept_index, charged, durable? }`.
-     * The payload is a signed authorization: never logged.
+     * `{ account, device?: { kind, address }, now_s?, detection: { tab, id,
+     * url }, requirements, authorization: { token } | { cap: { agent,
+     * attributable } }, accept_index?, grant? }` → `{ payload, reservation,
+     * accept_index, charged, grant?, durable? }`, or with `device` `{
+     * device: { typed_data, hash }, reservation, accept_index, charged,
+     * durable? }`. `now_s` (cored 0.30.0, design 0016's D2) only with a
+     * Ledger's `device`: main's clock, which the authorization's times
+     * are built on. The payload is a signed authorization: never logged.
      */
     authorize(params) {
       return call('x402.authorize', params);
@@ -1010,6 +1014,19 @@ const vaultBackend = {
      */
     settle(params) {
       return call('x402.settle', params);
+    },
+    /**
+     * A Ledger payment's `{ reservation, typed_data }` (design 0016, "x402
+     * from a Ledger account", D2; cored 0.30.0) → `{ payload, charged,
+     * grant?, durable? }`: main's own rebuild of the authorization, which
+     * the core signs on its device lane. It drives the device, so it goes
+     * through `ledgerCall`, under the device watchdog; `onSent` and
+     * `signal` are the client's, for main's relay (x402/caps.js
+     * `settleTypedData`). The payload is a signed authorization: never
+     * logged.
+     */
+    settleOnLedger(params, { onSent = null, signal = null } = {}) {
+      return ledgerCall('x402.settle', params, null, { onSent, signal });
     },
     /**
      * A cap's narrowing (cored 0.19.0), the chrome's or main's own:

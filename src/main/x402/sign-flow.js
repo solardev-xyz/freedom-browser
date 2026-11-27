@@ -20,14 +20,22 @@
  * the typed data to sign, the device signs it (a Ledger by EIP-712, a phone
  * through its core job, `phone.job`), and `x402.settle { reservation,
  * signature }` checks the device's signature and gives the payment.
+ * A Ledger on the core's backend (FREEDOM_LEDGER_BACKEND=core, development
+ * builds only; freedom-core design 0016, "x402 from a Ledger account", D2
+ * option A; LDG-3's PR 9) sends main's clock with it (`now_s`), checks the
+ * core's typed data against main's own rebuild before anything reaches the
+ * device, and has the core sign main's copy on its device lane through
+ * main's relay (`x402.settle { reservation, typed_data }`); it never takes
+ * the `{ signature }` form.
  * Extracting here keeps that sequence in one place and dodges a circular
  * ipc.js ↔ intercept.js dependency.
  */
 
 const crypto = require('crypto');
 const { webContents } = require('electron');
+const { TypedDataEncoder } = require('ethers');
 const log = require('../logger');
-const { getActiveWalletIndex } = require('../identity-manager');
+const { getActiveWalletIndex, getWalletRecord } = require('../identity-manager');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const {
   X402_HEADERS,
@@ -44,8 +52,14 @@ const {
   authorize: authorizePayment,
   settle: settlePayment,
   settleSignature,
+  settleTypedData,
+  rereadCaps,
 } = require('./caps');
+const { checkLedgerAuthorization, nonceOf } = require('./ledger-authorization');
 const { tupleFromAccept } = require('./payment-utils');
+const { holdIfCovered, releaseHold, awaitSpend } = require('./cap-holds');
+const { ledgerBackendKind } = require('../wallet/ledger/ledger-backend-kind');
+const { createLedgerError } = require('../wallet/ledger/errors');
 const { isUserPageId, isAgentPageId } = require('../wallet/agent-tab-custody');
 const { withVaultAccount } = require('../wallet/vault-access');
 const { discardConfirmation } = require('../wallet/signing-confirmation');
@@ -99,11 +113,11 @@ const SIGNATURE_REFUSALS = new Set(['wrong_account', 'bad_response']);
  * before the core is asked, an account that can't pay: a Safe (it has no
  * key; its owners sign through the Safe flow) and an index in the device
  * range that no account holds any more (the vault would derive a key the
- * user never saw there).
+ * user never saw there). `record` is main's snapshot of the account's
+ * record (`getWalletRecord`), read once for the payment.
  */
-function paymentDevice(walletIndex) {
-  const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
-  const record = getWalletRecord(walletIndex);
+function paymentDevice(walletIndex, record) {
+  const { isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
   if (!record) {
     if (isHardwareWalletIndex(walletIndex)) throw new Error('Device account no longer exists; reconnect the device');
     return null;
@@ -204,7 +218,11 @@ function authorizationRunwaySeconds(payload) {
  * signature (`x402.settle { reservation, signature }`). A signature the
  * core refuses spends the reservation and gives the charge back there; a
  * device that refuses or fails leaves the reservation to be settled
- * `withheld` here.
+ * `withheld` here. A Ledger on the core's backend sends `now_s` instead,
+ * and its reservation is settled `withheld` here before its payment is
+ * signed only when main refused the core's authorization, or the settle,
+ * before the settle was sent: once `x402.settle { reservation, typed_data }`
+ * is sent, any end but a signed payment spends it (`settledByLedger`).
  *
  * The identity core charges a cap as it signs (#1024, design 0012
  * `x402-at-sign`): an auto-pay (`authorizedBy: CAP`) is signed only if the
@@ -295,9 +313,18 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
 
   const authorizedBy = opts.authorizedBy ?? AUTHORIZED_BY.MANUAL;
   const walletIndex = opts.walletIndex ?? getActiveWalletIndex();
+  const record = getWalletRecord(walletIndex);
   // A Ledger's or a phone's, or null for the vault's: an account that can't
   // pay (a Safe, a device account deleted) is refused here, unasked.
-  const device = paymentDevice(walletIndex);
+  const device = paymentDevice(walletIndex, record);
+  // A Ledger on the core's backend (design 0016, D2 option A): main's own
+  // wall-clock reading in whole seconds, taken once for this payment, which
+  // every time in the authorization is built on, and the record's address
+  // and path as main holds them now.
+  const ledger =
+    device?.kind === 'ledger' && ledgerBackendKind() === 'core'
+      ? { walletIndex, address: record.address, path: record.path, nowS: Math.floor(Date.now() / 1000) }
+      : null;
   const params = {
     account: walletIndex,
     detection: {
@@ -308,6 +335,7 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
     requirements: detected.requirements,
   };
   if (device) params.device = device;
+  if (ledger) params.now_s = ledger.nowS;
   if (authorizedBy === AUTHORIZED_BY.CAP) {
     // An auto-pay is for a tab the user controls now, before the core is
     // asked: one resumed after an unlock included. The core is told the
@@ -323,6 +351,12 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
     params.authorization = { token: confirmation.token };
     params.accept_index = confirmation.payload?.accept_index;
     if (confirmation.payload?.grant) params.grant = confirmation.payload.grant;
+  }
+  // The entry a Ledger's payment may pay (`ledgerEntry`): a cap's, or the
+  // one the token binds.
+  if (ledger) {
+    ledger.byCap = authorizedBy === AUTHORIZED_BY.CAP;
+    ledger.acceptIndex = ledger.byCap ? null : params.accept_index;
   }
 
   const ask = () => {
@@ -351,7 +385,8 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
   held.reservation = typeof reply?.reservation === 'string' ? reply.reservation : null;
   held.origin = origin;
   if (reply?.charged) sendToHost(webContentsId, 'x402:cap-consumed', { origin });
-  if (device) reply = await signedByDevice(webContentsId, walletIndex, reply, held);
+  if (ledger) reply = await settledByLedger(webContentsId, detected, reply, held, ledger);
+  else if (device) reply = await signedByDevice(webContentsId, walletIndex, reply, held);
   if (reply?.grant && reply.grant.added === false) {
     log.warn(`[x402:sign] grant not added (${reply.grant.reason ?? 'unknown'})`);
   }
@@ -482,6 +517,184 @@ async function signedByDevice(webContentsId, walletIndex, reply, held) {
     }
     throw err;
   }
+  // A token's payment writes its grant and charges a cap only now.
+  if (settled?.charged && !reply.charged) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
+  return {
+    payload: settled?.payload,
+    reservation: held.reservation,
+    accept_index: reply.accept_index,
+    charged: reply.charged === true || settled?.charged === true,
+    ...(settled?.grant ? { grant: settled.grant } : {}),
+    ...(settled?.durable === false || reply.durable === false ? { durable: false } : {}),
+  };
+}
+
+/**
+ * What a Ledger's payment showed about its record, kept by the identity
+ * core (`accounts.record_address_check`) as the JS backend keeps it for a
+ * Ledger's signature (wallet/signers.js `keepAddressCheck`; the LDG-3
+ * plan's point 8), without holding up the payment: a failure is logged.
+ */
+function keepLedgerAddressCheck(walletIndex, matched) {
+  const warn = (err) => {
+    log.warn(`[x402:sign] account ${walletIndex}'s address check was not kept: ${err?.message}`);
+  };
+  try {
+    const { recordLedgerAddressCheck } = require('../identity-manager');
+    Promise.resolve(recordLedgerAddressCheck(walletIndex, matched)).catch(warn);
+  } catch (err) {
+    warn(err);
+  }
+}
+
+/**
+ * The core's error for a Ledger payment as the caller shows it: a device's
+ * failure (`device_failed` with its `LEDGER_*` code in `data.ledger`,
+ * design 0016's API) with ledger/errors.js's text and code, the core's error
+ * as its cause; any other as it is.
+ */
+function ledgerPaymentError(err) {
+  const code = err?.code === 'device_failed' ? err.data?.ledger : null;
+  if (typeof code !== 'string' || !/^LEDGER_[A-Z_]+$/.test(code)) return err;
+  const failure = createLedgerError(code);
+  failure.cause = err;
+  return failure;
+}
+
+/**
+ * The entry a Ledger's payment is rebuilt from (`settledByLedger`): main's
+ * own copy of the `accepts[]` entry the core's reply names, only if it is
+ * one main asked the core to pay, as `{ accept, hold }`; null otherwise. A
+ * payment the user approved pays the entry its token binds, the
+ * `accept_index` main sent: the reply must name that very index (`hold`
+ * null). An auto-pay pays the entry the core picked under a cap (the first
+ * a cap covers, in the seller's order) only if main's own view shows a cap
+ * covering it: its mirror of the caps as main's auto-pay selector reads it
+ * (payment-utils.js `coverageForAccept`: the site's cap for that entry's
+ * chain and asset answers now and has room for its amount), less what main
+ * already holds against that cap for the Ledger's other auto-pays in
+ * flight, whose charges the mirror can't show yet; the entry's amount is
+ * then held in the same synchronous step (cap-holds.js `holdIfCovered`),
+ * so two auto-pays can't both pass on the same room. So a core can't move
+ * a payment onto another entry (another amount, asset, chain or
+ * recipient), nor have the Ledger sign more than main's cap.
+ */
+function ledgerEntry(detected, reply, ledger, origin) {
+  const index = reply?.accept_index;
+  if (!Number.isSafeInteger(index) || index < 0) return null;
+  const accepts = detected.requirements?.accepts;
+  const accept = Array.isArray(accepts) && index < accepts.length ? accepts[index] : null;
+  if (!accept) return null;
+  if (ledger.byCap) {
+    const hold = holdIfCovered(origin, accept);
+    return hold ? { accept, hold } : null;
+  }
+  return index === ledger.acceptIndex ? { accept, hold: null } : null;
+}
+
+/**
+ * A Ledger's payment on the core's backend (freedom-core design 0016, "x402
+ * from a Ledger account", D2 option A, and LDG-2's L5 as built; the LDG-3
+ * plan's point 13), after `x402.authorize { device, now_s }` answered `{
+ * device: { typed_data, hash }, reservation, accept_index, charged }`.
+ * Returns the authorize reply with the payment in it, as `signedByDevice`.
+ *
+ * - **Checked before the device:** the reply must name an entry main asked
+ *   for (`ledgerEntry`: the token's, or one a cap covers in main's own
+ *   view beyond its other auto-pays' holds; an auto-pay's that isn't is
+ *   CAP_NOT_COVERED, for the card). Main
+ *   rebuilds the authorization from what it holds (its parsed requirements'
+ *   copy of that entry, the record's address, the `now_s` it sent) and the
+ *   core's nonce, and
+ *   requires the core's typed data, and its hash, to equal its own
+ *   (ledger-authorization.js `checkLedgerAuthorization`). A refusal throws
+ *   before anything is sent to the device, with the reservation untouched,
+ *   and the caller settles it `withheld`, which drops its hold.
+ * - **Signed on the device lane:** `x402.settle { reservation, typed_data }`
+ *   with main's own frozen copy, through main's relay under the device
+ *   watchdog (caps.js `settleTypedData`). Never the `{ signature }` form.
+ * - **Spent once sent:** from the moment that settle is written to the
+ *   core, the reservation is the core's to spend, whatever the outcome. A
+ *   signed payment's is kept again, for `sent` or `withheld`; any other end
+ *   spends it, so this throws with nothing left for the caller to settle,
+ *   and `data.refunded` says whether the charge's room is back on its cap.
+ *   A settle main refused unsent (a stream it can't derive, no core) leaves
+ *   the reservation as it was, for the caller to settle `withheld`.
+ * - **The address check** is kept as the JS backend keeps it: `matched`
+ *   after a signed payment, `mismatched` on LEDGER_WRONG_DEVICE.
+ * - **An auto-pay's hold** (cap-holds.js) is let go at once only when the
+ *   device's signature never left main, as main's relay saw it
+ *   (`handle.signed`: refused before the device or unsent, then settled
+ *   `withheld`; rejected on the device; failed or ended before the
+ *   signature was handed to the core, a signature its cancel overtook
+ *   included), whatever the core says of its charge. Otherwise (a signed
+ *   payment, or one the core failed after the signature) it stays until
+ *   main's mirror accounts for the spend or another cap takes its key
+ *   (`awaitSpend`), checked once a mirror read asked after the end lands
+ *   and at every later check of that cap: so the charge is never counted
+ *   by neither, and a core that never reports it leaves its room held.
+ */
+async function settledByLedger(webContentsId, detected, reply, held, ledger) {
+  const typed = reply?.device;
+  if (!typed || typeof typed.hash !== 'string' || !typed.typed_data || !held.reservation) {
+    throw new Error('The identity core gave no payment for the device to sign');
+  }
+  const entry = ledgerEntry(detected, reply, ledger, held.origin);
+  if (!entry) {
+    log.warn("[x402:sign] the identity core's payment for a Ledger names an entry main didn't ask for: nothing reaches the device");
+    if (ledger.byCap) throw capNotCoveredError();
+    throw new Error("The payment the identity core prepared isn't the one you approved: nothing was paid");
+  }
+  // The settle's progress (caps.js `settleTypedData`): whether it was sent,
+  // and whether the device's signature may have left main.
+  const track = { sent: false, signed: false };
+  try {
+    return await settleLedgerEntry(webContentsId, detected, reply, held, ledger, entry.accept, track);
+  } finally {
+    if (track.signed) awaitSpend(entry.hold, rereadCaps(held.origin));
+    else releaseHold(entry.hold);
+  }
+}
+
+/** `settledByLedger`'s check and settle of `accept`, the entry main asked for, filling `track`. */
+async function settleLedgerEntry(webContentsId, detected, reply, held, ledger, accept, track) {
+  const typed = reply.device;
+  const checked = checkLedgerAuthorization({
+    x402Version: detected.requirements?.x402Version,
+    accept,
+    from: ledger.address,
+    nowS: ledger.nowS,
+    nonce: nonceOf(typed.typed_data),
+    authorization: typed.typed_data,
+  });
+  const ownHash = checked.accepted
+    ? TypedDataEncoder.hash(checked.typedData.domain, checked.typedData.types, checked.typedData.message)
+    : null;
+  if (!checked.accepted || typed.hash !== ownHash) {
+    log.warn(
+      `[x402:sign] the identity core's authorization for a Ledger isn't main's ` +
+      `(${checked.accepted ? 'hash' : checked.reason}): nothing reaches the device`
+    );
+    throw new Error("The payment the identity core prepared isn't the one this site asked for: nothing was paid");
+  }
+  let settled;
+  try {
+    settled = await settleTypedData(held.reservation, checked.typedData, {
+      path: ledger.path,
+      expectedHash: ownHash,
+      origin: held.origin,
+      track,
+    });
+  } catch (err) {
+    if (track.sent) {
+      held.reservation = null;
+      if (err?.data?.refunded === true) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
+    }
+    const failure = ledgerPaymentError(err);
+    if (failure?.code === 'LEDGER_WRONG_DEVICE') keepLedgerAddressCheck(ledger.walletIndex, false);
+    throw failure;
+  }
+  keepLedgerAddressCheck(ledger.walletIndex, true);
   // A token's payment writes its grant and charges a cap only now.
   if (settled?.charged && !reply.charged) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
   return {

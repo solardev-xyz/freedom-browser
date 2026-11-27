@@ -348,7 +348,11 @@ const OK = '9000';
 /**
  * Scripted devices behind the relay: `openDevice` for its seam,
  * `respond(apdu, { device, index })` for each answer (default `9000`),
- * `events` the spy.
+ * `events` the spy. An answer may be scripted as `{ hold: true }`, kept
+ * until `release(answer)`, which main letting go of the device (`detach()`,
+ * the exchange's signal) fails `disconnected` as hid-device.js does; with
+ * `outlives: true` too, letting go doesn't fail it, and `release` still
+ * answers it (a device whose answer reaches the relay after main let go).
  */
 function fakeLedgerDevices({ respond = () => OK } = {}) {
   const devices = [];
@@ -394,6 +398,7 @@ function fakeLedgerDevices({ respond = () => OK } = {}) {
         }
         if (script && typeof script === 'object' && !Buffer.isBuffer(script)) {
           if (script.hold) {
+            pending.outlives = script.outlives === true;
             held.push({ device: this, pending });
             return;
           }
@@ -414,7 +419,7 @@ function fakeLedgerDevices({ respond = () => OK } = {}) {
     }
 
     answer(pending, answer) {
-      if (this.pending !== pending) {
+      if (this.pending !== pending && !pending.outlives) {
         events.push({ type: 'late', device: this.number, answer: answer.toString('hex') });
         return;
       }
@@ -428,7 +433,9 @@ function fakeLedgerDevices({ respond = () => OK } = {}) {
         events.push({ type: 'detach', device: this.number, inFlight: Boolean(this.pending) });
       }
       const { pending } = this;
-      if (pending) {
+      if (pending?.outlives) {
+        this.pending = null;
+      } else if (pending) {
         this.settle(pending, new HidDeviceError('disconnected', { detached: true }));
       }
     }
