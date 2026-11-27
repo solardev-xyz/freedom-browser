@@ -204,6 +204,9 @@ test('the handshake asks for stream frames, and grants them', () => {
 test("a valid hello: its public part; the wrong process's or policy's, or a malformed one, is refused", () => {
   expect(validHello(HELLO, 'persistent', DIRECT)).toEqual(HELLO);
   expect(ipfsdService('persistent', { network: DIRECT }).validHello(HELLO)).toEqual(HELLO);
+  // From 0.5.0 the report carries the memory cap, which the hello keeps.
+  const capped = { ...HELLO, confinement: { ...CONFINEMENT, memory_cap: 2147483648 } };
+  expect(validHello(capped, 'persistent', DIRECT)).toStrictEqual(capped);
   expect(
     validHello({ ...HELLO, freedom_ipfs: { version: '0.4.6' }, extra: 1 }, 'persistent', DIRECT)
   ).toEqual({ ...HELLO, freedom_ipfs: { version: '0.4.6', git_commit: null } });
@@ -327,6 +330,58 @@ test('the confinement report: its public part, and what a log line carries', () 
     gaps: ['signals'],
     resolution: 'system',
   });
+});
+
+test('the memory cap (design 0010): kept as read back, null with its reason, and left out where the report has none', () => {
+  const GIB2 = 2147483648;
+  // Linux's RLIMIT_DATA or Windows's job limit, as read back: 2 GiB, or a
+  // lower limit the process inherited and kept.
+  for (const cap of [GIB2, 1073741824]) {
+    expect(validConfinement({ ...CONFINEMENT, memory_cap: cap })).toStrictEqual({
+      ...CONFINEMENT,
+      memory_cap: cap,
+    });
+  }
+  // macOS: none, and why.
+  const unsupported = 'unsupported: macOS has no reliable per-process memory cap';
+  expect(
+    validConfinement({
+      ...CONFINEMENT,
+      mechanism: 'seatbelt',
+      memory_cap: null,
+      reasons: { memory_cap: unsupported },
+    })
+  ).toStrictEqual({
+    ...CONFINEMENT,
+    mechanism: 'seatbelt',
+    memory_cap: null,
+    reasons: { memory_cap: unsupported },
+  });
+  // A report from before the cap, or a process whose policy has none (the
+  // core's): no field, in the public part either.
+  expect(validConfinement(CONFINEMENT)).toStrictEqual(CONFINEMENT);
+  expect(Object.hasOwn(validConfinement(CONFINEMENT), 'memory_cap')).toBe(false);
+  for (const cap of ['2147483648', -1, 1.5, 2 ** 53, {}]) {
+    expect(validConfinement({ ...CONFINEMENT, memory_cap: cap })).toBeNull();
+  }
+  expect(
+    validConfinement({ ...CONFINEMENT, memory_cap: null, reasons: { memory_cap: 7 } })
+  ).toBeNull();
+  // The log line carries the cap, null too, and no field where none came.
+  expect(confinementLog(validConfinement({ ...CONFINEMENT, memory_cap: GIB2 }))).toEqual({
+    mechanism: 'landlock-4+seccomp',
+    files: 'enforced',
+    exec: 'enforced',
+    ipc: 'partial',
+    network: 'none',
+    gaps: ['signals'],
+    resolution: 'system',
+    memory_cap: GIB2,
+  });
+  expect(confinementLog({ ...CONFINEMENT, memory_cap: null })).toMatchObject({
+    memory_cap: null,
+  });
+  expect(Object.hasOwn(confinementLog(CONFINEMENT), 'memory_cap')).toBe(false);
 });
 
 test("Windows's report from freedom-ipfsd 0.4.0: the job, its gap, and no mitigations in the public part", () => {

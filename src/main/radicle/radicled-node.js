@@ -52,7 +52,10 @@
  *   `restarting`, and comes back `running` once it is.
  * - **Crashes and restarts** are the client's: 0.5 s, 2 s, then 10 s, and
  *   three within 60 s stop them. Each restart is a new generation, with
- *   the whole start again: its key is sealed anew.
+ *   the whole start again: its key is sealed anew. Exit 71, a native
+ *   library out of memory under the service's cap (design 0010, "The
+ *   memory cap"), is a crash too; when the third is one, the node's failure
+ *   says so.
  * - **Stop** is the process's end: `rad.shutdown`, and the kill 10 s after
  *   it. The exit is the proof that the node stopped, in place of the
  *   add-on's `isStarted()` (R-8).
@@ -114,7 +117,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { spawn: spawnProcess } = require('child_process');
 const defaultLog = require('../logger');
-const { CoreError, isObject } = require('../core/service-client');
+const { CoreError, isObject, OUT_OF_MEMORY_EXIT_CODE } = require('../core/service-client');
 const { confinementLog } = require('../ipfs/ipfsd-client');
 const { RadicledClient } = require('./radicled-client');
 const { getRadicledBinaryPath } = require('./radicled-binary');
@@ -137,6 +140,7 @@ const EXITED = 'freedom-radicled exited';
 const CRASHED = 'freedom-radicled crashed three times within a minute';
 const NOT_RUNNING = 'The Radicle node is not running';
 const CONFINEMENT_REFUSED = 'freedom-radicled refused its confinement';
+const OUT_OF_MEMORY = 'freedom-radicled ran out of memory';
 const LOCK_HELD = 'The Radicle data is in use by another process. Close it and try again.';
 const STORAGE = "freedom-radicled can't use the Radicle data's storage";
 const USAGE = 'freedom-radicled refused how it was started';
@@ -213,11 +217,16 @@ function stepFailure(err) {
   return START_FAILED;
 }
 
-/** What the manager shows for the client's `failed` reason. */
-function clientFailure(reason) {
+/** What the manager shows for the client's `failed` reason, or for a
+ * process's exit code as an import reads it (`exit code N`). `lastCode`:
+ * the process's last exit code, which names a crash loop that ended on an
+ * exit 71. */
+function clientFailure(reason, lastCode = null) {
   switch (reason) {
     case 'exit code 77':
       return CONFINEMENT_REFUSED;
+    case 'exit code 71':
+      return OUT_OF_MEMORY;
     case 'exit code 75':
       return LOCK_HELD;
     case 'exit code 74':
@@ -225,7 +234,7 @@ function clientFailure(reason) {
     case 'exit code 64':
       return USAGE;
     case 'three crashes within a minute':
-      return CRASHED;
+      return lastCode === OUT_OF_MEMORY_EXIT_CODE ? OUT_OF_MEMORY : CRASHED;
     case 'spawn wait failed':
     case 'spawn deferral failed':
       return KEY_UNAVAILABLE;
@@ -358,6 +367,8 @@ class RadicledNode {
     // stopped → starting → running ⇄ restarting; failed, or stopping → stopped.
     this.state = 'stopped';
     this.failureReason = null;
+    // The process's last exit code, for the failure's text (`clientFailure`).
+    this.lastExitCode = null;
     // The code of the start step's error the node gave up on, if one did
     // (`deadline`: still repairing, so the manager's start retries).
     this.failureCode = null;
@@ -486,7 +497,7 @@ class RadicledNode {
     client.generationBase = this.generationsBefore;
     this.client = client;
     client.on('ready', (hello) => this.onReady(client, hello));
-    client.on('exit', () => this.onExit(client));
+    client.on('exit', (exit) => this.onExit(client, exit));
     client.on('failed', (reason) => this.onClientFailed(client, reason));
     client.on('event', (name, data) => this.onEvent(client, name, data));
     this.schedulePoll();
@@ -1210,8 +1221,9 @@ class RadicledNode {
 
   // ---- the process ----
 
-  onExit(client) {
+  onExit(client, exit) {
     if (client !== this.client) return;
+    this.lastExitCode = Number.isInteger(exit?.code) ? exit.code : null;
     this.retireGeneration();
     if (this.stopping || this.state === 'failed') return;
     this.goDown();
@@ -1223,7 +1235,7 @@ class RadicledNode {
       this.giveUp(GRANT_REFUSED);
       return;
     }
-    this.giveUp(clientFailure(reason));
+    this.giveUp(clientFailure(reason, this.lastExitCode));
   }
 
   /** The generation's identity and stats go with it. */
@@ -1299,6 +1311,7 @@ module.exports = {
   CRASHED,
   NOT_RUNNING,
   CONFINEMENT_REFUSED,
+  OUT_OF_MEMORY,
   LOCK_HELD,
   GRANT_REFUSED,
   KEY_UNAVAILABLE,
