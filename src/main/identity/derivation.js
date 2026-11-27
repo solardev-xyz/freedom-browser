@@ -47,6 +47,21 @@ const PATHS = {
 // derives the same key for a site from the same recovery phrase.
 const SITE_ENCRYPTION_KEY_DOMAIN = 'swarm-provider/encryption-key/v1\n';
 
+// A wallet account at an explicit path may not sit on a key Freedom already
+// uses for something else: a dApp could then ask that key to sign, and
+// Settings could export it. Every namespace in PATHS other than the user's
+// own m/44'/60' wallets belongs here, including the per-site encryption keys,
+// which must only ever be used for key agreement.
+const RESERVED_WALLET_PATH_PREFIXES = [
+  "m/44'/73404'",
+  "m/44'/73405'",
+  PATHS.SWARM_PUBLISHER,
+  PATHS.SWARM_ENCRYPTION,
+];
+const MAX_WALLET_PATH_DEPTH = 10;
+const MAX_WALLET_PATH_INDEX = 0x7fffffff;
+const INVALID_WALLET_PATH = "Enter a path like m/44'/60'/0'/0/0";
+
 /**
  * Generate a new BIP-39 mnemonic
  * @param {number} strength - Entropy bits (128 = 12 words, 256 = 24 words)
@@ -138,6 +153,59 @@ function deriveUserWallet(mnemonic, accountIndex = 0) {
     ...wallet,
     accountIndex,
   };
+}
+
+/**
+ * Normalize a user-supplied wallet path to its canonical `m/...` form.
+ * Ledger's format (no leading `m/`) is accepted. Numbers are rewritten
+ * without leading zeros, so `m/044'/...` cannot slip past the reserved-path
+ * check while still deriving the same key.
+ * @param {string} path
+ * @returns {string} Canonical path, e.g. "m/44'/60'/0'/0/0"
+ */
+function normalizeWalletPath(path) {
+  if (typeof path !== 'string') {
+    throw new Error(INVALID_WALLET_PATH);
+  }
+  const trimmed = path.trim();
+  const segments = (trimmed.startsWith('m/') ? trimmed.slice(2) : trimmed).split('/');
+  if (segments.length > MAX_WALLET_PATH_DEPTH) {
+    throw new Error(INVALID_WALLET_PATH);
+  }
+  const normalized = segments.map((segment) => {
+    const match = /^(\d{1,10})('?)$/.exec(segment);
+    if (!match || Number(match[1]) > MAX_WALLET_PATH_INDEX) {
+      throw new Error(INVALID_WALLET_PATH);
+    }
+    return `${Number(match[1])}${match[2]}`;
+  });
+  return `m/${normalized.join('/')}`;
+}
+
+/**
+ * Derive a user wallet at an explicit path, for accounts that don't follow
+ * Freedom's default `m/44'/60'/{accountIndex}'/0/0` scheme. Every derivation
+ * re-checks the path, signing included, because the path comes back from
+ * vault-meta.json, which sits outside the encrypted vault.
+ * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {string} path - Derivation path, with or without the leading `m/`
+ * @returns {Object} { privateKey, publicKey, address, path } with `path` canonical
+ */
+function deriveWalletAtPath(mnemonic, path) {
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('Invalid mnemonic');
+  }
+  const normalized = normalizeWalletPath(path);
+  if (normalized === PATHS.BEE_WALLET) {
+    throw new Error("This path is your Swarm node's wallet, so it can't be added as an account");
+  }
+  const reserved = RESERVED_WALLET_PATH_PREFIXES.some(
+    (prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`)
+  );
+  if (reserved) {
+    throw new Error("This path is reserved for Freedom's node, publishing and encryption keys");
+  }
+  return deriveEthereumKey(mnemonic, normalized);
 }
 
 /**
@@ -237,6 +305,8 @@ module.exports = {
   deriveEthereumKey,
   deriveEd25519Key,
   deriveUserWallet,
+  normalizeWalletPath,
+  deriveWalletAtPath,
   derivePublisherKey,
   siteEncryptionKeyPath,
   deriveSiteEncryptionKey,
