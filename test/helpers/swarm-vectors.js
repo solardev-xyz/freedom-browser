@@ -23,8 +23,11 @@
  * - **the body** in the form the core sends: `{ stream }` for a form that
  *   only streams, `{ base64 }` for one that takes only base64, and for
  *   `bzz_file` base64 when the data rides in the params (the core's
- *   `INLINE_BODY` rule), else a stream; a form with a body whose scenario
- *   recorded none (an empty upload) gets the empty `{ base64: '' }`;
+ *   `INLINE_BODY` rule), else a stream. A part main's own params name
+ *   (`{ part: k }`, fc-swarm-provider's `Piece::Part`) is always streamed,
+ *   whatever its length, its bytes part k's in the scenario's `parts`
+ *   (`partBytes`); a form with a body whose scenario recorded none (an
+ *   empty upload) gets the empty `{ base64: '' }`;
  * - **`max_bytes`** as recorded, else the form's whole-reply cap, or B for a
  *   streamed `feed_latest` (the site's `maxBytes`, which the scenarios
  *   don't record);
@@ -32,11 +35,9 @@
  *   store (`body_ref`); `bytes_up`'s reference, which the scenarios don't
  *   record, is the root the reference read back (the `feed-wrap-root`
  *   request that follows the upload in swarm.json's methods case).
- * Main's own rows' params are the reference's options as the scenarios
- * write them, completed with what main's JSON always carries and they
- * leave out (SWM-4's #497): `pin: true`, `deferred` as today's callers set
- * it (false for data, true for a file or collection), and a data or file
- * part's bytes, as the call's body.
+ * Main's own rows' params are the scenarios' own, whole, in the wire form
+ * main sends (from cored-v0.30.0's vectors, which carry `pin`, `deferred`
+ * and a part's `base64` or `part` themselves: SWM-4's #497).
  *
  * Its parts (`coreCall`, `replyOf`, `uploadReferences`) are exported for the
  * suites that play a scenario through more than the Admission:
@@ -130,23 +131,39 @@ function uploadReferences(scenario, grammar, swarm) {
   return out;
 }
 
-/** Main's own params for a main row's scenario. */
-function mainParams(scenario) {
-  const params = structuredClone(scenario.params);
-  if (!scenario.row.startsWith('swarm.publish:')) return params;
-  params.pin = true;
-  if (params.deferred === undefined) params.deferred = params.kind !== 'data';
-  const upload = scenario.calls.find((c) => c.form === 'bzz_file');
-  if (params.kind !== 'collection' && upload?.body?.base64 !== undefined) {
-    params.parts = params.parts.map((part) => ({ ...part, base64: upload.body.base64 }));
-  }
-  return params;
+/** The params the Admission takes: a page's typed form read back, or main's own JSON, as the scenario writes them. */
+function scenarioParams(scenario) {
+  if (scenario.row.startsWith('swarm.')) return structuredClone(scenario.params);
+  return scenario.params === undefined ? undefined : readTyped(scenario.params);
 }
 
-/** The params the Admission takes: a page's typed form read back, or main's own JSON. */
-function scenarioParams(scenario) {
-  if (scenario.row.startsWith('swarm.')) return mainParams(scenario);
-  return scenario.params === undefined ? undefined : readTyped(scenario.params);
+/**
+ * The part main's own `swarm.publish` data or file params name for its
+ * `bzz_file` body (`{ bytes, part }`), or null: a page's typed form, a
+ * part that rides in the params (`base64`), a collection or another row.
+ */
+function namedPart(c, params) {
+  if (c.form !== 'bzz_file' || !Array.isArray(params?.parts) || params.parts.length !== 1) {
+    return null;
+  }
+  const part = params.parts[0];
+  return part && Number.isInteger(part.part) ? part : null;
+}
+
+/**
+ * The bytes a scenario's call streams from a part its params name: part
+ * k's in the scenario's `parts`, which main reads for the core
+ * (`shell.swarm_part`) and the core sends back as the call's body
+ * (`swarm.body`). Null for a call that streams no named part.
+ */
+function partBytes(scenario, params, c) {
+  const part = namedPart(c, params);
+  if (!part) return null;
+  const source = scenario.parts?.[part.part];
+  if (typeof source?.base64 !== 'string') {
+    throw new Error(`${scenario.id}: no bytes for part ${part.part} in its parts`);
+  }
+  return Buffer.from(source.base64, 'base64');
 }
 
 /** The core's `shell.swarm_api` call for a scenario's call. */
@@ -166,7 +183,10 @@ function coreCall(c, params) {
   };
   if (!form) return call;
   const kinds = form.body || [];
-  if (!c.body && kinds.includes('base64')) {
+  const part = namedPart(c, params);
+  if (part) {
+    call.body = { stream: c.body?.bytes ?? 0 };
+  } else if (!c.body && kinds.includes('base64')) {
     call.body = { base64: '' };
   } else if (c.body) {
     if (!kinds.includes('base64')) {
@@ -227,6 +247,7 @@ module.exports = {
   contentSlice,
   coreCall,
   dataOf,
+  partBytes,
   playScenario,
   replyOf,
   scenarioParams,

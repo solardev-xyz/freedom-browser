@@ -11,6 +11,9 @@
  *   core's wire.rs and, from cored-v0.30.0's commit, the file);
  * - every honest scenario is admitted call by call, every forbidden one
  *   refused at its last call by its rule, all of them, not a sample;
+ * - main's own rows' params are the file's, whole, and a part they name
+ *   (`{ part: k }`) is streamed, its bytes part k's in the scenario's
+ *   `parts`, never inlined;
  * - the head probe's runs, the next index, topics and identifiers are
  *   swarm.json's.
  *
@@ -20,6 +23,7 @@
  */
 
 const {
+  Admission,
   ERROR_REPLY,
   FAILED,
   FORMS,
@@ -35,10 +39,15 @@ const {
   topicOf,
 } = require('./swarm-grammar');
 const {
+  coreCall,
+  partBytes,
   playScenario,
+  replyOf,
   scenarioParams,
+  sha256,
   swarmVectors,
   swarmVectorsRequired,
+  uploadReferences,
 } = require('../../../test/helpers/swarm-vectors');
 
 const grammar = swarmVectors('swarm-grammar.json');
@@ -100,6 +109,82 @@ describeIfVectors("main's grammar against vectors/swarm-grammar.json", () => {
     expect(wrong).toStrictEqual([]);
     expect(played).toBe(grammar.forbidden.length);
     expect(played).toBeGreaterThanOrEqual(73);
+  });
+
+  test("main's own swarm.publish params are the file's, whole: pin, deferred, and each part's bytes or its part", () => {
+    const own = [...grammar.honest, ...grammar.forbidden].filter((s) =>
+      s.row.startsWith('swarm.publish:')
+    );
+    expect(own.length).toBeGreaterThan(0);
+    for (const s of own) {
+      const params = scenarioParams(s);
+      expect({ id: s.id, params }).toStrictEqual({ id: s.id, params: s.params });
+      expect({ id: s.id, pin: typeof params.pin, deferred: typeof params.deferred }).toStrictEqual({
+        id: s.id,
+        pin: 'boolean',
+        deferred: 'boolean',
+      });
+      for (const part of params.parts) {
+        const forms = ['base64', 'part'].filter((name) => Object.hasOwn(part, name));
+        // Exactly one: the bytes in the params, or the part that holds them.
+        expect({ id: s.id, forms: forms.length }).toStrictEqual({ id: s.id, forms: 1 });
+      }
+    }
+  });
+
+  // From cored-v0.30.0's commit the file names a picked file's bytes as a
+  // part (`{ bytes, part }`, beside the scenario's `parts`), which the
+  // core streams (`Piece::Part`) however short it is. The Admission takes
+  // it only as a stream of the part's length, so a play that inlined it
+  // would no longer pass.
+  test("a part main's params name is streamed: swarm.publish-file-default keeps { part: 0 } and its upload is { stream: 9 }", () => {
+    const named = [];
+    for (const s of [...grammar.honest, ...grammar.forbidden]) {
+      const params = scenarioParams(s);
+      for (const c of s.calls) {
+        const bytes = partBytes(s, params, c);
+        if (!bytes) continue;
+        named.push(s.id);
+        const part = params.parts[0];
+        expect(coreCall(c, params).body).toStrictEqual({ stream: part.bytes });
+        // Part k's bytes are the ones the node took.
+        expect(bytes.length).toBe(part.bytes);
+        expect(c.body.bytes).toBe(part.bytes);
+        if (c.body.base64 !== undefined) {
+          expect(bytes.toString('base64')).toBe(c.body.base64);
+        } else {
+          expect(sha256(bytes)).toBe(c.body.sha256);
+        }
+      }
+    }
+    expect(named).toStrictEqual(['swarm.publish-file-default']);
+
+    const s = grammar.honest.find((scenario) => scenario.id === 'swarm.publish-file-default');
+    const params = scenarioParams(s);
+    expect(params.parts).toStrictEqual([{ bytes: 9, part: 0 }]);
+    const at = s.calls.findIndex((c) => c.form === 'bzz_file');
+    expect(coreCall(s.calls[at], params).body).toStrictEqual({ stream: 9 });
+
+    // The same upload, its body inlined or another length: refused `body`.
+    const play = (body) => {
+      const admission = new Admission({ row: s.row, params, key: s.key ?? null });
+      if (s.ready) {
+        expect(admission.ready(s.ready.check)).toBeNull();
+        admission.readyAnswered(s.ready.ok);
+      }
+      const references = uploadReferences(s, grammar, swarm);
+      for (const [i, c] of s.calls.entries()) {
+        const call = coreCall(c, params);
+        if (i === at) call.body = body;
+        const verdict = admission.admit(call);
+        if (verdict.rule) return { at: i, rule: verdict.rule };
+        admission.settle(verdict.ticket, replyOf(c, dwebVerify.swarm.chunks, references));
+      }
+      return null;
+    };
+    expect(play({ stream: 9 })).toBeNull();
+    expect(play({ base64: s.calls[at].body.base64 })).toStrictEqual({ at, rule: 'body' });
+    expect(play({ stream: 10 })).toStrictEqual({ at, rule: 'body' });
   });
 
   test("every rule but ended is some forbidden scenario's", () => {
