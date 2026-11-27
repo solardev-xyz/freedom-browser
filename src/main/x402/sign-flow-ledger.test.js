@@ -22,6 +22,12 @@
  *   the first APDU, the reservation withheld: a payment the user approved
  *   pays only the entry its token binds, and an auto-pay only an entry
  *   main's own mirror shows a cap covering (else CAP_NOT_COVERED).
+ * - **Main's holds against a cap** (cap-holds.js): an auto-pay that passes
+ *   holds its amount in the same step, so of two authorize replies held
+ *   against one cap with room for one, the second is CAP_NOT_COVERED, no
+ *   APDU, withheld once; a hold is let go at once when nothing was written
+ *   to the cap, and otherwise once the mirror's read asked after the end
+ *   lands (a signed payment's: until then another auto-pay finds no room).
  * - **A settled payment:** `now_s` sent with the Ledger's `device`, main's
  *   own frozen copy settled as `{ reservation, typed_data }` under the
  *   device watchdog, the honest stream carried to the device byte for byte,
@@ -47,6 +53,8 @@ const mockState = {
   tabs: new Map(),
   // The caps' mirror main reads (core/grants.js), by origin.
   caps: new Map(),
+  // A read of the mirror, as core/grants.js's `reread` resolves once it lands.
+  reread: () => Promise.resolve(),
 };
 
 jest.mock('electron', () => ({
@@ -78,7 +86,10 @@ jest.mock('../core/core-process', () => ({
 // The caps' mirror, as the core last reported it: read again after each
 // payment, which this suite doesn't follow.
 jest.mock('../core/grants', () => ({
-  grantStore: () => ({ reread: () => {}, get: (key) => mockState.caps.get(key) ?? [] }),
+  grantStore: () => ({
+    reread: (key) => mockState.reread(key),
+    get: (key) => mockState.caps.get(key) ?? [],
+  }),
 }));
 jest.mock('../wallet/ledger/ledger-backend-kind', () => ({ ledgerBackendKind: () => 'core' }));
 jest.mock('../identity-manager', () => ({
@@ -111,6 +122,7 @@ const { vaultBackend } = require('../core/vault-backend');
 const { TypedDataEncoder } = require('ethers');
 const { signAndQueueRetry, CAP_NOT_COVERED } = require('./sign-flow');
 const { rebuildLedgerAuthorization } = require('./ledger-authorization');
+const capHolds = require('./cap-holds');
 const { ledgerVectors, ledgerVectorsRequired } = require('../../../test/helpers/ledger-vectors');
 const { fakeLedgerDevices, startLedgerCore, until, settle } = require('../../../test/helpers/fake-ledger-core');
 
@@ -182,6 +194,8 @@ function serveX402({ authorize, settle: onSettle = () => {} }) {
     if (message?.type !== 'request') return;
     if (message.method === 'x402.authorize') {
       const answer = authorize(message.params);
+      // null: the test answers it itself.
+      if (answer === null) return;
       if (answer.error) fc.fail(message.id, answer.error);
       else fc.respond(message.id, answer);
     } else if (message.method === 'x402.settle') {
@@ -232,7 +246,7 @@ async function playLane(fc, parentId, apdus) {
 
 /** Runs one payment to its end: `{ result }` or `{ error }`. */
 async function pay(c, opts = {}) {
-  const outcome = await signAndQueueRetry(TAB, {
+  const outcome = await signAndQueueRetry(opts.tab ?? TAB, {
     detection: detectionOf(c, opts.accepts),
     walletIndex: ACCOUNT,
     ...(opts.authorizedBy === 'cap'
@@ -261,6 +275,8 @@ beforeEach(async () => {
   mockState.addressChecks = [];
   mockState.tabs.clear();
   mockState.caps.clear();
+  mockState.reread = () => Promise.resolve();
+  capHolds._resetForTests();
   setPendingPayment.mockClear();
   sendToHost.mockClear();
   log.warn.mockClear();
@@ -469,6 +485,173 @@ describeIfVectors('a Ledger payment on the core: the core names another entry', 
     expect(ledgerSettles()).toEqual([
       { reservation: reservations[0], typed_data: authorizationFor(c, accepts[1]).typedData },
     ]);
+  });
+});
+
+describeIfVectors("a Ledger auto-pay on the core: main's holds against the cap", () => {
+  const assetOf = (c) => c.x402.requirements.asset.toLowerCase();
+  const heldOf = (c) => capHolds.heldAmount(ORIGIN, 8453, assetOf(c));
+  const cancelled = { code: 'cancelled', message: 'Cancelled' };
+
+  /** A mirror read that lands only when the test says so. */
+  function readHeld() {
+    const read = {};
+    read.promise = new Promise((resolve) => {
+      read.land = resolve;
+    });
+    mockState.reread = () => read.promise;
+    return read;
+  }
+
+  test('two authorize replies held against one insufficient cap: one goes on, the other is CAP_NOT_COVERED with no APDU, withheld once', async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    // Room for one 10000 payment, not two.
+    capFor(c, '15000');
+    const ledgerAsks = [];
+    const fc = serveX402({ authorize: () => null, settle: (message) => ledgerAsks.push(message) });
+    const payments = [pay(c, { authorizedBy: 'cap', tab: 7 }), pay(c, { authorizedBy: 'cap', tab: 8 })];
+    await until(() => fc.requests('x402.authorize').length === 2, 'both authorizations');
+
+    // Both replies in one chunk, as the core's writer sends frames back to back.
+    fc.batch(() => {
+      for (const message of fc.requests('x402.authorize')) {
+        fc.respond(message.id, authorizeReply(c, { charged: true }));
+      }
+    });
+    await until(() => ledgerAsks.length === 1 && outcomeSettles().length === 1, 'one settle and one withheld');
+    await settle();
+
+    expect(ledgerSettles()).toHaveLength(1);
+    const going = ledgerSettles()[0].reservation;
+    const refused = reservations.find((reservation) => reservation !== going);
+    expect(outcomeSettles()).toEqual([{ reservation: refused, outcome: 'withheld' }]);
+    expect(started.devices.events).toEqual([]);
+    expect(heldOf(c)).toBe(10000n);
+
+    fc.fail(ledgerAsks[0].id, cancelled);
+    const outcomes = await Promise.all(payments);
+
+    expect(outcomes.map(({ error }) => error?.code).sort()).toEqual([CAP_NOT_COVERED, 'cancelled'].sort());
+    expect(outcomeSettles()).toHaveLength(1);
+    expect(started.devices.events).toEqual([]);
+    expect(heldOf(c)).toBe(0n);
+    expect(fc.faults).toEqual([]);
+  });
+
+  // [the end, how the test brings it about] — each lets go of the hold at
+  // once, even with the mirror's read never landing.
+  const AT_ONCE = [
+    ["refused before the device (the core's hash isn't main's)", { hash: `0x${'11'.repeat(32)}` }, null],
+    ["refused unsent (a path main can't derive a stream for)", { path: true }, null],
+    ['refunded', {}, { code: 'device_failed', message: 'Ledger device failed', data: { ledger: 'LEDGER_USER_REJECTED', refunded: true } }],
+    ['cancelled', {}, cancelled],
+  ];
+
+  test.each(AT_ONCE)('%s: the hold is let go at once', async (_what, how, coreError) => {
+    const [, c] = FORMS[0];
+    recordFor(c, how.path ? { path: `m/${c.record.path}` } : {});
+    capFor(c, '15000');
+    readHeld();
+    const fc = serveX402({
+      authorize: () => authorizeReply(c, { charged: true, ...(how.hash ? { hash: how.hash } : {}) }),
+      settle: (message) => fc.fail(message.id, coreError),
+    });
+
+    const { error } = await pay(c, { authorizedBy: 'cap' });
+
+    expect(error).toBeDefined();
+    expect(heldOf(c)).toBe(0n);
+    expect(started.devices.events).toEqual([]);
+  });
+
+  test.each([
+    ['the cap changed (not refunded)', { code: 'not_authorized', message: 'the cap changed', data: { reason: 'cap_changed', refunded: false } }],
+    [
+      "the hold's write wasn't flushed (counted, not refunded)",
+      { code: 'storage', message: 'not durable', data: { store: 'x402', applied: true, durable: false, refunded: false } },
+    ],
+  ])('%s: the hold is kept until the mirror read asked after it lands', async (_what, coreError) => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    capFor(c, '15000');
+    const read = readHeld();
+    const fc = serveX402({
+      authorize: () => authorizeReply(c, { charged: true }),
+      settle: (message) => fc.fail(message.id, coreError),
+    });
+
+    await pay(c, { authorizedBy: 'cap' });
+
+    expect(heldOf(c)).toBe(10000n);
+    read.land();
+    await settle();
+    expect(heldOf(c)).toBe(0n);
+    expect(outcomeSettles()).toEqual([]);
+  });
+
+  test("the core exits while the device signs: the hold is kept until the mirror's read lands", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    capFor(c, '15000');
+    const read = readHeld();
+    started.devices.respond = answersOf(c, { [c.exchanges.length - 1]: { hold: true } });
+    const fc = serveX402({
+      authorize: () => authorizeReply(c, { charged: true }),
+      settle: (message) => {
+        const apdus = honest.get(c.id);
+        playLane(fc, message.id, apdus.slice(0, -1)).then(() => fc.apdu(message.id, apdus.at(-1), USER_MS));
+      },
+    });
+    const paid = pay(c, { authorizedBy: 'cap' });
+    await until(() => started.devices.held.length === 1, 'the device waiting for the user');
+
+    fc.exit(null, 'SIGKILL');
+    const { error } = await paid;
+
+    expect(error.code).toBe('core_unavailable');
+    expect(heldOf(c)).toBe(10000n);
+    read.land();
+    await settle();
+    expect(heldOf(c)).toBe(0n);
+  });
+
+  test('a signed payment keeps its hold until the mirror shows the spend: meanwhile another auto-pay finds no room', async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    capFor(c, '15000');
+    const read = readHeld();
+    started.devices.respond = answersOf(c);
+    let settles = 0;
+    const fc = serveX402({
+      authorize: () => authorizeReply(c, { charged: true }),
+      settle: (message) => {
+        settles += 1;
+        playLane(fc, message.id, honest.get(c.id)).then(() =>
+          fc.respond(message.id, { payload: JSON.parse(c.result.payload), charged: true })
+        );
+      },
+    });
+
+    const first = await pay(c, { authorizedBy: 'cap' });
+
+    expect(first.error).toBeUndefined();
+    expect(setPendingPayment).toHaveBeenCalledTimes(1);
+    expect(heldOf(c)).toBe(10000n);
+    // The mirror hasn't shown the spend: the hold still counts it.
+    const second = await pay(c, { authorizedBy: 'cap', tab: 8 });
+    expect(second.error.code).toBe(CAP_NOT_COVERED);
+    expect(settles).toBe(1);
+    expect(started.devices.of('open')).toHaveLength(1);
+
+    // The read lands with the spend: the mirror counts it now, not the hold.
+    mockState.caps.get(ORIGIN)[0].spentAmount = '10000';
+    read.land();
+    await settle();
+    expect(heldOf(c)).toBe(0n);
+    const third = await pay(c, { authorizedBy: 'cap', tab: 9 });
+    expect(third.error.code).toBe(CAP_NOT_COVERED);
+    expect(settles).toBe(1);
   });
 });
 

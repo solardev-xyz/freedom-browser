@@ -127,6 +127,25 @@ function reread(key) {
 }
 
 /**
+ * The caps of `origin` read again: resolves once that read has landed in
+ * the mirror (or failed, when the mirror drops the key until the core
+ * answers again); never rejects.
+ */
+function rereadCaps(origin) {
+  const key = normalizeOrigin(origin);
+  if (!key) return Promise.resolve();
+  try {
+    return Promise.resolve(mirror().reread(key)).then(
+      () => {},
+      () => {}
+    );
+  } catch {
+    // No mirror (a test without the core): nothing to wait for.
+    return Promise.resolve();
+  }
+}
+
+/**
  * `x402.authorize`: the core checks the token or the cap, charges a cap
  * before it signs, and builds and signs the payment. The mirror reads the
  * seller's caps again afterwards, whatever the outcome.
@@ -320,6 +339,7 @@ module.exports = {
   settleSent,
   settleSignature,
   settleTypedData,
+  rereadCaps,
   narrow,
   NARROW_ONLY,
   capKeyOf,

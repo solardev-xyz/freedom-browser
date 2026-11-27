@@ -53,9 +53,11 @@ const {
   settle: settlePayment,
   settleSignature,
   settleTypedData,
+  rereadCaps,
 } = require('./caps');
 const { checkLedgerAuthorization, nonceOf } = require('./ledger-authorization');
-const { tupleFromAccept, coverageForAccept } = require('./payment-utils');
+const { tupleFromAccept } = require('./payment-utils');
+const { holdIfCovered, releaseHold, releaseHoldWhen } = require('./cap-holds');
 const { ledgerBackendKind } = require('../wallet/ledger/ledger-backend-kind');
 const { createLedgerError } = require('../wallet/ledger/errors');
 const { isUserPageId, isAgentPageId } = require('../wallet/agent-tab-custody');
@@ -562,15 +564,20 @@ function ledgerPaymentError(err) {
 /**
  * The entry a Ledger's payment is rebuilt from (`settledByLedger`): main's
  * own copy of the `accepts[]` entry the core's reply names, only if it is
- * one main asked the core to pay; null otherwise. A payment the user
- * approved pays the entry its token binds, the `accept_index` main sent:
- * the reply must name that very index. An auto-pay pays the entry the core
- * picked under a cap (the first a cap covers, in the seller's order), which
- * main's own mirror of the caps must show covered as main's auto-pay
- * selector reads it (payment-utils.js `coverageForAccept`: the site's cap
- * for that entry's chain and asset answers now and has room for its
- * amount). So a core can't move a payment onto another entry: another
- * amount, asset, chain or recipient.
+ * one main asked the core to pay, as `{ accept, hold }`; null otherwise. A
+ * payment the user approved pays the entry its token binds, the
+ * `accept_index` main sent: the reply must name that very index (`hold`
+ * null). An auto-pay pays the entry the core picked under a cap (the first
+ * a cap covers, in the seller's order) only if main's own view shows a cap
+ * covering it: its mirror of the caps as main's auto-pay selector reads it
+ * (payment-utils.js `coverageForAccept`: the site's cap for that entry's
+ * chain and asset answers now and has room for its amount), less what main
+ * already holds against that cap for the Ledger's other auto-pays in
+ * flight, whose charges the mirror can't show yet; the entry's amount is
+ * then held in the same synchronous step (cap-holds.js `holdIfCovered`),
+ * so two auto-pays can't both pass on the same room. So a core can't move
+ * a payment onto another entry (another amount, asset, chain or
+ * recipient), nor have the Ledger sign more than main's cap.
  */
 function ledgerEntry(detected, reply, ledger, origin) {
   const index = reply?.accept_index;
@@ -578,8 +585,11 @@ function ledgerEntry(detected, reply, ledger, origin) {
   const accepts = detected.requirements?.accepts;
   const accept = Array.isArray(accepts) && index < accepts.length ? accepts[index] : null;
   if (!accept) return null;
-  if (ledger.byCap) return coverageForAccept(origin, accept)?.covers === true ? accept : null;
-  return index === ledger.acceptIndex ? accept : null;
+  if (ledger.byCap) {
+    const hold = holdIfCovered(origin, accept);
+    return hold ? { accept, hold } : null;
+  }
+  return index === ledger.acceptIndex ? { accept, hold: null } : null;
 }
 
 /**
@@ -591,7 +601,8 @@ function ledgerEntry(detected, reply, ledger, origin) {
  *
  * - **Checked before the device:** the reply must name an entry main asked
  *   for (`ledgerEntry`: the token's, or one a cap covers in main's own
- *   view; an auto-pay's that isn't is CAP_NOT_COVERED, for the card). Main
+ *   view beyond its other auto-pays' holds; an auto-pay's that isn't is
+ *   CAP_NOT_COVERED, for the card). Main
  *   rebuilds the authorization from what it holds (its parsed requirements'
  *   copy of that entry, the record's address, the `now_s` it sent) and the
  *   core's nonce, and
@@ -611,18 +622,41 @@ function ledgerEntry(detected, reply, ledger, origin) {
  *   the reservation as it was, for the caller to settle `withheld`.
  * - **The address check** is kept as the JS backend keeps it: `matched`
  *   after a signed payment, `mismatched` on LEDGER_WRONG_DEVICE.
+ * - **An auto-pay's hold** (cap-holds.js) is let go however the payment
+ *   ends: at once when nothing was written to the cap (refused before the
+ *   device or unsent, then settled `withheld`; refunded; cancelled), and
+ *   otherwise only once a read of the mirror asked after the end has
+ *   landed (a signed payment, whose charge the core wrote before it
+ *   answered; any other end that may have left its charge counted), so
+ *   the charge is never counted by neither.
  */
 async function settledByLedger(webContentsId, detected, reply, held, ledger) {
   const typed = reply?.device;
   if (!typed || typeof typed.hash !== 'string' || !typed.typed_data || !held.reservation) {
     throw new Error('The identity core gave no payment for the device to sign');
   }
-  const accept = ledgerEntry(detected, reply, ledger, held.origin);
-  if (!accept) {
+  const entry = ledgerEntry(detected, reply, ledger, held.origin);
+  if (!entry) {
     log.warn("[x402:sign] the identity core's payment for a Ledger names an entry main didn't ask for: nothing reaches the device");
     if (ledger.byCap) throw capNotCoveredError();
     throw new Error("The payment the identity core prepared isn't the one you approved: nothing was paid");
   }
+  const end = { written: false };
+  try {
+    return await settleLedgerEntry(webContentsId, detected, reply, held, ledger, entry.accept, end);
+  } finally {
+    if (end.written) releaseHoldWhen(entry.hold, rereadCaps(held.origin));
+    else releaseHold(entry.hold);
+  }
+}
+
+/**
+ * `settledByLedger`'s check and settle of `accept`, the entry main asked
+ * for; `end.written` says, once it ends, whether the cap's charge was, or
+ * may have been, written.
+ */
+async function settleLedgerEntry(webContentsId, detected, reply, held, ledger, accept, end) {
+  const typed = reply.device;
   const checked = checkLedgerAuthorization({
     x402Version: detected.requirements?.x402Version,
     accept,
@@ -655,12 +689,16 @@ async function settledByLedger(webContentsId, detected, reply, held, ledger) {
   } catch (err) {
     if (sent) {
       held.reservation = null;
-      if (err?.data?.refunded === true) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
+      const refunded = err?.data?.refunded === true;
+      if (refunded) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
+      // Nothing written: the room is back, or the cancel dropped the hold.
+      end.written = !refunded && err?.code !== 'cancelled';
     }
     const failure = ledgerPaymentError(err);
     if (failure?.code === 'LEDGER_WRONG_DEVICE') keepLedgerAddressCheck(ledger.walletIndex, false);
     throw failure;
   }
+  end.written = true;
   keepLedgerAddressCheck(ledger.walletIndex, true);
   // A token's payment writes its grant and charges a cap only now.
   if (settled?.charged && !reply.charged) sendToHost(webContentsId, 'x402:cap-consumed', { origin: held.origin });
