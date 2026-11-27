@@ -111,6 +111,7 @@ const {
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { runInWindow } = require('../windows/request-window');
+const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
 const {
   CHANNELS: PROMPT_CHANNELS,
   KIND_SET,
@@ -1266,8 +1267,13 @@ function createPageRequests({
       let out;
       try {
         // For the window that hosts the tab: a phone account's job shows
-        // its QR in that window's sidebar (APS-4, `request-window.js`).
-        out = await runInWindow(record.window, () => dispatch(contextOf(record, params)));
+        // its QR in that window's sidebar (APS-4, `request-window.js`); and
+        // a Ledger's hash-only warning, where no approval waits on the
+        // device, shows over the tab (LDG-3's PR 11, hash-only-warning.js).
+        const target = { guest: record.requester?.guest, site: record.requester?.key };
+        out = await runInWindow(record.window, () =>
+          withHashOnlyTarget(target, () => dispatch(contextOf(record, params)))
+        );
       } catch (err) {
         out = { error: { code: err?.code, message: err?.message, data: err?.data } };
       }

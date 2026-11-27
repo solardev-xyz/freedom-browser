@@ -98,6 +98,7 @@ import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
 import { initWalletUi, openPublishSetupFromPage, routeToPublishSetup } from './lib/wallet-ui.js';
 import { initPagePrompts } from './lib/page-prompts.js';
+import { initLedgerHashOnlyNotice } from './lib/wallet/ledger-hash-only-notice.js';
 import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
@@ -975,6 +976,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initSidebar(); // Identity & wallet sidebar
   initWalletUi(); // Wallet & identity display in sidebar
   initPagePrompts(); // Main's prompts for page requests, and their badges (0011 PRQ-4)
+  initLedgerHashOnlyNotice(); // A Ledger's hash-only warning over a tab (design 0016, Q23)
   initRadicleConsent(); // Radicle provider consent subscreen (sidebar)
   initRadicleAlias(); // Radicle alias display/editing in the Nodes tab
   loadBookmarks();

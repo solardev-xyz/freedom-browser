@@ -22,5 +22,9 @@ contextBridge.exposeInMainWorld(
     decide: (handle, approve, choices) => ipcRenderer.invoke('approvals:decide', { handle, approve, choices }),
     // A part of a view over 256 KiB (APS-4), for the prompt main shows.
     viewPart: (handle, revision, index) => ipcRenderer.invoke('approvals:view-part', { handle, revision, index }),
+    // The hash-only warning in a Ledger's waiting state (freedom-core design
+    // 0016, Q23; LDG-3's PR 11), and its report once it is on screen.
+    onHashOnly: listen('approvals:hash-only'),
+    hashOnlyShown: (handle, warning) => ipcRenderer.send('approvals:hash-only-shown', { handle, warning }),
   })
 );

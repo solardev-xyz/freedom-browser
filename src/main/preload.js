@@ -927,6 +927,17 @@ contextBridge.exposeInMainWorld('ledger', {
   // has no index, is sent as (name, address, path) instead.
   addAccount: (name, scheme, index) =>
     ipcRenderer.invoke('wallet:add-ledger-wallet', name, scheme, index),
+  // The hash-only warning over a tab, on the core's Ledger backend
+  // (freedom-core design 0016, Q23; LDG-3's PR 11): main sends it with the
+  // two hashes the device will show, the chrome reports it on screen, and
+  // its Cancel (the LDG-3 plan's point 19) cancels the request.
+  onHashOnlyNotice: (callback) => {
+    const handler = (_event, message) => callback(message);
+    ipcRenderer.on('ledger:hash-only-notice', handler);
+    return () => ipcRenderer.removeListener('ledger:hash-only-notice', handler);
+  },
+  hashOnlyNoticeShown: (id) => ipcRenderer.send('ledger:hash-only-notice-shown', { id }),
+  cancelHashOnlyNotice: (id) => ipcRenderer.send('ledger:hash-only-notice-cancel', { id }),
 });
 
 // Remote (phone) signing: main publishes signing jobs here; the renderer

@@ -11,14 +11,22 @@
  * (core-accounts.js), which also checks the unmatched Ledger records and
  * keeps each result itself, so account-checks.js isn't run. On the JS
  * backend, nothing changes.
+ *
+ * The chrome's report and Cancel for the hash-only warning over a tab
+ * (hash-only-warning.js; freedom-core design 0016, Q23; LDG-3's PR 11) are
+ * registered here too, whichever backend runs: on `js` main never shows the
+ * notice, and a report names none.
  */
 
 const { ipcMain } = require('electron');
 const { listAccounts } = require('./transport');
 const { checkLedgerAccounts } = require('./account-checks');
 const { ledgerBackendKind } = require('./ledger-backend-kind');
+const { registerHashOnlyIpc } = require('./hash-only-warning');
 
 function registerLedgerIpc() {
+  registerHashOnlyIpc(ipcMain);
+
   // Requires an attached, unlocked device with the Ethereum app open;
   // errors carry a stable LEDGER_* code the renderer turns into
   // instructions ("plug it in", "open the app", …). The connect screen

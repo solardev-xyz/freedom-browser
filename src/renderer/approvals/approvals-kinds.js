@@ -1366,5 +1366,54 @@
     return type === 'ledger' || type === 'remote' ? type : null;
   }
 
-  return Object.freeze({ KINDS, SITE, checkMessage, checkJoined, deviceOf, typedDataText, units });
+  // --- The hash-only warning (freedom-core design 0016, Q23; LDG-3's PR 11) ---
+
+  /**
+   * The warning a Ledger's waiting state shows when the device can show only
+   * two hashes, before it asks. The chrome's notice over a tab says the same
+   * (renderer/lib/wallet/ledger-hash-only-notice.js; a test pins the two).
+   */
+  const HASH_ONLY_COPY = Object.freeze({
+    title: "This Ledger can't show the request's details",
+    body:
+      'It will show only two hashes, not what you are signing. Check that they match the ones below, ' +
+      'and approve on the Ledger only if you trust this request.',
+    domain: 'Domain hash',
+    message: 'Message hash',
+  });
+
+  const DEVICE_HASH = /^0x[0-9a-f]{64}$/;
+
+  /** A hash as the Ethereum app shows it: `0x`, then its 64 digits in capitals. */
+  const deviceHash = (hash) => '0x' + hash.slice(2).toUpperCase();
+
+  /**
+   * An `approvals:hash-only` message, checked: `{ handle, warning,
+   * domainSeparator, structHash }` (the warning to show, main's number for
+   * it, and main's two hashes), `{ handle, warning: null }` (take it down),
+   * or null for anything else.
+   */
+  function checkHashOnly(message) {
+    if (!isPlainObject(message) || typeof message.handle !== 'string' || !HANDLE.test(message.handle)) return null;
+    const keys = Object.keys(message);
+    if (message.warning === null) return keys.length === 2 ? { handle: message.handle, warning: null } : null;
+    if (keys.length !== 4 || !Number.isSafeInteger(message.warning) || message.warning < 1) return null;
+    const { domainSeparator, structHash } = message;
+    if (typeof domainSeparator !== 'string' || !DEVICE_HASH.test(domainSeparator)) return null;
+    if (typeof structHash !== 'string' || !DEVICE_HASH.test(structHash)) return null;
+    return { handle: message.handle, warning: message.warning, domainSeparator, structHash };
+  }
+
+  return Object.freeze({
+    KINDS,
+    SITE,
+    checkMessage,
+    checkJoined,
+    deviceOf,
+    typedDataText,
+    units,
+    HASH_ONLY_COPY,
+    deviceHash,
+    checkHashOnly,
+  });
 });

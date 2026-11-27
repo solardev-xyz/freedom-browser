@@ -62,6 +62,8 @@
  * 'executor-send' token (`wallet.executor_send`).
  */
 
+const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
+
 const BOARD_KINDS = Object.freeze({
   MESSAGE: 'eth.safe_message',
   SEND: 'eth.safe_send',
@@ -283,11 +285,22 @@ function createSafeBoards({
    * show, or another SafeTx pending than the board's), or `{ error }`.
    * `safeTxHash` binds a send's board to that SafeTx; without it, to the
    * one pending as it opens. `signal`, aborted, ends the board after the
-   * wait it is in (`closed`).
+   * wait it is in (`closed`). `windowId`: the window it shows in, where
+   * the request's own isn't (the wallet's board).
    */
   async function runBoard(
     board,
-    { safeIndex, safeTxHash = null, token = null, ask, unlock, confirmFee, confirmSafe = async () => null, signal = null }
+    {
+      safeIndex,
+      safeTxHash = null,
+      token = null,
+      ask,
+      unlock,
+      confirmFee,
+      confirmSafe = async () => null,
+      signal = null,
+      windowId = null,
+    }
   ) {
     // The SafeTx a send's board shows and acts on, once known.
     let bound = board === 'message' || typeof safeTxHash !== 'string' ? null : safeTxHash;
@@ -352,7 +365,10 @@ function createSafeBoards({
       let confirmed = false;
       for (let attempt = 0; ; attempt += 1) {
         try {
-          await api.sign(owner, confirmation);
+          // A Ledger owner's hash-only warning shows in this board's
+          // waiting state, for the owner row the user picked
+          // (wallet/ledger/hash-only-warning.js; LDG-3's PR 11).
+          await withHashOnlyTarget({ windowId, owner }, () => api.sign(owner, confirmation));
           return;
         } catch (err) {
           confirmation = null;
@@ -578,6 +594,7 @@ function createSafeBoards({
       return await runBoard('send', {
         safeIndex,
         signal: lifetime.signal,
+        windowId,
         ask: ({ view, choices, released }) =>
           walletPrompt(windowId, { kind: BOARD_KINDS.WALLET, view, choices, released }),
         unlock: async (reason) => {

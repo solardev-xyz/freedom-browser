@@ -2082,13 +2082,17 @@ jobs:
       # Cmd/Ctrl+Enter text publish. `dapp-background-tab.spec.js` (#764) keeps a
       # background tab's wallet requests attributed to its own site, with a real
       # vault and the real main-side signing check. The anvil-backed Safe specs
-      # run in `e2e-safe` below.
+      # run in `e2e-safe` below. `ledger-hash-only-notice.spec.js` (freedom-core
+      # design 0016, Q23; LDG-3's PR 11) renders a Ledger's hash-only warning
+      # over a tab in the real chrome, and reports it on screen only in a
+      # visible window.
       - name: Run wallet approval E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-wallet \
             test-e2e/dapp-background-tab.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
+            test-e2e/ledger-hash-only-notice.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
             test-e2e/wallet-toggle-early-start.spec.js \

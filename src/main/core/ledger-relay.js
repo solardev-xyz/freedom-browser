@@ -104,12 +104,15 @@
  *   once the core reads them (`vault_meta` moved), else none;
  *   `expectedHash`: `x402.settle`'s, main's own hash of its rebuild
  *   (`sign.typed_data` takes its params' `expected_hash`).
- * - `hashOnlySurface({ domainSeparator, structHash, signal })`: puts the
- *   hash-only warning with those two hashes (`0x` hex, main's binding's)
- *   on screen in the surface that waits on the device, and resolves true
- *   once it reports the state on screen (two animation frames in a visible
- *   window); `signal` aborts when main stops waiting for that report, or
- *   when the parent ends.
+ * - `hashOnlySurface({ domainSeparator, structHash, signal, cancel })`:
+ *   puts the hash-only warning with those two hashes (`0x` hex, main's
+ *   binding's) on screen in the surface that waits on the device, and
+ *   resolves true once it reports the state on screen (two animation frames
+ *   in a visible window); `signal` aborts when main stops waiting for that
+ *   report, or when the parent ends; `cancel()` is main's own cancel of the
+ *   parent, for a surface the user can cancel from (the chrome's notice
+ *   over a tab, the LDG-3 plan's point 19). LDG-3's PR 11 fills it
+ *   (wallet/ledger/hash-only-warning.js).
  * - `handle.signed`: whether the device answered the operation's last APDU
  *   (a signature's `E0 0C`) with status `9000` and main handed that answer
  *   to the pipe (latched by the handler's `onAnswer`), however the parent
@@ -676,7 +679,12 @@ class LedgerRelay {
     const giveUp = new AbortController();
     const surfaceSignal = AbortSignal.any([giveUp.signal, entry.life.signal]);
     const outcome = await this.held(entry, until, signal, () =>
-      entry.hashOnlySurface({ ...entry.hashes, signal: surfaceSignal })
+      entry.hashOnlySurface({
+        ...entry.hashes,
+        signal: surfaceSignal,
+        // Main's own cancel, as `handle.cancel()` (point 19's Cancel).
+        cancel: () => entry.controller.abort(),
+      })
     );
     const shown = outcome.value === true;
     if (!shown) giveUp.abort();

@@ -37,6 +37,7 @@ const { vaultBackend } = require('../core/vault-backend');
 const { createLedgerBackend } = require('./ledger/signer');
 const { ledgerBackendKind } = require('./ledger/ledger-backend-kind');
 const { LEDGER_ERROR_CODES, createLedgerError, fromCoreError } = require('./ledger/errors');
+const { currentHashOnlySurface } = require('./ledger/hash-only-warning');
 const { createRemoteBackend } = require('./remote/signer');
 const {
   normalizeMessage,
@@ -252,8 +253,15 @@ function createVaultBackend(walletIndex, authorized = {}) {
  *   signature is (the core already recovered the device's): a transaction's
  *   unsigned hash and sender, a message's EIP-191 signer, typed data's
  *   signer over the confirmed digest. Anything else is LEDGER_BAD_SIGNATURE.
- * - `hashOnlySurface` (the hash-only warning's, LDG-3's PR 11) and `signal`
- *   (main's own cancel, PR 10) go to the relay when the caller gives them.
+ * - **The hash-only warning** (Q23; LDG-3's PR 11): the relay holds the
+ *   device's `6D00` until it is on screen. The caller's `hashOnlySurface`
+ *   when it gives one; otherwise the one its request's target names
+ *   (ledger/hash-only-warning.js `currentHashOnlySurface`: the approvals
+ *   document's waiting state for the approval it waits on, or the chrome's
+ *   notice over its tab), captured as the signer is asked, inside the
+ *   caller's entry point.
+ * - `signal` (main's own cancel, PR 10) goes to the relay when the caller
+ *   gives it.
  */
 function createCoreLedgerBackend(walletIndex, record, authorized = {}) {
   const key = { kind: 'ledger', index: walletIndex, path: record.path, address: record.address };
@@ -284,9 +292,8 @@ function createCoreLedgerBackend(walletIndex, record, authorized = {}) {
             },
           }
         : {}),
-      ...(typeof authorized.hashOnlySurface === 'function'
-        ? { hashOnlySurface: authorized.hashOnlySurface }
-        : {}),
+      hashOnlySurface:
+        typeof authorized.hashOnlySurface === 'function' ? authorized.hashOnlySurface : currentHashOnlySurface(),
       ...(authorized.signal ? { signal: authorized.signal } : {}),
     };
     let reply;
