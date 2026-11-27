@@ -45,6 +45,7 @@ const { attachNaming, detachNaming } = require('./naming');
 const { attachChain, detachChain } = require('./chain');
 const { registerDwebShell } = require('./dweb-shell');
 const { registerSwarmShell } = require('./swarm-shell');
+const { registerLedgerRelay } = require('./ledger-relay');
 const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 const { attachGrants, detachGrants } = require('./grants');
 const { registerKeystoreShell } = require('./keystore-shell');
@@ -60,6 +61,8 @@ let client = null;
 let dwebShell = null;
 // The Swarm asks' executor (design 0015, SWM-5), likewise.
 let swarmShell = null;
+// The relay for the core's `shell.ledger_apdu` (design 0016, LDG-3), likewise.
+let ledgerRelay = null;
 // Set once app wind-down has stopped the core; nothing starts it again.
 let shutDown = false;
 
@@ -268,6 +271,11 @@ async function startCore() {
   // 0015's switch) no parent is admitted, and a stray ask is answered
   // `ended`, where no handler would end the connection.
   swarmShell = registerSwarmShell(client);
+  // The core's Ledger APDUs (`shell.ledger_apdu`), whichever backend drives
+  // the Ledger: on the JS backend (FREEDOM_LEDGER_BACKEND, design 0016's
+  // switch, LDG-3) no parent is opened, and a stray APDU is answered
+  // `parent`, where no handler would end the connection.
+  ledgerRelay = registerLedgerRelay(client);
   // The dApp grants, which the core writes (design 0012, APB-2): main's
   // copy read at each handshake, and again for each change the core sends.
   require('../wallet/dapp-permissions').attachCore(client);
@@ -312,6 +320,8 @@ async function stopCore() {
   detachGrants();
   dwebShell = null;
   swarmShell = null;
+  ledgerRelay?.endAll();
+  ledgerRelay = null;
   if (!client) return;
   const stopping = client;
   client = null;
@@ -334,6 +344,13 @@ function getSwarmShell() {
   return swarmShell;
 }
 
+/** The relay for the core's `shell.ledger_apdu`, whose `prepare()` and
+ * `open()` a Ledger request's sender calls (`open()` from its `onSent`);
+ * null while no core client runs. */
+function getLedgerRelay() {
+  return ledgerRelay;
+}
+
 module.exports = {
   RADICLE_PREPARE_WAIT_MS,
   // For tests: the bounded wait's parts.
@@ -347,4 +364,5 @@ module.exports = {
   getCoreClient,
   getDwebShell,
   getSwarmShell,
+  getLedgerRelay,
 };
