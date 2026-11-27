@@ -260,3 +260,29 @@ body {
 .panel-waiting[hidden] {
   display: none;
 }
+
+/* The hash-only warning (freedom-core design 0016, Q23): a Ledger that can
+   show only two hashes, before it asks. Amber, as a warning's consequence. */
+.panel-hash-only {
+  margin: 12px 16px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warning-fg);
+  border-radius: 6px;
+}
+
+.panel-hash-only[hidden] {
+  display: none;
+}
+
+.hash-only-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.hash-only-body {
+  margin: 6px 0 0;
+}
+
+.panel-hash-only .field-value.mono {
+  overflow-wrap: anywhere;
+}

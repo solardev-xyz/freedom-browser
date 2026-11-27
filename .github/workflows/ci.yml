@@ -2089,6 +2089,9 @@ jobs:
       # released), and `dapp-tx-ledger-confirm.spec.js` rejects a page's
       # transaction and message from the approvals document's waiting state.
       # The anvil-backed Safe specs run in `e2e-safe` below.
+      # `ledger-hash-only-notice.spec.js` (freedom-core design 0016, Q23;
+      # LDG-3's PR 11) renders a Ledger's hash-only warning over a tab in the
+      # real chrome, and reports it on screen only in a visible window.
       - name: Run wallet approval E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
@@ -2096,6 +2099,7 @@ jobs:
             test-e2e/dapp-background-tab.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
             test-e2e/dapp-tx-ledger-confirm.spec.js \
+            test-e2e/ledger-hash-only-notice.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
             test-e2e/wallet-toggle-early-start.spec.js \

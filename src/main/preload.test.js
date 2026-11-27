@@ -566,6 +566,9 @@ describe('preload', () => {
     expect(exposures.payments.clear).toBeUndefined();
 
     const sendCases = [
+      // The hash-only notice's report and Cancel (design 0016, Q23; LDG-3's PR 11).
+      [exposures.ledger, 'hashOnlyNoticeShown', ['ab'.repeat(16)], 'ledger:hash-only-notice-shown', [{ id: 'ab'.repeat(16) }]],
+      [exposures.ledger, 'cancelHashOnlyNotice', ['ab'.repeat(16)], 'ledger:hash-only-notice-cancel', [{ id: 'ab'.repeat(16) }]],
       [exposures.electronAPI, 'setWindowTitle', ['Title'], IPC.WINDOW_SET_TITLE, ['Title']],
       [exposures.electronAPI, 'closeWindow', [], IPC.WINDOW_CLOSE, []],
       [exposures.electronAPI, 'minimizeWindow', [], IPC.WINDOW_MINIMIZE, []],

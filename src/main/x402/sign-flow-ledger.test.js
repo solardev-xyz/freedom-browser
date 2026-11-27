@@ -40,6 +40,11 @@
  *   settles it `withheld` again, and reads `data.refunded` instead.
  * - **A settle main refuses unsent** (a path main can't derive a stream
  *   for) leaves the reservation to be settled `withheld`.
+ * - **The hash-only warning comes first** (Q23; LDG-3's PR 11): a device
+ *   that answers `6D00` to the first `E0 1A` gets no answer, and no
+ *   `E0 0C 00 00` reaches it, until the chrome's notice over the payment's
+ *   tab reports it on screen; then `hash_only: "shown"`, and the notice's
+ *   two hashes are the APDU's.
  *
  * Skipped unless the vectors are found (test/helpers/ledger-vectors.js):
  * FREEDOM_CORE_LEDGER_VECTORS names freedom-core's `vectors` directory, as
@@ -57,6 +62,9 @@ const mockState = {
   caps: new Map(),
   // A read of the mirror, as core/grants.js's `reread` resolves once it lands.
   reread: () => Promise.resolve(),
+  // The tabs' chrome, in window 1 (the hash-only notice's, LDG-3's PR 11).
+  chrome: null,
+  window: null,
 };
 
 jest.mock('electron', () => ({
@@ -68,11 +76,16 @@ jest.mock('electron', () => ({
           id,
           isDestroyed: () => false,
           loadURL: () => Promise.resolve(),
-          hostWebContents: { id: 1, send: () => {} },
+          hostWebContents: mockState.chrome,
         });
       }
       return mockState.tabs.get(id);
     },
+  },
+  BrowserWindow: {
+    fromId: (id) => (id === 1 ? mockState.window : null),
+    fromWebContents: (contents) => (contents && contents === mockState.chrome ? mockState.window : null),
+    getFocusedWindow: () => null,
   },
 }));
 jest.mock('../logger', () => ({
@@ -118,8 +131,12 @@ jest.mock('./intercept', () => ({
   sendToHost: jest.fn(),
 }));
 
+const path = require('path');
+const { pathToFileURL } = require('url');
 const log = require('../logger');
 const { setPendingPayment, sendToHost } = require('./intercept');
+const { LedgerRelay } = require('../core/ledger-relay');
+const { CHANNELS: HASH_ONLY, getHashOnlyWarnings } = require('../wallet/ledger/hash-only-warning');
 const { vaultBackend } = require('../core/vault-backend');
 const { TypedDataEncoder } = require('ethers');
 const { signAndQueueRetry, CAP_NOT_COVERED } = require('./sign-flow');
@@ -278,6 +295,18 @@ beforeEach(async () => {
   mockState.tabs.clear();
   mockState.caps.clear();
   mockState.reread = () => Promise.resolve();
+  // The chrome of window 1, which hosts every tab here.
+  mockState.chrome = {
+    id: 1,
+    sent: [],
+    isDestroyed: () => false,
+    getURL: () => pathToFileURL(path.resolve(__dirname, '..', '..', 'renderer', 'index.html')).href,
+    send(channel, payload) {
+      this.sent.push([channel, payload]);
+    },
+  };
+  mockState.window = { id: 1, webContents: mockState.chrome, isDestroyed: () => false, isVisible: () => true, isMinimized: () => false };
+  require('./intercept').clearAllHostSenders?.();
   capHolds._resetForTests();
   setPendingPayment.mockClear();
   sendToHost.mockClear();
@@ -1043,4 +1072,73 @@ describeIfVectors('a Ledger payment on the core: a settle main refuses unsent', 
     expect(started.devices.events).toEqual([]);
     expect(fc.faults).toEqual([]);
   });
+});
+
+describeIfVectors("a Ledger payment on the core: the hash-only warning comes first (Q23, LDG-3's PR 11)", () => {
+  test.each(FORMS)(
+    "%s: over the payment's tab, the 6D00 held until the notice reports; the hashes shown are the APDU's",
+    async (id, c) => {
+      recordFor(c);
+      const { admission } = new LedgerRelay({ log }).prepare({
+        method: 'x402.settle',
+        params: { reservation: 'r', typed_data: c.request.typed_data },
+        path: c.record.path,
+        expectedHash: c.request.expected_hash,
+      });
+      const hashOnlyApdu = admission.hashOnlySlot.apdu.toString('hex');
+      // A Nano S: the case's address check and app, 6D00 to the first E0 1A,
+      // and the recorded signature (over the same digest) for the two hashes.
+      started.devices.respond = (apdu, { index }) => {
+        const text = apdu.toString('hex');
+        if (index < 2) return c.exchanges[index].answer;
+        if (text.startsWith('e01a')) return '6d00';
+        if (text === hashOnlyApdu) return c.exchanges.at(-1).answer;
+        throw new Error(`unexpected APDU ${index}`);
+      };
+      const lane = { sixD: null, done: null };
+      const fc = serveX402({
+        authorize: () => authorizeReply(c),
+        settle: (message) => {
+          lane.done = (async () => {
+            for (const [i, slot] of admission.slots.slice(0, 3).entries()) {
+              const ask = fc.apdu(message.id, slot.apdu.toString('hex'), DEVICE_MS);
+              if (i === 2) lane.sixD = ask;
+              await until(() => fc.reply(ask) !== null, `the reply to APDU ${i}`, 20_000);
+            }
+            if (!fc.reply(lane.sixD).hashOnlyShown) return;
+            const ask = fc.apdu(message.id, hashOnlyApdu, USER_MS);
+            await until(() => fc.reply(ask) !== null, 'the signature');
+            fc.respond(message.id, { payload: JSON.parse(c.result.payload), charged: false });
+          })();
+        },
+      });
+      const notices = () => mockState.chrome.sent.filter(([channel]) => channel === HASH_ONLY.NOTICE).map(([, m]) => m);
+
+      const paid = pay(c);
+      await until(() => notices().length > 0, 'the notice up', 10_000);
+      const [notice] = notices();
+      // Held: no answer to the 6D00, nothing signing on the device.
+      await settle();
+      expect(fc.raw(lane.sixD)).toBeNull();
+      expect(started.devices.bytes().some((apdu) => apdu.startsWith('e00c'))).toBe(false);
+      expect(notice.site).toBe(ORIGIN);
+      expect(getHashOnlyWarnings().noticeShown({ sender: mockState.chrome }, { id: notice.id })).toBe(true);
+      const { error } = await paid;
+      await lane.done;
+
+      expect(error).toBeUndefined();
+      expect(fc.raw(lane.sixD).result).toEqual({ answer: '6d00', hash_only: 'shown' });
+      const reachedHashOnly = started.devices.bytes().filter((apdu) => apdu.startsWith('e00c0000'));
+      expect(reachedHashOnly).toEqual([hashOnlyApdu]);
+      expect(hashOnlyApdu.endsWith(notice.domainSeparator.slice(2) + notice.structHash.slice(2))).toBe(true);
+      const typed = c.request.typed_data;
+      const types = { ...typed.types };
+      delete types.EIP712Domain;
+      expect(notice.domainSeparator).toBe(TypedDataEncoder.hashDomain(typed.domain));
+      expect(notice.structHash).toBe(TypedDataEncoder.from(types).hash(typed.message));
+      expect(notices().at(-1)).toEqual({ id: notice.id, closed: true });
+      expect(setPendingPayment).toHaveBeenCalledTimes(1);
+      expect(fc.faults).toEqual([]);
+    }
+  );
 });

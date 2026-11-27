@@ -34,6 +34,11 @@
  *                                          -> { ok } | { ok: false, reason }
  *   approvals:view-part  document -> main  { handle, revision, index }
  *                                          -> { ok, part } | { ok: false, reason }
+ *   approvals:hash-only  main -> document  { handle, warning, domainSeparator,
+ *                                          structHash } | { handle, warning: null }
+ *   approvals:hash-only-shown
+ *                        document -> main  { handle, warning }: the warning is
+ *                                          on screen
  *   page:prompt-waiting  main -> document  { handle }: the approved request now
  *                                          waits on a Ledger Reject still reaches
  *   approvals:cancel     document -> main  { handle } -> { ok, notice } | { ok: false, reason }
@@ -47,6 +52,20 @@
  * shows main's notice (point 18, wallet/ledger/errors.js) for NOTICE_MS
  * after the request is answered, unless another prompt shows first. A
  * Reject needs no input delay, as a rejection never does.
+ *
+ * The hash-only warning (freedom-core design 0016, "Typed data on the
+ * device (Q23)"; LDG-3's PR 11, on the core's Ledger backend): while an
+ * approval waits on a Ledger (its waiting state below), main's relay may
+ * hold the device's `6D00` until the warning that the device shows only
+ * two hashes is on screen (`presentHashOnly`, for the approval
+ * wallet/ledger/hash-only-warning.js names: a page prompt's handle, or a
+ * Safe board prompt's handle and the owner it signs with; every identity
+ * named must match, `waitsFor`). Main sends the two hashes with a warning
+ * number of its own; the document shows them in the waiting state and
+ * reports after two animation frames with the warning laid out in a
+ * visible document, and main counts the report only for that warning,
+ * while that same approval still waits and the panel and its window show.
+ * It stays until the operation ends (`{ warning: null }`).
  *
  * A view over 256 KiB (very large transaction data, typed data or a
  * message; APS-4) doesn't go in one message: `page:prompt` then carries
@@ -165,6 +184,8 @@ const CHANNELS = Object.freeze({
   VIEW_PART: 'approvals:view-part',
   WAITING: 'page:prompt-waiting',
   CANCEL: 'approvals:cancel',
+  HASH_ONLY: 'approvals:hash-only',
+  HASH_ONLY_SHOWN: 'approvals:hash-only-shown',
   ANCHOR: 'page:approvals-anchor',
 });
 
@@ -176,6 +197,7 @@ const DOCUMENT_CHANNELS = Object.freeze([
   CHANNELS.DECIDE,
   CHANNELS.VIEW_PART,
   CHANNELS.CANCEL,
+  CHANNELS.HASH_ONLY_SHOWN,
 ]);
 
 // How long the panel keeps a cancel's notice (point 18) once the request
@@ -383,6 +405,28 @@ const deviceOf = (prompt, choices) => {
   return typeof type === 'string' && DEVICES.has(type) ? type : null;
 };
 
+/**
+ * Whether a waiting approval is the one a hash-only target names: that very
+ * approval, by its handle (main's 32 random bytes, one per prompt), and a
+ * Safe board's also by the owner it signs with. Every identity must match:
+ * a target with no handle names no approval, and another approval waiting
+ * in the window (another board with the same owner, for another Safe,
+ * SafeTx or message; another prompt) never matches.
+ */
+const waitsFor = (waiting, target) => {
+  if (!waiting || waiting.device !== 'ledger') return false;
+  if (typeof target?.handle !== 'string' || waiting.handle !== target.handle) return false;
+  const owner = Number.isSafeInteger(target.owner) ? target.owner : null;
+  return (waiting.owner ?? null) === owner;
+};
+
+const HASH = /^0x[0-9a-f]{64}$/;
+
+// Whether a window shows: visible, not minimized.
+function defaultWindowShows(window) {
+  return Boolean(window && !window.isDestroyed?.() && window.isVisible() && !window.isMinimized());
+}
+
 /** Whether bounds leave the panel room for a whole, actionable prompt. */
 const panelFits = (bounds) =>
   Boolean(bounds) && bounds.width >= MIN_PANEL_WIDTH && bounds.height >= MIN_PANEL_HEIGHT;
@@ -425,6 +469,8 @@ function defaultChromeWindowOf(contents) {
  *   `prefers-color-scheme` on every platform, so the document is told.
  * @param {(listener: (theme: string) => void) => void} [options.onThemeChange]
  * @param {(entry: object) => void} [options.onTrace]
+ * @param {(window: object) => boolean} [options.windowShows] whether a
+ *   window is visible and not minimized (the hash-only warning's report).
  */
 function createApprovalsDocuments({
   WebContentsView = () => require('electron').WebContentsView,
@@ -440,12 +486,15 @@ function createApprovalsDocuments({
   themeSetting = () => 'system',
   onThemeChange = () => {},
   onTrace = () => {},
+  windowShows = defaultWindowShows,
   log = console,
 } = {}) {
   const byWindow = new Map(); // window id -> record
   const byContents = new Map(); // the view's webContents id -> record
   // Every `page:prompt` sent is a revision of its own (APS-4).
   let lastRevision = 0;
+  // Every hash-only warning sent is a number of its own.
+  let lastWarning = 0;
   const preparedSessions = new WeakSet();
 
   const trace = (entry) => {
@@ -610,11 +659,15 @@ function createApprovalsDocuments({
       parts: null,
       revision: 0,
       report: null,
-      // `{ handle, device, cancellable }` while an approval for a device's
-      // account signs; `cancellable` once Reject reaches its device step.
+      // `{ handle, device, owner, cancellable }` while an approval for a
+      // device's account signs (`owner`: a Safe board's, the owner it signs
+      // with; `cancellable` once Reject reaches its device step).
       waiting: null,
       // `{ handle, timer }`: a cancel's notice the panel keeps a moment.
       notice: null,
+      // The hash-only warning up in the waiting state: `{ handle, target,
+      // warning, report }`, `target` the approval it is for (LDG-3's PR 11).
+      hashOnly: null,
       armedAt: -Infinity,
       top: DEFAULT_TOP,
       bounds: null,
@@ -689,6 +742,7 @@ function createApprovalsDocuments({
       record.report = null;
       record.waiting = null;
       dropNotice(record);
+      endHashOnly(record);
       show(record);
       trace({ kind: 'prompt', window: windowId, handle, revision: lastRevision, parts: parts ? parts.length : 0 });
       deliver(record, CHANNELS.PROMPT, message);
@@ -846,7 +900,10 @@ function createApprovalsDocuments({
     // Approved for an account that signs on a device: the panel keeps
     // saying where to confirm until the request is answered.
     const device = payload.approve ? deviceOf({ kind: record.shown.kind, view: record.shownView }, payload.choices) : null;
-    if (device) record.waiting = { handle: payload.handle, device };
+    if (device) {
+      const owner = BOARDS.has(record.shown.kind) && Number.isSafeInteger(payload.choices?.owner) ? payload.choices.owner : null;
+      record.waiting = { handle: payload.handle, device, owner };
+    }
     let result;
     try {
       result = await decide(record.windowId, payload);
@@ -855,6 +912,7 @@ function createApprovalsDocuments({
     }
     if (device && record.waiting?.handle === payload.handle) {
       record.waiting = null;
+      endHashOnly(record);
       waitOver(record, payload.handle);
     }
     return out(isPlainObject(result) ? result : { ok: false, reason: 'failed' });
@@ -937,6 +995,94 @@ function createApprovalsDocuments({
   }
 
   /**
+   * The hash-only warning (LDG-3's PR 11) in window `windowId`'s waiting
+   * state, for the approval `target` names (`waitsFor`), until `signal`
+   * aborts: resolves true once the document reports it on screen, false
+   * if it ends first. Null when no such approval waits there (the caller
+   * shows the chrome's notice instead).
+   */
+  function presentHashOnly(windowId, target, { domainSeparator, structHash } = {}, signal = null) {
+    const record = byWindow.get(windowId);
+    if (!record?.ready || !waitsFor(record.waiting, target)) return null;
+    if (!(signal instanceof AbortSignal) || signal.aborted) return null;
+    if (!HASH.test(domainSeparator ?? '') || !HASH.test(structHash ?? '')) return null;
+    endHashOnly(record);
+    lastWarning += 1;
+    // The approval it is for, as the target named it: its report counts
+    // only while that same approval waits.
+    const owner = Number.isSafeInteger(target.owner) ? { owner: target.owner } : {};
+    const entry = {
+      handle: record.waiting.handle,
+      target: Object.freeze({ handle: target.handle, ...owner }),
+      warning: lastWarning,
+      settle: null,
+    };
+    const shown = new Promise((resolve) => {
+      entry.settle = resolve;
+    });
+    const settle = (value) => {
+      const done = entry.settle;
+      entry.settle = null;
+      done?.(value);
+    };
+    entry.report = () => settle(true);
+    entry.end = () => settle(false);
+    record.hashOnly = entry;
+    trace({ kind: 'hash-only', window: windowId, handle: entry.handle, warning: entry.warning });
+    deliver(record, CHANNELS.HASH_ONLY, { handle: entry.handle, warning: entry.warning, domainSeparator, structHash });
+    signal.addEventListener(
+      'abort',
+      () => {
+        if (record.hashOnly === entry) endHashOnly(record);
+        settle(false);
+      },
+      { once: true }
+    );
+    return shown;
+  }
+
+  // The warning up, taken down: its approval stopped waiting, another took
+  // over, or its operation ended.
+  function endHashOnly(record) {
+    const entry = record.hashOnly;
+    if (!entry) return;
+    record.hashOnly = null;
+    entry.end();
+    trace({ kind: 'hash-only-ended', window: record.windowId, handle: entry.handle, warning: entry.warning });
+    deliver(record, CHANNELS.HASH_ONLY, { handle: entry.handle, warning: null });
+  }
+
+  /**
+   * `approvals:hash-only-shown { handle, warning }` from a window's own
+   * document: the warning main sent last is on screen, while the approval
+   * it was sent for still waits (`waitsFor`, every identity its target
+   * named) and the panel and its window show.
+   */
+  function hashOnlyShown(event, payload) {
+    const { record, reason } = senderOf(event);
+    if (!record) return refused(CHANNELS.HASH_ONLY_SHOWN, reason);
+    const entry = record.hashOnly;
+    if (
+      !isPlainObject(payload) ||
+      Object.keys(payload).length !== 2 ||
+      !entry ||
+      payload.handle !== entry.handle ||
+      payload.warning !== entry.warning ||
+      !waitsFor(record.waiting, entry.target)
+    ) {
+      trace({ kind: 'hash-only-ignored', window: record.windowId });
+      return { ok: false, reason: 'not-shown' };
+    }
+    if (!record.visible || !safely(() => windowShows(record.window), false)) {
+      trace({ kind: 'hash-only-hidden', window: record.windowId, handle: entry.handle });
+      return { ok: false, reason: 'hidden' };
+    }
+    trace({ kind: 'hash-only-shown', window: record.windowId, handle: entry.handle, warning: entry.warning });
+    entry.report();
+    return { ok: true };
+  }
+
+  /**
    * `page:approvals-anchor { top }` from a window's chrome: where its content
    * area starts. Clamped, so the panel stays beside the content, below the
    * toolbar, wherever the chrome says it is.
@@ -963,6 +1109,9 @@ function createApprovalsDocuments({
     ipcMain.handle(CHANNELS.DECIDE, (event, payload) => decideFrom(event, payload));
     ipcMain.handle(CHANNELS.VIEW_PART, (event, payload) => viewPart(event, payload));
     ipcMain.handle(CHANNELS.CANCEL, (event, payload) => cancelFrom(event, payload));
+    ipcMain.on(CHANNELS.HASH_ONLY_SHOWN, (event, payload) => {
+      hashOnlyShown(event, payload);
+    });
     ipcMain.on(CHANNELS.ANCHOR, (event, payload) => {
       anchor(event, payload);
     });
@@ -1000,6 +1149,7 @@ function createApprovalsDocuments({
         waiting: record.waiting ? record.waiting.device : null,
         cancellable: record.waiting?.cancellable === true,
         notice: record.notice ? record.notice.handle : null,
+        hashOnly: record.hashOnly ? record.hashOnly.warning : null,
       };
     }
     return out;
@@ -1018,6 +1168,8 @@ function createApprovalsDocuments({
     reshow,
     state,
     serve,
+    presentHashOnly,
+    hashOnlyShown,
   };
 }
 

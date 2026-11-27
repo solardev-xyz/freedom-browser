@@ -281,7 +281,10 @@ function refusal(code, message, data) {
  * settle goes under the device watchdog (vault-backend.js
  * `x402.settleOnLedger`) and is opened in the relay from its `onSent`,
  * before the core can ask anything for it; its end, whatever it is, closes
- * it there.
+ * it there. A device that shows only hashes gets the hash-only warning
+ * first, over the payment's tab (wallet/ledger/hash-only-warning.js, the
+ * target `x402/sign-flow.js` runs the payment with, and `origin` as its
+ * site; LDG-3's PR 11).
  *
  * `track` is filled as the settle goes: `track.sent` once it is written to
  * the core (from then on the reservation is the core's to spend, however
@@ -306,6 +309,9 @@ async function settleTypedData(reservation, typedData, { path, expectedHash, ori
       });
     }
     const controller = new AbortController();
+    const hashOnlySurface = require('../wallet/ledger/hash-only-warning').currentHashOnlySurface(
+      origin ? { site: origin } : null
+    );
     let handle = null;
     let unopened = null;
     try {
@@ -314,7 +320,7 @@ async function settleTypedData(reservation, typedData, { path, expectedHash, ori
         onSent: (id, generation) => {
           track.sent = true;
           try {
-            handle = relay.open({ id, generation }, { prepared, controller });
+            handle = relay.open({ id, generation }, { prepared, controller, hashOnlySurface });
           } catch (err) {
             // Every APDU of it would be refused: main cancels it at once.
             unopened = err;

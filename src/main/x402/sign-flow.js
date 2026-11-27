@@ -48,6 +48,7 @@ const {
   hostWindowIdOf,
 } = require('./intercept');
 const { runInWindow } = require('../windows/request-window');
+const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
 const {
   authorize: authorizePayment,
   settle: settlePayment,
@@ -260,16 +261,20 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
   const held = { reservation: null, origin: null, historySlot: null };
   // It runs for the window that hosts the tab (freedom-core design 0011,
   // APS-5): an auto-pay within a cap, which asks nothing, goes there too.
-  return runInWindow(hostWindowIdOf(webContentsId), async () => {
-    try {
-      return await signAndStash(webContentsId, opts, held);
-    } catch (err) {
-      if (held.reservation) settleAndTell(webContentsId, held.reservation, held.origin);
-      releaseHistorySlot(held.historySlot);
-      held.historySlot = null;
-      throw err;
-    }
-  });
+  // A Ledger's hash-only warning on the core's backend shows over that tab
+  // (freedom-core design 0016, Q23; LDG-3's PR 11, hash-only-warning.js).
+  return runInWindow(hostWindowIdOf(webContentsId), () =>
+    withHashOnlyTarget({ guest: webContentsId }, async () => {
+      try {
+        return await signAndStash(webContentsId, opts, held);
+      } catch (err) {
+        if (held.reservation) settleAndTell(webContentsId, held.reservation, held.origin);
+        releaseHistorySlot(held.historySlot);
+        held.historySlot = null;
+        throw err;
+      }
+    })
+  );
 }
 
 function settleAndTell(webContentsId, reservation, origin) {

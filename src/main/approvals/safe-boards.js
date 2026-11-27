@@ -62,6 +62,8 @@
  * 'executor-send' token (`wallet.executor_send`).
  */
 
+const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
+
 const BOARD_KINDS = Object.freeze({
   MESSAGE: 'eth.safe_message',
   SEND: 'eth.safe_send',
@@ -277,17 +279,30 @@ function createSafeBoards({
    * One board, from its first view to its end. `ask({ view, choices,
    * released })` shows the board and settles with the decision; `unlock`
    * asks for the vault unlocked and resolves whether it is; `confirmFee`
-   * asks for the executor's fee. Resolves with the board's outcome:
+   * asks for the executor's fee. The decision names the handle of the
+   * prompt it was made on (`page-requests.js`), for a Ledger owner's
+   * hash-only warning. Resolves with the board's outcome:
    * `complete` (a message whose threshold is met), `executed`, `parked`,
    * `discarded`, `rejected` (a message), `closed`, `gone` (nothing left to
    * show, or another SafeTx pending than the board's), or `{ error }`.
    * `safeTxHash` binds a send's board to that SafeTx; without it, to the
    * one pending as it opens. `signal`, aborted, ends the board after the
-   * wait it is in (`closed`).
+   * wait it is in (`closed`). `windowId`: the window it shows in, where
+   * the request's own isn't (the wallet's board).
    */
   async function runBoard(
     board,
-    { safeIndex, safeTxHash = null, token = null, ask, unlock, confirmFee, confirmSafe = async () => null, signal = null }
+    {
+      safeIndex,
+      safeTxHash = null,
+      token = null,
+      ask,
+      unlock,
+      confirmFee,
+      confirmSafe = async () => null,
+      signal = null,
+      windowId = null,
+    }
   ) {
     // The SafeTx a send's board shows and acts on, once known.
     let bound = board === 'message' || typeof safeTxHash !== 'string' ? null : safeTxHash;
@@ -346,13 +361,19 @@ function createSafeBoards({
       }
     };
 
-    async function signOwner(owner) {
+    // `handle`: the board prompt's the decision was made on (`ask` names it).
+    async function signOwner(owner, handle) {
       notes.delete(owner);
       let confirmation = null;
       let confirmed = false;
       for (let attempt = 0; ; attempt += 1) {
         try {
-          await api.sign(owner, confirmation);
+          // A Ledger owner's hash-only warning shows in this board's
+          // waiting state: for that very approval (the prompt's handle) and
+          // the owner row the user picked, never another board's with the
+          // same owner (wallet/ledger/hash-only-warning.js; LDG-3's PR 11).
+          const target = { windowId, owner, handle: typeof handle === 'string' ? handle : undefined };
+          await withHashOnlyTarget(target, () => api.sign(owner, confirmation));
           return;
         } catch (err) {
           confirmation = null;
@@ -514,7 +535,7 @@ function createSafeBoards({
           error = null;
           continue;
         }
-        if (choice.action === 'sign') await signOwner(choice.owner);
+        if (choice.action === 'sign') await signOwner(choice.owner, decision.handle);
       }
     } finally {
       releasePrevious();
@@ -578,6 +599,7 @@ function createSafeBoards({
       return await runBoard('send', {
         safeIndex,
         signal: lifetime.signal,
+        windowId,
         ask: ({ view, choices, released }) =>
           walletPrompt(windowId, { kind: BOARD_KINDS.WALLET, view, choices, released }),
         unlock: async (reason) => {

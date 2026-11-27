@@ -950,6 +950,27 @@ describe('the hash-only warning (Q23, point 12)', () => {
     expect(surface.mock.calls[0][0].signal.aborted).toBe(true);
     expect(devices.of('detach')).toHaveLength(1);
   });
+
+  test("the surface's cancel (the notice's Cancel, point 19) is main's own cancel of the parent", async () => {
+    await start({ respond: sixD });
+    const surface = jest.fn(() => new Promise(() => {}));
+    const parent = open('typed', { hashOnlySurface: surface });
+    await until(() => parent.handle, 'the parent');
+    const stream = typed();
+    await play(parent, stream, 2);
+    const first = core().apdu(parent.id, stream[2].apdu, 15_000);
+    await until(() => surface.mock.calls.length === 1, 'the warning asked for');
+    const [{ cancel, signal }] = surface.mock.calls[0];
+    expect(typeof cancel).toBe('function');
+    cancel();
+    await until(() => core().raw(first), 'the reply');
+    expect(core().raw(first).result).toEqual({ answer: SIX_D });
+    expect(core().cancels()).toEqual([parent.id]);
+    expect(signal.aborted).toBe(true);
+    expect(devices.of('detach')).toHaveLength(1);
+    expect(await ask(parent, hashOnlyApdu(), 300_000)).toEqual({ refused: 'ended' });
+    expect(devices.bytes()).not.toContain(hashOnlyApdu());
+  });
 });
 
 describe('across operations (0016, LDG-3 relay rules)', () => {

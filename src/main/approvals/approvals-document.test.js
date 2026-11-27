@@ -145,6 +145,16 @@ class FakeWindow extends EventEmitter {
     this.contentView = { addChildView: (view) => this.children.push(view) };
     this.webContents = { id: 500 + id, focused: false, focus() { this.focused = true; } };
     this.minimum = [0, 0];
+    this.shows = true;
+    this.minimized = false;
+  }
+
+  isVisible() {
+    return this.shows;
+  }
+
+  isMinimized() {
+    return this.minimized;
   }
 
   getContentSize() {
@@ -800,7 +810,7 @@ describe('main\'s prompts in the document', () => {
   test('registers the document\'s channels and the chrome\'s anchor', () => {
     const env = setup();
     expect(env.ipc.on.mock.calls.map(([channel]) => channel).sort()).toEqual(
-      [CHANNELS.READY, CHANNELS.SHOWN, CHANNELS.ANCHOR].sort()
+      [CHANNELS.READY, CHANNELS.SHOWN, CHANNELS.ANCHOR, CHANNELS.HASH_ONLY_SHOWN].sort()
     );
     expect(env.ipc.handle.mock.calls.map(([channel]) => channel)).toEqual([
       CHANNELS.DECIDE,
@@ -1946,5 +1956,255 @@ describe('APS-3b: a window\'s own vault unlock, for the wallet\'s Safe board', (
     expect(env.chromeChannels().filter((c) => c === 'page:prompt')).toEqual([]);
     // Off: nothing asked.
     expect(await withPageRequests({ flag: false }).requests.walletUnlock(1, { reason: 'send' })).toEqual({ closed: 'cancelled' });
+  });
+});
+
+// freedom-core design 0016, "Typed data on the device (Q23)"; LDG-3's PR 11:
+// while an approval waits on a Ledger, the hash-only warning in its waiting
+// state, reported on screen by the window's own document, for the warning
+// main sent last, while that approval waits and the panel and its window show.
+describe("the hash-only warning in a Ledger's waiting state (Q23, LDG-3's PR 11)", () => {
+  const DOMAIN = '0x' + '1a'.repeat(32);
+  const STRUCT = '0x' + '2b'.repeat(32);
+  const HASHES = { domainSeparator: DOMAIN, structHash: STRUCT };
+  const ledgerView = { account: { index: 1000000, name: 'Ledger', address: null, type: 'ledger' } };
+  const owners = [
+    { index: 1, type: 'ledger', signed: false },
+    { index: 2, type: 'ledger', signed: false },
+  ];
+
+  /** Window 1's document waiting on an approval of `shownPrompt` with `choices`; the decision held. */
+  function waitingOn(shownPrompt, choices) {
+    const env = setup();
+    const { window, contents, view } = attached(env);
+    let answer;
+    env.decide.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+    env.docs.send(1, CHANNELS.PROMPT, shownPrompt);
+    env.docs.shown(eventFrom(contents), { handle: shownPrompt.handle, revision: sentRevision(contents) });
+    env.advance(INPUT_DELAY_MS);
+    const decided = env.docs.decide(eventFrom(contents), {
+      handle: shownPrompt.handle,
+      approve: true,
+      ...(choices ? { choices } : {}),
+    });
+    contents.sent.length = 0;
+    return { env, window, contents, view, decided, answer: (value) => answer(value) };
+  }
+  const warningsSent = (contents) => contents.sent.filter(([channel]) => channel === CHANNELS.HASH_ONLY).map(([, m]) => m);
+  const settled = async (promise) => {
+    let out = 'pending';
+    promise.then((value) => (out = value));
+    await flush();
+    return out;
+  };
+
+  test("a prompt's approve, by its handle: the hashes sent, true once the document reports that warning", async () => {
+    const { env, contents, decided, answer } = waitingOn(prompt(HANDLE, ledgerView));
+    const life = new AbortController();
+    const shown = env.docs.presentHashOnly(1, { handle: HANDLE }, HASHES, life.signal);
+    expect(shown).toBeInstanceOf(Promise);
+    const [message] = warningsSent(contents);
+    expect(message).toEqual({ handle: HANDLE, warning: expect.any(Number), domainSeparator: DOMAIN, structHash: STRUCT });
+    expect(env.docs.state()[1].hashOnly).toBe(message.warning);
+    // Not yet on screen: nothing resolves.
+    expect(await settled(shown)).toBe('pending');
+    // An older warning's number, or another handle, counts for nothing.
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: HANDLE, warning: message.warning - 1 })).toEqual({
+      ok: false,
+      reason: 'not-shown',
+    });
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: OTHER_HANDLE, warning: message.warning })).toEqual({
+      ok: false,
+      reason: 'not-shown',
+    });
+    // Another window's document, or a sub-frame, is refused.
+    const other = attached(env, 2);
+    expect(env.docs.hashOnlyShown(eventFrom(other.contents), { handle: HANDLE, warning: message.warning })).toMatchObject({
+      ok: false,
+    });
+    expect(env.docs.hashOnlyShown(eventFrom(contents, { url: APPROVALS_URL, detached: false }), message)).toMatchObject({
+      ok: false,
+      reason: 'sub-frame',
+    });
+    expect(await settled(shown)).toBe('pending');
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: HANDLE, warning: message.warning })).toEqual({ ok: true });
+    expect(await shown).toBe(true);
+    // It stays until the operation ends; then main takes it down.
+    life.abort();
+    expect(warningsSent(contents).at(-1)).toEqual({ handle: HANDLE, warning: null });
+    expect(env.docs.state()[1].hashOnly).toBeNull();
+    answer({ ok: true });
+    await decided;
+  });
+
+  test("a prompt's approve is no board's: a target naming an owner never matches it", async () => {
+    const { env, contents, answer, decided } = waitingOn(prompt(HANDLE, ledgerView));
+    const life = new AbortController();
+    expect(env.docs.presentHashOnly(1, { handle: HANDLE, owner: 1 }, HASHES, life.signal)).toBeNull();
+    expect(env.docs.presentHashOnly(1, { handle: OTHER_HANDLE }, HASHES, life.signal)).toBeNull();
+    expect(warningsSent(contents)).toEqual([]);
+    answer({ ok: true });
+    await decided;
+  });
+
+  test('a hidden window, a minimized one, or the panel hidden: the report counts for nothing', async () => {
+    const { env, window, contents, view } = waitingOn(prompt(HANDLE, ledgerView));
+    const life = new AbortController();
+    const shown = env.docs.presentHashOnly(1, { handle: HANDLE }, HASHES, life.signal);
+    const [{ warning }] = warningsSent(contents);
+    window.shows = false;
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: HANDLE, warning })).toEqual({ ok: false, reason: 'hidden' });
+    window.shows = true;
+    window.minimized = true;
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: HANDLE, warning })).toEqual({ ok: false, reason: 'hidden' });
+    window.minimized = false;
+    expect(view.visible).toBe(true);
+    life.abort();
+    expect(await shown).toBe(false);
+  });
+
+  test("a Safe board's owner row, by its prompt's handle and the owner it signs with", async () => {
+    const board = { handle: HANDLE, guest: null, kind: 'wallet.safe_board', site: SITE, view: { owners } };
+    const { env, contents, answer, decided } = waitingOn(board, { action: 'sign', owner: 2 });
+    const life = new AbortController();
+    // Every identity must match: the owner alone, another owner, another
+    // board's handle, or the handle without the owner is no match, and the
+    // caller shows the notice.
+    for (const target of [
+      { owner: 2 },
+      { handle: HANDLE, owner: 1 },
+      { handle: OTHER_HANDLE, owner: 2 },
+      { handle: HANDLE },
+      { guest: 7, site: SITE.key },
+    ]) {
+      expect(env.docs.presentHashOnly(1, target, HASHES, life.signal)).toBeNull();
+    }
+    expect(warningsSent(contents)).toEqual([]);
+    const shown = env.docs.presentHashOnly(1, { handle: HANDLE, owner: 2 }, HASHES, life.signal);
+    const [{ warning }] = warningsSent(contents);
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: HANDLE, warning })).toEqual({ ok: true });
+    expect(await shown).toBe(true);
+    // The decision answered: the waiting state goes, and the warning with it.
+    answer({ ok: true });
+    await decided;
+    expect(warningsSent(contents).at(-1)).toEqual({ handle: HANDLE, warning: null });
+    expect(env.docs.state()[1]).toMatchObject({ waiting: null, hashOnly: null });
+  });
+
+  // The crossing (Codex, #1364): Safe A's and Safe B's boards in one
+  // window share Ledger owner 2. A is approved while its device operation
+  // is queued; B's board takes the panel and is approved for owner 2; then
+  // A's device answers 6D00. A's warning never shows in B's board, and no
+  // report of B's releases A.
+  test("two boards in one window sharing a Ledger owner: A's warning never shows in B's waiting state", async () => {
+    const boardA = { handle: HANDLE, guest: 7, kind: 'eth.safe_message', site: SITE, view: { owners } };
+    const boardB = { handle: OTHER_HANDLE, guest: null, kind: 'wallet.safe_board', site: SITE, view: { owners } };
+    const { env, contents, answer: answerA, decided: decidedA } = waitingOn(boardA, { action: 'sign', owner: 2 });
+    let answerB;
+    env.decide.mockImplementation(() => new Promise((resolve) => (answerB = resolve)));
+    env.docs.send(1, CHANNELS.PROMPT, boardB);
+    env.docs.shown(eventFrom(contents), { handle: OTHER_HANDLE, revision: sentRevision(contents) });
+    env.advance(INPUT_DELAY_MS);
+    const decidedB = env.docs.decide(eventFrom(contents), {
+      handle: OTHER_HANDLE,
+      approve: true,
+      choices: { action: 'sign', owner: 2 },
+    });
+    expect(env.docs.state()[1].waiting).toBe('ledger');
+    contents.sent.length = 0;
+    const life = new AbortController();
+    // A's 6D00: its target names A's handle and owner 2. B waits with owner
+    // 2, but it is not A: nothing goes to the document.
+    expect(env.docs.presentHashOnly(1, { handle: HANDLE, owner: 2 }, HASHES, life.signal)).toBeNull();
+    expect(warningsSent(contents)).toEqual([]);
+    expect(env.docs.state()[1].hashOnly).toBeNull();
+    // Whatever B's document reports, there is no warning to count.
+    for (let warning = 0; warning < 5; warning += 1) {
+      for (const handle of [HANDLE, OTHER_HANDLE]) {
+        expect(env.docs.hashOnlyShown(eventFrom(contents), { handle, warning })).toEqual({ ok: false, reason: 'not-shown' });
+      }
+    }
+    // B's own warning shows in B's waiting state, and B's report counts for B.
+    const shownB = env.docs.presentHashOnly(1, { handle: OTHER_HANDLE, owner: 2 }, HASHES, life.signal);
+    const [message] = warningsSent(contents);
+    expect(message).toMatchObject({ handle: OTHER_HANDLE });
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: HANDLE, warning: message.warning })).toEqual({
+      ok: false,
+      reason: 'not-shown',
+    });
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: OTHER_HANDLE, warning: message.warning })).toEqual({
+      ok: true,
+    });
+    expect(await shownB).toBe(true);
+    life.abort();
+    answerA({ ok: true });
+    answerB({ ok: true });
+    await decidedA;
+    await decidedB;
+  });
+
+  test("a Safe board's decision names the handle it was made on (page-requests.js); another prompt's doesn't", async () => {
+    const decisions = [];
+    const env = withPageRequests({
+      dispatch: async (context) => {
+        decisions.push(await context.prompt({ kind: 'eth.safe_message', view: { owners }, choices: (raw) => raw }));
+        return { result: 'done' };
+      },
+    });
+    const { contents } = attached(env);
+    const lastShown = () => contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1];
+    const approveShown = (choices) => {
+      const shown = lastShown();
+      env.docs.shown(eventFrom(contents), { handle: shown.handle, revision: sentRevision(contents) });
+      env.advance(INPUT_DELAY_MS);
+      return { handle: shown.handle, decided: env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true, choices }) };
+    };
+    // A page's board.
+    const answer = env.tab().ask(VIEW);
+    await flush();
+    expect(lastShown().kind).toBe('eth.safe_message');
+    const page = approveShown({ action: 'sign', owner: 1 });
+    await answer;
+    expect(await page.decided).toEqual({ ok: true });
+    expect(decisions).toEqual([{ approve: true, choices: { action: 'sign', owner: 1 }, from: 'approvals', handle: page.handle }]);
+    // The wallet's board.
+    const board = env.requests.walletPrompt(1, { kind: 'wallet.safe_board', view: { owners }, choices: (raw) => raw });
+    await flush();
+    const wallet = approveShown({ action: 'sign', owner: 2 });
+    expect(await wallet.decided).toEqual({ ok: true });
+    expect(await board).toEqual({ approve: true, choices: { action: 'sign', owner: 2 }, from: 'approvals', handle: wallet.handle });
+    // Another wallet prompt's decision names none.
+    const send = env.requests.walletPrompt(1, { kind: 'wallet.send', view: {} });
+    await flush();
+    await approveShown(undefined).decided;
+    expect(await send).toEqual({ approve: true, choices: {}, from: 'approvals' });
+  });
+
+  test('no approval waiting on a Ledger there, a phone waiting, no signal, or bad hashes: null, nothing sent', async () => {
+    const env = setup();
+    const { contents } = attached(env);
+    const life = new AbortController();
+    expect(env.docs.presentHashOnly(1, { handle: HANDLE }, HASHES, life.signal)).toBeNull();
+    expect(env.docs.presentHashOnly(9, { handle: HANDLE }, HASHES, life.signal)).toBeNull();
+    const phone = waitingOn(prompt(HANDLE, { account: { index: 1000001, name: 'Phone', address: null, type: 'remote' } }));
+    expect(phone.env.docs.presentHashOnly(1, { handle: HANDLE }, HASHES, life.signal)).toBeNull();
+    const ledger = waitingOn(prompt(HANDLE, ledgerView));
+    expect(ledger.env.docs.presentHashOnly(1, { handle: HANDLE }, HASHES, null)).toBeNull();
+    expect(ledger.env.docs.presentHashOnly(1, { handle: HANDLE }, { ...HASHES, structHash: 'nope' }, life.signal)).toBeNull();
+    const done = new AbortController();
+    done.abort();
+    expect(ledger.env.docs.presentHashOnly(1, { handle: HANDLE }, HASHES, done.signal)).toBeNull();
+    expect(warningsSent(contents)).toEqual([]);
+    expect(warningsSent(ledger.contents)).toEqual([]);
+  });
+
+  test('a new prompt taking over the waiting panel ends the warning, unreported: false', async () => {
+    const { env, contents } = waitingOn(prompt(HANDLE, ledgerView));
+    const life = new AbortController();
+    const shown = env.docs.presentHashOnly(1, { handle: HANDLE }, HASHES, life.signal);
+    const [{ warning }] = warningsSent(contents);
+    env.docs.send(1, CHANNELS.PROMPT, prompt(OTHER_HANDLE));
+    expect(await shown).toBe(false);
+    expect(env.docs.hashOnlyShown(eventFrom(contents), { handle: HANDLE, warning })).toEqual({ ok: false, reason: 'not-shown' });
   });
 });

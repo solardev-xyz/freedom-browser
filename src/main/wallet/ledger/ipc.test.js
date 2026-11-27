@@ -92,3 +92,12 @@ describe('ledger:get-accounts on the core’s backend (FREEDOM_LEDGER_BACKEND=co
     expect(mockListAccounts).not.toHaveBeenCalled();
   });
 });
+
+describe("the hash-only notice's report and Cancel (design 0016, Q23; LDG-3's PR 11)", () => {
+  test('registered whichever backend runs; a report naming no notice changes nothing', () => {
+    expect(mockIpcMain.listeners.has('ledger:hash-only-notice-shown')).toBe(true);
+    expect(mockIpcMain.listeners.has('ledger:hash-only-notice-cancel')).toBe(true);
+    expect(() => mockIpcMain.emit('ledger:hash-only-notice-shown', { sender: {} }, { id: 'ab'.repeat(16) })).not.toThrow();
+    expect(() => mockIpcMain.emit('ledger:hash-only-notice-cancel', { sender: {} }, { id: 'ab'.repeat(16) })).not.toThrow();
+  });
+});
