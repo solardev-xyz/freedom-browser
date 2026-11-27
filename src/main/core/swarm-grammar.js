@@ -1468,6 +1468,24 @@ function parsePath(form, path) {
   return values;
 }
 
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const BASE64_TEXT = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * Whether `text` is base64 exactly as its bytes encode: the standard
+ * alphabet in groups of four, padded to the end, and the bits a padded
+ * group leaves unused all zero. The same test as decoding it and writing it
+ * back (what `bytes.toString('base64') === text` asks), without making that
+ * second string.
+ */
+function canonicalBase64(text) {
+  if (!BASE64_TEXT.test(text)) return false;
+  const end = text.length;
+  if (text.endsWith('==')) return (BASE64_ALPHABET.indexOf(text[end - 3]) & 0x0f) === 0;
+  if (text.endsWith('=')) return (BASE64_ALPHABET.indexOf(text[end - 2]) & 0x03) === 0;
+  return true;
+}
+
 /** The body as the call carries it: `{ bytes }` for base64, `{ stream }`, or null; `invalid` when malformed. */
 function readBody(body) {
   if (body === undefined || body === null) return null;
@@ -1475,10 +1493,12 @@ function readBody(body) {
   const keys = Object.keys(body);
   if (keys.length !== 1) return 'invalid';
   if (keys[0] === 'base64') {
-    // Past the inline bound by its length alone: refused undecoded.
+    // Past the inline bound by its length alone: refused undecoded. And
+    // canonical by its text, so no second string is written to compare.
     if (typeof body.base64 !== 'string' || body.base64.length > INLINE_BASE64) return 'invalid';
+    if (!canonicalBase64(body.base64)) return 'invalid';
     const bytes = Buffer.from(body.base64, 'base64');
-    if (bytes.toString('base64') !== body.base64 || bytes.length > INLINE_BODY) return 'invalid';
+    if (bytes.length > INLINE_BODY) return 'invalid';
     return { kind: 'base64', bytes };
   }
   if (keys[0] === 'stream') {
@@ -1900,6 +1920,7 @@ module.exports = {
   ROWS,
   RULES,
   VALUES,
+  canonicalBase64,
   feedIdentifier,
   feedUpdateAddress,
   pageTopic,

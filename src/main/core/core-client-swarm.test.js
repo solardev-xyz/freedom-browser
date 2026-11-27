@@ -766,6 +766,45 @@ describe("main's Swarm I/O pool (design 0015)", () => {
     expect(chainTake).not.toHaveBeenCalled();
   });
 
+  test('a byte stream is read through one buffer, reused read after read, however small its chunks (Codex round 2 on #1340)', async () => {
+    makeClient(coreWith());
+    const reused = [];
+    const total = 3000;
+    let sent = 0;
+    const body = new ReadableStream({
+      type: 'bytes',
+      pull(controller) {
+        const { view } = controller.byobRequest;
+        // A mark at the buffer's last byte survives only in a buffer
+        // handed back: a fresh one is zeroed.
+        const all = new Uint8Array(view.buffer);
+        reused.push(all[all.length - 1] === 0x99);
+        all[all.length - 1] = 0x99;
+        if (sent >= total) {
+          controller.close();
+          controller.byobRequest?.respond(0);
+          return;
+        }
+        view[0] = sent % 251;
+        sent += 1;
+        controller.byobRequest.respond(1);
+      },
+    });
+    client.handle('shell.swarm_api', () => new StreamedReply({ status: 200 }, body), {
+      streams: true,
+      failure: FAILED,
+      race: true,
+    });
+    await client.start();
+    core().send({ type: 'request', id: 1, method: 'shell.swarm_api', params: {} });
+    for (let i = 0; i < 200 && core().framesOf(KIND_END, 1).length === 0; i++) await settle();
+    expect(core().framesOf(KIND_END, 1)).toHaveLength(1);
+    expect(core().dataOf(1)).toEqual(Buffer.from(Array.from({ length: total }, (_, i) => i % 251)));
+    // Every read after the first is into the buffer the last handed back.
+    expect(reused.length).toBeGreaterThan(total);
+    expect(reused.slice(1).every(Boolean)).toBe(true);
+  });
+
   test("a Swarm head sent with bodyFlag: false carries no body member, which the core's strict readers refuse; the stream opens all the same", async () => {
     makeClient(coreWith());
     client.handle(

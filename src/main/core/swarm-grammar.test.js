@@ -15,6 +15,7 @@ const {
   HeadProbe,
   IndexLookup,
   RULES,
+  canonicalBase64,
   feedUpdateAddress,
   pageTopic,
   readAnswer,
@@ -920,5 +921,57 @@ describe('core-supplied values are refused by a rule, never thrown', () => {
       expect(occurrences.take('ab'.repeat(32), length, depth)).toBe('value');
     }
     expect(occurrences.take(null, 4096, 1)).toBe('value');
+  });
+});
+
+describe('canonical base64, read by its text (Codex round 2 on #1340)', () => {
+  // What it stands in for: decoding the text and writing it back.
+  const writesBack = (text) => Buffer.from(text, 'base64').toString('base64') === text;
+
+  test('agrees with decoding and writing back, over every short text and many random ones', () => {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const odd = '=-_ .\n';
+    // Every text of up to three characters over a sample of the alphabet,
+    // padding and characters outside it.
+    const sample = `AQgw+/9z${odd}`;
+    const texts = [''];
+    for (let length = 1; length <= 4; length++) {
+      const next = [];
+      for (const text of texts.filter((t) => t.length === length - 1)) {
+        for (const c of sample) next.push(text + c);
+      }
+      texts.push(...next);
+    }
+    // And seeded random ones, mostly of the alphabet.
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    for (let i = 0; i < 20_000; i++) {
+      let text = '';
+      const length = Math.floor(random() * 13);
+      for (let j = 0; j < length; j++) {
+        const pool = random() < 0.85 ? alphabet : alphabet + odd;
+        text += pool[Math.floor(random() * pool.length)];
+      }
+      texts.push(text);
+    }
+    const disagree = texts.filter((text) => canonicalBase64(text) !== writesBack(text));
+    expect(disagree).toEqual([]);
+    expect(texts.length).toBeGreaterThan(20_000);
+  });
+
+  test("every encoding of bytes is canonical; a padded group's unused bits set is not", () => {
+    for (let n = 0; n < 70; n++) {
+      const bytes = Buffer.from(Array.from({ length: n }, (_, i) => (i * 37 + n) % 256));
+      expect(canonicalBase64(bytes.toString('base64'))).toBe(true);
+    }
+    expect(canonicalBase64('AQ==')).toBe(true);
+    expect(canonicalBase64('AR==')).toBe(false);
+    expect(canonicalBase64('AAE=')).toBe(true);
+    expect(canonicalBase64('AAF=')).toBe(false);
+    expect(canonicalBase64('AQ')).toBe(false);
+    expect(canonicalBase64('A-8_')).toBe(false);
   });
 });

@@ -3123,7 +3123,16 @@ class ServiceClient extends EventEmitter {
         this.flushStreams(gen);
         return;
       }
-      const piece = { id, reader, byob, pending: null, eof: false, reading: false, claimed: 0 };
+      const piece = {
+        id,
+        reader,
+        byob,
+        pending: null,
+        eof: false,
+        reading: false,
+        claimed: 0,
+        scratch: null,
+      };
       gen.pieces.set(id, piece);
       // The body's failure ends the stream as it happens, a read pending or
       // not: an abort goes ahead of the data and needs no credit, and the
@@ -3191,6 +3200,15 @@ class ServiceClient extends EventEmitter {
     }
   }
 
+  /** A byte stream's view to read `claimed` bytes into: its piece's one
+   * buffer of MAX_READ_AHEAD, made once and handed back by each read
+   * (BYOB reads transfer it), never one a read. */
+  scratchView(piece, claimed) {
+    const scratch = piece.scratch ?? new ArrayBuffer(MAX_READ_AHEAD);
+    piece.scratch = null;
+    return new Uint8Array(scratch, 0, claimed);
+  }
+
   /** One read of a body, into the `claimed` room of `sender`'s cap: its
    * bytes keep as much of it as they take, and the rest goes back. */
   readPiece(gen, piece, sender, claimed) {
@@ -3206,7 +3224,7 @@ class ServiceClient extends EventEmitter {
     };
     let read;
     try {
-      read = piece.byob ? piece.reader.read(new Uint8Array(claimed)) : piece.reader.read();
+      read = piece.byob ? piece.reader.read(this.scratchView(piece, claimed)) : piece.reader.read();
     } catch (err) {
       read = Promise.reject(err);
     }
@@ -3231,6 +3249,11 @@ class ServiceClient extends EventEmitter {
           // The claim passes to the bytes read; what they didn't take goes.
           sender.release(held - byteLength);
           if (byteLength) piece.pending = Buffer.from(buffer, byteOffset, byteLength);
+          // The read's buffer comes back: the next read reuses it, once
+          // these bytes have gone to the sender (`pumpPiece` reads only
+          // with nothing pending), so a source of small chunks costs no
+          // buffer a read.
+          if (piece.byob && buffer.byteLength === MAX_READ_AHEAD) piece.scratch = buffer;
         } else {
           sender.release(held);
           this.abortPiece(gen, piece, null);
