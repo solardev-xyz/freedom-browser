@@ -381,7 +381,11 @@ describe('refused before the first APDU, rule payload', () => {
       message: { [name]: 1 },
     });
     for (const name of ['é', 'a😀', 'a b', '1a', '', 'a-b']) {
-      expect(bind(field(name))).toStrictEqual({ rule: 'payload', reason: 'name-ascii' });
+      expect(bind(field(name))).toStrictEqual({
+        rule: 'payload',
+        reason: 'name-ascii',
+        check: 'identifier',
+      });
     }
     const typeNamed = (name) => ({
       domain: {},
@@ -393,10 +397,11 @@ describe('refused before the first APDU, rule payload', () => {
       '{"domain":{},"types":{"T":[{"name":"__proto__","type":"uint8"}]},"message":{}}'
     );
     expect(
-      typedDataApdus({ typedData: proto, expectedHash: '0x' + '00'.repeat(32), path: P }).reason
-    ).toBe('name-ascii');
+      typedDataApdus({ typedData: proto, expectedHash: '0x' + '00'.repeat(32), path: P })
+    ).toStrictEqual({ rule: 'payload', reason: 'name-ascii', check: 'proto-name' });
   });
 
+  // Every rule of fc-evm's, its edge and its check: typed-data-subset.test.js.
   test("what ethers accepts and fc-evm doesn't: a bool that isn't a boolean, a type named like a primitive, an ICAP address", () => {
     for (const value of ['false', 0, 1, null]) {
       const typedData = {
@@ -404,7 +409,11 @@ describe('refused before the first APDU, rule payload', () => {
         types: { T: [{ name: 'v', type: 'bool' }] },
         message: { v: value },
       };
-      expect(bind(typedData)).toStrictEqual({ rule: 'payload', reason: 'typed-data' });
+      expect(bind(typedData)).toStrictEqual({
+        rule: 'payload',
+        reason: 'typed-data',
+        check: value === null ? 'missing' : 'bool',
+      });
     }
     const missing = { domain: {}, types: { T: [{ name: 'v', type: 'bool' }] }, message: {} };
     expect(bind(missing).reason).toBe('typed-data');
@@ -414,7 +423,11 @@ describe('refused before the first APDU, rule payload', () => {
       types: { T: [{ name: 'v', type: 'address' }] },
       message: { v: icap },
     };
-    expect(bind(typedData)).toStrictEqual({ rule: 'payload', reason: 'typed-data' });
+    expect(bind(typedData)).toStrictEqual({
+      rule: 'payload',
+      reason: 'typed-data',
+      check: 'address',
+    });
     for (const name of ['uint256', 'uint7', 'bytes33', 'bool', 'string', 'address', 'bytes']) {
       const types = { [name]: [{ name: 'v', type: 'uint8' }], T: [{ name: 'w', type: name }] };
       const result = typedDataApdus({
@@ -422,44 +435,59 @@ describe('refused before the first APDU, rule payload', () => {
         expectedHash: '0x' + '00'.repeat(32),
         path: P,
       });
-      expect(result.reason).toBe('typed-data');
+      expect(result).toStrictEqual({
+        rule: 'payload',
+        reason: 'typed-data',
+        check: 'primitive-name',
+      });
     }
   });
 
-  test("a typed_data outside the core's form, or ethers' parse refused", () => {
+  test("a typed_data outside the core's form, or fc-evm's parse refused, or ethers' bound", () => {
     const cases = [
-      null,
-      'text',
-      { types: MAIL.types, message: MAIL.message },
-      { ...MAIL, domain: [] },
-      { ...MAIL, message: null },
-      { ...MAIL, types: [] },
-      { ...MAIL, types: { ...MAIL.types, EIP712Domain: [] } },
-      { ...MAIL, types: { Mail: MAIL.types.Mail } },
-      { ...MAIL, types: { ...MAIL.types, Person: [{ name: 'name' }] } },
-      { ...MAIL, types: { ...MAIL.types, Person: 'string name' } },
-      { ...MAIL, domain: { ...MAIL.domain, colour: 'blue' } },
-      { ...MAIL, message: { ...MAIL.message, contents: 5 } },
-      // A diamond ethers would walk for ever: assertBoundedTypeGraph's.
-      {
-        domain: {},
-        types: Object.fromEntries(
-          Array.from({ length: 40 }, (_, i) => [
-            `T${i}`,
-            i === 39
-              ? []
-              : [
-                  { name: 'a', type: `T${i + 1}` },
-                  { name: 'b', type: `T${i + 1}` },
+      [null, 'typed-data-object'],
+      ['text', 'typed-data-object'],
+      [{ types: MAIL.types, message: MAIL.message }, 'domain-object'],
+      [{ ...MAIL, domain: [] }, 'domain-object'],
+      [{ ...MAIL, message: null }, 'struct-object'],
+      [{ ...MAIL, types: [] }, 'types-object'],
+      [{ ...MAIL, types: { ...MAIL.types, EIP712Domain: [] } }, 'domain-type-name'],
+      [{ ...MAIL, types: { Mail: MAIL.types.Mail } }, 'unknown-type'],
+      [{ ...MAIL, types: { ...MAIL.types, Person: [{ name: 'name' }] } }, 'field-shape'],
+      [{ ...MAIL, types: { ...MAIL.types, Person: 'string name' } }, 'field-list'],
+      [{ ...MAIL, domain: { ...MAIL.domain, colour: 'blue' } }, 'domain-key'],
+      [{ ...MAIL, message: { ...MAIL.message, contents: 5 } }, 'string'],
+      // 40 diamonds, 2^40 paths, which fc-evm takes (its arrays empty) and
+      // ethers would walk for ever: assertBoundedTypeGraph's, before ethers.
+      [
+        {
+          domain: {},
+          types: Object.fromEntries(
+            Array.from({ length: 40 }, (_, i) => [
+              [
+                `T${i}`,
+                [
+                  { name: 'a', type: `A${i}[]` },
+                  { name: 'b', type: `B${i}[]` },
                 ],
-          ])
-        ),
-        message: {},
-      },
+              ],
+              [`A${i}`, [{ name: 'x', type: `T${i + 1}[]` }]],
+              [`B${i}`, [{ name: 'x', type: `T${i + 1}[]` }]],
+            ])
+              .flat()
+              .concat([['T40', []]])
+          ),
+          message: { a: [], b: [] },
+        },
+        'type-paths',
+      ],
     ];
-    for (const typedData of cases) {
+    for (const [typedData, check] of cases) {
       const result = typedDataApdus({ typedData, expectedHash: '0x' + '00'.repeat(32), path: P });
-      expect(result).toStrictEqual({ rule: 'payload', reason: 'typed-data' });
+      expect([check, result]).toStrictEqual([
+        check,
+        { rule: 'payload', reason: 'typed-data', check },
+      ]);
     }
   });
 
@@ -515,8 +543,13 @@ describe('refused before the first APDU, rule payload', () => {
       name: 'value_encoding_bytes',
       size: 65536,
     });
+    // fc-evm's 32 dimensions come first: the device's 255 is never reached.
     const dims = 'uint8' + '[]'.repeat(256);
-    expect(bound(one(dims, []))).toStrictEqual({ name: 'dimensions', size: 256 });
+    expect(one(dims, [])).toStrictEqual({
+      rule: 'payload',
+      reason: 'typed-data',
+      check: 'dimensions',
+    });
   });
 
   test('more than 2,048 APDUs in the operation, the address check, B0 01 and E0 0C counted', () => {
@@ -543,11 +576,12 @@ describe('refused before the first APDU, rule payload', () => {
       reason: 'device-bounds',
       bound: { name: 'apdus_per_operation', size: BOUNDS.apdus_per_operation + 1 },
     });
-    // A value's pieces count before any is made.
+    // A value's pieces count before any is made (strings: as hex, these
+    // bytes would pass the core's view bound first).
     const pieces = bind({
       domain: {},
-      types: { T: [{ name: 'v', type: 'bytes[]' }] },
-      message: { v: Array(8).fill('0x' + '00'.repeat(65535)) },
+      types: { T: [{ name: 'v', type: 'string[]' }] },
+      message: { v: Array(8).fill('a'.repeat(65535)) },
     });
     expect(pieces.bound.name).toBe('apdus_per_operation');
   });
@@ -588,6 +622,7 @@ describe("the binding's shape, as the Admission takes it", () => {
     expect(bindTypedData({ expectedHash: hashOf(MAIL) })).toStrictEqual({
       rule: 'payload',
       reason: 'typed-data',
+      check: 'typed-data-object',
     });
   });
 });

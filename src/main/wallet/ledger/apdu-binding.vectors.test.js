@@ -20,7 +20,13 @@
  *   (24) and `safe_changes` (15);
  * - typed data whose ethers hash isn't `expected_hash`, refused before the
  *   first APDU in both branches;
- * - `BOUNDS` and the rows' headers, the file's.
+ * - `BOUNDS` and the rows' headers, the file's;
+ * - fc-evm's own typed-data vectors (`vectors/signing.json`'s `typedData`,
+ *   `typedDataText` and `typedDataReports`, 660 cases): each the core
+ *   refuses (an error, or a deviation ethers signs) refused `payload` by one
+ *   of typed-data-subset.js's rules, before any APDU, under ethers' own hash
+ *   where ethers has one; each it accepts bound under its recorded hash, or
+ *   refused only for what a Ledger can't carry.
  *
  * What the relay's Admission does with each APDU (PR 1's), main's own here:
  * the APDU at the stream's position equal byte for byte, else `header` for
@@ -39,7 +45,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { TypedDataEncoder } = require('ethers');
+const { TypedDataEncoder, concat, keccak256 } = require('ethers');
 const { BOUNDS, HEADER, bindTypedData } = require('./apdu-binding');
 
 function ledgerVectorsDir() {
@@ -62,11 +68,14 @@ function load(name) {
 }
 const ledger = load('ledger.json');
 const grammar = load('ledger-grammar.json');
+const signing = load('signing.json');
 const describeIfVectors = ledger && grammar ? describe : describe.skip;
+const describeIfSigning = signing ? describe : describe.skip;
 
 (required ? test : test.skip)('the vectors FREEDOM_CORE_LEDGER_VECTORS names are there', () => {
   expect(ledger?.cases?.length).toBeGreaterThan(0);
   expect(grammar?.honest?.length).toBeGreaterThan(0);
+  expect(signing?.typedData?.length).toBeGreaterThan(0);
 });
 
 /** A record's path as the grammar encodes it: n, then n big-endian elements. */
@@ -357,6 +366,73 @@ describeIfVectors(
         }
       });
       expect(wrong).toStrictEqual([]);
+    });
+  }
+);
+
+describeIfSigning(
+  "fc-evm's own typed-data vectors (vectors/signing.json) through the binding",
+  () => {
+    // The core refuses a case that errs, and one with a deviation (ethers
+    // signs it, fc-evm doesn't; vectors.rs's expects_error).
+    const cases = signing
+      ? [
+          ...signing.typedData.map((c) => [c, c.typed_data]),
+          ...signing.typedDataText.map((c) => [c, JSON.parse(c.typed_data_json)]),
+          ...signing.typedDataReports.map((c) => [c, c.typed_data]),
+        ].map(([c, typedData]) => ({
+          id: c.id,
+          typedData,
+          refused: c.result.status === 'error' || Boolean(c.deviation),
+          hash: c.result.hash,
+        }))
+      : [];
+
+    test("each one fc-evm refuses: refused payload by one of its rules, before any APDU, under ethers' own hash", () => {
+      const wrong = [];
+      const checks = {};
+      for (const c of cases.filter((x) => x.refused)) {
+        let expectedHash = c.hash;
+        if (!expectedHash) {
+          try {
+            expectedHash = ownHash(c.typedData);
+          } catch {
+            expectedHash = '0x' + '00'.repeat(32);
+          }
+        }
+        const ours = bindTypedData({ typedData: c.typedData, expectedHash });
+        if (
+          ours.rule !== 'payload' ||
+          ours.apdus ||
+          !['name-ascii', 'typed-data'].includes(ours.reason) ||
+          !ours.check ||
+          ['ethers', 'type-paths'].includes(ours.check)
+        ) {
+          wrong.push({ id: c.id, ours });
+        }
+        checks[ours.check] = (checks[ours.check] ?? 0) + 1;
+      }
+      expect(wrong).toStrictEqual([]);
+      expect(Object.values(checks).reduce((a, b) => a + b, 0)).toBe(366);
+    });
+
+    test('each one it accepts: bound under its recorded hash, or refused only for a Ledger bound', () => {
+      const wrong = [];
+      const tally = { bound: 0, 'device-bounds': 0, 'not-canonical': 0 };
+      for (const c of cases.filter((x) => !x.refused)) {
+        const ours = bindTypedData({ typedData: c.typedData, expectedHash: c.hash });
+        if (ours.rule === undefined) {
+          const digest = keccak256(concat(['0x1901', ours.domainSeparator, ours.structHash]));
+          if (digest !== c.hash) wrong.push({ id: c.id, digest });
+          tally.bound += 1;
+        } else if (ours.reason in tally) {
+          tally[ours.reason] += 1;
+        } else {
+          wrong.push({ id: c.id, ours });
+        }
+      }
+      expect(wrong).toStrictEqual([]);
+      expect(tally).toStrictEqual({ bound: 291, 'device-bounds': 0, 'not-canonical': 3 });
     });
   }
 );

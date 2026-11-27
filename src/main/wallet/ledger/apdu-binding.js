@@ -17,7 +17,7 @@
  *
  *     bindTypedData({ typedData, expectedHash })
  *       → { apdus: Buffer[], domainSeparator: Buffer, structHash: Buffer }
- *       | { rule: 'payload', reason, bound? }
+ *       | { rule: 'payload', reason, check?, bound? }
  *
  *     const binding = bindTypedData({ typedData, expectedHash });
  *     if (binding.rule) → every APDU of the parent refused binding.rule
@@ -55,28 +55,38 @@
  * The binding is encoded whole before either branch, so the hash-only one
  * refuses what the stream field by field would.
  *
- * **A refusal** is `{ rule: 'payload', reason }`: main has no stream for the
- * parent, so every APDU of it is refused `payload`, the first before any
- * byte reaches the device (the relay logs the rule only). `reason` says why,
- * for tests and the relay's own record, never for the wire:
- * - `hash-mismatch`: ethers' `TypedDataEncoder.hash` of `typedData` isn't
- *   `expectedHash` (0016: checked first, before the first APDU);
- * - `name-ascii`: a type or field name outside 0002's identifiers
- *   (`[A-Za-z_$][A-Za-z0-9_$]*`), which fc-evm refuses before hashing, so a
- *   name's one-byte length is its byte count (deviation `name-ascii`, F-2);
- *   or `__proto__`, which neither side can carry;
- * - `typed-data`: what ethers' parse refuses, or what it accepts and fc-evm
- *   doesn't (a bool that isn't a boolean, a type named like a primitive, an
- *   address that isn't hex), or a `typed_data` not in the core's form;
+ * **A refusal** is `{ rule: 'payload', reason, check? }`: main has no
+ * stream for the parent, so every APDU of it is refused `payload`, the first
+ * before any byte reaches the device (the relay logs the rule only).
+ * `reason` says why, for tests and the relay's own record, never for the
+ * wire, in the core's order:
+ * - `hash-mismatch`: an `expectedHash` that isn't one; or, after the checks
+ *   below it, ethers' `TypedDataEncoder.hash` of `typedData` isn't
+ *   `expectedHash` (0016: before the first APDU);
+ * - `name-ascii` and `typed-data`, each with `check`: typed data the pinned
+ *   core refuses before fc-ledger, checked on `typedData` as main holds it,
+ *   before ethers normalizes anything (typed-data-subset.js, whose table
+ *   gives each `check` its fc-evm source): `name-ascii` for a type or field
+ *   name outside 0002's identifiers (`[A-Za-z_$][A-Za-z0-9_$]*`, at most 256
+ *   characters), so a name's one-byte length is its byte count (deviation
+ *   `name-ascii`, F-2), or `__proto__`, which neither side can carry;
+ *   `typed-data` for every other rule of fc-evm's (a quantity string such as
+ *   `"+1"`, a bool that isn't a boolean, a struct that isn't an object, 257
+ *   fields, nesting past 32, a view past the core's bound…), of the params'
+ *   JSON, or a `typed_data` that isn't an object.
+ *   After them, `typed-data` with `check: 'type-paths'` for a type graph
+ *   ethers would walk for too long (main's own bound, signing-utils), and
+ *   `check: 'ethers'` for what ethers refuses of what fc-evm accepts;
  * - `not-canonical`: an array suffix written in a form the device wouldn't
  *   rebuild from its descriptor (`uint8[02]`, `LEDGER_TYPE_NOT_CANONICAL`);
  * - `device-bounds`: what a Ledger can't carry (`LEDGER_TOO_LARGE`), with
  *   `bound: { name, size }`, `name` one of `BOUNDS`' keys or `definition`
  *   (a definition APDU's data): a name over 255 bytes, a definition over 255,
- *   more than 255 dimensions, a fixed size or an array over 255 entries, a
- *   value over 65,535 bytes, or more than 2,048 APDUs in the operation (the
- *   address check, `B0 01` and `E0 0C` counted, as the Admission counts
- *   them), checked in the core's order (`fc-ledger`'s `TypedStream::new`).
+ *   more than 255 dimensions (behind fc-evm's 32, never reached), a fixed
+ *   size or an array over 255 entries, a value over 65,535 bytes, or more
+ *   than 2,048 APDUs in the operation (the address check, `B0 01` and
+ *   `E0 0C` counted, as the Admission counts them), checked in the core's
+ *   order (`fc-ledger`'s `TypedStream::new`).
  * The core refuses each of these itself before its first APDU; main's
  * refusal is its own check, and where the two would differ on an input the
  * core accepts, main refuses: nothing is signed, and the case is a vector
@@ -97,6 +107,7 @@
 
 const { TypedDataEncoder, concat, getBytes, keccak256, toUtf8Bytes } = require('ethers');
 const { assertBoundedTypeGraph } = require('../signing-utils');
+const { checkTypedDataSubset } = require('./typed-data-subset');
 
 /**
  * What a Ledger can carry: `vectors/ledger-grammar.json`'s `bounds`, which
@@ -126,10 +137,6 @@ const HEADER = Object.freeze({
 const AROUND_STREAM = 3;
 
 const DOMAIN_TYPE = 'EIP712Domain';
-const PROTO_NAME = '__proto__';
-const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-/** ethers' `getBaseEncoder` names, and the widths it reads (or refuses). */
-const PRIMITIVE_NAME = /^(?:address|bool|bytes|string|(?:u?int|bytes)\d+)$/;
 const INT_TYPE = /^(u?)int(\d+)$/;
 const FIXED_BYTES_TYPE = /^bytes(\d+)$/;
 /** An array suffix as the device rebuilds it: `[]` or `[n]`, `n` decimal, no leading zero. */
@@ -152,15 +159,16 @@ const TYPE_KEY = Object.freeze({
 
 /** A refusal before the first APDU; thrown inside, returned at the edge. */
 class Refusal {
-  constructor(reason, bound) {
+  constructor(reason, bound, check) {
     this.rule = 'payload';
     this.reason = reason;
+    if (check) this.check = check;
     if (bound) this.bound = bound;
   }
 }
 
-function refuse(reason, bound) {
-  throw new Refusal(reason, bound);
+function refuse(reason, bound, check) {
+  throw new Refusal(reason, bound, check);
 }
 
 function tooLarge(name, size) {
@@ -186,35 +194,6 @@ function apdu(header, data) {
 /** A name with its one-byte length, the name ASCII (checked before). */
 function lengthPrefixed(name) {
   return Buffer.concat([Buffer.from([name.length]), Buffer.from(name, 'latin1')]);
-}
-
-/**
- * The request's names, before anything is hashed: 0002's identifiers, not
- * `__proto__`, no type named `EIP712Domain` or like a primitive; each field
- * a `{ name, type }` of strings.
- */
-function checkNames(types) {
-  if (!isRecord(types)) refuse('typed-data');
-  for (const name of Object.keys(types)) {
-    if (!IDENTIFIER.test(name) || name === PROTO_NAME) refuse('name-ascii');
-    if (name === DOMAIN_TYPE || PRIMITIVE_NAME.test(name)) refuse('typed-data');
-    const fields = types[name];
-    if (!Array.isArray(fields)) refuse('typed-data');
-    for (const field of fields) {
-      if (!isRecord(field) || typeof field.name !== 'string' || typeof field.type !== 'string') {
-        refuse('typed-data');
-      }
-      if (!IDENTIFIER.test(field.name) || field.name === PROTO_NAME) refuse('name-ascii');
-    }
-  }
-}
-
-/** A bool is a boolean: ethers takes any value as its truth, fc-evm only booleans. */
-function checkBools(types, message) {
-  TypedDataEncoder.from(types).visit(message, (type, value) => {
-    if (type === 'bool' && typeof value !== 'boolean') refuse('typed-data');
-    return value;
-  });
 }
 
 /**
@@ -422,21 +401,24 @@ function checkNameBounds(types) {
 
 function bind({ typedData, expectedHash }) {
   if (typeof expectedHash !== 'string' || !HASH_HEX.test(expectedHash)) refuse('hash-mismatch');
-  if (!isRecord(typedData)) refuse('typed-data');
+  // The core's order: fc-evm's parse of the typed data as main sent it, then
+  // the hash (TypedStream's checks follow, below). ethers' getPayload would
+  // erase what fc-evm refuses ("+1" is 1, a null struct {}), so it comes
+  // after.
+  const subset = checkTypedDataSubset(typedData);
+  if (subset) refuse(subset.reason, undefined, subset.check);
   const { domain, types, message } = typedData;
-  if (!isRecord(domain) || !isRecord(message)) refuse('typed-data');
-  checkNames(types);
   try {
-    // ethers' walk is exponential on diamond-shaped types; refused first.
+    // ethers' walk is exponential on diamond-shaped types fc-evm takes
+    // (empty arrays of them): refused before ethers walks them.
     assertBoundedTypeGraph(types);
   } catch {
-    refuse('typed-data');
+    refuse('typed-data', undefined, 'type-paths');
   }
 
   if (TypedDataEncoder.hash(domain, types, message) !== expectedHash.toLowerCase()) {
     refuse('hash-mismatch');
   }
-  checkBools(types, message);
   const payload = TypedDataEncoder.getPayload(domain, types, message);
 
   // The core's order: every written form (check_written_forms), then
@@ -480,16 +462,17 @@ function bind({ typedData, expectedHash }) {
  *
  * @param {{ typedData: object, expectedHash: string }} request
  * @returns {{ apdus: Buffer[], domainSeparator: Buffer, structHash: Buffer }
- *   | { rule: 'payload', reason: string, bound?: { name: string, size: number } }}
+ *   | { rule: 'payload', reason: string, check?: string,
+ *       bound?: { name: string, size: number } }}
  */
 function bindTypedData({ typedData, expectedHash } = {}) {
   try {
     return bind({ typedData, expectedHash });
   } catch (err) {
     if (err instanceof Refusal) return { ...err };
-    // ethers' own refusal of the typed data, or a value it lets through
-    // that BigInt can't read.
-    return { rule: 'payload', reason: 'typed-data' };
+    // ethers' own refusal of typed data fc-evm accepts, or a value it lets
+    // through that BigInt can't read.
+    return { rule: 'payload', reason: 'typed-data', check: 'ethers' };
   }
 }
 

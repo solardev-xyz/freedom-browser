@@ -222,8 +222,11 @@ jobs:
           ref: b4e0cef4f24f4e80aaa9df6568c7c9737ade9589
           path: .freedom-core
           persist-credentials: false
+          # signing.json: fc-evm's typed-data vectors, which
+          # `apdu-binding.vectors.test.js` runs through main's Ledger binding.
           sparse-checkout: |
             vectors/streams.json
+            vectors/signing.json
             vectors/radicle-reads.json
             vectors/radicle-blob.json
             vectors/radicle-network.json
