@@ -5,11 +5,18 @@
  * chosen account to the wallet list goes through identity-manager's
  * `wallet:add-ledger-wallet` handler, next to the other wallet-list
  * mutations.
+ *
+ * With FREEDOM_LEDGER_BACKEND=core (ledger-backend-kind.js; freedom-core
+ * design 0016, LDG-3), discovery is the core's `ledger.accounts`
+ * (core-accounts.js), which also checks the unmatched Ledger records and
+ * keeps each result itself, so account-checks.js isn't run. On the JS
+ * backend, nothing changes.
  */
 
 const { ipcMain } = require('electron');
 const { listAccounts } = require('./transport');
 const { checkLedgerAccounts } = require('./account-checks');
+const { ledgerBackendKind } = require('./ledger-backend-kind');
 
 function registerLedgerIpc() {
   // Requires an attached, unlocked device with the Ethereum app open;
@@ -22,6 +29,7 @@ function registerLedgerIpc() {
   // `mismatched`, for the chrome to tell the user. A failed check leaves
   // them as they were and doesn't fail discovery.
   ipcMain.handle('ledger:get-accounts', async (_event, options = {}) => {
+    if (ledgerBackendKind() === 'core') return discoverThroughCore(options);
     try {
       const accounts = await listAccounts(options);
       let mismatched = [];
@@ -36,6 +44,22 @@ function registerLedgerIpc() {
       return { success: false, error: err.message, code: err.code };
     }
   });
+}
+
+/**
+ * Discovery on the core's backend: the same answer, each account with the
+ * scheme and index the chrome adds it by (`ledger.add`), the check's
+ * `mismatched` the core's.
+ */
+async function discoverThroughCore(options) {
+  try {
+    const { discoverAccounts } = require('./core-accounts');
+    const { accounts, mismatched } = await discoverAccounts(options);
+    return { success: true, accounts, mismatched };
+  } catch (err) {
+    console.error('[LedgerIPC] Account discovery failed:', err.message);
+    return { success: false, error: err.message, code: err.code };
+  }
 }
 
 module.exports = { registerLedgerIpc };

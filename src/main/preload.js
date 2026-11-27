@@ -920,8 +920,13 @@ contextBridge.exposeInMainWorld('wallet', {
 
 contextBridge.exposeInMainWorld('ledger', {
   getAccounts: (options) => ipcRenderer.invoke('ledger:get-accounts', options),
-  addAccount: (name, address, path) =>
-    ipcRenderer.invoke('wallet:add-ledger-wallet', name, address, path),
+  // An account found by getAccounts, by its derivation scheme and index:
+  // the core reads its address from the device, never the chrome's
+  // (FREEDOM_LEDGER_BACKEND=core, freedom-core design 0016, `ledger.add`).
+  // Until the JS backend goes (LDG-3's PR 14), an account it found, which
+  // has no index, is sent as (name, address, path) instead.
+  addAccount: (name, scheme, index) =>
+    ipcRenderer.invoke('wallet:add-ledger-wallet', name, scheme, index),
 });
 
 // Remote (phone) signing: main publishes signing jobs here; the renderer
