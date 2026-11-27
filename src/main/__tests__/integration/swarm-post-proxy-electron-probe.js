@@ -6,8 +6,10 @@
  * Runs inside a real Electron main process and drives the *real* Ant backend
  * (`antBackend()`, `src/main/swarm/bzz-protocol.js`) through main's Swarm
  * call (`callAnt`, `src/main/swarm/ant-api-call.js`) at a remote node, on
- * the default session's stack (`netGatewayFetch`), with the *real* Ant API
- * guard installed on that session's webRequest dispatcher, as index.js does.
+ * Chromium's stack (`netGatewayFetch`): a POST on a write session of its
+ * own with the default session's proxy (`swarm/ant-write-sessions.js`), a
+ * GET on the default session, with the *real* Ant API guard installed on
+ * that session's webRequest dispatcher, as index.js does.
  * The fixtures are `colibri-fetch-proxy-electron-probe.js`'s:
  *   - an HTTP origin on 127.0.0.1 standing in for a remote Ant node, at
  *     `ant.example.test`;

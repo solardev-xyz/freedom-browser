@@ -32,6 +32,7 @@ const { loadsOnlyVerifiedContent } = require('../dweb/strict-mode');
 const { getActiveProfile } = require('../profile-resolver');
 const { isLoopbackGatewayUrl, netGatewayFetch } = require('../ipfs/gateway-transport');
 const { announceMainProcessAntDial } = require('./ant-api-main-dials');
+const { leaseWriteSession } = require('./ant-write-sessions');
 const { unlessAborted } = require('../lib/unless-aborted');
 const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/private-log-context');
 const { serveLabelled } = require('../dweb/content-trust');
@@ -63,14 +64,24 @@ let abandonedDials = 0;
  * - A loopback Ant, bundled or external, with Node's `fetch` (undici): it
  *   needs no proxy, and the dial stays outside the session's `webRequest`. A
  *   stream body goes with `duplex: 'half'`, pulled as the socket takes it.
- * - A non-loopback Ant (deviation `transport`, #360) with `net.request` on the
- *   request's session (`ipfs/gateway-transport.js`): manual redirects, the
- *   onion refusal before dialling when the session would resolve the host
- *   DIRECT, credentials omitted and no HTTP cache, and a stream body written
- *   as it is pulled. That dial passes the session's `webRequest` with no
- *   frame, where `ant-api-guard.js` cancels anything on the node's origin, so
- *   this exact URL and the one method the dial sends are announced to the
- *   guard (`ant-api-main-dials.js`) and released once the dial settles.
+ * - A non-loopback Ant (deviation `transport`, #360) with `net.request`
+ *   (`ipfs/gateway-transport.js`): manual redirects, the onion refusal
+ *   before dialling when the session would resolve the host DIRECT,
+ *   credentials omitted and no HTTP cache, and a stream body written as it
+ *   is pulled.
+ *   - A read (GET or HEAD) goes on the request's session. That dial passes
+ *     the session's `webRequest` with no frame, where `ant-api-guard.js`
+ *     cancels anything on the node's origin, so this exact URL and the one
+ *     method the dial sends are announced to the guard
+ *     (`ant-api-main-dials.js`) and released once the dial settles.
+ *     Chromium may send a read again when a reused connection closes before
+ *     its headers, which is idempotent.
+ *   - A write (POST) goes on a write session of its own, on the request
+ *     session's proxy, with no connection open before it, whose own guard
+ *     admits that write and nothing else (`ant-write-sessions.js`):
+ *     Chromium sends it once, whole or streamed, and it fails when the node
+ *     hangs up (freedom-core design 0015, point 6; #1344). It holds that
+ *     session until its reply is over.
  *
  * The remote dial is waited on only while the attempt lives: its header
  * deadline, the page's abort or the session's close ends the wait at once,
@@ -87,9 +98,10 @@ async function dialAnt(url, init, { session, fetchImpl }) {
     if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
     throw err;
   }
-  const release = announceMainProcessAntDial(url, init.method);
+  const write = init.method !== 'GET' && init.method !== 'HEAD';
+  const release = write ? () => {} : announceMainProcessAntDial(url, init.method);
   const dialling = Promise.resolve().then(() =>
-    netGatewayFetch(url, init, session ? { session } : {})
+    write ? dialWrite(url, init, session) : netGatewayFetch(url, init, session ? { session } : {})
   );
   try {
     return await unlessAborted(dialling, init.signal);
@@ -108,6 +120,29 @@ async function dialAnt(url, init, { session, fetchImpl }) {
     throw withChromiumCode(err);
   } finally {
     release();
+  }
+}
+
+/**
+ * A write to a remote Ant, on a write session leased for it
+ * (`ant-write-sessions.js`) and handed back once its reply is over: its
+ * body's end, failure or cancel, or the dial's failure. A stream body is
+ * cancelled when no session could be prepared, since nothing will pull it.
+ */
+async function dialWrite(url, init, source) {
+  let lease;
+  try {
+    lease = await leaseWriteSession(source, url, init.method, init.signal);
+  } catch (err) {
+    if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
+    throw err;
+  }
+  try {
+    const response = await netGatewayFetch(url, init, { session: lease.session });
+    return endingWith(response, lease.release);
+  } catch (err) {
+    lease.release();
+    throw err;
   }
 }
 
@@ -354,7 +389,8 @@ function verifiesExternalAnt() {
  * one dial of `path` on this node, with no retry: the dweb plan's executor
  * retries around it, and main's Swarm executor never does
  * (`ant-api-call.js`). `body` is bytes or a `ReadableStream` of bytes (a
- * POST's; design 0015, The transport), pulled only as the node takes it.
+ * POST's; design 0015, The transport), pulled only as the node takes it. A
+ * remote node's POST goes on a write session (`dialAnt`), so it is sent once.
  *
  * @param {object} [transport]
  * @param {Electron.Session} [transport.session] - the request's session

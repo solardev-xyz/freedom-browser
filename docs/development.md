@@ -100,7 +100,7 @@ Swarm moves from bee-js in main to freedom-cored's swarm thread (freedom-core de
 Its gates, beside the executor's unit suites (`swarm-shell`, `swarm-shell-uploads`, `swarm-grammar.vectors`, `swarm-tree.vectors`):
 
 - **The real core with the switch on** (`src/main/core/swarm-shell.integration.test.js`): `swarm.stamps` and a 50 MiB `swarm.publish` of 100 files through the pinned core, which ends the connection (exit 76) on any frame of main's it doesn't take. It needs the binary, as the other real-core suites do (`node scripts/fetch-freedom-cored.js`); CI's `e2e-desktop` job runs it on each OS with `FREEDOM_CORED_SWARM_TEST=1`.
-- **Every form through a session proxy** (`src/main/__tests__/integration/swarm-shell-proxy.test.js`): every honest scenario of the core's Swarm grammar played through the executor in a real Electron process, against a remote node behind a SOCKS proxy on the session. It needs the Swarm vectors (`FREEDOM_CORE_SWARM_VECTORS`, freedom-core's `vectors` directory at CI's pin) and runs with the other proxy suites.
+- **Every form through a session proxy** (`src/main/__tests__/integration/swarm-shell-proxy.test.js`): every honest scenario of the core's Swarm grammar played through the executor in a real Electron process, against a remote node behind a SOCKS proxy on the session. It also holds point 6 where Chromium's stack would break it: a node that hangs up gets each write once, on a write session of its own with the session's proxy and its own guard (`src/main/swarm/ant-write-sessions.js`, #1344), and a read at most twice; and the app's NetLog shows no request but the node's. It needs the Swarm vectors (`FREEDOM_CORE_SWARM_VECTORS`, freedom-core's `vectors` directory at CI's pin) and runs with the other proxy suites.
 - **The bundled node** (`src/main/core/swarm-shell-node.integration.test.js`, gated by `SWARM_NODE_E2E=1`): antd, offline, with its chunk cache seeded from the vectors, answers `feed-v1`'s index lookup with `swarm-feed-index`, and takes chunked `/bzz` and `/bytes` uploads. It needs `npm run ant:download` and the vectors; CI runs it on Linux.
 - **Peaks and resident memory** (`FREEDOM_SWARM_PEAKS=1`, in the real-core suite): main's resident memory through the largest whole reply, 64 concurrent maximum calls and the 50 MiB publish, printed with the figures. They depend on the allocator and the machine, so no CI job runs them.
 
@@ -147,6 +147,14 @@ The fake can't show what the OS and the device do, so on each OS the probe must 
 8. With hands: an unplug mid-read is `disconnected` right away, not at the deadline. Plugged back in, the next operation works.
 
 A packaged build adds what the probe can't reach (R8): the utility process loading node-hid from `app.asar.unpacked`, and on macOS the helper's signature under the hardened runtime. Check those in a packaged build before LDG-3's last step makes the core the default.
+
+**Recording a real Ledger's answers** (`scripts/ledger-record.js`, development only, never packaged) writes one device's file in the form of freedom-core's `vectors/ledger-devices.json`, for the core's replay test. Use a Ledger reset to the public test phrase (`abandon` ×11, `about`) and never funded: the recorder reads the first account before it records anything and refuses any other seed. With Ledger Live closed and the Ledger unlocked in the Ethereum app, blind signing off:
+
+```bash
+ELECTRON_RUN_AS_NODE=1 npx electron scripts/ledger-record.js --model <nanoSP|nanoX|stax|flex|nanoS> --out ledger-devices-<model>.json
+```
+
+It asks for the firmware version (or takes `--firmware <version>`), then says what to do on the device at each step: transactions, a message, typed data field by field, the name-edge cases, adding an account, a rejection, a contract call with blind signing off and then on, an unplug, and a cancel while the old prompt shows; on a Nano S, only the hash-only cases. Each step's APDUs are main's own stream (the core's, by the joint contract), or the reference's for F-2's non-ASCII names; each exchange is timed (R3), and an answer held until the user goes on is marked (R2). The file is written after every step, never over an existing one. `scripts/ledger-record.test.js` runs it whole against the fake node-hid.
 
 ### Experimental Windows Agent workspace backend
 

@@ -21,7 +21,7 @@ for (const platform of ['mac', 'linux', 'win']) {
     for (const file of ['out/windows-workspace-source/target/release/cache.bin',
       'out/windows-workspace/x64/freedom-workspace-runner.exe', 'docs/audits/report.pdf',
       'research/notes.md', 'ant-bin/win-arm64/antd.exe', 'scratch/private.txt',
-      'src/main/index.test.js']) {
+      'src/main/index.test.js', 'scripts/ledger-record.js', 'scripts/ledger-record-cases.json']) {
       expect({ file, included: included(file) }).toEqual({ file, included: false });
     }
   });

@@ -1,8 +1,10 @@
 /**
  * Integration test: main's Swarm calls POST to a remote node through the
- * session (freedom-core design 0015, The transport): its proxy applies, a
- * streamed body is written as it is pulled, and the Ant API guard lets
- * through exactly the announced method to exactly the announced URL. It
+ * session's proxy (freedom-core design 0015, The transport), on a write
+ * session of its own (#1344, `swarm/ant-write-sessions.js`): its proxy
+ * applies, a streamed body is written as it is pulled, and the Ant API
+ * guard, which a write no longer meets, lets through exactly the announced
+ * method to exactly the announced URL on the session. It
  * also pins what the SWM-5 plan asked to measure about Chromium's stack:
  * `accept-encoding: identity` kept, a reply encoded despite it refused, a
  * header byte in U+0080–U+00FF sent as UTF-8 (#1328), and a
@@ -130,18 +132,11 @@ describeWithElectron("main's Swarm POSTs in a real Electron process", () => {
     });
   });
 
-  test('the guard sees each POST frameless, as announced, and cancels none of them', () => {
+  // #1344: a write goes on a write session of its own, which runs no guard.
+  test('the guard sees none of the POSTs, which go on write sessions, and cancels nothing', () => {
     const leg = results.viaSessionProxy;
-    expect(leg.guardSaw.slice(0, 2)).toEqual([
-      {
-        method: 'POST',
-        path: '/bzz?name=site.tar',
-        resourceType: 'other',
-        webContentsId: null,
-        frame: false,
-      },
-      { method: 'POST', path: '/chunks', resourceType: 'other', webContentsId: null, frame: false },
-    ]);
+    expect(leg.originSeen.map((seen) => seen.method)).toEqual(['POST', 'POST']);
+    expect(leg.guardSaw.filter((seen) => seen.method === 'POST')).toEqual([]);
     expect(leg.cancelled).toEqual([]);
   });
 
