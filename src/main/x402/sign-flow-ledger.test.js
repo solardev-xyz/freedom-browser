@@ -1,0 +1,577 @@
+/**
+ * x402 from a Ledger account on the core's backend (sign-flow.js
+ * `settledByLedger`, caps.js `settleTypedData`; freedom-core design 0016,
+ * "x402 from a Ledger account", D2 option A, and LDG-2's L5 as built;
+ * LDG-3's PR 9 and the plan's point 13), end to end through main: the real
+ * sign flow, caps.js and vault-backend.js (`call`, `ledgerCall`), a real
+ * CoreClient against a scripted core that answers `x402.authorize` and
+ * `x402.settle` as cored 0.30.0 does and drives the device lane with
+ * `shell.ledger_apdu` (test/helpers/fake-ledger-core.js, whose reader is
+ * reply.rs's at b4e0cef4), main's relay registered on it, and a scripted
+ * device behind the relay that records every byte it is sent (the spy).
+ *
+ * - **Per form** (ledger.json's three x402 cases): each of the core's
+ *   authorizations with one thing changed (ledger-grammar.json's 99
+ *   `x402_changes`) is refused by main before the first APDU, with nothing
+ *   sent to the device and the reservation settled `withheld`, and a faulty
+ *   core's APDUs for it are refused `parent`; only a changed nonce passes,
+ *   as another nonce the core could have drawn. So is a core's hash that
+ *   isn't main's.
+ * - **A settled payment:** `now_s` sent with the Ledger's `device`, main's
+ *   own frozen copy settled as `{ reservation, typed_data }` under the
+ *   device watchdog, the honest stream carried to the device byte for byte,
+ *   the core's payment stashed with its reservation; never `{ signature }`.
+ * - **After a settle is sent,** whatever ends it (the device's refusal,
+ *   another device, the core's `mismatch` or `cap_changed`, a failed flush,
+ *   a cancel, the core's exit), the reservation is spent: main never
+ *   settles it `withheld` again, and reads `data.refunded` instead.
+ * - **A settle main refuses unsent** (a path main can't derive a stream
+ *   for) leaves the reservation to be settled `withheld`.
+ *
+ * Skipped unless the vectors are found (test/helpers/ledger-vectors.js):
+ * FREEDOM_CORE_LEDGER_VECTORS names freedom-core's `vectors` directory, as
+ * CI does at the pinned commit, and then a missing file fails the suite.
+ * The JS backend's path is sign-flow.test.js's, unchanged.
+ */
+
+const mockState = {
+  client: null,
+  relay: null,
+  records: new Map(),
+  addressChecks: [],
+  tabs: new Map(),
+};
+
+jest.mock('electron', () => ({
+  app: { isPackaged: false },
+  webContents: {
+    fromId: (id) => {
+      if (!mockState.tabs.has(id)) {
+        mockState.tabs.set(id, {
+          id,
+          isDestroyed: () => false,
+          loadURL: () => Promise.resolve(),
+          hostWebContents: { id: 1, send: () => {} },
+        });
+      }
+      return mockState.tabs.get(id);
+    },
+  },
+}));
+jest.mock('../logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+}));
+jest.mock('../core/core-process', () => ({
+  getCoreClient: () => mockState.client,
+  getLedgerRelay: () => mockState.relay,
+}));
+// The caps' mirror: read again after each payment, which this suite doesn't follow.
+jest.mock('../core/grants', () => ({ grantStore: () => ({ reread: () => {} }) }));
+jest.mock('../wallet/ledger/ledger-backend-kind', () => ({ ledgerBackendKind: () => 'core' }));
+jest.mock('../identity-manager', () => ({
+  getActiveWalletIndex: () => 100,
+  getWalletRecord: (index) => mockState.records.get(index) ?? null,
+  isHardwareWalletIndex: (index) => index >= 100,
+  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
+  recordLedgerAddressCheck: (index, matched) => {
+    mockState.addressChecks.push([index, matched]);
+  },
+}));
+// The JS backend's signer: never asked for a Ledger on the core's backend.
+jest.mock('../wallet/signers', () => ({
+  getSigner: () => {
+    throw new Error("the JS backend's Ledger signer was asked");
+  },
+}));
+jest.mock('../webrequest-dispatcher', () => ({ registerWebRequestHandler: jest.fn() }));
+jest.mock('../vault-timer', () => ({ resetVaultAutoLockTimer: jest.fn() }));
+// The pending payment and the chrome's notices, as sign-flow.js hands them on.
+jest.mock('./intercept', () => ({
+  ...jest.requireActual('./intercept'),
+  setPendingPayment: jest.fn(),
+  sendToHost: jest.fn(),
+}));
+
+const log = require('../logger');
+const { setPendingPayment, sendToHost } = require('./intercept');
+const { vaultBackend } = require('../core/vault-backend');
+const { signAndQueueRetry } = require('./sign-flow');
+const { ledgerVectors, ledgerVectorsRequired } = require('../../../test/helpers/ledger-vectors');
+const { fakeLedgerDevices, startLedgerCore, until, settle } = require('../../../test/helpers/fake-ledger-core');
+
+const grammar = ledgerVectors('ledger-grammar.json');
+const ledger = ledgerVectors('ledger.json');
+const found = Boolean(grammar && ledger);
+const describeIfVectors = found ? describe : describe.skip;
+
+jest.setTimeout(120_000);
+
+(ledgerVectorsRequired ? test : test.skip)('the vectors FREEDOM_CORE_LEDGER_VECTORS names are there', () => {
+  expect(ledger?.cases?.some((c) => c.family === 'x402')).toBe(true);
+  expect(grammar?.x402_changes?.length).toBeGreaterThan(0);
+});
+
+const ACCOUNT = 100;
+const TAB = 7;
+const USER_MS = 300_000;
+const DEVICE_MS = 15_000;
+const DEVICE_WATCHDOG_MS = 315_000;
+
+const x402Cases = found ? ledger.cases.filter((c) => c.family === 'x402') : [];
+const honest = found ? new Map(grammar.honest.map((h) => [h.case, h.apdus])) : new Map();
+const FORMS = x402Cases.map((c) => [c.id, c]);
+
+/** The 402 a site answered for a case: its one accept entry, as main parsed it. */
+function detectionOf(c) {
+  const url = 'https://paid.example/a';
+  const requirements =
+    c.x402.version === 1
+      ? { x402Version: 1, accepts: [c.x402.requirements] }
+      : { x402Version: 2, resource: { url }, accepts: [c.x402.requirements] };
+  return { url, requirements, detectionId: `req-${c.id}`, resourceType: 'xhr' };
+}
+
+/** The confirmation x402:approve holds for the case's entry: its token, as the core minted it. */
+const confirmationOf = (token = 'token-1') => ({ token, payload: { accept_index: 0 } });
+
+let started;
+let reservations;
+
+/**
+ * The scripted core's x402 methods (cored 0.30.0's replies): `authorize`
+ * answers `x402.authorize` (`(params) => result` or `{ error }`), `settle`
+ * gets each `x402.settle { reservation, typed_data }` (its message), and an
+ * outcome settle is answered `{ refunded: true }`.
+ */
+function serveX402({ authorize, settle: onSettle = () => {} }) {
+  const fc = started.core();
+  const onMessage = fc.onMessage.bind(fc);
+  fc.onMessage = (message) => {
+    onMessage(message);
+    if (message?.type !== 'request') return;
+    if (message.method === 'x402.authorize') {
+      const answer = authorize(message.params);
+      if (answer.error) fc.fail(message.id, answer.error);
+      else fc.respond(message.id, answer);
+    } else if (message.method === 'x402.settle') {
+      if (Object.hasOwn(message.params, 'outcome')) fc.respond(message.id, { refunded: true });
+      else onSettle(message);
+    }
+  };
+  return fc;
+}
+
+/** The core's reply to `x402.authorize` for a Ledger's payment: the case's typed data and hash, unless changed. */
+function authorizeReply(c, { typedData = c.request.typed_data, hash = c.request.expected_hash, charged = false } = {}) {
+  const reservation = `${String(reservations.length + 1).padStart(2, '0')}${'ab'.repeat(15)}`;
+  reservations.push(reservation);
+  return { device: { typed_data: typedData, hash }, reservation, accept_index: 0, charged };
+}
+
+/** The device answers each APDU of the case's honest stream as ledger.json recorded it. */
+function answersOf(c, overrides = {}) {
+  return (apdu, { index }) => {
+    if (Object.hasOwn(overrides, index)) return overrides[index];
+    const exchange = c.exchanges[index];
+    if (!exchange || exchange.apdu !== apdu.toString('hex')) throw new Error(`unexpected APDU ${index}`);
+    return exchange.answer;
+  };
+}
+
+/**
+ * The core's device lane for a settle: each APDU of `apdus` in turn, as
+ * `shell.ledger_apdu` with its `deadline_ms` (the last one waits for the
+ * user), each read back as the core reads it; stops at the first that
+ * isn't an answer ending `9000`. Returns the replies.
+ */
+async function playLane(fc, parentId, apdus) {
+  const replies = [];
+  for (const [i, apdu] of apdus.entries()) {
+    const ask = fc.apdu(parentId, apdu, i === apdus.length - 1 ? USER_MS : DEVICE_MS);
+    await until(() => fc.reply(ask) !== null, `the reply to APDU ${i}`);
+    const reply = fc.reply(ask);
+    replies.push(reply);
+    if (!reply.answer || reply.answer.toString('hex').slice(-4) !== '9000') break;
+  }
+  return replies;
+}
+
+/** Runs one payment to its end: `{ result }` or `{ error }`. */
+async function pay(c, opts = {}) {
+  const outcome = await signAndQueueRetry(TAB, {
+    detection: detectionOf(c),
+    walletIndex: ACCOUNT,
+    ...(opts.authorizedBy === 'cap' ? { authorizedBy: 'cap' } : { confirmation: confirmationOf() }),
+  }).then(
+    (result) => ({ result }),
+    (error) => ({ error })
+  );
+  // A withheld settle is fire-and-forget: its answer lands a few turns later.
+  await settle();
+  return outcome;
+}
+
+const requests = (method) => started.core().requests(method).map((m) => m.params);
+const ledgerSettles = () => requests('x402.settle').filter((p) => Object.hasOwn(p, 'typed_data'));
+const outcomeSettles = () => requests('x402.settle').filter((p) => Object.hasOwn(p, 'outcome'));
+const signatureSettles = () => requests('x402.settle').filter((p) => Object.hasOwn(p, 'signature'));
+
+let settleSpy;
+let requestSpy;
+
+beforeEach(async () => {
+  jest.spyOn(Date, 'now').mockReturnValue(1_762_000_000_000);
+  reservations = [];
+  mockState.addressChecks = [];
+  mockState.tabs.clear();
+  setPendingPayment.mockClear();
+  sendToHost.mockClear();
+  log.warn.mockClear();
+  started = await startLedgerCore({ log, devices: fakeLedgerDevices() });
+  mockState.client = started.client;
+  mockState.relay = started.relay;
+  settleSpy = jest.spyOn(vaultBackend.x402, 'settle');
+  requestSpy = jest.spyOn(started.client, 'request');
+});
+
+afterEach(async () => {
+  jest.restoreAllMocks();
+  await started.client.stop();
+  mockState.client = null;
+  mockState.relay = null;
+});
+
+/** The case's record, as main holds it: its path and address. */
+function recordFor(c, overrides = {}) {
+  mockState.records.set(ACCOUNT, { index: ACCOUNT, type: 'ledger', ...c.record, ...overrides });
+}
+
+describeIfVectors('a Ledger payment on the core: the core changes the authorization', () => {
+  describe.each(FORMS)('%s', (id, c) => {
+    const changes = found ? grammar.x402_changes.filter((change) => change.case === id) : [];
+    const refused = changes.filter((change) => change.change !== 'message.nonce');
+    const nonces = changes.filter((change) => change.change === 'message.nonce');
+
+    test.each(refused.map((change) => [change.change, change]))(
+      '%s: refused before the first APDU, nothing sent to the device, the reservation withheld',
+      async (_name, change) => {
+        recordFor(c);
+        const fc = serveX402({
+          authorize: () => authorizeReply(c, { typedData: change.typed_data, hash: change.hash }),
+        });
+
+        const { error } = await pay(c);
+
+        expect(error.message).toMatch(/isn't the one this site asked for: nothing was paid/);
+        expect(ledgerSettles()).toEqual([]);
+        expect(outcomeSettles()).toEqual([{ reservation: reservations[0], outcome: 'withheld' }]);
+        // A faulty core sends its stream anyway, naming main's requests:
+        // none is a parent, so nothing reaches the device.
+        const asks = fc
+          .requests('x402.authorize')
+          .concat(fc.requests('x402.settle'))
+          .map((m) => fc.apdu(m.id, change.apdus[0]));
+        await until(() => asks.every((ask) => fc.reply(ask) !== null), 'the replies');
+        expect(asks.map((ask) => fc.reply(ask))).toEqual(asks.map(() => ({ refused: 'parent' })));
+        expect(started.devices.events).toEqual([]);
+        expect(fc.faults).toEqual([]);
+        expect(setPendingPayment).not.toHaveBeenCalled();
+      }
+    );
+
+    test.each(nonces.map((change) => [change.change, change]))(
+      '%s: another nonce the core could have drawn, settled as main rebuilt it around that nonce',
+      async (_name, change) => {
+        recordFor(c);
+        const fc = serveX402({
+          authorize: () => authorizeReply(c, { typedData: change.typed_data, hash: change.hash }),
+          settle: (message) => fc.fail(message.id, { code: 'cancelled', message: 'Cancelled' }),
+        });
+
+        await pay(c);
+
+        expect(ledgerSettles()).toEqual([{ reservation: reservations[0], typed_data: change.typed_data }]);
+        expect(outcomeSettles()).toEqual([]);
+      }
+    );
+
+    test("a core's hash that isn't main's: refused before the first APDU, the reservation withheld", async () => {
+      recordFor(c);
+      const fc = serveX402({ authorize: () => authorizeReply(c, { hash: `0x${'11'.repeat(32)}` }) });
+
+      const { error } = await pay(c);
+
+      expect(error.message).toMatch(/nothing was paid/);
+      expect(ledgerSettles()).toEqual([]);
+      expect(outcomeSettles()).toEqual([{ reservation: reservations[0], outcome: 'withheld' }]);
+      expect(started.devices.events).toEqual([]);
+      expect(fc.faults).toEqual([]);
+    });
+  });
+});
+
+describeIfVectors('a Ledger payment on the core: settled', () => {
+  test.each(FORMS)(
+    "%s: now_s, main's copy settled under the device watchdog, the honest stream on the device, the payment stashed",
+    async (id, c) => {
+      recordFor(c);
+      started.devices.respond = answersOf(c);
+      let lane = null;
+      const fc = serveX402({
+        authorize: () => authorizeReply(c),
+        settle: (message) => {
+          lane = playLane(fc, message.id, honest.get(id)).then((replies) => {
+            fc.respond(message.id, { payload: JSON.parse(c.result.payload), charged: false });
+            return replies;
+          });
+        },
+      });
+
+      const { result, error } = await pay(c);
+
+      expect(error).toBeUndefined();
+      expect(result).toBeUndefined();
+      // x402.authorize: the Ledger's device, with main's clock.
+      expect(requests('x402.authorize')).toEqual([
+        expect.objectContaining({
+          account: ACCOUNT,
+          device: { kind: 'ledger', address: c.record.address },
+          now_s: c.x402.now_s,
+          authorization: { token: 'token-1' },
+          accept_index: 0,
+        }),
+      ]);
+      // x402.settle: exactly the reservation and main's own copy, which
+      // equals the core's, under the device watchdog.
+      const [settleParams] = ledgerSettles();
+      expect(Object.keys(settleParams)).toEqual(['reservation', 'typed_data']);
+      expect(settleParams).toEqual({ reservation: reservations[0], typed_data: c.request.typed_data });
+      const sent = requestSpy.mock.calls.filter(([method, params]) => method === 'x402.settle' && params.typed_data);
+      expect(sent).toHaveLength(1);
+      expect(sent[0][3]).toMatchObject({ deviceWatchdogMs: DEVICE_WATCHDOG_MS });
+      expect(sent[0][3].watchdogMs).toBeUndefined();
+      // Every APDU of the honest stream reached the device byte for byte,
+      // on one device, closed after.
+      const replies = await lane;
+      expect(replies.every((reply) => reply.answer)).toBe(true);
+      expect(started.devices.bytes()).toEqual(honest.get(id));
+      expect(started.devices.of('open')).toHaveLength(1);
+      expect(started.devices.of('detach')).toHaveLength(1);
+      expect(fc.faults).toEqual([]);
+      expect(started.relay.stats()).toEqual({ parents: 0, open: false });
+      // The core's payment, stashed with its reservation, which now waits
+      // for `sent` or `withheld` there.
+      expect(setPendingPayment).toHaveBeenCalledTimes(1);
+      const [, , pending] = setPendingPayment.mock.calls[0];
+      expect(pending).toMatchObject({ reservation: reservations[0], charged: false });
+      expect(JSON.parse(Buffer.from(pending.value, 'base64').toString())).toEqual(JSON.parse(c.result.payload));
+      expect(signatureSettles()).toEqual([]);
+      expect(outcomeSettles()).toEqual([]);
+      expect(settleSpy).not.toHaveBeenCalled();
+      expect(mockState.addressChecks).toEqual([[ACCOUNT, true]]);
+    }
+  );
+
+  test("a cap's auto-pay: the hold charged at authorize, the payment signed on the device and stashed", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    started.devices.respond = answersOf(c);
+    const fc = serveX402({
+      authorize: () => authorizeReply(c, { charged: true }),
+      settle: (message) => {
+        playLane(fc, message.id, honest.get(c.id)).then(() =>
+          fc.respond(message.id, { payload: JSON.parse(c.result.payload), charged: true })
+        );
+      },
+    });
+
+    const { error } = await pay(c, { authorizedBy: 'cap' });
+
+    expect(error).toBeUndefined();
+    expect(requests('x402.authorize')[0]).toMatchObject({
+      now_s: c.x402.now_s,
+      authorization: { cap: { agent: false, attributable: true } },
+    });
+    expect(sendToHost).toHaveBeenCalledWith(TAB, 'x402:cap-consumed', { origin: 'https://paid.example' });
+    expect(setPendingPayment.mock.calls[0][2]).toMatchObject({ reservation: reservations[0], charged: true });
+    expect(outcomeSettles()).toEqual([]);
+  });
+
+  test('a signed payment keeps its reservation: a payment past its runway when it comes back is withheld', async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    started.devices.respond = answersOf(c);
+    const fc = serveX402({
+      authorize: () => authorizeReply(c),
+      settle: (message) => {
+        playLane(fc, message.id, honest.get(c.id)).then(() => {
+          // The user took 45 s to confirm: 15 s of the authorization left.
+          Date.now.mockReturnValue(1_762_000_045_000);
+          fc.respond(message.id, { payload: JSON.parse(c.result.payload), charged: false });
+        });
+      },
+    });
+
+    const { error } = await pay(c);
+
+    expect(error.message).toMatch(/expired while it was being confirmed/);
+    expect(outcomeSettles()).toEqual([{ reservation: reservations[0], outcome: 'withheld' }]);
+    expect(setPendingPayment).not.toHaveBeenCalled();
+  });
+});
+
+describeIfVectors('a Ledger payment on the core: whatever ends a sent settle, its reservation is spent', () => {
+  const lastApdu = (c) => c.exchanges.length - 1;
+  const fail = (code, message, data) => ({ code, message, ...(data ? { data } : {}) });
+
+  // [what, the device's overrides by APDU index (null: the core ends it
+  // before the lane), the core's error, the caller's code, refunded]
+  const OUTCOMES = [
+    [
+      'the device rejects it',
+      (c) => ({ [lastApdu(c)]: '6985' }),
+      fail('device_failed', 'Ledger device failed', { ledger: 'LEDGER_USER_REJECTED', refunded: true }),
+      'LEDGER_USER_REJECTED',
+      true,
+    ],
+    [
+      'another device holds another account',
+      () => ({}),
+      fail('device_failed', 'Ledger device failed', { ledger: 'LEDGER_WRONG_DEVICE', refunded: false }),
+      'LEDGER_WRONG_DEVICE',
+      false,
+    ],
+    [
+      "the core's authorization isn't main's copy",
+      null,
+      fail('not_authorized', 'typed_data: not the reserved authorization', { reason: 'mismatch', refunded: true }),
+      'not_authorized',
+      true,
+    ],
+    [
+      'the cap changed while the device signed',
+      () => ({}),
+      fail('not_authorized', 'the cap changed', { reason: 'cap_changed', refunded: false }),
+      'not_authorized',
+      false,
+    ],
+    [
+      "the hold's write wasn't flushed",
+      () => ({}),
+      fail('storage', 'The permission file could not be written durably', {
+        store: 'x402',
+        applied: true,
+        durable: false,
+        refunded: false,
+      }),
+      'storage',
+      false,
+    ],
+    ['the settle is cancelled', () => ({}), fail('cancelled', 'Cancelled'), 'cancelled', false],
+  ];
+
+  test.each(OUTCOMES)(
+    '%s: never settled withheld again',
+    async (_what, overrides, coreError, code, refunded) => {
+      const [, c] = FORMS[0];
+      recordFor(c);
+      if (overrides) started.devices.respond = answersOf(c, overrides(c));
+      const fc = serveX402({
+        authorize: () => authorizeReply(c),
+        settle: (message) => {
+          const lane = overrides ? playLane(fc, message.id, honest.get(c.id)) : Promise.resolve();
+          lane.then(() => fc.fail(message.id, coreError));
+        },
+      });
+
+      const { error } = await pay(c);
+
+      expect(error.code).toBe(code);
+      expect(ledgerSettles()).toHaveLength(1);
+      expect(outcomeSettles()).toEqual([]);
+      expect(settleSpy).not.toHaveBeenCalled();
+      expect(setPendingPayment).not.toHaveBeenCalled();
+      // `data.refunded` read instead: the cap's room is back, or isn't.
+      expect(sendToHost.mock.calls.filter(([, channel]) => channel === 'x402:cap-consumed')).toHaveLength(
+        refunded ? 1 : 0
+      );
+      expect(fc.faults).toEqual([]);
+      if (!overrides) expect(started.devices.events).toEqual([]);
+      expect(started.relay.stats()).toEqual({ parents: 0, open: false });
+    }
+  );
+
+  test("the device's failure is shown with the Ledger's text, the core's error its cause", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    started.devices.respond = answersOf(c, { [lastApdu(c)]: '6985' });
+    const fc = serveX402({
+      authorize: () => authorizeReply(c),
+      settle: (message) =>
+        playLane(fc, message.id, honest.get(c.id)).then(() =>
+          fc.fail(message.id, OUTCOMES[0][2])
+        ),
+    });
+
+    const { error } = await pay(c);
+
+    expect(error.message).toBe('Request rejected on the Ledger device.');
+    expect(error.cause).toMatchObject({ code: 'device_failed', data: { ledger: 'LEDGER_USER_REJECTED', refunded: true } });
+    expect(mockState.addressChecks).toEqual([]);
+  });
+
+  test('another device: the record is marked mismatched, as the JS backend marks it', async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    const fc = serveX402({
+      authorize: () => authorizeReply(c),
+      settle: (message) => fc.fail(message.id, OUTCOMES[1][2]),
+    });
+
+    await pay(c);
+
+    expect(mockState.addressChecks).toEqual([[ACCOUNT, false]]);
+  });
+
+  test("the core exits while the device signs: nothing is settled again, to it or to the next", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c);
+    started.devices.respond = answersOf(c, { [lastApdu(c)]: { hold: true } });
+    const fc = serveX402({
+      authorize: () => authorizeReply(c),
+      settle: (message) => {
+        const apdus = honest.get(c.id);
+        playLane(fc, message.id, apdus.slice(0, -1)).then(() => fc.apdu(message.id, apdus.at(-1), USER_MS));
+      },
+    });
+    const paid = pay(c);
+    await until(() => started.devices.held.length === 1, 'the device waiting for the user');
+
+    fc.exit(null, 'SIGKILL');
+    const { error } = await paid;
+
+    expect(error.code).toBe('core_unavailable');
+    expect(settleSpy).not.toHaveBeenCalled();
+    expect(outcomeSettles()).toEqual([]);
+    expect(started.relay.stats()).toEqual({ parents: 0, open: false });
+  });
+});
+
+describeIfVectors('a Ledger payment on the core: a settle main refuses unsent', () => {
+  test("a record path main can't derive a stream for: nothing sent, the reservation withheld", async () => {
+    const [, c] = FORMS[0];
+    recordFor(c, { path: `m/${c.record.path}` });
+    const fc = serveX402({ authorize: () => authorizeReply(c) });
+
+    const { error } = await pay(c);
+
+    expect(error).toMatchObject({ code: 'invalid_argument', data: { rule: 'path' } });
+    expect(ledgerSettles()).toEqual([]);
+    expect(outcomeSettles()).toEqual([{ reservation: reservations[0], outcome: 'withheld' }]);
+    expect(started.devices.events).toEqual([]);
+    expect(fc.faults).toEqual([]);
+  });
+});
