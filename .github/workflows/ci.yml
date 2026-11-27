@@ -197,6 +197,10 @@ jobs:
       # freedom-core's stream vectors (design 0009, amendment 5, design
       # 0014's service connections that take main's bodies, and design
       # 0015's Swarm streams), which `stream-vectors.test.js` replays, its
+      # x402 vectors (design 0012's `approvals.json`), whose payments
+      # `ledger-authorization.vectors.test.js` holds main's rebuild of a
+      # Ledger payment's authorization to (design 0016, with `ledger.json`
+      # and `ledger-grammar.json` below), its
       # method table (`protocol/schema.json`, with the protocol-2 rows), which
       # `core-deadlines.test.js` checks main's deadline table against, and
       # its Radicle vectors (design 0008), which `radicle-vectors.test.js`
@@ -223,6 +227,7 @@ jobs:
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
+            vectors/approvals.json
             vectors/streams.json
             vectors/radicle-reads.json
             vectors/radicle-blob.json
