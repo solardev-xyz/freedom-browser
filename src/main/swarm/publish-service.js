@@ -4,6 +4,31 @@
  * Upload operations via bee-js: data, files, and directories.
  * All uploads use auto batch selection and return normalized results.
  * Runs in the main process only — renderer interacts via IPC.
+ *
+ * **freedom://publish on the core's backend** (freedom-core design 0015,
+ * "Methods main calls", SWM-8; the SWM-6 to SWM-9 plan's PR 8.3): in a
+ * process whose Swarm backend is `core` (swarm-backend-kind.js, read once),
+ * the IPC handlers send main's own `swarm.publish` instead of bee-js
+ * (core/swarm-own-calls.js): text as one `data` part (inline up to 64 KiB,
+ * else main's held bytes), a picked file as one `file` part main streams
+ * from the file when the core asks, and a picked folder walked into a
+ * `collection` of parts as bee-js finds its files, each streamed from its
+ * file, named by its `/`-separated path in the folder. Each carries
+ * `history`, so the core keeps the freedom://publish row around the upload
+ * itself (`addEntry` before it, `updateEntry` after it, D3), and main
+ * writes none of it; a publish that fails before anything is sent (its
+ * file or folder can't be read) has its row written through the core's
+ * `swarm.history` as js writes it. `swarm:get-upload-status` is
+ * `swarm.upload_status`, within the reference's 10 s. The answers are the
+ * reference's: the same `{ success, reference, bzzUrl, tagUid }`, and the
+ * same failure texts, the core giving the service's messages
+ * (`describePublishError`'s "try again shortly", `describePickedPathError`'s
+ * `Could not read "<name>" (<code>)`, `needsStorage` for no usable batch).
+ * Two differ, as the design records: a picked file that changes size while
+ * it is read shows `Internal error` where bee-js gave its transport's text
+ * (`picked-read-text`, U13), and a name over 100 UTF-8 bytes in a folder is
+ * kept whole in the tar, where bee-js cut it (`tar-paths`, F-3). On `js`
+ * nothing changes.
  */
 
 const fs = require('fs');
@@ -20,6 +45,9 @@ const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-
 const { createPickTokenStore } = require('./publish-pick-tokens');
 const { getAntApiUrl } = require('../service-registry');
 const pageUpload = require('./page-upload');
+// Main's own calls on the core's backend (core/swarm-own-calls.js), loaded
+// with their first call: on `js` nothing of the core's client is.
+const coreCalls = () => require('../core/swarm-own-calls');
 
 /** Whether `value` is a promise (any thenable). */
 function isThenable(value) {
@@ -44,6 +72,17 @@ function writeHistory(name, ...args) {
     : publishHistory;
   return ops[name](...args);
 }
+
+/**
+ * Whether freedom://publish runs on the core's backend: the process's
+ * Swarm backend (swarm-backend-kind.js), read once and kept.
+ */
+function publishesOnCore() {
+  return require('./swarm-backend-kind').swarmBackendKind() === 'core';
+}
+
+/** `swarm:get-upload-status`'s bound on the core, as bee-js's `tag.get` had it. */
+const UPLOAD_STATUS_MS = 10_000;
 
 // What the user reads when a publish fails. A batch bought moments ago that
 // storer peers have not synced yet gets a "try again shortly" sentence
@@ -77,6 +116,121 @@ function describePickedPathError(err, pickedPath) {
 // Sentinel for user-initiated publishes (text/file/directory triggered from
 // the freedom://publish UI). dApp-driven publishes pass their actual origin.
 const USER_ORIGIN = 'freedom://publish';
+
+/** The IPC answer for a publish the core made: the reference's fields. */
+function publishedOnCore(result) {
+  return {
+    success: true,
+    reference: result.reference,
+    bzzUrl: `bzz://${result.reference}`,
+    tagUid: result.tag_uid,
+  };
+}
+
+/**
+ * The row of a freedom://publish upload that failed on the core's backend
+ * before `swarm.publish` was sent (its text not readable as bytes, its
+ * file or folder not read): the core's `swarm.history` `add` and `update`,
+ * as `shell` (publish-history.js `coreOps`), the row the handler keeps on
+ * `js`, where it is written before the upload. `message` is its text.
+ */
+async function unsentRowOnCore(type, name, message) {
+  const row = await publishHistory.coreOps.addEntry({
+    type,
+    name,
+    status: 'uploading',
+    origin: USER_ORIGIN,
+  });
+  await publishHistory.coreOps.updateEntry(row.id, { status: 'failed', errorMessage: message });
+}
+
+/**
+ * Text for `swarm.publish`'s one `data` part: a string's UTF-8, or the
+ * bytes of a buffer, as `publishData`'s `Buffer.byteLength` and bee-js read
+ * them; anything else throws what `Buffer.byteLength` throws.
+ */
+function dataBytes(data) {
+  if (typeof data === 'string') return Buffer.from(data, 'utf8');
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  Buffer.byteLength(data);
+  throw new TypeError('The data must be a string or bytes');
+}
+
+/** `swarm:publish-data` on the core's backend. */
+async function publishDataOnCore(data) {
+  let bytes;
+  try {
+    bytes = dataBytes(data);
+  } catch (err) {
+    log.error('[PublishService] Failed to publish data:', err.message);
+    await unsentRowOnCore('data', 'Text', err.message);
+    return publishFailure(err);
+  }
+  try {
+    const result = await coreCalls().swarmOwnCalls().publish({
+      kind: 'data',
+      parts: [{ bytes }],
+      deferred: false,
+      history: { type: 'data', name: 'Text' },
+    });
+    return publishedOnCore(result);
+  } catch (err) {
+    log.error('[PublishService] Failed to publish data:', err.message);
+    return publishFailure(err);
+  }
+}
+
+/** `swarm:publish-file` on the core's backend, for the picked `filePath`. */
+async function publishFileOnCore(filePath, name) {
+  let size;
+  try {
+    ({ size } = fs.statSync(filePath));
+  } catch (err) {
+    log.error('[PublishService] Failed to publish file:', err.message);
+    const message = describePickedPathError(err, filePath);
+    await unsentRowOnCore('file', name, message);
+    return publishFailure(err, message);
+  }
+  try {
+    const result = await coreCalls().swarmOwnCalls().publish({
+      kind: 'file',
+      parts: [{ file: filePath, size }],
+      name,
+      deferred: true,
+      history: { type: 'file', name },
+    });
+    return publishedOnCore(result);
+  } catch (err) {
+    log.error('[PublishService] Failed to publish file:', err.message);
+    return publishFailure(err, describePickedPathError(err, filePath));
+  }
+}
+
+/** `swarm:publish-directory` on the core's backend, for the picked `dirPath`. */
+async function publishDirectoryOnCore(dirPath, name) {
+  let files;
+  try {
+    files = await coreCalls().walkDirectory(dirPath);
+  } catch (err) {
+    log.error('[PublishService] Failed to publish directory:', err.message);
+    const message = describePickedPathError(err, dirPath);
+    await unsentRowOnCore('directory', name, message);
+    return publishFailure(err, message);
+  }
+  try {
+    const result = await coreCalls().swarmOwnCalls().publish({
+      kind: 'collection',
+      parts: files.map(({ path: entry, file, size }) => ({ path: entry, file, size })),
+      deferred: true,
+      history: { type: 'directory', name },
+    });
+    return publishedOnCore(result);
+  } catch (err) {
+    log.error('[PublishService] Failed to publish directory:', err.message);
+    return publishFailure(err, describePickedPathError(err, dirPath));
+  }
+}
 
 /**
  * Normalize an UploadResult to a Freedom publish result.
@@ -434,6 +588,7 @@ function registerPublishIpc() {
     if (!data && data !== '') {
       return { success: false, error: 'Data is required' };
     }
+    if (publishesOnCore()) return publishDataOnCore(data);
     const added = writeHistory('addEntry', {
       type: 'data',
       name: 'Text',
@@ -474,6 +629,7 @@ function registerPublishIpc() {
       return { success: false, error: `File not found: ${path.basename(filePath)}` };
     }
     const name = path.basename(filePath);
+    if (publishesOnCore()) return publishFileOnCore(filePath, name);
     const added = writeHistory('addEntry', {
       type: 'file',
       name,
@@ -523,6 +679,7 @@ function registerPublishIpc() {
       return { success: false, error: `Directory not found: ${path.basename(dirPath)}` };
     }
     const name = path.basename(dirPath);
+    if (publishesOnCore()) return publishDirectoryOnCore(dirPath, name);
     const added = writeHistory('addEntry', {
       type: 'directory',
       name,
@@ -560,7 +717,11 @@ function registerPublishIpc() {
       if (!tagUid || typeof tagUid !== 'number') {
         return { success: false, error: 'Tag UID is required' };
       }
-      const status = await getUploadStatus(tagUid);
+      const status = publishesOnCore()
+        ? await coreCalls().swarmOwnCalls().uploadStatus(tagUid, {
+            signal: AbortSignal.timeout(UPLOAD_STATUS_MS),
+          })
+        : await getUploadStatus(tagUid);
       return { success: true, ...status };
     } catch (err) {
       log.error('[PublishService] Failed to get upload status:', err.message);

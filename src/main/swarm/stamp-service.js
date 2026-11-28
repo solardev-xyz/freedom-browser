@@ -6,6 +6,16 @@
  * the renderer receives normalized Freedom batch model objects. Buying, extending and resizing batches, and the chequebook
  * deposit, go through the node's xDAI storage routes instead
  * (publish-setup-service.js), which price and pay for them in one step.
+ *
+ * **On the core's backend** (freedom-core design 0015, "Methods main
+ * calls": `swarm.stamps`; SWM-8, the SWM-6 to SWM-9 plan's PR 8.3): in a
+ * process whose Swarm backend is `core` (swarm-backend-kind.js, read once),
+ * `swarm:get-stamps` reads the batches through the core's `swarm.stamps`
+ * (core/swarm-own-calls.js), one `/stamps` read whose batches carry
+ * bee-js's `mapPostageBatch` fields as plain numbers and strings beside the
+ * node's own `exists`, `propagating` and `batchTTL`, and normalizes each to
+ * the same Freedom batch model (`normalizeCoreBatch`). On `js` nothing
+ * changes.
  */
 
 const { ipcMain } = require('electron');
@@ -73,9 +83,33 @@ function normalizeBatch(batch, raw = null) {
 }
 
 /**
+ * One of the core's `swarm.stamps` batches (mapPostageBatch's fields as
+ * numbers and strings, with the node's `exists`, `propagating` and
+ * `batchTTL`) as `normalizeBatch` gives bee-js's: the batch is its own raw
+ * `/stamps` entry, and its rough expiry is `ttlSeconds` from `now`, as
+ * bee-js's `Duration.toEndDate()` counts it.
+ */
+function normalizeCoreBatch(batch, now = Date.now()) {
+  const normalized = normalizeBatch(batch, batch);
+  if (normalized.ttlSeconds > 0) {
+    normalized.expiresApprox = new Date(now + normalized.ttlSeconds * 1000).toISOString();
+  }
+  return normalized;
+}
+
+/** The batches through the core's `swarm.stamps`, normalized. */
+async function getStampsFromCore() {
+  const batches = await require('../core/swarm-own-calls').swarmOwnCalls().stamps();
+  if (!Array.isArray(batches)) throw new Error("The core's swarm.stamps answer is not a list");
+  const now = Date.now();
+  return batches.map((batch) => normalizeCoreBatch(batch, now));
+}
+
+/**
  * List all postage batches, normalized to the Freedom batch model.
  */
 async function getStamps() {
+  if (require('./swarm-backend-kind').swarmBackendKind() === 'core') return getStampsFromCore();
   const bee = getBee();
   const [batches, rawRes] = await Promise.all([bee.stamp.getAll(), antApi.getStamps()]);
   const raw = new Map();
@@ -110,5 +144,6 @@ function registerSwarmIpc() {
 
 module.exports = {
   normalizeBatch,
+  normalizeCoreBatch,
   registerSwarmIpc,
 };

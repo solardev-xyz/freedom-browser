@@ -114,6 +114,20 @@
  *   its call's, names none either. Its frames, and the core's credit on
  *   it, are its upload's `swarm.body` progress (D13's one timer), reported
  *   to the watchdog (`watchdogProgress`).
+ * - **`swarm.publish`'s watchdog** (design 0015, Deadlines and cancel, D13;
+ *   SWM-8, the SWM-6 to SWM-9 plan's PR 8.3): main's idle method among the
+ *   parents, sent with its idle watchdog (core-deadlines.js
+ *   `idleWatchdogMs`), which nothing holds and its progress moves on
+ *   (`watchdogProgress`), mirroring the core's own bounds on its asks
+ *   (`ask_bound`: 60 s without progress, 300 s for a whole reply) plus the
+ *   margin: 75 s from each ask naming it (a ready check, a call, a part),
+ *   each of main's answers to one, each frame and credit of its part
+ *   streams and each piece of its upload's body main takes from the core;
+ *   315 s from each whole call's ask (the core waits that long for the
+ *   node's reply); and 315 s from its upload's body terminal (the core then
+ *   waits that long for the node's answer). Main's own cancel of it is the
+ *   client's (service-client.js). The other parents carry deadlines, and
+ *   their progress moves nothing.
  * - **The reply:** a status outside 200–299 is answered whole, its body
  *   read to 8 KiB and cut there. A 2xx whole call is `{ status,
  *   status_text, headers, body_base64 }`, its body at most `max_bytes`
@@ -168,9 +182,6 @@
  * - **Logs:** a refusal at `warn`, with the parent's row, its step and the
  *   rule; a core fault on an upload at `warn`, with the parent's row, its
  *   step and the fault's name; never a path, a value or a body.
- *
- * Not here yet: `swarm.publish`'s own watchdog progress (the asks naming
- * it, its streams' frames) is SWM-8's, with main's first `swarm.publish`.
  */
 
 const fs = require('fs');
@@ -221,6 +232,11 @@ const READY_BODY = 64 * KIB;
 const PART_READ = 64 * KIB;
 /** `swarm.body`'s idle watchdog after its progress: 75 s (point 3). */
 const BODY_PROGRESS_MS = idleWatchdogMs('swarm.body');
+/** `swarm.publish`'s idle watchdog (D13): 75 s after its progress, 315 s
+ * from a whole call's ask, and 315 s from its upload's body terminal. */
+const PUBLISH_PROGRESS_MS = idleWatchdogMs('swarm.publish');
+const PUBLISH_WHOLE_CALL_MS = idleWatchdogMs('swarm.publish', 'whole_call');
+const PUBLISH_BODY_END_MS = idleWatchdogMs('swarm.publish', 'body_end');
 
 const API_REQUIRED = ['for', 'form', 'method', 'path', 'query', 'headers', 'max_bytes', 'stream'];
 const API_OPTIONAL = ['body', 'feed', 'tree'];
@@ -550,9 +566,10 @@ const never = () => new Promise(() => {});
  * of another length. `hold()` stops it for good once the node has
  * answered: its pulls wait from then on and read nothing more of the
  * core's, until the transport lets go of it (its cancel). `ended` once its
- * last byte went.
+ * last byte went. `onRead(end)` sees each piece main takes from the core
+ * (`end` false) and its terminal (`end` true).
  */
-function uploadBody(source, length, onFault) {
+function uploadBody(source, length, onFault, onRead = () => {}) {
   const reader = source.getReader();
   const state = { ended: false, held: false, stream: null };
   let seen = 0;
@@ -571,6 +588,7 @@ function uploadBody(source, length, onFault) {
           throw err;
         }
         if (state.held) return never();
+        onRead(next.done);
         if (next.done) {
           if (seen !== length) {
             onFault('short');
@@ -1025,7 +1043,15 @@ class Upload {
       this.fault('head');
       return null;
     }
-    this.body = uploadBody(opened.body, this.length, (why) => this.fault(why));
+    // The body's head and each piece of it are the parent's progress, its
+    // terminal the start of the core's wait for the node's answer.
+    this.shell.progressed(this.entry);
+    this.body = uploadBody(
+      opened.body,
+      this.length,
+      (why) => this.fault(why),
+      (end) => this.shell.progressed(this.entry, end ? PUBLISH_BODY_END_MS : PUBLISH_PROGRESS_MS)
+    );
     return this.body.stream;
   }
 
@@ -1196,6 +1222,11 @@ class SwarmShell {
     if (this.live.has(parent)) throw new TypeError('that request is open already');
     const entry = {
       row,
+      generation,
+      id,
+      // `swarm.publish`, main's idle method: its watchdog follows its
+      // progress (`progressed`).
+      idle: row.startsWith('swarm.publish:'),
       admission: new Admission({ row, params, key }),
       backend,
       parts: partsOf(row, params, parts),
@@ -1251,6 +1282,25 @@ class SwarmShell {
     };
   }
 
+  /**
+   * Progress of an idle parent (`swarm.publish`, D13): its watchdog's
+   * deadline becomes at least now + `boundMs` (75 s by default). Nothing
+   * for a parent with a deadline, or without the client.
+   */
+  progressed(entry, boundMs = PUBLISH_PROGRESS_MS) {
+    if (!entry?.idle || !this.client) return;
+    this.client.watchdogProgress(entry.generation, entry.id, boundMs);
+  }
+
+  /** An ask naming `entry`: progress now, and again once main's answer to
+   * it (whatever it is, a refusal or a `cancelled` among them) is in the
+   * pipe. */
+  asked(entry, onAnswer) {
+    if (!entry?.idle) return;
+    this.progressed(entry);
+    onAnswer?.(() => this.progressed(entry));
+  }
+
   /** The live parent `id` of `generation`, or whether it has ended. */
   parentOf(generation, id) {
     const entry = id === null ? undefined : this.live.get(keyOf(generation, id));
@@ -1289,7 +1339,7 @@ class SwarmShell {
   // ---- shell.swarm_ready ----
 
   /** The handler: one `shell.swarm_ready`. */
-  async ready(params, { signal, generation }) {
+  async ready(params, { signal, generation, onAnswer = null }) {
     const ask = readReady(params);
     const found = this.parentOf(generation, ask ? ask.for : null);
     if (!ask) return this.refuse('shell.swarm_ready', found.entry, 'form');
@@ -1302,6 +1352,7 @@ class SwarmShell {
       return untilCancelled(signal);
     }
     const { entry } = found;
+    this.asked(entry, onAnswer);
     const rule = entry.admission.ready(ask.check);
     if (rule) return this.refuse('shell.swarm_ready', entry, rule);
     let answer;
@@ -1455,6 +1506,7 @@ class SwarmShell {
       throw new ShellError('invalid_argument', { rule: 'ended' });
     }
     const { entry } = found;
+    this.asked(entry, onAnswer);
     const { call } = read;
     // A walk whose map had no room: its calls are busy, never admitted.
     if (entry.walkBusy) return { failed: 'busy' };
@@ -1466,6 +1518,11 @@ class SwarmShell {
     if (verdict.rule) {
       shrink(0);
       return this.refuse('shell.swarm_api', entry, verdict.rule);
+    }
+    // A whole call's reply may take the core's 300 s from its ask; an
+    // upload's (its body streamed) counts from the body's terminal.
+    if (!call.stream && !(isObject(call.body) && Object.hasOwn(call.body, 'stream'))) {
+      this.progressed(entry, PUBLISH_WHOLE_CALL_MS);
     }
     let settled = false;
     const settle = (reply) => {
@@ -1628,6 +1685,7 @@ class SwarmShell {
         }
         return new StreamedReply(head, pieceBody(boundedBody(body, max), life, end), {
           bodyFlag: false,
+          onProgress: () => this.progressed(entry),
         });
       }
       if (declared !== null && declared > max) {
@@ -1688,7 +1746,7 @@ class SwarmShell {
    * opened nothing. The core's cancel of a waiting part takes it out of
    * the line; the service client answers that cancel.
    */
-  async part(params, { generation, signal, onRelease, abortStream = null }) {
+  async part(params, { generation, signal, onRelease, onAnswer = null, abortStream = null }) {
     const ask = readPart(params);
     const found = this.parentOf(generation, ask.for);
     if (ask.rule) return this.refuse('shell.swarm_part', found.entry, ask.rule);
@@ -1699,6 +1757,7 @@ class SwarmShell {
       throw new ShellError('invalid_argument', { rule: 'ended' });
     }
     const { entry } = found;
+    this.asked(entry, onAnswer);
     const rule = partRule(entry, ask.part);
     if (rule) return this.refuse('shell.swarm_part', entry, rule);
     const part = entry.parts.get(ask.part);
@@ -1741,8 +1800,10 @@ class SwarmShell {
     else if (part.held) body = heldPart(part.held, life);
     else body = pickedPart(part.path, part.length, life, this.openFile);
     // Its frames and the core's credit on it are its upload's progress
-    // (D13's one timer), which the watchdog sees only through them.
+    // (D13's one timer), which the watchdog sees only through them, and
+    // its parent's (`swarm.publish`'s own watchdog).
     const onProgress = () => {
+      this.progressed(entry);
       if (upload.bodyId === null) return;
       this.client?.watchdogProgress(upload.generation, upload.bodyId, BODY_PROGRESS_MS);
     };
@@ -1847,6 +1908,9 @@ module.exports = {
   SwarmShell,
   BODY_PROGRESS_MS,
   ERROR_BODY,
+  PUBLISH_BODY_END_MS,
+  PUBLISH_PROGRESS_MS,
+  PUBLISH_WHOLE_CALL_MS,
   PART_READ,
   READY_BODY,
   READY_TIMEOUT_MS,
