@@ -180,10 +180,19 @@ describeFork('a Safe on forked Gnosis through the real freedom-cored', () => {
   });
 
   afterAll(async () => {
+    // Each broadcast leaves tx-recorder's receipt poll running in the
+    // background (pollReceipt); let the payments settle before the core and
+    // anvil stop, so no poll outlives the test and fails the job after it.
+    const history = require('../../../../payment-history');
+    const until = Date.now() + 30000;
+    const pendingNow = () => history.getCount({ status: 'pending' }).catch(() => 0);
+    while (Date.now() < until && (await pendingNow())) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
     await world.stop?.();
     await forwarder?.close();
     anvil?.kill();
-  });
+  }, 60000);
 
   afterEach(() => {
     expect(world.exits).toEqual([]);
