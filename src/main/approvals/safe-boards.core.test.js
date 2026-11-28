@@ -4,8 +4,8 @@
 // reads the state, the SafeTx it shows is the core's state's call, each step
 // is the core's naming the board's SafeTx, and no owner is confirmed again.
 // At its threshold it executes; the executor's fee the core offers is
-// confirmed in the panel by acknowledging it (`confirmOfferedFee`), nothing
-// minted.
+// confirmed in the panel by the ask main holds for it (`confirmOfferedFee`),
+// nothing minted.
 
 jest.mock('electron', () => ({
   BrowserWindow: {
@@ -149,9 +149,9 @@ describe("getSafeBoards' send steps on the core", () => {
     expect(transactions.pendingCall).not.toHaveBeenCalled();
   });
 
-  test("the executor's fee the core offers: confirmed in the panel by acknowledging it, then executed with fee_ack", async () => {
+  test("the executor's fee the core offers: its ask confirmed in the panel, then executed with that ask's ID", async () => {
     coreBoard();
-    const offer = { feeAck: true, safeIndex: 5, executorIndex: 0, chainId: 100, to: '0x' + '55'.repeat(20), value: '0' };
+    const offer = { feeAskId: 'ask-1', feeAskAgain: false, safeIndex: 5, executorIndex: 0, chainId: 100, to: '0x' + '55'.repeat(20), value: '0' };
     transactions.executeSafePending
       .mockRejectedValueOnce(
         Object.assign(new Error("This payment's network fee needs your confirmation."), {
@@ -161,14 +161,14 @@ describe("getSafeBoards' send steps on the core", () => {
         })
       )
       .mockImplementation(async () => ({ ...state(2), status: 'executed', executed: EXECUTED }));
-    coreSends.confirmOfferedFee.mockResolvedValue({ approved: true, feeConfirmation: { feeAck: true } });
+    coreSends.confirmOfferedFee.mockResolvedValue({ approved: true, feeConfirmation: { feeAskId: 'ask-1' } });
     mockBoard.state = state(2);
     expect(await getSafeBoards().openWalletBoard(3, 5)).toMatchObject({ outcome: 'executed' });
     // Asked in the board's window for the Safe's offer main holds; no token.
-    expect(coreSends.confirmOfferedFee).toHaveBeenCalledWith({ approvals: expect.any(Object), windowId: 3, safeIndex: 5 });
+    expect(coreSends.confirmOfferedFee).toHaveBeenCalledWith({ approvals: expect.any(Object), windowId: 3, safeIndex: 5, askId: 'ask-1' });
     expect(transactions.executeSafePending.mock.calls).toEqual([
       [5, { safeTxHash: HASH }],
-      [5, { feeConfirmation: { feeAck: true }, safeTxHash: HASH }],
+      [5, { feeConfirmation: { feeAskId: 'ask-1' }, safeTxHash: HASH }],
     ]);
   });
 
@@ -178,7 +178,7 @@ describe("getSafeBoards' send steps on the core", () => {
       Object.assign(new Error('fee'), {
         code: 'FEE_CHECK_NEEDS_CONFIRMATION',
         feeCheck: { above: true },
-        offer: { feeAck: true, safeIndex: 5, executorIndex: 0, chainId: 100, to: TO, value: '0' },
+        offer: { feeAskId: 'ask-1', feeAskAgain: false, safeIndex: 5, executorIndex: 0, chainId: 100, to: TO, value: '0' },
       })
     );
     coreSends.confirmOfferedFee.mockResolvedValue({ approved: false, error: 'User rejected the request', code: 'USER_REJECTED' });

@@ -700,5 +700,4 @@ module.exports = {
   deploySafe,
   pickDefaultExecutor,
   execIntentKey,
-  deployIntentKey,
 };

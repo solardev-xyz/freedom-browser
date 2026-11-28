@@ -212,20 +212,20 @@ describe('on the core', () => {
     expect(transactions.cancelSafeSend).not.toHaveBeenCalled();
   });
 
-  test("the execution names the board's SafeTx, its fee acknowledged in the window's document when it is on", async () => {
+  test("the execution names the board's SafeTx, and its fee confirmation, the ask main showed, goes to the core's route with the asking chrome", async () => {
     mockWalletApprovals = { confirm: jest.fn() };
-    const options = { safeTxHash: BOARD.safeTxHash, feeConfirmation: { feeAck: true } };
+    const options = { safeTxHash: BOARD.safeTxHash, feeConfirmation: { feeAskId: 'ask-1' } };
     expect(await handlers['wallet:safe-execute']({ sender: CHROME }, 7, options)).toEqual({ success: true, state: { status: 'executed' } });
     expect(transactions.executeChromeSafeSend).toHaveBeenCalledWith({
       sender: CHROME,
       safeIndex: 7,
       safeTxHash: BOARD.safeTxHash,
-      feeConfirmation: { feeAck: true },
+      feeConfirmation: { feeAskId: 'ask-1' },
       approvals: mockWalletApprovals,
     });
     expect(transactions.executeSafePending).not.toHaveBeenCalled();
     // The fee asked: its verdict and the core's offer reach the chrome.
-    const offer = { feeAck: true, safeIndex: 7, executorIndex: 0, chainId: 100, to: '0x' + '77'.repeat(20), value: '0' };
+    const offer = { feeAskId: 'ask-2', feeAskAgain: false, safeIndex: 7, executorIndex: 0, chainId: 100, to: '0x' + '77'.repeat(20), value: '0' };
     transactions.executeChromeSafeSend.mockRejectedValueOnce(
       Object.assign(new Error('fee'), { code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeCheck: { above: true }, offer })
     );

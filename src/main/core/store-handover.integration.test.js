@@ -16,6 +16,14 @@
  * receipts from the profile's directory into the Freedom root and imports
  * the copy (design 0017 C5).
  *
+ * The Swarm stores (freedom-core design 0015, D3; the SWM-6 to SWM-9
+ * plan's PR 6.1): no build's hello names `swarm_stores` before SWM-7's
+ * flip, so every call of core/swarm-stores.js fails `requirement_unmet`
+ * in main, unsent, and the core, asked directly, answers `not_moved`; a
+ * hello a test chooses (`storeMovedFor('core', { swarmStores: true })`)
+ * gets the name back, and the calls reach the stores, main's own identity
+ * ops refused to the chrome as the calls' table says.
+ *
  * Skipped without the binaries; FREEDOM_CORED_STORES_TEST=1 requires both
  * (npm run core:download, npm run core:download:previous).
  */
@@ -137,12 +145,13 @@ describeIfCurrent('the set-A stores before any moves, on the pinned freedom-core
   });
 
   test('a hello naming all five gets all five back, in its order', async () => {
+    const { SET_A_STORES } = require('./core-client');
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-all-'));
     let named;
     try {
-      named = await startCore({ binary: current, root: other, storeMoved: STORES });
-      expect(named.service.helloParams(named).store_moved).toEqual([...STORES]);
-      expect(named.hello.store_moved).toEqual([...STORES]);
+      named = await startCore({ binary: current, root: other, storeMoved: SET_A_STORES });
+      expect(named.service.helloParams(named).store_moved).toEqual([...SET_A_STORES]);
+      expect(named.hello.store_moved).toEqual([...SET_A_STORES]);
     } finally {
       await named?.stop();
       fs.rmSync(other, { recursive: true, force: true });
@@ -304,7 +313,7 @@ describeIfPrevious('the set-A stores on the previous freedom-cored release', () 
   let STORES;
 
   beforeAll(async () => {
-    ({ requiresStore, STORES } = require('./core-client'));
+    ({ requiresStore, SET_A_STORES: STORES } = require('./core-client'));
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-previous-'));
     // The hello also names the profile's directory (PRF-8b-lite), which a
     // core before 0.24.0 ignores, as every member it doesn't know. It
@@ -342,5 +351,109 @@ describeIfPrevious('the set-A stores on the previous freedom-cored release', () 
     }
     expect(snapshot(root)).toEqual(before);
     expect(snapshot(path.join(root, 'identity'))).toEqual(identityBefore);
+  });
+});
+
+describeIfCurrent('the Swarm stores on the pinned freedom-cored, before SWM-7 names them', () => {
+  // Their files (design 0015, D3): main's on either backend until the flip.
+  const SWARM_FILES = ['swarm-feeds.json', 'swarm-manifest-grants.json', 'publish-history.sqlite'];
+  // The error a call rejects with, itself.
+  const thrownBy = (promise) =>
+    promise.then(
+      (result) => {
+        throw new Error(`expected a rejection, got ${JSON.stringify(result)}`);
+      },
+      (err) => err
+    );
+  let root;
+  let core;
+  let stores;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-swarm-'));
+    // The build's hello, whichever backend the switch reads.
+    core = await startCore({ binary: current, root });
+    const { createSwarmStores } = require('./swarm-stores');
+    stores = createSwarmStores({ request: (...args) => core.request(...args) });
+  });
+
+  afterAll(async () => {
+    await core?.stop();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("the build's hello names no swarm_stores, so every call fails requirement_unmet, unsent", async () => {
+    const { STORE_MOVED } = require('./core-client');
+    expect(core.service.helloParams(core).store_moved).toEqual([...STORE_MOVED]);
+    expect(core.hello.store_moved).not.toContain('swarm_stores');
+    for (const [call, op, members, caller] of [
+      ['identities', 'get-all-origins', {}, 'chrome'],
+      ['identities', 'hasFeedGrant', { key: 'https://app.example' }, 'shell'],
+      ['history', 'list', {}, 'chrome'],
+      ['history', 'remove', { id: 1 }, 'shell'],
+      ['manifest', 'get', { origin: 'https://app.example' }, 'shell'],
+    ]) {
+      const answer = await errorOf(stores[call](op, members, { caller }));
+      expect([call, op, answer.code]).toEqual([call, op, 'requirement_unmet']);
+    }
+    // Asked directly, the core answers not_moved, and opens none of the files.
+    const raw = await errorOf(core.request('swarm.history', { op: 'list' }, shell));
+    expect([raw.code, raw.data?.store]).toEqual(['not_moved', 'swarm_stores']);
+    for (const file of SWARM_FILES) expect(fs.existsSync(path.join(root, file))).toBe(false);
+  });
+
+  test('a hello a test chooses names swarm_stores, gets it back, and the calls reach the stores', async () => {
+    const { storeMovedFor } = require('./core-client');
+    const { createSwarmStores, OPS } = require('./swarm-stores');
+    const chosen = storeMovedFor('core', { swarmStores: true });
+    expect(chosen).toContain('swarm_stores');
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'store-handover-swarm-named-'));
+    let named;
+    try {
+      named = await startCore({ binary: current, root: other, storeMoved: chosen });
+      expect(named.hello.store_moved).toEqual([...chosen]);
+      const calls = createSwarmStores({ request: (...args) => named.request(...args) });
+      expect(await calls.identities('get-all-origins', {}, { caller: 'chrome' })).toEqual([]);
+      expect(
+        await calls.identities(
+          'has-feed-identity',
+          { origin: 'https://app.example' },
+          {
+            caller: 'chrome',
+          }
+        )
+      ).toBe(false);
+      expect(await calls.identities('hasFeedGrant', { key: 'https://app.example' })).toBe(false);
+      expect(await calls.history('list', {}, { caller: 'chrome' })).toEqual([]);
+      expect(await calls.history('remove', { id: 7 })).toBe(false);
+      expect(await calls.manifest('get', { origin: 'https://app.example' })).toBeNull();
+      // What the store threw comes back as the reference threw it.
+      const wrongType = await thrownBy(calls.history('remove', { id: true }, { caller: 'chrome' }));
+      expect([wrongType.constructor, wrongType.message]).toEqual([
+        TypeError,
+        'SQLite3 can only bind numbers, strings, bigints, buffers, and null',
+      ]);
+      const refused = await thrownBy(
+        calls.identities('set-feed-identity', {}, { caller: 'chrome' })
+      );
+      expect([refused.constructor, refused.message]).toEqual([
+        Error,
+        'Swarm feed access is granted only from its own prompt',
+      ]);
+      // Main's own identity ops are the shell's: the core refuses each to
+      // the chrome, as the calls' table does in main.
+      for (const [op, { callers }] of Object.entries(OPS['swarm.identities'])) {
+        if (callers.includes('chrome')) continue;
+        const params =
+          op === 'getEthereumWalletIdentityReferences' ? { op } : { op, key: { string: 'k' } };
+        const answer = await errorOf(
+          named.request('swarm.identities', params, { caller: 'chrome' })
+        );
+        expect([op, answer.code]).toEqual([op, 'forbidden']);
+      }
+    } finally {
+      await named?.stop();
+      fs.rmSync(other, { recursive: true, force: true });
+    }
   });
 });

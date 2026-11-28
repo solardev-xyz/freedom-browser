@@ -64,8 +64,8 @@
  * On the core's Safe backend (freedom-core design 0016, SAFE-3) a send
  * board's state and steps are the core's (`coreSends`): its proposal
  * authorized every owner, so none is confirmed again, and its executor's
- * fee is the core's offer, acknowledged in the panel (`fee_ack`), with no
- * 'executor-send' token.
+ * fee is the core's offer, confirmed in the panel by the ask main holds for
+ * it (`fee_ack`), with no 'executor-send' token.
  */
 
 const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
@@ -633,20 +633,21 @@ function createSafeBoards({
  * The executor's fee, asked in window `windowId`'s panel as
  * `wallet.executor_send` (`wallet-approvals.js`): main's own offer, the
  * token minted on the user's approval there, and asked again above the
- * threshold; on the core's Safe backend the core's offer, acknowledged and
- * nothing minted. Resolves with the fee confirmation `executeSafePending`
+ * threshold; on the core's Safe backend the ask main holds for the core's
+ * offer, confirmed by its ID and nothing minted. Resolves with the fee confirmation `executeSafePending`
  * takes, or null.
  */
 async function confirmExecutorFee(windowId, offer) {
   const approvals = require('./wallet-approvals').getWalletApprovals();
   if (!approvals || !Number.isInteger(windowId) || !isPlainObject(offer)) return null;
-  if (offer.feeAck === true) {
+  if (typeof offer.feeAskId === 'string') {
     // The core's offer (freedom-core design 0016, SAFE-3; the plan's point
-    // 8): the fee main holds for the Safe, shown with the core's verdict and
-    // acknowledged (`fee_ack`), never minted as an 'executor-send' token.
+    // 8): the ask main holds for the Safe, shown with the core's verdict and
+    // confirmed by its ID (`fee_ack`), never minted as an 'executor-send'
+    // token.
     if (!Number.isSafeInteger(offer.safeIndex)) return null;
     const { confirmOfferedFee } = require('../wallet/safe/core-sends');
-    const outcome = await confirmOfferedFee({ approvals, windowId, safeIndex: offer.safeIndex });
+    const outcome = await confirmOfferedFee({ approvals, windowId, safeIndex: offer.safeIndex, askId: offer.feeAskId });
     return outcome.approved ? outcome.feeConfirmation : null;
   }
   const signing = require('../wallet/signing-confirmation');
