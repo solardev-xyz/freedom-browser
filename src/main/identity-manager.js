@@ -1604,9 +1604,22 @@ async function renameDerivedWallet(index, newName, caller = null) {
   await vaultBackend.accounts.rename(index, newName, caller);
 }
 
+/**
+ * The Swarm publisher identities that still name account `walletIndex`:
+ * main's feed store answers in the run while it writes swarm-feeds.json;
+ * once the store is the core's (its hello names `swarm_stores`, design
+ * 0015, D3 and D8), the core's `getEthereumWalletIdentityReferences` shell
+ * op answers with a promise, in the core's order (ICU root collation),
+ * which main keeps.
+ * @param {number} walletIndex
+ * @returns {Array|Promise<Array>}
+ */
 function getSwarmPublisherIdentityReferences(walletIndex) {
-  const { getEthereumWalletIdentityReferences } = require('./swarm/feed-store');
-  return getEthereumWalletIdentityReferences(walletIndex);
+  const feeds = require('./swarm/feed-store');
+  if (require('./core/core-client').swarmStoresNamed()) {
+    return feeds.coreOps.getEthereumWalletIdentityReferences(walletIndex);
+  }
+  return feeds.getEthereumWalletIdentityReferences(walletIndex);
 }
 
 /**
@@ -1650,8 +1663,11 @@ function removalRefusedBeforeCleanup(err) {
  * @param {'chrome'|null} [caller] - the chrome's request, or main's own
  */
 async function deleteDerivedWallet(index, caller = null) {
-  const references =
+  let references =
     Number.isInteger(index) && index >= 0 ? getSwarmPublisherIdentityReferences(index) : [];
+  // The core's feed store answers with a promise; main's own in this run,
+  // which is never awaited.
+  if (typeof references?.then === 'function') references = await references;
   const isSafe = getWalletRecord(index)?.type === WALLET_TYPES.SAFE;
   // Lazy requires (the Safe modules are dependency-light) keep the Safe
   // stack out of ordinary wallet operations.

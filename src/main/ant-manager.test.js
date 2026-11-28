@@ -655,6 +655,51 @@ describe('ant-manager', () => {
     expect(ctx.mod.getSpawnedAt()).toBeNull();
   });
 
+  test("restartAnt reports the bundled node's URL from the stop until the start settles", async () => {
+    jest.useFakeTimers();
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
+    const configPath = path.join(dataDir, 'config.yaml');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const ctx = loadAntManagerModule({
+      existsSync: (target) =>
+        target === antBinPath || target === swarmKeyPath || target === configPath,
+      configContents: 'api-addr: 127.0.0.1:1633\npassword: injected-keystore-password\n',
+      portSequence: [false, false],
+      httpResponse: (url) =>
+        url === 'http://127.0.0.1:1633/health'
+          ? { statusCode: 200, body: { version: '2.1.0' } }
+          : { statusCode: 500, body: '' },
+    });
+    ctx.mod.setUseInjectedIdentity(true);
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+    await jest.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(ctx.mod.getStatus().status).toBe('running');
+    expect(ctx.mod.restartingUrl()).toBeNull();
+
+    const restart = ctx.mod.restartAnt();
+    // From the stop: the subscriptions on it wait (subscription-registry.js).
+    expect(ctx.mod.restartingUrl()).toBe('http://127.0.0.1:1633');
+    await jest.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await restart;
+    await jest.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+    expect(ctx.spawnedProcesses).toHaveLength(2);
+    expect(ctx.mod.getStatus().status).toBe('running');
+    expect(ctx.mod.restartingUrl()).toBeNull();
+    // A plain stop is no restart.
+    const stop = ctx.mod.stopAnt();
+    expect(ctx.mod.restartingUrl()).toBeNull();
+    await jest.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await stop;
+  });
+
   test('narrows keys an older build left readable to other users (K-3)', async () => {
     jest.useFakeTimers();
     const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
