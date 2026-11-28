@@ -18,6 +18,7 @@ tmp/
 .env
 .env.agent-tests.local
 ant-bin/
+bee-dev-bin/
 freedom-cored-bin/
 freedom-cored-bin-previous/
 freedom-ipfsd-bin/

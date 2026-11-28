@@ -13,17 +13,34 @@
  * antd runs with a postage batch it reads from a loopback chain and no
  * peers, so it stamps and assembles what it is sent (it logs each `/bzz`
  * upload's manifest root) and then fails the push, 502. It serves a single
- * chunk from its cache, and nothing that needs a peer.
+ * chunk from its cache, and nothing that needs a peer. A light node, it
+ * can't keep an upload offline, and it peers only with full Bee nodes, so
+ * no second antd can keep one for it: the upload that has to succeed and
+ * stay goes to `bee dev` (Bee v2.8.0's dev mode, `npm run bee-dev:download`;
+ * test/helpers/bee-dev-node.js), one offline process with a real local
+ * store, behind a tap of its own.
  *
  * - **A nested `publishFiles`** gives the reference the JS backend gives for
  *   the same files: the JS backend's run (bee-js, the reference) first, then
- *   the core's; antd assembles the same manifest root from both tars, and
- *   it is the root of a manifest naming exactly the page's nested paths
- *   (antd's own writer, `collectionManifest`). With the chunks the push
- *   would have stored put in antd's cache, every nested file resolves
- *   through the node: its manifest walked with core-sdk's mantaray reader
- *   over window.swarm's `readChunk` through the core, each file's bytes and
- *   metadata as antd stores them.
+ *   the core's, the same files under nested paths with an index document.
+ *   - **Offline, against antd:** antd assembles the same manifest root from
+ *     both tars, and it is the root of a manifest naming exactly the page's
+ *     nested paths (antd's own writer, `collectionManifest`). With the
+ *     chunks the push would have stored put in antd's cache, every nested
+ *     file resolves through the node: its manifest walked with core-sdk's
+ *     mantaray reader over window.swarm's `readChunk` through the core,
+ *     each file's bytes and metadata as antd stores them.
+ *   - **To a node that keeps it (bee dev):** each backend's page call
+ *     succeeds, and window.swarm on the core answers the reference the JS
+ *     backend's call got (the root antd assembled from both tars). From
+ *     that uploaded root every nested path resolves with the chunks the
+ *     node stored, nothing seeded (only the two uploads ever wrote to it):
+ *     the manifest walked over window.swarm's `readChunk` through the core
+ *     (each file's `Content-Type` and `Filename`, its bytes by `readChunk`
+ *     and by `readData`, the index document at `/`, a missing path
+ *     refused), and the node's own `/bzz/<root>/<path>` (each file's bytes,
+ *     `Content-Type` and filename, `index.html` at the root, 404 for a
+ *     missing path).
  * - **A feed read past the read window** is refused before its body is
  *   held: a site with no grant (512 KiB a minute) reads a 4096-byte entry,
  *   then a wrapped entry of 524288 bytes: its SOC read, then refused
@@ -51,9 +68,10 @@
  *   isn't loopback: main's remote dials and the sockets are aliased to it.
  *
  * Gated: runs only with SWARM_CORE_NODE_E2E=1, which then requires antd
- * (ant-bin/<os>-<arch>/antd, `npm run ant:download`) and freedom-cored
- * (`npm run core:download`, or FREEDOM_CORED_PATH): either missing fails
- * the suite, never skips it.
+ * (ant-bin/<os>-<arch>/antd, `npm run ant:download`), bee dev
+ * (bee-dev-bin/<os>-<arch>/bee, `npm run bee-dev:download`) and
+ * freedom-cored (`npm run core:download`, or FREEDOM_CORED_PATH): any of
+ * them missing fails the suite, never skips it.
  */
 
 const fs = require('fs');
@@ -74,6 +92,7 @@ const {
   startFakeGnosis,
   startTap,
 } = require('../../../test/helpers/antd-node');
+const { BEE_DEV, startBeeDev } = require('../../../test/helpers/bee-dev-node');
 
 const RUN = process.env.SWARM_CORE_NODE_E2E === '1';
 const SRC = path.join(__dirname, '..');
@@ -94,6 +113,11 @@ function coredBinary() {
 
 if (RUN && !fs.existsSync(ANTD)) {
   throw new Error(`SWARM_CORE_NODE_E2E=1 needs antd at ${ANTD}: run npm run ant:download`);
+}
+if (RUN && !fs.existsSync(BEE_DEV)) {
+  throw new Error(
+    `SWARM_CORE_NODE_E2E=1 needs bee dev at ${BEE_DEV}: run npm run bee-dev:download`
+  );
 }
 const BINARY = RUN ? coredBinary() : null;
 const describeIfNode = RUN
@@ -255,9 +279,11 @@ async function until(check, what, ms = 20_000) {
 }
 
 describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NODE_E2E=1)', () => {
-  const shared = { gnosis: null, node: null, tap: null, nodeDir: null };
+  const shared = { gnosis: null, node: null, tap: null, nodeDir: null, bee: null, beeTap: null };
   // The manifest root antd assembled from each backend's nested tar.
   const roots = {};
+  // The reference each backend's nested publishFiles got from bee dev.
+  const refs = {};
 
   beforeAll(async () => {
     shared.gnosis = await startFakeGnosis({ owner: new Wallet(`0x${POSTAGE_KEY}`).address });
@@ -267,12 +293,16 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
       postage: { batch: BATCH, ownerKey: POSTAGE_KEY, rpcUrl: shared.gnosis.url },
     });
     shared.tap = await startTap(shared.node.port);
+    shared.bee = await startBeeDev();
+    shared.beeTap = await startTap(shared.bee.port);
   });
 
   afterAll(async () => {
     await shared.tap?.close();
     await shared.node?.stop();
     await shared.gnosis?.close();
+    await shared.beeTap?.close();
+    await shared.bee?.stop();
     if (shared.nodeDir)
       fs.rmSync(shared.nodeDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
@@ -653,6 +683,61 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
     indexDocument: INDEX,
   });
 
+  /**
+   * A manifest walked with core-sdk's mantaray reader over the page's
+   * window.swarm `readChunk` (through its backend, `GET /chunks/<addr>` at
+   * main's node). `resolve(root, filePath)` gives the path's target and its
+   * fork's metadata, or null; `reads` holds every address read.
+   */
+  function manifestWalker(page) {
+    const reads = [];
+    const readChunk = async (address) => {
+      reads.push(address);
+      const answer = await page.ask('swarm_readChunk', { reference: address });
+      if (!answer.result) throw new Error(`readChunk ${address}: ${JSON.stringify(answer.error)}`);
+      return Buffer.from(answer.result.data, 'base64');
+    };
+    const load = async (address) =>
+      coreSdk.MantarayNode.unmarshalFromData(await readChunk(address), Buffer.from(address, 'hex'));
+    async function resolve(root, filePath) {
+      let node = await load(root);
+      let rest = Buffer.from(filePath, 'utf8');
+      let metadata = null;
+      while (rest.length) {
+        const fork = node.forks.get(rest[0]);
+        if (!fork) return null;
+        const prefix = Buffer.from(fork.prefix);
+        if (!rest.subarray(0, prefix.length).equals(prefix)) return null;
+        rest = rest.subarray(prefix.length);
+        metadata = fork.node.metadata;
+        node = await load(Buffer.from(fork.node.selfAddress).toString('hex'));
+      }
+      return { target: Buffer.from(node.targetAddress).toString('hex'), metadata };
+    }
+    return { reads, readChunk, resolve };
+  }
+
+  /**
+   * The page's nested publishFiles on `world`, to bee dev (a node that keeps
+   * the upload) instead of antd: main's node URL is bee dev's tap for the
+   * call, and antd's again after it. `{ answer, upload }`, `upload` the
+   * request that carried the body to the node.
+   */
+  async function publishToBee(world) {
+    const page = world.tab(APP);
+    const from = shared.beeTap.requests.length;
+    world.nodeUrl = shared.beeTap.url;
+    try {
+      const answer = await page.ask('swarm_publishFiles', nestedParams());
+      const upload = shared.beeTap.requests
+        .slice(from)
+        .find((r) => r.method === 'POST' && r.target.startsWith('/bzz'));
+      return { answer, upload };
+    } finally {
+      world.nodeUrl = shared.tap.url;
+    }
+  }
+
   describe('the JS backend, the reference', () => {
     let world;
     beforeAll(async () => {
@@ -677,6 +762,22 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
       [roots.js] = await newRoots(rootsFrom);
       expect(world.prompts).toEqual([]);
       expect(world.exits).toEqual([]);
+    });
+
+    test("a nested publishFiles to a node that keeps it (bee dev): the reference it answers is the root antd assembled from bee-js's tar", async () => {
+      const { answer, upload } = await publishToBee(world);
+      expect(answer.error).toBeUndefined();
+      expect(answer.result.reference).toMatch(/^[0-9a-f]{64}$/);
+      expect(answer.result.bzzUrl).toBe(`bzz://${answer.result.reference}`);
+      // The node took the body whole, on its own batch, and kept it (201).
+      expect(upload).toMatchObject({ whole: true, status: 201 });
+      expect(upload.headers['swarm-postage-batch-id']).toBe(shared.bee.batch);
+      expect(upload.headers['swarm-index-document']).toBe(INDEX);
+      // antd's root from the same tar, which names exactly the page's paths.
+      expect(answer.result.reference).toBe(roots.js);
+      expect(answer.result.reference).toBe(collectionManifest(NESTED, INDEX).root);
+      refs.js = answer.result.reference;
+      expect(world.prompts).toEqual([]);
     });
   });
 
@@ -722,35 +823,7 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
         // What the push would have stored, in antd's cache.
         seedChunks(path.join(shared.nodeDir, 'chunks.sqlite'), manifest.chunks);
         const page = world.tab(APP);
-        const reads = [];
-        const readChunk = async (address) => {
-          reads.push(address);
-          const answer = await page.ask('swarm_readChunk', { reference: address });
-          if (!answer.result)
-            throw new Error(`readChunk ${address}: ${JSON.stringify(answer.error)}`);
-          return Buffer.from(answer.result.data, 'base64');
-        };
-        const load = async (address) =>
-          coreSdk.MantarayNode.unmarshalFromData(
-            await readChunk(address),
-            Buffer.from(address, 'hex')
-          );
-        /** `filePath` in the manifest at `root`: its target and its fork's metadata, or null. */
-        async function resolve(root, filePath) {
-          let node = await load(root);
-          let rest = Buffer.from(filePath, 'utf8');
-          let metadata = null;
-          while (rest.length) {
-            const fork = node.forks.get(rest[0]);
-            if (!fork) return null;
-            const prefix = Buffer.from(fork.prefix);
-            if (!rest.subarray(0, prefix.length).equals(prefix)) return null;
-            rest = rest.subarray(prefix.length);
-            metadata = fork.node.metadata;
-            node = await load(Buffer.from(fork.node.selfAddress).toString('hex'));
-          }
-          return { target: Buffer.from(node.targetAddress).toString('hex'), metadata };
-        }
+        const { reads, readChunk, resolve } = manifestWalker(page);
         for (const file of NESTED) {
           const found = await resolve(roots.core, file.path);
           expect(found?.metadata).toEqual({
@@ -773,6 +846,92 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
             chunkReads.some((r) => r.target === `/chunks/${address}` && r.status === 200)
           ).toBe(true);
         }
+      });
+
+      test("to a node that keeps it (bee dev): window.swarm gives the JS backend's reference", async () => {
+        const { answer, upload } = await publishToBee(world);
+        expect(answer.error).toBeUndefined();
+        // What the core's upload gave the page, which the next test resolves
+        // whatever it is.
+        refs.core = answer.result.reference;
+        // The core's tar, streamed chunked through main's executor, whole,
+        // on the node's batch, and kept.
+        expect(upload).toMatchObject({ framing: 'chunked', whole: true, status: 201 });
+        expect(upload.headers['swarm-postage-batch-id']).toBe(shared.bee.batch);
+        expect(upload.headers['swarm-index-document']).toBe(INDEX);
+        expect(refs.js).toMatch(/^[0-9a-f]{64}$/);
+        expect(answer.result.reference).toBe(refs.js);
+        expect(answer.result.bzzUrl).toBe(`bzz://${refs.js}`);
+        // The root antd assembled from the same tar, offline.
+        expect(answer.result.reference).toBe(roots.core);
+        expect(world.prompts).toEqual([]);
+      });
+
+      test('its nested files resolve from the uploaded root through the node that kept them: window.swarm over the core, and the node itself', async () => {
+        expect(refs.core).toMatch(/^[0-9a-f]{64}$/);
+        const root = refs.core;
+        const page = world.tab(APP);
+        const from = shared.beeTap.requests.length;
+        world.nodeUrl = shared.beeTap.url;
+        try {
+          const walker = manifestWalker(page);
+          for (const file of NESTED) {
+            const found = await walker.resolve(root, file.path);
+            expect(found?.metadata).toEqual({
+              'Content-Type': contentTypeOf(file.path),
+              Filename: file.path.split('/').pop(),
+            });
+            expect((await walker.readChunk(found.target)).equals(Buffer.from(file.bytes))).toBe(
+              true
+            );
+            // window.swarm's readData gives the same bytes.
+            const data = await page.ask('swarm_readData', { reference: found.target });
+            expect(data.error).toBeUndefined();
+            expect(Buffer.from(data.result.data, 'base64').equals(Buffer.from(file.bytes))).toBe(
+              true
+            );
+          }
+          expect(await walker.resolve(root, '/')).toEqual({
+            target: '00'.repeat(32),
+            metadata: { 'website-index-document': INDEX },
+          });
+          expect(await walker.resolve(root, 'assets/missing.js')).toBeNull();
+          // Each chunk read went to the node, which served what it stored.
+          const chunkReads = shared.beeTap.requests
+            .slice(from)
+            .filter((r) => r.method === 'GET' && r.target.startsWith('/chunks/'));
+          for (const address of new Set(walker.reads)) {
+            expect(
+              chunkReads.some((r) => r.target === `/chunks/${address}` && r.status === 200)
+            ).toBe(true);
+          }
+        } finally {
+          world.nodeUrl = shared.tap.url;
+        }
+        // The node's own resolution of each path from the root.
+        const bzz = async (rest) => {
+          const res = await fetch(`${shared.beeTap.url}/bzz/${root}/${rest}`);
+          return { res, body: Buffer.from(await res.arrayBuffer()) };
+        };
+        for (const file of NESTED) {
+          const { res, body } = await bzz(file.path);
+          expect(res.status).toBe(200);
+          expect(body.equals(Buffer.from(file.bytes))).toBe(true);
+          expect(res.headers.get('content-type')).toBe(contentTypeOf(file.path));
+          expect(res.headers.get('content-disposition')).toBe(
+            `inline; filename="${file.path.split('/').pop()}"`
+          );
+        }
+        const index = await bzz('');
+        expect(index.res.status).toBe(200);
+        expect(index.body.equals(Buffer.from(NESTED[0].bytes))).toBe(true);
+        expect((await bzz('assets/missing.js')).res.status).toBe(404);
+        // Nothing reached the node's store but the two backends' uploads:
+        // every chunk read here is one they stored, none seeded.
+        expect(shared.beeTap.requests.filter((r) => r.method !== 'GET').map(line)).toEqual([
+          'POST /bzz',
+          'POST /bzz',
+        ]);
       });
     });
 

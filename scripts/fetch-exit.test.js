@@ -23,7 +23,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const SCRIPTS = ['fetch-ant.js', 'fetch-arti.js'];
+const SCRIPTS = ['fetch-ant.js', 'fetch-arti.js', 'fetch-bee-dev.js'];
 
 /** Source with comments and string/template literals blanked out. */
 function codeOnly(source) {
