@@ -5,6 +5,7 @@ import { updateRegistry, applySettingsToState } from './lib/state.js';
 import { initAntUi, updateAntStatusLine, updateAntToggleState } from './lib/ant-ui.js';
 import { initIpfsUi, updateIpfsStatusLine, updateIpfsToggleState } from './lib/ipfs-ui.js';
 import { initMyotisUi } from './lib/myotis-ui.js';
+import { initSwarmMessagesNotice } from './lib/swarm-messages-notice.js';
 import { initRadicleUi, updateRadicleStatusLine } from './lib/radicle-ui.js';
 import { initRadicleRepairUi } from './lib/radicle-repair-ui.js';
 import { initTorUi, updateTorStatusLine } from './lib/tor-ui.js';
@@ -894,6 +895,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initAntUi();
   initIpfsUi();
   initMyotisUi();
+  initSwarmMessagesNotice();
   initRadicleUi();
   initRadicleRepairUi();
   initTorUi();

@@ -460,6 +460,16 @@ module.exports = {
   // main -> chrome: a page's Swarm write failed because publishing isn't set
   // up ({ origin, reason }); the chrome shows its setup screen (PRQ-7c).
   SWARM_PUBLISH_SETUP_NEEDED: 'swarm:publish-setup-needed',
+  // Question 4's surfaces (freedom-core design 0015, Messaging;
+  // src/main/swarm/subscription-route-notices.js): the Nodes panel's and
+  // Settings > Nodes' words while live messages to the Swarm node in use
+  // are off ({ panel, settings }, each a string or null), read by the chrome
+  // and by Settings, and pushed to the chrome when they change; and main ->
+  // chrome, a site's live messages refused or ended, once per site per
+  // session ({ site, text }).
+  SWARM_MESSAGES_ROUTE_GET: 'swarm:messages-route-get',
+  SWARM_MESSAGES_ROUTE: 'swarm:messages-route',
+  SWARM_MESSAGES_NOTICE: 'swarm:messages-notice',
 
   // Swarm publish setup (src/main/swarm/publish-setup-service.js). Chrome
   // only, except the state read and push, which the internal pages also use.

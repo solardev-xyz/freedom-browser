@@ -1288,6 +1288,9 @@ const PROFILE_NODE_SERVICES = [
   {
     protocol: 'bee',
     label: 'Swarm',
+    // The profile names the Swarm node `bee`; the service registry names
+    // its service `ant` (service-registry.js).
+    registryKey: 'ant',
     modes: ['managed', 'external', 'disabled'],
     externalFields: [{ key: 'externalApi', label: 'API', placeholder: 'http://127.0.0.1:1633' }],
     // "Verify content from this node", and the note under it while it is off.
@@ -1347,6 +1350,12 @@ const PROFILE_NODE_SERVICES = [
       ].filter(Boolean),
   },
 ];
+
+// A node row's service in the registry: under the row's `registryKey`
+// where the registry names it differently from the profile, else under
+// its protocol.
+const registryServiceFor = (registry, definition) =>
+  registry?.[definition.registryKey || definition.protocol] || {};
 
 const SERVICE_DEFINITIONS = Object.fromEntries(
   PROFILE_NODE_SERVICES.map((definition) => [definition.protocol, definition])
@@ -1480,13 +1489,68 @@ const applyVerifySetting = (row, mode) => {
   row.querySelector('[data-unverified-note]')?.toggleAttribute('hidden', !shown || on);
 };
 
+// "Live messages are off while Tor is on: …" (freedom-core design 0015,
+// Messaging, question 4): under an external Swarm node while main refuses
+// live messages to it because the session reaches it through a proxy or Tor.
+// Main words it and says when (`getSwarmMessagesRoute`'s `settings`, read at
+// each section refresh but apart from it, so a slow route test never holds
+// the section back nor is dropped with an overtaken refresh; Codex round 4
+// on #1382); its test passes the bundled node and an external node on
+// loopback, so the note never shows for either. It shows only under a row set
+// to external: switching the row away hides it at once. Main numbers each
+// read (`revision`): an answer older than the last taken is dropped.
+let swarmMessagesRoute = null;
+let swarmMessagesRouteRevision = 0;
+const takeSwarmMessagesRoute = (route) => {
+  if (!route || typeof route !== 'object') return false;
+  if (Number.isSafeInteger(route.revision)) {
+    if (route.revision < swarmMessagesRouteRevision) return false;
+    swarmMessagesRouteRevision = route.revision;
+  }
+  swarmMessagesRoute = route;
+  return true;
+};
+const messagesOffText = (protocol, mode) =>
+  protocol === 'bee' && mode === 'external' && typeof swarmMessagesRoute?.settings === 'string'
+    ? swarmMessagesRoute.settings
+    : '';
+
+// Shows or hides a row's live-messages note for `mode`; while it shows, it
+// describes the node's endpoint field (hidden text a description names is
+// still read out, so only then).
+const applyMessagesOffNote = (row, mode) => {
+  const note = row?.querySelector('[data-messages-off-note]');
+  if (!note) return;
+  const text = messagesOffText(row.dataset.protocol, mode);
+  note.textContent = text;
+  note.hidden = text === '';
+  const field = row.querySelector('[data-endpoint-field]');
+  if (text) field?.setAttribute('aria-describedby', note.id);
+  else field?.removeAttribute('aria-describedby');
+};
+
+// Main's answer read on its own, however slow; taken if it is the newest,
+// and the Swarm row's note set from it as the row stands. A failed read
+// keeps the last answer.
+const refreshSwarmMessagesRoute = async () => {
+  let route;
+  try {
+    route = await freedomAPI.getSwarmMessagesRoute?.();
+  } catch {
+    return;
+  }
+  if (!takeSwarmMessagesRoute(route)) return;
+  const row = profileFields.nodesCard?.querySelector('.profile-node[data-protocol="bee"]');
+  if (row) applyMessagesOffNote(row, row.querySelector('[data-node-mode]')?.value);
+};
+
 const renderProfileNodes = (profile, registry, settings) => {
   const nodes = profile?.nodes || {};
   storedProfileNodes = nodes;
   const rows = visibleProfileServices(settings).map((definition) => {
     const protocol = definition.protocol;
     const config = nodes[protocol] || {};
-    const service = registry?.[protocol] || {};
+    const service = registryServiceFor(registry, definition);
     // An uncommitted edit (an external switch still missing its endpoint,
     // or one the main process refused) outlives the periodic re-render, so
     // the row keeps showing what the user picked next to why it was not
@@ -1512,6 +1576,7 @@ const renderProfileNodes = (profile, registry, settings) => {
           ${details}
           ${renderExternalEditor(protocol, config, mode, draft)}
           ${renderVerifySetting(protocol, config, mode, reused)}
+          ${protocol === 'bee' ? `<p class="profile-node-note" id="profile-bee-messages-off-note" data-messages-off-note hidden></p>` : ''}
           <p class="profile-node-error" data-node-error role="alert"${draft?.error ? '' : ' hidden'}>${esc(draft?.error || '')}</p>
         </div>
       </div>`;
@@ -1533,6 +1598,9 @@ const renderProfileNodes = (profile, registry, settings) => {
       : null;
 
   profileFields.nodesCard.innerHTML = rows.join('');
+  for (const row of profileFields.nodesCard.querySelectorAll('.profile-node')) {
+    applyMessagesOffNote(row, row.querySelector('[data-node-mode]')?.value);
+  }
 
   if (focused?.protocol && (focused.field || focused.mode || focused.verify)) {
     const row = profileFields.nodesCard.querySelector(
@@ -1550,6 +1618,10 @@ const renderProfileNodes = (profile, registry, settings) => {
 
 const refreshProfileSection = async (force = false) => {
   if (!profileFields.nodesCard) return;
+  // Before the focus guard: the route read sets only the note, never the
+  // focused controls, and a system or PAC proxy change has no event to wait
+  // for (Codex round 5 on #1382).
+  refreshSwarmMessagesRoute();
   if (
     !force &&
     document.activeElement &&
@@ -1870,6 +1942,7 @@ profileFields.nodesCard?.addEventListener('change', (event) => {
   const row = modeSelect.closest('.profile-node');
   setExternalEditorVisible(row, modeSelect.value);
   applyVerifySetting(row, modeSelect.value);
+  applyMessagesOffNote(row, modeSelect.value);
   commitNodeRow(row);
 });
 
