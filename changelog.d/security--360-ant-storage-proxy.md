@@ -1,1 +1,1 @@
-- Storage purchases, browsing credit and readiness checks for an external Swarm node on another machine follow your proxy and Tor settings ([#360](https://github.com/solardev-xyz/freedom-browser/issues/360))
+- Storage purchases, browsing credit, readiness checks and ad-block list updates for an external Swarm node on another machine follow your proxy and Tor settings ([#360](https://github.com/solardev-xyz/freedom-browser/issues/360))

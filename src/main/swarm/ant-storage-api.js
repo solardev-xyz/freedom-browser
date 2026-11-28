@@ -19,6 +19,8 @@
  * `status` is 0 when no HTTP response arrived; `notSent` then says whether
  * the request never left Freedom (no node URL), which matters for writes: a
  * write that timed out or lost its connection may still land on chain.
+ * `antGet` is the exception, for a caller that reads a reply itself (the
+ * ad-block list): it hands back the reply, or rejects.
  *
  * Each call is one dial on the node's transport (`antBackend()`,
  * bzz-protocol.js; freedom-core design 0015, The transport, which SWM-8
@@ -131,33 +133,83 @@ function isConnectFailure(err) {
 }
 
 /**
- * The reply's body as text, read until `signal` aborts: then the body is
+ * The reply's body, read whole until `signal` aborts: then the body is
  * cancelled, so the transport lets its connection (and a write session) go,
- * and the read fails with the abort's reason.
+ * and the read fails with the abort's reason. `admit(bytes, total)` sees
+ * each piece as it comes, before it is kept: one that throws cancels the
+ * body there and fails the read with its error, so nothing past it is held.
+ *
+ * @param {Response} response
+ * @param {AbortSignal} [signal]
+ * @param {(bytes: number, total: number) => void} [admit]
+ * @returns {Promise<Buffer>}
  */
-async function readText(response, signal) {
-  if (!response.body) return '';
+async function readBody(response, signal, admit = () => {}) {
+  if (!response.body) return Buffer.alloc(0);
   const reader = response.body.getReader();
   const onAbort = () => reader.cancel(signal.reason).catch(() => {});
-  if (signal.aborted) onAbort();
-  else signal.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
   const parts = [];
+  let total = 0;
   try {
     for (;;) {
       let next;
       try {
         next = await reader.read();
       } catch (err) {
-        throw signal.aborted ? signal.reason : err;
+        throw signal?.aborted ? signal.reason : err;
       }
-      if (signal.aborted) throw signal.reason;
+      if (signal?.aborted) throw signal.reason;
       if (next.done) break;
+      total += next.value.byteLength;
+      try {
+        admit(next.value.byteLength, total);
+      } catch (err) {
+        reader.cancel(err).catch(() => {});
+        throw err;
+      }
       parts.push(next.value);
     }
   } finally {
-    signal.removeEventListener('abort', onAbort);
+    signal?.removeEventListener('abort', onAbort);
   }
-  return new TextDecoder().decode(Buffer.concat(parts));
+  return Buffer.concat(parts, total);
+}
+
+/** The reply's body as text (see readBody). */
+async function readText(response, signal) {
+  return new TextDecoder().decode(await readBody(response, signal));
+}
+
+/**
+ * One GET of the node's API on its transport, for a caller that reads the
+ * reply itself (the ad-block list's feed and its lists,
+ * adblock/update-manager.js): one dial, as `antRequest`'s, a remote node's
+ * announced to the Ant API guard for the dial. Resolves with the reply once
+ * its headers are in, its body unread; rejects, undialled, without a node
+ * URL (getBee's "Swarm node is not ready"), and with the transport's
+ * failure. `signal` aborts the dial. The transport lets it go once the
+ * headers are in, so from there the caller cancels the body: `readBody`
+ * does, at the same signal. Redirects are answered, never followed.
+ *
+ * @param {string} endpoint - the path and query, from the node's root
+ * @param {{ headers?: object, signal?: AbortSignal }} [options]
+ * @returns {Promise<Response>}
+ */
+async function antGet(endpoint, { headers, signal } = {}) {
+  const notReady = () => new Error('Swarm node is not ready');
+  if (!hasNodeUrl()) throw notReady();
+  const backend = nodeBackend({});
+  if (!backend.url) throw notReady();
+  return backend.request({
+    path: endpoint,
+    method: 'GET',
+    headers,
+    signal,
+    // The caller's signal bounds it; the transport sets no deadline of its own.
+    headersTimeoutMs: null,
+  });
 }
 
 /**
@@ -370,6 +422,8 @@ function describeAntError(res, action = 'The request') {
 
 module.exports = {
   antRequest,
+  antGet,
+  readBody,
   getHealth,
   getNode,
   getReadiness,

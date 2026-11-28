@@ -1,8 +1,9 @@
 /**
  * The wallet's own Safe sends on the core's Safe backend (freedom-core
- * design 0016, SAFE-3's PR 4a; FREEDOM_SAFE_BACKEND=core, development
- * builds only: safe-backend-kind.js). safe-transactions.js routes its steps
- * here on the core, and keeps today's protocol-kit path on js.
+ * design 0016, SAFE-3's PRs 4a and 4b; FREEDOM_SAFE_BACKEND=core,
+ * development builds only: safe-backend-kind.js). safe-transactions.js
+ * routes its steps here on the core, and keeps today's protocol-kit path
+ * on js.
  *
  * - **Prepared, approved, then minted.** A send the chrome composed is
  *   built by the core first, `safe.prepare` as main's own (`shell`): the
@@ -36,9 +37,25 @@
  *   Every board step names that SafeTx, its sweep included: one that names
  *   none is refused here, unsent, so a step never acts on a SafeTx that
  *   replaced the one shown (the core refuses another, SAFE_DISCARDED).
- * - **The execution** (`safe.execute`, the executor's signature, the
- *   journal and the broadcast, then `safe.executed`) is SAFE-3's PR 4b:
- *   refused here, nothing sent.
+ * - **The execution** (SAFE-3's PR 4b) is `safe.execute`, naming the
+ *   SafeTx the board showed (required, as for every board step): the core
+ *   reads the Safe again and answers its executor's prepared send with an
+ *   `executor-send` token it minted itself, or `{ fee_check }`, or `{
+ *   superseded }`. A fee the core's check
+ *   stops is the user's to confirm, as the plan's point 8 has it: the
+ *   approvals document's `wallet.executor_send` panel (or, with it off, the
+ *   chrome's board) shows the core's verdict, twice above the threshold,
+ *   and the user's confirmation of the ask main holds for it (a single-use
+ *   ID bound to that verdict, the SafeTx and the window that asked, as
+ *   core-accounts.js holds an activation's) is `safe.execute` again with
+ *   `fee_ack: true`; main mints no `executor-send` token. Main checks the send (the executor, the Safe,
+ *   the SafeTx's call, the fee the user confirmed), the executor signs it
+ *   with the core's token (`sign.transaction` with `{ token, kind:
+ *   "executor-send" }`), main journals it under `execIntentKey`
+ *   (transaction-service.js commits the intent before its bytes go
+ *   anywhere) and broadcasts it, then tells the core (`safe.executed`).
+ *   A "Try again" while the execution is held sends its bytes again, at
+ *   its nonce, with nothing signed anew.
  *
  * Each step holds main's own step exclusion for the Safe, as today's path
  * does, and then reads the core's entry into main's read-only copy
@@ -50,7 +67,14 @@
  */
 
 const crypto = require('crypto');
-const { codedError, SAFE_BUSY, SAFE_DISCARDED, SAFE_UNSUPPORTED } = require('./errors');
+const { Interface, ZeroAddress } = require('ethers');
+const {
+  codedError,
+  SAFE_BUSY,
+  SAFE_DISCARDED,
+  SAFE_NEEDS_FUNDS,
+  SAFE_UNSUPPORTED,
+} = require('./errors');
 const safeApprovals = require('./safe-approvals');
 
 // The SafeTxs main minted a wallet `safe-send` for, by token: { safeIndex,
@@ -71,19 +95,46 @@ const SAFE_TX_PREPARED = 'SAFE_TX_PREPARED';
 // The board's last state of each Safe, by its index, as the core gave it.
 const boards = new Map();
 
+/** How many fees one execution asks about, across its round trips, before it stops. */
+const MAX_FEE_ASKS = 3;
+
+// The executor's fee ask main holds for each Safe (`safe.execute`'s `{
+// fee_check }`), by its index (`holdAsk`): { id, asker, safeTxHash, verdict,
+// executorIndex, safeAddress, chainId, presses, count, approved }. As
+// core-accounts.js holds an activation's: one per Safe, so a newer ask, or
+// a fresh execution of the Safe from any window, replaces it, and its ID
+// then confirms nothing. `fee_ack` goes to the core only for the ask's own
+// ID, approved where it was shown, and the send it answers must cost what
+// that ask's verdict showed.
+const asks = new Map();
+
+// Executions broadcast whose `safe.executed` failed, by the Safe's index:
+// { state, executed: { hash, explorerUrl } } (`finishExecuted`). In memory
+// only, as the core keeps no executed mark: after a restart the verified
+// nonce decides.
+const unfinished = new Map();
+
+const EXEC_INTERFACE = new Interface([
+  'function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)',
+]);
+const DECIMAL = /^(?:0|[1-9][0-9]{0,77})$/;
+
 /**
  * PR 6's seam (the SAFE-3 plan's point 5, approval records). Today each
  * does nothing. PR 6 records `{ address, chainId: 100, hash }` for the Safe
  * on the user's decision (`decided`, before the token is minted, and only
  * once ethers' hash of the prepared fields is the core's `safe_tx_hash`:
  * a throw there mints nothing), and drops it (`dropped`) on a failed
- * propose and before `safe.discard`; PR 4b adds its drops on a superseded
- * SafeTx and before `safe.executed`.
+ * propose, before `safe.discard`, when `safe.execute` answers the SafeTx
+ * superseded, and before `safe.executed`.
  */
 const approvalRecords = {
   /** The user approved the SafeTx `payload` for Safe `safeIndex`. */
   decided(_safeIndex, _payload) {},
-  /** The Safe's record for `safeTxHash` ends (`why`: `propose_failed`, `discard`). */
+  /**
+   * The Safe's record for `safeTxHash` ends (`why`: `propose_failed`,
+   * `discard`, `superseded`, `executed`).
+   */
   dropped(_safeIndex, _safeTxHash, _why) {},
 };
 
@@ -389,6 +440,7 @@ async function discard(safeIndex, { safeTxHash = null } = {}) {
     await approvalRecords.dropped(safeIndex, named, 'discard');
     await vault().safe.discard({ safe: safeIndex, safe_tx_hash: named });
     boards.delete(safeIndex);
+    asks.delete(safeIndex);
   } finally {
     safeApprovals.endStep(safeIndex);
     await refreshCopy(safeIndex);
@@ -396,18 +448,410 @@ async function discard(safeIndex, { safeTxHash = null } = {}) {
   return { safeIndex, safeTxHash: named, outcome: 'discarded' };
 }
 
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function safeRecord(safeIndex) {
+  const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
+  const record = getWalletRecord(safeIndex);
+  if (record?.type !== WALLET_TYPES.SAFE || typeof record.address !== 'string') {
+    throw new Error('Not a multi-owner account');
+  }
+  return record;
+}
+
 /**
- * The execution, SAFE-3's PR 4b: until then refused, nothing sent. PR 4b
- * runs `safe.execute`, the executor's fee as the plan's point 8 has it,
- * the signature under the core's token, the journal under `execIntentKey`
- * (safe-executor.js) and the broadcast, then `safe.executed`, with PR 6's
- * drops before it and on a superseded SafeTx.
+ * The Safe's executor as main reads the record: its first vault owner, the
+ * account the core sends from (`pickDefaultExecutor`'s rule).
  */
-async function execute() {
-  throw codedError(
-    "Sending a multi-owner transaction through the identity core isn't available in this build yet",
-    SAFE_UNSUPPORTED
+function executorOf(record) {
+  const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
+  const owners = Array.isArray(record.owners) ? record.owners : [];
+  const index = owners.find((owner) => getWalletRecord(owner)?.type === WALLET_TYPES.MNEMONIC);
+  if (index === undefined) {
+    throw new Error('No browser account among the owners to act as executor — choose one that can pay gas');
+  }
+  return index;
+}
+
+/**
+ * The call an `execTransaction` calldata executes, as main compares calls,
+ * or null for any other calldata, or a SafeTx Freedom doesn't make (one
+ * CALL, no refund).
+ */
+function executedCall(data) {
+  let decoded;
+  try {
+    decoded = EXEC_INTERFACE.decodeFunctionData('execTransaction', data);
+  } catch {
+    return null;
+  }
+  const fixed =
+    decoded.operation === 0n &&
+    decoded.safeTxGas === 0n &&
+    decoded.baseGas === 0n &&
+    decoded.gasPrice === 0n &&
+    decoded.gasToken === ZeroAddress &&
+    decoded.refundReceiver === ZeroAddress;
+  if (!fixed) return null;
+  return callOf({ to: decoded.to, value: decoded.value.toString(), data: decoded.data });
+}
+
+const decimalOf = (value) => (typeof value === 'string' && DECIMAL.test(value) ? BigInt(value) : null);
+
+/** The most a send in `sign.transaction`'s form can cost: gas limit times `max_fee_per_gas ?? gas_price`. */
+function maxCostOf(tx) {
+  const gasLimit = decimalOf(tx.gas_limit);
+  const perGas = decimalOf(tx.type === 2 ? tx.max_fee_per_gas : tx.gas_price);
+  return gasLimit === null || perGas === null ? null : (gasLimit * perGas).toString();
+}
+
+/**
+ * The executor's send the core prepared (`{ send }`), checked before the
+ * executor signs it: the core's own `executor-send` token, from the Safe's
+ * executor (`executorOf`), to the Safe on the board's chain, value 0, its
+ * calldata `execTransaction` of the very call the board shows for the
+ * SafeTx, with a gas limit and fees. Main's form of the transaction
+ * (`mainTxOf`), or a throw.
+ */
+function checkedSend(send, { record, state }) {
+  const refuse = () => new Error('The identity core prepared another execution than the pending transaction');
+  if (!isObject(send) || send.kind !== 'executor-send' || typeof send.token !== 'string' || send.token === '') {
+    throw refuse();
+  }
+  const tx = send.tx;
+  if (!isObject(tx) || send.account !== executorOf(record)) throw refuse();
+  if (tx.type !== 0 && tx.type !== 2) throw refuse();
+  if (decimalOf(tx.chain_id) === null || Number(tx.chain_id) !== state.chainId) throw refuse();
+  if (typeof tx.to !== 'string' || tx.to.toLowerCase() !== record.address.toLowerCase()) throw refuse();
+  if (decimalOf(tx.value) !== 0n || !(decimalOf(tx.gas_limit) > 0n) || maxCostOf(tx) === null) throw refuse();
+  if (tx.type === 2 && decimalOf(tx.max_priority_fee_per_gas) === null) throw refuse();
+  const call = executedCall(tx.data);
+  let shown;
+  try {
+    shown = callOf(state.call);
+  } catch {
+    shown = null;
+  }
+  if (!call || !shown || !sameCall(call, shown)) throw refuse();
+  // Main's form of it, as a page's prepared send is signed.
+  return require('../../page/page-core-sends').mainTxOf(tx);
+}
+
+/** A fee confirmation that isn't the ask main holds for this Safe and window. */
+function notShown() {
+  return codedError(
+    "This fee confirmation isn't the one shown for this transaction. Nothing was sent: try again.",
+    signing().NOT_CONFIRMED
   );
+}
+
+/** The asking chrome's webContents id, which an ask is bound to; null for main's own board. */
+function askerOf(sender) {
+  return Number.isSafeInteger(sender?.id) ? sender.id : null;
+}
+
+/**
+ * The core's fee verdict for the SafeTx `safeTxHash` of Safe `safeIndex`,
+ * held as the ask main shows (`asks`): a new ID, the asking chrome
+ * (`asker`, null for main's own board), the verdict and the executor that
+ * pays. It replaces the Safe's earlier ask, whose ID no longer confirms
+ * anything, and counts one more of the SafeTx's asks: past MAX_FEE_ASKS
+ * the execution stops, nothing sent.
+ */
+function holdAsk(safeIndex, { safeTxHash, verdict, asker, executorIndex, safeAddress, chainId }) {
+  const earlier = asks.get(safeIndex);
+  const count = (earlier?.safeTxHash === safeTxHash ? earlier.count : 0) + 1;
+  if (count > MAX_FEE_ASKS) {
+    asks.delete(safeIndex);
+    throw new Error("The execution's network fee kept changing. Nothing was sent: try again.");
+  }
+  const ask = {
+    id: crypto.randomUUID(),
+    asker,
+    safeIndex,
+    safeTxHash,
+    verdict,
+    executorIndex,
+    safeAddress,
+    chainId,
+    presses: 0,
+    count,
+    approved: false,
+  };
+  asks.set(safeIndex, ask);
+  return ask;
+}
+
+/**
+ * The executor's fee the core's check stopped (FEE_CHECK_NEEDS_CONFIRMATION,
+ * with the core's verdict), offered for the user to confirm by the ask's
+ * ID (`feeAskId`; `feeAskAgain` once a fee above the threshold was pressed
+ * once), never with a token.
+ */
+function feeAsk(ask) {
+  const { FEE_CHECK_NEEDS_CONFIRMATION, feeCheckError } = require('../fee-check');
+  const error = feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, { ...ask.verdict });
+  error.offer = {
+    feeAskId: ask.id,
+    feeAskAgain: ask.presses > 0,
+    safeIndex: ask.safeIndex,
+    executorIndex: ask.executorIndex,
+    chainId: ask.chainId,
+    to: ask.safeAddress,
+    value: '0',
+  };
+  return error;
+}
+
+/**
+ * The chrome's confirmation of ask `id` for Safe `safeIndex`, with the
+ * approvals document off: the ask main holds for the Safe, shown in that
+ * chrome (`sender`); anything else is refused. A fee above the threshold
+ * takes two presses: the first is asked again, under a new ID
+ * (FEE_CHECK_NEEDS_CONFIRMATION, `feeAskAgain`), and sends nothing.
+ * Resolves the fee confirmation `execute` takes, `{ feeAskId }`.
+ */
+function confirmFeeOnChrome(safeIndex, id, sender) {
+  const ask = asks.get(safeIndex);
+  const asker = askerOf(sender);
+  if (!ask || typeof id !== 'string' || ask.id !== id || asker === null || ask.asker !== asker) {
+    throw notShown();
+  }
+  if (ask.verdict?.above === true && ask.presses === 0) {
+    ask.presses = 1;
+    ask.id = crypto.randomUUID();
+    throw feeAsk(ask);
+  }
+  ask.approved = true;
+  return { feeAskId: ask.id };
+}
+
+/**
+ * The user's confirmation of ask `askId` for Safe `safeIndex` in the
+ * window's approvals document (`approvals`, wallet-approvals.js
+ * `confirmCoreFee`): main's own board's (`windowId`), or the chrome's
+ * (`sender`), the one the ask was shown to. `wallet.executor_send` with
+ * the core's verdict, asked again above the threshold, nothing minted. On
+ * the approval, while that ask is still the one main holds (another
+ * window's execution meanwhile replaces it), it is approved. Resolves `{
+ * approved: true, feeConfirmation: { feeAskId } }`, or a refusal.
+ */
+async function confirmOfferedFee({ approvals, windowId = null, sender = null, safeIndex, askId }) {
+  const ask = asks.get(safeIndex);
+  const asker = sender ? askerOf(sender) : null;
+  const refused = (err) => ({ approved: false, error: err.message, code: err.code });
+  if (!ask || typeof askId !== 'string' || ask.id !== askId || ask.asker !== asker) return refused(notShown());
+  let outcome;
+  try {
+    outcome = await approvals.confirmCoreFee(
+      {
+        ...(Number.isInteger(windowId) ? { windowId } : { sender }),
+        index: ask.executorIndex,
+        safe: ask.safeAddress,
+        chainId: ask.chainId,
+        verdict: ask.verdict,
+      },
+      () => {
+        if (asks.get(safeIndex) !== ask || ask.id !== askId) throw notShown();
+        ask.approved = true;
+        return { feeConfirmation: { feeAskId: askId } };
+      }
+    );
+  } catch (err) {
+    return refused(err);
+  }
+  return outcome.approved
+    ? { approved: true, feeConfirmation: outcome.feeConfirmation }
+    : { approved: false, error: outcome.error, code: outcome.code };
+}
+
+/**
+ * The ask a fee confirmation names, taken: the ask main holds for the Safe
+ * and the SafeTx `named`, approved where it was shown, under the very ID
+ * confirmed. Its ID is spent (its count kept, for a fee the core asks
+ * again), or the confirmation is refused, nothing sent.
+ */
+function takeAsk(safeIndex, named, feeConfirmation) {
+  const ask = asks.get(safeIndex);
+  const id = feeConfirmation?.feeAskId;
+  if (!ask || typeof id !== 'string' || ask.id !== id || !ask.approved || ask.safeTxHash !== named) {
+    throw notShown();
+  }
+  ask.id = null;
+  ask.approved = false;
+  return ask;
+}
+
+/**
+ * An execution broadcast, told to the core (`safe.executed`), after PR 6's
+ * record is dropped: the core ends the Safe's approvals and clears its
+ * entry. If the core isn't told, the execution is kept (`unfinished`) and
+ * the error thrown: the next attempt tells it again, and executes nothing.
+ */
+async function finishExecuted(safeIndex, done) {
+  await approvalRecords.dropped(safeIndex, done.state.safeTxHash, 'executed');
+  try {
+    await vault().safe.executed({ safe: safeIndex, safe_tx_hash: done.state.safeTxHash, hash: done.executed.hash });
+  } catch (err) {
+    // Another SafeTx pending: nothing of this one is left to clear.
+    if (err?.code === SAFE_DISCARDED) unfinished.delete(safeIndex);
+    else unfinished.set(safeIndex, done);
+    console.warn('[SafeCore] An executed Safe transaction was not cleared yet:', err?.message);
+    throw err;
+  }
+  unfinished.delete(safeIndex);
+  boards.delete(safeIndex);
+  return { ...done.state, status: 'executed', executed: done.executed };
+}
+
+/**
+ * The Safe's pending SafeTx `safeTxHash` executed (`safe.execute`), the one
+ * the board showed (required): another pending, or none named, is
+ * SAFE_DISCARDED, with nothing sent. `feeConfirmation`: `{ feeAskId }`,
+ * the user's confirmation of the ask main holds for that SafeTx
+ * (`confirmOfferedFee` in the approvals document, `confirmFeeOnChrome` with
+ * it off), taken as `safe.execute { fee_ack: true }` is sent (`takeAsk`);
+ * any other is refused, nothing sent, and a token burnt. Without one, the
+ * execution is a fresh one: the Safe's ask is dropped. `asker`: the
+ * chrome that asks (its webContents), which a new ask is bound to; none
+ * for main's own board.
+ *
+ * In order, holding main's step exclusion for the Safe from `safe.execute`
+ * to `safe.executed`, as the reference's `acquire` spans its signature and
+ * broadcast:
+ * - `{ superseded }`: PR 6's record dropped, and the board's state returned
+ *   (`status: 'superseded'`), nothing signed;
+ * - `{ fee_check }`: the offer kept, and FEE_CHECK_NEEDS_CONFIRMATION with
+ *   the core's verdict (`feeAsk`), nothing signed; but while the execution
+ *   is held (a broadcast that failed), its bytes go again, as the fee they
+ *   were signed with needs no new confirmation;
+ * - `{ send }`, checked (`checkedSend`; after `fee_ack`, at the fee the
+ *   user confirmed): signed by the executor with the core's token,
+ *   journaled under `execIntentKey` and broadcast, or the held execution's
+ *   bytes sent again; then PR 6's record dropped and `safe.executed` told
+ *   (`finishExecuted`). Resolves the board's state, `status: 'executed'`,
+ *   with `executed: { hash, explorerUrl }`.
+ * The token is burnt however it ends. A failed signature or broadcast
+ * leaves the SafeTx pending for "Try again".
+ */
+async function execute(safeIndex, { feeConfirmation = null, safeTxHash = null, asker = null } = {}) {
+  if (feeConfirmation !== null && typeof feeConfirmation?.feeAskId !== 'string') {
+    if (typeof feeConfirmation?.confirmation === 'string') signing().discardConfirmation(feeConfirmation.confirmation);
+    throw notShown();
+  }
+  // The SafeTx the board showed, required: none is refused unsent.
+  const named = shown(safeTxHash).toLowerCase();
+  const record = safeRecord(safeIndex);
+  safeApprovals.beginStep(safeIndex);
+  let token = null;
+  try {
+    // The fee the user confirmed, its ask taken now, under the step: an ask
+    // another execution replaced confirms nothing. A fresh execution drops
+    // the Safe's ask.
+    let confirmed = null;
+    if (feeConfirmation !== null) confirmed = takeAsk(safeIndex, named, feeConfirmation);
+    else asks.delete(safeIndex);
+    // Broadcast before, but the core not told: told now, executed no more.
+    const done = unfinished.get(safeIndex);
+    if (done && done.state.safeTxHash.toLowerCase() === named) return await finishExecuted(safeIndex, done);
+    let state = cachedState(safeIndex);
+    if (state?.safeTxHash?.toLowerCase() !== named) state = await readState(safeIndex);
+    if (state?.safeTxHash?.toLowerCase() !== named) {
+      throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
+    }
+    // SAFE-3's PR 7: a site's SafeTx executes on the core only with its
+    // site's guard.
+    if (state.display?.site !== undefined && state.display?.site !== null) throw siteSendRefused();
+    const chainId = state.chainId;
+    if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+      throw new Error("The identity core answered no state of this account's transaction");
+    }
+    const intentKey = require('./safe-executor').execIntentKey(chainId, named);
+    const { heldIntentFor } = require('../transaction-service');
+    const held = await heldIntentFor(intentKey);
+    const answer = await vault().safe.execute({
+      safe: safeIndex,
+      safe_tx_hash: state.safeTxHash,
+      ...(confirmed ? { fee_ack: true } : {}),
+    });
+
+    if (isObject(answer?.superseded)) {
+      asks.delete(safeIndex);
+      await approvalRecords.dropped(safeIndex, state.safeTxHash, 'superseded');
+      return remember(safeIndex, answer.superseded);
+    }
+
+    let params;
+    let executorIndex;
+    if (isObject(answer?.fee_check)) {
+      executorIndex = executorOf(record);
+      // Asked, unless the execution is held: its bytes go again unsigned,
+      // and a send that would sign anew refuses without a gas limit.
+      if (!held) {
+        throw feeAsk(
+          holdAsk(safeIndex, {
+            safeTxHash: named,
+            verdict: answer.fee_check,
+            asker: askerOf(asker),
+            executorIndex,
+            safeAddress: record.address,
+            chainId,
+          })
+        );
+      }
+      asks.delete(safeIndex);
+      params = { to: record.address, value: '0', data: '0x', chainId };
+    } else {
+      const send = answer?.send;
+      token = typeof send?.token === 'string' ? send.token : null;
+      params = checkedSend(send, { record, state });
+      asks.delete(safeIndex);
+      // The fee confirmed: the send must be the offer that ask showed.
+      if (confirmed && (send.account !== confirmed.executorIndex || maxCostOf(send.tx) !== confirmed.verdict?.maxCost)) {
+        throw require('../fee-check').feeNotShownError();
+      }
+      executorIndex = send.account;
+    }
+
+    const { getSigner } = require('../signers');
+    const executor = getSigner(
+      executorIndex,
+      token ? { confirmation: { token, kind: signing().KINDS.EXECUTOR_SEND, page: null } } : {}
+    );
+    const from = await executor.getAddress();
+    const display = isObject(state.display) ? state.display : {};
+    const { signAndRecord, KINDS: PAYMENT_KINDS } = require('../tx-recorder');
+    let result;
+    try {
+      result = await signAndRecord(
+        params,
+        executor,
+        {
+          kind: PAYMENT_KINDS.SAFE_SEND,
+          fromAddress: record.address,
+          toAddress: display.toAddress,
+          asset: display.asset ?? null,
+          amount: display.amount,
+          metadata: { safeAddress: record.address, safeTxHash: state.safeTxHash, executor: from },
+        },
+        { intentKey }
+      );
+    } catch (err) {
+      if (/insufficient funds/i.test(err?.message ?? '')) err.code = SAFE_NEEDS_FUNDS;
+      throw err;
+    }
+
+    const { durable: _durable, ...shown } = state;
+    return await finishExecuted(safeIndex, {
+      state: shown,
+      executed: { hash: result.hash, explorerUrl: result.explorerUrl ?? null },
+    });
+  } finally {
+    // The core's token, spent at its presentation; one never presented is burnt.
+    if (token) signing().discardConfirmation(token);
+    safeApprovals.endStep(safeIndex);
+    await refreshCopy(safeIndex);
+  }
 }
 
 /**
@@ -427,12 +871,17 @@ function _reset() {
   prepared.clear();
   awaiting.clear();
   boards.clear();
+  asks.clear();
+  unfinished.clear();
 }
 
 module.exports = {
   SAFE_TX_PREPARED,
   approvalRecords,
   cachedState,
+  MAX_FEE_ASKS,
+  confirmOfferedFee,
+  confirmFeeOnChrome,
   confirmWalletSend,
   discard,
   execute,

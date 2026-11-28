@@ -1119,6 +1119,29 @@ describe('preload', () => {
     });
   });
 
+  // freedom-core design 0016, SAFE-3: the Safe card reads a deployed Safe's
+  // setup only when main put the core Safe backend's switch on its command
+  // line.
+  describe("the core Safe backend's switch", () => {
+    const { SAFE_CORE_RENDERER_ARG } = require('./wallet/safe/safe-backend-kind');
+    const originalArgv = process.argv;
+    afterEach(() => {
+      process.argv = originalArgv;
+    });
+
+    test('keys on the same renderer argument safe-backend-kind.js names', () => {
+      const source = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+      expect(source).toContain(`process.argv.includes('${SAFE_CORE_RENDERER_ARG}')`);
+    });
+
+    test('on with the argument, off without it', () => {
+      process.argv = [...originalArgv, SAFE_CORE_RENDERER_ARG];
+      expect(loadPreloadModule().exposures.wallet.safeCoreBackend).toBe(true);
+      process.argv = originalArgv.filter((arg) => arg !== SAFE_CORE_RENDERER_ARG);
+      expect(loadPreloadModule().exposures.wallet.safeCoreBackend).toBe(false);
+    });
+  });
+
   describe('E2E harness bridge (freedomTest)', () => {
     const { TEST_HARNESS_RENDERER_ARG } = require('./test-mode');
     const originalArgv = process.argv;
