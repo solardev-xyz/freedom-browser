@@ -514,6 +514,17 @@ describe('getSafeSendState / cancelSafeSend', () => {
     await cancelSafeSend(5);
     expect(getSafeSendState(5)).toBeNull();
   });
+
+  // SAFE-3's PR 9 is the core's backend's: on js no entry carries the
+  // core's proposal mark, as none ever did, and its state and its owners'
+  // signatures are as before.
+  test("on js nothing of the core's older entries or changed setups: today's state, and its owners sign", async () => {
+    await start();
+    const state = getSafeSendState(5);
+    expect(state).not.toHaveProperty('older');
+    expect(state).not.toHaveProperty('setupChanged');
+    await expect(signSafePending(5, 2)).resolves.toMatchObject({ safeTxHash: SAFE_TX_HASH });
+  });
 });
 
 // freedom-core design 0011, PRQ-5b: a page's Safe send waits on main's own

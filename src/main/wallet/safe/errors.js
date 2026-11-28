@@ -93,6 +93,39 @@ const CORE_SAFE_CODES = Object.freeze({
 });
 
 /**
+ * What the wallet says for the core's own refusals of a Safe step (SAFE-3's
+ * PR 9), by main's code: the core's text names the Safe and its nonce,
+ * these name the account and what the user can do. core-sends.js gives a
+ * refusal of a send's step one of these in place of the core's text, its
+ * code kept.
+ */
+const PLAIN_TEXTS = Object.freeze({
+  [CODES.SAFE_UNVERIFIED]:
+    "Freedom couldn't verify this account on Gnosis, so nothing was signed or sent. " +
+    'Try again, or add an RPC provider in Settings.',
+  [CODES.SAFE_NONCE_BEHIND]:
+    "Gnosis doesn't show this account's earlier transactions yet, so nothing was signed or sent. " +
+    'Try again in a moment.',
+  [CODES.SAFE_STORE_FULL]:
+    "There's no room to save another multi-owner transaction. " +
+    'Finish or discard a waiting one, then try again.',
+  [CODES.SAFE_SELF_CALL]:
+    "Freedom doesn't send a transaction from this account to the account itself, since such a " +
+    'transaction could change its owners or settings. Nothing was signed or sent; choose another recipient.',
+  [CODES.SAFE_CHANGED]:
+    "This account was changed outside Freedom, so Freedom can't sign or send for it. " +
+    'Discard this transaction.',
+  [CODES.SAFE_NOT_PROPOSED]:
+    'This transaction was started in an older version of Freedom, so its owners ' +
+    "can't sign it here. Discard it and send it again.",
+});
+
+/** The wallet's text for a core refusal's code (PLAIN_TEXTS), or null. */
+function plainText(code) {
+  return typeof code === 'string' && Object.hasOwn(PLAIN_TEXTS, code) ? PLAIN_TEXTS[code] : null;
+}
+
+/**
  * The code main gives a core refusal (`invalid_argument` whose `data.safe`
  * CORE_SAFE_CODES names), or null for any other error.
  * @param {{ code?: string, data?: { safe?: unknown } }} err
@@ -112,4 +145,4 @@ function codedError(message, code) {
   return err;
 }
 
-module.exports = { ...CODES, CORE_SAFE_CODES, codedError, coreSafeCode };
+module.exports = { ...CODES, CORE_SAFE_CODES, PLAIN_TEXTS, codedError, coreSafeCode, plainText };
