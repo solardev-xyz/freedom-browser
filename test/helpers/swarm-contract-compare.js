@@ -250,18 +250,30 @@ function fixedText(got, want, fix) {
 const promptsOf = (step) => (step.events || []).filter((e) => e.prompt).map((e) => e.prompt);
 
 /**
+ * The vectors' `core` answers the browser's own route test now reads
+ * otherwise: the suite holds these cases to the reference's answer on both
+ * backends, and counts them. Not changed here: they are freedom-core's
+ * vectors to update.
+ */
+const KNOWN_CORE_VECTOR_DIFFERENCES = Object.freeze({
+  'subscribe-gsoc-topic-remote-node-tor':
+    "Tor on, no proxy, a node at a normal address: the vectors' core answer refuses it (subscribe-proxy, written " +
+    'before design 0015\'s 2026-11-28 amendment, "Question 4\'s test"); Freedom\'s Tor carries `.onion` names only, so ' +
+    "main's route test reads the node DIRECT and both backends subscribe, as the reference did. A core vectors update, " +
+    'after the user answers U-1 (the SWM-6 to SWM-9 plan, point 14)',
+});
+
+/**
  * The deviation a case is held to on `backend`, or null for the
  * reference's answers. Every deviation is the core's; `subscribe-proxy`'s
  * refusal is main's own route test (subscription-registry.js, SWM-7's PR
  * 7.3), which both backends run, so a case with a proxy on is held to it
- * on `js` too. With Tor on and no proxy, the route test reads the node at
- * a normal address as DIRECT (Freedom's Tor carries `.onion` names only:
- * the 2026-11-28 amendment's test), so both subscribe, as the reference
- * did.
+ * on `js` too. A known core-vectors difference
+ * (`KNOWN_CORE_VECTOR_DIFFERENCES`) is held to the reference on both.
  */
 function deviationOn(backend, kase) {
-  if (!kase.deviation) return null;
-  if (kase.deviation === 'subscribe-proxy') return kase.session?.proxy === true ? 'subscribe-proxy' : null;
+  if (!kase.deviation || Object.hasOwn(KNOWN_CORE_VECTOR_DIFFERENCES, kase.id)) return null;
+  if (kase.deviation === 'subscribe-proxy') return 'subscribe-proxy';
   return backend === 'core' ? kase.deviation : null;
 }
 
@@ -424,8 +436,11 @@ function summary(backend, seen, outside) {
   if (backend === 'core') {
     for (const [id, why] of Object.entries(LEFT_OUT_ON_CORE)) lines.push(`  left out on core: ${id} (${why})`);
   }
+  for (const id of Object.keys(KNOWN_CORE_VECTOR_DIFFERENCES)) {
+    lines.push(`  known core-vectors difference, held to the reference: ${id}`);
+  }
   for (const [id, count] of [...seen.deviations].sort()) lines.push(`  deviation ${id}: ${count}`);
   return lines.join('\n');
 }
 
-module.exports = { LEFT_OUT_ON_CORE, compareCase, deviationOn, expectedAnswer, sameAnswer, summary, wire };
+module.exports = { KNOWN_CORE_VECTOR_DIFFERENCES, LEFT_OUT_ON_CORE, compareCase, deviationOn, expectedAnswer, sameAnswer, summary, wire };

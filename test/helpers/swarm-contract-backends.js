@@ -258,7 +258,7 @@ function mockBoundaries(world) {
   for (const name of PACKAGES) jest.doMock(name, () => packages[name]);
   jest.doMock('electron', () => electronOf(world), { virtual: true });
   jest.doMock('electron-log', () => SILENT);
-  mock('logger.js', () => (process.env.SWARM_CONTRACT_DEBUG ? { ...SILENT, warn: (...a) => process.stderr.write(`[warn] ${JSON.stringify(a)}\n`), error: (...a) => process.stderr.write(`[error] ${JSON.stringify(a)}\n`) } : SILENT));
+  mock('logger.js', () => SILENT);
   mock('service-registry.js', () => ({
     ...jest.requireActual(SRC_PATH('service-registry.js')),
     getAntApiUrl: () => world.nodeUrl,

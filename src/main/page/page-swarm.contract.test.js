@@ -15,18 +15,23 @@
  *   path, query, body, headers as the caller set them, status), the
  *   prompts it showed, the WebSockets opened, and the stores after (the
  *   feed store's text, the publish history's rows), against the
- *   reference's. On `core` the cases in the file's `deviations` map are
- *   asserted as the deviation each names (`deviationHolds`), and only
- *   there; the core's own clock writes its timestamps, which are held to
- *   the run's window.
- * - **The provider suites' behaviour the vectors lack** (swarm-provider-ipc,
- *   feed-service, chunk-service, messaging-service, publish-service):
- *   contract cases in the vectors' form (test/helpers/swarm-contract-cases.js),
- *   which both backends must pass with the same answers.
- * - **SW-1** (design 0015, "SW-1 in the core"): a raw SOC under the Bee
- *   wallet, a shared index, an exclusive index, a missing index, and an
- *   `ethereum-wallet` identity first, through the dispatcher on both
- *   backends (on `core`, through the pipe: the core's own check).
+ *   reference's (test/helpers/swarm-contract-compare.js). On `core` the
+ *   cases in the file's `deviations` map are asserted as the deviation each
+ *   names, and only there (`subscribe-proxy` is main's own route test, so
+ *   on both); main's executor sends its own headers first, which aren't
+ *   compared; the core's clock writes its times (store timestamps, a tar's
+ *   mtimes, a feed update's time and so its signature, which the node
+ *   checks), held to the run's window; and the core's vault always holds
+ *   its main wallet, which the generator's listed none of.
+ * - **Known core-vectors differences** (`KNOWN_CORE_VECTOR_DIFFERENCES`):
+ *   a case whose recorded `core` answer main's own route test now reads
+ *   otherwise is held to the reference on both backends; the test below
+ *   fails once freedom-core's vectors change it, so the entry goes then.
+ * - **Left out on `core`** (`LEFT_OUT_ON_CORE`), each with why, and on
+ *   both the cases that call `executeSwarmMethod` with no page.
+ *
+ * The provider suites' behaviour the vectors lack, and SW-1's cases, are
+ * contract cases in the same form (PR 7.6b).
  *
  * The vectors are found as the other Swarm vector suites find them
  * (test/helpers/swarm-vectors.js): FREEDOM_CORE_SWARM_VECTORS names
@@ -41,7 +46,12 @@ const {
   runCase,
   viaDispatcher,
 } = require('../../../test/helpers/swarm-contract-backends');
-const { LEFT_OUT_ON_CORE, compareCase, summary } = require('../../../test/helpers/swarm-contract-compare');
+const {
+  KNOWN_CORE_VECTOR_DIFFERENCES,
+  LEFT_OUT_ON_CORE,
+  compareCase,
+  summary,
+} = require('../../../test/helpers/swarm-contract-compare');
 
 const vectors = BACKEND ? contractVectors() : null;
 if (BACKEND && process.env.FREEDOM_CORE_SWARM_VECTORS && !vectors) {
@@ -71,6 +81,19 @@ describeIf(`window.swarm's contract on the ${BACKEND} backend: vectors/swarm.jso
 
   test('the cases outside the dispatcher are only executeSwarmMethod with no page', () => {
     expect(outside.every((kase) => kase.steps.every((step) => step.page === false))).toBe(true);
+  });
+
+  test("each known core-vectors difference is still the vectors' refusal", () => {
+    for (const id of Object.keys(KNOWN_CORE_VECTOR_DIFFERENCES)) {
+      const kase = vectors.swarm.methods.find((one) => one.id === id);
+      expect(kase?.deviation).toBe('subscribe-proxy');
+      expect(kase.core?.error?.data).toEqual({ reason: 'proxy-or-tor' });
+    }
+  });
+
+  test('each case left out on the core is in the vectors', () => {
+    const ids = new Set(vectors.swarm.methods.map((kase) => kase.id));
+    expect(Object.keys(LEFT_OUT_ON_CORE).filter((id) => !ids.has(id))).toEqual([]);
   });
 
   test.each(cases.map((kase) => [kase.id, kase]))('%s', async (_id, kase) => {
