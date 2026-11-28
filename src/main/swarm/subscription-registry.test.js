@@ -354,12 +354,11 @@ describe('subscription-registry: the route test', () => {
     ['a remote node behind a proxy list ending DIRECT', REMOTE, 'PROXY proxy.example:8080; DIRECT', 'proxy', true],
     ["a remote node behind Arti's endpoint", REMOTE, `SOCKS5 ${ARTI}`, 'tor', true],
     ['a remote node behind another SOCKS proxy', REMOTE, 'SOCKS5 127.0.0.1:1080', 'proxy', true],
-    // An onion node is refused whatever its route; `via` says what the
-    // route is (PR 7.5, Codex round 1: Tor is named only when Arti's
-    // endpoint is the route).
-    ['an onion node, Tor off', 'http://abcdef.onion', 'DIRECT', 'onion', true],
-    ['an onion node, Tor on', 'http://abcdef.onion:1633', `SOCKS5 ${ARTI}`, 'tor', true],
-    ['an onion node behind another SOCKS proxy', 'http://abcdef.onion', 'SOCKS5 127.0.0.1:1080', 'proxy', true],
+    // An onion node is refused before its route is asked, so its name never
+    // reaches a resolver (Codex round 2 on #1382); with Arti running (this
+    // table's torEndpoint) the socket would go around Tor.
+    ['an onion node, Tor on', 'http://abcdef.onion:1633', `SOCKS5 ${ARTI}`, 'tor', false],
+    ['an onion node behind another SOCKS proxy, Tor on', 'http://abcdef.onion', 'SOCKS5 127.0.0.1:1080', 'tor', false],
     ['no node', null, 'PROXY proxy.example:8080', null, false],
   ])('routeRefusal: %s', async (_label, url, answer, via, asked) => {
     const ask = jest.fn(async () => answer);
@@ -373,14 +372,18 @@ describe('subscription-registry: the route test', () => {
       throw new Error('network service gone');
     });
     expect(await registry.routeRefusal(REMOTE, { resolveProxy: failing })).toEqual({ reason: 'proxy-or-tor', via: 'proxy' });
-    // An onion node with no route it can name: refused, and no proxy named.
+    // An onion node with Tor off: refused, `onion`, and its route never asked.
+    failing.mockClear();
     expect(await registry.routeRefusal('http://abcdef.onion', { resolveProxy: failing })).toEqual({
       reason: 'proxy-or-tor',
       via: 'onion',
     });
+    const direct = jest.fn(async () => 'DIRECT');
     expect(
-      await registry.routeRefusal('http://abcdef.onion', { resolveProxy: async () => 'DIRECT', torEndpoint: () => null })
+      await registry.routeRefusal('http://abcdef.onion', { resolveProxy: direct, torEndpoint: () => null })
     ).toEqual({ reason: 'proxy-or-tor', via: 'onion' });
+    expect(failing).not.toHaveBeenCalled();
+    expect(direct).not.toHaveBeenCalled();
     expect(
       await registry.routeRefusal(REMOTE, { resolveProxy: async () => `SOCKS5 ${ARTI}`, torEndpoint: () => null })
     ).toEqual({ reason: 'proxy-or-tor', via: 'proxy' });
@@ -530,9 +533,10 @@ describe('subscription-registry: the route test', () => {
       nodeUrl = 'http://abcdefghijklmnop.onion';
       await registry.recheckRoutes();
       expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+      // This world runs Arti, so the onion node's refusal names Tor.
       await expect(
         registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY })
-      ).rejects.toMatchObject({ reason: 'proxy-or-tor', via: 'onion' });
+      ).rejects.toMatchObject({ reason: 'proxy-or-tor', via: 'tor' });
       expect(openSocket).toHaveBeenCalledTimes(1);
     });
 

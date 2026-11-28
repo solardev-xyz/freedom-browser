@@ -202,11 +202,13 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
     ['a remote external node behind a proxy', REMOTE, PROXY, null, PROXY_LINES],
     ["a remote external node behind Arti's endpoint", REMOTE, `SOCKS5 ${ARTI}; DIRECT`, ARTI, TOR_LINES],
     ['a remote external node behind another SOCKS proxy, with Tor on', REMOTE, 'SOCKS5 10.0.0.1:1080', ARTI, PROXY_LINES],
-    ["an onion node behind Arti's endpoint", ONION, `SOCKS5 ${ARTI}`, ARTI, TOR_LINES],
-    ['an onion node behind another proxy', ONION, PROXY, null, PROXY_LINES],
-    // Codex round 1: DIRECT with no Tor endpoint never says Tor is on.
-    ['an onion node, DIRECT, with no Tor endpoint (Tor off)', ONION, 'DIRECT', null, ONION_LINES],
-    ['an onion node, DIRECT, while Arti runs', ONION, 'DIRECT', ARTI, ONION_LINES],
+    // An onion node: worded from main's Tor state, its route never asked
+    // (Codex round 2 on #1382). Tor on: the socket would go around it.
+    ["an onion node while Arti runs", ONION, `SOCKS5 ${ARTI}`, ARTI, TOR_LINES],
+    ['an onion node while Arti runs, whatever the session says', ONION, 'DIRECT', ARTI, TOR_LINES],
+    // Tor off: never said to be on, whatever proxy is set.
+    ['an onion node with Tor off', ONION, 'DIRECT', null, ONION_LINES],
+    ['an onion node behind another proxy, Tor off', ONION, PROXY, null, ONION_LINES],
     ['a remote external node reached directly, with Tor on', REMOTE, 'DIRECT', ARTI, NO_LINES],
     ['a remote external node reached directly', REMOTE, 'DIRECT', null, NO_LINES],
   ])('%s', async (_case, node, proxy, tor, lines) => {
