@@ -141,7 +141,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(29);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(30);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -158,6 +158,7 @@ describe('preload', () => {
       'wallet',
       'ledger',
       'remoteSigner',
+      'swarmMessages',
       'swarmNode',
       'publishSetup',
       'browsingCredit',
@@ -184,6 +185,8 @@ describe('preload', () => {
 
     const invokeCases = [
       [exposures.remoteSigner, 'requestSent', ['job-1'], 'remote-signer:request-sent', [{ jobId: 'job-1' }]],
+      // Question 4's line for the Nodes panel (design 0015, Messaging).
+      [exposures.swarmMessages, 'getRoute', [], IPC.SWARM_MESSAGES_ROUTE_GET, []],
       [
         exposures.electronAPI,
         'setBzzBase',
@@ -737,6 +740,22 @@ describe('preload', () => {
         IPC.SWARM_PUBLISH_SETUP_NEEDED,
         [{ origin: 'app.eth', reason: 'no-usable-stamps' }],
         [{ origin: 'app.eth', reason: 'no-usable-stamps' }],
+      ],
+      // Question 4 (design 0015, Messaging): the Nodes panel's line as it
+      // changes, and a site's notice, once per site per session.
+      [
+        exposures.swarmMessages,
+        'onRoute',
+        IPC.SWARM_MESSAGES_ROUTE,
+        [{ panel: 'Live messages are off', settings: 'Live messages are off.' }],
+        [{ panel: 'Live messages are off', settings: 'Live messages are off.' }],
+      ],
+      [
+        exposures.swarmMessages,
+        'onNotice',
+        IPC.SWARM_MESSAGES_NOTICE,
+        [{ site: 'app.eth', text: 'Live messages from app.eth are off' }],
+        [{ site: 'app.eth', text: 'Live messages from app.eth are off' }],
       ],
     ];
 

@@ -1,3 +1,4 @@
 - Live Swarm messages no longer go around your proxy or Tor: sites can't subscribe through an external node reached through either ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
   - Open subscriptions end when a proxy comes on
+  - Freedom says so: a notice once per site, and a line in the Nodes menu and Settings
   - The built-in node, and an external node on this computer, are unaffected

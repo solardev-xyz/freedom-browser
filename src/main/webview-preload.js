@@ -1233,6 +1233,13 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   clearSwarmCache: guardSettingsPage('clearSwarmCache', () =>
     ipcRenderer.invoke('ant:cache-clear')
   ),
+  // Settings → Nodes, under the external Swarm node (freedom-core design
+  // 0015, Messaging, question 4): main's words while live messages to the
+  // node in use are off because the session reaches it through a proxy or
+  // Tor, `{ panel, settings }`, each a string or null.
+  getSwarmMessagesRoute: guardSettingsPage('getSwarmMessagesRoute', () =>
+    ipcRenderer.invoke('swarm:messages-route-get')
+  ),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),
   createProfile: guardProfileManagerPage('createProfile', (profile) =>

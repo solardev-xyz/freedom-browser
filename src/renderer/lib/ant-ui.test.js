@@ -47,6 +47,8 @@ const loadBeeModule = async (options = {}) => {
   const beeStatusValue = createElement('span');
   const beeVerifyFailedNotice = createElement('p');
   beeVerifyFailedNotice.hidden = true; // as the markup ships it
+  const beeMessagesOffNotice = createElement('p');
+  beeMessagesOffNotice.hidden = true; // as the markup ships it
   const body = createElement('body');
   body.appendChild(beeInfoPanel);
   const document = createDocument({
@@ -61,6 +63,7 @@ const loadBeeModule = async (options = {}) => {
       'bee-status-label': beeStatusLabel,
       'bee-status-value': beeStatusValue,
       'bee-verify-failed-notice': beeVerifyFailedNotice,
+      'bee-messages-off-notice': beeMessagesOffNotice,
     },
   });
   let statusHandler = null;
@@ -116,6 +119,7 @@ const loadBeeModule = async (options = {}) => {
     });
   global.window = {
     ant: beeApi,
+    ...(options.swarmMessages ? { swarmMessages: options.swarmMessages } : {}),
   };
   global.document = document;
 
@@ -151,6 +155,7 @@ const loadBeeModule = async (options = {}) => {
       beeStatusLabel,
       beeStatusValue,
       beeVerifyFailedNotice,
+      beeMessagesOffNotice,
     },
   };
 };
@@ -416,6 +421,114 @@ describe('bee-ui', () => {
       answer(running(4));
       await flushMicrotasks();
       expect(notice.hidden).toBe(true);
+    });
+  });
+
+  // freedom-core design 0015, Messaging, question 4 (SWM-7's PR 7.5): "the
+  // Nodes panel says 'Live messages are off while Tor is on: …', as it shows
+  // the node's other conditions", while main refuses subscriptions to the
+  // node in use. Main words it and says when; the panel shows what it gets.
+  describe('live messages off over a proxy or Tor', () => {
+    const TOR = {
+      panel: 'Live messages are off while Tor is on: they would go around it to your external node',
+      settings: 'Live messages are off while Tor is on: they would go around it to your external node.',
+    };
+    const PROXY = {
+      panel: 'Live messages are off while your proxy is on: they would go around it to your external node',
+      settings: 'Live messages are off while your proxy is on: they would go around it to your external node.',
+    };
+    const OFF = { panel: null, settings: null };
+    const statusPoll = (ctx) => ctx.setIntervalMock.mock.calls.find(([, ms]) => ms === 5000)[0];
+
+    const swarmMessages = (route) => {
+      let push = null;
+      return {
+        getRoute: jest.fn(async () => route.now),
+        onRoute: jest.fn((handler) => {
+          push = handler;
+        }),
+        onNotice: jest.fn(),
+        push: (value) => push(value),
+      };
+    };
+
+    const open = async (route, options = {}) => {
+      const api = swarmMessages(route);
+      const ctx = await loadBeeModule({
+        antMenuOpen: true,
+        currentAntStatus: 'running',
+        mode: 'external',
+        statusResult: { status: 'running', error: null },
+        swarmMessages: api,
+        ...options,
+      });
+      ctx.mod.initAntUi();
+      await flushMicrotasks();
+      return { ctx, api, line: ctx.elements.beeMessagesOffNotice };
+    };
+
+    test("main's words, read when the panel opens and at the status poll while it's open", async () => {
+      const route = { now: PROXY };
+      const { ctx, api, line } = await open(route);
+      expect(ctx.elements.beeInfoPanel.classList.contains('visible')).toBe(true);
+      expect(api.getRoute).toHaveBeenCalled();
+      expect(line.hidden).toBe(false);
+      expect(line.textContent).toBe(PROXY.panel);
+
+      // Tor takes the route, read at the next poll.
+      route.now = TOR;
+      statusPoll(ctx)();
+      await flushMicrotasks();
+      expect(line.textContent).toBe(TOR.panel);
+
+      // The node moves to loopback (or the bundled node): main says nothing.
+      route.now = OFF;
+      statusPoll(ctx)();
+      await flushMicrotasks();
+      expect(line.hidden).toBe(true);
+      expect(line.textContent).toBe('');
+    });
+
+    test('a push from main updates it at once, open or not', async () => {
+      const route = { now: OFF };
+      const { api, line } = await open(route);
+      expect(line.hidden).toBe(true);
+      api.push(TOR);
+      expect(line.hidden).toBe(false);
+      expect(line.textContent).toBe(TOR.panel);
+      api.push(PROXY);
+      expect(line.textContent).toBe(PROXY.panel);
+      api.push(OFF);
+      expect(line.hidden).toBe(true);
+    });
+
+    test('not read while the panel is closed', async () => {
+      const route = { now: PROXY };
+      const { ctx, api } = await open(route, { antMenuOpen: false, currentAntStatus: 'stopped' });
+      statusPoll(ctx)();
+      await flushMicrotasks();
+      expect(api.getRoute).not.toHaveBeenCalled();
+    });
+
+    test('a failed read keeps the last line; a malformed answer shows nothing', async () => {
+      const route = { now: PROXY };
+      const { ctx, api, line } = await open(route);
+      api.getRoute.mockRejectedValueOnce(new Error('ipc gone'));
+      statusPoll(ctx)();
+      await flushMicrotasks();
+      expect(line.textContent).toBe(PROXY.panel);
+      for (const bad of [null, undefined, {}, { panel: 7 }, 'text']) {
+        api.push(bad);
+        expect(line.hidden).toBe(true);
+      }
+    });
+
+    test('a chrome with no such API leaves the line hidden', async () => {
+      const ctx = await loadBeeModule({ antMenuOpen: true, currentAntStatus: 'running' });
+      ctx.mod.initAntUi();
+      ctx.mod.startAntInfoPolling();
+      await flushMicrotasks();
+      expect(ctx.elements.beeMessagesOffNotice.hidden).toBe(true);
     });
   });
 });

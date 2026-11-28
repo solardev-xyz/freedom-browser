@@ -15,6 +15,7 @@ let beeStatusRow = null;
 let beeStatusLabel = null;
 let beeStatusValue = null;
 let beeVerifyFailedNotice = null;
+let beeMessagesOffNotice = null;
 
 // Binary availability state
 let beeBinaryAvailable = true;
@@ -48,6 +49,30 @@ const renderVerifyFailures = (reply) => {
   if (!beeVerifyFailedNotice) return;
   const failures = reply?.externalVerifyFailures;
   beeVerifyFailedNotice.hidden = !(Number.isSafeInteger(failures) && failures > 0);
+};
+
+// "Live messages are off while Tor is on: …" (freedom-core design 0015,
+// Messaging, question 4): shown while main refuses subscriptions to the Swarm
+// node in use because the session reaches it through a proxy or Tor (an
+// external node not on loopback; never the bundled node, nor an external one
+// on loopback). Main words it and says when (`panel`, a string or null): it
+// pushes the line when Tor or the node changes, and the panel reads it when
+// it opens and at the status poll's pace while it's open, since a system
+// proxy changes with no event. A failed read keeps the last line.
+const renderMessagesRoute = (route) => {
+  if (!beeMessagesOffNotice) return;
+  const text = typeof route?.panel === 'string' ? route.panel : '';
+  beeMessagesOffNotice.textContent = text;
+  beeMessagesOffNotice.hidden = text === '';
+};
+
+const fetchMessagesRoute = async () => {
+  if (!window.swarmMessages?.getRoute) return;
+  try {
+    renderMessagesRoute(await window.swarmMessages.getRoute());
+  } catch {
+    // Keep the last line.
+  }
 };
 
 // A status reply for the open panel; one that lands after it closed is dropped.
@@ -145,6 +170,7 @@ export const startAntInfoPolling = () => {
   fetchConnectedPeers();
   fetchVisiblePeers();
   fetchVerifyFailures();
+  fetchMessagesRoute();
   if (!state.antVersionFetched) fetchAntVersionOnce();
 
   if (state.antPeersInterval) clearInterval(state.antPeersInterval);
@@ -278,6 +304,8 @@ export const initAntUi = () => {
   beeStatusLabel = document.getElementById('bee-status-label');
   beeStatusValue = document.getElementById('bee-status-value');
   beeVerifyFailedNotice = document.getElementById('bee-verify-failed-notice');
+  beeMessagesOffNotice = document.getElementById('bee-messages-off-notice');
+  window.swarmMessages?.onRoute?.(renderMessagesRoute);
 
   // Check binary availability
   if (window.ant) {
@@ -339,6 +367,7 @@ export const initAntUi = () => {
         updateAntUi(reply.status, reply.error);
         renderVerifyFailuresIfOpen(reply);
       });
+      if (beeInfoPanel?.classList.contains('visible')) fetchMessagesRoute();
     };
     refreshBeeStatus();
     setInterval(refreshBeeStatus, 5000);

@@ -1480,6 +1480,33 @@ const applyVerifySetting = (row, mode) => {
   row.querySelector('[data-unverified-note]')?.toggleAttribute('hidden', !shown || on);
 };
 
+// "Live messages are off while Tor is on: …" (freedom-core design 0015,
+// Messaging, question 4): under an external Swarm node while main refuses
+// live messages to it because the session reaches it through a proxy or Tor.
+// Main words it and says when (`getSwarmMessagesRoute`'s `settings`, read
+// with the rest of the section); its test passes the bundled node and an
+// external node on loopback, so the note never shows for either. It shows
+// only under a row set to external: switching the row away hides it at once.
+let swarmMessagesRoute = null;
+const messagesOffText = (protocol, mode) =>
+  protocol === 'bee' && mode === 'external' && typeof swarmMessagesRoute?.settings === 'string'
+    ? swarmMessagesRoute.settings
+    : '';
+
+// Shows or hides a row's live-messages note for `mode`; while it shows, it
+// describes the node's endpoint field (hidden text a description names is
+// still read out, so only then).
+const applyMessagesOffNote = (row, mode) => {
+  const note = row?.querySelector('[data-messages-off-note]');
+  if (!note) return;
+  const text = messagesOffText(row.dataset.protocol, mode);
+  note.textContent = text;
+  note.hidden = text === '';
+  const field = row.querySelector('[data-endpoint-field]');
+  if (text) field?.setAttribute('aria-describedby', note.id);
+  else field?.removeAttribute('aria-describedby');
+};
+
 const renderProfileNodes = (profile, registry, settings) => {
   const nodes = profile?.nodes || {};
   storedProfileNodes = nodes;
@@ -1512,6 +1539,7 @@ const renderProfileNodes = (profile, registry, settings) => {
           ${details}
           ${renderExternalEditor(protocol, config, mode, draft)}
           ${renderVerifySetting(protocol, config, mode, reused)}
+          ${protocol === 'bee' ? `<p class="profile-node-note" id="profile-bee-messages-off-note" data-messages-off-note hidden></p>` : ''}
           <p class="profile-node-error" data-node-error role="alert"${draft?.error ? '' : ' hidden'}>${esc(draft?.error || '')}</p>
         </div>
       </div>`;
@@ -1533,6 +1561,9 @@ const renderProfileNodes = (profile, registry, settings) => {
       : null;
 
   profileFields.nodesCard.innerHTML = rows.join('');
+  for (const row of profileFields.nodesCard.querySelectorAll('.profile-node')) {
+    applyMessagesOffNote(row, row.querySelector('[data-node-mode]')?.value);
+  }
 
   if (focused?.protocol && (focused.field || focused.mode || focused.verify)) {
     const row = profileFields.nodesCard.querySelector(
@@ -1561,12 +1592,14 @@ const refreshProfileSection = async (force = false) => {
 
   const seq = ++profileRefreshSeq;
   try {
-    const [profile, registry, settings] = await Promise.all([
+    const [profile, registry, settings, messagesRoute] = await Promise.all([
       freedomAPI.getActiveProfile?.(),
       freedomAPI.getServiceRegistry().catch(() => null),
       freedomAPI.getSettings?.().catch(() => null),
+      freedomAPI.getSwarmMessagesRoute?.().catch(() => swarmMessagesRoute),
     ]);
     if (seq !== profileRefreshSeq) return;
+    swarmMessagesRoute = messagesRoute ?? null;
     const profileId = profile?.id || null;
     if (profileId !== activeProfileId) nodeDrafts.clear();
     activeProfileId = profileId;
@@ -1870,6 +1903,7 @@ profileFields.nodesCard?.addEventListener('change', (event) => {
   const row = modeSelect.closest('.profile-node');
   setExternalEditorVisible(row, modeSelect.value);
   applyVerifySetting(row, modeSelect.value);
+  applyMessagesOffNote(row, modeSelect.value);
   commitNodeRow(row);
 });
 

@@ -200,6 +200,7 @@ const SETTINGS_CHANNELS = [
   'shortcuts:reset',
   'shortcuts:set-override',
   'shortcuts:set-recording',
+  'swarm:messages-route-get',
   'tor:checkBinary',
   'update:check',
   'update:get-state',
