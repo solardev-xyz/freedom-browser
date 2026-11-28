@@ -308,8 +308,21 @@ function registerSwarmPermissionsIpc() {
   console.log('[SwarmPermissions] IPC handlers registered');
 }
 
+/**
+ * The origin's grant read back from the core after a change the core made
+ * itself (a manifest's projection, written inside its `swarm.manifest`
+ * decide): resolves true once main's mirror holds the core's answer for
+ * it, false if that read failed (core/grants.js `readBack`).
+ * @param {string} origin
+ * @returns {Promise<boolean>}
+ */
+function readBack(origin) {
+  return store().readBack(normalizeOrigin(origin));
+}
+
 module.exports = {
   getPermission,
+  readBack,
   grantPermission,
   revokePermission,
   getAllPermissions,
