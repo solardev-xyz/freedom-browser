@@ -135,6 +135,45 @@ function mainHeadersMissing(request) {
   return missing.length ? `lacks main's ${missing.join(' and ')}` : null;
 }
 
+// fc-swarm-provider's machine/node.rs `INLINE_BODY`.
+const INLINE_BODY = 64 * 1024;
+
+/**
+ * Whether the core streams this call's body: every `bytes_up` (POST
+ * `/bytes`) and `bzz_tar` (POST `/bzz` of a tar), and a `bzz_file` (POST
+ * `/bzz` of anything else) past `INLINE_BODY`, a smaller one going inline
+ * (fc-swarm-provider's methods/writes.rs `bytes_up`, methods/publish.rs
+ * `Upload::File`).
+ */
+function streamedOnCore(request) {
+  if (request.method !== 'POST') return false;
+  if (request.path === '/bytes') return true;
+  if (request.path !== '/bzz') return false;
+  const type = (request.headers || []).find(([name]) => name === 'content-type')?.[1];
+  return type === 'application/x-tar' || (request.body?.bytes ?? 0) > INLINE_BODY;
+}
+
+/**
+ * How a request's body must be framed on the wire, which the recorded
+ * headers leave out with the rest of the transport's own (Codex round 5
+ * on #1390): `null` when it is. The reference (bee-js's fetch, and
+ * page-upload.js's `http.request`, which sets `content-length` itself)
+ * gives every call but a GET a `content-length` of its body, an empty one
+ * 0, and a GET none. So does the core's executor for a call whose body is
+ * base64 bytes; a streamed upload (swarm-shell.js "A streamed upload")
+ * goes chunked, with no `content-length` (design 0015's
+ * `session-transport`: "On either stack a streamed upload goes chunked";
+ * `streamedOnCore`).
+ */
+function framingProblem(backend, request) {
+  const streamed = backend === 'core' && streamedOnCore(request);
+  let want;
+  if (request.method === 'GET') want = 'none';
+  else if (streamed) want = 'transfer-encoding: chunked';
+  else want = `content-length: ${request.body?.bytes ?? 0}`;
+  return request.framing === want ? null : `framed ${request.framing}, not ${want}`;
+}
+
 /**
  * A request as both backends are compared: what crossed to the node. On
  * `core`, main's executor makes every call, with main's own headers
@@ -472,6 +511,10 @@ function compareCase(backend, kase, record) {
         const lack = mainHeadersMissing(r);
         if (lack) problems.push(`step ${k}: ${r.method} ${r.path} ${lack}`);
       }
+    }
+    for (const r of ran.requests) {
+      const framing = framingProblem(backend, r);
+      if (framing) problems.push(`step ${k}: ${r.method} ${r.path} ${framing}`);
     }
     const gotRequests = ran.requests.map((r) => wire(r, backend));
     for (const r of gotRequests) if (r.soc_valid === false) problems.push(`step ${k}: a SOC whose signature isn't its owner's: ${r.path}`);

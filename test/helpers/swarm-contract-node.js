@@ -160,6 +160,16 @@ function retimeTar(body, { seconds, from, now }) {
   return out;
 }
 
+/**
+ * A request's framing as the node read it: `transfer-encoding: <value>`,
+ * else `content-length: <value>`, else `none`.
+ */
+function framingOf(headers) {
+  if (headers['transfer-encoding'] !== undefined) return `transfer-encoding: ${headers['transfer-encoding']}`;
+  if (headers['content-length'] !== undefined) return `content-length: ${headers['content-length']}`;
+  return 'none';
+}
+
 /** A headers value as fetch or http.request take it, as `[name, value]` pairs, names lower-cased. */
 function headerPairs(headers) {
   if (!headers) return [];
@@ -569,6 +579,10 @@ class ContractNode {
               ([name]) => !TRANSPORT_HEADERS.has(name)
             ),
         body,
+        // How the body was framed on the wire, whichever backend sent it
+        // (the headers above leave the transport's own out): compared on
+        // its own (swarm-contract-compare.js `framingProblem`).
+        framing: framingOf(req.headers),
       };
       if (request.method === 'POST' && request.path.startsWith('/soc/')) request.socValid = this.socValid(request);
       this.requests.push(request);
@@ -830,6 +844,7 @@ function requestRecord(r, node) {
   if (feed) out.feed = feed;
   if (r.socValid !== undefined) out.soc_valid = r.socValid;
   if (r.held !== undefined) out.held = r.held;
+  out.framing = r.framing;
   return out;
 }
 
