@@ -6,18 +6,19 @@
  * Almost all of the main process's node traffic uses Node's `fetch`, which
  * never reaches `session.webRequest`. The exceptions dial a *remote* external
  * node through the shared gateway transport, so the session's proxy policy
- * applies: the `bzz:` handler's content requests (`swarm/bzz-protocol.js`)
- * and the ENS prefetch (`ens-prefetch.js`). In webRequest such a dial looks
+ * applies: the `bzz:` handler's content requests (`swarm/bzz-protocol.js`),
+ * the ENS prefetch (`ens-prefetch.js`) and main's own calls
+ * (`swarm/ant-storage-api.js`). In webRequest such a dial looks
  * like a worker's request — no frame, no webContents — so the guard cannot
  * tell it apart by shape. Instead the caller announces the exact URL here for
  * the lifetime of the dial, with the one method the dial sends, and the guard
  * lets a frameless request of exactly that method to exactly that URL through
  * (freedom-core design 0015, The transport). An announced GET lets no HEAD,
  * POST or any other method of the same URL through, nor an announced POST a
- * GET. Main's Swarm executor reads a remote node on this path; its writes go
- * on write sessions of their own, each with its own guard, armed for the one
- * write it carries, and announce nothing here (`ant-write-sessions.js`,
- * #1344).
+ * GET. Main's Swarm executor and ant-storage-api read a remote node on this
+ * path; their writes (POST, and ant-storage-api's PUT) go on write sessions
+ * of their own, each with its own guard, armed for the one write it carries,
+ * and announce nothing here (`ant-write-sessions.js`, #1344).
  *
  * Kept free of dependencies so both the guard and its callers can load it.
  */
@@ -55,8 +56,10 @@ function dialKey(url) {
 }
 
 // The methods main dials the node with: the dweb handler's GET and HEAD, the
-// ENS prefetch's GET and the Swarm executor's GET, and POST for a dial on the
-// request's session (the executor's own go on write sessions).
+// ENS prefetch's GET, the Swarm executor's and ant-storage-api's GET, and
+// POST for a dial on the request's session (the executor's own go on write
+// sessions). A PUT is never announced: ant-storage-api's goes on a write
+// session too.
 const METHODS = new Set(['GET', 'HEAD', 'POST']);
 
 /** The method's key, as webRequest reports it (upper case), or null. */

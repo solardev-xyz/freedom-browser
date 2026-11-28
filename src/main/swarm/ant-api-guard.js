@@ -29,15 +29,18 @@
  * publishing, probes) goes over Node's fetch and never reaches
  * `session.webRequest`, so it is not affected. The exceptions are dials of a
  * *remote* external node — the bzz: handler's content requests (freedom-core
- * design 0006, deviation `transport`), the ENS prefetch, and main's Swarm
- * executor's node calls (design 0015, The transport), POSTs among them —
+ * design 0006, deviation `transport`), the ENS prefetch, main's Swarm
+ * executor's node calls (design 0015, The transport) and ant-storage-api's
+ * calls (readiness, storage, settlements), POSTs and a PUT among them —
  * which go through Electron's `net.request` (for the session's proxy
- * policy). `net.request` does pass through `session.webRequest`, with no
- * frame and no webContents, exactly like a worker's request. Each such dial
- * announces its exact URL and its one method in `ant-api-main-dials.js` for
- * its lifetime, and only a frameless request of exactly that method to
- * exactly that URL is let through; the node's origin isn't exempted, nor is
- * frameless traffic, nor another method of an announced URL.
+ * policy); the writes on write sessions of their own, which this guard
+ * never sees (`ant-write-sessions.js`). `net.request` does pass through
+ * `session.webRequest`, with no frame and no webContents, exactly like a
+ * worker's request. Each dial on the session announces its exact URL and
+ * its one method in `ant-api-main-dials.js` for its lifetime, and only a
+ * frameless request of exactly that method to exactly that URL is let
+ * through; the node's origin isn't exempted, nor is frameless traffic, nor
+ * another method of an announced URL.
  *
  * Which requests count as "to the Ant API":
  *   - any loopback host — `localhost`, `*.localhost`, `127.0.0.0/8`,
