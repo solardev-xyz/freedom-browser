@@ -1,12 +1,22 @@
 /**
- * The typed form's writer and plain reader (swarm-typed.js `writeTyped`,
+ * The typed form's writers and plain reader (swarm-typed.js `writeTyped`,
  * `readPlain`; freedom-core design 0015, D5 and D7: the Swarm store ops'
- * members and answers, SWM-6's PR 6.1). The reader of a page's params is
+ * members and answers, SWM-6's PR 6.1; and `writePageParams`, a page's
+ * params, SWM-7's PR 7.2). The reader of a page's params is
  * swarm-grammar.test.js's; the vectors' members and answers are
- * swarm-stores.vectors.test.js's.
+ * swarm-stores.vectors.test.js's, and the vectors' page params
+ * page-swarm-core.vectors.test.js's.
  */
 
-const { SwarmData, TypedFormError, readPlain, readTyped, writeTyped } = require('./swarm-typed');
+const {
+  INLINE_TOTAL,
+  SwarmData,
+  TypedFormError,
+  readPlain,
+  readTyped,
+  writePageParams,
+  writeTyped,
+} = require('./swarm-typed');
 
 /** What goes on the wire: the typed value through JSON and back. */
 const wire = (typed) => JSON.parse(JSON.stringify(typed));
@@ -134,5 +144,131 @@ describe('readPlain', () => {
 
   test('readTyped still reads data as SwarmData', () => {
     expect(readTyped({ bytes: 1, kind: 'Buffer', base64: 'YQ==' })).toBeInstanceOf(SwarmData);
+  });
+});
+
+describe('writePageParams', () => {
+  const KIB = 1024;
+  const b64 = (bytes) => Buffer.from(bytes).toString('base64');
+
+  test('data where a method reads it: bytes of each kind, and a string as its UTF-8', () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    expect(writePageParams('swarm_publishData', { data: bytes }).typed).toEqual({
+      object: [['data', { bytes: 3, kind: 'Uint8Array', base64: b64(bytes) }]],
+    });
+    expect(writePageParams('swarm_sendPss', { data: Buffer.from('ab') }).typed.object[0][1]).toEqual({
+      bytes: 2,
+      kind: 'Buffer',
+      base64: b64('ab'),
+    });
+    expect(writePageParams('swarm_publishChunk', { data: bytes.buffer }).typed.object[0][1]).toEqual({
+      bytes: 3,
+      kind: 'ArrayBuffer',
+      base64: b64(bytes),
+    });
+    expect(writePageParams('swarm_writeFeedEntry', { data: { type: 'Buffer', data: [7, 8] } }).typed.object[0][1]).toEqual({
+      bytes: 2,
+      kind: 'BufferJSON',
+      base64: b64([7, 8]),
+    });
+    // A lone surrogate is U+FFFD's three bytes, as Buffer.from writes it.
+    const out = writePageParams('swarm_sendGsoc', { data: 'é\ud800' });
+    expect(out.typed.object[0][1]).toEqual({ string_bytes: 5, base64: b64(Buffer.from('é\ud800', 'utf-8')) });
+    expect(out.copies).toBe(5);
+    // A view writes its own bytes, never the rest of its buffer.
+    const wide = new Uint8Array([9, 9, 1, 2, 9]).subarray(2, 4);
+    expect(writePageParams('swarm_writeSingleOwnerChunk', { data: wide }).typed.object[0][1].base64).toBe(b64([1, 2]));
+  });
+
+  test("a file's bytes take no string, and a value normalizeBytes refuses keeps its tag", () => {
+    const typed = writePageParams('swarm_publishFiles', {
+      files: [
+        { path: 'a', bytes: new Uint8Array([1]) },
+        { path: 'b', bytes: 'text' },
+      ],
+    }).typed;
+    const [first, second] = typed.object[0][1].array;
+    expect(first.object[1][1]).toEqual({ bytes: 1, kind: 'Uint8Array', base64: b64([1]) });
+    expect(second.object[1][1]).toEqual({ string: 'text' });
+    expect(writePageParams('swarm_publishData', { data: 42 }).typed.object[0][1]).toEqual({ number: '42' });
+    // No method reads `data` as data for a read: bytes there are elsewhere.
+    expect(writePageParams('swarm_readChunk', { data: 'x' }).typed.object[0][1]).toEqual({ string: 'x' });
+  });
+
+  test('past 64 KiB a part, numbered in the order written, holding the page\'s own view', () => {
+    const big = new Uint8Array(64 * KIB + 1);
+    const small = new Uint8Array(10);
+    const out = writePageParams('swarm_publishFiles', {
+      files: [
+        { path: 'big', bytes: big },
+        { path: 'small', bytes: small },
+        { path: 'big2', bytes: big },
+      ],
+    });
+    const items = out.typed.object[0][1].array.map((file) => file.object[1][1]);
+    expect(items[0]).toEqual({ bytes: 64 * KIB + 1, kind: 'Uint8Array', part: 0 });
+    expect(items[1]).toEqual({ bytes: 10, kind: 'Uint8Array', base64: b64(small) });
+    expect(items[2]).toEqual({ bytes: 64 * KIB + 1, kind: 'Uint8Array', part: 1 });
+    expect(out.parts.get(0)).toBe(big);
+    expect(out.parts.get(1)).toBe(big);
+    expect(out.copies).toBe(0);
+    // A string's part is its UTF-8, copied.
+    const text = 'é'.repeat(40 * KIB);
+    const copy = writePageParams('swarm_publishData', { data: text });
+    expect(copy.typed.object[0][1]).toEqual({ string_bytes: 80 * KIB, part: 0 });
+    expect(Buffer.from(copy.parts.get(0)).equals(Buffer.from(text, 'utf-8'))).toBe(true);
+    expect(copy.copies).toBe(80 * KIB);
+  });
+
+  test('inline data stays within its total; the rest goes as parts', () => {
+    const file = (i) => ({ path: String(i), bytes: new Uint8Array(64 * KIB) });
+    const count = INLINE_TOTAL / (64 * KIB) + 2;
+    const out = writePageParams('swarm_publishFiles', { files: Array.from({ length: count }, (_, i) => file(i)) });
+    const tags = out.typed.object[0][1].array.map((f) => f.object[1][1]);
+    expect(tags.filter((t) => 'base64' in t)).toHaveLength(INLINE_TOTAL / (64 * KIB));
+    expect(tags.slice(-2).map((t) => t.part)).toEqual([0, 1]);
+    expect(Buffer.byteLength(JSON.stringify(out.typed))).toBeLessThan(512 * KIB);
+  });
+
+  test('everything else plainly: bytes elsewhere, holes, -0, BigInts, undefined, key order', () => {
+    const holes = [1, 0];
+    delete holes[1];
+    const typed = writePageParams('swarm_readChunk', {
+      reference: new Uint8Array([5]),
+      buf: { type: 'Buffer', data: [1] },
+      holes,
+      n: -0,
+      big: 2n ** 70n,
+      u: undefined,
+      s: '\ud800',
+    }).typed;
+    expect(typed).toEqual({
+      object: [
+        ['reference', { bytes_elsewhere: 1, kind: 'Uint8Array', base64: b64([5]) }],
+        ['buf', { object: [['type', { string: 'Buffer' }], ['data', { array: [{ number: '1' }] }]] }],
+        ['holes', { array: [{ number: '1' }, { hole: true }] }],
+        ['n', { number: '-0' }],
+        ['big', { bigint: (2n ** 70n).toString() }],
+        ['u', { undefined: true }],
+        ['s', { string: '\ud800' }],
+      ],
+    });
+    expect(writePageParams('swarm_listFeeds', undefined).typed).toEqual({ undefined: true });
+  });
+
+  test('reads back as the grammar takes it', () => {
+    const big = new Uint8Array(70 * KIB);
+    const out = writePageParams('swarm_publishData', { data: big, name: 'n' });
+    const back = readTyped(JSON.parse(JSON.stringify(out.typed)));
+    expect(back.data).toBeInstanceOf(SwarmData);
+    expect(back.data).toMatchObject({ kind: 'Uint8Array', length: 70 * KIB, part: 0, bytes: null });
+    expect(back.name).toBe('n');
+  });
+
+  test('refuses what has no typed form', () => {
+    const list = [];
+    list.push(list);
+    expect(() => writePageParams('swarm_readChunk', list)).toThrow(TypedFormError);
+    expect(() => writePageParams('swarm_readChunk', { f: () => 1 })).toThrow(/a function has no typed form/);
   });
 });
