@@ -11,8 +11,11 @@
  *   the chrome's confirmation of the prepared SafeTx's nonce. And only once
  *   ethers' EIP-712 hash of the ten fields `safe.prepare` answered, for the
  *   Safe's address on Gnosis, is the core's `safe_tx_hash`: otherwise the
- *   decision is refused (`record` throws) and nothing is minted. A Safe has
- *   one pending SafeTx, so a newer decision replaces the Safe's record.
+ *   decision is refused (`record` throws) and nothing is minted. Or, for a
+ *   Ledger owner's turn with no record (SAFE-3's PR 8), the board's
+ *   "confirm again" of the pending entry's fields (ledger-owners.js
+ *   `confirmAgain`), under the same check, nothing minted. A Safe has one
+ *   pending SafeTx, so a newer decision replaces the Safe's record.
  * - **Dropped, never restored** (`drop`): on a failed propose (the core's
  *   refusal, or main's own of the token presented), before `safe.discard`,
  *   when `safe.execute` answers the SafeTx superseded, before
@@ -21,8 +24,11 @@
  *   decision's) stays.
  * - **In memory only.** Nothing here is written anywhere, by design: after
  *   a restart main holds no record, and a Ledger owner's turn goes through
- *   the board's "confirm again" step (SAFE-3's PR 8, the plan's point 6).
- * - **Read** by SAFE-3's PR 8 (`binds`): a SafeTx is the Safe's approved one
+ *   the board's "confirm again" step (SAFE-3's PR 8, the plan's point 6:
+ *   ledger-owners.js `confirmAgain`, which records it anew on the user's
+ *   approval there).
+ * - **Read** for a Ledger owner's signature (SAFE-3's PR 8,
+ *   ledger-owners.js; `binds`): a SafeTx is the Safe's approved one
  *   only when its fields hash, for the record's Safe and chain, to the
  *   record's hash. A record binds that one SafeTx and no other.
  *

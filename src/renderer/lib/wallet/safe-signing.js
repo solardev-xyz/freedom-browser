@@ -514,6 +514,10 @@ async function maybeFinalize() {
 async function signWithNewConfirmation(ownerIndex) {
   const call = state?.call;
   if (boardKind !== 'send' || !call?.to) return null;
+  // On the core's Safe backend no token is minted again: a Ledger owner's
+  // SafeTx is confirmed again in the approvals document (SAFE-3's PR 8),
+  // and its row keeps main's answer.
+  if (window.wallet?.safeCoreBackend === true) return null;
   let confirmation;
   try {
     ({ confirmation } = await confirmSigning('safe-send', boardSafeIndex, {

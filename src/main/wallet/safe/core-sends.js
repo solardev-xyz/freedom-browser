@@ -29,10 +29,12 @@
  *   answered for each Safe is kept for the approvals document's board,
  *   which reads between its steps without waiting (`cachedState`).
  * - **Owners** sign through `safe.sign_owner`: without an owner the vault
- *   owners' sweep, with one that owner. A Ledger owner is refused here,
- *   unsent, until SAFE-3's PR 8 (main's binding of the SafeTx, on PR 6's
- *   records): no device is asked for a Safe owner before then. A phone
- *   owner is the core's own refusal.
+ *   owners' sweep, with one that owner. A Ledger owner (SAFE-3's PR 8,
+ *   ledger-owners.js) signs on the core's Ledger backend only, under main's
+ *   binding of the pending entry's fields to the approval record below,
+ *   and with no record the board confirms the SafeTx again first
+ *   (SAFE_APPROVAL_NEEDED); on the JS Ledger backend it is refused,
+ *   unsent. A phone owner is the core's own refusal.
  * - **A discard** is `safe.discard`, naming the SafeTx the board showed.
  *   Every board step names that SafeTx, its sweep included: one that names
  *   none is refused here, unsent, so a step never acts on a SafeTx that
@@ -79,8 +81,9 @@
  * Each step holds main's own step exclusion for the Safe, as today's path
  * does, and then reads the core's entry into main's read-only copy
  * (pending-store.js `refreshPending`; the SAFE-3 plan's point 3, the copy
- * PR 8's binding reads). A refusal of the core's keeps its code
- * (wallet/safe/errors.js): nothing here falls back to main's own path.
+ * a Ledger owner's binding reads, ledger-owners.js). A refusal of the
+ * core's keeps its code (wallet/safe/errors.js): nothing here falls back
+ * to main's own path.
  *
  * - **The approval records** (SAFE-3's PR 6, the plan's point 5;
  *   approval-records.js, in memory only): at the user's decision, before
@@ -90,8 +93,9 @@
  *   prepare too, so a SafeTx that doesn't hash to it is never shown). The
  *   record is dropped on a failed mint or propose, before `safe.discard`,
  *   when `safe.execute` answers the SafeTx superseded, and before
- *   `safe.executed` (`approvalRecords`, below). PR 8's binding of a Ledger
- *   owner's SafeTx reads it.
+ *   `safe.executed` (`approvalRecords`, below). A Ledger owner's
+ *   signature is bound to it (ledger-owners.js), and the board's "confirm
+ *   again" step for a Ledger owner records it anew (`confirmAgain`).
  */
 
 const crypto = require('crypto');
@@ -107,6 +111,7 @@ const {
   SAFE_UNSUPPORTED,
 } = require('./errors');
 const records = require('./approval-records');
+const ledgerOwners = require('./ledger-owners');
 const safeApprovals = require('./safe-approvals');
 
 // The SafeTxs main minted a wallet `safe-send` for, by token: { safeIndex,
@@ -576,11 +581,6 @@ function cachedState(safeIndex) {
   return state ? shownState(state) : null;
 }
 
-function isLedgerOwner(ownerIndex) {
-  const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
-  return getWalletRecord(ownerIndex)?.type === WALLET_TYPES.LEDGER;
-}
-
 /**
  * One owner's signature (`ownerIndex`), or the vault owners' sweep (none),
  * through `safe.sign_owner` as main's own, naming the SafeTx the caller
@@ -589,7 +589,10 @@ function isLedgerOwner(ownerIndex) {
  * board's state. No owner needs a confirmation of its own on the core: its
  * proposal authorized them, so `approval` is refused. An entry from an
  * older version (`olderEntry`) is refused, unsent, SAFE_NOT_PROPOSED, as
- * the core would refuse it.
+ * the core would refuse it. A Ledger owner signs under main's binding
+ * (ledger-owners.js `signPending`): with no approval record that binds the
+ * pending SafeTx, SAFE_APPROVAL_NEEDED, unsent, for the board to confirm it
+ * again; on the JS Ledger backend, refused unsent.
  */
 async function signOwner(safeIndex, ownerIndex, { safeTxHash = null, approval = null } = {}) {
   if (approval !== null) throw new Error('This transaction was not confirmed');
@@ -599,14 +602,17 @@ async function signOwner(safeIndex, ownerIndex, { safeTxHash = null, approval = 
   if (olderEntry(safeIndex, named, sameHash(board?.safeTxHash, named) ? board.proposed : undefined)) {
     throw codedError(plainText(SAFE_NOT_PROPOSED), SAFE_NOT_PROPOSED);
   }
-  if (owner !== undefined && isLedgerOwner(owner)) {
-    // SAFE-3's PR 8: a Ledger owner signs on the core only under main's
-    // binding of the SafeTx (and PR 6's record of its approval).
-    throw codedError("A Ledger can't sign for a multi-owner account here yet", SAFE_UNSUPPORTED);
+  const ledger = owner !== undefined && ledgerOwners.isLedgerOwner(owner);
+  if (ledger && require('../ledger/ledger-backend-kind').ledgerBackendKind() !== 'core') {
+    // The plan's point 4: a Ledger the JS backend drives signs for no Safe
+    // on the core.
+    throw codedError(ledgerOwners.UNAVAILABLE, SAFE_UNSUPPORTED);
   }
   safeApprovals.beginStep(safeIndex);
   try {
-    const answer = await vault().safe.signOwner({ safe: safeIndex, owner, safe_tx_hash: named });
+    const answer = ledger
+      ? await ledgerOwners.signPending(safeIndex, owner, named)
+      : await vault().safe.signOwner({ safe: safeIndex, owner, safe_tx_hash: named });
     return remember(safeIndex, answer);
   } catch (err) {
     throw learned(safeIndex, named, err);
@@ -1085,6 +1091,21 @@ function siteSendRefused() {
   );
 }
 
+/**
+ * The board's "confirm again" for a Ledger owner of Safe `safeIndex` with
+ * no approval record (the SAFE-3 plan's point 6; ledger-owners.js
+ * `confirmAgain`): the pending SafeTx `safeTxHash` shown in window
+ * `windowId`'s approvals document from the entry's fields, recorded on the
+ * user's approval, nothing minted. Refused (SAFE_BUSY) while a step of the
+ * Safe runs. Resolves whether it was approved.
+ */
+async function confirmAgain({ approvals, windowId, safeIndex, safeTxHash }) {
+  if (safeApprovals.stepRunning(safeIndex)) {
+    throw codedError('Wait for the current step to finish first', SAFE_BUSY);
+  }
+  return ledgerOwners.confirmAgain({ approvals, windowId, safeIndex, safeTxHash: shown(safeTxHash) });
+}
+
 /** Tests: nothing held. */
 function _reset() {
   prepared.clear();
@@ -1104,6 +1125,7 @@ module.exports = {
   confirmOfferedFee,
   confirmFeeOnChrome,
   confirmWalletSend,
+  confirmAgain,
   discard,
   execute,
   noteSetup,

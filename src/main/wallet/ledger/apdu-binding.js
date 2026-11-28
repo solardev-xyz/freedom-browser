@@ -1,7 +1,8 @@
 /**
  * Main's typed-data binding for a Ledger (freedom-core design 0016, Main's
  * typed-data binding; the `sign.typed_data` rows of The APDU grammar; Typed
- * data on the device, Q23; Bounds). LDG-3's PR 2: nothing calls it yet.
+ * data on the device, Q23; Bounds). LDG-3's PR 2; the Safe rows' typed data
+ * from SAFE-3's PR 8 (`safeTxTypedData`, `safeMessageTypedData`, below).
  *
  * When the core signs typed data on a Ledger, it sends main each APDU as a
  * `shell.ledger_apdu`, and main compares every one, byte for byte, with the
@@ -105,9 +106,18 @@
  * `field-pieces`), not as hw-app-eth cuts them.
  */
 
-const { TypedDataEncoder, concat, getBytes, keccak256, toUtf8Bytes } = require('ethers');
-const { assertBoundedTypeGraph } = require('../signing-utils');
+const {
+  TypedDataEncoder,
+  concat,
+  getAddress,
+  getBytes,
+  hashMessage,
+  keccak256,
+  toUtf8Bytes,
+} = require('ethers');
+const { assertBoundedTypeGraph, normalizeMessage, normalizeTypedData } = require('../signing-utils');
 const { checkTypedDataSubset } = require('./typed-data-subset');
+const { SAFE_CHAIN_ID, SAFE_TX_TYPES } = require('../safe/approval-records');
 
 /**
  * What a Ledger can carry: `vectors/ledger-grammar.json`'s `bounds`, which
@@ -476,4 +486,133 @@ function bindTypedData({ typedData, expectedHash } = {}) {
   }
 }
 
-module.exports = { BOUNDS, HEADER, bindTypedData };
+// ---------------------------------------------------------------------------
+// The Safe rows (SAFE-3's PR 8; design 0016, Main's typed-data binding)
+//
+// A Safe's Ledger owner signs, through `safe.sign_owner` or
+// `safe.message_sign`, the core's SafeTx or SafeMessage as `sign.typed_data`'s
+// stream. Main binds that stream to typed data it builds itself, from what
+// it holds, never from the core's stream: a pending SafeTx's fields (whose
+// hash its approval record holds; wallet/safe/ledger-owners.js checks them
+// against it, `binds`), or the page's own request for a SafeMessage. Each
+// is the core's form for `bindTypedData` (the domain `{ chainId: 100,
+// verifyingContract }`, its one type, no EIP712Domain), as fc-safe's
+// `tx_operation` and `message_operation` build theirs.
+
+const ADDRESS_FIELDS = new Set(
+  SAFE_TX_TYPES.SafeTx.filter((field) => field.type === 'address').map((field) => field.name)
+);
+const SAFE_MESSAGE_TYPES = Object.freeze({
+  SafeMessage: Object.freeze([{ name: 'message', type: 'bytes' }]),
+});
+const ADDRESS_TEXT = /^0x[0-9a-fA-F]{40}$/;
+const BYTES_TEXT = /^0x(?:[0-9a-fA-F]{2})*$/;
+const QUANTITY_TEXT = /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
+
+/** The Safe's domain on Gnosis: `{ chainId: 100, verifyingContract }`, checksummed. */
+function safeDomain(safeAddress) {
+  if (typeof safeAddress !== 'string' || !ADDRESS_TEXT.test(safeAddress)) {
+    throw new Error('Invalid Safe address');
+  }
+  return { chainId: SAFE_CHAIN_ID, verifyingContract: getAddress(safeAddress.toLowerCase()) };
+}
+
+/** An integer field as fc-safe reads one back (a JSON integer, or quantity text), as typed data carries it. */
+function quantity(value) {
+  let n;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) n = BigInt(value);
+  else if (typeof value === 'string' && QUANTITY_TEXT.test(value)) n = BigInt(value.replace(/^0X/, '0x'));
+  else throw new Error('Invalid Safe transaction');
+  return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n.toString();
+}
+
+/**
+ * A pending SafeTx's typed data, from its ten fields as the pending entry
+ * holds them (`safeTxData`), for the Safe at `safeAddress` on Gnosis: each
+ * value read as fc-safe reads the entry back (an address in any case; an
+ * integer as a JSON integer or quantity text; `value` text only), written
+ * in one form. Returns `{ typedData, hash }`, `hash` ethers' EIP-712 hash
+ * of it; throws for anything but the ten fields.
+ *
+ * @param {{ safeAddress: string, safeTx: object }} input
+ */
+function safeTxTypedData({ safeAddress, safeTx } = {}) {
+  const domain = safeDomain(safeAddress);
+  if (!isRecord(safeTx)) throw new Error('Invalid Safe transaction');
+  const names = SAFE_TX_TYPES.SafeTx.map((field) => field.name);
+  const keys = Object.keys(safeTx);
+  if (keys.length !== names.length || !names.every((name) => hasOwn(safeTx, name))) {
+    throw new Error('Invalid Safe transaction');
+  }
+  const message = {};
+  for (const { name, type } of SAFE_TX_TYPES.SafeTx) {
+    const value = safeTx[name];
+    if (ADDRESS_FIELDS.has(name)) {
+      if (typeof value !== 'string' || !ADDRESS_TEXT.test(value)) throw new Error('Invalid Safe transaction');
+      message[name] = value.toLowerCase();
+    } else if (type === 'bytes') {
+      if (typeof value !== 'string' || !BYTES_TEXT.test(value)) throw new Error('Invalid Safe transaction');
+      message[name] = value.toLowerCase();
+    } else if (name === 'value') {
+      if (typeof value !== 'string') throw new Error('Invalid Safe transaction');
+      message[name] = String(quantity(value));
+    } else {
+      message[name] = quantity(value);
+    }
+  }
+  const types = { SafeTx: SAFE_TX_TYPES.SafeTx.map((field) => ({ ...field })) };
+  const typedData = { domain, types, message };
+  return { typedData, hash: TypedDataEncoder.hash(domain, types, message).toLowerCase() };
+}
+
+/**
+ * The digest a verifier computes for a page's own request (`{ method,
+ * params }`, as main holds it): `personal_sign`'s EIP-191 hash of its
+ * message's bytes (`0x` hex read as bytes, as the signers read it), or
+ * `eth_signTypedData_v4`'s EIP-712 hash of its typed data (an object or
+ * its JSON text), each by ethers. Throws for any other request.
+ */
+function safeMessageDigest(request) {
+  const params = Array.isArray(request?.params) ? request.params : null;
+  if (request?.method === 'personal_sign' && params) {
+    const message = normalizeMessage(params[0]);
+    if (typeof message !== 'string' && !(message instanceof Uint8Array)) {
+      throw new Error('Invalid message');
+    }
+    return hashMessage(message);
+  }
+  if (request?.method === 'eth_signTypedData_v4' && params) {
+    const typed = normalizeTypedData(params[1]);
+    if (!isRecord(typed) || !isRecord(typed.types)) throw new Error('Invalid typed data');
+    const types = { ...typed.types };
+    delete types[DOMAIN_TYPE];
+    return TypedDataEncoder.hash(typed.domain || {}, types, typed.message);
+  }
+  throw new Error('Unsupported signing method for Safe accounts');
+}
+
+/**
+ * A page's SafeMessage: `{ message: digest }`, `digest` the one a verifier
+ * computes for the page's own request (`safeMessageDigest`), under the
+ * domain of the Safe at `safeAddress` on Gnosis. Returns `{ typedData,
+ * hash }`, `hash` ethers' EIP-712 hash of it.
+ *
+ * @param {{ safeAddress: string, digest: string }} input
+ */
+function safeMessageTypedData({ safeAddress, digest } = {}) {
+  const domain = safeDomain(safeAddress);
+  if (typeof digest !== 'string' || !HASH_HEX.test(digest)) throw new Error('Invalid digest');
+  const types = { SafeMessage: SAFE_MESSAGE_TYPES.SafeMessage.map((field) => ({ ...field })) };
+  const message = { message: digest.toLowerCase() };
+  const typedData = { domain, types, message };
+  return { typedData, hash: TypedDataEncoder.hash(domain, types, message).toLowerCase() };
+}
+
+module.exports = {
+  BOUNDS,
+  HEADER,
+  bindTypedData,
+  safeMessageDigest,
+  safeMessageTypedData,
+  safeTxTypedData,
+};
