@@ -24,6 +24,14 @@
  *   record, and only the fees from the caller. Offered for a refusal over
  *   fees, and as "speed up" for a payment that may be stuck. Refusals
  *   carry the intent's current summary, as a resend's do.
+ * - A Safe's held deployment (`safe-deploy:<chain>:<address>`) on the
+ *   core's Safe backend (freedom-core design 0016, SAFE-3's C1): the
+ *   journal's intent-replace can't re-sign it (under the hello's `safe3`
+ *   the core signs a deployment only with its `executor-send` token), so
+ *   its summary names its Safe (`safeActivation`, the Safe's wallet index)
+ *   and its speed-up is the activation's own, `wallet:activate-safe` with
+ *   `speedUp` (safe/core-accounts.js): `safe.deploy`'s send at the core's
+ *   quote, signed with its token at the held nonce.
  * - `wallet:intent-close(intentId, authorization)`: close by hand a held
  *   intent shown as Couldn't confirm (design 0005, "State history", #94),
  *   only once a verified read showed its nonce used at a finalized block,
@@ -102,12 +110,29 @@ const FEE_REFUSALS = new Set([
  * with its signing account known.
  */
 function replacementOffer(view, attention) {
-  if (!Number.isSafeInteger(view.context?.walletIndex)) return null;
+  if (!Number.isSafeInteger(view.context?.walletIndex) && safeActivationOf(view) === null) return null;
   if (attention === 'refused') {
     const reason = view.handoffs[view.handoffs.length - 1]?.outcome?.reasonClass;
     return FEE_REFUSALS.has(reason) ? 'replace' : null;
   }
   return ['uncertain', 'pending', 'absent'].includes(attention) ? 'speed-up' : null;
+}
+
+// A Safe deployment's intent key (safe-executor.js's deployIntentKey).
+const SAFE_DEPLOY_KEY = /^safe-deploy:(\d+):(0x[0-9a-f]{40})$/;
+
+/**
+ * The Safe whose held deployment `view` is, by its wallet index, on the
+ * core's Safe backend only (its speed-up is the activation's,
+ * safe/core-accounts.js), or null: any other intent, or the JS backend.
+ */
+function safeActivationOf(view) {
+  const match = SAFE_DEPLOY_KEY.exec(view.context?.key ?? '');
+  if (!match || Number(match[1]) !== view.chainId) return null;
+  const { safeBackendKind } = require('./safe/safe-backend-kind');
+  if (safeBackendKind() !== 'core') return null;
+  const safe = findWalletRecordByAddress(match[2]);
+  return safe?.type === WALLET_TYPES.SAFE && Number.isSafeInteger(safe.index) ? safe.index : null;
 }
 
 /**
@@ -137,6 +162,7 @@ function intentSummary(view, observation = null) {
       : null,
     attention,
     replacement: replacementOffer(view, attention),
+    safeActivation: safeActivationOf(view),
   };
 }
 

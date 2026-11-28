@@ -830,6 +830,72 @@ describe('held payments over IPC (4b)', () => {
   });
 });
 
+describe("a Safe's held deployment on the core's Safe backend (SAFE-3's PR 7)", () => {
+  const SAFE_ADDRESS = '0x' + '5a'.repeat(20);
+  // A deployment held after a send whose fate is unknown: one a speed-up is for.
+  async function uncertainDeployment(running) {
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw new Error('freedom-cored exited');
+    });
+    await running.safe
+      .deploySafe({
+        owners: [ALICE.address],
+        threshold: 1,
+        saltNonce: '1',
+        chainId: 100,
+        executorIndex: 0,
+        deployment: { safeAddress: SAFE_ADDRESS, to: '0x' + '4e'.repeat(20), data: '0x1688f0b9' },
+      })
+      .catch(() => {});
+  }
+
+  test.each([
+    ['core', 9, 'speed-up'],
+    ['js', null, null],
+  ])("on %s: its summary names its Safe (safeActivation %s), and offers %s", async (backend, safeIndex, offer) => {
+    const saved = process.env.FREEDOM_SAFE_BACKEND;
+    process.env.FREEDOM_SAFE_BACKEND = backend;
+    mockSafeRecord = { index: 9, address: SAFE_ADDRESS, type: 'safe' };
+    try {
+      const running = start();
+      require('./intent-ipc').registerIntentIpc({ windows: () => [] });
+      const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+      await uncertainDeployment(running);
+      const listed = await handlers['wallet:intents-list']({});
+      const [intent] = listed.intents;
+      expect(intent).toMatchObject({ walletIndex: null, attention: 'uncertain' });
+      expect(intent.safeActivation).toBe(safeIndex);
+      expect(intent.replacement).toBe(offer);
+      // Its account isn't known to the journal: the intent-replace path
+      // never signs it, whatever the backend.
+      const replaced = await handlers['wallet:intent-replace']({}, intent.intentId, { gasPrice: '1' }, {});
+      expect(replaced).toMatchObject({ success: false, code: 'INTENT_SIGNER_UNKNOWN' });
+    } finally {
+      mockSafeRecord = null;
+      if (saved === undefined) delete process.env.FREEDOM_SAFE_BACKEND;
+      else process.env.FREEDOM_SAFE_BACKEND = saved;
+    }
+  });
+
+  test('a deployment key for no Safe in the wallet names none', async () => {
+    const saved = process.env.FREEDOM_SAFE_BACKEND;
+    process.env.FREEDOM_SAFE_BACKEND = 'core';
+    mockSafeRecord = null;
+    try {
+      const running = start();
+      require('./intent-ipc').registerIntentIpc({ windows: () => [] });
+      const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+      await uncertainDeployment(running);
+      const [intent] = (await handlers['wallet:intents-list']({})).intents;
+      expect(intent.safeActivation).toBeNull();
+      expect(intent.replacement).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.FREEDOM_SAFE_BACKEND;
+      else process.env.FREEDOM_SAFE_BACKEND = saved;
+    }
+  });
+});
+
 describe('replacement at the same nonce (9)', () => {
   function startReplacing() {
     const running = start();

@@ -228,6 +228,11 @@ export const REPLACE = Object.freeze({
   note: 'The same payment, signed again with a higher fee. Only one of the two can go through.',
   replacing: 'Replacing…',
   replaced: 'Replaced with a higher fee',
+  // A Safe's held activation on the identity core (freedom-core design
+  // 0016, C1): sped up at the fee the core quotes now.
+  activationNote:
+    "The same activation, signed again at today's network fee in its place in the queue. Only one of the two can go through.",
+  activationTooLow: "Today's network fee isn't high enough yet to speed this activation up. Try again later.",
 });
 
 /**

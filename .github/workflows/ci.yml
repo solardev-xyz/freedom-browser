@@ -2230,6 +2230,23 @@ jobs:
             test-e2e/safe-dapp.spec.js \
             test-e2e/approvals-safe.spec.js
 
+      # A dApp's Safe on the core's Safe backend (freedom-core design 0016,
+      # SAFE-3's PR 7): main's hello declares `safe3`, so the site's send is
+      # prepared by the real freedom-cored before its prompt ("Safe
+      # transaction #0" in the panel), its token, bound to the page and that
+      # SafeTx, is proposed under the page, and the board executes it with
+      # the core's executor-send token, against the same anvil fork and its
+      # forwarder (two endpoints for the core's verified reads). The other
+      # Safe specs join it on the core with SAFE-3's PR 10.
+      - name: Run Safe dApp E2E on the core's Safe backend
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        env:
+          FREEDOM_SAFE_E2E_REQUIRED: '1'
+          FREEDOM_SAFE_BACKEND: core
+        run: |
+          xvfb-run -a npm run test:e2e -- --output=test-results/e2e-safe-core \
+            test-e2e/safe-dapp.spec.js
+
       # ── was the `e2e-settings` job ──
       # Settings navigation, persistence, and chain policy are shipped control
       # surfaces. Exercise their real renderer/webview integration so malformed

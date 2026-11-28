@@ -84,15 +84,18 @@ describe('wallet:activate-safe', () => {
       feeAskId: null,
       sender: CHROME,
       feeConfirmation: undefined,
+      speedUp: false,
     });
     await handlers['wallet:activate-safe']({ sender: CHROME }, 7, {
       feeAskId: 'ask-1',
       feeConfirmation: FEE_CONFIRMATION,
+      speedUp: false,
     });
     expect(service.activateSafe).toHaveBeenLastCalledWith(7, {
       feeAskId: 'ask-1',
       sender: CHROME,
       feeConfirmation: FEE_CONFIRMATION,
+      speedUp: false,
     });
     // Only a string is an ask's ID; a bare acknowledgement is nothing.
     await handlers['wallet:activate-safe']({ sender: CHROME }, 7, { feeAskId: 7 });
@@ -102,7 +105,18 @@ describe('wallet:activate-safe', () => {
       feeAskId: null,
       sender: CHROME,
       feeConfirmation: undefined,
+      speedUp: false,
     });
+    // A held activation's speed-up (SAFE-3's PR 7): only `true` asks for it.
+    await handlers['wallet:activate-safe']({ sender: CHROME }, 7, { speedUp: true, feeAskId: 'ask-3' });
+    expect(service.activateSafe.mock.calls.at(-1)[1]).toEqual({
+      feeAskId: 'ask-3',
+      sender: CHROME,
+      feeConfirmation: undefined,
+      speedUp: true,
+    });
+    await handlers['wallet:activate-safe']({ sender: CHROME }, 7, { speedUp: 'yes' });
+    expect(service.activateSafe.mock.calls.at(-1)[1].speedUp).toBe(false);
   });
 
   test("on the core: the core's fee reaches the card as its verdict and the ask's ID, with no offer", async () => {
