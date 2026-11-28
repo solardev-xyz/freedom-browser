@@ -236,7 +236,8 @@ describe("main's outbox", () => {
     expect(outbox.size).toBe(2);
     expect(drain(outbox)).toEqual([
       { kind: KIND_STREAM_CREDIT, id: 6, credit: 7 },
-      { kind: 0x01, message: { type: 'cancel', id: 5 } },
+      // A whole message comes with its payload's length.
+      { kind: 0x01, message: { type: 'cancel', id: 5 }, size: '{"type":"cancel","id":5}'.length },
     ]);
   });
 

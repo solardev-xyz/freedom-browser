@@ -1351,8 +1351,18 @@ describe('vaultBackend', () => {
   test("every request carries its method's hang watchdog (design 0001)", async () => {
     // 45 s on the vault queue (its 30 s deadline + 15 s), 135 s for a
     // session (120 s + 15 s: `phone.result`, which may read the network for
-    // a payment's transaction), 15 s otherwise.
-    const SESSION = new Set(['phone.result']);
+    // a payment's transaction, and the Safe methods that read the chain),
+    // 15 s otherwise.
+    const SESSION = new Set([
+      'phone.result',
+      'safe.status',
+      'safe.deploy',
+      'safe.deployed',
+      'safe.prepare',
+      'safe.propose',
+      'safe.execute',
+      'safe.message_start',
+    ]);
     const VAULT_QUEUE = new Set([
       'vault.unlock',
       'vault.verify_password',
@@ -1386,6 +1396,7 @@ describe('vaultBackend', () => {
       'secrets.rpc_api_key_status',
       'secrets.set_rpc_api_key',
       'secrets.remove_rpc_api_key',
+      'safe.create',
     ]);
     let lose = true;
     const core = new FakeCore((method) => {
@@ -1497,18 +1508,40 @@ describe('vaultBackend', () => {
     await vaultBackend.secrets.rpcApiKeyStatus('chrome');
     await vaultBackend.secrets.setRpcApiKey({ id: 'alchemy', api_key: 'k' }, 'chrome');
     await vaultBackend.secrets.removeRpcApiKey({ id: 'alchemy' }, 'chrome');
+    // Design 0016, SAFE-3: the Safe methods but the owners' signatures,
+    // which go through ledgerCall (vault-backend-safe.test.js).
+    const { safe } = vaultBackend;
+    const hash = '0x' + '1a'.repeat(32);
+    await safe.create({ name: 'Team', owners: [0, 1], threshold: 1 });
+    await safe.status({ safe: 7 });
+    await safe.deploy({ safe: 7 });
+    await safe.deployed({ safe: 7, hash });
+    await safe.pending();
+    await safe.discard({ safe: 7 });
+    await safe.prepare({ safe: 7, chain_id: 100, tx: { to: '0xD', value: '0', data: '0x' } }, page);
+    await safe.propose({ safe: 7, safe_tx_hash: hash, authorization: { token: 't' } });
+    await safe.execute({ safe: 7 });
+    await safe.executed({ safe: 7, safe_tx_hash: hash, hash });
+    await safe.messageStart(
+      { safe: 7, request: { method: 'personal_sign', params: [] }, authorization: { token: 't' } },
+      page
+    );
+    await safe.messageState({ safe: 7, session: 's' });
+    await safe.messageCancel({ safe: 7, session: 's' });
+    await safe.messageComplete({ safe: 7, session: 's' });
 
     const sent = new Set(core.calls.map((c) => c.method));
     // Every method vault-backend.js sends was sent above.
     const source = fs.readFileSync(path.join(__dirname, 'vault-backend.js'), 'utf8');
     const named = new Set(
-      [...source.matchAll(/(?:call|mutate|accountsCall|safePendingCall|signCall)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
+      [...source.matchAll(/(?:call|mutate|accountsCall|safePendingCall|signCall|safeCall)\(\s*'([a-z_.]+)'/g)].map((m) => m[1])
     );
     expect([...named].sort()).toEqual([...sent].sort());
     // vault-meta.json's requests, and the create and import that write it
     // with the vault, require `vault_meta` (design 0013, PRF-6(a)).
     const metaWrites = (method, params) =>
       method.startsWith('accounts.') ||
+      method === 'safe.create' ||
       method === 'vault.create' ||
       method === 'vault.import' ||
       (method === 'vault.reconcile' && ['create', 'import'].includes(params.op));
@@ -1521,6 +1554,17 @@ describe('vaultBackend', () => {
       if (metaWrites(method, params)) {
         expect([method, requires({ store_moved: ['vault_meta'] })]).toEqual([method, true]);
         expect([method, requires({ store_moved: [] })]).toEqual([method, false]);
+      } else if (method.startsWith('safe.')) {
+        // A Safe's read its record (`vault_meta`), and the five that read or
+        // write the pending store `safe_pending` too (design 0016, SAFE-3).
+        const both = ['vault_meta', 'safe_pending'];
+        const pending = ['safe.discard', 'safe.propose', 'safe.execute', 'safe.executed'];
+        expect([method, requires({ store_moved: both })]).toEqual([method, true]);
+        expect([method, requires({ store_moved: ['vault_meta'] })]).toEqual([
+          method,
+          !pending.includes(method),
+        ]);
+        expect([method, requires({ store_moved: ['safe_pending'] })]).toEqual([method, false]);
       } else if (method.startsWith('safe_pending.')) {
         // safe-pending.json's (PRF-6(d)) require `safe_pending`.
         expect([method, requires({ store_moved: ['safe_pending'] })]).toEqual([method, true]);

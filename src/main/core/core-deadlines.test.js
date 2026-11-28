@@ -101,16 +101,25 @@ describe('core deadlines', () => {
     // (the core's `Steps`, a session's 120 s until APB-4 pauses it).
     expect(watchdogMs('phone.result')).toBe(135_000);
     expect(watchdogMs('eip1193.request')).toBe(135_000);
-    // cored-v0.30.0's (design 0016, SAFE-2): the Safe methods that read the
-    // chain, under its machine's bound.
-    for (const method of [
+    // cored-v0.30.0's and 0.31.0's (design 0016, SAFE-2): the Safe methods
+    // that read the chain, but the two owner signatures, under its
+    // machine's bound.
+    const sessions = Object.keys(METHOD_CLASSES).filter(
+      (m) => m.startsWith('safe.') && METHOD_CLASSES[m] === 'session'
+    );
+    expect(sessions).toEqual([
       'safe.status',
       'safe.deploy',
       'safe.deployed',
       'safe.prepare',
       'safe.propose',
-    ]) {
+      'safe.execute',
+      'safe.message_start',
+    ]);
+    for (const method of sessions) {
       expect(watchdogMs(method)).toBe(135_000);
+      // None takes a `deadline_ms` (the core reads only its own members).
+      expect(watchdogMs(method, 10_000)).toBe(25_000);
     }
     expect(watchdogMs('dweb.open', 10_000)).toBe(25_000);
     expect(watchdogMs('naming.resolve_content', 0)).toBe(15_000);
@@ -194,8 +203,10 @@ describe('core deadlines', () => {
   // request that doesn't drive the device, the immediate 15 s: its own
   // keys' `sign.*`, and x402's settle by outcome or by signature. A
   // `ledger.*` request always drives it, so asking for its watchdog here
-  // throws: its watchdog is `deviceWatchdogMs`'s (below).
-  test("a device-class method's watchdogMs is 15 s, and a Ledger's own throws", () => {
+  // throws: its watchdog is `deviceWatchdogMs`'s (below). So does asking
+  // for a Safe owner's signature's (cored-v0.31.0's rows): its reads come
+  // first, and main's record of the owner decides the rest.
+  test("a device-class method's watchdogMs is 15 s, and a Ledger's own and a Safe owner's throw", () => {
     const device = Object.keys(METHOD_CLASSES).filter((m) => METHOD_CLASSES[m] === 'device');
     expect(device).toEqual([
       'sign.transaction',
@@ -204,6 +215,8 @@ describe('core deadlines', () => {
       'ledger.accounts',
       'ledger.add',
       'x402.settle',
+      'safe.message_sign',
+      'safe.sign_owner',
     ]);
     for (const method of ['sign.transaction', 'sign.message', 'sign.typed_data', 'x402.settle']) {
       expect(watchdogMs(method)).toBe(15_000);
@@ -216,7 +229,26 @@ describe('core deadlines', () => {
       );
       expect(() => watchdogMs(method, 10_000)).toThrow(/drives the device/);
     }
-    for (const method of ['safe.pending', 'safe.discard']) expect(watchdogMs(method)).toBe(15_000);
+    expect(SAFE_OWNER_METHODS).toEqual(device.filter((m) => m.startsWith('safe.')).reverse());
+    for (const method of SAFE_OWNER_METHODS) {
+      expect(() => watchdogMs(method)).toThrow(
+        /reads the chain before an owner's signature: its watchdog is deviceWatchdogMs/
+      );
+      expect(() => watchdogMs(method, 10_000)).toThrow(/deviceWatchdogMs/);
+    }
+    // The Safe rows answered at once.
+    const immediate = Object.keys(METHOD_CLASSES).filter(
+      (m) => m.startsWith('safe.') && METHOD_CLASSES[m] === 'immediate'
+    );
+    expect(immediate).toEqual([
+      'safe.pending',
+      'safe.discard',
+      'safe.executed',
+      'safe.message_state',
+      'safe.message_cancel',
+      'safe.message_complete',
+    ]);
+    for (const method of immediate) expect(watchdogMs(method)).toBe(15_000);
   });
 
   test('a method the core does not serve is refused at once: 15 s', () => {
@@ -278,15 +310,12 @@ describe("the device watchdog's classifier (design 0016, D7)", () => {
     }
   });
 
-  test("the methods it classifies are the device class's and the two Safe owner methods; every other throws", () => {
+  test("the methods it classifies are the device class's, the two Safe owner methods among them; every other throws", () => {
     const device = Object.keys(METHOD_CLASSES).filter((m) => METHOD_CLASSES[m] === 'device');
     expect(SAFE_OWNER_METHODS).toEqual(['safe.sign_owner', 'safe.message_sign']);
-    // cored-v0.30.0's table has no row for them: the schema check stays
-    // exact (below).
-    for (const method of SAFE_OWNER_METHODS)
-      expect(Object.hasOwn(METHOD_CLASSES, method)).toBe(false);
-    for (const method of [...device, ...SAFE_OWNER_METHODS])
-      expect(isDeviceMethod(method)).toBe(true);
+    // cored-v0.31.0's table has their rows, in the `device` class.
+    for (const method of SAFE_OWNER_METHODS) expect(METHOD_CLASSES[method]).toBe('device');
+    for (const method of device) expect(isDeviceMethod(method)).toBe(true);
     const others = [
       ...Object.keys(METHOD_CLASSES).filter((m) => !device.includes(m)),
       'safe.unknown',
@@ -317,9 +346,8 @@ describe("the device watchdog's classifier (design 0016, D7)", () => {
 
   // Their setup reads come first, under the chain machine's 120 s: 135 s
   // for vault owners, and 120 s + the lane's 5 minutes + 15 s for a Ledger
-  // owner until its first APDU. 0.30.0 has no rows for them, so only the
-  // classifier is tested here; their live watchdog tests are SAFE-3's
-  // (0016, Steps).
+  // owner until its first APDU. The classifier is tested here; the safe
+  // namespace's live watchdogs are vault-backend-safe-watchdog.test.js's.
   test('safe.sign_owner and safe.message_sign: 135 s for vault owners, 7 minutes and 15 s for a Ledger owner', () => {
     for (const method of SAFE_OWNER_METHODS) {
       expect(deviceWatchdogMs(method, { safe: 7 })).toBe(135_000);
@@ -480,7 +508,7 @@ describe("the check against the core's file", () => {
     for (const edit of fails) expect(() => checkSchema(edited(edit))).toThrow();
   });
 
-  test('0016\'s rows: sign.*, ledger.* and x402.settle written "device", and the Safe rows each in its class', () => {
+  test('0016\'s rows: sign.*, ledger.*, x402.settle and the two Safe owner methods written "device", and the Safe rows each in its class', () => {
     const written = schemaOf();
     expect(written.methods.filter((m) => m.deadline_ms === 'device').map((m) => m.name)).toEqual([
       'sign.transaction',
@@ -489,6 +517,8 @@ describe("the check against the core's file", () => {
       'ledger.accounts',
       'ledger.add',
       'x402.settle',
+      'safe.message_sign',
+      'safe.sign_owner',
     ]);
     const fails = [
       // A device-class row written as an immediate one's, or as an idle
@@ -501,9 +531,26 @@ describe("the check against the core's file", () => {
       (methods) => (methods[at(methods, 'safe.create')].deadline_ms = SESSION_DEADLINE_MS),
       (methods) => (methods[at(methods, 'safe.status')].deadline_ms = null),
       (methods) => (methods[at(methods, 'safe.pending')].deadline_ms = 'device'),
+      // 0.31.0's Safe rows: a Safe owner's signature written as an
+      // immediate one's or a session's, a chain-reading row as an
+      // immediate one's, a board call as a device-class one's.
+      (methods) => (methods[at(methods, 'safe.sign_owner')].deadline_ms = null),
+      (methods) => (methods[at(methods, 'safe.message_sign')].deadline_ms = SESSION_DEADLINE_MS),
+      (methods) => (methods[at(methods, 'safe.execute')].deadline_ms = null),
+      (methods) => (methods[at(methods, 'safe.message_start')].deadline_ms = 'device'),
+      (methods) => (methods[at(methods, 'safe.message_state')].deadline_ms = 'device'),
+      (methods) => (methods[at(methods, 'safe.executed')].deadline_ms = SESSION_DEADLINE_MS),
       // A row of 0.30.0's missing (a file before it, as 0.29.0's).
       (methods) => methods.splice(at(methods, 'ledger.accounts'), 1),
       (methods) => methods.splice(at(methods, 'safe.propose'), 1),
+      // A row of 0.31.0's missing (a file before it, as 0.30.0's).
+      (methods) => methods.splice(at(methods, 'safe.execute'), 8),
+      (methods) => methods.splice(at(methods, 'safe.sign_owner'), 1),
+      // Two of them reversed.
+      (methods) => {
+        const i = at(methods, 'safe.message_sign');
+        methods.splice(i, 2, methods[i + 1], methods[i]);
+      },
     ];
     for (const edit of fails) expect(() => checkSchema(edited(edit))).toThrow();
   });
