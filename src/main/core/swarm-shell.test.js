@@ -1,9 +1,9 @@
 /**
  * Main's Swarm executor (core/swarm-shell.js; freedom-core design 0015,
  * Node access, Main's Swarm I/O pool, and SWM-5's calls):
- * - **the switch:** FREEDOM_SWARM_BACKEND's states, the registry admitting
- *   nothing on `js`, and the handlers registered either way, so a stray ask
- *   is `ended`;
+ * - **the switch:** FREEDOM_SWARM_BACKEND's states, read once for the
+ *   process, the registry admitting nothing on `js`, and the handlers
+ *   registered either way, so a stray ask is `ended`;
  * - **the registry:** a parent's ends (`close()`, its signal, its session's
  *   stop, its deadline), `ended` for a race and a fault for a `for` never
  *   sent, and a ready check of an ended parent answered `cancelled` only;
@@ -49,7 +49,7 @@ const {
 const { SwarmIoPool } = require('./swarm-io-pool');
 const { feedUpdateAddress, pageTopic, topicOf } = require('./swarm-grammar');
 const { SwarmData } = require('./swarm-typed');
-const { swarmBackendKind } = require('../swarm/swarm-backend-kind');
+const { readSwarmBackendKind } = require('../swarm/swarm-backend-kind');
 const { antBackend } = require('../swarm/bzz-protocol');
 const {
   coreCall,
@@ -493,7 +493,7 @@ describe('the switch (FREEDOM_SWARM_BACKEND)', () => {
     const log = require('../logger');
     log.warn.mockClear();
     const env = value === undefined ? {} : { FREEDOM_SWARM_BACKEND: value };
-    expect(swarmBackendKind({ packaged, env })).toBe(runs);
+    expect(readSwarmBackendKind({ packaged, env })).toBe(runs);
     if (value === 'rust') {
       expect(log.warn).toHaveBeenCalledWith(
         '[Swarm] Unknown FREEDOM_SWARM_BACKEND=rust; using the JS backend'
@@ -507,8 +507,8 @@ describe('the switch (FREEDOM_SWARM_BACKEND)', () => {
     const log = require('../logger');
     log.warn.mockClear();
     const env = { FREEDOM_SWARM_BACKEND: 'bee-js' };
-    expect(swarmBackendKind({ packaged: false, env })).toBe('js');
-    expect(swarmBackendKind({ packaged: false, env })).toBe('js');
+    expect(readSwarmBackendKind({ packaged: false, env })).toBe('js');
+    expect(readSwarmBackendKind({ packaged: false, env })).toBe('js');
     expect(log.warn).toHaveBeenCalledTimes(1);
   });
 
@@ -525,25 +525,31 @@ describe('the switch (FREEDOM_SWARM_BACKEND)', () => {
     expect(shell.stats().parents).toBe(1);
   });
 
-  test('the default switch reads the environment: a development build without the variable runs js, and admits nothing', () => {
+  test("the default switch is the process's, read once: a development build without the variable runs js, and admits nothing for the rest of the process", () => {
     const saved = process.env.FREEDOM_SWARM_BACKEND;
-    delete process.env.FREEDOM_SWARM_BACKEND;
+    const open = (Shell, node, id) =>
+      new Shell({ log: quietLog() }).open(
+        { generation: 1, id },
+        { row: 'readChunk', params: { reference: A }, backend: node.backend }
+      );
     try {
-      const shell = new SwarmShell({ log: quietLog() });
-      const node = scriptedNode();
-      expect(() =>
-        shell.open(
-          { generation: 1, id: 1 },
-          { row: 'readChunk', params: { reference: A }, backend: node.backend }
-        )
-      ).toThrow(/JS backend/);
-      process.env.FREEDOM_SWARM_BACKEND = 'core';
-      expect(() =>
-        shell.open(
-          { generation: 1, id: 1 },
-          { row: 'readChunk', params: { reference: A }, backend: node.backend }
-        )
-      ).not.toThrow();
+      jest.isolateModules(() => {
+        const { SwarmShell: Shell } = require('./swarm-shell');
+        const node = scriptedNode();
+        delete process.env.FREEDOM_SWARM_BACKEND;
+        expect(() => open(Shell, node, 1)).toThrow(/JS backend/);
+        // Set later, it changes nothing: the switch was read once.
+        process.env.FREEDOM_SWARM_BACKEND = 'core';
+        expect(() => open(Shell, node, 2)).toThrow(/JS backend/);
+      });
+      jest.isolateModules(() => {
+        const { SwarmShell: Shell } = require('./swarm-shell');
+        const node = scriptedNode();
+        process.env.FREEDOM_SWARM_BACKEND = 'core';
+        expect(() => open(Shell, node, 1)).not.toThrow();
+        delete process.env.FREEDOM_SWARM_BACKEND;
+        expect(() => open(Shell, node, 2)).not.toThrow();
+      });
     } finally {
       if (saved === undefined) delete process.env.FREEDOM_SWARM_BACKEND;
       else process.env.FREEDOM_SWARM_BACKEND = saved;
