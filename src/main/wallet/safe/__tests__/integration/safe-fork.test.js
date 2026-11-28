@@ -265,7 +265,16 @@ describeFork('a Safe on forked Gnosis through the real freedom-cored', () => {
     await vaultBackend.unlock(PASSWORD);
     expect(await transactions.signSafePending(safe.index, 0, { safeTxHash })).toMatchObject({ collected: 2 });
 
-    await transactions.executeSafePending(safe.index, { safeTxHash });
+    const executed = await transactions.executeSafePending(safe.index, { safeTxHash });
+    expect(executed).toMatchObject({ safeTxHash, status: 'executed', executed: { hash: expect.any(String) } });
+    // The execution's own receipt, mined and successful, before the balances
+    // are read (a failure says why instead of a bare balance mismatch).
+    let receipt = null;
+    for (let i = 0; i < 40 && !receipt; i += 1) {
+      receipt = await rpc('eth_getTransactionReceipt', [executed.executed.hash]);
+      if (!receipt) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    expect(receipt).toMatchObject({ status: '0x1' });
     expect(await balanceOf(recipient)).toBe(parseEther('1'));
     expect(await balanceOf(safe.address)).toBe(0n);
     expect((await safeCall(safe.address, 'nonce'))[0]).toBe(1n);
