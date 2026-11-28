@@ -87,6 +87,25 @@ describe('antRequest', () => {
     expect(api.isUncertainWrite(reset)).toBe(true);
   });
 
+  test('a lost route is certain only when the connect failed with it, not a write on a connected socket', async () => {
+    const failed = (cause) => Object.assign(new TypeError('fetch failed'), { cause });
+    const buy = (cause) =>
+      api.buyStorage(
+        { depth: 20, amountPerChunk: '1' },
+        { fetchImpl: jest.fn().mockRejectedValue(failed(cause)) }
+      );
+    for (const code of ['EHOSTUNREACH', 'ENETUNREACH']) {
+      const atConnect = await buy({ code, syscall: 'connect' });
+      expect(atConnect).toMatchObject({ status: 0, unreachable: true, refused: true });
+      expect(api.isUncertainWrite(atConnect)).toBe(false);
+      for (const cause of [{ code, syscall: 'write' }, { code, syscall: 'read' }, { code }]) {
+        const afterConnect = await buy(cause);
+        expect(afterConnect).toMatchObject({ status: 0, unreachable: true, refused: false });
+        expect(api.isUncertainWrite(afterConnect)).toBe(true);
+      }
+    }
+  });
+
   test('keeps a non-JSON body out of `data`', async () => {
     await expect(api.getNode({ fetchImpl: respond('<html>', 502) })).resolves.toEqual({
       ok: false,

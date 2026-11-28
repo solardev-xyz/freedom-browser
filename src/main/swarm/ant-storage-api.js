@@ -83,20 +83,23 @@ const CONNECT_FAILURE_CODES = new Set([
   'ECONNREFUSED',
   'ENOTFOUND',
   'EAI_AGAIN',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
   'EADDRNOTAVAIL',
   'UND_ERR_CONNECT_TIMEOUT',
 ]);
 
+// A lost route: before the request only when the socket's own `connect`
+// failed with it. The same codes from a write or read on a connected socket
+// may follow some or all of the request (Codex round 5 on #1369).
+const ROUTE_FAILURE_CODES = new Set(['EHOSTUNREACH', 'ENETUNREACH']);
+
 // The same failures on the session's stack (a remote node), as Chromium
-// names them: undici's others (EHOSTUNREACH, ENETUNREACH, EADDRNOTAVAIL, a
-// connect timeout, EAI_AGAIN), and a proxy the connection to the node had to
-// go through refusing or failing it, before the request was written.
-// Not `ERR_INTERNET_DISCONNECTED`: Chromium also ends a request it already
-// sent with it when the connection is lost, so a write may have landed.
+// names them: undici's others (EADDRNOTAVAIL, a connect timeout,
+// EAI_AGAIN), and a proxy the connection to the node had to go through
+// refusing or failing it, before the request was written.
+// Not `ERR_INTERNET_DISCONNECTED` or `ERR_ADDRESS_UNREACHABLE`: Chromium
+// also ends a request it already wrote with them when the connection or the
+// route is lost, so a write may have landed.
 const CHROMIUM_CONNECT_FAILURES = new Set([
-  'net::ERR_ADDRESS_UNREACHABLE',
   'net::ERR_ADDRESS_INVALID',
   'net::ERR_CONNECTION_TIMED_OUT',
   'net::ERR_NAME_RESOLUTION_FAILED',
@@ -122,6 +125,7 @@ function isConnectFailure(err) {
   return causes.some(
     (e) =>
       CONNECT_FAILURE_CODES.has(e?.code) ||
+      (ROUTE_FAILURE_CODES.has(e?.code) && e?.syscall === 'connect') ||
       CHROMIUM_CONNECT_FAILURES.has(String(e?.message || '').trim())
   );
 }

@@ -452,7 +452,6 @@ describe('a remote node: every call on the default session’s stack, through it
     for (const netError of [
       'net::ERR_CONNECTION_REFUSED',
       'net::ERR_NAME_NOT_RESOLVED',
-      'net::ERR_ADDRESS_UNREACHABLE',
       'net::ERR_CONNECTION_TIMED_OUT',
       'net::ERR_PROXY_CONNECTION_FAILED',
       'net::ERR_SOCKS_CONNECTION_FAILED',
@@ -465,8 +464,10 @@ describe('a remote node: every call on the default session’s stack, through it
       'net::ERR_EMPTY_RESPONSE',
       'net::ERR_CONNECTION_CLOSED',
       'net::ERR_TIMED_OUT',
-      // Chromium ends a request already written with it too (Codex round 4).
+      // Chromium ends a request already written with these too (Codex
+      // rounds 4 and 5).
       'net::ERR_INTERNET_DISCONNECTED',
+      'net::ERR_ADDRESS_UNREACHABLE',
     ]) {
       await expect(outcome(netError)).resolves.toEqual(maybeSent);
     }
