@@ -553,11 +553,13 @@ function encodeStreamCredit(id, bytes) {
 }
 
 /**
- * Turns a byte stream into frames: `{ kind: KIND_JSON, message }` for a whole
- * message, parsed, `{ kind, payload }` for the fragment kinds, and a stream
- * frame decoded (`decodeStreamFrame`). It takes the kinds its connection
- * granted (`CORE_KINDS` by default), checked at each header. After the
- * first error it stays failed: a corrupted stream can't be resynchronized.
+ * Turns a byte stream into frames: `{ kind: KIND_JSON, message, size }` for
+ * a whole message, parsed, `size` its payload's length (what its receiver
+ * may charge for it, design 0015's Results for pages), `{ kind, payload }`
+ * for the fragment kinds, and a stream frame decoded (`decodeStreamFrame`).
+ * It takes the kinds its connection granted (`CORE_KINDS` by default),
+ * checked at each header. After the first error it stays failed: a
+ * corrupted stream can't be resynchronized.
  *
  * Input is kept as the list of chunks it came in, never joined as a whole: a
  * frame within one chunk is a view of it, and one across chunks is copied
@@ -606,7 +608,7 @@ class FrameDecoder {
       this.frame = null;
       const payload = this.take(length);
       try {
-        if (kind === KIND_JSON) frames.push({ kind, message: decodeJson(payload) });
+        if (kind === KIND_JSON) frames.push({ kind, message: decodeJson(payload), size: length });
         else if (STREAM_KINDS.has(kind)) frames.push(decodeStreamFrame(kind, payload));
         else frames.push({ kind, payload });
       } catch (err) {
@@ -688,8 +690,10 @@ class FrameDecoder {
  *   message cap and the ID against the receiver's pending requests, then
  *   reserves exactly the declared bytes. The credit allows one response in
  *   reassembly, so nothing else is ever reserved.
- * - **Whole messages** pass, also between fragments. A whole response for
- *   the request in reassembly is its second response (0001: one each).
+ * - **Whole messages** pass, also between fragments, with their payload's
+ *   length as the decoder read it (`size`), for the receiver to charge. A
+ *   whole response for the request in reassembly is its second response
+ *   (0001: one each).
  * - **Fragments** append; the last completes the response, which must be
  *   exactly the declared size, and is decoded as a whole message is.
  * - **Declined** (`admit`): a response the receiver won't hold is taken
@@ -713,7 +717,8 @@ class Reassembler {
    * @param {Function} [admit] - `(id, bytes)`, asked at a begin that passed
    *   them all, before its buffer is made: false declines the response
    *   (its receiver can't hold `bytes`), which is then taken with none
-   * @returns {object|null} `{ type: 'message', message }` for a whole message,
+   * @returns {object|null} `{ type: 'message', message, size }` for a whole
+   *   message (`size` its payload's length, as the decoder gives it),
    *   `{ type: 'response', id, message }` for a completed fragmented response
    *   to request `id`, `{ type: 'dropped', id }` for a declined one,
    *   `{ type: 'credit' }` when the peer returned this side's credit, or null
@@ -737,7 +742,7 @@ class Reassembler {
       if (this.current && isObject(message) && message.type === 'response') {
         if (message.id === this.current.id) throw new FrameError('duplicate_response');
       }
-      return { type: 'message', message };
+      return { type: 'message', message, size: frame.size };
     }
     if (kind === KIND_CREDIT) {
       if (payload.length) throw new FrameError('credit_payload');

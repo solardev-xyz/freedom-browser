@@ -332,20 +332,22 @@ async function send(client, shell, method, params, { parts = null } = {}) {
       ? { idleWatchdogMs: idleWatchdogMs(method) }
       : { watchdogMs: watchdogMs(method) };
   try {
-    return {
-      result: await client.request(
-        method,
-        params,
-        { caller: 'shell' },
-        {
-          ...deadline,
-          pool: swarmIoPool,
-          onSent: (id, generation) => {
-            handle = shell.open({ id, generation }, { row, params, backend, parts });
-          },
-        }
-      ),
-    };
+    // A pooled request resolves with `{ result, release }`: its charge is
+    // held until the result is handed on, which is here.
+    const { result, release } = await client.request(
+      method,
+      params,
+      { caller: 'shell' },
+      {
+        ...deadline,
+        pool: swarmIoPool,
+        onSent: (id, generation) => {
+          handle = shell.open({ id, generation }, { row, params, backend, parts });
+        },
+      }
+    );
+    release();
+    return { result };
   } catch (err) {
     return { error: { code: err.code, message: err.message } };
   } finally {
