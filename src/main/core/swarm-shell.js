@@ -13,7 +13,8 @@
  *   registers the handlers whichever backend runs, so a stray ask is
  *   answered `ended` (an `unknown_method` would end the core's
  *   connection), and `open()` throws unless FREEDOM_SWARM_BACKEND selects
- *   `core`: on `js` no parent is ever admitted.
+ *   `core`: on `js` no parent is ever admitted. The switch is read once,
+ *   at the process's first ask, and kept (one backend per process).
  * - **The parent registry:** `open({ generation, id }, capture)`, called
  *   from the parent's `onSent` (service-client.js), before the core can
  *   ask anything for it. A parent keeps its row's `Admission` (built from
