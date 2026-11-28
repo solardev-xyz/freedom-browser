@@ -28,7 +28,8 @@
  * - **the op** runs as the core's does (fc-swarm-provider's `ops/`): the
  *   chrome's identity ops as feed-store.js's IPC handlers run them (a
  *   change under the site's lock with `source: 'user'`, then the state with
- *   owners), main's own with `source: 'user'`, the manifest page path as
+ *   owners; the lock is the simulated core's own, since main's relay holds
+ *   main's while it waits), main's own with `source: 'user'`, the manifest page path as
  *   `checkPageManifest` and `decidePageManifest` run it after main's window
  *   checks (`live` main's answer to the guard), and the history's ops as
  *   publish-history.js's own functions, `add` and `update` among them (core
@@ -40,6 +41,13 @@
  *
  * Each reference loads at its first use, in the module registry current
  * then.
+ *
+ * **Site keys** (`origin`, `key`) are taken as main sends them: the core
+ * keys the stores by the permission keys main gives it and normalizes none
+ * again (fc-swarm-provider's `stores`), where the reference normalizes each
+ * (`normalizeOrigin`). So a key main sends that isn't normalized is
+ * recorded in `unnormalized` (`[method, op, member, value]`), which a
+ * suite checks is empty.
  *
  * `fetchManifest({ for, url })` answers a check's `shell.swarm_manifest`
  * as main's handler would (`{ status, body_base64 }` or `{ failed: true }`;
@@ -121,7 +129,7 @@ function thrownAnswer(err) {
 }
 
 function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null } = {}) {
-  const sim = { moved, fetchManifest, fail, calls: [] };
+  const sim = { moved, fetchManifest, fail, calls: [], unnormalized: [] };
   // Each reference is loaded at its first use, in the registry that is
   // current then (a suite that only uses the feed store never loads the
   // manifest store's grants).
@@ -144,8 +152,25 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     }
     return out;
   };
-  const lock = (key, task) =>
-    require('../../src/main/swarm/origin-mutation-lock').withOriginLock(key, task);
+  // The core's own keeper of a site's changes: not main's
+  // origin-mutation-lock, which main's relays hold while the core answers
+  // (feed-store.js's chrome handlers), so sharing it would wait for ever.
+  // The same queue per normalized site, a failed task not holding the next.
+  const tails = new Map();
+  const lock = (origin, task) => {
+    const { normalizeOrigin } = require('../../src/shared/origin-utils');
+    const key = normalizeOrigin(origin);
+    const result = (tails.get(key) || Promise.resolve()).then(task, task);
+    const settled = result.then(
+      () => undefined,
+      () => undefined
+    );
+    tails.set(key, settled);
+    settled.then(() => {
+      if (tails.get(key) === settled) tails.delete(key);
+    });
+    return result;
+  };
 
   // A check's fetch: main's `shell.swarm_manifest` answer as the
   // reference's `discover` reads a response; `{ failed: true }` throws, a
@@ -339,6 +364,13 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     }
     const members = readMembers(method, name, params, spec);
     sim.calls.push([method, name, caller]);
+    const { normalizeOrigin } = require('../../src/shared/origin-utils');
+    for (const member of ['origin', 'key']) {
+      const value = members[member];
+      if (typeof value === 'string' && normalizeOrigin(value) !== value) {
+        sim.unnormalized.push([method, name, member, value]);
+      }
+    }
     if (sim.fail) {
       try {
         await sim.fail(method, params);

@@ -25,6 +25,26 @@
  *
  * Survives permission revocation — revoking Swarm connection does not
  * forget publisher identities. Switching identity is an explicit user action.
+ *
+ * **Where it lives** (freedom-core design 0015, D3 and D7; the SWM-6 to
+ * SWM-9 plan's PR 6.2): main's own file, swarm-feeds.json, unless this
+ * process's hello names `swarm_stores` (core-client.js
+ * `swarmStoresNamed()`: a process on the core's Swarm backend, from SWM-7's
+ * flip, PR 7.4; until then only tests). Then the file is the core's, and
+ * main never opens it:
+ * - the chrome's handlers (`registerFeedStoreIpc`) relay each request to
+ *   the core's `swarm.identities` op named by its channel, as `chrome`;
+ * - the feed prompt's ops (page/page-swarm.js) and the account removal's
+ *   references (identity-manager.js, D8: the core's order) are `coreOps`,
+ *   main's own `swarm.identities` ops, as `shell`; their callers pick these
+ *   or the functions below by `swarmStoresNamed()`;
+ * - every function below that reads or writes the file throws, unrun
+ *   (`loadFeeds`). Among them are the JS provider's direct calls
+ *   (swarm-provider-ipc.js: `getOriginEntry`, `getFeed`, `setFeed`,
+ *   `updateFeedReference`, `getAllFeeds`, `isIdentitySharedWithOtherOrigins`,
+ *   `hasFeedGrant`), which have no core op: the JS provider can't run on
+ *   such a process (the plan's point 1; PR 7.4 sends its methods to the
+ *   core), so they are refused rather than built.
  */
 
 const { ipcMain } = require('electron');
@@ -96,6 +116,71 @@ function assertAvailableMode(identityMode) {
 function getFeedsPath() {
   return getFreedomDataPath(FEEDS_FILE);
 }
+
+/** Whether the feed store is the core's (core-client.js `swarmStoresNamed`). */
+function storeIsCore() {
+  return require('../core/core-client').swarmStoresNamed();
+}
+
+/**
+ * Throws once the feed store is the core's: main then never opens
+ * swarm-feeds.json, its backups or its temporary file (design 0015, D3;
+ * the SWM-6 to SWM-9 plan, section 5).
+ */
+function assertMainStore() {
+  if (storeIsCore()) {
+    throw new Error(`${FEEDS_FILE} is the identity core's: main doesn't open it`);
+  }
+}
+
+/**
+ * The core's `swarm.identities` op `op`, for the chrome's request. Its
+ * site (`origin`) goes as its permission key (`normalizeOrigin`), as each
+ * function below normalizes it: the core keys the store by the keys main
+ * gives it and normalizes none again (fc-swarm-provider's `stores`).
+ */
+function chromeOp(op, members = {}) {
+  const sent = Object.hasOwn(members, 'origin')
+    ? { ...members, origin: normalizeOrigin(members.origin) }
+    : members;
+  return require('../core/swarm-stores').identities(op, sent, { caller: 'chrome' });
+}
+
+/** The core's `swarm.identities` op `op`, main's own (D7). */
+function shellOp(op, members) {
+  return require('../core/swarm-stores').identities(op, members);
+}
+
+/**
+ * Main's own ops on the core's feed store (design 0015, D7 and D8), for a
+ * process whose hello names `swarm_stores`: `swarm.identities`' shell ops,
+ * named by the functions below they stand for. Each resolves with what the
+ * function returns, or rejects with what it throws (its class, message and
+ * code, `identity_taken` among them), or with the protocol's error
+ * (core/swarm-stores.js). Each takes the function's own arguments without
+ * `source`, which the core always reads as `'user'`: the feed prompt's
+ * choices are the user's. `getEthereumWalletIdentityReferences` answers in
+ * the core's order (D8's ICU root collation), which main keeps.
+ *
+ * Unused while main writes swarm-feeds.json: page-swarm.js and
+ * identity-manager.js call these or the functions below by
+ * `swarmStoresNamed()`.
+ */
+const coreOps = Object.freeze({
+  getOriginIdentityStateWithOwners: (key) => shellOp('getOriginIdentityStateWithOwners', { key }),
+  previewAppScopedIdentity: (key, options) =>
+    shellOp('previewAppScopedIdentity', { key, options }),
+  createAppScopedIdentityAt: (key, index, options) =>
+    shellOp('createAppScopedIdentityAt', { key, index, options }),
+  ensureAntWalletIdentity: (key, options) => shellOp('ensureAntWalletIdentity', { key, options }),
+  activateIdentity: (key, identityId) =>
+    shellOp('activateIdentity', { key, identity_id: identityId }),
+  grantFeedAccess: (key) => shellOp('grantFeedAccess', { key }),
+  hasFeedGrant: (key) => shellOp('hasFeedGrant', { key }),
+  assertFeedGrantable: (key) => shellOp('assertFeedGrantable', { key }),
+  getEthereumWalletIdentityReferences: (walletIndex) =>
+    shellOp('getEthereumWalletIdentityReferences', { wallet_index: walletIndex }),
+});
 
 function createEmptyStore() {
   return {
@@ -373,6 +458,8 @@ function loadFeedsFromFile(filePath) {
 }
 
 function loadFeeds() {
+  // Every read and write of the file comes through here.
+  assertMainStore();
   if (feedsCache !== null) {
     return feedsCache;
   }
@@ -394,6 +481,7 @@ function loadFeeds() {
 }
 
 function saveFeeds() {
+  assertMainStore();
   try {
     const filePath = getFeedsPath();
     const tempPath = `${filePath}.tmp`;
@@ -985,30 +1073,45 @@ function revokeFeedAccess(origin, { source = 'user' } = {}) {
 
 /**
  * Register IPC handlers for feed store.
+ *
+ * Once the store is the core's (`storeIsCore()`), each handler relays the
+ * chrome's request to the core's op named by its channel, as `chrome`
+ * (design 0015, D7), and answers what the core answers: what the handler
+ * below would have, or its error. The core runs the change and the state it
+ * answers with together, `source` always `'user'`. A change still takes
+ * main's lock on the site, as below, so it keeps its order with main's
+ * other writes under that lock (the Swarm grants, the feed prompt's
+ * choice); the core's own keeper serializes it there.
  */
 function registerFeedStoreIpc() {
   ipcMain.handle(IPC.SWARM_GET_ALL_ORIGINS, () => {
+    if (storeIsCore()) return chromeOp('get-all-origins');
     return getAllOriginEntries();
   });
 
   ipcMain.handle(IPC.SWARM_HAS_FEED_IDENTITY, (_event, origin) => {
+    if (storeIsCore()) return chromeOp('has-feed-identity', { origin });
     return hasIdentityMode(origin);
   });
 
   ipcMain.handle(IPC.SWARM_GET_IDENTITY_MODE, (_event, origin) => {
+    if (storeIsCore()) return chromeOp('get-identity-mode', { origin });
     const entry = getOriginEntry(origin);
     return entry?.identityMode || null;
   });
 
   ipcMain.handle(IPC.SWARM_GET_ORIGIN_IDENTITIES, async (_event, origin) => {
+    if (storeIsCore()) return chromeOp('get-origin-identities', { origin });
     return getOriginIdentityStateWithOwners(origin);
   });
 
   // Everything arriving over IPC is a user action by definition: `source` is
   // forced here so a renderer cannot pass `{ source: 'manifest' }` and mutate
-  // an origin's identity without detaching the manifest's claim on it.
+  // an origin's identity without detaching the manifest's claim on it. The
+  // core's op takes no `source`: it forces it the same way.
   ipcMain.handle(IPC.SWARM_CREATE_APP_SCOPED_IDENTITY, async (_event, origin, options = {}) => {
     return withOriginLock(origin, async () => {
+      if (storeIsCore()) return chromeOp('create-app-scoped-identity', { origin, options });
       createAppScopedIdentity(origin, { ...options, source: 'user' });
       return getOriginIdentityStateWithOwners(origin);
     });
@@ -1016,6 +1119,7 @@ function registerFeedStoreIpc() {
 
   ipcMain.handle(IPC.SWARM_ENSURE_ANT_WALLET_IDENTITY, async (_event, origin, options = {}) => {
     return withOriginLock(origin, async () => {
+      if (storeIsCore()) return chromeOp('ensure-ant-wallet-identity', { origin, options });
       ensureAntWalletIdentity(origin, { ...options, source: 'user' });
       return getOriginIdentityStateWithOwners(origin);
     });
@@ -1023,6 +1127,9 @@ function registerFeedStoreIpc() {
 
   ipcMain.handle(IPC.SWARM_ACTIVATE_FEED_IDENTITY, async (_event, origin, identityId) => {
     return withOriginLock(origin, async () => {
+      if (storeIsCore()) {
+        return chromeOp('activate-feed-identity', { origin, identity_id: identityId });
+      }
       activateIdentity(origin, identityId);
       return getOriginIdentityStateWithOwners(origin);
     });
@@ -1032,13 +1139,16 @@ function registerFeedStoreIpc() {
   // always granted feed access, for a site the chrome named. Main grants it
   // itself, for the key it attested, from the user's decision on its own
   // feed prompt (page/page-swarm.js), with the identity picked there.
-  // Revoking (swarm:revoke-feed-access) stays open: it only narrows.
+  // Revoking (swarm:revoke-feed-access) stays open: it only narrows. The
+  // core's op refuses it the same way, with nothing read.
   ipcMain.handle(IPC.SWARM_SET_FEED_IDENTITY, () => {
+    if (storeIsCore()) return chromeOp('set-feed-identity');
     throw new Error(FEED_GRANT_REFUSED);
   });
 
   ipcMain.handle(IPC.SWARM_REVOKE_FEED_ACCESS, (_event, origin) => {
     return withOriginLock(origin, () => {
+      if (storeIsCore()) return chromeOp('revoke-feed-access', { origin });
       revokeFeedAccess(origin);
       return true;
     });
@@ -1077,6 +1187,7 @@ module.exports = {
   revokeFeedAccess,
   onManifestMutation,
   registerFeedStoreIpc,
+  coreOps,
   VALID_IDENTITY_MODES,
   _resetCache,
 };
