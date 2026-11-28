@@ -107,7 +107,13 @@ jest.mock('../swarm/swarm-signer', () => ({
   getIdentityMode: (identity) => identity?.mode || identity?.identityMode || null,
 }));
 jest.mock('../swarm/messaging-service', () => ({ MAX_MESSAGE_BYTES: 4000, MAX_TARGET_DEPTH: 3, DEFAULT_TARGET_DEPTH: 2 }));
-jest.mock('../service-registry', () => ({ getAntApiUrl: () => 'http://127.0.0.1:1633' }));
+jest.mock('../service-registry', () => ({
+  getAntApiUrl: () => 'http://127.0.0.1:1633',
+  // The subscriptions' route test (swarm/subscription-registry.js) hears
+  // the node's and Tor's changes here; the bundled node is on loopback.
+  getService: () => null,
+  onServiceChange: () => {},
+}));
 jest.mock('../swarm/publish-setup-service', () => ({
   getPublishReadiness: async () => (mockNode.readiness ? mockNode.readiness : { ok: true }),
 }));

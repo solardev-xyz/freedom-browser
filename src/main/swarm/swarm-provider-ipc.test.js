@@ -49,11 +49,18 @@ jest.mock('./subscription-registry', () => ({
   subscribe: mockRegistrySubscribe,
   unsubscribe: mockRegistryUnsubscribe,
   cancelByOrigin: jest.fn(),
+  // Question 4's route test passes here: subscription-route.test.js runs
+  // the real registry.
+  checkRoute: jest.fn(async () => null),
+  recheckRoutes: jest.fn(async () => {}),
+  PROXY_OR_TOR: 'proxy-or-tor',
 }));
 
 const mockGetBeeApiUrl = jest.fn();
 jest.mock('../service-registry', () => ({
   getAntApiUrl: mockGetBeeApiUrl,
+  getService: () => null,
+  onServiceChange: jest.fn(),
 }));
 
 // The write pre-flight is the publish setup service's readiness, tested in

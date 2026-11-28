@@ -2043,8 +2043,7 @@ describe('registerPublishSetupIpc', () => {
   const antManager = {
     getStatus: jest.fn(() => ({ status: 'stopped', error: null })),
     onStatusChange: jest.fn((listener) => statusListeners.push(listener)),
-    stopAnt: jest.fn().mockResolvedValue(),
-    startAnt: jest.fn().mockResolvedValue(),
+    restartAnt: jest.fn().mockResolvedValue(),
   };
 
   // One app instance for the block, as in main: the service is a lazy
@@ -2089,9 +2088,10 @@ describe('registerPublishSetupIpc', () => {
     await expect(mockIpcHandlers.get('swarm:setup-get-state')()).resolves.toMatchObject({
       readiness: { key: 'stopped' },
     });
+    // ant-manager's restart, which the bundled node's Swarm subscriptions
+    // wait through (restartingUrl).
     await mockIpcHandlers.get('swarm:setup-restart-node')();
-    expect(antManager.stopAnt).toHaveBeenCalledTimes(1);
-    expect(antManager.startAnt).toHaveBeenCalledTimes(1);
+    expect(antManager.restartAnt).toHaveBeenCalledTimes(1);
   });
 
   test('pushes state to the chrome and internal pages, never to a web page', () => {

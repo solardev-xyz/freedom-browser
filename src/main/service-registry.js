@@ -67,6 +67,31 @@ const registry = {
   },
 };
 
+// In-process listeners of a service's state: each called with the service's
+// name after updateService() or clearService() changed it (the Swarm
+// subscriptions' route test hears the node's URL and Tor's state this way:
+// swarm/subscription-registry.js).
+const changeListeners = new Set();
+
+/**
+ * Calls `listener(service)` after each updateService() or clearService().
+ * @returns {() => void} removes it
+ */
+function onServiceChange(listener) {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+function notifyServiceChange(service) {
+  for (const listener of [...changeListeners]) {
+    try {
+      listener(service);
+    } catch {
+      // One listener's failure never stops the change, nor the others.
+    }
+  }
+}
+
 function createEmptyServiceState(service) {
   if (service === 'tor') {
     return {
@@ -132,6 +157,7 @@ function updateService(service, updates) {
 
   Object.assign(registry[service], updates);
   broadcastRegistryUpdate();
+  notifyServiceChange(service);
 }
 
 /**
@@ -225,6 +251,7 @@ function clearService(service) {
   registry[service] = createEmptyServiceState(service);
 
   broadcastRegistryUpdate();
+  notifyServiceChange(service);
 }
 
 /**
@@ -314,5 +341,6 @@ module.exports = {
   getAntGatewayUrl,
   getTorSocksUrl,
   broadcastRegistryUpdate,
+  onServiceChange,
   registerServiceRegistryIpc,
 };
