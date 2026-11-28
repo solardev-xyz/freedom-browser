@@ -9,8 +9,10 @@
  * - main's Swarm I/O pool: a handler registered with `{ pool }` charges
  *   that pool, held to its reply's last byte (a stream's terminal), never
  *   the chain I/O pool; and `{ pool }` on main's own request charges its
- *   fragmented response, twice as it arrives, dropping one that doesn't
- *   fit;
+ *   response twice (a fragmented one at its begin, a whole one of 64 KiB
+ *   or more as it is decoded), dropping one that doesn't fit as `busy`,
+ *   and holds the charge until the caller releases the result it was
+ *   handed (`{ result, release }`);
  * - the answers the core takes from a Swarm handler: `invalid_argument`
  *   with `data: { rule }`, `cancelled` at once for a cancel it races, and
  *   `{ failed: "error" }` for anything else, never `internal`.
@@ -49,6 +51,7 @@ const {
   KIND_FRAGMENT,
   KIND_LAST,
   KIND_STREAM_CREDIT,
+  MAX_PAYLOAD,
   SWARM_PART_ABORT_CODES,
   WINDOW,
 } = require('./frame');
@@ -1286,20 +1289,29 @@ describe("a Swarm handler's answers (design 0015: the core takes no other error)
   });
 });
 
-describe("main's own fragmented responses, charged to a pool ({ pool })", () => {
-  /** `message` as a fragmented response: its begin, then `pieces` frames. */
-  function fragments(message, pieces) {
-    const payload = Buffer.from(JSON.stringify(message));
-    const size = Math.ceil(payload.length / pieces);
-    const frames = [];
-    for (let offset = 0; offset < payload.length; offset += size) {
-      const end = Math.min(payload.length, offset + size);
-      const kind = end === payload.length ? KIND_LAST : KIND_FRAGMENT;
-      frames.push(Buffer.concat([frameHeader(kind, end - offset), payload.subarray(offset, end)]));
-    }
-    return { begin: encodeBegin(message.id, payload.length), frames, payload };
+/** `message` as a fragmented response: its begin, then `pieces` frames. */
+function fragments(message, pieces) {
+  const payload = Buffer.from(JSON.stringify(message));
+  const size = Math.ceil(payload.length / pieces);
+  const frames = [];
+  for (let offset = 0; offset < payload.length; offset += size) {
+    const end = Math.min(payload.length, offset + size);
+    const kind = end === payload.length ? KIND_LAST : KIND_FRAGMENT;
+    frames.push(Buffer.concat([frameHeader(kind, end - offset), payload.subarray(offset, end)]));
   }
+  return { begin: encodeBegin(message.id, payload.length), frames, payload };
+}
 
+/** A whole response to request `id` whose frame's payload is exactly
+ * `bytes` long. */
+function wholeOf(id, bytes) {
+  const empty = Buffer.byteLength(JSON.stringify({ type: 'response', id, result: { data: '' } }));
+  const message = { type: 'response', id, result: { data: 'd'.repeat(bytes - empty) } };
+  expect(Buffer.byteLength(JSON.stringify(message))).toBe(bytes);
+  return message;
+}
+
+describe("main's own fragmented responses, charged to a pool ({ pool })", () => {
   /** Buffer.alloc watched: the pool's holding at each allocation of a
    * MiB or more, the reassembler's buffer among them. */
   function watchAllocations(pool) {
@@ -1312,7 +1324,7 @@ describe("main's own fragmented responses, charged to a pool ({ pool })", () => 
     return { seen, restore: () => spy.mockRestore() };
   }
 
-  test('twice the size its begin declares, charged before its buffer is made, until the caller has it', async () => {
+  test('twice the size its begin declares, charged before its buffer is made, until the caller releases the result', async () => {
     const pool = new SwarmIoPool();
     makeClient(coreWith());
     const chainTake = jest.spyOn(client.pool, 'take');
@@ -1344,14 +1356,23 @@ describe("main's own fragmented responses, charged to a pool ({ pool })", () => 
         expect(pool.held).toBe(2 * payload.length);
       }
       core().write(frames.at(-1));
-      await expect(read.pending).resolves.toEqual(message.result);
+      const { result, release } = await read.pending;
+      expect(result).toEqual(message.result);
+      // The caller has it, and its credit is back, but the charge holds
+      // until the caller has handed the result on.
+      expect(core().credits).toBe(1);
+      await settle();
+      expect(pool.held).toBe(2 * payload.length);
+      release();
+      expect(pool.held).toBe(0);
+      release();
+      expect(pool.held).toBe(0);
     } finally {
       allocations.restore();
     }
-    expect(pool.held).toBe(0);
     expect(pool.highWater).toBe(2 * payload.length);
-    expect(core().credits).toBe(1);
     expect(chainTake).not.toHaveBeenCalled();
+    expect(client.pool.held).toBe(0);
   });
 
   test('with the pool full, a response is never held: busy at its begin, no buffer made, read to its end with none and let go of', async () => {
@@ -1436,26 +1457,232 @@ describe("main's own fragmented responses, charged to a pool ({ pool })", () => 
     expect(pool.highWater).toBe(0);
   });
 
-  test('a response under one frame, or one to a request without a pool, is charged nothing', async () => {
+  test('a whole response under 64 KiB, or any to a request without a pool, is charged nothing', async () => {
     const pool = new SwarmIoPool(64 * KIB);
     makeClient(coreWith());
     await client.start();
-    const whole = sendOwn((onSent) =>
+    const small = sendOwn((onSent) =>
       client.request('swarm.request', {}, { caller: 'shell' }, { pool, onSent })
     );
     const unpooled = sendOwn((onSent) =>
       client.request('swarm.request', {}, { caller: 'shell' }, { onSent })
     );
+    const unpooledWhole = sendOwn((onSent) =>
+      client.request('swarm.request', {}, { caller: 'shell' }, { onSent })
+    );
     await settle();
-    core().send({ type: 'response', id: whole.sent.id, result: { data: 'w'.repeat(512 * KIB) } });
+    const under = wholeOf(small.sent.id, POOL_EXEMPT_BYTES - 1);
+    core().send(under);
     const big = { type: 'response', id: unpooled.sent.id, result: { data: 'v'.repeat(2 * MIB) } };
     const { begin, frames } = fragments(big, 3);
     core().write(begin);
     for (const frame of frames) core().write(frame);
-    await expect(whole.pending).resolves.toEqual({ data: 'w'.repeat(512 * KIB) });
+    const whole = wholeOf(unpooledWhole.sent.id, 512 * KIB);
+    core().send(whole);
+    const { result, release } = await small.pending;
+    expect(result).toEqual(under.result);
+    expect(pool.held).toBe(0);
+    release();
+    // Without a pool, the result alone, as before.
     await expect(unpooled.pending).resolves.toEqual(big.result);
+    await expect(unpooledWhole.pending).resolves.toEqual(whole.result);
     expect(pool.held).toBe(0);
     expect(pool.highWater).toBe(0);
     expect(POOL_EXEMPT_BYTES).toBe(64 * KIB);
+  });
+});
+
+describe("main's own whole responses of 64 KiB or more, charged to a pool ({ pool })", () => {
+  /** Sends a pooled `swarm.request`: `{ pending, sent }`, `pending`
+   * settling to the result's `{ result, release }` or the error. */
+  function pooled(pool, options = {}) {
+    return sendOwn((onSent) =>
+      client
+        .request(
+          'swarm.request',
+          { method: 'readData' },
+          { caller: 'shell' },
+          { pool, watchdogMs: watchdogMs('swarm.request'), onSent, ...options }
+        )
+        .catch((e) => e)
+    );
+  }
+
+  test('a 200 KiB result with 100 KiB free: busy, nothing charged, the request ended, and the connection serves on', async () => {
+    const pool = new SwarmIoPool();
+    makeClient(coreWith());
+    const chainTake = jest.spyOn(client.pool, 'take');
+    await client.start();
+    const others = pool.reserve(pool.limit - 100 * KIB);
+    const read = pooled(pool);
+    await settle();
+    const take = jest.spyOn(pool, 'take');
+    const message = wholeOf(read.sent.id, 200 * KIB);
+    core().send(message);
+    const answer = await read.pending;
+    expect(answer.code).toBe('busy');
+    expect(answer.message).toBe('No room for the response');
+    // Asked for twice its payload, once, and refused: nothing more held.
+    expect(take.mock.calls).toEqual([[2 * 200 * KIB]]);
+    expect(pool.held).toBe(pool.limit - 100 * KIB);
+    expect(pool.highWater).toBe(pool.limit - 100 * KIB);
+    // Ended as a response ends it: its record, its watchdog, no bulk credit
+    // to return (a whole response took none), and no protocol fault.
+    expect(client.current.pending.has(read.sent.id)).toBe(false);
+    expect(client.streamStats().outstanding).toBe(0);
+    expect(live().filter((t) => t.at === watchdogMs('swarm.request'))).toEqual([]);
+    expect(core().credits).toBe(0);
+    expect(core().killed).toBeNull();
+    expect(log.error).not.toHaveBeenCalled();
+    others.close();
+    expect(pool.held).toBe(0);
+    // The connection serves on: the chain's requests and a pooled one that
+    // fits now.
+    const next = sendOwn((onSent) =>
+      client.request('vault.status', {}, { caller: 'chrome' }, { onSent })
+    );
+    const again = pooled(pool);
+    await settle();
+    core().send({ type: 'response', id: next.sent.id, result: { exists: true } });
+    const fits = wholeOf(again.sent.id, 200 * KIB);
+    core().send(fits);
+    await expect(next.pending).resolves.toEqual({ exists: true });
+    const { result, release } = await again.pending;
+    expect(result).toEqual(fits.result);
+    expect(pool.held).toBe(2 * 200 * KIB);
+    release();
+    expect(pool.held).toBe(0);
+    expect(chainTake).not.toHaveBeenCalled();
+    expect(client.pool.held).toBe(0);
+  });
+
+  test('charged twice its payload as it is decoded, before the caller has it; released only once the caller releases it, not by the generation', async () => {
+    const pool = new SwarmIoPool();
+    makeClient(coreWith());
+    const chainTake = jest.spyOn(client.pool, 'take');
+    await client.start();
+    const read = pooled(pool);
+    await settle();
+    const message = wholeOf(read.sent.id, 300 * KIB);
+    // Charged in the same run that decodes the frame, before any caller
+    // code: the pool already holds it when the caller's result is made.
+    const seen = [];
+    const settleOf = client.current.pending.get(read.sent.id).settle;
+    client.current.pending.get(read.sent.id).settle = (outcome) => {
+      seen.push(pool.held);
+      settleOf(outcome);
+    };
+    core().send(message);
+    const { result, release } = await read.pending;
+    expect(seen).toEqual([2 * 300 * KIB]);
+    expect(result).toEqual(message.result);
+    expect(Object.isFrozen(await read.pending)).toBe(true);
+    // Held while the caller holds it, through the core's exit and restart:
+    // the generation's end doesn't take it from the caller.
+    await settle();
+    expect(pool.held).toBe(2 * 300 * KIB);
+    const first = core();
+    first.kill('SIGKILL');
+    await settle();
+    await advance(RESTART_DELAYS_MS[0]);
+    expect(core()).not.toBe(first);
+    expect(pool.held).toBe(2 * 300 * KIB);
+    release();
+    expect(pool.held).toBe(0);
+    // Once: a second call gives back nothing another holds.
+    const others = pool.reserve(KIB);
+    release();
+    expect(pool.held).toBe(KIB);
+    others.close();
+    expect(pool.highWater).toBe(2 * 300 * KIB);
+    expect(chainTake).not.toHaveBeenCalled();
+    expect(client.pool.held).toBe(0);
+  });
+
+  test('exactly 64 KiB is charged, and charges go on per response: the high-water mark stays within 64 MiB over 64 maximum results', async () => {
+    const pool = new SwarmIoPool();
+    makeClient(coreWith());
+    const chainTake = jest.spyOn(client.pool, 'take');
+    await client.start();
+    const edge = pooled(pool);
+    await settle();
+    core().send(wholeOf(edge.sent.id, POOL_EXEMPT_BYTES));
+    const atEdge = await edge.pending;
+    expect(pool.held).toBe(2 * POOL_EXEMPT_BYTES);
+    atEdge.release();
+    expect(pool.held).toBe(0);
+
+    // 64 results of a whole frame's most, each held by its caller.
+    const reads = [];
+    for (let i = 0; i < 64; i++) reads.push(pooled(pool));
+    await settle();
+    for (const read of reads) core().send(wholeOf(read.sent.id, MAX_PAYLOAD));
+    const answers = await Promise.all(reads.map((read) => read.pending));
+    const held = answers.filter((a) => a.release);
+    const busy = answers.filter((a) => a.code === 'busy');
+    expect(held.length + busy.length).toBe(64);
+    expect(held.length).toBe(Math.floor(pool.limit / (2 * MAX_PAYLOAD)));
+    expect(busy.length).toBeGreaterThan(0);
+    expect(pool.held).toBe(held.length * 2 * MAX_PAYLOAD);
+    expect(pool.highWater).toBeLessThanOrEqual(64 * MIB);
+    expect(pool.highWater).toBe(held.length * 2 * MAX_PAYLOAD);
+    // Every request ended, none faulted, and the connection serves on.
+    expect(client.current.pending.size).toBe(0);
+    expect(client.streamStats().outstanding).toBe(0);
+    expect(core().killed).toBeNull();
+    expect(log.error).not.toHaveBeenCalled();
+    for (const answer of held) answer.release();
+    expect(pool.held).toBe(0);
+    expect(chainTake).not.toHaveBeenCalled();
+    expect(client.pool.held).toBe(0);
+  });
+
+  test('an error, or a result its caller no longer waits for, gives its charge back as it is answered', async () => {
+    const pool = new SwarmIoPool();
+    makeClient(coreWith());
+    const chainTake = jest.spyOn(client.pool, 'take');
+    await client.start();
+    const failing = pooled(pool);
+    const controller = new AbortController();
+    const cancelledRead = pooled(pool, { signal: controller.signal });
+    const waiting = new AbortController();
+    const untilResponse = sendOwn((onSent) =>
+      client.requestTo(
+        client.current,
+        'swarm.request',
+        {},
+        { caller: 'shell' },
+        { pool, signal: waiting.signal, untilResponse: true, onSent }
+      )
+    );
+    await settle();
+    controller.abort();
+    waiting.abort();
+    expect((await cancelledRead.pending).code).toBe('cancelled');
+    const take = jest.spyOn(pool, 'take');
+    core().send({
+      type: 'response',
+      id: failing.sent.id,
+      error: { code: 'internal', message: 'e'.repeat(100 * KIB) },
+    });
+    core().send(wholeOf(cancelledRead.sent.id, 200 * KIB));
+    const late = wholeOf(untilResponse.sent.id, 150 * KIB);
+    core().send(late);
+    const error = await failing.pending;
+    expect(error.code).toBe('internal');
+    // A caller that waits for its response through a cancel still gets the
+    // result and its charge.
+    const { result, release } = await untilResponse.pending;
+    expect(result).toEqual(late.result);
+    // Each charged as it came; the error's and the cancelled read's given
+    // back at once.
+    expect(take).toHaveBeenCalledTimes(3);
+    expect(pool.held).toBe(2 * 150 * KIB);
+    release();
+    expect(pool.held).toBe(0);
+    expect(client.current.pending.size).toBe(0);
+    expect(core().killed).toBeNull();
+    expect(chainTake).not.toHaveBeenCalled();
+    expect(client.pool.held).toBe(0);
   });
 });
