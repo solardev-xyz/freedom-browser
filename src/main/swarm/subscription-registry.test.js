@@ -354,8 +354,12 @@ describe('subscription-registry: the route test', () => {
     ['a remote node behind a proxy list ending DIRECT', REMOTE, 'PROXY proxy.example:8080; DIRECT', 'proxy', true],
     ["a remote node behind Arti's endpoint", REMOTE, `SOCKS5 ${ARTI}`, 'tor', true],
     ['a remote node behind another SOCKS proxy', REMOTE, 'SOCKS5 127.0.0.1:1080', 'proxy', true],
-    ['an onion node, Tor off', 'http://abcdef.onion', 'DIRECT', 'tor', false],
-    ['an onion node, Tor on', 'http://abcdef.onion:1633', `SOCKS5 ${ARTI}`, 'tor', false],
+    // An onion node is refused whatever its route; `via` says what the
+    // route is (PR 7.5, Codex round 1: Tor is named only when Arti's
+    // endpoint is the route).
+    ['an onion node, Tor off', 'http://abcdef.onion', 'DIRECT', 'onion', true],
+    ['an onion node, Tor on', 'http://abcdef.onion:1633', `SOCKS5 ${ARTI}`, 'tor', true],
+    ['an onion node behind another SOCKS proxy', 'http://abcdef.onion', 'SOCKS5 127.0.0.1:1080', 'proxy', true],
     ['no node', null, 'PROXY proxy.example:8080', null, false],
   ])('routeRefusal: %s', async (_label, url, answer, via, asked) => {
     const ask = jest.fn(async () => answer);
@@ -369,6 +373,14 @@ describe('subscription-registry: the route test', () => {
       throw new Error('network service gone');
     });
     expect(await registry.routeRefusal(REMOTE, { resolveProxy: failing })).toEqual({ reason: 'proxy-or-tor', via: 'proxy' });
+    // An onion node with no route it can name: refused, and no proxy named.
+    expect(await registry.routeRefusal('http://abcdef.onion', { resolveProxy: failing })).toEqual({
+      reason: 'proxy-or-tor',
+      via: 'onion',
+    });
+    expect(
+      await registry.routeRefusal('http://abcdef.onion', { resolveProxy: async () => 'DIRECT', torEndpoint: () => null })
+    ).toEqual({ reason: 'proxy-or-tor', via: 'onion' });
     expect(
       await registry.routeRefusal(REMOTE, { resolveProxy: async () => `SOCKS5 ${ARTI}`, torEndpoint: () => null })
     ).toEqual({ reason: 'proxy-or-tor', via: 'proxy' });
@@ -520,7 +532,7 @@ describe('subscription-registry: the route test', () => {
       expect(opened[0].cancel).toHaveBeenCalledTimes(1);
       await expect(
         registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY })
-      ).rejects.toMatchObject({ reason: 'proxy-or-tor', via: 'tor' });
+      ).rejects.toMatchObject({ reason: 'proxy-or-tor', via: 'onion' });
       expect(openSocket).toHaveBeenCalledTimes(1);
     });
 

@@ -1288,6 +1288,9 @@ const PROFILE_NODE_SERVICES = [
   {
     protocol: 'bee',
     label: 'Swarm',
+    // The profile names the Swarm node `bee`; the service registry names
+    // its service `ant` (service-registry.js).
+    registryKey: 'ant',
     modes: ['managed', 'external', 'disabled'],
     externalFields: [{ key: 'externalApi', label: 'API', placeholder: 'http://127.0.0.1:1633' }],
     // "Verify content from this node", and the note under it while it is off.
@@ -1347,6 +1350,12 @@ const PROFILE_NODE_SERVICES = [
       ].filter(Boolean),
   },
 ];
+
+// A node row's service in the registry: under the row's `registryKey`
+// where the registry names it differently from the profile, else under
+// its protocol.
+const registryServiceFor = (registry, definition) =>
+  registry?.[definition.registryKey || definition.protocol] || {};
 
 const SERVICE_DEFINITIONS = Object.fromEntries(
   PROFILE_NODE_SERVICES.map((definition) => [definition.protocol, definition])
@@ -1513,7 +1522,7 @@ const renderProfileNodes = (profile, registry, settings) => {
   const rows = visibleProfileServices(settings).map((definition) => {
     const protocol = definition.protocol;
     const config = nodes[protocol] || {};
-    const service = registry?.[protocol] || {};
+    const service = registryServiceFor(registry, definition);
     // An uncommitted edit (an external switch still missing its endpoint,
     // or one the main process refused) outlives the periodic re-render, so
     // the row keeps showing what the user picked next to why it was not

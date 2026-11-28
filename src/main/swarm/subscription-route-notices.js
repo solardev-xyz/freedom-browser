@@ -27,8 +27,11 @@
  *   that finds it changed, since a system or PAC proxy changes with no event
  *   and the surfaces read it again as they poll.
  *
- * The texts name Tor when what is in the way is Arti's endpoint, and "your
- * proxy" for any other proxy (the refusal's `via`). U-1, still with the
+ * The texts name Tor ("while Tor is on") only when the node's resolved route
+ * is Arti's endpoint, and "your proxy" for any other proxy (the refusal's
+ * `via`). An onion node is refused whatever its route; with neither in the
+ * way (Tor off, say) its texts say what holds then: the node is an .onion
+ * address, and live messages can't go through Tor. U-1, still with the
  * user, may change the test (`routeRefusal`) and these words: each is in one
  * place, the words in TEXTS below.
  */
@@ -41,6 +44,12 @@ const MAX_SITE_CHARS = 120;
 /** What is in the way, as the texts name it: Arti's endpoint, or any other proxy. */
 const inTheWay = (via) => (via === 'tor' ? 'Tor' : 'your proxy');
 
+/** Why live messages are off, after "Live messages … are off". */
+const why = (via, node) =>
+  via === 'onion'
+    ? `: ${node} is an .onion address, and they can't go through Tor`
+    : ` while ${inTheWay(via)} is on: they would go around it to ${node}`;
+
 /**
  * Every word question 4's surfaces show, in one place.
  * - `notice(site, via)`: the chrome's notice, for a site's subscription
@@ -50,12 +59,9 @@ const inTheWay = (via) => (via === 'tor' ? 'Tor' : 'your proxy');
  *   applies (the panel's words, as a sentence of the page's help text).
  */
 const TEXTS = Object.freeze({
-  notice: (site, via) =>
-    `Live messages from ${site} are off while ${inTheWay(via)} is on: they would go around it to your external Swarm node`,
-  panel: (via) =>
-    `Live messages are off while ${inTheWay(via)} is on: they would go around it to your external node`,
-  settings: (via) =>
-    `Live messages are off while ${inTheWay(via)} is on: they would go around it to your external node.`,
+  notice: (site, via) => `Live messages from ${site} are off${why(via, 'your external Swarm node')}`,
+  panel: (via) => `Live messages are off${why(via, 'your external node')}`,
+  settings: (via) => `Live messages are off${why(via, 'your external node')}.`,
 });
 
 /** None of the surfaces' lines: the condition doesn't apply. */
@@ -85,10 +91,10 @@ function displaySite(site) {
 function createSubscriptionRouteNotices({ checkRoute, nodeUrl, noticeWindow, chromeWindows }) {
   // The sites told this session.
   const told = new Set();
-  // The lines last pushed (JSON), and the latest read, so an older read
-  // that resolves late never pushes over a newer one.
+  // The lines last pushed (JSON), and the newest read: an older read that
+  // resolves late answers the newest read's lines, and never pushes its own.
   let pushed = null;
-  let reads = 0;
+  let newest = null;
 
   function send(win, channel, payload) {
     if (!win || win.isDestroyed?.() || win.webContents?.isDestroyed?.()) return false;
@@ -134,14 +140,20 @@ function createSubscriptionRouteNotices({ checkRoute, nodeUrl, noticeWindow, chr
 
   /**
    * The lines now, pushed to every browser window when they changed since
-   * the last push.
+   * the last push. A read that a newer one overtook answers the newest
+   * read's lines, so a surface's late reply never stands over a newer push.
    * @returns {Promise<{panel: string|null, settings: string|null}>}
    */
   async function refresh() {
-    const read = ++reads;
-    const now = await lines();
+    let read = lines();
+    newest = read;
+    let now = await read;
+    while (newest !== read) {
+      read = newest;
+      now = await read;
+    }
     const key = JSON.stringify(now);
-    if (read === reads && key !== pushed) {
+    if (key !== pushed) {
       pushed = key;
       let windows;
       try {

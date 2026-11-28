@@ -64,6 +64,7 @@ const IPC = require('../../shared/ipc-channels');
 const REMOTE = 'https://ant.example:1633';
 const LOOPBACK = 'http://127.0.0.1:1633';
 const BUNDLED = 'http://127.0.0.1:11633';
+const ONION = 'http://abcdefghijklmnop.onion';
 const ARTI = '127.0.0.1:19150';
 const PROXY = 'PROXY proxy.example:8080';
 const TOPIC = 'room:lobby';
@@ -74,6 +75,10 @@ const lines = (what) => ({
   panel: `Live messages are off while ${what} is on: they would go around it to your external node`,
   settings: `Live messages are off while ${what} is on: they would go around it to your external node.`,
 });
+const ONION_LINES = {
+  panel: "Live messages are off: your external node is an .onion address, and they can't go through Tor",
+  settings: "Live messages are off: your external node is an .onion address, and they can't go through Tor.",
+};
 const NO_LINES = { panel: null, settings: null };
 
 class FakeWebSocket {
@@ -235,6 +240,18 @@ describe('the notice, once per site per session', () => {
     ]);
   });
 
+  test('an onion node with Tor off: refused, and told so without saying Tor is on (Codex round 1)', async () => {
+    mockServices.url = ONION;
+    expect((await subscribe()).error).toMatchObject({ code: 4900, data: { reason: 'proxy-or-tor' } });
+    expect(global.WebSocket).not.toHaveBeenCalled();
+    expect(notices(mockWindows.all[0])).toEqual([
+      {
+        site: 'myapp.eth',
+        text: "Live messages from myapp.eth are off: your external Swarm node is an .onion address, and they can't go through Tor",
+      },
+    ]);
+  });
+
   test('a node on loopback still subscribes with a proxy on, and nobody is told anything', async () => {
     mockServices.url = LOOPBACK;
     proxy = PROXY;
@@ -257,11 +274,30 @@ describe("the Nodes panel's and Settings' line", () => {
     ['an external node on loopback, Tor on', LOOPBACK, `SOCKS5 ${ARTI}`, { socks: ARTI }, NO_LINES],
     ['the bundled node, a proxy on', BUNDLED, PROXY, null, NO_LINES],
     ['the bundled node, Tor on', BUNDLED, `SOCKS5 ${ARTI}`, { socks: ARTI }, NO_LINES],
+    ["an onion node behind Arti's endpoint", ONION, `SOCKS5 ${ARTI}`, { socks: ARTI }, lines('Tor')],
+    ['an onion node, DIRECT, with no Tor endpoint', ONION, 'DIRECT', null, ONION_LINES],
   ])('%s', async (_case, url, answer, tor, expected) => {
     mockServices.url = url;
     mockServices.tor = tor;
     proxy = answer;
     expect(await read()).toEqual(expected);
+  });
+
+  test('a slow read, then a newer push, then the slow read lands: it answers the newest lines', async () => {
+    let answer;
+    mockResolveProxy.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    // The panel opens and reads; its read waits on resolveProxy.
+    const slow = read();
+    await Promise.resolve();
+    expect(typeof answer).toBe('function');
+    // A proxy comes on and the node changes: the newer read pushes.
+    proxy = PROXY;
+    await serviceChanged('ant');
+    expect(sent(mockWindows.all[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([lines('your proxy')]);
+    // The slow read's own answer (DIRECT, from before) lands last.
+    answer('DIRECT');
+    expect(await slow).toEqual(lines('your proxy'));
+    expect(sent(mockWindows.all[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([lines('your proxy')]);
   });
 
   test('it follows Tor, the proxy and the node, pushed to every browser window', async () => {

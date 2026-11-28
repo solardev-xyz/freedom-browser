@@ -523,6 +523,66 @@ describe('bee-ui', () => {
       }
     });
 
+    // Codex round 1 on #1382: main's real notices behind the panel. The
+    // panel's read is slow, a node change pushes newer lines meanwhile, and
+    // then the slow read's reply lands: it must not stand over the push.
+    test("with main's real notices: a slow read's late reply never stands over a newer push", async () => {
+      const { createSubscriptionRouteNotices } = require('../../main/swarm/subscription-route-notices');
+      const IPC = require('../../shared/ipc-channels');
+      let pushToChrome = null;
+      const held = [];
+      const node = { refusal: null, slow: true };
+      const notices = createSubscriptionRouteNotices({
+        checkRoute: () =>
+          node.slow ? new Promise((resolve) => held.push(resolve)) : Promise.resolve(node.refusal),
+        nodeUrl: () => 'https://ant.example:1633',
+        noticeWindow: () => null,
+        chromeWindows: () => [
+          {
+            isDestroyed: () => false,
+            webContents: {
+              send: (channel, payload) => {
+                if (channel === IPC.SWARM_MESSAGES_ROUTE) pushToChrome?.(payload);
+              },
+            },
+          },
+        ],
+      });
+      const api = {
+        getRoute: jest.fn(() => notices.refresh()),
+        onRoute: jest.fn((handler) => {
+          pushToChrome = handler;
+        }),
+        onNotice: jest.fn(),
+      };
+      const ctx = await loadBeeModule({
+        antMenuOpen: true,
+        currentAntStatus: 'running',
+        mode: 'external',
+        statusResult: { status: 'running', error: null },
+        swarmMessages: api,
+      });
+      const line = ctx.elements.beeMessagesOffNotice;
+      ctx.mod.initAntUi();
+      await flushMicrotasks();
+      // The panel opened and read; the read waits (the node reached directly).
+      expect(api.getRoute).toHaveBeenCalledTimes(1);
+      expect(held).toHaveLength(1);
+
+      // A proxy comes on: main reads again at the change and pushes.
+      node.slow = false;
+      node.refusal = { reason: 'proxy-or-tor', via: 'proxy' };
+      await notices.refresh();
+      expect(line.hidden).toBe(false);
+      expect(line.textContent).toBe(PROXY.panel);
+
+      // The slow read's own answer, from before the change, lands last.
+      held[0](null);
+      await flushMicrotasks();
+      expect(line.hidden).toBe(false);
+      expect(line.textContent).toBe(PROXY.panel);
+    });
+
     test('a chrome with no such API leaves the line hidden', async () => {
       const ctx = await loadBeeModule({ antMenuOpen: true, currentAntStatus: 'running' });
       ctx.mod.initAntUi();

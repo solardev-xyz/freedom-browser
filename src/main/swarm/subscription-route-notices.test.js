@@ -35,6 +35,12 @@ const PROXY_LINES = {
   panel: 'Live messages are off while your proxy is on: they would go around it to your external node',
   settings: 'Live messages are off while your proxy is on: they would go around it to your external node.',
 };
+const ONION_NOTICE = (site) =>
+  `Live messages from ${site} are off: your external Swarm node is an .onion address, and they can't go through Tor`;
+const ONION_LINES = {
+  panel: "Live messages are off: your external node is an .onion address, and they can't go through Tor",
+  settings: "Live messages are off: your external node is an .onion address, and they can't go through Tor.",
+};
 const NO_LINES = { panel: null, settings: null };
 
 function fakeWindow() {
@@ -144,13 +150,30 @@ describe('the notice: once per site per browser session', () => {
     expect(world.windows[0].webContents.send).not.toHaveBeenCalled();
   });
 
-  test('the wording: Tor for Arti, "your proxy" for any other', () => {
+  test('the wording: Tor for Arti, "your proxy" for any other, and an onion node with neither', () => {
     expect(TEXTS.notice('myapp.eth', 'tor')).toBe(TOR_NOTICE('myapp.eth'));
     expect(TEXTS.notice('myapp.eth', 'proxy')).toBe(PROXY_NOTICE('myapp.eth'));
     // Anything but Arti is a proxy.
     expect(TEXTS.notice('myapp.eth', undefined)).toBe(PROXY_NOTICE('myapp.eth'));
     expect({ panel: TEXTS.panel('tor'), settings: TEXTS.settings('tor') }).toEqual(TOR_LINES);
     expect({ panel: TEXTS.panel('proxy'), settings: TEXTS.settings('proxy') }).toEqual(PROXY_LINES);
+    // An onion node with no Tor route: Tor isn't said to be on.
+    expect(TEXTS.notice('myapp.eth', 'onion')).toBe(ONION_NOTICE('myapp.eth'));
+    expect({ panel: TEXTS.panel('onion'), settings: TEXTS.settings('onion') }).toEqual(ONION_LINES);
+    for (const text of [TEXTS.notice('a.eth', 'onion'), TEXTS.panel('onion'), TEXTS.settings('onion')]) {
+      expect(text).not.toMatch(/Tor is on|your proxy/);
+    }
+  });
+
+  test('an onion node refused with Tor off: its notice says so, not that Tor is on', async () => {
+    Object.assign(world, { node: ONION, proxy: 'DIRECT', tor: null });
+    const refusal = await registry.checkRoute(ONION);
+    expect(refusal).toEqual({ reason: 'proxy-or-tor', via: 'onion' });
+    const notices = session();
+    notices.onRefused({ origin: 'myapp.eth', via: refusal.via, ended: false });
+    expect(sent(world.windows[0], IPC.SWARM_MESSAGES_NOTICE)).toEqual([
+      { site: 'myapp.eth', text: ONION_NOTICE('myapp.eth') },
+    ]);
   });
 
   test("a site's key is shown as it is, without control or format characters, and cut short when long", () => {
@@ -179,7 +202,11 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
     ['a remote external node behind a proxy', REMOTE, PROXY, null, PROXY_LINES],
     ["a remote external node behind Arti's endpoint", REMOTE, `SOCKS5 ${ARTI}; DIRECT`, ARTI, TOR_LINES],
     ['a remote external node behind another SOCKS proxy, with Tor on', REMOTE, 'SOCKS5 10.0.0.1:1080', ARTI, PROXY_LINES],
-    ['an onion node', ONION, 'DIRECT', ARTI, TOR_LINES],
+    ["an onion node behind Arti's endpoint", ONION, `SOCKS5 ${ARTI}`, ARTI, TOR_LINES],
+    ['an onion node behind another proxy', ONION, PROXY, null, PROXY_LINES],
+    // Codex round 1: DIRECT with no Tor endpoint never says Tor is on.
+    ['an onion node, DIRECT, with no Tor endpoint (Tor off)', ONION, 'DIRECT', null, ONION_LINES],
+    ['an onion node, DIRECT, while Arti runs', ONION, 'DIRECT', ARTI, ONION_LINES],
     ['a remote external node reached directly, with Tor on', REMOTE, 'DIRECT', ARTI, NO_LINES],
     ['a remote external node reached directly', REMOTE, 'DIRECT', null, NO_LINES],
   ])('%s', async (_case, node, proxy, tor, lines) => {
@@ -260,14 +287,18 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
     world.proxy = PROXY;
     expect(await notices.refresh()).toEqual(NO_LINES);
 
-    // An onion node.
+    // An onion node through Tor, then with Tor off.
     world.node = ONION;
+    world.proxy = `SOCKS5 ${ARTI}`;
     expect(await notices.refresh()).toEqual(TOR_LINES);
+    world.tor = null;
+    world.proxy = 'DIRECT';
+    expect(await notices.refresh()).toEqual(ONION_LINES);
 
-    expect(pushes()).toEqual([NO_LINES, PROXY_LINES, TOR_LINES, NO_LINES, TOR_LINES]);
+    expect(pushes()).toEqual([NO_LINES, PROXY_LINES, TOR_LINES, NO_LINES, TOR_LINES, ONION_LINES]);
   });
 
-  test('a read that resolves after a newer one never pushes over it', async () => {
+  test("a read a newer one overtook answers the newest read's lines, and never pushes its own", async () => {
     let answer;
     world.resolveProxy = jest
       .fn()
@@ -276,10 +307,32 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
     const notices = session();
     const older = notices.refresh();
     await Promise.resolve();
-    await notices.refresh();
+    expect(await notices.refresh()).toEqual(NO_LINES);
     answer(PROXY);
-    expect(await older).toEqual(PROXY_LINES);
+    expect(await older).toEqual(NO_LINES);
     expect(sent(world.windows[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([NO_LINES]);
+  });
+
+  test('a read overtaken by one still under way waits for it', async () => {
+    const answers = [];
+    world.resolveProxy = jest.fn(() => new Promise((resolve) => answers.push(resolve)));
+    const notices = session();
+    const first = notices.refresh();
+    await Promise.resolve();
+    const second = notices.refresh();
+    await Promise.resolve();
+    expect(answers).toHaveLength(2);
+    // The first read's answer lands first, while the second is under way.
+    answers[0]('DIRECT');
+    let firstDone = false;
+    first.then(() => (firstDone = true));
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(firstDone).toBe(false);
+    expect(sent(world.windows[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([]);
+    answers[1](PROXY);
+    expect(await first).toEqual(PROXY_LINES);
+    expect(await second).toEqual(PROXY_LINES);
+    expect(sent(world.windows[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([PROXY_LINES]);
   });
 
   test('a window that fails to take the push stops none of the others', async () => {
