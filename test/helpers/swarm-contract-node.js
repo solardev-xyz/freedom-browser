@@ -444,6 +444,25 @@ class ContractNode {
   }
 
   /**
+   * A node-side gate: holds `request`'s answer until a later request that
+   * `other` takes has reached the node, or for at most 1,000 turns of 5 ms
+   * (turns, not Date: the JS backend's runs freeze it), and notes on the
+   * request which ended the hold (`held`: the releasing request's path, or
+   * `timed out`).
+   */
+  async holdUntil(request, other) {
+    for (let turn = 0; turn < 1000; turn++) {
+      const by = this.requests.find((r) => r !== request && other(r));
+      if (by) {
+        request.held = by.path;
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    request.held = 'timed out';
+  }
+
+  /**
    * The node sends `base64`'s bytes as one frame on every open subscription
    * socket, then waits (at most 5 s) until `delivered()`, the document's
    * count of messages, has grown by one per socket. Resolves the sockets
@@ -780,7 +799,11 @@ class ContractNode {
   }
 }
 
-/** A request as the vectors write it (swarm-run.js `requestRecord`), its body whole up to 8 KiB. */
+/**
+ * A request as the vectors write it (swarm-run.js `requestRecord`), its
+ * body whole up to 8 KiB; and what ended its hold where a case's gate held
+ * it (`holdUntil`).
+ */
 function requestRecord(r, node) {
   const out = { via: r.via, method: r.method, path: r.path };
   if (r.query.length) out.query = r.query;
@@ -792,6 +815,7 @@ function requestRecord(r, node) {
   const feed = r.method === 'GET' && r.path.startsWith('/chunks/') ? node.feedIndex.get(r.path.slice(8)) : undefined;
   if (feed) out.feed = feed;
   if (r.socValid !== undefined) out.soc_valid = r.socValid;
+  if (r.held !== undefined) out.held = r.held;
   return out;
 }
 

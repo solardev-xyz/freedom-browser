@@ -18,7 +18,8 @@
  *
  * - **feed-service** (`withWriteLock`): two writes to one feed at once get
  *   consecutive indexes, never the same one; writes to two feeds go
- *   together, each at its own first index.
+ *   together (the second runs to its upload while the node holds the
+ *   first's), each at its own first index.
  * - **messaging-service** (`openSubscriptionSocket`): every frame the node
  *   sends reaches the document, in order, byte-identical repeats included;
  *   a node that refuses the subscription (close 1013 before the grace) is
@@ -28,13 +29,15 @@
  *   site's budget is its own.
  * - **swarm-provider-ipc**: a feed read on a node that isn't reachable is
  *   4900 `node-stopped`, before any feed request; and two blob reads at
- *   once can't both start past the read budget (the size is reserved
- *   before the join).
+ *   once can't both start past the read budget: the size is reserved
+ *   before the join, so the other is refused `rate_limited` before its
+ *   body is read.
  */
 
 const crypto = require('crypto');
 const { content } = require('./swarm-vectors');
 const { splitTree } = require('./swarm-contract-node');
+const { sameAnswer } = require('./swarm-contract-compare');
 
 const OTHER = 'https://other.example';
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -76,6 +79,10 @@ async function contractCases(swarm) {
   }
 
   // feed-service: writes to two topics go in parallel, each at its own index.
+  // The node holds the first SOC upload (inside its write's lock on both
+  // backends) until the other feed's reaches it, as the provider test holds
+  // one write while the other starts and ends: a lock shared by both topics
+  // would keep the second write from its upload until the hold timed out.
   {
     const kase = base('write-feed-rule');
     const beeJs = require('@ethersphere/bee-js');
@@ -86,6 +93,18 @@ async function contractCases(swarm) {
       topic: beeJs.Topic.fromString(`${kase.origin}/news`).toHex(),
       manifestReference: 'ce'.repeat(32),
     };
+    const isSoc = (r) => r.method === 'POST' && r.path.startsWith('/soc/');
+    kase.node.rules = [
+      {
+        match: { method: 'POST', prefix: '/soc/' },
+        times: 1,
+        reply: async (request, node) => {
+          await node.holdUntil(request, isSoc);
+          return node.own(request);
+        },
+      },
+      ...(kase.node.rules || []),
+    ];
     cases.push({
       ...kase,
       id: 'contract/feed-writes-two-feeds-at-once',
@@ -97,10 +116,20 @@ async function contractCases(swarm) {
         },
       ],
       check: (record) => {
+        const problems = [];
         const got = answers(record.steps[0]);
-        return show(got) === show([{ result: { index: 0 } }, { result: { index: 0 } }])
-          ? []
-          : [`answers ${show(got)}, against index 0 for each feed`];
+        if (show(got) !== show([{ result: { index: 0 } }, { result: { index: 0 } }])) {
+          problems.push(`answers ${show(got)}, against index 0 for each feed`);
+        }
+        const socs = record.steps[0].requests.filter(isSoc);
+        const held = socs.filter((r) => r.held !== undefined);
+        const other = socs.find((r) => !held.includes(r));
+        if (socs.length !== 2 || held.length !== 1 || !other || held[0].held !== other.path) {
+          problems.push(
+            `the first SOC upload held until the other feed's reached the node: ${show(socs.map((r) => ({ path: r.path, held: r.held })))}`
+          );
+        }
+        return problems;
       },
     });
   }
@@ -210,8 +239,13 @@ async function contractCases(swarm) {
   }
 
   // swarm-provider-ipc: two blob reads at once, past the anonymous budget.
+  // Each blob is within the per-read bound (512 KiB), so the read that
+  // doesn't fit what is left of the window is refused rate_limited, as the
+  // vectors record the reserve's refusal, and before its body is read: of
+  // the refused blob only its root chunk reaches the node.
   {
     const kase = base('read-data-524288-anonymous');
+    const refusal = base('read-data-reserve-refused').steps.at(-1).error;
     const length = 300000;
     const blobs = ['contract/a', 'contract/b'].map((seed) => ({ seed, length }));
     const refs = [];
@@ -223,7 +257,8 @@ async function contractCases(swarm) {
       suite: 'swarm-provider-ipc',
       steps: [{ concurrent: refs.map((reference) => ({ method: 'swarm_readData', plain: { reference } })) }],
       check: (record) => {
-        const got = answers(record.steps[0]);
+        const step = record.steps[0];
+        const got = answers(step);
         const read = got.filter((one) => one.result);
         const refused = got.filter((one) => one.error);
         const problems = [];
@@ -231,8 +266,14 @@ async function contractCases(swarm) {
         const bytes = Buffer.from(read[0].result.data, 'base64');
         const i = got.indexOf(read[0]);
         if (bytes.length !== length || sha256(bytes) !== sha256(content(blobs[i].seed, length))) problems.push('the read blob');
-        if (refused[0].error.code !== -32602 || !['data_too_large', 'rate_limited'].includes(refused[0].error.data?.reason)) {
-          problems.push(`the refusal ${show(refused[0])}`);
+        if (!sameAnswer(refused[0], { error: refusal })) problems.push(`the refusal ${show(refused[0])} against ${show({ error: refusal })}`);
+        // Only the read blob's body reaches the node (its join, ranged on
+        // `core`), and of the refused blob nothing but its root chunk.
+        const bodies = step.requests.filter((r) => r.path.startsWith('/bytes/')).map((r) => r.path);
+        if (show(bodies) !== show([`/bytes/${refs[i]}`])) problems.push(`body reads ${show(bodies)}, against /bytes/${refs[i]} alone`);
+        const ofRefused = step.requests.filter((r) => r.path.includes(refs[1 - i])).map((r) => `${r.method} ${r.path}`);
+        if (show(ofRefused) !== show([`GET /chunks/${refs[1 - i]}`])) {
+          problems.push(`the refused blob's requests ${show(ofRefused)}, against its root chunk alone`);
         }
         return problems;
       },
