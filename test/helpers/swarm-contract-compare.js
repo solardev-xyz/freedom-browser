@@ -326,6 +326,13 @@ function deviationOn(backend, kase) {
   return backend === 'core' ? kase.deviation : null;
 }
 
+/** The core's text for each transport failure class (fc-swarm-provider machine/node.rs). */
+const TRANSPORT_TEXTS = Object.freeze({
+  unreachable: 'fetch failed',
+  error: 'fetch failed: other side closed',
+  aborted: 'This operation was aborted',
+});
+
 /** What the core answers in a deviation's place: `exact` (the case's `core`), `cancelled`, `transport`, or the reference's. */
 function deviationWant(kase) {
   if (kase.core && typeof kase.core === 'object') return 'exact';
@@ -458,11 +465,15 @@ function compareCase(backend, kase, record) {
       return;
     }
     if (how === 'transport' && k === last) {
-      // One text per failure class: the reference's code and data, the
-      // core's text; and the reference's requests, which end at the failure.
-      const same = 'error' in got && got.error.code === want.error?.code && typeof got.error.message === 'string';
+      // One text per failure class (the vector's `core` names it, e.g.
+      // "(error)"): the reference's code and data, the core's exact text
+      // for that class (fc-swarm-provider machine/node.rs); and the
+      // reference's requests, which end at the failure.
+      const text = TRANSPORT_TEXTS[/\(([a-z]+)\)\s*$/.exec(String(kase.core ?? ''))?.[1]];
+      const same =
+        'error' in got && got.error.code === want.error?.code && text !== undefined && got.error.message === text;
       if (!same || !isDeepStrictEqual(got.error.data, want.error?.data)) {
-        problems.push(`step ${k}: a transport failure answered ${show(got)} against code ${want.error?.code}`);
+        problems.push(`step ${k}: a transport failure answered ${show(got)} against code ${want.error?.code} and ${show(text)}`);
       }
       deviated = got;
     } else if (!sameAnswer(fix(got, want), want)) {
