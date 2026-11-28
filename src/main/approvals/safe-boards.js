@@ -66,6 +66,13 @@
  * authorized every owner, so none is confirmed again, and its executor's
  * fee is the core's offer, confirmed in the panel by the ask main holds for
  * it (`fee_ack`), with no 'executor-send' token.
+ *
+ * Two of the core's states offer less (SAFE-3's PR 9; `core-sends.js`).
+ * An entry from an older version (`older`: no proposal mark of the core's,
+ * so no owner signs it) has no sweep and no automatic execution: its board
+ * says so and offers its discard, and its execution ("Send") only once it
+ * has its threshold. A Safe whose setup changed outside Freedom
+ * (`setupChanged`) offers only the discard. On js no state has either.
  */
 
 const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
@@ -78,8 +85,19 @@ const BOARD_KINDS = Object.freeze({
 const BOARD_KIND_SET = new Set(Object.values(BOARD_KINDS));
 
 // What a board shows: the owners to sign with, an execution to try again,
-// a superseded SafeTx's discard, or a discard to confirm.
-const STEPS = Object.freeze({ COLLECT: 'collect', RETRY: 'retry', SUPERSEDED: 'superseded', DISCARD: 'discard' });
+// a superseded SafeTx's discard, or a discard to confirm; on the core, an
+// entry from an older version (its discard, and its execution at the
+// threshold), or a changed Safe's discard.
+const STEPS = Object.freeze({
+  COLLECT: 'collect',
+  RETRY: 'retry',
+  SUPERSEDED: 'superseded',
+  DISCARD: 'discard',
+  OLDER: 'older',
+  CHANGED: 'changed',
+});
+// The names the core gives what changed of a Safe's setup (design 0016).
+const SETUP_NAMES = new Set(['singleton', 'owners', 'threshold', 'guard', 'handler', 'module']);
 
 // A device's own "declined" is a row's note; a closed QR is no note at all.
 const DECLINED = new Set(['LEDGER_USER_REJECTED', 'REMOTE_USER_REJECTED']);
@@ -109,7 +127,8 @@ const approved = (decision) => decision?.approve === true;
 /**
  * What a board's decision may choose, for the view main shows: an unsigned
  * owner of that view to sign with, its execution tried again, or (a send's)
- * discard. Anything else is refused, and the prompt stays.
+ * discard; an older entry's execution ("Send") once it has its threshold.
+ * Anything else is refused, and the prompt stays.
  */
 function boardChoices(board, view) {
   const unsigned = new Set(view.owners.filter((owner) => !owner.signed).map((owner) => owner.index));
@@ -128,8 +147,16 @@ function boardChoices(board, view) {
     if (keys.length !== 1) return null;
     if (raw.action === 'retry') return view.step === STEPS.RETRY ? { action: 'retry' } : null;
     if (raw.action === 'discard') return board === 'send' ? { action: 'discard' } : null;
+    if (raw.action === 'send') {
+      return board === 'send' && view.step === STEPS.OLDER && view.collected >= view.threshold ? { action: 'send' } : null;
+    }
     return null;
   };
+}
+
+/** What changed of the Safe's setup, as a send's state says (core-sends.js), or null. */
+function setupChangedOf(state) {
+  return Array.isArray(state?.setupChanged) ? state.setupChanged.filter((name) => SETUP_NAMES.has(name)) : null;
 }
 
 // Whether window `windowId` is open: then `onClosed` runs once it closes,
@@ -279,6 +306,8 @@ function createSafeBoards({
     view.tx = tx;
     view.transfer = transfer;
     view.executor = Number.isSafeInteger(state.executorIndex) ? accountOf(wallets, state.executorIndex) : null;
+    // A changed Safe's board names what changed, as the core said.
+    if (step === STEPS.CHANGED) view.changed = setupChangedOf(state) ?? [];
     return view;
   }
 
@@ -352,6 +381,7 @@ function createSafeBoards({
     const notes = new Map(); // owner index -> { note, message }
     let error = null; // { code, message }: why the last execution didn't land
     let confirming = false; // a send's discard, asked again
+    let sending = false; // an older entry's execution, chosen ("Send")
     let feeConfirmation = null;
     // The last decision's invocation, answered once what it started is done.
     let release = () => {};
@@ -466,10 +496,22 @@ function createSafeBoards({
       return null;
     }
 
+    // On the core (a send's): an entry from an older version, which no
+    // owner signs, and a Safe whose setup changed, which nothing signs or
+    // executes for.
+    const olderOf = (state) => board !== 'message' && state?.older === true;
+    const changedOf = (state) => board !== 'message' && setupChangedOf(state) !== null;
+
     try {
       let state = await readState();
       // The sweep when a board opens: the free vault signatures.
-      if (state && state.status !== 'superseded' && state.collected < state.threshold) {
+      if (
+        state &&
+        state.status !== 'superseded' &&
+        !olderOf(state) &&
+        !changedOf(state) &&
+        state.collected < state.threshold
+      ) {
         try {
           await api.sign(undefined);
         } catch {
@@ -483,7 +525,10 @@ function createSafeBoards({
         state = await readState();
         if (!state) return { outcome: 'gone' };
         const superseded = board !== 'message' && state.status === 'superseded';
-        if (!superseded && !confirming && !error && state.collected >= state.threshold) {
+        const changed = !superseded && changedOf(state);
+        // An older entry executes only once its "Send" is chosen.
+        const older = olderOf(state) && !sending;
+        if (!superseded && !changed && !older && !confirming && !error && state.collected >= state.threshold) {
           if (board === 'message') return { outcome: 'complete' };
           const done = await execute();
           if (done) return done;
@@ -493,9 +538,13 @@ function createSafeBoards({
           ? STEPS.DISCARD
           : superseded
             ? STEPS.SUPERSEDED
-            : error
-              ? STEPS.RETRY
-              : STEPS.COLLECT;
+            : changed
+              ? STEPS.CHANGED
+              : error
+                ? STEPS.RETRY
+                : olderOf(state)
+                  ? STEPS.OLDER
+                  : STEPS.COLLECT;
         const view = await viewOf(board, safeIndex, state, { step, notes, error });
         const stale = ended();
         if (stale) return stale;
@@ -541,6 +590,11 @@ function createSafeBoards({
         confirming = false;
         if (choice.action === 'retry') {
           error = null;
+          continue;
+        }
+        if (choice.action === 'send') {
+          // The older entry's execution, chosen: the next turn runs it.
+          sending = true;
           continue;
         }
         if (choice.action === 'sign') await signOwner(choice.owner, decision.handle);

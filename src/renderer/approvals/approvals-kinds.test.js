@@ -805,6 +805,76 @@ describe('the Safe signing boards (APS-3b)', () => {
     expect(boardChoices('send', funds)({ action: 'sign', owner: 5 })).toBeNull();
   });
 
+  // SAFE-3's PR 9 (the core's Safe backend): an entry from an older version,
+  // which no owner signs here, and a Safe changed outside Freedom.
+  test('an entry from an older version: its discard, and Send once it already has its threshold', () => {
+    const below = { ...SEND_BOARD, step: 'older' };
+    expect(checkMessage(message('wallet.safe_board', below)).valid).toBe(true);
+    const asked = render('wallet.safe_board', below);
+    expect([asked.heading, asked.approve]).toEqual(['Transaction from an older version', 'Discard transaction']);
+    expect(asked.body.textContent).toContain("This transaction was started in an older version of Freedom, so its owners can't sign it here.");
+    expect(asked.body.textContent).toContain('Discard it and send it again.');
+    expect(asked.body.textContent).not.toContain('It executes once enough owners have signed');
+    expect(radiosOf(asked.body)).toHaveLength(0);
+    expect(asked.form.choices()).toEqual({ action: 'discard' });
+    expect(boardChoices('send', below)({ action: 'send' })).toBeNull();
+    expect(boardChoices('send', below)({ action: 'sign', owner: 5 })).toBeNull();
+
+    const ready = { ...SEND_BOARD, collected: 2, step: 'older' };
+    const sendable = render('eth.safe_send', ready);
+    expect(sendable.approve).toBe('Send');
+    expect(sendable.body.textContent).toContain('It already has enough signatures, so you can still send it.');
+    expect(sendable.body.textContent).not.toContain('Sign with');
+    const labels = [];
+    sendable.form.watch((label) => labels.push(label));
+    expect(radiosOf(sendable.body)).toHaveLength(2);
+    expect(sendable.form.choices()).toEqual({ action: 'send' });
+    expect(boardChoices('send', ready)(sendable.form.choices())).toEqual({ action: 'send' });
+    pick(sendable.body, 1);
+    expect(sendable.form.choices()).toEqual({ action: 'discard' });
+    expect(boardChoices('send', ready)(sendable.form.choices())).toEqual({ action: 'discard' });
+    pick(sendable.body, 0);
+    expect(labels).toEqual(['Discard', 'Send']);
+    // A message's board has no Send, and a send's only on this step.
+    expect(boardChoices('message', { ...BOARD, collected: 2, step: 'older' })({ action: 'send' })).toBeNull();
+    expect(boardChoices('send', { ...SEND_BOARD, collected: 2 })({ action: 'send' })).toBeNull();
+  });
+
+  test('a Safe changed outside Freedom: only its discard, what changed named', () => {
+    const view = { ...SEND_BOARD, collected: 2, step: 'changed', changed: ['owners', 'module'] };
+    expect(checkMessage(message('wallet.safe_board', view)).valid).toBe(true);
+    const shown = render('wallet.safe_board', view);
+    expect([shown.heading, shown.approve, KINDS['wallet.safe_board'].reject(view)]).toEqual([
+      'Account changed outside Freedom',
+      'Discard transaction',
+      'Leave',
+    ]);
+    expect(shown.body.textContent).toContain("This account was changed outside Freedom, so Freedom can't sign or send this transaction.");
+    expect(shown.body.textContent).toContain('its owners and its modules');
+    expect(shown.body.textContent).not.toContain('Network fee');
+    expect(radiosOf(shown.body)).toHaveLength(0);
+    expect(shown.form.choices()).toEqual({ action: 'discard' });
+    expect(boardChoices('send', view)({ action: 'send' })).toBeNull();
+    expect(boardChoices('send', view)({ action: 'retry' })).toBeNull();
+    // Named by the core's names only, and only on a send's board.
+    expect(checkMessage(message('wallet.safe_board', { ...view, changed: ['<b>owners</b>'] })).valid).toBe(false);
+    expect(checkMessage(message('eth.safe_message', { ...VIEWS['eth.safe_message'], changed: [] })).valid).toBe(false);
+  });
+
+  test.each(['SAFE_UNVERIFIED', 'SAFE_NONCE_BEHIND', 'SAFE_STORE_FULL', 'SAFE_SELF_CALL', 'SAFE_CHANGED', 'SAFE_NOT_PROPOSED'])(
+    "the core's refusal (%s) in the wallet's words: an owner's note, and an execution's reason",
+    (code) => {
+      const { PLAIN_TEXTS } = require('../../main/wallet/safe/errors');
+      const text = PLAIN_TEXTS[code];
+      const noted = { ...SEND_BOARD, notes: [{ owner: 5, note: 'failed', message: text }] };
+      expect(checkMessage(message('wallet.safe_board', noted)).valid).toBe(true);
+      expect(render('wallet.safe_board', noted).body.textContent).toContain(text);
+      const failed = { ...SEND_BOARD, collected: 2, step: 'retry', error: { code: 'failed', message: text } };
+      expect(checkMessage(message('wallet.safe_board', failed)).valid).toBe(true);
+      expect(render('wallet.safe_board', failed).body.textContent).toContain(text);
+    }
+  );
+
   test('an approval waits on the device of the owner chosen to sign', () => {
     for (const kind of ['eth.safe_message', 'eth.safe_send', 'wallet.safe_board']) {
       const prompt = checkMessage(message(kind, VIEWS[kind]));

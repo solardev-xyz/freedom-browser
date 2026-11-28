@@ -1154,6 +1154,185 @@ describe('the execution: safe.execute (PR 4b)', () => {
   });
 });
 
+// SAFE-3's PR 9 (the plan's point 14, option (a)): an entry from before the
+// update carries no proposal mark of the core's, so no owner signs it; it
+// still discards, and executes at its threshold. A changed setup offers only
+// the discard. A core refusal with a code errors.js gives a text says it in
+// the wallet's words.
+describe('an entry from an older version, and a changed setup (PR 9)', () => {
+  const { PLAIN_TEXTS } = require('./errors');
+  // As the core's board gives it under the hello's safe3: no mark.
+  const OLD = Object.freeze({ ...BOARD, proposed: false });
+  const OLD_READY = Object.freeze({ ...READY, proposed: false });
+  const sign = (owner) => transactions.signSafePending(5, owner, { safeTxHash: SAFE_TX_HASH });
+  const execute = () => transactions.executeSafePending(5, { safeTxHash: SAFE_TX_HASH });
+  // Main's read-only copy of the core's entry (pending-store.js), with or
+  // without the core's mark.
+  const ENTRY = Object.freeze({
+    chainId: 100,
+    safeAddress: SAFE,
+    safeTxData: SAFE_TX,
+    safeTxHash: SAFE_TX_HASH,
+    threshold: 2,
+    signatures: [],
+    createdAt: 1764300000000,
+  });
+  const MARK = Object.freeze({ chainId: 100, safeAddress: SAFE, safeTxHash: SAFE_TX_HASH });
+  let copy = null;
+  let getPending = null;
+  const copyHolds = (entry) => {
+    copy = entry;
+  };
+
+  beforeEach(() => {
+    copy = null;
+    getPending = jest.spyOn(pendingStore, 'getPending').mockImplementation((index) => (index === 5 ? copy : null));
+  });
+  afterEach(() => getPending.mockRestore());
+
+  test("the board says it was started in an older version; signing is refused before anything is sent", async () => {
+    await setup({ 'safe.pending': { states: [OLD] } });
+    const [state] = await transactions.getAllSafeSendStates();
+    expect(state).toEqual({ ...OLD, older: true });
+    expect(await transactions.getSafeSendState(5)).toEqual({ ...OLD, older: true });
+    expect(coreSends.cachedState(5).older).toBe(true);
+    // The sweep, a vault owner, and a Ledger owner alike: the core would
+    // answer not_proposed, so nothing is sent.
+    for (const owner of [undefined, 1, 2]) {
+      await expect(sign(owner)).rejects.toMatchObject({ code: 'SAFE_NOT_PROPOSED', message: PLAIN_TEXTS.SAFE_NOT_PROPOSED });
+    }
+    expect(fake.sent('safe.sign_owner')).toEqual([]);
+    expect(safeApprovals.stepRunning(5)).toBe(false);
+  });
+
+  test("without the core's proposed (no safe3 yet), main's copy of the entry decides: no mark is older, the core's mark isn't", async () => {
+    await setup();
+    copyHolds({ ...ENTRY });
+    expect((await transactions.getSafeSendState(5)).older).toBe(true);
+    await expect(sign(undefined)).rejects.toMatchObject({ code: 'SAFE_NOT_PROPOSED' });
+    expect(fake.sent('safe.sign_owner')).toEqual([]);
+
+    // The core's mark for this Safe and SafeTx: proposed, its owners sign.
+    copyHolds({ ...ENTRY, coreProposal: MARK });
+    const state = await transactions.getSafeSendState(5);
+    expect(state).toEqual(BOARD);
+    expect(state).not.toHaveProperty('older');
+    await sign(undefined);
+    expect(fake.sent('safe.sign_owner')).toHaveLength(1);
+
+    // A mark for another SafeTx, or a copy of another entry, isn't this one's.
+    copyHolds({ ...ENTRY, coreProposal: { ...MARK, safeTxHash: OTHER_HASH } });
+    expect((await transactions.getSafeSendState(5)).older).toBe(true);
+    copyHolds({ ...ENTRY, safeTxHash: OTHER_HASH });
+    expect(await transactions.getSafeSendState(5)).not.toHaveProperty('older');
+  });
+
+  test("the core's own proposed decides over main's copy where it gives it", async () => {
+    await setup({ 'safe.pending': { states: [{ ...BOARD, proposed: true }] } });
+    copyHolds({ ...ENTRY });
+    expect(await transactions.getSafeSendState(5)).not.toHaveProperty('older');
+  });
+
+  test("the core's not_proposed where main didn't know: the wallet's text, and the board then says older", async () => {
+    await setup({ 'safe.sign_owner': refusal('not_proposed', "This transaction wasn't confirmed in Freedom") });
+    await transactions.getSafeSendState(5);
+    await expect(sign(1)).rejects.toMatchObject({
+      code: 'SAFE_NOT_PROPOSED',
+      message: PLAIN_TEXTS.SAFE_NOT_PROPOSED,
+      data: { safe: 'not_proposed' },
+    });
+    expect(coreSends.cachedState(5).older).toBe(true);
+    expect((await transactions.getSafeSendState(5)).older).toBe(true);
+    // The next is refused unsent.
+    await expect(sign(undefined)).rejects.toMatchObject({ code: 'SAFE_NOT_PROPOSED' });
+    expect(fake.sent('safe.sign_owner')).toHaveLength(1);
+    // Discarded, it's forgotten: another entry at that index is the core's to say.
+    await transactions.cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH });
+    expect((await transactions.getSafeSendState(5)).older).toBeUndefined();
+  });
+
+  test('its discard works: safe.discard naming the SafeTx the board showed', async () => {
+    await setup({ 'safe.pending': { states: [OLD] } });
+    await transactions.getSafeSendState(5);
+    const heard = [];
+    const stop = transactions.onSafeSendSettled((event) => heard.push(event));
+    await transactions.cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH });
+    stop();
+    expect(fake.sent('safe.discard').map((m) => m.params)).toEqual([{ safe: 5, safe_tx_hash: SAFE_TX_HASH }]);
+    expect(heard).toEqual([{ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' }]);
+  });
+
+  test("it executes at its threshold through safe.execute, the core's send signed with its token", async () => {
+    await setup({ 'safe.pending': { states: [OLD_READY] } });
+    const state = await execute();
+    expect(state).toMatchObject({ safeTxHash: SAFE_TX_HASH, status: 'executed', executed: { hash: expect.any(String) } });
+    expect(fake.sent('safe.execute').map((m) => m.params)).toEqual([{ safe: 5, safe_tx_hash: SAFE_TX_HASH }]);
+    expect(fake.sent('sign.transaction')[0].params.authorization).toEqual({ token: expect.stringMatching(/^exec-/), kind: 'executor-send' });
+    expect(fake.sent('safe.executed')).toHaveLength(1);
+    expect(fake.sent('safe.sign_owner')).toEqual([]);
+  });
+
+  test('below its threshold its execution is refused before anything is sent', async () => {
+    await setup({ 'safe.pending': { states: [OLD] } });
+    await expect(execute()).rejects.toMatchObject({
+      code: 'SAFE_NOT_PROPOSED',
+      message: expect.stringContaining('has 1 of 2 signatures'),
+    });
+    expect(fake.sent('safe.execute')).toEqual([]);
+    expect(fake.sent('sign.transaction')).toEqual([]);
+    expect(safeApprovals.stepRunning(5)).toBe(false);
+  });
+
+  test("a changed setup: safe.status's names, or a step's changed refusal, go on the board's state until the Safe reads unchanged", async () => {
+    await setup({
+      'safe.sign_owner': refusal('changed', 'This Safe was changed outside Freedom'),
+      'safe.pending': { states: [READY] },
+    });
+    // safe.status (core-accounts.js) read the Safe's owners and threshold changed.
+    coreSends.noteSetup(5, { state: 'changed', changed: ['owners', 'threshold', 'nonsense'] });
+    expect((await transactions.getSafeSendState(5)).setupChanged).toEqual(['owners', 'threshold']);
+    // An unverified status says nothing of it.
+    coreSends.noteSetup(5, { state: 'unverified', read: 'owners', why: 'unverified' });
+    expect(coreSends.cachedState(5).setupChanged).toEqual(['owners', 'threshold']);
+    coreSends.noteSetup(5, { state: 'unchanged' });
+    expect(coreSends.cachedState(5)).not.toHaveProperty('setupChanged');
+
+    // A step the core refused `changed`: the wallet's text, the Safe changed.
+    await expect(sign(1)).rejects.toMatchObject({ code: 'SAFE_CHANGED', message: PLAIN_TEXTS.SAFE_CHANGED });
+    expect(coreSends.cachedState(5).setupChanged).toEqual([]);
+    expect((await transactions.getAllSafeSendStates())[0].setupChanged).toEqual([]);
+    // A step that read the Safe and went on (the core's execution): unchanged again.
+    await execute();
+    expect(await transactions.getSafeSendState(5)).not.toHaveProperty('setupChanged');
+  });
+
+  test.each([
+    ['unverified', 'SAFE_UNVERIFIED'],
+    ['nonce_behind', 'SAFE_NONCE_BEHIND'],
+    ['store_full', 'SAFE_STORE_FULL'],
+    ['self_call', 'SAFE_SELF_CALL'],
+  ])("the core's %s: the wallet's text at every step, its code and data kept", async (named, code) => {
+    const core = refusal(named, "the core's own text");
+    await setup({ 'safe.prepare': core, 'safe.sign_owner': core, 'safe.execute': core, 'safe.pending': { states: [READY] } });
+    const expected = { code, message: PLAIN_TEXTS[code], data: { safe: named } };
+    // The send screen's confirmation, prepared first; an owner; the execution.
+    await expect(confirm(null)).rejects.toMatchObject(expected);
+    await transactions.getSafeSendState(5);
+    await expect(sign(1)).rejects.toMatchObject(expected);
+    await expect(execute()).rejects.toMatchObject(expected);
+    expect(PLAIN_TEXTS[code]).not.toMatch(/Safe|nonce/);
+  });
+
+  test.each([
+    ['store_full', 'SAFE_STORE_FULL'],
+    ['nonce_behind', 'SAFE_NONCE_BEHIND'],
+  ])("a proposal the core refuses %s: the wallet's text", async (named, code) => {
+    await setup({ 'safe.propose': refusal(named, "the core's own text") });
+    const { token } = await confirmOnChrome();
+    await expect(propose(token)).rejects.toMatchObject({ code, message: PLAIN_TEXTS[code] });
+  });
+});
+
 describe('what waits for later PRs is refused, nothing sent', () => {
   test("a site's send (PR 7), before its token is spent", async () => {
     await setup();
