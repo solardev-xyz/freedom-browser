@@ -129,6 +129,12 @@ test('a short narrow window keeps the bottom sheet inside the page area, below F
       await window.locator('#agent-run').scrollIntoViewIfNeeded();
       await expect.poll(() => hit(window, '#agent-run')).toBe(true);
       await expect.poll(() => hit(window, '#agent-sidebar-close')).toBe(true);
+      // The sheet settles after the resize and the shelf: read its place once
+      // it has (a single read right after could catch it mid-move, ~11.5px).
+      await expect.poll(async () => {
+        const { panel, status } = await geometry();
+        return panel.top - status.bottom;
+      }).toBeGreaterThanOrEqual(12);
       const { body, panel, find, status } = await geometry();
       expect(panel.top).toBeGreaterThanOrEqual(body.top);
       expect(panel.top).toBeGreaterThanOrEqual(find.bottom);
