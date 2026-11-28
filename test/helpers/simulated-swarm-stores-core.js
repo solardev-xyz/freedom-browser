@@ -28,7 +28,8 @@
  * - **the op** runs as the core's does (fc-swarm-provider's `ops/`): the
  *   chrome's identity ops as feed-store.js's IPC handlers run them (a
  *   change under the site's lock with `source: 'user'`, then the state with
- *   owners), main's own with `source: 'user'`, the manifest page path as
+ *   owners; the lock is the simulated core's own, since main's relay holds
+ *   main's while it waits), main's own with `source: 'user'`, the manifest page path as
  *   `checkPageManifest` and `decidePageManifest` run it after main's window
  *   checks (`live` main's answer to the guard), and the history's ops as
  *   publish-history.js's own functions, `add` and `update` among them (core
@@ -41,9 +42,20 @@
  * Each reference loads at its first use, in the module registry current
  * then.
  *
+ * **Site keys** (`origin`, `key`) are taken as main sends them: the core
+ * keys the stores by the permission keys main gives it and normalizes none
+ * again (fc-swarm-provider's `stores`), where the reference normalizes each
+ * (`normalizeOrigin`). So a key main sends that isn't normalized is
+ * recorded in `unnormalized` (`[method, op, member, value]`), which a
+ * suite checks is empty.
+ *
  * `fetchManifest({ for, url })` answers a check's `shell.swarm_manifest`
  * as main's handler would (`{ status, body_base64 }` or `{ failed: true }`;
  * by default `{ failed: true }`, which the check reads as unresolved).
+ * `for` is the check's envelope ID, as the core names it: each request
+ * that passes `requires` takes the next ID (from 1), and its
+ * `onSent(id, generation)` runs with it before the op, `generation` being
+ * `sim.generation` (1), as main's client reports a request written.
  * `fail(method, params)`, when set, runs before each op and fails it by
  * throwing (its error, with `code` `storage` unless it set one, as a
  * protocol error). `calls` records `[method, op, caller]`. `references()`
@@ -121,7 +133,7 @@ function thrownAnswer(err) {
 }
 
 function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null } = {}) {
-  const sim = { moved, fetchManifest, fail, calls: [] };
+  const sim = { moved, fetchManifest, fail, calls: [], unnormalized: [] };
   // Each reference is loaded at its first use, in the registry that is
   // current then (a suite that only uses the feed store never loads the
   // manifest store's grants).
@@ -144,15 +156,32 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     }
     return out;
   };
-  const lock = (key, task) =>
-    require('../../src/main/swarm/origin-mutation-lock').withOriginLock(key, task);
+  // The core's own keeper of a site's changes: not main's
+  // origin-mutation-lock, which main's relays hold while the core answers
+  // (feed-store.js's chrome handlers), so sharing it would wait for ever.
+  // The same queue per normalized site, a failed task not holding the next.
+  const tails = new Map();
+  const lock = (origin, task) => {
+    const { normalizeOrigin } = require('../../src/shared/origin-utils');
+    const key = normalizeOrigin(origin);
+    const result = (tails.get(key) || Promise.resolve()).then(task, task);
+    const settled = result.then(
+      () => undefined,
+      () => undefined
+    );
+    tails.set(key, settled);
+    settled.then(() => {
+      if (tails.get(key) === settled) tails.delete(key);
+    });
+    return result;
+  };
 
   // A check's fetch: main's `shell.swarm_manifest` answer as the
   // reference's `discover` reads a response; `{ failed: true }` throws, a
   // transport failure.
-  const manifestFetch = (key) => async (request) => {
+  const manifestFetch = (forId) => async (request) => {
     const answer = sim.fetchManifest
-      ? await sim.fetchManifest({ for: key, url: request.url })
+      ? await sim.fetchManifest({ for: forId, url: request.url })
       : null;
     if (!answer || answer.failed === true) throw new Error('fetch failed');
     const body = Buffer.from(answer.body_base64, 'base64');
@@ -277,11 +306,11 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
       check: [
         { key: S, url: S, eager: [B, false] },
         true,
-        ({ manifests }, m) =>
+        ({ manifests }, m, id) =>
           lock(m.key, () =>
             manifests.checkManifest(
               { origin: m.key, committedUrl: m.url, eager: m.eager },
-              { owner: 'page', fetchManifest: manifestFetch(m.key), fetchContext: {} }
+              { owner: 'page', fetchManifest: manifestFetch(id), fetchContext: {} }
             )
           ),
       ],
@@ -321,6 +350,10 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     if (options.requires && options.requires(hello) !== true) {
       throw new CoreError('requirement_unmet', "The core can't take this request");
     }
+    // Written: the request has its envelope ID.
+    sim.lastId += 1;
+    const id = sim.lastId;
+    options.onSent?.(id, sim.generation);
     if (!sim.moved) {
       throw new CoreError('not_moved', 'main still writes the Swarm stores', {
         store: SWARM_STORES,
@@ -339,6 +372,13 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     }
     const members = readMembers(method, name, params, spec);
     sim.calls.push([method, name, caller]);
+    const { normalizeOrigin } = require('../../src/shared/origin-utils');
+    for (const member of ['origin', 'key']) {
+      const value = members[member];
+      if (typeof value === 'string' && normalizeOrigin(value) !== value) {
+        sim.unnormalized.push([method, name, member, value]);
+      }
+    }
     if (sim.fail) {
       try {
         await sim.fail(method, params);
@@ -348,13 +388,16 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     }
     let result;
     try {
-      result = await run(references(), members);
+      result = await run(references(), members, id);
     } catch (err) {
       return thrownAnswer(err);
     }
     return { result_typed: writeTyped(result) };
   };
 
+  // The envelope IDs: the generation's number, and the last ID written.
+  sim.generation = 1;
+  sim.lastId = 0;
   sim.stores = createSwarmStores({ request: sim.request });
   sim.references = references;
   sim.restart = () => {

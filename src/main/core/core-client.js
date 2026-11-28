@@ -217,6 +217,25 @@ function storeMovedFor(backend, { swarmStores = SWARM_STORES_NAMED } = {}) {
 }
 
 /**
+ * Whether this process's hello names `swarm_stores`: the Swarm stores are
+ * then the core's, and main never opens their files (design 0015, D3; the
+ * SWM-6 to SWM-9 plan, point 1 and section 5). Main's store modules ask it
+ * to pick their writer: their own file on the JS backend, the core's typed
+ * calls (core/swarm-stores.js) once it is true. It is the hello's own
+ * list, `storeMovedFor` the latched backend, so it is fixed for the
+ * process. While no backend names the stores (`SWARM_STORES_NAMED` false,
+ * every build until PR 7.4) it is false without reading the switch, so a
+ * module that asks neither latches it nor loads it.
+ *
+ * @returns {boolean}
+ */
+function swarmStoresNamed() {
+  if (!SWARM_STORES_NAMED) return false;
+  const backend = require('../swarm/swarm-backend-kind').swarmBackendKind();
+  return storeMovedFor(backend).includes(SWARM_STORES);
+}
+
+/**
  * The hello answer's `store_moved`: the names of `sent` whose store the core
  * serves, each once. Absent (a core before 0.23.0, which ignores the field)
  * is none, `[]`; undefined for a malformed echo: not an array, longer than
@@ -480,6 +499,7 @@ module.exports = {
   STORES,
   STORE_MOVED,
   storeMovedFor,
+  swarmStoresNamed,
   requiresStore,
   // For tests.
   _internal: { coreService, validHello, withGrantArgs },
