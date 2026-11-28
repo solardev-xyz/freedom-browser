@@ -89,9 +89,12 @@ let abandonedDials = 0;
  * even while the session's proxy lookup ignores it. That work is abandoned:
  * the transport refuses to dial an aborted request once the lookup returns,
  * anything it still brings is discarded, and it is counted until it settles.
- * A write that ends so before its write session was ready (waiting for one,
- * or while it was prepared) was never dialled, and never will be: it fails
- * with an `AntNotDialled`, its cause the abort, so a caller can tell.
+ * A write that ends so before its request exists was never sent, and never
+ * will be: it fails with an `AntNotDialled`, its cause the abort, so a caller
+ * can tell. Its request exists from the moment the transport makes it
+ * (`netGatewayFetch`'s `onRequest`), the one point a byte of it can leave;
+ * every wait before (for a write session, the session's preparation, the
+ * onion gate's lookup) is undialled.
  */
 async function dialAnt(url, init, { session, fetchImpl }) {
   if (isLoopbackGatewayUrl(url)) {
@@ -104,8 +107,8 @@ async function dialAnt(url, init, { session, fetchImpl }) {
   }
   const write = init.method !== 'GET' && init.method !== 'HEAD';
   const release = write ? () => {} : announceMainProcessAntDial(url, init.method);
-  // A write's stage: `leased` once its write session is ready (`dialWrite`).
-  const stage = { leased: false };
+  // A write's stage: `dialled` once the transport makes its request.
+  const stage = { dialled: false };
   const dialling = Promise.resolve().then(() =>
     write
       ? dialWrite(url, init, session, stage)
@@ -124,9 +127,9 @@ async function dialAnt(url, init, { session, fetchImpl }) {
         .finally(() => {
           abandonedDials -= 1;
         });
-      // Not leased yet: its request doesn't exist, and won't (`dialWrite`
-      // refuses to dial once the session is ready).
-      if (write && !stage.leased && !(err instanceof AntNotDialled)) {
+      // No request yet, and none to come: the transport makes none for an
+      // aborted signal.
+      if (write && !stage.dialled && !(err instanceof AntNotDialled)) {
         throw new AntNotDialled('a write ended before it was dialled: not dialled', {
           cause: err,
         });
@@ -143,8 +146,7 @@ async function dialAnt(url, init, { session, fetchImpl }) {
  * (`ant-write-sessions.js`) and handed back once its reply is over: its
  * body's end, failure or cancel, or the dial's failure. A stream body is
  * cancelled when no session could be prepared, since nothing will pull it.
- * `stage.leased` marks the session ready: the request is made from there, in
- * the same turn (after the onion gate's lookup, for an onion host).
+ * `stage.dialled` is set as the transport makes its request.
  */
 async function dialWrite(url, init, source, stage) {
   let lease;
@@ -163,9 +165,13 @@ async function dialWrite(url, init, source, stage) {
     if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
     throw err;
   }
-  stage.leased = true;
   try {
-    const response = await netGatewayFetch(url, init, { session: lease.session });
+    const response = await netGatewayFetch(url, init, {
+      session: lease.session,
+      onRequest: () => {
+        stage.dialled = true;
+      },
+    });
     return endingWith(response, lease.release);
   } catch (err) {
     lease.release();

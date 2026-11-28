@@ -1027,7 +1027,7 @@ describe('a non-loopback Ant', () => {
       const [ses] = mockWriteSessions;
       const [url, init, deps] = mockNetGatewayFetch.mock.calls[0];
       expect(url).toBe(dialled);
-      expect(deps).toEqual({ session: ses });
+      expect(deps).toEqual({ session: ses, onRequest: expect.any(Function) });
       expect(source.resolveProxy).toHaveBeenCalledWith(dialled);
       expect(seen.proxy).toBe(SOCKS);
       expect(ses.closeAllConnections).toHaveBeenCalledTimes(1);
@@ -1174,14 +1174,31 @@ describe('a non-loopback Ant', () => {
         expect(abandonedAntDials()).toBe(0);
       });
 
-      test('once dialled, its end is the abort itself: it may have been sent', async () => {
+      test('before its request exists (the onion gate still asking), not dialled either', async () => {
         const source = writeSource();
+        // The transport waits on the write session's lookup, the request not made yet.
         mockNetGatewayFetch.mockImplementation(
           (_url, init) =>
             new Promise((_resolve, reject) =>
               init.signal.addEventListener('abort', () => reject(init.signal.reason))
             )
         );
+        const cancel = new AbortController();
+        const pending = post(source, new Uint8Array(1), { signal: cancel.signal });
+        while (mockNetGatewayFetch.mock.calls.length === 0) await new Promise(setImmediate);
+        cancel.abort();
+        await expect(pending).rejects.toMatchObject({ name: 'AntNotDialled' });
+      });
+
+      test('once dialled, its end is the abort itself: it may have been sent', async () => {
+        const source = writeSource();
+        // The transport makes the request (`onRequest`), which the node never answers.
+        mockNetGatewayFetch.mockImplementation((_url, init, deps) => {
+          deps.onRequest();
+          return new Promise((_resolve, reject) =>
+            init.signal.addEventListener('abort', () => reject(init.signal.reason))
+          );
+        });
         const cancel = new AbortController();
         const pending = post(source, new Uint8Array(1), { signal: cancel.signal });
         while (mockNetGatewayFetch.mock.calls.length === 0) await new Promise(setImmediate);

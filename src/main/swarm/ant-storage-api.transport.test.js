@@ -35,12 +35,35 @@ jest.mock('../logger', () => ({
 // makes a write session misbehave: `readBack`, the proxy it resolves whatever
 // it was set to; `setProxy` or `closeAllConnections`, an error its next such
 // call fails with.
-const mockChromium = { onDial: null, events: [], writeSession: {} };
+const mockChromium = { onDial: null, events: [], writeSession: {}, hold: null };
+
+/**
+ * `mockChromium.hold = { call, skip }` holds the session call named `call`
+ * (`source.resolveProxy`, `write.setProxy`, …) after `skip` more of them:
+ * it waits until `hold.release()`, then does what it would have; `reached`
+ * says it is waiting.
+ */
+async function mockGate(call) {
+  const hold = mockChromium.hold;
+  if (!hold || hold.call !== call) return;
+  if (hold.skip > 0) {
+    hold.skip -= 1;
+    return;
+  }
+  mockChromium.hold = null;
+  await new Promise((resolve) => {
+    hold.release = resolve;
+    hold.reached = true;
+  });
+}
 const mockWriteSessions = [];
 const mockDefaultSession = {
   name: 'default',
   proxy: 'DIRECT',
-  resolveProxy: jest.fn(async () => mockDefaultSession.proxy),
+  resolveProxy: jest.fn(async () => {
+    await mockGate('source.resolveProxy');
+    return mockDefaultSession.proxy;
+  }),
 };
 // The publish setup's own suite mocks the node's routes; here it runs on
 // the real calls, so only swarm-service's bee-js client is left out.
@@ -76,6 +99,7 @@ jest.mock('electron', () => {
           setSpellCheckerLanguages: jest.fn(),
           setSpellCheckerEnabled: jest.fn(),
           setProxy: jest.fn(async ({ pacScript }) => {
+            await mockGate('write.setProxy');
             const failure = mockChromium.writeSession.setProxy;
             if (failure) {
               delete mockChromium.writeSession.setProxy;
@@ -84,8 +108,9 @@ jest.mock('electron', () => {
             const script = Buffer.from(pacScript.split(',')[1], 'base64').toString('utf-8');
             proxy = JSON.parse(script.match(/return (".*");/)[1]);
           }),
-          forceReloadProxyConfig: jest.fn(async () => {}),
+          forceReloadProxyConfig: jest.fn(() => mockGate('write.forceReloadProxyConfig')),
           closeAllConnections: jest.fn(async () => {
+            await mockGate('write.closeAllConnections');
             const failure = mockChromium.writeSession.closeAllConnections;
             if (failure) {
               delete mockChromium.writeSession.closeAllConnections;
@@ -93,7 +118,10 @@ jest.mock('electron', () => {
             }
             mockChromium.events.push(`close ${partition}`);
           }),
-          resolveProxy: jest.fn(async () => mockChromium.writeSession.readBack ?? proxy),
+          resolveProxy: jest.fn(async () => {
+            await mockGate('write.resolveProxy');
+            return mockChromium.writeSession.readBack ?? proxy;
+          }),
         };
         mockWriteSessions.push(ses);
         return ses;
@@ -721,6 +749,66 @@ describe('a write whose deadline passes before it was dialled', () => {
       service.dispose();
       await endHolders(holders);
     }
+  });
+});
+
+// Codex round 3 on #1369: a write is possibly sent from the moment its
+// request is made, never before. A deadline at each wait between its lease
+// and that point leaves it certainly unsent, the request never made.
+describe('a deadline at each wait before the request exists', () => {
+  const ONION = 'http://antnode.onion:1633';
+  let deadline;
+  let timeoutSpy;
+  let proxyPort = 9200;
+  beforeEach(() => {
+    timeoutSpy = jest.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
+      deadline = new AbortController();
+      return deadline.signal;
+    });
+  });
+  afterEach(() => {
+    timeoutSpy.mockRestore();
+    mockChromium.hold = null;
+  });
+
+  test.each([
+    ['the request session’s proxy lookup', 'source.resolveProxy', 0],
+    ['setting the write session’s proxy', 'write.setProxy', 0],
+    ['reloading its proxy configuration', 'write.forceReloadProxyConfig', 0],
+    ['closing its connections', 'write.closeAllConnections', 0],
+    ['reading its proxy back', 'write.resolveProxy', 0],
+    // The write session's second lookup: the onion gate's, the session ready.
+    ['the onion gate’s lookup on it', 'write.resolveProxy', 1],
+  ])('%s: certain, and no request, then or after', async (_wait, call, skip) => {
+    mockRegistry.url = ONION;
+    // A new proxy each time, so the write session is set to it again.
+    proxyPort += 1;
+    mockDefaultSession.proxy = `SOCKS5 127.0.0.1:${proxyPort}`;
+    const dials = playChromium();
+    const hold = { call, skip };
+    mockChromium.hold = hold;
+    const pending = api.buyStorage({ depth: 20, amountPerChunk: '1' });
+    await waitFor(() => hold.reached === true, { what: `the held ${call}` });
+    deadline.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    try {
+      const res = await pending;
+      expect(res).toEqual({
+        ok: false,
+        status: 0,
+        data: null,
+        message: null,
+        timedOut: true,
+        unreachable: false,
+        refused: true,
+      });
+      expect(api.isUncertainWrite(res)).toBe(false);
+    } finally {
+      // The held call returns; the rest of the way still makes no request.
+      hold.release();
+      for (let n = 0; n < 5; n++) await new Promise(setImmediate);
+    }
+    expect(dials).toEqual([]);
+    expect(mockChromium.events.filter((e) => e.startsWith('dial'))).toEqual([]);
   });
 });
 
