@@ -32,7 +32,14 @@
  *   - **A Safe** (`safe`, `safe-message`): the token is spent for the Safe
  *     approval its owners present, and the message's session runs as
  *     before: the vault owners sign at once, and a device owner's signature
- *     goes through the Safe's board.
+ *     goes through the Safe's board. On the core's Safe backend
+ *     (FREEDOM_SAFE_BACKEND=core; freedom-core design 0016, "Messages";
+ *     SAFE-3's PR 5) main spends nothing: the token and the handle it was
+ *     minted for, `{ token, handle }` (or a site's rule, `{ standing }`),
+ *     go to `safe.message_start` under `page` with the request's
+ *     PageContext, which spends the token (or checks the rule) itself and
+ *     opens the session; its board's calls are the core's too
+ *     (`wallet/safe/core-messages.js`).
  *
  * Each presents the core's `payload` unchanged, so the spend binds what the
  * core bound for the request. After a device signs, main checks the
@@ -45,8 +52,9 @@
  * presented, and as the signer's last step, right before the device is
  * asked (`beforeSign`). A Safe's is never the sheet's (A7-3).
  *
- * The token is a bearer secret: it goes only to the core (its spend, or a
- * Ledger's `sign.*` on the core's backend), is never logged or put in an
+ * The token is a bearer secret: it goes only to the core (its spend, a
+ * Ledger's `sign.*` on the core's backend, or a Safe's
+ * `safe.message_start` on the core's), is never logged or put in an
  * error, and never reaches a renderer. Main discards it
  * once the step ends, spent or not.
  *
@@ -102,6 +110,8 @@ function defaultDeviceDependencies() {
     safeBoards: () => require('../approvals/safe-boards').getSafeBoards(),
     // Whether a Ledger's wait can be cancelled: the core's Ledger backend.
     ledgerCancels: () => require('../wallet/ledger/ledger-backend-kind').ledgerBackendKind() === 'core',
+    // Whether a Safe's message opens in the core: the core's Safe backend.
+    safeOnCore: () => require('../wallet/safe/safe-backend-kind').safeBackendKind() === 'core',
   };
 }
 
@@ -119,6 +129,7 @@ function createDeviceSigning(deps = {}) {
     cancelSafeMessage,
     safeBoards,
     ledgerCancels,
+    safeOnCore,
   } = { ...defaultDeviceDependencies(), ...deps };
 
   const discard = (token) => {
@@ -172,13 +183,17 @@ function createDeviceSigning(deps = {}) {
   }
 
   /**
-   * A Safe's message, on the Safe approval its token gave: a session main
-   * owns, bound to the requester, whose vault owners sign at once. A Safe
-   * that needs a device owner's signature shows its board (`eth.safe_message`,
-   * or main's board in the approvals document), and main completes the
-   * session on its approval. Cancelled if the request ends any other way.
+   * A Safe's message, on the Safe approval its token gave (`{ approval }`),
+   * or on the core's Safe backend with what `safe.message_start` presents
+   * (`{ authorization, page }`): a session main owns, bound to the
+   * requester, whose vault owners sign at once. A Safe that needs a device
+   * owner's signature shows its board (`eth.safe_message`, or main's board
+   * in the approvals document), and main completes the session on its
+   * approval. Cancelled if the request ends any other way. The session's
+   * token in the state is main's own on either backend (on the core, never
+   * the core's session ID).
    */
-  async function safeMessage(context, device, approval) {
+  async function safeMessage(context, device, authorized) {
     const { requester } = context;
     const { method, params } = device.payload;
     const safeIndex = device.account;
@@ -190,7 +205,7 @@ function createDeviceSigning(deps = {}) {
         display: { kind: 'message', site: requester.key, method },
         requester: { origin: requester.key, webContentsId: requester.guest },
         owner: 'main',
-        approval,
+        ...authorized,
       });
     } catch (err) {
       return failure(err);
@@ -241,7 +256,11 @@ function createDeviceSigning(deps = {}) {
    * against its request (`page-eip1193.js`): `{ type, kind, account,
    * payload, expectedHash?, handle, token }`, and `page`, the PageContext
    * main sent the request under. `agent`: the Agent's sheet approved it, so
-   * custody is checked again (A7-6).
+   * custody is checked again (A7-6). On the core's Safe backend a Safe's
+   * `{ device }` with `standing: true` (a site's rule, no token) opens under
+   * `{ standing }`, 0016's other form of `safe.message_start`; the relay
+   * admits only the token's form today, as the core answers no Safe's
+   * message by a rule yet (fc-eip1193's `sign.rs`).
    *
    * @returns {Promise<{result: string}|{error: object}>}
    */
@@ -278,6 +297,12 @@ function createDeviceSigning(deps = {}) {
         }
       }
       context.traceCoreToken?.('spent', device.kind);
+      if (device.type === 'safe' && safeOnCore()) {
+        // Spent by the core in `safe.message_start`, for this page and
+        // handle; a site's rule checked there instead.
+        const authorization = device.standing === true ? { standing: {} } : { token, handle: device.handle };
+        return await safeMessage(context, device, { authorization, page });
+      }
       if (device.type === 'safe') {
         let approval;
         try {
@@ -286,7 +311,7 @@ function createDeviceSigning(deps = {}) {
           return failure(err);
         }
         if (!approval) return failure(new Error('The identity core gave no Safe approval'));
-        return await safeMessage(context, device, approval);
+        return await safeMessage(context, device, { approval });
       }
       let signature;
       try {
