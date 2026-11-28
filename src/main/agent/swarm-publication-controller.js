@@ -30,6 +30,48 @@ const PUBLICATION_STATES = Object.freeze({
   OUTCOME_UNKNOWN: 'outcome_unknown',
 });
 
+/** Whether `value` is a promise (any thenable). */
+function isThenable(value) {
+  return (
+    (typeof value === 'object' || typeof value === 'function') && typeof value?.then === 'function'
+  );
+}
+
+/**
+ * The agent's own history writers (`addEntry`, `updateEntry`): its rows,
+ * origin `freedom://agent`, written before the upload and updated after it.
+ * publish-history.js's own functions, answered in the run, while main
+ * writes publish-history.sqlite; once the history is the core's (this
+ * process's hello names `swarm_stores`, freedom-core design 0015, D3; the
+ * SWM-6 to SWM-9 plan's PR 6.4), its `swarm.history` `add` and `update`, as
+ * `shell` (publish-history.js `coreOps`), each a promise. The controller
+ * awaits a promise where it can wait, logs the failure of one where it
+ * can't (`historyWritten`), and never awaits a plain answer, so on main's
+ * own store it runs as it always has.
+ */
+function mainHistoryWriters() {
+  const history = require('../swarm/publish-history');
+  const writer = (name) => (...args) => {
+    const ops = require('../core/core-client').swarmStoresNamed() ? history.coreOps : history;
+    return ops[name](...args);
+  };
+  return { addEntry: writer('addEntry'), updateEntry: writer('updateEntry') };
+}
+
+/**
+ * A history update no caller waits for (inside a step that can't): main's
+ * own store has answered in the run, or thrown there as it always has; the
+ * core's answer is a promise, and its failure is logged. Each such update
+ * is followed by another, sent after it (the core applies them in order)
+ * and awaited.
+ */
+function historyWritten(written) {
+  if (!isThenable(written)) return;
+  written.then(undefined, (error) => {
+    require('../logger').warn('[SwarmPublication] A history update failed:', error?.message);
+  });
+}
+
 function approved(decision) {
   return (
     decision === true ||
@@ -206,9 +248,7 @@ class SwarmPublicationController {
         : require('../swarm/publish-service'));
     const publishHistory =
       options.publishHistory ||
-      (options.addHistoryEntry && options.updateHistoryEntry
-        ? {}
-        : require('../swarm/publish-history'));
+      (options.addHistoryEntry && options.updateHistoryEntry ? {} : mainHistoryWriters());
     this.attachmentStore = options.attachmentStore;
     this.readAttachmentSource = options.readAttachmentSource || (async (descriptor) => {
       const root = descriptor.kind === 'folder' ? descriptor.path : path.dirname(descriptor.path);
@@ -389,13 +429,16 @@ class SwarmPublicationController {
     }
 
     const publicationId = this.publicationIdFactory();
-    const history = this.addHistoryEntry({
+    // The row, before the upload: the core's history answers with a
+    // promise, main's own in the run.
+    const added = this.addHistoryEntry({
       type: source.kind === 'folder' ? 'directory' : source.kind === 'file' ? 'file' : 'data',
       name: draft ? `${source.name} (private draft link)` : source.name,
       status: 'uploading',
       origin: AGENT_PUBLISH_ORIGIN,
       ...(Number.isSafeInteger(source.bytes) && { bytesSize: source.bytes }),
     });
+    const history = isThenable(added) ? await added : added;
     const operation = {
       publicationId,
       ownerId,
@@ -423,12 +466,16 @@ class SwarmPublicationController {
     catch (error) {
       operation.state = PUBLICATION_STATES.FAILED;
       operation.message = 'Publication could not be recorded. No upload was sent; check available disk space before retrying.';
-      this.updateHistoryEntry(operation.historyId, { status: 'failed', errorMessage: operation.message });
+      const failed = this.updateHistoryEntry(operation.historyId, { status: 'failed', errorMessage: operation.message });
+      if (isThenable(failed)) await failed;
       throw error;
     }
 
     const onAbort = () => { operation.stopRequested = true; };
     context.signal?.addEventListener('abort', onAbort, { once: true });
+    // A cancel while the core wrote the row (its answer awaited above) came
+    // before the listener; main's own store answers in the run, so never.
+    if (context.signal?.aborted) onAbort();
     const active = this.#run(operation, source, input, context.onProgress);
     active.finally(() => context.signal?.removeEventListener('abort', onAbort)).catch(() => {});
     this.active.set(publicationId, active);
@@ -604,7 +651,7 @@ class SwarmPublicationController {
         if (observed.kind === 'timeout') {
           // The transport may still resolve. Retain its late receipt without
           // waking a stopped turn or dispatching any further network request.
-          Promise.resolve(upload).then(result => {
+          Promise.resolve(upload).then(async result => {
             if (!this.operations.has(operation.publicationId)) return;
             try {
               this.#recordUploadResult(operation, result);
@@ -617,7 +664,8 @@ class SwarmPublicationController {
               operation.error = safeMessage(error, 'The Swarm publication failed');
               operation.message = 'Upload failed. The existing postage batch was retained.';
               // History still holds the timeout's "outcome is unknown" text.
-              this.updateHistoryEntry(operation.historyId, { status: 'failed', errorMessage: operation.error });
+              const failed = this.updateHistoryEntry(operation.historyId, { status: 'failed', errorMessage: operation.error });
+              if (isThenable(failed)) await failed;
             }
             this.#emitProgress(operation);
           }).catch(() => {});
@@ -645,7 +693,8 @@ class SwarmPublicationController {
       operation.error = safeMessage(error, 'The Swarm publication failed');
       operation.message = operation.state === 'outcome_unknown' ? 'Publication could not be confirmed. Inspect the existing upload before retrying.' : operation.dispatched ? 'Upload failed. The existing postage batch was retained.' : 'Publication could not start. Check postage readiness.';
       if (error?.capacity) operation.error += ` Upload: ${error.capacity.uploadBytes} bytes; required with safety margin: ${error.capacity.requiredBytes} bytes; largest usable batch remaining: ${error.capacity.largestRemainingBytes} bytes.`;
-      this.updateHistoryEntry(operation.historyId, { status: operation.state === 'failed' ? 'failed' : 'uploading', errorMessage: operation.error });
+      const recorded = this.updateHistoryEntry(operation.historyId, { status: operation.state === 'failed' ? 'failed' : 'uploading', errorMessage: operation.error });
+      if (isThenable(recorded)) await recorded;
       this.#emitProgress(operation, onProgress);
       throw error instanceof AutomationError ? error : new AutomationError(
         [ERROR_CODES.POSTAGE_CAPACITY_INSUFFICIENT, ERROR_CODES.POSTAGE_UNAVAILABLE].includes(error?.code) ? error.code : ERROR_CODES.CAPABILITY_UNAVAILABLE,
@@ -659,7 +708,8 @@ class SwarmPublicationController {
       // The node ignored Swarm-Encrypt. Never present this as a private link,
       // but record where the now-public content is, so the user can check it.
       operation.unencryptedReference = result.reference;
-      this.updateHistoryEntry(operation.historyId, { status: 'failed', reference: result.reference, bzzUrl: `bzz://${result.reference}` });
+      // The failure's own update (errorMessage) follows this one.
+      historyWritten(this.updateHistoryEntry(operation.historyId, { status: 'failed', reference: result.reference, bzzUrl: `bzz://${result.reference}` }));
       operation.failureKnown = true;
       throw new Error(`The node did not encrypt this upload: it returned the unencrypted reference ${result.reference}. Treat the content as public, and do not share it as a private draft link.`);
     }
@@ -710,7 +760,8 @@ class SwarmPublicationController {
     if (operation.stableAddress && operation.stableAddress.updated !== true) operation.message += ' · the stable address was not updated';
     delete operation.error;
     if (verified.kind === 'error') operation.error = safeMessage(verified.error, 'Retrieval could not be verified');
-    this.updateHistoryEntry(operation.historyId, { status: 'completed', reference: operation.reference, bzzUrl: operation.bzzUrl, tagUid: operation.tagUid, batchIdUsed: operation.batchId });
+    const completed = this.updateHistoryEntry(operation.historyId, { status: 'completed', reference: operation.reference, bzzUrl: operation.bzzUrl, tagUid: operation.tagUid, batchIdUsed: operation.batchId });
+    if (isThenable(completed)) await completed;
     this.#emitProgress(operation, onProgress);
   }
 
