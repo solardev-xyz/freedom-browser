@@ -53,6 +53,49 @@ const NODE_URL = 'http://127.0.0.1:1633';
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
+// 0009's tree geometry (freedom-core `fc-swarm`'s tree.rs, Bee's and Ant's
+// joiners), for the verified walk's expected calls (`verifiedWalk`).
+const CHUNK = 4096;
+const MAX_REFS = 128;
+// The data references a full intermediate holds at each redundancy level
+// (Bee `GetMaxShards`).
+const MAX_SHARDS = [128, 119, 107, 97, 39];
+// The walk's chunk calls open at once (read_data.rs `OPEN_AT_ONCE`).
+const OPEN_AT_ONCE = 8;
+
+/** A span's redundancy level and its value without it (Bee `DecodeSpan`: a top byte past 128 carries the level). */
+function decodeSpan(span) {
+  const plain = Buffer.from(span);
+  if (plain[7] > 128) {
+    const level = plain[7] & 0x7f;
+    plain[7] = 0;
+    return { level, value: Number(plain.readBigUInt64LE(0)) };
+  }
+  return { level: 0, value: Number(plain.readBigUInt64LE(0)) };
+}
+
+/** The data children a node of `span` bytes has at `branching` (Bee `ReferenceCount`). */
+function dataShards(span, branching) {
+  let branchSize = CHUNK;
+  let levels = 1;
+  while (branchSize < span) {
+    branchSize *= branching;
+    levels += 1;
+  }
+  let referenceSize = CHUNK;
+  for (let i = 1; i + 1 < levels; i++) referenceSize *= branching;
+  let shards = 1;
+  for (let offset = referenceSize; offset < span; offset += referenceSize) shards += 1;
+  return shards;
+}
+
+/** Each data child's length but the last's (Bee `subtrieSection`). */
+function branchSize(refs, span, branching) {
+  let branch = CHUNK;
+  while (span - branch * (refs - 1) > branch) branch *= branching;
+  return branch;
+}
+
 /** The usable batch the vectors' cases use (swarm-cases.js `batch`). */
 function batch(over = {}) {
   return {
@@ -496,6 +539,11 @@ class ContractNode {
     let body = reply.body ?? Buffer.alloc(0);
     if (reply.json !== undefined) body = Buffer.from(JSON.stringify(reply.json));
     if (typeof body === 'string') body = Buffer.from(body, 'utf8');
+    // What a `/bytes` read was sent, for the verified walk's leaf check
+    // (`verifiedWalk`).
+    if (request.method === 'GET' && request.path.startsWith('/bytes/')) {
+      request.served = reply.chunked ? Buffer.concat(reply.pieces || [body]) : body;
+    }
     const headers = { ...(reply.headers || {}) };
     if (reply.json !== undefined && !headers['content-type']) headers['content-type'] = 'application/json; charset=utf-8';
     if (reply.chunked) {
@@ -527,6 +575,103 @@ class ContractNode {
       return typeof rule.reply === 'function' ? rule.reply(request, this) : rule.reply;
     }
     return this.own(request);
+  }
+
+  /**
+   * The node calls design 0015's verified walk (`read-data-verified`;
+   * freedom-core `fc-swarm-provider`'s read_data.rs, over 0009's geometry
+   * in `fc-swarm`'s tree.rs) makes for `root`'s tree after its root chunk,
+   * each in the wire form the suite compares on `core` and with its group:
+   *
+   * - `tree`: each intermediate chunk under the root, level by level, as
+   *   `GET /chunks/<address>`;
+   * - `bytes`: the leaves as one `GET /bytes/<root>` with `range:
+   *   bytes=0-<size − 1>` (and main's `accept-encoding` as fetch sends it
+   *   beside a range), answered `status` (the reference's join's);
+   * - `leaves`: when the node streamed the whole size (`served`), each leaf
+   *   whose streamed bytes aren't at its address, as `GET /chunks/<leaf>`.
+   *   The first answer ends the walk (a leaf's own chunk never holds the
+   *   bytes that failed it), so only those the walk opens at once reach the
+   *   node: the first eight.
+   *
+   * Each child's length is its parent's geometry's, never its own span's,
+   * and parities are never read. A tree this can't read (a chunk the node
+   * doesn't hold, too few references) throws: the suite then needs this
+   * extended, not a looser comparison.
+   */
+  verifiedWalk(root, { status, served }) {
+    const { core } = this.libs;
+    const read = (address) => {
+      const wire = this.chunks.get(address);
+      if (!wire || wire.length < 8) throw new Error(`the verified walk of ${root}: the node holds no chunk ${address}`);
+      return { span: wire.subarray(0, 8), payload: wire.subarray(8) };
+    };
+    const top = read(root);
+    const size = decodeSpan(top.span).value;
+    if (size <= CHUNK) return [];
+    const walk = [];
+    const leaves = [];
+    const childrenOf = (chunk, length) => {
+      const { level } = decodeSpan(chunk.span);
+      const branching = MAX_SHARDS[level] ?? MAX_REFS;
+      const shards = dataShards(length, branching);
+      if (chunk.payload.length < shards * 32) throw new Error(`the verified walk of ${root}: an intermediate with too few references`);
+      const branch = branchSize(shards, length, branching);
+      const out = [];
+      for (let i = 0; i < shards; i++) {
+        const before = branch * i;
+        const childLength = i + 1 === shards ? length - before : Math.min(branch, length - before);
+        if (childLength > 0) out.push({ address: chunk.payload.subarray(i * 32, i * 32 + 32).toString('hex'), length: childLength });
+      }
+      return out;
+    };
+    // Level by level for the fetches; depth-first for the leaves' order.
+    const nodes = [{ address: root, length: size, chunk: top, children: null }];
+    for (let at = 0; at < nodes.length; at++) {
+      const node = nodes[at];
+      node.children = childrenOf(node.chunk, node.length).map((child) => {
+        if (child.length <= CHUNK) return { leaf: child };
+        walk.push({ group: 'tree', request: { method: 'GET', path: `/chunks/${child.address}`, status: 200 } });
+        const inner = { ...child, chunk: read(child.address), children: null };
+        nodes.push(inner);
+        return { inner };
+      });
+    }
+    let start = 0;
+    const order = (node) => {
+      for (const child of node.children) {
+        if (child.inner) {
+          order(child.inner);
+          continue;
+        }
+        leaves.push({ ...child.leaf, start });
+        start += child.leaf.length;
+      }
+    };
+    order(nodes[0]);
+    // Main's `accept-encoding: identity` reaches the node twice: fetch
+    // appends it again to a request with a `range` (the Fetch standard's
+    // HTTP-network-or-cache fetch: "If httpRequest's header list contains
+    // `Range`, then append (`Accept-Encoding`, `identity`)").
+    const headers = [
+      ['accept-encoding', 'identity, identity'],
+      ['range', `bytes=0-${size - 1}`],
+    ];
+    walk.push({ group: 'bytes', request: { method: 'GET', path: `/bytes/${root}`, headers, status } });
+    if (Buffer.isBuffer(served) && status >= 200 && status < 300 && served.length === size) {
+      const failed = leaves.filter(
+        (leaf) =>
+          core.makeContentAddressedChunk(served.subarray(leaf.start, leaf.start + leaf.length), BigInt(leaf.length)).address.toHex() !==
+          leaf.address
+      );
+      for (const leaf of failed.slice(0, OPEN_AT_ONCE)) {
+        walk.push({
+          group: 'leaves',
+          request: { method: 'GET', path: `/chunks/${leaf.address}`, status: this.chunks.has(leaf.address) ? 200 : 404 },
+        });
+      }
+    }
+    return walk;
   }
 
   /** Whether a SOC upload's signature is its owner's, as a node checks it before anything else. */
