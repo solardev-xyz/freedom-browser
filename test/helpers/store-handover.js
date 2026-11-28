@@ -4,9 +4,10 @@
  * (freedom-core design 0013, "One writer per store: `store_moved`"): the
  * pinned binary and the previous release (design 0013's "previous core
  * release", scripts/fetch-freedom-cored-previous.js), a client whose hello
- * names the stores a test chooses, a spy on main's writes, file digests and
- * directory snapshots, a process's open files, and one request per write of
- * each set-A store.
+ * names the stores a test chooses, a spy on main's writes, a watch of every
+ * touch of a store's files with whose it was (SWM-6's gates), file digests
+ * and directory snapshots, a process's open files, and one request per
+ * write of each set-A store.
  */
 
 const crypto = require('crypto');
@@ -156,6 +157,154 @@ function watchWrites(pattern, { forbidReads = false } = {}) {
     },
     restore() {
       for (const [, spy] of spies) spy.mockRestore();
+    },
+  };
+}
+
+// Every `fs` call that takes a path, for `watchFileTouches`: opens, reads,
+// writes, stats, streams and watches, sync, callback and promise forms.
+const FS_PATH_CALLS = [
+  'access',
+  'appendFile',
+  'chmod',
+  'chown',
+  'copyFile',
+  'cp',
+  'createReadStream',
+  'createWriteStream',
+  'exists',
+  'lchown',
+  'link',
+  'lstat',
+  'lutimes',
+  'mkdir',
+  'open',
+  'openAsBlob',
+  'readFile',
+  'readlink',
+  'realpath',
+  'rename',
+  'rm',
+  'rmdir',
+  'stat',
+  'statfs',
+  'symlink',
+  'truncate',
+  'unlink',
+  'utimes',
+  'watch',
+  'watchFile',
+  'writeFile',
+];
+const FS_PATH_CALLS_SYNC = FS_PATH_CALLS.filter(
+  (name) =>
+    !['createReadStream', 'createWriteStream', 'openAsBlob', 'watch', 'watchFile'].includes(name)
+).map((name) => `${name}Sync`);
+const FS_PROMISE_PATH_CALLS = FS_PATH_CALLS.filter(
+  (name) =>
+    !['createReadStream', 'createWriteStream', 'exists', 'openAsBlob', 'watchFile'].includes(name)
+).concat(['lchmod']);
+
+const REFERENCE_MODULES = path.join(ROOT, 'test', 'helpers', 'reference-');
+
+/** The files of a V8 stack's frames, innermost first. */
+function stackFiles(stack) {
+  const files = [];
+  for (const line of String(stack).split('\n').slice(1)) {
+    const found = /\(([^()]+):\d+:\d+\)$/.exec(line) || /at ([^\s()]+):\d+:\d+$/.exec(line);
+    if (found) files.push(found[1]);
+  }
+  return files;
+}
+
+/**
+ * Whether a touch's stack is main's: its innermost frame outside Node,
+ * node_modules and the watching files (`skip`) is a module under src/ that
+ * isn't a test, and no frame is a reference module's
+ * (test/helpers/reference-*.js), which may call main's helpers.
+ */
+function isMainStack(files, skip) {
+  if (files.some((file) => file.startsWith(REFERENCE_MODULES))) return false;
+  const inner = files.find(
+    (file) =>
+      path.isAbsolute(file) && !file.split(/[\\/]/).includes('node_modules') && !skip.includes(file)
+  );
+  if (!inner) return false;
+  const rel = path.relative(ROOT, inner);
+  return rel.split(/[\\/]/)[0] === 'src' && !/\.test\.js$/.test(rel);
+}
+
+/**
+ * Watches every touch of a file whose path `matches` (a function of the
+ * path's text), by any `fs` call that takes a path (`FS_PATH_CALLS`, each
+ * form), across every module registry (Node's `fs` is shared), until
+ * `restore()`. `record(name, target)` records another kind of touch (a
+ * spied better-sqlite3 open) from where it is called. Each touch is `{
+ * name, path, files, main }`: the call, the path, its stack's files, and
+ * whether main made it (`isMainStack`, `skip` naming the files whose frames
+ * are the watch's own, a test file that records from its spies). `mark()`
+ * and `since(mark)` read the touches from a point on; `allowed(fn)` runs
+ * `fn` with main's touches kept apart (`allowedTouches()`), for a run
+ * where main is the files' writer by design (the JS backend's).
+ */
+function watchFileTouches(matches, { skip = [] } = {}) {
+  const touches = [];
+  const allowed = [];
+  let allowing = 0;
+  const own = [__filename, ...skip];
+  const matching = (value) =>
+    (typeof value === 'string' || value instanceof URL || Buffer.isBuffer(value)) &&
+    matches(String(value));
+  const record = (name, target) => {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 100;
+    const { stack } = new Error();
+    Error.stackTraceLimit = limit;
+    const files = stackFiles(stack);
+    const touch = { name, path: String(target), files, main: isMainStack(files, own) };
+    (touch.main && allowing > 0 ? allowed : touches).push(touch);
+  };
+  const restores = [];
+  const wrap = (target, name, label) => {
+    const original = target[name];
+    if (typeof original !== 'function') return;
+    const wrapper = function watched(...args) {
+      for (const arg of args.slice(0, 2)) {
+        if (matching(arg)) {
+          record(label, arg);
+          break;
+        }
+      }
+      return original.apply(this, args);
+    };
+    for (const key of Reflect.ownKeys(original)) {
+      if (['length', 'name', 'prototype'].includes(key)) continue;
+      Object.defineProperty(wrapper, key, Object.getOwnPropertyDescriptor(original, key));
+    }
+    target[name] = wrapper;
+    restores.push(() => {
+      target[name] = original;
+    });
+  };
+  for (const name of [...FS_PATH_CALLS, ...FS_PATH_CALLS_SYNC]) wrap(fs, name, name);
+  for (const name of FS_PROMISE_PATH_CALLS) wrap(fs.promises, name, `promises.${name}`);
+  return {
+    record,
+    touches: () => [...touches],
+    mainTouches: () => touches.filter((touch) => touch.main),
+    mark: () => touches.length,
+    since: (mark) => touches.slice(mark),
+    async allowed(fn) {
+      allowing += 1;
+      try {
+        return await fn();
+      } finally {
+        allowing -= 1;
+      }
+    },
+    allowedTouches: () => [...allowed],
+    restore() {
+      for (const undo of restores.splice(0).reverse()) undo();
     },
   };
 }
@@ -346,6 +495,7 @@ module.exports = {
   coredBinaries,
   startCore,
   watchWrites,
+  watchFileTouches,
   digests,
   snapshot,
   openFiles,
