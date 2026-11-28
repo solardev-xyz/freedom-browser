@@ -201,4 +201,28 @@ describe('service-registry', () => {
       })
     );
   });
+
+  test('tells its in-process listeners which service changed, after the change', () => {
+    const { mod } = loadServiceRegistry();
+    const heard = [];
+    const failing = jest.fn(() => {
+      throw new Error('listener failed');
+    });
+    mod.onServiceChange(failing);
+    const off = mod.onServiceChange((service) => heard.push([service, mod.getAntApiUrl()]));
+
+    mod.updateService('ant', { api: 'https://ant.example', mode: mod.MODE.EXTERNAL });
+    mod.clearService('tor');
+    // A status message isn't a change of the service's state.
+    mod.setStatusMessage('ant', 'Running');
+    expect(heard).toEqual([
+      ['ant', 'https://ant.example'],
+      ['tor', 'https://ant.example'],
+    ]);
+    expect(failing).toHaveBeenCalledTimes(2);
+
+    off();
+    mod.clearService('ant');
+    expect(heard).toHaveLength(2);
+  });
 });

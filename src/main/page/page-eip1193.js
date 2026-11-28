@@ -115,7 +115,11 @@
  *     now, with nothing awaited: whether the request is still open and its
  *     document still holds its key, and whether the Agent holds its tab. A
  *     DNS name over IPNS is the core's to resolve: it checks the name after
- *     main's recheck, then asks main once more (cored 0.21.0, APR-5f).
+ *     main's recheck, then asks main once more (cored 0.21.0, APR-5f). One
+ *     handler and one registry of running requests serve it for
+ *     window.swarm's `swarm.request` too (page-core-requests.js; design
+ *     0015's 2026-11-28 amendment), while the two asks below find only
+ *     this relay's requests.
  *   - **`eip1193.select_chain { request, page, chain_id }`:** a switch's
  *     selection, for the chain the page asked for and nothing else: main
  *     selects it for the request's window and sends `chainChanged` as its
@@ -127,6 +131,7 @@
  */
 
 const { ShellError, REQUIREMENT_UNMET } = require('../core/service-client');
+const { bindingOf, pageContextOf, createCoreRequests, getCoreRequests } = require('./page-core-requests');
 const { txOf, selectorOf } = require('./page-core-sends');
 const { feeCheckError, FEE_CHECK_ASK_AGAIN } = require('../wallet/fee-check');
 
@@ -190,13 +195,6 @@ const TX_FIELDS = Object.freeze({
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const HEX = /^0x(?:[0-9a-fA-F]{2})*$/;
-const PAGE_FIELDS = Object.freeze(['origin', 'top_origin', 'frame', 'navigation', 'agent']);
-// What the core echoes of a PageContext: its fields, and `transport_key`
-// where main sent one (cored 0.21.0, APR-5f), never a null.
-const ECHO_FIELDS = new Set([...PAGE_FIELDS, 'transport_key']);
-// A DNS name over IPNS: the document's transport key, `ipns://` and the
-// IPNS key's letters and digits (design 0011's binding).
-const IPNS_TRANSPORT = /^ipns:\/\/[A-Za-z0-9]+$/;
 // The methods the core checks a bound document's name for (design 0012,
 // APR-5f and APR-5f-2): never the reads, `eth_chainId` or `net_version`.
 const NAME_CHECKED = new Set([
@@ -224,7 +222,6 @@ const CUSTODY_LOST = Object.freeze({
 });
 const ACCOUNT_UNAVAILABLE = Object.freeze({ code: INTERNAL_ERROR_CODE, message: 'The selected wallet is unavailable' });
 const SELECT_KEYS = new Set(['request', 'page', 'chain_id']);
-const RECHECK_KEYS = new Set(['request', 'page']);
 const PROMPT_KEYS = new Set(['request', 'prompt', 'page', 'kind', 'view', 'choices']);
 // D12's pause is read only for a send's rule (APB-4c): the core reads it
 // nowhere else, and a missing one counts as paused.
@@ -261,19 +258,6 @@ function checksNames(version) {
 // What a bound document's request requires of the process it is written
 // to (service-client's `requires`): a hello from a core that checks names.
 const checksNamesFor = (hello) => checksNames(hello?.core_version);
-
-/**
- * A document's name binding: its transport key for a DNS name over IPNS
- * (its key differs from its transport key, which is `ipns://` and letters
- * and digits), `null` for a document with no binding, and `false` for a key
- * that differs from a transport key of any other form, which no check can
- * pass.
- */
-function bindingOf(requester) {
-  const { key, transportKey } = requester;
-  if (!key || key === transportKey) return null;
-  return typeof transportKey === 'string' && IPNS_TRANSPORT.test(transportKey) ? transportKey : false;
-}
 
 const positive = (value) => (Number.isSafeInteger(value) && value > 0 ? value : null);
 const hex = (chainId) => `0x${chainId.toString(16)}`;
@@ -522,6 +506,10 @@ function feeStopped(view) {
 
 /**
  * @param {object} [deps] injected for tests; each defaults to main's own.
+ *   `coreRequests` is the registry the relay's requests run in and its
+ *   `approval.recheck` reads (page-core-requests.js): main's one relay
+ *   takes the shared one (`getEip1193Relay`); by default a relay has its
+ *   own.
  */
 function createEip1193Relay(deps = {}) {
   const {
@@ -539,10 +527,14 @@ function createEip1193Relay(deps = {}) {
     discardToken,
     agentPrompt,
     safeOnCore,
+    coreRequests,
   } = { ...defaultDependencies(), ...deps };
 
-  // `${generation}:${id}` -> the request main sent the core, while it runs.
-  const running = new Map();
+  // The requests main sent the core, while they run: shared with window.swarm
+  // on the core's backend for main's one relay (`getEip1193Relay`), so one
+  // `approval.recheck` serves both (page-core-requests.js); a relay of its
+  // own for a test.
+  const running = coreRequests || createCoreRequests();
 
   const read = (fn, fallback) => {
     try {
@@ -606,20 +598,7 @@ function createEip1193Relay(deps = {}) {
    * and for a DNS name over IPNS its transport key (APR-5f), under which
    * the core checks the name itself. Omitted for any other document.
    */
-  function pageOf(context) {
-    const { requester } = context;
-    const page = context.pageContext();
-    const out = {
-      origin: requester.key || '',
-      top_origin: requester.topKey || requester.key || '',
-      frame: page.frame,
-      navigation: page.navigation,
-      agent: page.agent === true,
-    };
-    const binding = bindingOf(requester);
-    if (binding) out.transport_key = binding;
-    return out;
-  }
+  const pageOf = pageContextOf;
 
   // What a keyless document gets for a method whose name the core checks.
   const keylessAnswer = (method) => (method === 'eth_accounts' ? { result: [] } : { error: { ...NO_ADDRESS } });
@@ -914,7 +893,7 @@ function createEip1193Relay(deps = {}) {
     }
     const body = { method, world };
     if (params !== undefined) body.params = params;
-    const entry = { context, method, page, params, world, client, announce, id: null, generation: null };
+    const entry = { family: 'eip1193', context, method, page, params, world, client, announce, id: null, generation: null };
     entry.override = null;
     entry.granted = null;
     // The handle main approved the core's prompt on, for this request, and
@@ -930,7 +909,7 @@ function createEip1193Relay(deps = {}) {
     entry.sheet = false;
     entry.heard = null;
     entry.paymentId = undefined;
-    let key = null;
+    let remove = null;
     let answer;
     let reply = null;
     try {
@@ -941,15 +920,14 @@ function createEip1193Relay(deps = {}) {
         onSent: (id, generation) => {
           entry.id = id;
           entry.generation = generation;
-          key = `${generation}:${id}`;
-          running.set(key, entry);
+          remove = running.add(generation, id, entry);
         },
       });
     } catch (err) {
       // Refused in main, unsent: the process it would go to checks no name.
       answer = requires && err?.code === REQUIREMENT_UNMET ? keylessAnswer(method) : failure(err);
     } finally {
-      if (key !== null && running.get(key) === entry) running.delete(key);
+      remove?.();
     }
     if (!answer && isDevice(reply)) answer = await deviceAnswer(entry, reply.device, device);
     if (!answer && isSend(reply)) answer = await sendAnswer(entry, reply.send, send);
@@ -974,19 +952,9 @@ function createEip1193Relay(deps = {}) {
     return final;
   }
 
-  // The request a core's request names, with the PageContext main sent.
-  function runningFor(params, generation, keys) {
-    if (!isPlainObject(params) || !hasOnlyKeys(params, keys) || !Number.isSafeInteger(params.request)) throw invalid();
-    const entry = running.get(`${generation}:${params.request}`);
-    if (!entry) throw invalid();
-    const page = params.page;
-    if (!isPlainObject(page) || !hasOnlyKeys(page, ECHO_FIELDS)) throw invalid();
-    if (!PAGE_FIELDS.every((field) => page[field] === entry.page[field])) throw invalid();
-    // The transport key echoed as main sent it: a missing, null or other
-    // one for a bound page is crossed, and so is one for a page sent none.
-    if (page.transport_key !== entry.page.transport_key) throw invalid();
-    return entry;
-  }
+  // The EIP-1193 request a core's request names, with the PageContext main
+  // sent: a Swarm request named here is crossed.
+  const runningFor = (params, generation, keys) => running.entryFor(params, generation, keys, 'eip1193');
 
   function grantWritten(entry, chainId) {
     let settle;
@@ -1385,11 +1353,9 @@ function createEip1193Relay(deps = {}) {
   // awaited: the request still open, its document current and holding its
   // key. A bound document's name is the core's to check, before and after
   // its first recheck, and its last recheck follows that lookup (APR-5f).
+  // The registry's one handler: a Swarm request's too, on the shared one.
   async function approvalRecheck(params, { generation } = {}) {
-    const entry = runningFor(params, generation, RECHECK_KEYS);
-    const { context } = entry;
-    const live = !context.signal.aborted && context.isCurrent() && context.holdsKey();
-    return { live, agent: context.pageContext().agent === true };
+    return running.recheck(params, { generation });
   }
 
   // The chain the page asked for, as main's own switch read it.
@@ -1446,7 +1412,11 @@ function createEip1193Relay(deps = {}) {
     return {};
   }
 
-  /** Serve the core's requests about the page requests main relays. */
+  /**
+   * Serve the core's requests about the page requests main relays, and the
+   * core's recheck for every request on the relay's registry (window.swarm's
+   * on the core's backend too, page-swarm-core.js).
+   */
   function attach(client) {
     client.handle('approval.request', approvalRequest);
     client.handle('approval.recheck', approvalRecheck);
@@ -1460,15 +1430,19 @@ function createEip1193Relay(deps = {}) {
     approvalRequest,
     approvalRecheck,
     selectChain,
-    running: () => running.size,
+    running: () => running.size('eip1193'),
   };
 }
 
 let shared = null;
 
-/** Main's relay, shared by the page dispatchers and the core's client. */
+/**
+ * Main's relay, shared by the page dispatchers and the core's client, on
+ * main's one registry of the core's page requests (page-core-requests.js),
+ * whose `approval.recheck` it serves for window.swarm's too.
+ */
 function getEip1193Relay() {
-  if (!shared) shared = createEip1193Relay();
+  if (!shared) shared = createEip1193Relay({ coreRequests: getCoreRequests() });
   return shared;
 }
 
