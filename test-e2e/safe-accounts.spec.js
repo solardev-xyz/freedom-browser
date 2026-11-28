@@ -12,6 +12,12 @@
 // executor's fee are asked in the window's approvals panel (freedom-core
 // design 0011, APS-3 and APS-3b); the summary of an executed send shows in
 // the sidebar.
+//
+// With FREEDOM_SAFE_BACKEND=core (the `e2e-safe` job runs it both ways) the
+// Safe runs on freedom-cored (design 0016, SAFE-3), which judges an
+// executor's fee itself, on the fee evidence it read through the fork's two
+// endpoints: the spec gives it the evidence each case wants through them
+// (safe-fixtures.js `refuseFeeReads`), never through main's fixture.
 
 const { Wallet, parseEther } = require('ethers');
 const { test, expect, safeE2eAvailable, VAULT_PASSWORD } = require('./safe-fixtures');
@@ -21,6 +27,19 @@ test.skip(
   !safeE2eAvailable(),
   'anvil (foundry) or the Gnosis fork RPC not available — Safe E2E needs both'
 );
+
+// The core's Safe backend (wallet/safe/safe-backend-kind.js), as the app
+// launched here reads it (safe-fixtures.js passes the environment on).
+const SAFE_ON_CORE = process.env.FREEDOM_SAFE_BACKEND === 'core';
+
+/**
+ * Main asks the core's own `chain.fee_reference` for Gnosis now; the core
+ * keeps the reply as its fee evidence (for up to 60 s, then it reads its
+ * own again). Resolves the reply.
+ */
+function askCoreFeeReference(electronApp) {
+  return electronApp.evaluate(() => globalThis.__FREEDOM_TEST_HARNESS__.askCoreFeeReference(100));
+}
 
 /**
  * Create a 1-of-2 Safe through the wizard, see its blocking state, and fund
@@ -160,12 +179,14 @@ test('create, activate, and send from a Safe account', async ({ window: win, anv
   const recipient = await sendFromSafe(win, electronApp);
 
   // Confirm hands over to main's board; with a 1-of-2 vault owner the free
-  // signature meets the threshold and execution runs on its own. The
+  // signature meets the threshold and execution runs on its own. On js the
   // executor presents the SafeTx's Safe approval (freedom-core design 0012,
   // APB-1c), which the core checks against its own fee evidence: the
   // harness's fee reference is main's, so the core has none, stops it, and
-  // the fee is asked as an executor-send token, confirmed in the panel.
-  // The sidebar shows the executed send.
+  // the fee is asked as an executor-send token, confirmed in the panel. On
+  // the core's Safe backend the core's `safe.execute` judges the fee on the
+  // evidence it reads itself, from the fork's two endpoints, which agree:
+  // it goes ahead with no ask. The sidebar shows the executed send.
   await confirmFeesInPanel(electronApp, async () => (await win.locator('#safe-signing-title').textContent()) === 'Transaction sent');
   await win.click('#safe-signing-done');
   await expectReceived(anvil, recipient);
@@ -191,6 +212,14 @@ test("a Safe's activation and execution wait for the user to confirm their fee",
 
   // No reference: the activation fee couldn't be compared.
   await setFeeReference({ header: null, lowest_priority: null, quote: null });
+  if (SAFE_ON_CORE) {
+    // The core's evidence: asked while neither endpoint answers a fee read,
+    // it holds no quote, and the activation (within its 60 s) is judged on
+    // it. Then the endpoints answer again, for the activation's own quote.
+    anvil.refuseFeeReads(['first', 'second']);
+    expect((await askCoreFeeReference(electronApp)).quote).toBeNull();
+    anvil.refuseFeeReads([]);
+  }
   await win.click('#safe-status-activate');
   await expect(win.locator('#sidebar-vault-unlock')).toBeVisible({ timeout: 15_000 });
   await win.fill('#vault-unlock-password-input', VAULT_PASSWORD);
@@ -225,6 +254,13 @@ test("a Safe's activation and execution wait for the user to confirm their fee",
       answered: 1,
     },
   });
+  if (SAFE_ON_CORE) {
+    // The core's evidence: the second endpoint refuses the fee reads from
+    // now on, so what the core holds (asked now, or read again once stale)
+    // is the first endpoint's word alone.
+    anvil.refuseFeeReads(['second']);
+    expect((await askCoreFeeReference(electronApp)).quote).toMatchObject({ answered: 1 });
+  }
   await fundSafe(win, anvil, safeAddress);
   const recipient = await sendFromSafe(win, electronApp);
   // The board's execution waits for the executor's fee, asked in the panel.

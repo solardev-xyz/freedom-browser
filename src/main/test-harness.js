@@ -1237,6 +1237,14 @@ function exposeGlobalShim(agentRuntime) {
       feeReferenceFixture = reply ?? DEFAULT_FEE_REFERENCE;
       require('./wallet/fee-check')._shared.clear();
     },
+    // Main asks the core's own `chain.fee_reference` for `chainId` now,
+    // whatever the fixture above, and resolves its reply. The core keeps
+    // the reply as the chain's fee evidence, for up to 60 s, which the
+    // checks it makes itself judge by (a Safe executor's fee on the core's
+    // Safe backend, freedom-core design 0016; a site's rule, 0012): a spec
+    // gives the core its evidence through the chain's endpoints, then this.
+    askCoreFeeReference: (chainId) =>
+      require('./networks/chain-data').getFeeReference(chainId, { deadlineMs: 30_000 }),
     // Profile-launch recording (see installProfileLaunchRecorder). Specs read
     // these to confirm a profile "open"/switch fired for the expected id.
     profileLaunches: () => profileLaunches.map((entry) => ({ ...entry })),

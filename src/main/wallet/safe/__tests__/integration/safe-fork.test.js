@@ -1,171 +1,115 @@
 /**
- * Fork-chain verification of the Safe reproducible-address story
- * (research doc Part B, decision 5): the record's init params predict,
- * from the pinned proxy code, the address the real factory deploys, and
- * a deployment after the fact claims funds that were sent to the address
- * before it existed. Safes are created on Gnosis only (#1066: no other
- * chain has a pinned deployment).
+ * A Safe on forked Gnosis through the real freedom-cored (freedom-core
+ * design 0016; the SAFE-3 plan's point 11 and PR 10): the canonical Safe
+ * 1.4.1 contracts on an anvil fork of live Gnosis check what the core and
+ * main sign, with main's own modules on the core's Safe and Ledger backends
+ * (test/helpers/safe-core-world.js, as safe-core.integration.test.js runs
+ * them over a stub).
  *
- * Runs the real SafeExecutor against an anvil fork of live Gnosis —
- * canonical safe-deployments factories only, real protocol-kit
- * encoding, the real transaction-service broadcast path. Only the signer
- * seam is faked (well-known anvil test keys stand in for vault/Ledger/
- * phone owners; they all sign the same EIP-712 payload).
+ * The owners are the vault's own accounts (the core's vault, imported from
+ * a test phrase) and a Ledger, the reference's device (ledger.json's
+ * `typed-safe-tx`) behind main's relay and HID layer over a fake node-hid,
+ * signing the live SafeTx. Accounts are funded with `anvil_setBalance`.
+ * Chain 100 has two endpoints, anvil and a forwarder in front of it
+ * (test-e2e/rpc-forwarder.js), named as two providers through the
+ * test-only seam FREEDOM_E2E_PROVIDER_IDENTITIES as the Safe E2E names
+ * them, so the core's quorum agrees and its Safe reads are verified.
  *
- * Needs `anvil` (foundry) on PATH and network access to the public fork
- * RPCs; skips cleanly otherwise (CI has neither).
+ * - The record's address, computed by the core, is the one the real
+ *   factory deploys at, and the deployment claims funds sent to it before
+ *   it existed (research doc Part B, decision 5).
+ * - A 2-of-3 SafeTx signed by the Ledger (through the device) and a vault
+ *   owner, executed by the real Safe with the core's executor-send token,
+ *   moves those funds.
+ * - A page's `personal_sign` answered with the vault owners' signatures,
+ *   which the real Safe's fallback handler accepts (`isValidSignature`,
+ *   EIP-1271).
+ *
+ * Needs `anvil` (foundry) on PATH, the public fork RPC, freedom-cored
+ * (FREEDOM_CORED_PATH, or `npm run core:download`'s) and the Ledger vectors
+ * (test/helpers/ledger-vectors.js); skips otherwise, unless
+ * FREEDOM_SAFE_FORK_REQUIRED=1 (CI's Safe E2E job), which makes a missing
+ * one a failure, e.g.
+ *   FREEDOM_SAFE_FORK_REQUIRED=1 FREEDOM_CORE_LEDGER_VECTORS=…/freedom-core/vectors \
+ *     npx jest src/main/wallet/safe/__tests__/integration/safe-fork
  */
 
+const ANVIL_PORT = 18845;
+const FORWARDER_PORT = 18846;
+const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
+const FORWARDER_URL = `http://127.0.0.1:${FORWARDER_PORT}`;
+// Before main's modules load (networks/e2e-provider-identities.js reads it
+// once): anvil and its forwarder, two providers to the core's quorum.
+process.env.FREEDOM_E2E_PROVIDER_IDENTITIES = JSON.stringify({
+  [ANVIL_URL]: 'fork-anvil',
+  [FORWARDER_URL]: 'fork-anvil-forwarder',
+});
+
+const mockWorld = {};
+require('../../../../../../test/helpers/safe-core-world').mockSafeCoreModules(mockWorld);
+
+const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
+const { Interface, Wallet, getAddress, hashMessage, parseEther } = require('ethers');
 const {
-  AbiCoder,
-  Wallet,
-  JsonRpcProvider,
-  keccak256,
-  parseEther,
-  hashMessage,
-  Interface,
-  TypedDataEncoder,
-} = require('ethers');
+  LEDGER_INDEX,
+  createPageRelay,
+  pageHarness,
+  startSafeCoreWorld,
+  until,
+} = require('../../../../../../test/helpers/safe-core-world');
+const { FALLBACK_HANDLER, PROXY_FACTORY, SINGLETON } = require('../../../../../../test/helpers/safe-chain-stub');
+const { ledgerVectors } = require('../../../../../../test/helpers/ledger-vectors');
+const { deviceKey } = require('../../../../../../test/helpers/ledger-reference-device');
+const { startRpcForwarder } = require('../../../../../../test-e2e/rpc-forwarder');
 
-const { ownerWallet } = require('../helpers/test-owners');
-
-const FORKS = {
-  gnosis: { chainId: 100, forkUrl: 'https://rpc.gnosischain.com', port: 18845 },
-};
-
-const anvilUrl = (fork) => `http://127.0.0.1:${fork.port}`;
-
-// Owner signers over the shared test keys, one per fake wallet index.
-jest.mock('../../../signers', () => ({
-  getSigner: (walletIndex) => require('../helpers/test-owners').createTestSigner(walletIndex),
-}));
-
-// Wallet records for the orchestrator path (owners stored as INDEXES,
-// like real vault-meta records). The safe record is added by the test
-// once the predicted address is known.
-const mockWalletRecords = {
-  0: { index: 0, name: 'Main Wallet', type: 'mnemonic', address: ownerWallet(0).address },
-  2: { index: 2, name: 'My Stax', type: 'ledger', address: ownerWallet(2).address },
-  4: { index: 4, name: 'My Phone', type: 'remote', address: ownerWallet(4).address },
-};
-jest.mock('../../../../identity-manager', () => ({
-  getWalletRecord: (index) => mockWalletRecords[index] || null,
-  isVaultUnlocked: async () => true,
-  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
-}));
-
-// Recording is unit-tested elsewhere; here the broadcast must be real.
-jest.mock('../../../tx-recorder', () => ({
-  KINDS: { SAFE_SEND: 'safe-send', SAFE_DEPLOY: 'safe-deploy' },
-  signAndRecord: (params, signer) =>
-    jest.requireActual('../../../transaction-service').signAndSendTransaction(params, signer),
-}));
-
-// Every send is an intent (transaction-service): its records live in a
-// temp dir for the run.
-jest.mock('../../../intent-store', () => {
-  const fs = require('fs');
-  const os = require('os');
-  const path = require('path');
-  const actual = jest.requireActual('../../../intent-store');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-fork-intents-'));
-  const { simulatedIntents } = require('../../../../../../test/helpers/simulated-intents-core');
-  const store = actual.createIntentStore({
-    backend: simulatedIntents({ filePath: path.join(dir, 'wallet-intents.jsonl') }).intents,
-  });
-  return { ...actual, getIntentStore: () => store };
-});
-
-// Point protocol-kit and Safe's raw reads at the anvil fork.
-jest.mock('../../../provider-manager', () => {
-  const { JsonRpcProvider: Provider } = require('ethers');
-  const urls = { 100: 'http://127.0.0.1:18845' };
-  const cache = new Map();
-  return {
-    getProvider: (chainId) => {
-      if (!cache.has(chainId)) {
-        cache.set(chainId, new Provider(urls[chainId], chainId, { staticNetwork: true }));
-      }
-      return cache.get(chainId);
-    },
-    getEip1193Provider: (chainId) => ({
-      request: ({ method, params }) => {
-        if (!cache.has(chainId)) {
-          cache.set(chainId, new Provider(urls[chainId], chainId, { staticNetwork: true }));
-        }
-        return cache.get(chainId).send(method, params ?? []);
-      },
-    }),
-    withRetry: (fn) => fn(),
-  };
-});
-
-// Transaction-service now routes reads, fees, and broadcasts through the
-// capability-aware chain router. Give that router a direct-only policy whose
-// RPC inventory is the same local fork; otherwise it would correctly
-// follow the app's normal registry and accidentally exercise public chains.
-jest.mock('../../../../networks/network-registry', () => {
-  const urls = { 100: 'http://127.0.0.1:18845' };
-  return {
-    getNetwork: (chainId) => ({
-      chainId: Number(chainId),
-      access: { readOrder: ['direct'], broadcastOrder: ['direct'] },
-      quorum: { k: 1, m: 1, timeoutMs: 15000 },
-    }),
-    getEndpoints: (chainId, role) => (role === 'rpc' && urls[chainId] ? [urls[chainId]] : []),
-  };
-});
-
-const {
-  pinnedSafeDeployment,
-  predictSafeAddress,
-  buildSafeTransaction,
-  collectOwnerSignature,
-  execTransaction,
-  deploySafe,
-} = require('../../safe-executor');
-
-// ---------------------------------------------------------------------------
-// Availability gate (sync, decides skip at collection time)
-// ---------------------------------------------------------------------------
+const FORK_URL = 'https://rpc.gnosischain.com';
+// A phrase of this run's: the fork is live Gnosis, where the well-known
+// test phrases' accounts have histories of their own.
+const MNEMONIC = Wallet.createRandom().mnemonic.phrase;
+const PASSWORD = 'Freedom-Safe-Fork-2026!';
+const LEDGER_CASE = 'typed-safe-tx';
+const SITE = `bzz://${'f0'.repeat(32)}`;
+const MAGIC = '0x1626ba7e';
+const SAFE_ABI = new Interface([
+  'function nonce() view returns (uint256)',
+  'function getOwners() view returns (address[])',
+  'function getThreshold() view returns (uint256)',
+  'function isValidSignature(bytes32 dataHash, bytes signature) view returns (bytes4)',
+]);
 
 function availability() {
-  if (spawnSync('anvil', ['--version']).status !== 0) {
-    return { ok: false, reason: 'anvil (foundry) not on PATH' };
-  }
-  for (const fork of Object.values(FORKS)) {
-    const probe = spawnSync('curl', [
-      '-sf',
-      '-m',
-      '10',
-      '-X',
-      'POST',
-      fork.forkUrl,
-      '-H',
-      'Content-Type: application/json',
-      '-d',
-      '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}',
-    ]);
-    if (probe.status !== 0) {
-      return { ok: false, reason: `fork RPC ${fork.forkUrl} unreachable` };
-    }
-  }
-  return { ok: true };
+  if (spawnSync('anvil', ['--version']).status !== 0) return 'anvil (foundry) is not on PATH';
+  const probe = spawnSync('curl', [
+    '-sf',
+    '-m',
+    '10',
+    '-X',
+    'POST',
+    FORK_URL,
+    '-H',
+    'Content-Type: application/json',
+    '-d',
+    '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}',
+  ]);
+  if (probe.status !== 0) return `the fork RPC ${FORK_URL} is unreachable`;
+  const binary = process.env.FREEDOM_CORED_PATH || require('../../../../core/cored-binary').getCoredBinaryPath();
+  if (!binary || !fs.existsSync(binary)) return 'no freedom-cored: set FREEDOM_CORED_PATH or run npm run core:download';
+  if (!ledgerVectors('ledger.json')) return 'no Ledger vectors: set FREEDOM_CORE_LEDGER_VECTORS';
+  return null;
 }
 
-const gate = availability();
-if (!gate.ok) {
-  console.warn(`[safe-fork.test] skipping fork verification: ${gate.reason}`);
+const missing = availability();
+if (missing && process.env.FREEDOM_SAFE_FORK_REQUIRED === '1') {
+  throw new Error(`The Safe fork test is required but ${missing}`);
 }
-const describeFork = gate.ok ? describe : describe.skip;
+if (missing) console.warn(`[safe-fork.test] skipping: ${missing}`);
+const describeFork = missing ? describe.skip : describe;
 
-// ---------------------------------------------------------------------------
+jest.setTimeout(300_000);
 
-jest.setTimeout(300000);
-
-async function rpc(url, method, params = []) {
-  const res = await fetch(url, {
+async function rpc(method, params = []) {
+  const res = await fetch(ANVIL_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
@@ -175,248 +119,159 @@ async function rpc(url, method, params = []) {
   return result;
 }
 
-// State reads and receipt waits go over raw JSON-RPC: a long-lived ethers
-// provider instance caches account state keyed to a block number that
-// never advances without polling/subscriptions, and its waitForTransaction
-// only re-checks receipts on new blocks — which an automine chain never
-// produces after the tx itself.
-async function waitForReceipt(fork, hash, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const receipt = await rpc(anvilUrl(fork), 'eth_getTransactionReceipt', [hash]);
-    if (receipt) return receipt;
-    if (Date.now() > deadline) throw new Error(`no receipt for ${hash} after ${timeoutMs}ms`);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-}
+const balanceOf = async (address) => BigInt(await rpc('eth_getBalance', [address, 'latest']));
+const safeCall = async (address, name, args = []) =>
+  SAFE_ABI.decodeFunctionResult(
+    name,
+    await rpc('eth_call', [{ to: address, data: SAFE_ABI.encodeFunctionData(name, args) }, 'latest'])
+  );
+const fund = (address, wei) => rpc('anvil_setBalance', [address, '0x' + BigInt(wei).toString(16)]);
 
-const getCode = (fork, address) => rpc(anvilUrl(fork), 'eth_getCode', [address, 'latest']);
-const getBalance = async (fork, address) =>
-  BigInt(await rpc(anvilUrl(fork), 'eth_getBalance', [address, 'latest']));
-
-async function startAnvil(fork) {
-  const proc = spawn('anvil', [
-    '--fork-url',
-    fork.forkUrl,
-    '--port',
-    String(fork.port),
-    '--silent',
-  ]);
-  const deadline = Date.now() + 120000;
+async function startAnvil() {
+  const proc = spawn('anvil', ['--fork-url', FORK_URL, '--port', String(ANVIL_PORT), '--silent']);
+  const deadline = Date.now() + 120_000;
   for (;;) {
     if (proc.exitCode !== null) throw new Error(`anvil exited with ${proc.exitCode}`);
     try {
-      const chainIdHex = await rpc(anvilUrl(fork), 'eth_chainId');
-      if (parseInt(chainIdHex, 16) === fork.chainId) return proc;
-      throw new Error(`fork reports unexpected chain id ${chainIdHex}`);
+      if (parseInt(await rpc('eth_chainId'), 16) === 100) return proc;
     } catch (err) {
-      if (Date.now() > deadline) {
-        throw new Error(`anvil fork of ${fork.forkUrl} not ready: ${err.message}`, { cause: err });
-      }
+      if (Date.now() > deadline) throw new Error(`the anvil fork is not ready: ${err.message}`, { cause: err });
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
 }
 
-describeFork('Safe on forked Gnosis (pinned addresses, retroactive deploy)', () => {
-  const INIT = {
-    owners: [ownerWallet(0).address, ownerWallet(2).address, ownerWallet(4).address],
-    threshold: 2,
-    saltNonce: '20260709',
-  };
-  const executorAddress = ownerWallet(0).address;
-
-  const procs = [];
-  let predicted;
+describeFork('a Safe on forked Gnosis through the real freedom-cored', () => {
+  const world = mockWorld;
+  let anvil;
+  let forwarder;
+  let ledger;
+  let safe;
+  let service;
+  let transactions;
+  let vaultBackend;
 
   beforeAll(async () => {
-    procs.push(await startAnvil(FORKS.gnosis));
-
-    // The executor EOA pays gas on the fork.
-    const balance = '0x' + parseEther('10').toString(16);
-    await rpc(anvilUrl(FORKS.gnosis), 'anvil_setBalance', [executorAddress, balance]);
-  });
-
-  afterAll(() => {
-    for (const proc of procs) proc.kill();
-  });
-
-  test('the pinned proxy code is the forked factory\'s own, and Base is refused', async () => {
-    const pinned = pinnedSafeDeployment(100);
-    const factory = new Interface(['function proxyCreationCode() view returns (bytes)']);
-    const answer = await rpc(anvilUrl(FORKS.gnosis), 'eth_call', [
-      { to: pinned.factory, data: factory.encodeFunctionData('proxyCreationCode') },
-      'latest',
-    ]);
-    const [code] = AbiCoder.defaultAbiCoder().decode(['bytes'], answer);
-    expect(keccak256(code)).toBe(pinned.proxyCreationCodeHash);
-
-    predicted = await predictSafeAddress({ ...INIT, chainId: 100 });
-    expect(await getCode(FORKS.gnosis, predicted)).toBe('0x');
-    await expect(predictSafeAddress({ ...INIT, chainId: 8453 })).rejects.toMatchObject({
-      code: 'SAFE_UNSUPPORTED',
+    anvil = await startAnvil();
+    forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT);
+    // A cold fork reads each account and contract from the public RPC the
+    // first time: the Safe contracts, loaded before the core's reads.
+    await Promise.all([SINGLETON, PROXY_FACTORY, FALLBACK_HANDLER].map((address) => rpc('eth_getCode', [address, 'latest'])));
+    const c = ledgerVectors('ledger.json').cases.find((one) => one.id === LEDGER_CASE);
+    ledger = { path: c.record.path, address: deviceKey(c.record.path).address };
+    service = require('../../safe-service');
+    transactions = require('../../safe-transactions');
+    ({ vaultBackend } = require('../../../../core/vault-backend'));
+    createPageRelay(world);
+    await startSafeCoreWorld(world, {
+      binary: process.env.FREEDOM_CORED_PATH || require('../../../../core/cored-binary').getCoredBinaryPath(),
+      urls: [ANVIL_URL, FORWARDER_URL],
+      fetch,
+      mnemonic: MNEMONIC,
+      password: PASSWORD,
+      ledger,
+      vectors: ledgerVectors('ledger.json'),
     });
+    // The executor (the vault's first account) pays for the activation and
+    // the execution.
+    await fund(world.accounts[0].address, parseEther('10'));
   });
 
-  test('retroactive deployment claims funds sent to the empty address', async () => {
-    // Someone pays the Safe before it exists…
-    const funderProvider = new JsonRpcProvider(anvilUrl(FORKS.gnosis), 100, { staticNetwork: true });
-    const funder = ownerWallet(0).connect(funderProvider);
-    const funding = await funder.sendTransaction({ to: predicted, value: parseEther('1') });
-    await waitForReceipt(FORKS.gnosis, funding.hash);
-    funderProvider.destroy();
-    expect(await getBalance(FORKS.gnosis, predicted)).toBe(parseEther('1'));
-    expect(await getCode(FORKS.gnosis, predicted)).toBe('0x');
+  afterAll(async () => {
+    await world.stop?.();
+    await forwarder?.close();
+    anvil?.kill();
+  });
 
-    // …then the ORIGINAL init params deploy the Safe at that address.
-    const { safeAddress, tx } = await deploySafe({
-      ...INIT,
-      chainId: 100,
-      executorIndex: 0,
-    });
-    expect(safeAddress).toBe(predicted);
-    const receipt = await waitForReceipt(FORKS.gnosis, tx.hash);
+  afterEach(() => {
+    expect(world.exits).toEqual([]);
+    expect(world.errors).toEqual([]);
+    expect(world.device.unrecorded).toEqual([]);
+  });
+
+  test("the core's record of a 2-of-3 Safe names an address with no code yet, which the core's status reads from both endpoints", async () => {
+    safe = await service.createSafeAccount({ name: 'Fork Joint', ownerIndexes: [0, 1, LEDGER_INDEX], threshold: 2 });
+    expect(safe).toMatchObject({ type: 'safe', owners: [0, 1, LEDGER_INDEX], threshold: 2 });
+    expect(await rpc('eth_getCode', [safe.address, 'latest'])).toBe('0x');
+    const status = await service.getSafeStatus(safe.index);
+    expect(status).toMatchObject({ deployed: false, executorIndex: 0, needsFunds: false });
+    expect(BigInt(status.executorBalance)).toBe(parseEther('10'));
+  });
+
+  test("the activation: the real factory deploys the record's Safe, with its owners and threshold, and it keeps funds sent to it before it existed", async () => {
+    // Someone pays the Safe before it exists.
+    await fund(safe.address, parseEther('1'));
+    const result = await service.activateSafe(safe.index, {});
+    expect(result).toMatchObject({ safeAddress: safe.address });
+    expect((await rpc('eth_getCode', [safe.address, 'latest'])).length).toBeGreaterThan(2);
+    const [owners] = await safeCall(safe.address, 'getOwners');
+    expect([...owners].map((owner) => owner.toLowerCase()).sort()).toEqual(
+      [world.accounts[0].address, world.accounts[1].address, ledger.address].map((owner) => owner.toLowerCase()).sort()
+    );
+    expect((await safeCall(safe.address, 'getThreshold'))[0]).toBe(2n);
+    expect(await balanceOf(safe.address)).toBe(parseEther('1'));
+    const receipt = await rpc('eth_getTransactionReceipt', [result.hash]);
     expect(receipt.status).toBe('0x1');
-    expect((await getCode(FORKS.gnosis, predicted)).length).toBeGreaterThan(2);
-
-    // …and a 2/3-signed SafeTx moves the pre-sent funds out.
-    const recipient = Wallet.createRandom().address;
-    const built = await buildSafeTransaction({
-      chainId: 100,
-      safe: { ...INIT, address: predicted },
-      tx: { to: recipient, value: parseEther('1').toString(), data: '0x' },
-      provider: anvilUrl(FORKS.gnosis),
-    });
-    expect(built.deployed).toBe(true);
-    expect(built.safeAddress).toBe(predicted);
-
-    const signatures = [
-      await collectOwnerSignature({ typedData: built.typedData, ownerIndex: 0 }),
-      await collectOwnerSignature({ typedData: built.typedData, ownerIndex: 2 }),
-    ];
-    const result = await execTransaction({
-      chainId: 100,
-      safeAddress: predicted,
-      safeTxData: built.safeTxData,
-      signatures,
-      executorIndex: 0,
-    });
-    const execReceipt = await waitForReceipt(FORKS.gnosis, result.hash);
-    expect(execReceipt.status).toBe('0x1');
-
-    expect(await getBalance(FORKS.gnosis, recipient)).toBe(parseEther('1'));
-    expect(await getBalance(FORKS.gnosis, predicted)).toBe(0n);
+    expect(getAddress(receipt.to)).toBe(getAddress(PROXY_FACTORY));
+    // Marked on the verified receipt; its setup then reads unchanged.
+    expect(world.stored(safe.index).deployed).toEqual({ 100: { verified: true } });
+    expect((await service.getSafeStatus(safe.index)).setup).toMatchObject({ state: 'unchanged' });
   });
 
-  test('the send orchestrator moves funds starting from a wallet RECORD (owners as indexes)', async () => {
-    // Regression: the record stores owners as wallet indexes; passing
-    // them unresolved into protocol-kit blew up with `Address "0" is
-    // invalid`. This walks the REAL start → sign → execute path, un-mocked.
-    const { startSafeSend, signSafePending, executeSafePending } = require('../../safe-transactions');
-    // Main's copy of the pending SafeTxs (the identity core's store since
-    // PRF-6(d)) starts empty for this run.
-    require('../../pending-store')._reset();
-
-    // Fund the (deployed, previous test) safe on the Gnosis fork.
-    const gnosisProvider = new JsonRpcProvider(anvilUrl(FORKS.gnosis), 100, { staticNetwork: true });
-    const funder = ownerWallet(0).connect(gnosisProvider);
-    const funding = await funder.sendTransaction({ to: predicted, value: parseEther('1') });
-    await waitForReceipt(FORKS.gnosis, funding.hash);
-    gnosisProvider.destroy();
-
-    mockWalletRecords[5] = {
-      index: 5,
-      name: 'Joint',
-      type: 'safe',
-      address: predicted,
-      owners: [0, 2, 4], // wallet indexes, exactly like vault-meta
-      threshold: INIT.threshold,
-      saltNonce: INIT.saltNonce,
-      deployed: { 100: true },
-    };
-
+  test('a 2-of-3 SafeTx signed by the Ledger, through its device, and a vault owner, executed by the real Safe with the core\'s token, moves the funds', async () => {
     const recipient = Wallet.createRandom().address;
-    const amount = parseEther('1').toString();
-    // start silently signs the mnemonic owner (1 of 2)…
-    const started = await startSafeSend({
-      safeIndex: 5,
-      chainId: 100,
-      tx: { to: recipient, value: amount, data: '0x' },
-      display: { toAddress: recipient, asset: null, amount },
+    const value = parseEther('1').toString();
+    // Locked: no vault owner signs as it is proposed, so the Ledger signs first.
+    await vaultBackend.lock();
+    const request = { tx: { to: recipient, value, data: '0x' }, chainId: 100 };
+    const first = await transactions.confirmSafeSend({ sender: null, safeIndex: safe.index, request, approvals: null });
+    expect(first).toMatchObject({ code: 'SAFE_TX_PREPARED', prepared: { nonce: 0 } });
+    const { token } = await transactions.confirmSafeSend({
+      sender: null,
+      safeIndex: safe.index,
+      request: { ...request, prepared: first.prepared.id },
+      approvals: null,
     });
-    expect(started).toMatchObject({ collected: 1, threshold: 2, status: 'awaiting' });
+    const proposed = await transactions.proposeSafeSend({
+      safeIndex: safe.index,
+      tx: request.tx,
+      chainId: 100,
+      display: { asset: null, toAddress: recipient, amount: value },
+      authorization: { confirmation: token },
+    });
+    expect(proposed).toMatchObject({ collected: 0, threshold: 2, proposed: true });
+    const { safeTxHash } = proposed;
 
-    // …the user signs the second owner, then execution runs on its own.
-    const signed = await signSafePending(5, 2);
-    expect(signed.collected).toBe(2);
-    const result = await executeSafePending(5);
-    expect(result.status).toBe('executed');
+    world.device.play(LEDGER_CASE, { sign: () => safeTxHash });
+    const signed = await transactions.signSafePending(safe.index, LEDGER_INDEX, { safeTxHash });
+    expect(signed).toMatchObject({ collected: 1 });
+    await until(() => world.relay.stats().parents === 0, 'the relay to let go of the Ledger');
 
-    const receipt = await waitForReceipt(FORKS.gnosis, result.executed.hash);
-    expect(receipt.status).toBe('0x1');
-    expect(await getBalance(FORKS.gnosis, recipient)).toBe(parseEther('1'));
+    await vaultBackend.unlock(PASSWORD);
+    expect(await transactions.signSafePending(safe.index, 0, { safeTxHash })).toMatchObject({ collected: 2 });
+
+    await transactions.executeSafePending(safe.index, { safeTxHash });
+    expect(await balanceOf(recipient)).toBe(parseEther('1'));
+    expect(await balanceOf(safe.address)).toBe(0n);
+    expect((await safeCall(safe.address, 'nonce'))[0]).toBe(1n);
+    expect(await transactions.getSafeSendState(safe.index)).toBeNull();
   });
 
-  test('a collected SafeMessage signature passes isValidSignature on chain (EIP-1271)', async () => {
-    // What WP-S4 promises dApps: personal_sign / typed data answered by
-    // a Safe account verifies through the REAL contract's fallback
-    // handler, exactly the call a dApp makes.
-    const { startSafeMessage, signSafeMessage, completeSafeMessage } = require('../../safe-messages');
-    const IS_VALID = new Interface([
-      'function isValidSignature(bytes32 dataHash, bytes signature) view returns (bytes4)',
-    ]);
-    const MAGIC = '0x1626ba7e';
-    const callIsValid = async (digest, signature) => {
-      const data = IS_VALID.encodeFunctionData('isValidSignature', [digest, signature]);
-      const result = await rpc(anvilUrl(FORKS.gnosis), 'eth_call', [
-        { to: predicted, data },
-        'latest',
-      ]);
-      return result.slice(0, 10);
-    };
-
-    // personal_sign, hex-encoded the way dApps send it (2 of 3 owners)
-    const text = 'freedom 1271';
-    const hexMessage = '0x' + Buffer.from(text, 'utf8').toString('hex');
-    const started = await startSafeMessage({
-      safeIndex: 5,
-      request: { method: 'personal_sign', params: [hexMessage, predicted] },
-      display: { site: 'app.example', method: 'personal_sign' },
-      requester: { origin: 'app.example', webContentsId: 1 },
-    });
-    expect(started).toMatchObject({ collected: 1, threshold: 2, complete: false });
-    await signSafeMessage(5, 2, started.token);
-    const { signature } = completeSafeMessage(5, started.token);
-
-    // the digest a verifying dApp computes: EIP-191 over the BYTES
-    expect(await callIsValid(hashMessage(text), signature)).toBe(MAGIC);
-    // …and the same signature over a different digest is refused
-    await expect(callIsValid(hashMessage('tampered'), signature)).rejects.toThrow();
-
-    // eth_signTypedData_v4 (JSON-string param, EIP712Domain included)
-    const typed = {
-      domain: { name: 'Fork Dapp', chainId: 100, verifyingContract: ownerWallet(0).address },
-      types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
-        Ping: [{ name: 'note', type: 'string' }],
-      },
-      primaryType: 'Ping',
-      message: { note: 'gm' },
-    };
-    const startedTyped = await startSafeMessage({
-      safeIndex: 5,
-      request: { method: 'eth_signTypedData_v4', params: [predicted, JSON.stringify(typed)] },
-      display: { site: 'app.example', method: 'eth_signTypedData_v4' },
-      requester: { origin: 'app.example', webContentsId: 1 },
-    });
-    await signSafeMessage(5, 4, startedTyped.token); // a different second owner this time
-    const { signature: typedSignature } = completeSafeMessage(5, startedTyped.token);
-
-    const typedDigest = TypedDataEncoder.hash(typed.domain, { Ping: typed.types.Ping }, typed.message);
-    expect(await callIsValid(typedDigest, typedSignature)).toBe(MAGIC);
+  test("a page's personal_sign: the vault owners' signatures over the SafeMessage pass the real Safe's isValidSignature (EIP-1271)", async () => {
+    const env = pageHarness(world);
+    const page = await env.connected(`${SITE}/app`, safe.index);
+    const text = 'freedom 1271 on the core';
+    const asked = env.asking(page, 'personal_sign', ['0x' + Buffer.from(text, 'utf8').toString('hex'), safe.address]);
+    const shown = await asked.prompt();
+    expect(shown).toMatchObject({ kind: 'eth.sign' });
+    // Unlocked: both vault owners sign as the core's session opens, which
+    // meets the threshold, so no board is shown.
+    expect(await env.decide(shown.handle, true, {})).toEqual({ ok: true });
+    const { result: signature } = await asked.answer;
+    expect(signature).toMatch(/^0x[0-9a-f]{260}$/i);
+    const [verdict] = await safeCall(safe.address, 'isValidSignature', [hashMessage(text), signature]);
+    expect(verdict).toBe(MAGIC);
+    // The same signature over another message is refused by the contract.
+    await expect(safeCall(safe.address, 'isValidSignature', [hashMessage('tampered'), signature])).rejects.toThrow();
   });
 });
