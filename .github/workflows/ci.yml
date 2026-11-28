@@ -693,7 +693,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 0e01b95b5263fc9648cf0285386b08e9c842ae98
+          ref: 7eea60baaedd425a4956d7b8f5eddc137241673b
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
