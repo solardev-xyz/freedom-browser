@@ -35,6 +35,13 @@
  *   while either runs, and then lets no step start, no send reserve it and
  *   no approval be held for it until it ends.
  *
+ * On the core's Safe backend (design 0016, SAFE-3; FREEDOM_SAFE_BACKEND=
+ * core) the approvals are the core's: main holds none in these slots, and
+ * its record of the user's decision on a Safe send is approval-records.js.
+ * There this module serves only the Safe's exclusion: `beginStep` (a board
+ * step, an execution through its broadcast, intent-ipc.js's held
+ * execution), `reserveSend` (a proposal) and `beginDeletion`.
+ *
  * Dependency-light, so a Safe's deletion (identity-manager) can take its
  * exclusion and end its approvals without loading the Safe stack.
  */
