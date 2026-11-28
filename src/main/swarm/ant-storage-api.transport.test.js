@@ -42,9 +42,18 @@ const mockDefaultSession = {
   proxy: 'DIRECT',
   resolveProxy: jest.fn(async () => mockDefaultSession.proxy),
 };
+// The publish setup's own suite mocks the node's routes; here it runs on
+// the real calls, so only swarm-service's bee-js client is left out.
+jest.mock('./swarm-service', () => {
+  const { isUsableStamp, isPendingStamp, isPropagatingStamp, isFullImmutableStamp } =
+    jest.requireActual('./swarm-service');
+  return { isUsableStamp, isPendingStamp, isPropagatingStamp, isFullImmutableStamp };
+});
 jest.mock('electron', () => {
   const { FakeClientRequest } = jest.requireActual('../../../test/helpers/fake-electron-net');
   return {
+    ipcMain: { handle: jest.fn() },
+    webContents: { getAllWebContents: () => [] },
     net: {
       request: (options) => {
         const request = new FakeClientRequest(options);
@@ -100,6 +109,7 @@ const {
   waitFor,
 } = require('../../../test/helpers/fake-http-node');
 const api = require('./ant-storage-api');
+const { MAX_WRITE_SESSIONS } = require('./ant-write-sessions');
 const { isMainProcessAntDial } = require('./ant-api-main-dials');
 const { guardAntApiRequest, noteAntApiUrl, _resetAntApiGuardForTests } = require('./ant-api-guard');
 
@@ -556,6 +566,161 @@ describe('a write whose session could not be prepared was never sent', () => {
       expect(api.describeAntError(res, 'Buying storage')).toBe('Cannot reach the Swarm node.');
     }
     expect(mockChromium.events.filter((e) => e.startsWith('dial'))).toEqual([]);
+  });
+});
+
+// Codex round 2 on #1369: a write whose deadline passes before it was
+// dialled, waiting for one of the default session's write sessions (all
+// held by writes the node never answers) or while one is prepared.
+describe('a write whose deadline passes before it was dialled', () => {
+  let deadlines;
+  let timeoutSpy;
+  beforeEach(() => {
+    deadlines = [];
+    timeoutSpy = jest.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
+      const deadline = new AbortController();
+      deadlines.push(deadline);
+      return deadline.signal;
+    });
+  });
+  afterEach(() => timeoutSpy.mockRestore());
+  const expire = (deadline) =>
+    deadline.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+  // Timed out, and certain: nothing of it left Freedom.
+  const NOT_DIALLED = {
+    ok: false,
+    status: 0,
+    data: null,
+    message: null,
+    timedOut: true,
+    unreachable: false,
+    refused: true,
+  };
+
+  /** Every write session of the default session's pool, held by a dialled write. */
+  async function holdEveryWriteSession(dials) {
+    const holders = [];
+    for (let n = 0; n < MAX_WRITE_SESSIONS; n++) holders.push(api.topUpSettlementDeposit());
+    await waitFor(() => dials.length === MAX_WRITE_SESSIONS);
+    return holders;
+  }
+
+  /** The holders' own deadlines: dialled, so each may have landed. */
+  async function endHolders(holders) {
+    for (const deadline of deadlines.slice(0, MAX_WRITE_SESSIONS)) expire(deadline);
+    for (const res of await Promise.all(holders)) {
+      expect(res).toMatchObject({ timedOut: true, refused: false });
+      expect(api.isUncertainWrite(res)).toBe(true);
+    }
+  }
+
+  test(`waiting for a write session, all ${MAX_WRITE_SESSIONS} held: certain, and nothing dialled`, async () => {
+    const dials = playChromium({ answer: () => null });
+    const holders = await holdEveryWriteSession(dials);
+    try {
+      const pending = api.buyStorage({ depth: 20, amountPerChunk: '1' });
+      // Queued for a session.
+      await new Promise(setImmediate);
+      expect(deadlines).toHaveLength(MAX_WRITE_SESSIONS + 1);
+      expire(deadlines[MAX_WRITE_SESSIONS]);
+      const res = await pending;
+      expect(res).toEqual(NOT_DIALLED);
+      expect(api.isUncertainWrite(res)).toBe(false);
+      expect(api.describeAntError(res)).toBe('The Swarm node did not answer in time.');
+    } finally {
+      await endHolders(holders);
+    }
+    // A session that came back dialled nothing for it.
+    await new Promise(setImmediate);
+    expect(dials).toHaveLength(MAX_WRITE_SESSIONS);
+  });
+
+  test('while its session is prepared: certain at once, without waiting for the preparation, which dials nothing after', async () => {
+    const dials = playChromium();
+    let lookedUp = null;
+    mockDefaultSession.resolveProxy.mockImplementationOnce(
+      () => new Promise((resolve) => (lookedUp = resolve))
+    );
+    const pending = api.setSwapEnabled(true);
+    await waitFor(() => lookedUp !== null);
+    expire(deadlines[0]);
+    try {
+      await expect(pending).resolves.toEqual(NOT_DIALLED);
+    } finally {
+      // The preparation ends; its session goes back to the pool.
+      lookedUp(SOCKS);
+      await new Promise(setImmediate);
+      await new Promise(setImmediate);
+    }
+    expect(dials).toEqual([]);
+    expect(mockChromium.events.filter((e) => e.startsWith('dial'))).toEqual([]);
+  });
+
+  test('the publish setup fails such a buy as certain, never "may still go through"', async () => {
+    const { createPublishSetupService } = require('./publish-setup-service');
+    const dials = playChromium({ answer: () => null });
+    const holders = await holdEveryWriteSession(dials);
+    const ok = (data) => ({ ok: true, status: 200, data, message: null });
+    const wallet = '0x1234567890abcdef1234567890abcdef12345678';
+    // The node's reads, as the publish setup's own suite answers them; the
+    // buy is the real call, on the node's transport.
+    const setupApi = {
+      getHealth: jest.fn().mockResolvedValue(ok({ status: 'ok', chainReady: true })),
+      getNode: jest.fn().mockResolvedValue(ok({ beeMode: 'light' })),
+      getReadiness: jest.fn().mockResolvedValue(ok({})),
+      getStamps: jest.fn().mockResolvedValue(ok({ stamps: [] })),
+      getAddresses: jest.fn().mockResolvedValue(ok({ ethereum: wallet })),
+      getWallet: jest.fn().mockResolvedValue(ok({ nativeTokenBalance: '0', bzzBalance: '0' })),
+      getChequebookAddress: jest.fn().mockResolvedValue(ok({ chequebookAddress: wallet })),
+      getChequebookBalance: jest.fn().mockResolvedValue(ok({ availableBalance: '0' })),
+      getStorageQuote: jest.fn().mockResolvedValue(
+        ok({
+          depth: 20,
+          days: 30,
+          amountPerChunk: '65676000',
+          planCostPlur: '68866000000000',
+          settlementDepositPlur: '10000000000000',
+          walletAddress: wallet,
+          walletBzzPlur: '0',
+          walletXdaiWei: '447000000000000000',
+          bzzToAcquirePlur: '78866000000000',
+          swapInputWei: '432000000000000000',
+          gasReserveWei: '15000000000000000',
+          xdaiRequiredWei: '447000000000000000',
+          xdaiToSendWei: '0',
+          sufficientFunds: true,
+        })
+      ),
+      buyStorage: jest.fn((params) => api.buyStorage(params)),
+      extendStorage: jest.fn(),
+      getSettlementDeposit: jest.fn().mockResolvedValue(ok({ needsTopUp: false })),
+      topUpSettlementDeposit: jest.fn(),
+    };
+    const service = createPublishSetupService({
+      api: setupApi,
+      getNodeStatus: () => ({ status: 'running', error: null }),
+      getRegistryMode: () => 'external',
+      restartNode: jest.fn(),
+      getTransactionStatus: jest.fn(),
+      getNodeStartedAt: () => null,
+    });
+    try {
+      service.arm({ kind: 'buy', planId: 'starter' });
+      await waitFor(() => deadlines.length === MAX_WRITE_SESSIONS + 1);
+      await new Promise(setImmediate);
+      expire(deadlines[MAX_WRITE_SESSIONS]);
+      await waitFor(() => service.getState().operation?.phase === 'failed');
+      expect(setupApi.buyStorage).toHaveBeenCalledTimes(1);
+      expect(service.getState().operation).toMatchObject({
+        phase: 'failed',
+        uncertain: false,
+        error: 'The Swarm node did not answer in time.',
+      });
+      expect(dials).toHaveLength(MAX_WRITE_SESSIONS);
+    } finally {
+      service.dispose();
+      await endHolders(holders);
+    }
   });
 });
 

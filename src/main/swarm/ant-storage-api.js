@@ -105,11 +105,18 @@ const CHROMIUM_CONNECT_FAILURES = new Set([
   'net::ERR_TUNNEL_CONNECTION_FAILED',
 ]);
 
+/**
+ * Main's own refusals before the request existed, whenever they came, the
+ * call's deadline included: the onion gate's (onion-gate.js), and the
+ * transport's `AntNotDialled` (ant-write-sessions.js): a write session that
+ * couldn't be prepared, a write that ended while it waited for one or while
+ * it was prepared, the cap on abandoned dials.
+ */
+function neverDialled(err) {
+  return err instanceof OnionGateRefusal || err instanceof AntNotDialled;
+}
+
 function isConnectFailure(err) {
-  // Main's own refusals before the request existed: the onion gate's
-  // (onion-gate.js), and a write session that couldn't be prepared or the
-  // transport's cap on abandoned dials (ant-write-sessions.js).
-  if (err instanceof OnionGateRefusal || err instanceof AntNotDialled) return true;
   const causes = [err, err?.cause, err?.cause?.cause];
   return causes.some(
     (e) =>
@@ -194,7 +201,7 @@ async function antRequest(
       timedOut,
       unreachable: !timedOut,
       // No connection was ever made, so a write cannot have reached the node.
-      refused: !timedOut && isConnectFailure(err),
+      refused: neverDialled(err) || (!timedOut && isConnectFailure(err)),
     };
   }
 

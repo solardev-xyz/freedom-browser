@@ -81,8 +81,9 @@ const { dialKey } = require('./ant-api-main-dials');
  * A dial of the node main refused before any request of it existed: a write
  * whose lease refused its method or whose session couldn't be prepared (the
  * request session's proxy unknown or not read back, a session call that
- * failed or didn't settle in time), or one past the transport's cap on
- * abandoned dials (bzz-protocol.js). Only main makes one, before the request
+ * failed or didn't settle in time), a write that ended while it waited for
+ * a session or while one was prepared, or one past the transport's cap on
+ * abandoned dials (both bzz-protocol.js). Only main makes one, before the request
  * exists, so an instance is evidence that nothing of it was sent, as
  * `OnionGateRefusal` is for the onion gate; `code` names it for a caller
  * that reads codes.
