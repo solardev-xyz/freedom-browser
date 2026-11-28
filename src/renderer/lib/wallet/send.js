@@ -10,7 +10,7 @@ import {
   beginSignatureFlight,
   endSignatureFlight,
 } from './signature-flight.js';
-import { escapeHtml, accountType, walletRecord, bypassUnlockGateForDevice, renderSafeFeePayer, isSafeDeployed, GNOSIS_CHAIN_ID } from './wallet-utils.js';
+import { escapeHtml, accountType, walletRecord, bypassUnlockGateForDevice, renderSafeFeePayer, isSafeDeployed, safeSetupUnsettled, GNOSIS_CHAIN_ID } from './wallet-utils.js';
 import { openSafeSigningBoard } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
 import { FeeConfirmation } from './fee-check.js';
@@ -311,7 +311,8 @@ function sendBlockedReason() {
   if (safe && !isSafeDeployed(safe)) {
     return 'Activate this account on Gnosis before sending';
   }
-  return null;
+  // The core's Safe backend: its setup changed, or a read unverified.
+  return (safe && safeSetupUnsettled(safe)) || null;
 }
 
 /**

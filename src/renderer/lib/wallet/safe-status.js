@@ -17,7 +17,13 @@
  * deployed Safe whose setup is unchanged, every read verified, is taken as
  * active (marked in the snapshot, no card). Any other setup (changed, or a
  * read unverified, the code's included) leaves it unmarked, and the card
- * says why, with Try again. The core judges the activation's fee itself:
+ * says why, with Try again. A Safe already marked is still checked there
+ * (preload.js `wallet.safeCoreBackend`), since its owners can change
+ * elsewhere: only an unchanged setup keeps its card away and Send
+ * available; anything else (a failed check too) shows why, with Try again,
+ * and blocks Send (wallet-utils.js `setSafeSetupUnsettled`) until a check
+ * finds it unchanged. On js a marked Safe is never checked again, as
+ * before. The core judges the activation's fee itself:
  * the approvals document asks it, or, with the document off, main's answer
  * carries the ID of the ask main holds (`feeAskId`), which the card's
  * confirmation returns, with no token; a fee above the threshold is
@@ -31,6 +37,7 @@ import {
   formatRawTokenBalance,
   walletRecord,
   isSafeDeployed,
+  setSafeSetupUnsettled,
   showInlineError,
 } from './wallet-utils.js';
 import { updateSendAvailability } from './send.js';
@@ -59,12 +66,14 @@ const SETUP_CHANGED = "This account was changed outside Freedom, so Freedom can'
  * Why a Safe the core reports deployed isn't taken as active (design 0016,
  * API, `setup`): only an unchanged setup, every read verified, is. Null for
  * that, and for main's own status (the JS backend's, with no `setup`),
- * which says deployed only on a verified read.
+ * which says deployed only on a verified read. For a Safe already
+ * `marked` deployed (the core's backend only), anything but deployed with
+ * an unchanged setup is unsettled, a status without `setup` included.
  */
-function unsettledSetup(status) {
-  if (status?.deployed !== true || status.setup === undefined) return null;
-  const setup = status.setup;
-  if (setup?.state === 'unchanged') return null;
+function unsettledSetup(status, { marked = false } = {}) {
+  if (!marked && (status?.deployed !== true || status.setup === undefined)) return null;
+  const setup = status?.setup;
+  if (status?.deployed === true && setup?.state === 'unchanged') return null;
   if (setup?.state === 'changed') return SETUP_CHANGED;
   if (setup?.state === 'unverified' && setup.read === 'code') return ACTIVATION_UNVERIFIED;
   return SETUP_UNVERIFIED;
@@ -80,14 +89,18 @@ let statusCheck = null;
  * active account changes (wallet-selector) and after activation.
  */
 export async function refreshSafeStatusCard() {
-  await checkSafeStatus(() =>
-    render(`<div class="safe-status-text">Checking account status…</div>`)
-  );
+  await checkSafeStatus((marked) => {
+    // A Safe marked deployed keeps no card while its setup is read again.
+    if (marked) card.classList.add('hidden');
+    else render(`<div class="safe-status-text">Checking account status…</div>`);
+  });
 }
 
 /**
  * The status check behind refreshSafeStatusCard and Try again.
- * `showChecking` paints the card while getSafeStatus runs.
+ * `showChecking(marked)` paints the card while getSafeStatus runs
+ * (`marked`: a Safe the snapshot says is deployed, read again on the
+ * core's backend).
  */
 async function checkSafeStatus(showChecking) {
   card = document.getElementById('safe-status-card');
@@ -104,14 +117,17 @@ async function checkSafeStatus(showChecking) {
     return;
   }
 
-  // Deployed safes need no activation card — and the record snapshot is
-  // trustworthy once it says deployed (deployment is permanent).
-  if (isSafeDeployed(wallet)) {
+  // Deployed safes need no activation card — and on js the record snapshot
+  // is trustworthy once it says deployed (deployment is permanent). On the
+  // core's backend its setup is read again all the same: an owner change
+  // made elsewhere, or a read unverified, keeps the core from signing.
+  const marked = isSafeDeployed(wallet);
+  if (marked && window.wallet?.safeCoreBackend !== true) {
     card.classList.add('hidden');
     return;
   }
 
-  showChecking();
+  showChecking(marked);
 
   const check = window.wallet.getSafeStatus(wallet.index);
   statusCheck = check;
@@ -122,14 +138,27 @@ async function checkSafeStatus(showChecking) {
     if (statusCheck === check) statusCheck = null;
   }
   if (token !== refreshToken) return; // superseded by an account switch
+  // A marked Safe the check didn't settle blocks Send as well.
+  const unsettledMarked = (reason) => {
+    if (!marked) return;
+    setSafeSetupUnsettled(wallet.index, reason || SETUP_UNVERIFIED);
+    updateSendAvailability();
+  };
   if (!statusResult.success) {
+    unsettledMarked(statusResult.error);
     renderStatusError(statusResult.error);
     return;
   }
-  const unsettled = unsettledSetup(statusResult.status);
+  const unsettled = unsettledSetup(statusResult.status, { marked });
   if (unsettled) {
+    unsettledMarked(unsettled);
     renderStatusError(unsettled);
     return;
+  }
+  // Settled deployed (for a marked Safe, the only answer that gets here).
+  if (statusResult.status.deployed) {
+    setSafeSetupUnsettled(wallet.index, null);
+    if (marked) updateSendAvailability();
   }
 
   // Main owns deployment truth (it self-heals the stored record from

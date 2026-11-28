@@ -890,6 +890,12 @@ contextBridge.exposeInMainWorld('wallet', {
   createSafe: (name, ownerIndexes, threshold) =>
     ipcRenderer.invoke('wallet:create-safe', name, ownerIndexes, threshold),
   getSafeStatus: (index) => ipcRenderer.invoke('wallet:get-safe-status', index),
+  // Whether the identity core runs Safes (FREEDOM_SAFE_BACKEND=core,
+  // development builds only, SAFE-3): only then does the Safe card read the
+  // setup of a Safe already marked deployed. Keep the switch in sync with
+  // SAFE_CORE_RENDERER_ARG in wallet/safe/safe-backend-kind.js (a sandboxed
+  // preload cannot require it; preload.test.js pins the two together).
+  safeCoreBackend: process.argv.includes('--freedom-safe-core'),
   // `options.feeConfirmation`: the user's 'executor-send' confirmation of a
   // fee the fee check stopped for (design 0005, A), with that fee. On the
   // core's Safe backend, `options.feeAskId`: the card confirmed the core's
