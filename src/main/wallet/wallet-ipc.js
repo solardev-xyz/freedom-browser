@@ -97,10 +97,13 @@ function feeAsk(err) {
 }
 
 /** The same on the core's Safe backend with the approvals document off
- * (safe/core-accounts.js): the core's verdict, and `feeAck`, that the card's
- * confirmation is `feeAcknowledged` on the chrome's word, never a token. */
+ * (safe/core-accounts.js): the core's verdict, and the ID of the ask main
+ * holds for it, which the card's confirmation returns (`feeAskAgain`: a
+ * fee above the threshold, pressed once), never a token. */
 function coreFeeAsk(err) {
-  return err?.feeCheck && err?.feeAck === true ? { feeCheck: err.feeCheck, feeAck: true } : {};
+  return err?.feeCheck && typeof err?.feeAskId === 'string'
+    ? { feeCheck: err.feeCheck, feeAskId: err.feeAskId, feeAskAgain: err.feeAskAgain === true }
+    : {};
 }
 
 // The page kinds, whose methods main serves (freedom-core design 0011,
@@ -656,7 +659,8 @@ function registerWalletIpc() {
   // On the core's Safe backend (freedom-core design 0016, SAFE-3) the core
   // judges the fee and mints the executor's token itself: the fee is asked
   // in this window's approvals document (`sender`), or, with it off, on the
-  // card, whose confirmation comes back as `options.feeAcknowledged`
+  // card, whose confirmation returns the ask's ID, `options.feeAskId`, which
+  // main checks against the ask it holds for this Safe and this window
   // (safe/core-accounts.js). A confirmation of the chrome's is burnt unused.
   handle('wallet:activate-safe', async (event, index, options) => {
     try {
@@ -665,7 +669,7 @@ function registerWalletIpc() {
         index,
         safeBackendKind() === 'core'
           ? {
-              feeAcknowledged: options?.feeAcknowledged === true,
+              feeAskId: typeof options?.feeAskId === 'string' ? options.feeAskId : null,
               sender: event?.sender ?? null,
               feeConfirmation: options?.feeConfirmation,
             }

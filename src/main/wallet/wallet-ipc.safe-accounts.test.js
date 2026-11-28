@@ -1,9 +1,10 @@
 /**
  * wallet-ipc's Safe account handlers by the Safe backend (freedom-core
  * design 0016, SAFE-3's PR 3; safe/safe-backend-kind.js): on the core,
- * activation takes the asking window (for its approvals document) and the
- * card's `feeAcknowledged`, and a fee the core stopped reaches the card as
- * the core's verdict with `feeAck`; on js, every handler passes exactly
+ * activation takes the asking window (for its approvals document, and the
+ * ask main binds to it) and the card's `feeAskId`, and a fee the core
+ * stopped reaches the card as the core's verdict with the ask's ID; on js,
+ * every handler passes exactly
  * what it passes today. What the core's path does is
  * safe/safe-service.core.test.js's.
  */
@@ -72,7 +73,7 @@ beforeEach(() => {
 });
 
 describe('wallet:activate-safe', () => {
-  test("on the core: the asking window, the card's acknowledgement and the chrome's confirmation (burnt there)", async () => {
+  test("on the core: the asking window, the card's ask ID and the chrome's confirmation (burnt there)", async () => {
     service.activateSafe.mockResolvedValue({ safeAddress: '0xsafe', hash: '0xhash' });
     await expect(handlers['wallet:activate-safe']({ sender: CHROME }, 7)).resolves.toEqual({
       success: true,
@@ -80,34 +81,44 @@ describe('wallet:activate-safe', () => {
       hash: '0xhash',
     });
     expect(service.activateSafe).toHaveBeenLastCalledWith(7, {
-      feeAcknowledged: false,
+      feeAskId: null,
       sender: CHROME,
       feeConfirmation: undefined,
     });
     await handlers['wallet:activate-safe']({ sender: CHROME }, 7, {
-      feeAcknowledged: true,
+      feeAskId: 'ask-1',
       feeConfirmation: FEE_CONFIRMATION,
     });
     expect(service.activateSafe).toHaveBeenLastCalledWith(7, {
-      feeAcknowledged: true,
+      feeAskId: 'ask-1',
       sender: CHROME,
       feeConfirmation: FEE_CONFIRMATION,
     });
-    // Only `true` acknowledges.
-    await handlers['wallet:activate-safe']({ sender: CHROME }, 7, { feeAcknowledged: 'yes' });
-    expect(service.activateSafe.mock.calls.at(-1)[1].feeAcknowledged).toBe(false);
+    // Only a string is an ask's ID; a bare acknowledgement is nothing.
+    await handlers['wallet:activate-safe']({ sender: CHROME }, 7, { feeAskId: 7 });
+    expect(service.activateSafe.mock.calls.at(-1)[1].feeAskId).toBeNull();
+    await handlers['wallet:activate-safe']({ sender: CHROME }, 7, { feeAcknowledged: true });
+    expect(service.activateSafe.mock.calls.at(-1)[1]).toEqual({
+      feeAskId: null,
+      sender: CHROME,
+      feeConfirmation: undefined,
+    });
   });
 
-  test("on the core: the core's fee reaches the card as its verdict and feeAck, with no offer", async () => {
+  test("on the core: the core's fee reaches the card as its verdict and the ask's ID, with no offer", async () => {
     service.activateSafe.mockRejectedValueOnce(
-      Object.assign(feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, VERDICT), { feeAck: true })
+      Object.assign(feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, VERDICT), {
+        feeAskId: 'ask-2',
+        feeAskAgain: true,
+      })
     );
     await expect(handlers['wallet:activate-safe']({ sender: CHROME }, 7)).resolves.toEqual({
       success: false,
       code: FEE_CHECK_NEEDS_CONFIRMATION,
       error: "This payment's network fee needs your confirmation.",
       feeCheck: VERDICT,
-      feeAck: true,
+      feeAskId: 'ask-2',
+      feeAskAgain: true,
     });
     // The core's codes pass through; a locked vault is VAULT_LOCKED.
     service.activateSafe.mockRejectedValueOnce(
@@ -126,15 +137,15 @@ describe('wallet:activate-safe', () => {
     });
   });
 
-  test("on js: exactly today's options, and no feeAck", async () => {
+  test("on js: exactly today's options, and no ask ID", async () => {
     mockBackend.kind = 'js';
     service.activateSafe.mockResolvedValue({ safeAddress: '0xsafe', hash: '0xhash' });
     await handlers['wallet:activate-safe']({ sender: CHROME }, 7, {
-      feeAcknowledged: true,
+      feeAskId: 'ask-1',
       feeConfirmation: FEE_CONFIRMATION,
     });
     expect(service.activateSafe).toHaveBeenLastCalledWith(7, { feeConfirmation: FEE_CONFIRMATION });
-    // A `feeAck` on an error is the core's alone; today's offer goes as before.
+    // An ask's ID on an error is the core's alone; today's offer goes as before.
     const offer = { executorIndex: 0, chainId: 100, to: '0x' + '22'.repeat(20) };
     service.activateSafe.mockRejectedValueOnce(
       Object.assign(feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, VERDICT), { offer })

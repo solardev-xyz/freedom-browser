@@ -164,6 +164,8 @@ jest.mock('../transaction-service', () => ({
 // The approvals document's panel (wallet-approvals.js), its prompts scripted.
 const prompts = [];
 const decisions = [];
+// Run while a prompt waits, before its decision (once): another window's step.
+const whilePrompted = { run: null };
 const mockDocument = { on: true };
 jest.mock('../../approvals/wallet-approvals', () => {
   const actual = jest.requireActual('../../approvals/wallet-approvals');
@@ -175,6 +177,9 @@ jest.mock('../../approvals/wallet-approvals', () => {
       shared ??= actual.createWalletApprovals({
         walletPrompt: async (windowId, spec) => {
           prompts.push({ windowId, ...spec });
+          const meanwhile = whilePrompted.run;
+          whilePrompted.run = null;
+          if (meanwhile) await meanwhile();
           return decisions.length ? decisions.shift() : { approve: true, choices: {} };
         },
         chromeWindowOf: (contents) => contents?.windowId ?? null,
@@ -196,7 +201,9 @@ jest.mock('../../approvals/wallet-approvals', () => {
 const service = require('./safe-service');
 const kinds = require('../../../renderer/approvals/approvals-kinds.js');
 
-const CHROME = { windowId: 3 };
+// Two chrome windows' webContents: an ask is bound to the one it was shown in.
+const CHROME = { id: 41, windowId: 3 };
+const OTHER_CHROME = { id: 42, windowId: 4 };
 const DEPLOY_TX = Object.freeze({
   type: 2,
   chain_id: '100',
@@ -311,6 +318,7 @@ beforeEach(async () => {
   journal.length = 0;
   prompts.length = 0;
   decisions.length = 0;
+  whilePrompted.run = null;
   jest.clearAllMocks();
   mockChainRequest.mockReset();
   mockRpcRequest.mockReset();
@@ -603,36 +611,151 @@ describe('activate, on the core', () => {
     expect(core.sent('sign.transaction')).toEqual([]);
   });
 
-  test('with the approvals document off: the card asks, and its confirmation is fee_ack, with no token of its own', async () => {
-    mockDocument.on = false;
-    answers['safe.deploy'] = { fee_check: VERDICT };
-    const err = await service.activateSafe(5, { sender: CHROME }).catch((e) => e);
+  /** The card's ask (approvals document off) an activation ends with. */
+  async function cardAsk(promise) {
+    const err = await promise.catch((e) => e);
     expect(err).toMatchObject({
       code: 'FEE_CHECK_NEEDS_CONFIRMATION',
-      feeCheck: VERDICT,
-      feeAck: true,
+      feeCheck: expect.any(Object),
     });
+    expect(typeof err.feeAskId).toBe('string');
     expect(err.offer).toBeUndefined();
+    return err;
+  }
+  const deploys = () => sent('safe.deploy').map(({ params }) => params);
+
+  test('with the approvals document off: the card asks under an ID, and its confirmation returns it, with no token of its own', async () => {
+    mockDocument.on = false;
+    answers['safe.deploy'] = { fee_check: VERDICT };
+    const ask = await cardAsk(service.activateSafe(5, { sender: CHROME }));
+    expect(ask).toMatchObject({ feeCheck: VERDICT, feeAskAgain: false });
     expect(core.sent('sign.transaction')).toEqual([]);
 
     answers['safe.deploy'] = SEND;
     answers['safe.deployed'] = { deployed: true };
-    const result = await service.activateSafe(5, { feeAcknowledged: true });
+    const result = await service.activateSafe(5, { sender: CHROME, feeAskId: ask.feeAskId });
     expect(result).toEqual({ safeAddress: SAFE_ADDRESS, hash: journal[0].hash });
-    expect(sent('safe.deploy').map(({ params }) => params)).toEqual([
-      { safe: 5 },
-      { safe: 5, fee_ack: true },
-    ]);
+    expect(deploys()).toEqual([{ safe: 5 }, { safe: 5, fee_ack: true }]);
     expect(core.sent('approval.issue')).toEqual([]);
+
+    // Its ID is spent: it confirms nothing again.
+    await expect(
+      service.activateSafe(5, { sender: CHROME, feeAskId: ask.feeAskId })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(deploys()).toHaveLength(2);
   });
 
-  test("with the document on, the chrome's acknowledgement counts for nothing, and its own confirmation is burnt unused", async () => {
+  test("a window's stale confirmation, after another window replaced the offer, is refused", async () => {
+    mockDocument.on = false;
+    answers['safe.deploy'] = { fee_check: VERDICT };
+    const shownInA = await cardAsk(service.activateSafe(5, { sender: CHROME }));
+    // Window B activates the same Safe: the core's offer, and main's ask, are B's.
+    const pricier = { ...VERDICT, maxCost: '900000000000000' };
+    answers['safe.deploy'] = { fee_check: pricier };
+    const shownInB = await cardAsk(service.activateSafe(5, { sender: OTHER_CHROME }));
+    expect(shownInB.feeAskId).not.toBe(shownInA.feeAskId);
+
+    answers['safe.deploy'] = SEND;
+    await expect(
+      service.activateSafe(5, { sender: CHROME, feeAskId: shownInA.feeAskId })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', message: /isn't the one shown/ });
+    // B's ID from A's window is no confirmation either; nor is one for no ask.
+    await expect(
+      service.activateSafe(5, { sender: CHROME, feeAskId: shownInB.feeAskId })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    await expect(
+      service.activateSafe(6, { sender: CHROME, feeAskId: shownInB.feeAskId })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    await expect(
+      service.activateSafe(5, { sender: {}, feeAskId: shownInB.feeAskId })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(deploys()).toEqual([{ safe: 5 }, { safe: 5 }]);
+    expect(core.sent('sign.transaction')).toEqual([]);
+
+    // B's own confirmation stands; the send must be B's offer, which costs
+    // what B was shown, and so this one (A's price) is refused, its token burnt.
+    await expect(
+      service.activateSafe(5, { sender: OTHER_CHROME, feeAskId: shownInB.feeAskId })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(deploys()).toEqual([{ safe: 5 }, { safe: 5 }, { safe: 5, fee_ack: true }]);
+    expect(core.sent('sign.transaction')).toEqual([]);
+    await new Promise(setImmediate);
+    expect(sent('approval.discard')).toEqual([{ context: SHELL, params: { token: TOKEN } }]);
+  });
+
+  test('a fee above the threshold: a single press is asked again under a new ID; the second press confirms it', async () => {
+    mockDocument.on = false;
+    const above = { ...VERDICT, comparable: true, ratio: '5', above: true, basis: 'quote' };
+    answers['safe.deploy'] = { fee_check: above };
+    const first = await cardAsk(service.activateSafe(5, { sender: CHROME }));
+    expect(first.feeAskAgain).toBe(false);
+
+    const again = await cardAsk(
+      service.activateSafe(5, { sender: CHROME, feeAskId: first.feeAskId })
+    );
+    expect(again).toMatchObject({ feeCheck: above, feeAskAgain: true });
+    expect(again.feeAskId).not.toBe(first.feeAskId);
+    // One press only: no fee_ack, and the first ID confirms nothing now.
+    expect(deploys()).toEqual([{ safe: 5 }]);
+    await expect(
+      service.activateSafe(5, { sender: CHROME, feeAskId: first.feeAskId })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+
+    answers['safe.deploy'] = SEND;
+    answers['safe.deployed'] = { deployed: true };
+    const result = await service.activateSafe(5, { sender: CHROME, feeAskId: again.feeAskId });
+    expect(result).toEqual({ safeAddress: SAFE_ADDRESS, hash: journal[0].hash });
+    expect(deploys()).toEqual([{ safe: 5 }, { safe: 5, fee_ack: true }]);
+  });
+
+  test("the asks are counted across the card's round trips: at most three", async () => {
+    mockDocument.on = false;
+    answers['safe.deploy'] = { fee_check: VERDICT };
+    let ask = await cardAsk(service.activateSafe(5, { sender: CHROME }));
+    for (let i = 0; i < 2; i += 1) {
+      ask = await cardAsk(service.activateSafe(5, { sender: CHROME, feeAskId: ask.feeAskId }));
+    }
+    await expect(
+      service.activateSafe(5, { sender: CHROME, feeAskId: ask.feeAskId })
+    ).rejects.toThrow(/kept changing/);
+    expect(deploys()).toEqual([
+      { safe: 5 },
+      { safe: 5, fee_ack: true },
+      { safe: 5, fee_ack: true },
+      { safe: 5, fee_ack: true },
+    ]);
+    // The last ask is gone with it.
+    await expect(
+      service.activateSafe(5, { sender: CHROME, feeAskId: ask.feeAskId })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(core.sent('sign.transaction')).toEqual([]);
+  });
+
+  test("in the panel: another window's activation meanwhile leaves the approval confirming nothing", async () => {
+    answers['safe.deploy'] = inTurn({ fee_check: VERDICT }, { fee_check: VERDICT }, SEND);
+    answers['safe.deployed'] = { deployed: true };
+    let other;
+    whilePrompted.run = async () => {
+      other = await service.activateSafe(5, { sender: OTHER_CHROME });
+    };
+    await expect(service.activateSafe(5, { sender: CHROME })).rejects.toMatchObject({
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+    // The other window's activation went through on its own approval; this
+    // one's sent no fee_ack of its own.
+    expect(other).toEqual({ safeAddress: SAFE_ADDRESS, hash: journal[0].hash });
+    expect(prompts.map((prompt) => prompt.windowId)).toEqual([3, 4]);
+    expect(deploys()).toEqual([{ safe: 5 }, { safe: 5 }, { safe: 5, fee_ack: true }]);
+  });
+
+  test("with the document on, a card's ask ID counts for nothing, and a chrome's own confirmation is burnt unused", async () => {
     answers['safe.deploy'] = { deployed: true };
     await service.activateSafe(5, {
-      feeAcknowledged: true,
+      sender: CHROME,
+      feeAskId: 'an-id-from-the-chrome',
       feeConfirmation: { confirmation: 'chrome-token' },
     });
-    expect(sent('safe.deploy').map(({ params }) => params)).toEqual([{ safe: 5 }]);
+    expect(deploys()).toEqual([{ safe: 5 }]);
     await new Promise(setImmediate);
     expect(sent('approval.discard')).toEqual([
       { context: SHELL, params: { token: 'chrome-token' } },

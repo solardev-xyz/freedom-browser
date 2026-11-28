@@ -314,18 +314,19 @@ test("another account shown during Try again: the old check's answer paints noth
 
 // On the core's Safe backend (freedom-core design 0016, SAFE-3): the core
 // judges the activation's fee, and with the approvals document off main's
-// answer carries `feeAck`, the card's confirmation going back as
-// `feeAcknowledged`, with no token minted by the chrome.
+// answer carries the ID of the ask main holds, which the card's
+// confirmation returns, with no token minted by the chrome.
 describe("on the core's Safe backend", () => {
-  const coreStopped = (feeCheck = VERDICT) => ({
+  const coreStopped = (feeCheck = VERDICT, { feeAskId = 'ask-1', feeAskAgain = false } = {}) => ({
     success: false,
     code: 'FEE_CHECK_NEEDS_CONFIRMATION',
     error: "This payment's network fee needs your confirmation.",
     feeCheck,
-    feeAck: true,
+    feeAskId,
+    feeAskAgain,
   });
 
-  test("the core's fee: shown, and confirmed on the card's word, with no token", async () => {
+  test("the core's fee: shown, and confirmed with the ask's ID, with no token", async () => {
     const { wallet, card, click } = await loadCard();
     wallet.activateSafe.mockResolvedValueOnce(coreStopped());
     await click('safe-status-activate');
@@ -338,25 +339,51 @@ describe("on the core's Safe backend", () => {
       hash: '0xhash',
     });
     await click('safe-status-confirm-fee');
-    expect(wallet.activateSafe).toHaveBeenLastCalledWith(7, { feeAcknowledged: true });
+    expect(wallet.activateSafe).toHaveBeenLastCalledWith(7, { feeAskId: 'ask-1' });
     expect(wallet.confirmSigning).not.toHaveBeenCalled();
   });
 
-  test('above the threshold: the ratio shown, and one press confirms it', async () => {
+  test('above the threshold: main asks again after the first press, and the second press sends its new ID', async () => {
     const { wallet, card, click } = await loadCard();
-    wallet.activateSafe.mockResolvedValueOnce(
-      coreStopped({ ...VERDICT, comparable: true, ratio: '20', above: true })
-    );
+    const above = { ...VERDICT, comparable: true, ratio: '20', above: true };
+    wallet.activateSafe.mockResolvedValueOnce(coreStopped(above));
     await click('safe-status-activate');
     expect(card.innerHTML).toContain("This network fee is 20× today's network fee.");
+    expect(card.innerHTML).toContain('Confirm fee and activate');
+
+    wallet.activateSafe.mockResolvedValueOnce(
+      coreStopped(above, { feeAskId: 'ask-2', feeAskAgain: true })
+    );
+    await click('safe-status-confirm-fee');
+    expect(wallet.activateSafe).toHaveBeenLastCalledWith(7, { feeAskId: 'ask-1' });
+    expect(card.innerHTML).toContain('Check the fee, then press Send anyway to pay it.');
+    expect(card.innerHTML).toContain('>Send anyway</button>');
+
     wallet.activateSafe.mockResolvedValueOnce({
       success: true,
       safeAddress: '0xsafe',
       hash: '0xhash',
     });
     await click('safe-status-confirm-fee');
-    expect(wallet.activateSafe).toHaveBeenLastCalledWith(7, { feeAcknowledged: true });
+    expect(wallet.activateSafe).toHaveBeenLastCalledWith(7, { feeAskId: 'ask-2' });
     expect(wallet.confirmSigning).not.toHaveBeenCalled();
+  });
+
+  test("a confirmation main refuses (another window's offer since): the card again, with its error", async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const { wallet, card, click, errorEl } = await loadCard();
+    wallet.activateSafe.mockResolvedValueOnce(coreStopped());
+    await click('safe-status-activate');
+    const refused =
+      "This fee confirmation isn't the one shown for this account. Nothing was sent: try again.";
+    wallet.activateSafe.mockResolvedValueOnce({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: refused,
+    });
+    await click('safe-status-confirm-fee');
+    expect(card.innerHTML).toContain('Receive-only until activated');
+    expect(errorEl.textContent).toBe(refused);
   });
 
   test('the approvals document rejected: the card again, with its error', async () => {
@@ -399,17 +426,62 @@ describe("on the core's Safe backend", () => {
     expect(card.classList.contains('hidden')).toBe(true);
   });
 
-  test('deployed with its setup changed or a setup read unverified: deployed, as the core marked it', async () => {
+  test("deployed with its owners changed: not taken as active; the card says it can't sign, with Try again", async () => {
+    const { card, safe, updateSendAvailability } = await loadCard({
+      status: {
+        success: true,
+        status: { ...DEPLOYED.status, setup: { state: 'changed', changed: ['owners'] } },
+      },
+    });
+    expect(safe.deployed).toEqual({});
+    expect(updateSendAvailability).toHaveBeenCalledTimes(1);
+    expect(card.classList.contains('hidden')).toBe(false);
+    expect(card.innerHTML).toContain(
+      "This account was changed outside Freedom, so Freedom can't sign for it."
+    );
+    expect(card.innerHTML).toContain('id="safe-status-retry"');
+  });
+
+  test('deployed with its owners read unverified: not taken as active; the card says so, with Try again', async () => {
+    const { wallet, card, click, safe } = await loadCard({
+      status: {
+        success: true,
+        status: {
+          ...DEPLOYED.status,
+          setup: { state: 'unverified', read: 'owners', why: 'unverified' },
+        },
+      },
+    });
+    expect(safe.deployed).toEqual({});
+    expect(card.classList.contains('hidden')).toBe(false);
+    expect(card.innerHTML).toContain(
+      "Freedom couldn't verify this account on Gnosis, so it won't sign."
+    );
+    expect(card.innerHTML).toContain('id="safe-status-retry"');
+
+    // Every other setup state stays unmarked too; only unchanged marks it.
     for (const setup of [
-      { state: 'changed', changed: ['owners'] },
-      { state: 'unverified', read: 'owners', why: 'unverified' },
+      { state: 'changed', changed: ['threshold', 'module'] },
+      { state: 'unverified', read: 'modules', why: 'failed' },
+      { state: 'not_deployed' },
+      null,
+      { state: 'something new' },
     ]) {
-      const { card, safe } = await loadCard({
-        status: { success: true, status: { ...DEPLOYED.status, setup } },
+      wallet.getSafeStatus.mockResolvedValueOnce({
+        success: true,
+        status: { ...DEPLOYED.status, setup },
       });
-      expect(safe.deployed).toEqual({ 100: true });
-      expect(card.classList.contains('hidden')).toBe(true);
+      await click('safe-status-retry');
+      expect(safe.deployed).toEqual({});
+      expect(card.classList.contains('hidden')).toBe(false);
     }
+    wallet.getSafeStatus.mockResolvedValueOnce({
+      success: true,
+      status: { ...DEPLOYED.status, setup: { state: 'unchanged' } },
+    });
+    await click('safe-status-retry');
+    expect(safe.deployed).toEqual({ 100: true });
+    expect(card.classList.contains('hidden')).toBe(true);
   });
 
   test('not deployed, its code read unverified: Activate is offered, as today', async () => {

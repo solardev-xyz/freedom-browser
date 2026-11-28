@@ -280,7 +280,7 @@ async function getSafeStatus(index) {
  * `feeConfirmation`, the user's confirmation of that fee.
  *
  * On the core's Safe backend, `options` are core-accounts.js's
- * (`feeAcknowledged`, `sender`), and a `feeConfirmation` is burnt unused.
+ * (`feeAskId`, `sender`), and a `feeConfirmation` is burnt unused.
  *
  * @param {number} index - Wallet index of the safe record
  * @param {{ feeConfirmation?: Object }} [options]

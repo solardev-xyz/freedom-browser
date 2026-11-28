@@ -13,13 +13,15 @@
  * re-evaluation whenever the active account changes.
  *
  * On the core's Safe backend (freedom-core design 0016, SAFE-3), main's
- * status carries `setup`, what the core's reads show of the Safe. A Safe
- * the core reports deployed only from an unverified answer (`setup` naming
- * the code read unverified) is not marked: the card says so, with Try
- * again, as for an unverified status check. The core judges the
- * activation's fee itself: the approvals document asks it, or, with the
- * document off, main's answer carries `feeAck` and the card's confirmation
- * goes back as `feeAcknowledged`, with no token.
+ * status carries `setup`, what the core's reads show of the Safe. Only a
+ * deployed Safe whose setup is unchanged, every read verified, is taken as
+ * active (marked in the snapshot, no card). Any other setup (changed, or a
+ * read unverified, the code's included) leaves it unmarked, and the card
+ * says why, with Try again. The core judges the activation's fee itself:
+ * the approvals document asks it, or, with the document off, main's answer
+ * carries the ID of the ask main holds (`feeAskId`), which the card's
+ * confirmation returns, with no token; a fee above the threshold is
+ * pressed twice (`feeAskAgain`).
  */
 
 import { walletState } from './wallet-state.js';
@@ -47,17 +49,25 @@ const ACTIVATION_UNVERIFIED =
   "Freedom couldn't verify on Gnosis whether this account is activated. " +
   'Try again, or add an RPC provider in Settings.';
 
+/** The core's `safe_unverified` and `safe_changed` texts (design 0016). */
+const SETUP_UNVERIFIED =
+  "Freedom couldn't verify this account on Gnosis, so it won't sign. " +
+  'Try again, or add an RPC provider in Settings.';
+const SETUP_CHANGED = "This account was changed outside Freedom, so Freedom can't sign for it.";
+
 /**
- * Whether the core reported the Safe deployed from an unverified answer
- * alone (`setup` names the code read unverified): its record isn't marked,
- * so the Safe isn't taken as active.
+ * Why a Safe the core reports deployed isn't taken as active (design 0016,
+ * API, `setup`): only an unchanged setup, every read verified, is. Null for
+ * that, and for main's own status (the JS backend's, with no `setup`),
+ * which says deployed only on a verified read.
  */
-function deployedUnverified(status) {
-  return (
-    status?.deployed === true &&
-    status.setup?.state === 'unverified' &&
-    status.setup.read === 'code'
-  );
+function unsettledSetup(status) {
+  if (status?.deployed !== true || status.setup === undefined) return null;
+  const setup = status.setup;
+  if (setup?.state === 'unchanged') return null;
+  if (setup?.state === 'changed') return SETUP_CHANGED;
+  if (setup?.state === 'unverified' && setup.read === 'code') return ACTIVATION_UNVERIFIED;
+  return SETUP_UNVERIFIED;
 }
 
 let card;
@@ -116,8 +126,9 @@ async function checkSafeStatus(showChecking) {
     renderStatusError(statusResult.error);
     return;
   }
-  if (deployedUnverified(statusResult.status)) {
-    renderStatusError(ACTIVATION_UNVERIFIED);
+  const unsettled = unsettledSetup(statusResult.status);
+  if (unsettled) {
+    renderStatusError(unsettled);
     return;
   }
 
@@ -211,12 +222,15 @@ function renderStatus(status) {
  */
 function renderFeeAsk(walletIndex, ask) {
   const lines = describeFeeCheck(ask.feeCheck, 'xDAI');
+  // The core's fee above the threshold, pressed once: asked again.
+  if (ask.askAgain) lines.push(FEE_CHECK.askAgain.replace(/\.$/, ''));
+  const confirm = ask.askAgain ? FEE_CHECK.sendAnyway : FEE_CHECK.confirmActivate;
   render(`
     <div class="safe-status-text">
       <strong>${escapeHtml(FEE_CHECK.confirmFee)}.</strong>
       ${lines.map((line) => `${escapeHtml(line)}.`).join(' ')}
     </div>
-    <button type="button" class="safe-status-btn primary" id="safe-status-confirm-fee">${escapeHtml(FEE_CHECK.confirmActivate)}</button>
+    <button type="button" class="safe-status-btn primary" id="safe-status-confirm-fee">${escapeHtml(confirm)}</button>
     <button type="button" class="safe-status-btn" id="safe-status-cancel-fee">Cancel</button>
     <div class="unlock-error hidden" id="safe-status-error"></div>
   `);
@@ -236,9 +250,9 @@ async function confirmActivationFee(walletIndex, ask) {
     button.disabled = true;
     button.textContent = 'Activating…';
   }
-  // The core's fee: confirmed on the card's word, and the core sends the
-  // transaction it offered.
-  if (ask.feeAck === true) return handleActivate({ feeAcknowledged: true });
+  // The core's fee: the ID of the ask main holds goes back, and main checks
+  // it before the core sends the transaction it offered.
+  if (typeof ask.feeAskId === 'string') return handleActivate({ feeAskId: ask.feeAskId });
   let feeConfirmation;
   try {
     feeConfirmation = await confirmOfferedFee(ask.offer, ask.feeCheck);
@@ -258,8 +272,8 @@ async function confirmActivationFee(walletIndex, ask) {
 /**
  * `options`: `{ feeConfirmation }`, the user's confirmation of the
  * executor's fee that the fee check stopped for, or, on the core's Safe
- * backend, `{ feeAcknowledged: true }`, that the card confirmed the core's
- * fee (confirmActivationFee).
+ * backend, `{ feeAskId }`, the ask whose fee the card confirmed
+ * (confirmActivationFee).
  */
 async function handleActivate(options) {
   const wallet = walletRecord();
@@ -281,8 +295,16 @@ async function handleActivate(options) {
     return;
   }
   // The core's fee, with the approvals document off: the card confirms it.
-  if (!result.success && result.code === FEE_CHECK_NEEDS_CONFIRMATION && result.feeAck === true) {
-    renderFeeAsk(wallet.index, { feeCheck: result.feeCheck, feeAck: true });
+  if (
+    !result.success &&
+    result.code === FEE_CHECK_NEEDS_CONFIRMATION &&
+    typeof result.feeAskId === 'string'
+  ) {
+    renderFeeAsk(wallet.index, {
+      feeCheck: result.feeCheck,
+      feeAskId: result.feeAskId,
+      askAgain: result.feeAskAgain === true,
+    });
     return;
   }
 

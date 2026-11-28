@@ -892,8 +892,8 @@ contextBridge.exposeInMainWorld('wallet', {
   getSafeStatus: (index) => ipcRenderer.invoke('wallet:get-safe-status', index),
   // `options.feeConfirmation`: the user's 'executor-send' confirmation of a
   // fee the fee check stopped for (design 0005, A), with that fee. On the
-  // core's Safe backend, `options.feeAcknowledged`: the card confirmed the
-  // core's fee (approvals document off), and no token rides along.
+  // core's Safe backend, `options.feeAskId`: the card confirmed the core's
+  // fee main asked under that ID (approvals document off); no token.
   activateSafe: (index, options) => ipcRenderer.invoke('wallet:activate-safe', index, options),
   // Safe sends (the signing board): every call returns {success, state}
   // where state is the board's render model (null when nothing pending).

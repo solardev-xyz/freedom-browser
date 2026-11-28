@@ -33,10 +33,15 @@
  *     threshold; on the approval `safe.deploy { fee_ack: true }` mints the
  *     token for exactly the offered transaction. With the document off (a
  *     development build's FREEDOM_APPROVALS_DOCUMENT=0), the chrome's card
- *     shows the verdict (FEE_CHECK_NEEDS_CONFIRMATION with `feeAck`), and
- *     its confirmation is `safe.deploy { fee_ack: true }` on its word. The
- *     core confirms only an offer it made: `fee_ack` with none standing is
- *     judged again.
+ *     shows the verdict (FEE_CHECK_NEEDS_CONFIRMATION with `feeAskId`), and
+ *     its confirmation returns that ID: main takes it only for the ask it
+ *     holds for that Safe, from the chrome it was shown in, twice for a fee
+ *     above the threshold, before `safe.deploy { fee_ack: true }`. Main
+ *     holds one ask per Safe, so another activation of it (another window's
+ *     included) leaves an earlier ID confirming nothing, and it counts the
+ *     asks across the card's round trips (MAX_FEE_ASKS). Either way the
+ *     send that follows must be the offer shown: its executor, and the
+ *     verdict's most it can cost.
  *   - A deployment already journaled under the key (an activation retried
  *     after its first send) is sent again as it was, at its nonce: from a
  *     `{ send }` the held bytes go again and the new token is burnt
@@ -50,6 +55,7 @@
  * token is a bearer secret: never logged, and never in an error.
  */
 
+const crypto = require('crypto');
 const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
 const { codedError, SAFE_UNVERIFIED } = require('./errors');
 
@@ -59,8 +65,13 @@ const DEPLOY_CHAIN_ID = 100;
 /** The core's prepared executor send (cored 0.32.0, `safe::methods`). */
 const SEND_KIND = 'executor-send';
 
-/** How many fees one activation asks about in the panel before it stops. */
+/** How many fees one activation asks about, across the card's round trips, before it stops. */
 const MAX_FEE_ASKS = 3;
+
+// The fee ask main holds for each Safe, by its index: `{ id, asker, verdict,
+// executor, presses, count }` (`holdAsk`). One per Safe: a newer ask, or a
+// new activation, replaces it, and its ID then confirms nothing.
+const asks = new Map();
 
 /** `confirmDeployment`'s text, the core's own for `safe.deployed`. */
 const DEPLOYMENT_UNVERIFIED_TEXT =
@@ -123,27 +134,43 @@ async function getSafeStatus(index) {
 
 /**
  * The core's `{ send }` checked as main signs it: the executor's send, from
- * a vault account that owns this Safe, on Gnosis, with its token. Anything
- * else is refused before a key is touched, its token burnt.
+ * a vault account that owns this Safe, on Gnosis, with its token. After a
+ * fee the user confirmed (`shown`, the ask), it must also be the offer
+ * shown: from the executor named, at the verdict's most it can cost.
+ * Anything else is refused before a key is touched, its token burnt.
  */
-function checkedSend(record, send) {
+function checkedSend(record, send, shown = null) {
   const token = typeof send?.token === 'string' && send.token.length > 0 ? send.token : null;
   const tx = send?.tx;
   const account = send?.account;
   const owner = Number.isSafeInteger(account) && record.owners.includes(account);
   const vaultAccount = owner && getWalletRecord(account)?.type === WALLET_TYPES.MNEMONIC;
-  if (
-    !token ||
-    send.kind !== SEND_KIND ||
-    !vaultAccount ||
-    tx === null ||
-    typeof tx !== 'object' ||
-    String(tx.chain_id) !== String(DEPLOY_CHAIN_ID)
-  ) {
+  const valid =
+    token &&
+    send.kind === SEND_KIND &&
+    vaultAccount &&
+    tx !== null &&
+    typeof tx === 'object' &&
+    String(tx.chain_id) === String(DEPLOY_CHAIN_ID);
+  if (!valid) {
     if (token) burn(token);
     throw new Error("The core's activation isn't one Freedom signs: nothing was sent");
   }
+  if (shown && (account !== shown.executor || !costs(tx, shown.verdict.maxCost))) {
+    burn(token);
+    throw notShown();
+  }
   return { token, account, tx };
+}
+
+/** Whether `tx` (the core's form) costs at most exactly `maxCost`, a verdict's. */
+function costs(tx, maxCost) {
+  try {
+    const perGas = tx.type === 2 ? tx.max_fee_per_gas : tx.gas_price;
+    return typeof maxCost === 'string' && BigInt(tx.gas_limit) * BigInt(perGas) === BigInt(maxCost);
+  } catch {
+    return false;
+  }
 }
 
 /** Whether `safe.deploy` answered `{ fee_check }`: a fee for the user. */
@@ -166,30 +193,97 @@ async function executorAddress(record) {
   return require('../signers').getSigner(pickDefaultExecutor(record.owners)).getAddress();
 }
 
+/** A fee confirmation that isn't the ask main holds for this Safe and window. */
+function notShown() {
+  return codedError(
+    "This fee confirmation isn't the one shown for this account. Nothing was sent: try again.",
+    signing().NOT_CONFIRMED
+  );
+}
+
+/** The asking chrome's webContents id, which an ask is bound to, or null. */
+function askerOf(sender) {
+  return Number.isSafeInteger(sender?.id) ? sender.id : null;
+}
+
 /**
- * The deployment's fee, which the core's check stopped, asked as point 8
- * has it: in the approvals document, then `safe.deploy { fee_ack: true }`
- * on its approval. Resolves with that answer. Without the document, the
- * chrome's card asks (FEE_CHECK_NEEDS_CONFIRMATION, `feeAck`: its
- * confirmation is `feeAcknowledged`, never a token).
+ * The core's fee verdict `verdict` for Safe `index`, held as the ask main
+ * shows (`asks`): a new ID, the asking chrome (`sender`), the verdict and
+ * the executor that pays. It replaces the Safe's earlier ask, whose ID no
+ * longer confirms anything, and counts one more of the activation's asks:
+ * past MAX_FEE_ASKS the activation stops, nothing sent.
  */
-async function askFee(record, verdict, { approvals, sender, deploy }) {
-  if (!approvals) {
-    const { FEE_CHECK_NEEDS_CONFIRMATION, feeCheckError } = require('../fee-check');
-    throw Object.assign(feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, verdict), { feeAck: true });
+function holdAsk(index, verdict, sender, record) {
+  const count = (asks.get(index)?.count ?? 0) + 1;
+  if (count > MAX_FEE_ASKS) {
+    asks.delete(index);
+    throw new Error("The activation's network fee kept changing. Nothing was sent: try again.");
   }
-  // The core's executor, its first vault owner: the account the panel
-  // names as paying, which `checkedSend` then requires of the send.
   const { pickDefaultExecutor } = require('./safe-executor');
+  const ask = {
+    id: crypto.randomUUID(),
+    asker: askerOf(sender),
+    verdict,
+    executor: pickDefaultExecutor(record.owners),
+    presses: 0,
+    count,
+  };
+  asks.set(index, ask);
+  return ask;
+}
+
+/** The card's ask (approvals document off): the verdict, the ask's ID, and whether it asks again. */
+function cardAsk(ask) {
+  const { FEE_CHECK_NEEDS_CONFIRMATION, feeCheckError } = require('../fee-check');
+  return Object.assign(feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, ask.verdict), {
+    feeAskId: ask.id,
+    feeAskAgain: ask.presses > 0,
+  });
+}
+
+/**
+ * The card's confirmation of ask `id` for Safe `index` (approvals document
+ * off): the ask main holds for the Safe, shown in the same chrome; anything
+ * else is refused. A fee above the threshold takes two presses: the first
+ * is asked again, under a new ID. Resolves with the ask the fee_ack
+ * confirms, its ID spent.
+ */
+function confirmedAsk(index, id, sender) {
+  const ask = asks.get(index);
+  const asker = askerOf(sender);
+  if (!ask || typeof id !== 'string' || ask.id !== id || asker === null || ask.asker !== asker) {
+    throw notShown();
+  }
+  if (ask.verdict?.above === true && ask.presses === 0) {
+    ask.presses = 1;
+    ask.id = crypto.randomUUID();
+    throw cardAsk(ask);
+  }
+  ask.id = null;
+  return ask;
+}
+
+/**
+ * Ask `ask`'s fee in the approvals document, then `safe.deploy { fee_ack:
+ * true }` on its approval, while the ask is still the one main holds for
+ * the Safe (another activation meanwhile replaces it). Resolves with that
+ * answer.
+ */
+async function askInPanel(index, record, ask, { approvals, sender, deploy }) {
+  const id = ask.id;
   const outcome = await approvals.confirmCoreFee(
     {
       sender,
-      index: pickDefaultExecutor(record.owners),
+      index: ask.executor,
       safe: record.address,
       chainId: DEPLOY_CHAIN_ID,
-      verdict,
+      verdict: ask.verdict,
     },
-    async () => ({ answer: await deploy(true) })
+    async () => {
+      if (asks.get(index) !== ask || ask.id !== id) throw notShown();
+      ask.id = null;
+      return { answer: await deploy(true) };
+    }
   );
   if (!outcome?.approved)
     throw codedError(outcome?.error ?? 'User rejected the request', outcome?.code);
@@ -203,17 +297,17 @@ async function askFee(record, verdict, { approvals, sender, deploy }) {
  *
  * @param {number} index - Wallet index of the Safe record
  * @param {object} [options]
- * @param {boolean} [options.feeAcknowledged] - With the approvals document
- *   off, the chrome's confirmation of the fee its card showed; ignored
+ * @param {string} [options.feeAskId] - With the approvals document off, the
+ *   card's confirmation of the ask it showed (`confirmedAsk`); ignored
  *   while the document is on, which asks itself
- * @param {object} [options.sender] - The asking window's webContents, whose
- *   approvals document asks about a fee
+ * @param {object} [options.sender] - The asking chrome's webContents: its
+ *   approvals document asks about a fee, and an ask is bound to it
  * @param {object} [options.feeConfirmation] - A chrome's executor-send
  *   confirmation (today's path): burnt unused
  */
 async function activateSafe(
   index,
-  { feeAcknowledged = false, sender = null, feeConfirmation = null } = {}
+  { feeAskId = null, sender = null, feeConfirmation = null } = {}
 ) {
   const record = getSafeRecord(index);
   if (feeConfirmation?.confirmation) burn(feeConfirmation.confirmation);
@@ -223,24 +317,38 @@ async function activateSafe(
   const deploy = (feeAck) =>
     vault().safe.deploy(feeAck ? { safe: index, fee_ack: true } : { safe: index });
 
-  let answer = await deploy(!approvals && feeAcknowledged === true);
-  for (let asked = 0; feeAsked(answer); asked += 1) {
+  // The fee the user confirmed, which the send must then be.
+  let shown = null;
+  let answer;
+  if (!approvals && feeAskId !== null) {
+    shown = confirmedAsk(index, feeAskId, sender);
+    answer = await deploy(true);
+  } else {
+    // A new activation: its own asks, and no earlier ask confirms anything.
+    asks.delete(index);
+    answer = await deploy(false);
+  }
+  while (feeAsked(answer)) {
     // Journaled already: its bytes go again, and no fee is asked.
     const held = await require('../transaction-service').heldIntentFor(intentKey);
-    if (held) return sendHeld(record, held);
-    if (asked >= MAX_FEE_ASKS) {
-      throw new Error("The activation's network fee kept changing. Nothing was sent: try again.");
+    if (held) {
+      asks.delete(index);
+      return sendHeld(record, held);
     }
     // A locked vault is unlocked before the fee is asked, not after the
     // user confirmed it, as today's activation reads the executor first.
     await executorAddress(record);
-    answer = await askFee(record, answer.fee_check, { approvals, sender, deploy });
+    const ask = holdAsk(index, answer.fee_check, sender, record);
+    if (!approvals) throw cardAsk(ask);
+    shown = ask;
+    answer = await askInPanel(index, record, ask, { approvals, sender, deploy });
   }
+  asks.delete(index);
   if (answer?.deployed === true) return { safeAddress: record.address, alreadyDeployed: true };
   if (!answer?.send) {
     throw new Error("The core's activation isn't one Freedom signs: nothing was sent");
   }
-  const send = checkedSend(record, answer.send);
+  const send = checkedSend(record, answer.send, shown);
   const sent = await signing().withConfirmation(send.token, () =>
     sendDeployment(record, send, intentKey)
   );
