@@ -17,6 +17,9 @@
  *     the legs with no proxy;
  *   - a SOCKS5 proxy, recording the hostname:port Chromium asked it for and
  *     splicing the tunnel to the origin.
+ * Then main's own calls (`swarm/ant-storage-api.js`, SWM-8 PR 8.1): its
+ * reads, a POST and the swap switch's PUT through the same proxy, and a PUT
+ * the node hangs up on, after a write left a connection open: sent once.
  * It also measures what the plan's risks asked for (SWM-5 plan, section 4):
  * whether Chromium keeps main's `accept-encoding: identity`, which bytes a
  * header value in U+0080–U+00FF goes out as on each stack (#1328), and what a
@@ -45,6 +48,7 @@ app.setPath('userData', PROBE_USER_DATA);
 
 const { antBackend } = require('../../swarm/bzz-protocol');
 const { callAnt } = require('../../swarm/ant-api-call');
+const antStorageApi = require('../../swarm/ant-storage-api');
 const { announceMainProcessAntDial } = require('../../swarm/ant-api-main-dials');
 const { installAntApiGuard, noteAntApiUrl } = require('../../swarm/ant-api-guard');
 const {
@@ -60,6 +64,9 @@ const originSeen = [];
 const tunnelPorts = new Set();
 // Requests the origin holds unread (`/hold`), resumed by the probe.
 const held = [];
+// When set, the origin takes the next PUT whole and closes its connection
+// without answering; a later delivery of it would be answered.
+let hangUpPut = false;
 
 // The raw bytes of a header value: Node's server reads header bytes as
 // latin1, one character a byte.
@@ -76,9 +83,12 @@ function startOrigin() {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       const hash = crypto.createHash('sha256');
+      req.socket.served = (req.socket.served || 0) + 1;
       const entry = {
         host: req.headers.host,
         viaProxy: tunnelPorts.has(req.socket.remotePort),
+        // Whether its connection served a request before.
+        reused: req.socket.served > 1,
         method: req.method,
         path: req.url,
         contentType: req.headers['content-type'] || null,
@@ -103,6 +113,11 @@ function startOrigin() {
       req.on('end', () => {
         entry.complete = true;
         entry.digest = hash.digest('hex');
+        if (req.method === 'PUT' && hangUpPut) {
+          hangUpPut = false;
+          req.socket.destroy();
+          return;
+        }
         if (req.url.startsWith('/stamps')) {
           const body = zlib.gzipSync(Buffer.from(JSON.stringify({ stamps: 'a'.repeat(60 * KIB) })));
           res.writeHead(200, {
@@ -371,6 +386,38 @@ async function main() {
     guardSaw: [...guardSaw],
     cancelled: [...cancelled],
   };
+
+  // ---- ant-storage-api's calls: the same proxy, writes sent once -------
+  reset();
+  const storage = {
+    health: await antStorageApi.getHealth(),
+    settlements: await antStorageApi.getSettlements(),
+    quote: await antStorageApi.getStorageQuote({ depth: 20, days: 30 }),
+    buy: await antStorageApi.buyStorage({ depth: 20, amountPerChunk: '65676' }),
+    swap: await antStorageApi.setSwapEnabled(true),
+  };
+  storage.originSeen = [...originSeen];
+  storage.guardSaw = [...guardSaw];
+  storage.cancelled = [...cancelled];
+  storage.socksSeen = [...socksSeen];
+  // A write the node answers on a connection it keeps, then the swap
+  // switch's PUT, which it takes whole and drops without headers.
+  reset();
+  storage.warm = await antStorageApi.topUpSettlementDeposit();
+  hangUpPut = true;
+  storage.hungUp = await antStorageApi.setSwapEnabled(false);
+  // Anything Chromium still sends for it lands before the next call.
+  await sleep(300);
+  hangUpPut = false;
+  storage.hangUpSeen = originSeen.map(({ method, path: p, reused, viaProxy, bytes, digest }) => ({
+    method,
+    path: p,
+    reused,
+    viaProxy,
+    bytes,
+    digest,
+  }));
+  results.storage = storage;
 
   // ---- The guard binds an announcement's method and URL ---------------
   await ses.setProxy({ mode: 'direct' });

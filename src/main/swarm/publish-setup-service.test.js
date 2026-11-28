@@ -3,6 +3,8 @@ const mockWebContents = [];
 jest.mock('electron', () => ({
   ipcMain: { handle: (channel, handler) => mockIpcHandlers.set(channel, handler) },
   webContents: { getAllWebContents: () => mockWebContents },
+  // The service registry's broadcast, for the case that sets the node's URL.
+  BrowserWindow: { getAllWindows: () => [] },
 }));
 jest.mock('../logger', () => ({
   info: jest.fn(),
@@ -1230,6 +1232,46 @@ describe('the armed purchase', () => {
 
     await jest.advanceTimersByTimeAsync(REQUOTE_MS * 10);
     expect(api.buyStorage).toHaveBeenCalledTimes(1);
+  });
+
+  // Codex round 1 on #1369, 2: through the real antRequest, a buy the
+  // transport refused before any request of it existed (a write session
+  // that couldn't be prepared: ant-write-sessions.js's AntNotDialled, here
+  // at the loopback dial's test seam) left nothing on chain, and says so.
+  test('a buy main never dialled fails as certain: the node is unreachable, nothing may go through', async () => {
+    const antStorageApi = require('./ant-storage-api');
+    const { AntNotDialled } = require('./ant-write-sessions');
+    const registry = require('../service-registry');
+    registry.updateService('ant', { api: 'http://127.0.0.1:1633' });
+    try {
+      const fetchImpl = jest.fn(async () => {
+        throw new AntNotDialled(
+          'a write session resolves its proxy as DIRECT, its request session as SOCKS5 127.0.0.1:9150: not dialled'
+        );
+      });
+      const { service, api } = setup();
+      api.getStorageQuote.mockResolvedValue(ok(funded()));
+      api.buyStorage.mockImplementation((params) =>
+        antStorageApi.buyStorage(params, { fetchImpl })
+      );
+
+      service.arm({ kind: 'buy', planId: 'starter' });
+      await settle();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await expect(api.buyStorage.mock.results[0].value).resolves.toMatchObject({
+        status: 0,
+        timedOut: false,
+        unreachable: true,
+        refused: true,
+      });
+      expect(service.getState().operation).toMatchObject({
+        phase: 'failed',
+        uncertain: false,
+        error: 'Cannot reach the Swarm node.',
+      });
+    } finally {
+      registry.updateService('ant', { api: null });
+    }
   });
 
   test('a chain error fails with the node’s reason, in context', async () => {

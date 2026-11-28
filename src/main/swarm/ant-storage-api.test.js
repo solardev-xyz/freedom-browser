@@ -1,5 +1,15 @@
 const mockGetAntApiUrl = jest.fn();
-jest.mock('../service-registry', () => ({ getAntApiUrl: () => mockGetAntApiUrl() }));
+jest.mock('../service-registry', () => ({
+  MODE: { BUNDLED: 'bundled', EXTERNAL: 'external', REUSED: 'reused' },
+  getAntApiUrl: () => mockGetAntApiUrl(),
+  getService: () => ({ mode: 'bundled' }),
+}));
+jest.mock('../logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+}));
 
 const api = require('./ant-storage-api');
 
@@ -77,6 +87,25 @@ describe('antRequest', () => {
     expect(api.isUncertainWrite(reset)).toBe(true);
   });
 
+  test('a lost route is certain only when the connect failed with it, not a write on a connected socket', async () => {
+    const failed = (cause) => Object.assign(new TypeError('fetch failed'), { cause });
+    const buy = (cause) =>
+      api.buyStorage(
+        { depth: 20, amountPerChunk: '1' },
+        { fetchImpl: jest.fn().mockRejectedValue(failed(cause)) }
+      );
+    for (const code of ['EHOSTUNREACH', 'ENETUNREACH']) {
+      const atConnect = await buy({ code, syscall: 'connect' });
+      expect(atConnect).toMatchObject({ status: 0, unreachable: true, refused: true });
+      expect(api.isUncertainWrite(atConnect)).toBe(false);
+      for (const cause of [{ code, syscall: 'write' }, { code, syscall: 'read' }, { code }]) {
+        const afterConnect = await buy(cause);
+        expect(afterConnect).toMatchObject({ status: 0, unreachable: true, refused: false });
+        expect(api.isUncertainWrite(afterConnect)).toBe(true);
+      }
+    }
+  });
+
   test('keeps a non-JSON body out of `data`', async () => {
     await expect(api.getNode({ fetchImpl: respond('<html>', 502) })).resolves.toEqual({
       ok: false,
@@ -145,18 +174,19 @@ describe('storage routes', () => {
     expect(init).toMatchObject({
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: '{"swapEnabled":false}',
     });
+    // The JSON's bytes: the node's transport takes bytes or a stream.
+    expect(new TextDecoder().decode(init.body)).toBe('{"swapEnabled":false}');
     // No `Origin` from the main process: antd's web-page guard lets it through.
     expect(init.headers).not.toHaveProperty('Origin');
-    expect(second.body).toBe('{"swapEnabled":false}');
+    expect(new TextDecoder().decode(second.body)).toBe('{"swapEnabled":false}');
   });
 
   test('a read sends no body and no content type', async () => {
     const fetchImpl = respond({});
     await api.getNode({ fetchImpl });
     expect(fetchImpl.mock.calls[0][1]).not.toHaveProperty('body');
-    expect(fetchImpl.mock.calls[0][1]).not.toHaveProperty('headers');
+    expect(fetchImpl.mock.calls[0][1].headers).toBeUndefined();
   });
 });
 

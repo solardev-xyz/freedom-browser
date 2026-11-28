@@ -22,6 +22,7 @@
  */
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const path = require('path');
 
 const REQUIRED = process.env.FREEDOM_ELECTRON_NET_TEST === '1';
@@ -138,6 +139,118 @@ describeWithElectron("main's Swarm POSTs in a real Electron process", () => {
     expect(leg.originSeen.map((seen) => seen.method)).toEqual(['POST', 'POST']);
     expect(leg.guardSaw.filter((seen) => seen.method === 'POST')).toEqual([]);
     expect(leg.cancelled).toEqual([]);
+  });
+
+  // SWM-8 PR 8.1: ant-storage-api on the node's transport (closing F-6 for it).
+  describe("main's own calls (ant-storage-api) on the same transport", () => {
+    const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
+
+    test('every call goes through the session proxy, by name; the answers are what callers saw on Node’s fetch', () => {
+      const { storage } = results;
+      const { port } = new URL(results.remote);
+      const toNode = storage.socksSeen.filter((seen) => seen.endsWith(`:${port}`));
+      expect(toNode.length).toBeGreaterThan(0);
+      for (const seen of toNode) expect(seen).toBe(`ant.example.test:${port}`);
+      for (const name of ['health', 'settlements', 'quote', 'buy', 'swap']) {
+        expect(storage[name]).toMatchObject({ ok: true, status: 201, message: null });
+      }
+      expect(storage.swap.data).toEqual({ reference: 'ab'.repeat(32), bytes: 20 });
+      expect(
+        storage.originSeen.map(({ viaProxy, method, path: p, contentType, cookie }) => ({
+          viaProxy,
+          method,
+          path: p,
+          contentType,
+          cookie,
+        }))
+      ).toEqual([
+        { viaProxy: true, method: 'GET', path: '/health', contentType: null, cookie: null },
+        { viaProxy: true, method: 'GET', path: '/settlements', contentType: null, cookie: null },
+        {
+          viaProxy: true,
+          method: 'GET',
+          path: '/v0/storage/quote?depth=20&days=30',
+          contentType: null,
+          cookie: null,
+        },
+        {
+          viaProxy: true,
+          method: 'POST',
+          path: '/v0/storage/buy?depth=20&amountPerChunk=65676&immutable=true',
+          contentType: null,
+          cookie: null,
+        },
+        {
+          viaProxy: true,
+          method: 'PUT',
+          path: '/v0/settlement/swap',
+          contentType: 'application/json',
+          cookie: null,
+        },
+      ]);
+      expect(storage.originSeen[4].digest).toBe(sha256('{"swapEnabled":true}'));
+    });
+
+    test('the guard sees the reads, announced and admitted; the POST and PUT go on write sessions', () => {
+      const { storage } = results;
+      expect(storage.guardSaw).toEqual([
+        {
+          method: 'GET',
+          path: '/health',
+          resourceType: 'other',
+          webContentsId: null,
+          frame: false,
+        },
+        {
+          method: 'GET',
+          path: '/settlements',
+          resourceType: 'other',
+          webContentsId: null,
+          frame: false,
+        },
+        {
+          method: 'GET',
+          path: '/v0/storage/quote?depth=20&days=30',
+          resourceType: 'other',
+          webContentsId: null,
+          frame: false,
+        },
+      ]);
+      expect(storage.cancelled).toEqual([]);
+    });
+
+    test('a PUT the node hangs up on, after a write left a connection open, goes once and may have landed', () => {
+      const { storage } = results;
+      expect(storage.warm).toMatchObject({ ok: true, status: 201 });
+      expect(storage.hungUp).toEqual({
+        ok: false,
+        status: 0,
+        data: null,
+        message: null,
+        timedOut: false,
+        unreachable: true,
+        refused: false,
+      });
+      expect(storage.hangUpSeen).toEqual([
+        {
+          method: 'POST',
+          path: '/v0/settlement/deposit',
+          reused: false,
+          viaProxy: true,
+          bytes: 0,
+          digest: sha256(''),
+        },
+        // Once, whole, on a new connection: nothing sent it again.
+        {
+          method: 'PUT',
+          path: '/v0/settlement/swap',
+          reused: false,
+          viaProxy: true,
+          bytes: 21,
+          digest: sha256('{"swapEnabled":false}'),
+        },
+      ]);
+    });
   });
 
   test('the guard admits exactly the announced POST: another URL, another method, or none is cancelled', () => {

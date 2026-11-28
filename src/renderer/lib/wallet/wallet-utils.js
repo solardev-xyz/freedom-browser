@@ -44,6 +44,24 @@ export function isSafeDeployed(wallet) {
   return Boolean(wallet?.deployed?.[GNOSIS_CHAIN_ID]);
 }
 
+// On the core's Safe backend (freedom-core design 0016, SAFE-3): why a
+// deployed Safe's last status check didn't find its setup unchanged, by
+// wallet index. The core won't sign for it meanwhile, so Send is blocked
+// as for a Safe not yet activated (send.js), until a check finds it
+// unchanged again (safe-status.js).
+const unsettledSafes = new Map();
+
+/** Record (`reason`) or clear (null) a Safe's unsettled setup. */
+export function setSafeSetupUnsettled(walletIndex, reason) {
+  if (reason) unsettledSafes.set(walletIndex, reason);
+  else unsettledSafes.delete(walletIndex);
+}
+
+/** Why a Safe's setup is unsettled (setSafeSetupUnsettled), or null. */
+export function safeSetupUnsettled(wallet) {
+  return unsettledSafes.get(wallet?.index) ?? null;
+}
+
 /**
  * Whether a wallet index belongs to a device account (Ledger hardware,
  * remote phone). Device accounts sign on the device: no vault unlock,

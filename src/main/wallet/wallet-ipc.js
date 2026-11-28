@@ -96,6 +96,16 @@ function feeAsk(err) {
   return err?.feeCheck && err?.offer ? { feeCheck: err.feeCheck, offer: err.offer } : {};
 }
 
+/** The same on the core's Safe backend with the approvals document off
+ * (safe/core-accounts.js): the core's verdict, and the ID of the ask main
+ * holds for it, which the card's confirmation returns (`feeAskAgain`: a
+ * fee above the threshold, pressed once), never a token. */
+function coreFeeAsk(err) {
+  return err?.feeCheck && typeof err?.feeAskId === 'string'
+    ? { feeCheck: err.feeCheck, feeAskId: err.feeAskId, feeAskAgain: err.feeAskAgain === true }
+    : {};
+}
+
 // The page kinds, whose methods main serves (freedom-core design 0011,
 // "Approval tokens"; PRQ-5): `personal_sign` and `eth_signTypedData_v4`
 // (PRQ-5a) and `eth_sendTransaction` (PRQ-5b), from a Safe account too. The
@@ -695,16 +705,32 @@ function registerWalletIpc() {
 
   // `options.feeConfirmation`: an 'executor-send' confirmation of the fee
   // the fee check stopped for, with that fee (safe-executor.js).
-  handle('wallet:activate-safe', async (_event, index, options) => {
+  //
+  // On the core's Safe backend (freedom-core design 0016, SAFE-3) the core
+  // judges the fee and mints the executor's token itself: the fee is asked
+  // in this window's approvals document (`sender`), or, with it off, on the
+  // card, whose confirmation returns the ask's ID, `options.feeAskId`, which
+  // main checks against the ask it holds for this Safe and this window
+  // (safe/core-accounts.js). A confirmation of the chrome's is burnt unused.
+  handle('wallet:activate-safe', async (event, index, options) => {
     try {
       const { activateSafe } = require('./safe/safe-service');
-      const result = await activateSafe(index, { feeConfirmation: options?.feeConfirmation });
+      const result = await activateSafe(
+        index,
+        safeBackendKind() === 'core'
+          ? {
+              feeAskId: typeof options?.feeAskId === 'string' ? options.feeAskId : null,
+              sender: event?.sender ?? null,
+              feeConfirmation: options?.feeConfirmation,
+            }
+          : { feeConfirmation: options?.feeConfirmation }
+      );
       return { success: true, ...result };
     } catch (err) {
       // The identity core's errors carry their own code (`vault_locked`);
       // the renderer's contract is VAULT_LOCKED.
       const code = isVaultLockedError(err) ? 'VAULT_LOCKED' : err.code;
-      return { success: false, error: err.message, code, ...feeAsk(err) };
+      return { success: false, error: err.message, code, ...feeAsk(err), ...coreFeeAsk(err) };
     }
   });
 
