@@ -337,6 +337,43 @@ describe('the answer, read strictly', () => {
     ).toThrow(expect.objectContaining({ message: 'Not Found', status: 404 }));
   });
 
+  test("a thrown capacity is exactly the core's: three finite byte counts, at least 0", () => {
+    const thrownBy = (capacity) => {
+      try {
+        readOwnAnswer('swarm.publish', errorOf({ message: 'No room', code: 'POSTAGE_CAPACITY_INSUFFICIENT', capacity }));
+      } catch (err) {
+        return err;
+      }
+      return null;
+    };
+    // A room that isn't a whole number of bytes, and 0, as the core gives them.
+    for (const capacity of [
+      { uploadBytes: 100000, requiredBytes: 150000, largestRemainingBytes: 40890.5 },
+      { uploadBytes: 0, requiredBytes: 0, largestRemainingBytes: 0 },
+    ]) {
+      const err = thrownBy(capacity);
+      expect(err).not.toBeInstanceOf(CoreError);
+      expect(err.capacity).toEqual(capacity);
+      expect(Object.keys(err.capacity)).toEqual(['uploadBytes', 'requiredBytes', 'largestRemainingBytes']);
+    }
+    const valid = { uploadBytes: 5, requiredBytes: 8, largestRemainingBytes: 0 };
+    for (const capacity of [
+      { uploadBytes: 5, requiredBytes: 8 },
+      {},
+      { ...valid, extra: 1 },
+      { ...valid, largestRemainingBytes: Infinity },
+      { ...valid, requiredBytes: NaN },
+      { ...valid, uploadBytes: -1 },
+      { ...valid, uploadBytes: '5' },
+      { ...valid, requiredBytes: 8n },
+      { ...valid, largestRemainingBytes: null },
+      [5, 8, 0],
+      null,
+    ]) {
+      expect(thrownBy(capacity)).toEqual(expect.objectContaining({ name: 'CoreError', code: 'internal' }));
+    }
+  });
+
   test("anything else is the core's fault: internal", () => {
     for (const odd of [
       null,
