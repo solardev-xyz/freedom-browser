@@ -49,7 +49,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { heldOf, swarmVectors } = require('./swarm-vectors');
-const { ContractNode, NODE_URL, nodeWorld, requestRecord, testKeys } = require('./swarm-contract-node');
+const { ContractNode, nodeWorld, requestRecord, testKeys } = require('./swarm-contract-node');
 
 const SRC = path.join(__dirname, '..', '..', 'src', 'main');
 const BACKENDS = Object.freeze(['js', 'core']);
@@ -845,9 +845,6 @@ async function runCase(backend, kase, env) {
 
 module.exports = {
   BACKEND,
-  BACKENDS,
-  NODE_URL,
-  connected,
   contractVectors,
   coredBinary,
   removeCoreTemplate,
