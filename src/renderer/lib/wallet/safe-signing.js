@@ -44,6 +44,15 @@
  * openSafeSigningBoard asks main for (`wallet.safeBoard`). The chrome keeps
  * what decides nothing: the summary with the explorer link once a send has
  * executed, the balances, and the DOM events below.
+ *
+ * On the core's Safe backend (freedom-core design 0016, SAFE-3's PR 9) main's
+ * state can say two things of a send that offer less. `older`: it was
+ * started in an older version of Freedom, so no owner signs it here (main
+ * refuses, SAFE_NOT_PROPOSED): no sweep and no automatic execution; the
+ * board says so and offers Discard, and Send once it already has its
+ * threshold. `setupChanged`: the account was changed outside Freedom, so
+ * nothing signs or executes for it: the board offers only Discard. A state
+ * on js has neither, and the board is as before.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -107,6 +116,24 @@ const isStale = (epoch) => epoch !== boardEpoch;
 // The SafeTx a send board shows, which each of its steps names (main
 // refuses a step for another on the core's Safe backend: SAFE-3).
 const shownSafeTx = () => state?.safeTxHash ?? null;
+
+// A send main's state says offers less (the core's Safe backend, SAFE-3's
+// PR 9): started in an older version (no owner signs it here), or its
+// account changed outside Freedom (nothing signs or executes for it).
+const olderSend = () => boardKind === 'send' && state?.older === true;
+const changedSetup = () => boardKind === 'send' && Array.isArray(state?.setupChanged);
+// No owner signs on the board, and nothing executes by itself.
+const offersLess = () => olderSend() || changedSetup();
+
+// What changed of the account, as main names it (the core's names).
+const SETUP_CHANGES = Object.freeze({
+  singleton: 'its Safe version',
+  owners: 'its owners',
+  threshold: 'how many owners must sign',
+  guard: 'its transaction guard',
+  handler: 'its fallback handler',
+  module: 'its modules',
+});
 
 // The IPC surface per board kind — everything else is shared.
 const KIND_API = {
@@ -443,7 +470,8 @@ async function requestVaultUnlock() {
 
 /** Silent free signatures (main owns the policy) + finalize if ready. */
 async function progressAutomatics() {
-  if (!state || phase !== 'board') return;
+  // An older send, or a changed account: nothing is signed or executed by itself.
+  if (!state || phase !== 'board' || offersLess()) return;
   const epoch = boardEpoch;
   if (state.collected < state.threshold) {
     const result = await api().sign(boardSafeIndex); // free-signature sweep
@@ -459,7 +487,8 @@ async function progressAutomatics() {
 /**
  * The single decision site for finalization (executing a send /
  * completing a message): threshold met, board idle, and no unresolved
- * finalization error (its banner owns the retry).
+ * finalization error (its banner owns the retry). An older send is sent
+ * only by its own button, and a changed account's never.
  */
 async function maybeFinalize() {
   if (
@@ -467,6 +496,7 @@ async function maybeFinalize() {
     phase === 'board' &&
     !executeError &&
     !feeAsk &&
+    !offersLess() &&
     state.collected >= state.threshold
   ) {
     await (boardKind === 'message' ? completeNow() : executeNow());
@@ -778,7 +808,15 @@ function render() {
       : `all ${state.threshold} owners must sign`;
   const busy = phase === 'executing';
 
-  if (titleEl) titleEl.textContent = busy ? 'Executing transaction' : 'Collect signatures';
+  if (titleEl) {
+    titleEl.textContent = busy
+      ? 'Executing transaction'
+      : changedSetup()
+        ? 'Account changed outside Freedom'
+        : olderSend()
+          ? 'Transaction from an older version'
+          : 'Collect signatures';
+  }
   if (backBtn) backBtn.classList.toggle('hidden', busy || signingIndex !== null);
 
   content.innerHTML = `
@@ -801,10 +839,15 @@ function render() {
         <span class="connect-ledger-status-spinner"></span>
         Executing — broadcast by ${escapeHtml(executorName || 'an owner account')}…
       </div>
-    ` : `
+    ` : changedSetup() ? renderChangedSetup() : `
+      ${olderSend() ? renderOlderSend() : ''}
       ${executeError ? renderExecuteError() : ''}
       ${feeAsk ? renderFeeAsk() : ''}
-      ${boardKind === 'message' ? `
+      ${olderSend() ? (state.collected >= state.threshold ? `
+        <div class="safe-signing-note">
+          Network fee is paid by ${escapeHtml(executorName || 'an owner account')} when the transaction executes.
+        </div>
+      ` : '') : boardKind === 'message' ? `
         <div class="safe-signing-note">
           No transaction is sent — once enough owners have signed, the
           combined signature goes back to the app.
@@ -832,6 +875,58 @@ function render() {
     .getElementById('safe-signing-retry-execute')
     ?.addEventListener('click', boardKind === 'message' ? completeNow : () => executeNow());
   document.getElementById('safe-signing-confirm-fee')?.addEventListener('click', confirmFee);
+  document.getElementById('safe-signing-send-older')?.addEventListener('click', sendOlder);
+}
+
+/** An older send with its threshold, sent by the user's press. */
+function sendOlder() {
+  if (!olderSend() || phase !== 'board' || signingIndex !== null) return;
+  if (state.collected < state.threshold) return;
+  executeNow();
+}
+
+/**
+ * A send started in an older version of Freedom (the core's Safe backend):
+ * no owner signs it here. With its threshold it can still be sent; without,
+ * only discarded. Its own Send button stands while no execution's error or
+ * fee holds the board (theirs own the retry).
+ */
+function renderOlderSend() {
+  const sendable = state.collected >= state.threshold;
+  return `
+    <div class="safe-signing-banner">
+      <div>This transaction was started in an older version of Freedom, so its owners can't sign it here.</div>
+      <div class="safe-signing-banner-hint">${
+        sendable
+          ? 'It already has enough signatures, so you can still send it.'
+          : 'Discard it and send it again.'
+      }</div>
+      ${sendable && !executeError && !feeAsk ? `
+        <button type="button" class="safe-status-btn primary" id="safe-signing-send-older">Send</button>
+      ` : ''}
+    </div>
+  `;
+}
+
+/** What changed of the account, in words: "its owners and its modules". */
+function changesText(changed) {
+  const words = (changed || []).map((name) => SETUP_CHANGES[name]).filter(Boolean);
+  if (words.length <= 1) return words[0] || '';
+  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+}
+
+/** A send whose account changed outside Freedom: nothing signs or executes for it; only Discard. */
+function renderChangedSetup() {
+  const what = changesText(state.setupChanged);
+  return `
+    <div class="safe-signing-banner">
+      <div>This account was changed outside Freedom, so Freedom can't sign or send this transaction.</div>
+      ${what ? `<div class="safe-signing-banner-hint">What changed: ${escapeHtml(what)}.</div>` : ''}
+      <div class="safe-signing-banner-hint">Discard it. The signatures it has are deleted.</div>
+      <button type="button" class="safe-status-btn safe-signing-discard" id="safe-signing-discard"
+        ${signingIndex !== null ? 'disabled' : ''}>Discard transaction</button>
+    </div>
+  `;
 }
 
 function renderRow(owner) {
@@ -847,6 +942,9 @@ function renderRow(owner) {
     stateHtml = '<span class="safe-signing-row-state"><span class="connect-ledger-status-spinner"></span> Waiting…</span>';
   } else if (thresholdMet) {
     stateHtml = '<span class="safe-signing-row-state muted">Not needed</span>';
+  } else if (offersLess()) {
+    // An older send, or a changed account: no owner signs it here.
+    stateHtml = '<span class="safe-signing-row-state muted">Can\'t sign here</span>';
   } else {
     stateHtml = renderRowAction(owner);
   }

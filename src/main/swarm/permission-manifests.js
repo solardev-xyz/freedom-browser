@@ -3,6 +3,34 @@
  *
  * The renderer receives only display data and an opaque, short-lived token.
  * Manifest bytes, persisted decisions, grant projection, and pruning stay here.
+ *
+ * **Where it lives** (freedom-core design 0015, D3, D6 and D17; the SWM-6
+ * to SWM-9 plan's PR 6.3 and its points 5 and 6): main's own file,
+ * swarm-manifest-grants.json, unless this process's hello names
+ * `swarm_stores` (core-client.js `swarmStoresNamed()`: a process on the
+ * core's Swarm backend, from SWM-7's flip, PR 7.4; until then only tests).
+ * Then the store, its decisions and its projections onto the Swarm grants
+ * are the core's `swarm.manifest`, and main never opens the file:
+ * - the page path (page/page-swarm.js) runs `check`, `decide` and
+ *   `release`: `checkPageManifest` makes the window checks it makes today
+ *   (the window read when the check comes in, then again once the site's
+ *   lock is free) and sends `check`; `decidePageManifest` reads the guard
+ *   (`recheck()`, then `holds()`) just before it sends `decide` with its
+ *   answer as `live`; `releasePageManifest` sends `release`;
+ * - the chrome's three handlers send `get`, `use-individual` and
+ *   `disconnect`, as `shell` (the core's callers), under the site's lock;
+ * - every site key goes as its permission key (`normalizeOrigin`): the core
+ *   keys the store by the keys main gives it, where the functions below
+ *   normalize each;
+ * - a check's manifest is still main's fetch: the core asks
+ *   `shell.swarm_manifest { for, url }` (core/swarm-shell.js registers
+ *   `answerManifestAsk`), and main fetches it on the asking window's
+ *   session as `discover` does, or answers `{ failed: true }`;
+ * - main's detach hooks and its journal replay are off: the core detaches
+ *   a projection the user changed (D17) and replays its own journal;
+ * - every function below that reads or writes the file throws, unrun
+ *   (`loadStore`, `saveStore`).
+ * Off (every build until PR 7.4), all of this behaves as before the move.
  */
 
 const { ipcMain } = require('electron');
@@ -74,6 +102,15 @@ function sweepPageTokens(now = Date.now()) {
  * goes. Idempotent.
  */
 function releasePageManifest(token) {
+  // The core's consent: its `release`, which never fails its caller.
+  if (storeIsCore()) {
+    return Promise.resolve()
+      .then(() => coreManifest('release', { token }))
+      .then(
+        () => undefined,
+        () => undefined
+      );
+  }
   pageTokens.delete(token);
 }
 const unresolvedBackoff = new Map();
@@ -82,11 +119,34 @@ function getStorePath() {
   return getFreedomDataPath(STORE_FILE);
 }
 
+/** Whether the manifest store is the core's (core-client.js `swarmStoresNamed`). */
+function storeIsCore() {
+  return require('../core/core-client').swarmStoresNamed();
+}
+
+/**
+ * Throws once the manifest store is the core's: main then never opens
+ * swarm-manifest-grants.json, its backup or its temporary file (design
+ * 0015, D3; the SWM-6 to SWM-9 plan, section 5).
+ */
+function assertMainStore() {
+  if (storeIsCore()) {
+    throw new Error(`${STORE_FILE} is the identity core's: main doesn't open it`);
+  }
+}
+
+/** The core's `swarm.manifest` op `op`, main's own (core/swarm-stores.js). */
+function coreManifest(op, members, options) {
+  return require('../core/swarm-stores').manifest(op, members, options);
+}
+
 function emptyStore() {
   return { version: 1, records: {} };
 }
 
 function loadStore() {
+  // Every read and write of the file comes through here or `saveStore`.
+  assertMainStore();
   if (storeCache) return storeCache;
   const filePath = getStorePath();
   if (!fs.existsSync(filePath)) {
@@ -110,6 +170,7 @@ function loadStore() {
 }
 
 function saveStore() {
+  assertMainStore();
   const filePath = getStorePath();
   const tempPath = `${filePath}.tmp`;
   try {
@@ -287,16 +348,25 @@ function stillAsking(sender, fetchContext) {
   );
 }
 
-async function discover(committedUrl, fetchManifest = handleBzzRequest, fetchContext = {}) {
+/**
+ * Where a committed URL's manifest is: `bzz://<host>/freedom-manifest.json`,
+ * or null for a URL that doesn't parse or isn't `bzz:` (`unsupported`).
+ */
+function manifestUrlOf(committedUrl) {
   let url;
   try {
     url = new URL(committedUrl);
   } catch {
-    return { status: 'unsupported' };
+    return null;
   }
-  if (url.protocol !== 'bzz:') return { status: 'unsupported' };
+  if (url.protocol !== 'bzz:') return null;
+  return `bzz://${url.host}/freedom-manifest.json`;
+}
 
-  const manifestUrl = `bzz://${url.host}/freedom-manifest.json`;
+async function discover(committedUrl, fetchManifest = handleBzzRequest, fetchContext = {}) {
+  const manifestUrl = manifestUrlOf(committedUrl);
+  if (manifestUrl === null) return { status: 'unsupported' };
+
   let response;
   try {
     response = await fetchManifest(new Request(manifestUrl), fetchContext);
@@ -815,11 +885,187 @@ async function getRecord(origin) {
 function checkPageManifest({ key, url, guest, eager = false }) {
   const fetchContext = manifestFetchContext(guest);
   if (!fetchContext) return Promise.resolve({ kind: 'unresolved' });
-  return withOriginLock(key, () => (
-    stillAsking(guest, fetchContext)
-      ? checkManifest({ origin: key, committedUrl: url, eager }, { fetchContext, owner: 'page' })
-      : { kind: 'unresolved' }
-  ));
+  return withOriginLock(key, () => {
+    if (!stillAsking(guest, fetchContext)) return { kind: 'unresolved' };
+    if (storeIsCore()) return checkThroughCore({ key, url, eager }, { guest, fetchContext });
+    return checkManifest({ origin: key, committedUrl: url, eager }, { fetchContext, owner: 'page' });
+  });
+}
+
+// ---- The core's store: the page path's check and its manifest ----
+
+/**
+ * The checks main has sent the core, while each runs (design 0015, D6):
+ * `${generation}:${id}`, the check's envelope ID in the process it went to,
+ * to `{ guest, fetchContext, url }`, the window that asked, what it was
+ * when its check came in, and its committed URL. The core's
+ * `shell.swarm_manifest` names the check as `for`; main fetches for that
+ * window only, and only that URL's manifest. One entry per check in
+ * flight, gone once it is answered, so at most the core's outstanding
+ * requests.
+ */
+const manifestAsks = new Map();
+const askKey = (generation, id) => `${generation}:${id}`;
+
+/**
+ * The core's `check` for a page (design 0015, D6), after main's window
+ * checks: the site's key normalized, the window that asked kept for the
+ * fetch the core asks for it while the check runs.
+ */
+async function checkThroughCore({ key, url, eager }, { guest, fetchContext }) {
+  let sent = null;
+  try {
+    return await coreManifest(
+      'check',
+      { key: normalizeOrigin(key), url, eager: Boolean(eager) },
+      {
+        onSent: (id, generation) => {
+          sent = askKey(generation, id);
+          manifestAsks.set(sent, { guest, fetchContext, url });
+        },
+      }
+    );
+  } finally {
+    if (sent !== null) manifestAsks.delete(sent);
+  }
+}
+
+/** `shell.swarm_manifest`'s failure: the check reads it as unresolved. */
+const ASK_FAILED = Object.freeze({ failed: true });
+/** The most of a manifest's body main reads and sends: 8 KiB and a byte. */
+const ASK_MOST = MAX_BYTES + 1;
+
+/**
+ * What main holds for an answer whose body is `n` bytes, the reply's room
+ * of design 0015's D6 (`n + 2 × b64(n) + 16 KiB`): the body, its base64
+ * and the reply that carries it. About 45 KiB for the most it reads.
+ */
+function askCharge(n) {
+  return n + 2 * 4 * Math.ceil(n / 3) + 16 * 1024;
+}
+
+/** `{ for, url }` exactly, `for` an envelope ID and `url` a string; else null. */
+function readManifestAsk(params) {
+  if (params === null || typeof params !== 'object' || Array.isArray(params)) return null;
+  const keys = Object.keys(params);
+  if (keys.length !== 2 || !Object.hasOwn(params, 'for') || !Object.hasOwn(params, 'url')) {
+    return null;
+  }
+  if (!Number.isSafeInteger(params.for) || params.for < 1 || typeof params.url !== 'string') {
+    return null;
+  }
+  return { for: params.for, url: params.url };
+}
+
+/**
+ * A 2xx manifest's body, as `readLimitedBody` reads it (each read under
+ * the 15 s idle bound), but kept, not refused, past 8 KiB: at most 8 KiB
+ * and a byte, which the core refuses as `invalid`, as the reference refuses
+ * the body. A read that fails, stalls or is cancelled (`signal`) throws.
+ */
+async function readAskedBody(response, signal, idleTimeoutMs = BODY_IDLE_TIMEOUT_MS) {
+  // The capped bytes go into storage of exactly the cap that main owns, so
+  // nothing larger than the charge stays reachable from the answer (a short
+  // view of a copied 64 KiB piece would keep the whole piece alive).
+  const body = Buffer.alloc(ASK_MOST);
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const whole = new Uint8Array(await withIdleDeadline(response.arrayBuffer(), idleTimeoutMs));
+    const take = Math.min(whole.length, ASK_MOST);
+    body.set(whole.subarray(0, take));
+    return body.subarray(0, take);
+  }
+  const stop = () => reader.cancel().catch(() => {});
+  signal?.addEventListener('abort', stop, { once: true });
+  try {
+    let length = 0;
+    while (length < ASK_MOST) {
+      if (signal?.aborted) throw new Error('manifest fetch cancelled');
+      let chunk;
+      try {
+        chunk = await withIdleDeadline(reader.read(), idleTimeoutMs);
+      } catch (err) {
+        await stop();
+        throw err;
+      }
+      if (chunk.done) break;
+      const value = chunk.value instanceof Uint8Array ? chunk.value : new Uint8Array(chunk.value);
+      const take = Math.min(value.length, ASK_MOST - length);
+      body.set(value.subarray(0, take), length);
+      length += take;
+    }
+    if (signal?.aborted) throw new Error('manifest fetch cancelled');
+    if (length >= ASK_MOST) await stop();
+    return body.subarray(0, length);
+  } finally {
+    signal?.removeEventListener('abort', stop);
+  }
+}
+
+/**
+ * Main's answer to the core's `shell.swarm_manifest { for, url }` (design
+ * 0015, D6; the SWM-6 to SWM-9 plan, point 6), its handler's context the
+ * service client's (`signal`, `charge`, `shrink` on the Swarm I/O pool,
+ * `generation`). `for` must name a check main sent that is still running
+ * (`manifestAsks`) and `url` that check's manifest, the `bzz:` address
+ * `discover` would fetch: anything else, a non-`bzz:` URL among it, is
+ * fetched never, and answered `{ failed: true }`, as is a check whose
+ * window has gone or moved partition since. Otherwise today's fetch:
+ * `handleBzzRequest` on that window's session with its private context,
+ * its 2xx body read under the 15 s idle bound to at most 8 KiB and a byte
+ * (another status's body unread), answered `{ status, body_base64 }`; a
+ * fetch that throws, a body that breaks or stalls, is `{ failed: true }`.
+ * The reply's room (`askCharge`, about 45 KiB) is charged before the
+ * fetch, `{ failed: true }` without it, and shrunk to the body read.
+ */
+async function answerManifestAsk(params, context = {}) {
+  const { signal = null, charge = () => true, shrink = () => {}, generation = null } = context;
+  const ask = readManifestAsk(params);
+  if (!ask) {
+    console.warn('[PermissionManifests] A malformed manifest ask was answered failed');
+    return ASK_FAILED;
+  }
+  const entry = manifestAsks.get(askKey(generation, ask.for));
+  // No check of main's running under that ID: nothing to fetch for.
+  if (!entry) return ASK_FAILED;
+  // Only the check's own manifest, at its `bzz:` address.
+  if (ask.url !== manifestUrlOf(entry.url)) {
+    console.warn('[PermissionManifests] A manifest ask for another address was answered failed');
+    return ASK_FAILED;
+  }
+  if (!stillAsking(entry.guest, entry.fetchContext)) return ASK_FAILED;
+  if (!charge(askCharge(ASK_MOST))) return ASK_FAILED;
+  const failed = () => {
+    shrink(0);
+    return ASK_FAILED;
+  };
+  let response;
+  try {
+    response = await handleBzzRequest(
+      new Request(ask.url, signal ? { signal } : {}),
+      entry.fetchContext
+    );
+  } catch {
+    return failed();
+  }
+  const status = response?.status;
+  if (!Number.isInteger(status) || status < 100 || status > 599) return failed();
+  let body = Buffer.alloc(0);
+  if (status >= 200 && status <= 299) {
+    try {
+      body = await readAskedBody(response, signal);
+    } catch {
+      return failed();
+    }
+  } else {
+    try {
+      response.body?.cancel?.()?.catch?.(() => {});
+    } catch {
+      // Nothing more to read.
+    }
+  }
+  shrink(askCharge(body.length));
+  return { status, body_base64: body.toString('base64') };
 }
 
 /**
@@ -830,6 +1076,7 @@ function checkPageManifest({ key, url, guest, eager = false }) {
  * decision.
  */
 function decidePageManifest(key, token, outcome, { recheck, holds }) {
+  if (storeIsCore()) return decideThroughCore(key, token, outcome, { recheck, holds });
   return withOriginLock(key, async () => {
     sweepPageTokens();
     // Only a page consent main issued for this very key.
@@ -844,28 +1091,61 @@ function decidePageManifest(key, token, outcome, { recheck, holds }) {
   });
 }
 
+/**
+ * The core's `decide` for a page (design 0015, D6): the guard read just
+ * before it is sent, `recheck()` and then, if it passed, `holds()`, as the
+ * reference reads them, and sent as `live` with the site's key normalized.
+ * The core checks the consent is the key's (else `Manifest consent
+ * expired`, as main answers for no token at all, unsent), spends it on
+ * `live: false` (`{ refused: true }`), and makes the decision's writes
+ * itself, in its own order for the site: main's lock isn't held, since none
+ * of the writes is main's.
+ */
+async function decideThroughCore(key, token, outcome, { recheck, holds }) {
+  // No token is no consent of the core's, as no page consent is the key's.
+  if (typeof token !== 'string') throw new Error('Manifest consent expired');
+  const live = Boolean(await recheck()) && Boolean(holds());
+  return coreManifest('decide', { key: normalizeOrigin(key), token, outcome, live });
+}
+
+/**
+ * The chrome's request on the manifest store: the core's op `op` with the
+ * site's key normalized, on the core's store; else `local()`.
+ */
+function chromeRequest(op, origin, members, local) {
+  if (!storeIsCore()) return local();
+  return coreManifest(op, { origin: normalizeOrigin(origin), ...members });
+}
+
 function registerPermissionManifestIpc() {
-  recoverPending().catch((err) => {
-    console.error('[PermissionManifests] Could not finish an interrupted change:', err);
-  });
-  // Both stores that hold manifest-projected state report user mutations, so
-  // a grant the user changes by hand (revoking feed access, switching the
-  // publisher identity) drops manifest ownership instead of leaving a record
-  // that claims it — and can re-assert it on the next projection.
-  permissions.onManifestMutation(detachManagedLater);
-  feeds.onManifestMutation(detachManagedLater);
+  // On the core's store, the core replays its journal and detaches what
+  // the user changed (design 0015, D17): main neither reads the file nor
+  // listens.
+  if (!storeIsCore()) {
+    recoverPending().catch((err) => {
+      console.error('[PermissionManifests] Could not finish an interrupted change:', err);
+    });
+    // Both stores that hold manifest-projected state report user mutations, so
+    // a grant the user changes by hand (revoking feed access, switching the
+    // publisher identity) drops manifest ownership instead of leaving a record
+    // that claims it — and can re-assert it on the next projection.
+    permissions.onManifestMutation(detachManagedLater);
+    feeds.onManifestMutation(detachManagedLater);
+  }
   // No check or decide for the chrome (freedom-core design 0011, PRQ-7d):
   // main checks a page's manifest itself, for the document's own key and
   // URL, and decides the consent on its own prompt (checkPageManifest,
   // decidePageManifest). The chrome reads a site's record, and narrows it.
   ipcMain.handle(IPC.SWARM_MANIFEST_GET, (_event, origin) => (
-    withOriginLock(origin, () => getRecord(origin))
+    withOriginLock(origin, () => chromeRequest('get', origin, {}, () => getRecord(origin)))
   ));
   ipcMain.handle(IPC.SWARM_MANIFEST_USE_INDIVIDUAL, (_event, { origin, capability }) => (
-    withOriginLock(origin, () => useIndividual(origin, capability))
+    withOriginLock(origin, () => (
+      chromeRequest('use-individual', origin, { capability }, () => useIndividual(origin, capability))
+    ))
   ));
   ipcMain.handle(IPC.SWARM_MANIFEST_DISCONNECT, (_event, origin) => (
-    withOriginLock(origin, () => disconnect(origin))
+    withOriginLock(origin, () => chromeRequest('disconnect', origin, {}, () => disconnect(origin)))
   ));
   console.log('[PermissionManifests] IPC handlers registered');
 }
@@ -878,6 +1158,7 @@ function _resetForTests() {
   completedTokens.clear();
   pageTokens.clear();
   unresolvedBackoff.clear();
+  manifestAsks.clear();
   faultInjector = null;
 }
 
@@ -894,8 +1175,11 @@ module.exports = {
   checkPageManifest,
   decidePageManifest,
   releasePageManifest,
+  answerManifestAsk,
   MAX_PAGE_TOKENS,
   _pageTokenCountForTests: () => pageTokens.size,
+  _manifestAskCountForTests: () => manifestAsks.size,
+  _readAskedBodyForTests: readAskedBody,
   detachManaged,
   disconnect,
   getRecord,
