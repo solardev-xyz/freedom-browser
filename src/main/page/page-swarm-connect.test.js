@@ -55,7 +55,13 @@ jest.mock('../swarm/messaging-service', () => ({
     return socket;
   },
 }));
-jest.mock('../service-registry', () => ({ getAntApiUrl: () => 'http://127.0.0.1:1633' }));
+jest.mock('../service-registry', () => ({
+  getAntApiUrl: () => 'http://127.0.0.1:1633',
+  // The subscriptions' route test (swarm/subscription-registry.js) hears
+  // the node's and Tor's changes here; the bundled node is on loopback.
+  getService: () => null,
+  onServiceChange: () => {},
+}));
 jest.mock('../swarm/publish-setup-service', () => ({
   getPublishReadiness: async () => (mockNode.readiness ? mockNode.readiness : { ok: true }),
 }));

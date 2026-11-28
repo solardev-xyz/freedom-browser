@@ -350,9 +350,8 @@ async function sendGsoc({ topic, data, origin }) {
   return { address };
 }
 
-function wsBaseUrl() {
-  const bee = getBee();
-  return bee.url.replace(/^http/, 'ws').replace(/\/$/, '');
+function wsBaseUrl(nodeUrl = getBee().url) {
+  return nodeUrl.replace(/^http/, 'ws').replace(/\/$/, '');
 }
 
 function toPayloadBuffer(wsData) {
@@ -364,14 +363,19 @@ function toPayloadBuffer(wsData) {
 /**
  * Open a long-lived subscription socket to the node.
  *
- * @param {{ kind: 'gsoc'|'pss', key: string }} target - `key` is the 64-hex
- *   GSOC/SOC address (gsoc) or the 64-hex hashed topic (pss).
- * @param {{ onMessage: (payload: Buffer) => void }} handlers
+ * @param {{ kind: 'gsoc'|'pss', key: string, url?: string }} target - `key`
+ *   is the 64-hex GSOC/SOC address (gsoc) or the 64-hex hashed topic (pss);
+ *   `url` the node's API URL to dial, the one the registry's route test
+ *   passed (freedom-core design 0015, question 4), else the node's now.
+ * @param {{ onMessage: (payload: Buffer) => void, beforeReconnect?: () => Promise<boolean> }} handlers -
+ *   with `beforeReconnect`, each reconnect waits for it, and the socket
+ *   dials again only when it resolves true: otherwise it stops for good
+ *   (the registry's route test refused, and ended its subscriptions)
  * @returns {{ established: Promise<void>, cancel: () => void }}
  */
-function openSubscriptionSocket({ kind, key }, { onMessage }) {
+function openSubscriptionSocket({ kind, key, url: nodeUrl }, { onMessage, beforeReconnect = null }) {
   const path = kind === 'gsoc' ? `/gsoc/subscribe/${key}` : `/pss/subscribe/${key}`;
-  const url = `${wsBaseUrl()}${path}`;
+  const url = `${wsBaseUrl(nodeUrl || undefined)}${path}`;
 
   let cancelled = false;
   let ws = null;
@@ -443,12 +447,34 @@ function openSubscriptionSocket({ kind, key }, { onMessage }) {
       log.warn(
         `[MessagingService] Subscription socket closed (${kind}:${key}, code=${code}${reason ? `, ${reason}` : ''}); reconnecting in ${reconnectDelay}ms`
       );
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, reconnectDelay);
+      reconnectTimer = setTimeout(reconnect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
     };
+  };
+
+  // Each reconnect asks `beforeReconnect` first, when there is one: a no
+  // (or its failure) stops the socket for good.
+  const stop = () => {
+    if (cancelled) return;
+    cancelled = true;
+    if (!isEstablished) {
+      const err = new Error('Subscription cancelled');
+      err.reason = 'cancelled';
+      rejectEstablished(err);
+    }
+  };
+  const reconnect = () => {
+    reconnectTimer = null;
+    if (typeof beforeReconnect !== 'function') {
+      connect();
+      return;
+    }
+    Promise.resolve()
+      .then(beforeReconnect)
+      .then(
+        (go) => (go === true ? connect() : stop()),
+        () => stop()
+      );
   };
 
   connect();

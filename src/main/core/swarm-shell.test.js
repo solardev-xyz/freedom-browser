@@ -2501,7 +2501,7 @@ describe('shell.swarm_ready', () => {
     const passing = makeShell({ subscribeCheck: seam });
     const q = parent(passing, 'subscribe', {});
     expect(await q.ready('subscribe')).toEqual({ result: { ok: true } });
-    expect(seam).toHaveBeenCalledWith({ backend: q.node.backend });
+    expect(seam).toHaveBeenCalledWith({ backend: q.node.backend, key: KEY });
     expect(q.node.dials.map((d) => d.path)).toEqual(['/node']);
   });
 

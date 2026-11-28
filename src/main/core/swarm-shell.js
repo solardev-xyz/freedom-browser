@@ -1,9 +1,10 @@
 /**
  * Main's executor for the core's Swarm asks (freedom-core design 0015,
  * Node access, Main's Swarm I/O pool, The transport, Deadlines and cancel,
- * Uploads, and SWM-5's calls): `shell.swarm_ready`, `shell.swarm_api` and
- * `shell.swarm_part`, for the Swarm requests main sends the core (the
- * **parents**: `swarm.request`, `swarm.publish`, `swarm.feed`,
+ * Uploads, Messaging, and SWM-5's calls): `shell.swarm_ready`,
+ * `shell.swarm_api`, `shell.swarm_part`, `shell.swarm_subscribe` and
+ * `shell.swarm_unsubscribe`, for the Swarm requests main sends the core
+ * (the **parents**: `swarm.request`, `swarm.publish`, `swarm.feed`,
  * `swarm.stamps`, `swarm.upload_status`).
  * Each call is admitted by the operation grammar (swarm-grammar.js) before
  * anything is dialled, and dialled once on the node's transport the parent
@@ -44,11 +45,30 @@
  *   check. `reachable` is `GET /node` on the parent's transport, 5 s in
  *   all, its body read to at most 64 KiB and parsed as JSON, as
  *   `checkBeeReachable` reads it; `publish` is `getPublishReadiness()` as
- *   it stands, its `{ ok, reason }`; `subscribe` is the probe after the
- *   proxy check, a seam SWM-7 fills (question 4). A ready check whose
+ *   it stands, its `{ ok, reason }`; `subscribe` is the probe after
+ *   question 4's route test (`proxy-or-tor` for a node not on loopback
+ *   that the session reaches through a proxy or Tor, undialled:
+ *   swarm/subscription-registry.js `checkRoute`). A ready check whose
  *   parent main has ended is answered `cancelled` once the core cancels it,
  *   never refused (the amendment's disagreement 9): the core ends the
  *   connection on any other error to it.
+ * - **`shell.swarm_subscribe { for, kind, key }`** (SWM-4's D16, SWM-7):
+ *   once, for a `subscribe` parent whose ready check passed, its `kind` the
+ *   params' and its `key` the params' address or a PSS topic's hash (a
+ *   GSOC topic's key is the core's mined address). Main opens the
+ *   subscription through the subscription registry, bound to the parent's
+ *   document (`subscriber`, its key the site's), on the parent's node, the
+ *   route tested again just before the socket opens: `{ id }` once it is
+ *   open, or `{ failed: { reason?, message } }` with the registry's reason
+ *   and text (`proxy-or-tor` among them, with no socket made). The core's
+ *   cancel, or the parent's end, while it opens ends it; an `{ id }` that
+ *   would answer after either is closed, never sent. The subscription then
+ *   is main's: its messages, its limits, its later end.
+ * - **`shell.swarm_unsubscribe { id }`** closes a subscription
+ *   `shell.swarm_subscribe` opened on that connection (the core's close
+ *   after a refused recheck, which answers `NO_ADDRESS`, or of one whose
+ *   request ended), and answers `{}` at once, closed or already gone: the
+ *   core ends the connection after 60 s.
  * - **`shell.swarm_api`:** admitted, then, before any dial, a remote node's
  *   header values held to one byte a character (the session's stack would
  *   send U+0080 to U+00FF as their UTF-8; rule `header`); `stopped` when
@@ -167,7 +187,9 @@ const {
   ROWS,
   paramParts,
   requestHeaders,
+  topicOf,
 } = require('./swarm-grammar');
+const { isNullish, param } = require('./swarm-typed');
 const { CHUNK_SIZE, MAX_SLOTS, SLOT_CHARGE, decodeSpan } = require('./swarm-tree');
 const { swarmIoPool } = require('./swarm-io-pool');
 const { pieceBody } = require('./dweb-shell');
@@ -197,6 +219,12 @@ const API_REQUIRED = ['for', 'form', 'method', 'path', 'query', 'headers', 'max_
 const API_OPTIONAL = ['body', 'feed', 'tree'];
 const READY_MEMBERS = ['for', 'check'];
 const PART_MEMBERS = ['for', 'part'];
+const SUBSCRIBE_MEMBERS = ['for', 'kind', 'key'];
+const UNSUBSCRIBE_MEMBERS = ['id'];
+const KINDS = new Set(['gsoc', 'pss']);
+const HEX64 = /^[0-9a-f]{64}$/;
+/** A `{ failed }` answer's text: at most this many characters. */
+const FAILED_TEXT = 1024;
 // fc-protocol's `is_error_code`: the errno name a part's abort may carry.
 const ERRNO = /^[A-Z][A-Z0-9_]{0,31}$/;
 const CHECKS = new Set(['publish', 'reachable', 'subscribe']);
@@ -277,6 +305,46 @@ function readPart(params) {
     return { for: params.for, rule: 'form' };
   }
   return { for: params.for, part };
+}
+
+/** `shell.swarm_subscribe`'s params, read strictly: `{ for, kind, key }`, or null. */
+function readSubscribe(params) {
+  if (!exactly(params, SUBSCRIBE_MEMBERS)) return null;
+  if (!Number.isSafeInteger(params.for) || params.for < 1) return null;
+  if (!KINDS.has(params.kind) || typeof params.key !== 'string' || !HEX64.test(params.key)) return null;
+  return { for: params.for, kind: params.kind, key: params.key };
+}
+
+/**
+ * Whether a `subscribe` parent may open `ask`'s subscription now: null, or
+ * the rule it breaks. Once (`count`), after a ready check that passed
+ * (`order`), of the params' kind, on the params' address or a PSS topic's
+ * hash (`value`); only a `subscribe` parent's (`form`), and one that hasn't
+ * ended or been refused (`ended`).
+ */
+function subscribeRule(entry, ask) {
+  const { admission } = entry;
+  if (admission.ended || admission.refused) return 'ended';
+  if (entry.row !== 'subscribe') return 'form';
+  if (entry.subscribed) return 'count';
+  if (admission.readyState !== 'ok') return 'order';
+  const { params } = admission;
+  if (param(params, 'kind') !== ask.kind) return 'value';
+  const address = param(params, 'address');
+  if (ask.kind === 'pss' && topicOf(param(params, 'topic')) !== ask.key) return 'value';
+  if (ask.kind === 'gsoc' && !isNullish(address)) {
+    if (typeof address !== 'string' || address.toLowerCase() !== ask.key) return 'value';
+  }
+  return null;
+}
+
+/** A failed open's answer: the registry's reason, when it has one, and its text (bounded, well formed). */
+function failedOpen(err) {
+  const failed = {};
+  if (typeof err?.reason === 'string' && err.reason) failed.reason = err.reason;
+  const text = typeof err?.message === 'string' && err.message ? err.message : 'Subscription failed';
+  failed.message = Array.from(text.toWellFormed()).slice(0, FAILED_TEXT).join('');
+  return { failed };
 }
 
 /**
@@ -1002,8 +1070,12 @@ class SwarmShell {
    * @param {() => Promise<object>} [deps.publishReadiness] -
    *   `getPublishReadiness()`
    * @param {(parent: object) => (string|null|Promise<string|null>)} [deps.subscribeCheck] -
-   *   SWM-7's proxy check for `subscribe` (question 4), given `{ backend }`:
-   *   a reason to answer `ok: false` with, or null to go on to the probe
+   *   question 4's route test for `subscribe`, given `{ backend, key }` (the
+   *   parent's node and the page's key): a reason to answer `ok: false`
+   *   with, or null to go on to the probe; by default the subscription
+   *   registry's `checkRoute` on the parent's node
+   * @param {() => object} [deps.subscriptions] - the subscription registry
+   *   (swarm/subscription-registry.js) `shell.swarm_subscribe` opens through
    * @param {() => number} [deps.now]
    * @param {Function} [deps.setTimer]
    * @param {Function} [deps.clearTimer]
@@ -1023,7 +1095,9 @@ class SwarmShell {
     backendKind = () => require('../swarm/swarm-backend-kind').swarmBackendKind(),
     nodeUrl = () => require('../service-registry').getAntApiUrl() || null,
     publishReadiness = () => require('../swarm/publish-setup-service').getPublishReadiness(),
-    subscribeCheck = () => null,
+    subscriptions = () => require('../swarm/subscription-registry'),
+    subscribeCheck = async ({ backend, key }) =>
+      (await subscriptions().checkRoute(backend.url || null, key ?? null))?.reason ?? null,
     now = () => Date.now(),
     setTimer = (fn, ms) => setTimeout(fn, ms),
     clearTimer = (timer) => clearTimeout(timer),
@@ -1034,6 +1108,7 @@ class SwarmShell {
     this.backendKind = backendKind;
     this.nodeUrl = nodeUrl;
     this.publishReadiness = publishReadiness;
+    this.subscriptions = subscriptions;
     this.subscribeCheck = subscribeCheck;
     this.now = now;
     this.setTimer = setTimer;
@@ -1073,6 +1148,10 @@ class SwarmShell {
    * @param {Map<number, Uint8Array|{path: string, bytes: number}>} [capture.parts] -
    *   the source of each part its params name (`partsOf`), which
    *   `shell.swarm_part` streams: a held buffer, or a picked file
+   * @param {{document: string, deliverTo: Function}|null} [capture.subscriber] -
+   *   a page's `subscribe`: the document its subscription is bound to and
+   *   how its messages go there, as page-swarm.js gives them (`page.document`,
+   *   `page.deliverTo`), which `shell.swarm_subscribe` opens it for
    * @returns {{ close(): void }}
    */
   open(
@@ -1086,6 +1165,7 @@ class SwarmShell {
       stop = null,
       deadlineAt = null,
       parts = null,
+      subscriber = null,
     } = {}
   ) {
     if (this.backendKind() !== 'core') {
@@ -1098,6 +1178,12 @@ class SwarmShell {
     if (!backend || typeof backend.request !== 'function') throw new TypeError('no backend');
     if (deadlineAt !== null && !Number.isFinite(deadlineAt)) {
       throw new TypeError('a deadline is a time');
+    }
+    if (
+      subscriber !== null &&
+      (typeof subscriber?.document !== 'string' || typeof subscriber.deliverTo !== 'function')
+    ) {
+      throw new TypeError('a subscriber is a document and its delivery');
     }
     const parent = keyOf(generation, id);
     if (this.live.has(parent)) throw new TypeError('that request is open already');
@@ -1113,6 +1199,9 @@ class SwarmShell {
       walkBusy: false,
       timer: null,
       ended: false,
+      subscriber,
+      // `shell.swarm_subscribe` came for it.
+      subscribed: false,
     };
     this.live.set(parent, entry);
     if (id > (this.highest.get(generation) ?? 0)) this.highest.set(generation, id);
@@ -1225,10 +1314,83 @@ class SwarmShell {
   async readiness(entry, check, signal) {
     if (check === 'publish') return readinessOf(await this.publishReadiness());
     if (check === 'subscribe') {
-      const reason = await this.subscribeCheck({ backend: entry.backend });
+      const reason = await this.subscribeCheck({ backend: entry.backend, key: entry.admission.key });
       if (typeof reason === 'string' && reason) return { ok: false, reason };
     }
     return this.probe(entry, signal);
+  }
+
+  // ---- shell.swarm_subscribe, shell.swarm_unsubscribe ----
+
+  /**
+   * The handler: one `shell.swarm_subscribe` (D16). Opens the parent's
+   * subscription through the registry, bound to its document, on its node,
+   * with the core's connection as its opener: `{ id }`, or `{ failed }`.
+   * The core's cancel, or the parent's end, while it opens ends it, and the
+   * answer waits for the cancel (the core cancels the open as it reads the
+   * parent's end): a late `{ id }` is closed, never sent.
+   */
+  async subscribe(params, { signal, generation }) {
+    const ask = readSubscribe(params);
+    const found = this.parentOf(generation, ask ? ask.for : null);
+    if (!ask) return this.refuse('shell.swarm_subscribe', found.entry, 'form');
+    if (!found.entry) {
+      if (!found.ended) return this.refuse('shell.swarm_subscribe', null, 'ended');
+      this.log.debug?.('[Core] shell.swarm_subscribe for a parent that has ended');
+      return untilCancelled(signal);
+    }
+    const { entry } = found;
+    const rule = subscribeRule(entry, ask);
+    if (rule) return this.refuse('shell.swarm_subscribe', entry, rule);
+    entry.subscribed = true;
+    if (!entry.subscriber || typeof entry.admission.key !== 'string') {
+      // Main's own bug: a page's subscribe opened without its document or key.
+      this.log.warn('[Core] shell.swarm_subscribe for a parent with no document');
+      return failedOpen(new Error('The subscription has no document'));
+    }
+    const life = AbortSignal.any([signal, entry.life.signal]);
+    const registry = this.subscriptions();
+    let opened;
+    try {
+      opened = await registry.subscribe({
+        origin: entry.admission.key,
+        document: entry.subscriber.document,
+        deliverTo: entry.subscriber.deliverTo,
+        kind: ask.kind,
+        key: ask.key,
+        nodeUrl: entry.backend.url || null,
+        signal: life,
+        opener: this.openerOf(generation),
+      });
+    } catch (err) {
+      if (life.aborted) return untilCancelled(signal);
+      return failedOpen(err);
+    }
+    if (life.aborted) {
+      // Opened as the request ended: closed, never answered.
+      registry.cancelById(opened.subscriptionId);
+      return untilCancelled(signal);
+    }
+    return { id: opened.subscriptionId };
+  }
+
+  /**
+   * The handler: one `shell.swarm_unsubscribe { id }`, answered `{}` at
+   * once: the subscription closed if `shell.swarm_subscribe` opened it on
+   * this connection, else already gone. A malformed ask is a core fault
+   * (`form`), which ends the connection.
+   */
+  unsubscribe(params, { generation }) {
+    if (!exactly(params, UNSUBSCRIBE_MEMBERS) || typeof params.id !== 'string' || params.id === '') {
+      return this.refuse('shell.swarm_unsubscribe', null, 'form');
+    }
+    this.subscriptions().cancelByOpener(this.openerOf(generation), params.id);
+    return {};
+  }
+
+  /** The opener a connection's subscriptions carry: one per generation. */
+  openerOf(generation) {
+    return `core:${generation}`;
   }
 
   /**
@@ -1600,7 +1762,8 @@ function partRule(entry, number) {
 
 /**
  * Registers the Swarm asks on `client`, whichever backend runs (the
- * switch): `shell.swarm_ready`; `shell.swarm_api` twice, its whole calls
+ * switch): `shell.swarm_ready`; `shell.swarm_subscribe` and
+ * `shell.swarm_unsubscribe`; `shell.swarm_api` twice, its whole calls
  * (`stream: false`, uploads among them) on the client's own replies, which
  * a large one (a `/stamps` reply's base64 passes one frame) may fragment,
  * and its streaming calls on the duplex, whose bodies may end
@@ -1641,6 +1804,16 @@ function registerSwarmShell(client, deps = {}) {
     sends: SWARM_PART_ABORT_CODES,
     pool,
     race: true,
+  });
+  client.handle('shell.swarm_subscribe', (params, context) => shell.subscribe(params, context), {
+    pool,
+    failure: () => failedOpen(new Error('The subscription could not be opened')),
+    race: true,
+  });
+  // Never cancelled (D13), and answered at once.
+  client.handle('shell.swarm_unsubscribe', (params, context) => shell.unsubscribe(params, context), {
+    pool,
+    failure: () => ({}),
   });
   return shell;
 }

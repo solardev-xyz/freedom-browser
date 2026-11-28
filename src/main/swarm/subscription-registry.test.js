@@ -286,3 +286,222 @@ describe('subscription-registry: subscriptions bound to a document', () => {
     expect(registry.countByOrigin('a.eth')).toBe(0);
   });
 });
+
+// Question 4 (freedom-core design 0015, Messaging; SWM-6 to SWM-9's plan,
+// point 10): no socket to a node the session reaches through a proxy or
+// Tor, tested just before every open and reconnect, on every change and
+// every 30 s while a remote socket is open.
+describe('subscription-registry: the route test', () => {
+  const REMOTE = 'https://ant.example';
+  const LOOPBACK = 'http://127.0.0.1:1633';
+  const ARTI = '127.0.0.1:19150';
+  const KEY = 'cd'.repeat(32);
+  let opened;
+  let openSocket;
+  let proxy;
+  let resolveProxy;
+  let refused;
+  let nodeUrl;
+
+  function configure(extra = {}) {
+    registry.configure({
+      openSocket,
+      deliver: jest.fn(),
+      maxSubscriptionsPerOrigin: 3,
+      establishTimeoutMs: 5000,
+      route: { nodeUrl: () => nodeUrl, resolveProxy, torEndpoint: () => ARTI },
+      onRefused: (event) => refused.push(event),
+      ...extra,
+    });
+  }
+
+  beforeEach(() => {
+    registry._reset();
+    ({ openSocket, opened } = makeSocketFactory());
+    proxy = 'DIRECT';
+    resolveProxy = jest.fn(async () => proxy);
+    refused = [];
+    nodeUrl = REMOTE;
+    configure();
+  });
+
+  afterEach(() => {
+    registry._reset();
+  });
+
+  // A socket opened after the route test's wait (or none, joining one).
+  async function socketAfter(before) {
+    for (let i = 0; i < 20 && opened.length === before; i++) await Promise.resolve();
+    return opened.length > before ? opened[opened.length - 1] : null;
+  }
+
+  async function openOne(params = {}) {
+    const before = opened.length;
+    const promise = registry.subscribe({ origin: 'a.eth', document: '7:1', deliverTo: jest.fn(), kind: 'pss', key: KEY, ...params });
+    (await socketAfter(before))?.resolveEstablished();
+    return (await promise).subscriptionId;
+  }
+
+  test.each([
+    ['the bundled node', LOOPBACK, 'PROXY proxy.example:8080', null, false],
+    ['a node at localhost', 'http://localhost:1633', 'PROXY proxy.example:8080', null, false],
+    ['a node at [::1]', 'http://[::1]:1633', 'PROXY proxy.example:8080', null, false],
+    ['a remote node reached directly', REMOTE, 'DIRECT', null, true],
+    ['a remote node, DIRECT in any case', REMOTE, ' direct ', null, true],
+    ['a remote node behind a proxy', REMOTE, 'PROXY proxy.example:8080', 'proxy', true],
+    ['a remote node behind a proxy list ending DIRECT', REMOTE, 'PROXY proxy.example:8080; DIRECT', 'proxy', true],
+    ["a remote node behind Arti's endpoint", REMOTE, `SOCKS5 ${ARTI}`, 'tor', true],
+    ['a remote node behind another SOCKS proxy', REMOTE, 'SOCKS5 127.0.0.1:1080', 'proxy', true],
+    ['an onion node, Tor off', 'http://abcdef.onion', 'DIRECT', 'tor', false],
+    ['an onion node, Tor on', 'http://abcdef.onion:1633', `SOCKS5 ${ARTI}`, 'tor', false],
+    ['no node', null, 'PROXY proxy.example:8080', null, false],
+  ])('routeRefusal: %s', async (_label, url, answer, via, asked) => {
+    const ask = jest.fn(async () => answer);
+    const refusal = await registry.routeRefusal(url, { resolveProxy: ask, torEndpoint: () => ARTI });
+    expect(refusal).toEqual(via ? { reason: 'proxy-or-tor', via } : null);
+    expect(ask).toHaveBeenCalledTimes(asked ? 1 : 0);
+  });
+
+  test("routeRefusal fails closed when the proxy can't be resolved, and names a proxy with Tor off", async () => {
+    const failing = jest.fn(async () => {
+      throw new Error('network service gone');
+    });
+    expect(await registry.routeRefusal(REMOTE, { resolveProxy: failing })).toEqual({ reason: 'proxy-or-tor', via: 'proxy' });
+    expect(
+      await registry.routeRefusal(REMOTE, { resolveProxy: async () => `SOCKS5 ${ARTI}`, torEndpoint: () => null })
+    ).toEqual({ reason: 'proxy-or-tor', via: 'proxy' });
+  });
+
+  test('a refused open opens no socket, releases its slot and is reported', async () => {
+    proxy = `SOCKS5 ${ARTI}`;
+    await expect(
+      registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY })
+    ).rejects.toMatchObject({ reason: 'proxy-or-tor', message: 'Node not available: proxy-or-tor', via: 'tor' });
+    expect(openSocket).not.toHaveBeenCalled();
+    expect(registry.countByOrigin('a.eth')).toBe(0);
+    expect(refused).toEqual([{ origin: 'a.eth', via: 'tor', ended: false }]);
+  });
+
+  test('an open dials the URL it tested, the given one before the node now, and asks before each reconnect', async () => {
+    await openOne();
+    expect(openSocket).toHaveBeenLastCalledWith(
+      { kind: 'pss', key: KEY, url: REMOTE },
+      { onMessage: expect.any(Function), beforeReconnect: expect.any(Function) }
+    );
+    expect(resolveProxy).toHaveBeenLastCalledWith(REMOTE);
+    await openOne({ key: 'ef'.repeat(32), nodeUrl: 'https://other.example' });
+    expect(opened[1].target.url).toBe('https://other.example');
+    expect(resolveProxy).toHaveBeenLastCalledWith('https://other.example');
+  });
+
+  test('the slot is held through the test, and an end meanwhile opens nothing', async () => {
+    let answer;
+    resolveProxy = jest.fn(() => new Promise((resolve) => (answer = resolve)));
+    configure();
+    const promise = registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY });
+    expect(registry.countByOrigin('a.eth')).toBe(1);
+    registry.cancelByDocument('7:1');
+    answer('DIRECT');
+    await expect(promise).rejects.toMatchObject({ reason: 'subscription_cancelled' });
+    expect(openSocket).not.toHaveBeenCalled();
+  });
+
+  test('a reconnect the route refuses ends the socket and its subscriptions, reported once each', async () => {
+    await openOne();
+    await openOne({ origin: 'b.eth', document: '8:1' });
+    proxy = 'PROXY proxy.example:8080';
+    await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(false);
+    expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+    expect(registry.countByOrigin('a.eth')).toBe(0);
+    expect(registry.countByOrigin('b.eth')).toBe(0);
+    expect(refused).toEqual([
+      { origin: 'a.eth', via: 'proxy', ended: true },
+      { origin: 'b.eth', via: 'proxy', ended: true },
+    ]);
+    // A later ask of the ended socket's is a no as well.
+    proxy = 'DIRECT';
+    await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(false);
+  });
+
+  test('a reconnect on a route that still holds goes ahead', async () => {
+    await openOne();
+    await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(true);
+    expect(registry.countByOrigin('a.eth')).toBe(1);
+  });
+
+  test('recheckRoutes ends the sockets now refused, and keeps the loopback ones', async () => {
+    await openOne();
+    nodeUrl = LOOPBACK;
+    await openOne({ key: 'ef'.repeat(32), document: '8:1' });
+    proxy = 'PROXY proxy.example:8080';
+    await registry.recheckRoutes();
+    expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+    expect(opened[1].cancel).not.toHaveBeenCalled();
+    expect(registry.countByOrigin('a.eth')).toBe(1);
+  });
+
+  test('a subscription a recheck ends while it establishes is refused proxy-or-tor', async () => {
+    const promise = registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY });
+    await socketAfter(0);
+    proxy = 'PROXY proxy.example:8080';
+    await registry.recheckRoutes();
+    await expect(promise).rejects.toMatchObject({ reason: 'proxy-or-tor', via: 'proxy' });
+    expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+    // Reported once, as a refused open.
+    expect(refused).toEqual([{ origin: 'a.eth', via: 'proxy', ended: false }]);
+  });
+
+  test('every 30 s while a remote socket is open, and not at all for loopback ones', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    try {
+      nodeUrl = LOOPBACK;
+      await openOne();
+      await jest.advanceTimersByTimeAsync(registry.ROUTE_RECHECK_MS * 2);
+      expect(resolveProxy).not.toHaveBeenCalled();
+
+      nodeUrl = REMOTE;
+      await openOne({ key: 'ef'.repeat(32), document: '8:1' });
+      expect(resolveProxy).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(registry.ROUTE_RECHECK_MS);
+      expect(resolveProxy).toHaveBeenCalledTimes(2);
+      proxy = 'PROXY proxy.example:8080';
+      await jest.advanceTimersByTimeAsync(registry.ROUTE_RECHECK_MS);
+      expect(opened[1].cancel).toHaveBeenCalledTimes(1);
+      expect(opened[0].cancel).not.toHaveBeenCalled();
+      // No remote socket left: no more tests.
+      await jest.advanceTimersByTimeAsync(registry.ROUTE_RECHECK_MS * 3);
+      expect(resolveProxy).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('checkRoute: the first check, reported for a site; nothing while no route is configured', async () => {
+    proxy = 'PROXY proxy.example:8080';
+    expect(await registry.checkRoute(REMOTE)).toEqual({ reason: 'proxy-or-tor', via: 'proxy' });
+    expect(refused).toEqual([]);
+    expect(await registry.checkRoute(REMOTE, 'a.eth')).toEqual({ reason: 'proxy-or-tor', via: 'proxy' });
+    expect(refused).toEqual([{ origin: 'a.eth', via: 'proxy', ended: false }]);
+    registry.configure({ openSocket, deliver: jest.fn(), route: null });
+    expect(await registry.checkRoute(REMOTE, 'a.eth')).toBeNull();
+  });
+
+  test('its signal ends a subscription that establishes; only its opener closes it by id', async () => {
+    const controller = new AbortController();
+    const promise = registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY, signal: controller.signal });
+    await socketAfter(0);
+    controller.abort();
+    // At once, though the socket's mock never settles.
+    await expect(promise).rejects.toMatchObject({ reason: 'subscription_cancelled' });
+    expect(registry.countByOrigin('a.eth')).toBe(0);
+    expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+
+    const id = await openOne({ opener: 'core:1' });
+    expect(registry.cancelByOpener('core:2', id)).toBe(false);
+    expect(registry.cancelByOpener(undefined, id)).toBe(false);
+    expect(registry.countByOrigin('a.eth')).toBe(1);
+    expect(registry.cancelByOpener('core:1', id)).toBe(true);
+    expect(registry.cancelByOpener('core:1', id)).toBe(false);
+    expect(registry.countByOrigin('a.eth')).toBe(0);
+  });
+});

@@ -2262,8 +2262,19 @@ async function handleSubscribe(params, origin, meta) {
   return subscribeForPage({ kind, key, topic: params.topic }, origin, meta);
 }
 
+// A subscribe the node can't serve now: 4900 `Node not available: <reason>`.
+function nodeUnavailable(reason) {
+  return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reason}`, data: { reason } } };
+}
+
 // The errors a subscription that didn't open answers.
 function subscribeError(err, origin, kind, key) {
+  if (err.reason === subscriptionRegistry.PROXY_OR_TOR) {
+    // Question 4: the route test refused just before the open (a proxy or
+    // Tor came on during the waits). The first check's shape.
+    log.warn(`[SwarmProvider] subscribe refused for ${origin} (${err.reason}): ${kind}:${key}`);
+    return nodeUnavailable(err.reason);
+  }
   if (err.reason === 'establish_timeout' || err.reason === 'subscription_cancelled' || err.reason === 'cancelled') {
     // Never established within the window, or torn down while we waited
     // (navigation, tab close, grant revoke). Retryable, like any other
@@ -2319,10 +2330,15 @@ async function subscribeForPage({ kind, key: givenKey, topic }, origin, meta) {
     return messagingNotGranted();
   }
 
+  // Question 4 (design 0015, Messaging): a node the session reaches through
+  // a proxy or Tor gets no subscription, refused before the probe (which
+  // would go around them too) and before any mining. The registry tests the
+  // route again just before it opens the socket.
+  const refused = await subscriptionRegistry.checkRoute(getAntApiUrl() || null, origin);
+  if (refused) return nodeUnavailable(refused.reason);
+
   const reachable = await checkBeeReachable();
-  if (!reachable.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
-  }
+  if (!reachable.ok) return nodeUnavailable(reachable.reason);
 
   let key = givenKey;
   if (!key) {
@@ -2428,19 +2444,38 @@ async function checkSwarmPreFlight() {
 }
 
 /**
- * Wire the subscription registry to the node and to the grants. There is no
- * IPC handler: every window.swarm method comes through main's own page
+ * Wire the subscription registry to the node, to the grants, and to
+ * question 4's route test (design 0015, Messaging): the default session's
+ * `resolveProxy` for the node's URL (Tor's `.onion` PAC and any proxy apply
+ * to it as to every session), Arti's endpoint while Tor runs, and a test of
+ * every open socket again when the node's URL or Tor's state changes. Both
+ * backends' subscriptions go through this registry. There is no IPC
+ * handler: every window.swarm method comes through main's own page
  * dispatcher (freedom-core design 0011, PRQ-7d).
  */
 function registerSwarmProviderIpc() {
+  const services = require('../service-registry');
   subscriptionRegistry.configure({
     openSocket: messagingService.openSubscriptionSocket,
     deliver: deliverToDocument,
     maxSubscriptionsPerOrigin: LIMITS.maxSubscriptions,
+    route: {
+      nodeUrl: () => getAntApiUrl() || null,
+      resolveProxy: (url) => require('electron').session.defaultSession.resolveProxy(url),
+      torEndpoint: () => services.getService('tor')?.socks || null,
+    },
   });
 
   // Live messaging subscriptions must not outlive the origin's grant.
   onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
+
+  // Nor a route that now goes through a proxy or Tor.
+  services.onServiceChange((service) => {
+    if (service !== 'ant' && service !== 'tor') return;
+    subscriptionRegistry.recheckRoutes().catch((err) => {
+      log.error('[SwarmProvider] subscription route check failed:', err.message);
+    });
+  });
 
   log.info('[SwarmProvider] Subscriptions wired');
 }

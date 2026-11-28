@@ -537,4 +537,54 @@ describe('openSubscriptionSocket', () => {
     handle.cancel();
     await expect(handle.established).rejects.toMatchObject({ reason: 'cancelled' });
   });
+
+  test('dials the node URL it is given, the one the route test passed (question 4)', () => {
+    openSubscriptionSocket({ kind: 'pss', key: 'cd'.repeat(32), url: 'https://ant.example/' }, { onMessage: jest.fn() }).cancel();
+    expect(sockets[0].url).toBe(`wss://ant.example/pss/subscribe/${'cd'.repeat(32)}`);
+  });
+
+  test('each reconnect waits for beforeReconnect: a yes dials again, a no stops it for good', async () => {
+    let answer = true;
+    const beforeReconnect = jest.fn(async () => answer);
+    const handle = openSubscriptionSocket({ kind: 'gsoc', key: 'ab'.repeat(32) }, { onMessage: jest.fn(), beforeReconnect });
+
+    sockets[0].emitOpen();
+    jest.advanceTimersByTime(600);
+    await handle.established;
+    sockets[0].emitClose(1006);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(beforeReconnect).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(2);
+
+    answer = false;
+    sockets[1].emitClose(1006);
+    await jest.advanceTimersByTimeAsync(60000);
+    expect(beforeReconnect).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(2);
+  });
+
+  test('a no before establishment rejects the established promise, and a failed ask is a no', async () => {
+    const handle = openSubscriptionSocket(
+      { kind: 'gsoc', key: 'ab'.repeat(32) },
+      { onMessage: jest.fn(), beforeReconnect: async () => false }
+    );
+    sockets[0].emitClose(1006);
+    await jest.advanceTimersByTimeAsync(1000);
+    await expect(handle.established).rejects.toMatchObject({ reason: 'cancelled' });
+    expect(sockets).toHaveLength(1);
+
+    const failing = openSubscriptionSocket(
+      { kind: 'gsoc', key: 'ef'.repeat(32) },
+      {
+        onMessage: jest.fn(),
+        beforeReconnect: async () => {
+          throw new Error('no route');
+        },
+      }
+    );
+    sockets[1].emitClose(1006);
+    await jest.advanceTimersByTimeAsync(60000);
+    await expect(failing.established).rejects.toMatchObject({ reason: 'cancelled' });
+    expect(sockets).toHaveLength(2);
+  });
 });
