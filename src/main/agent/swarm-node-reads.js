@@ -23,13 +23,17 @@
  * - a failure before any reply throws bee-js's text for it: `Request
  *   aborted` for an abort, else the error's message and its cause's;
  * - a 2xx JSON reply is parsed as bee-js parses it (an empty body is null)
- *   and checked as its zod schema checks it (`GetGlobalPostageBatchResponse`,
- *   `GetChainStateResponse`): a missing member, one of another type, a
- *   number that isn't finite, a batch ID or owner that isn't hex of its
- *   length, or an amount that isn't an integer string throws. The values
- *   are mapped as bee-js maps them: the batch's ID and owner as lowercase
- *   hex (`BatchId`, `EthAddress`), its value kept as the integer string;
- *   the chain's `currentPrice` as a number at least 24,000
+ *   and parsed by bee-js's own schemas (`GetGlobalPostageBatchResponse`,
+ *   `GetChainStateResponse`), copied member for member into zod, the
+ *   library bee-js parses them with (the copy bee-js itself resolves), so a
+ *   reply out of schema throws the error bee-js throws: zod's `ZodError`,
+ *   its issues and its message naming each failing member with what was
+ *   expected and what came, or, from a member's transform, the error of
+ *   core-sdk's `BatchId` or `EthAddress` for a batch ID or owner that isn't
+ *   hex of its length, and `asNumberString`'s for an amount that isn't an
+ *   integer string. The values are mapped as bee-js maps them: the batch's
+ *   ID and owner as lowercase hex (`toHex()`), its value kept as the
+ *   integer string; the chain's `currentPrice` as a number at least 24,000
  *   (`normalizeCurrentPrice`), `minimumValidityBlocks` only when the node
  *   sent it; any other member dropped.
  *
@@ -37,24 +41,19 @@
  * (bee-js reads either whole); these replies are a few hundred bytes.
  */
 
+// bee-js's own dependency: the zod it resolves (no copy of its own under
+// node_modules/@ethersphere/bee-js), so its errors are the ones bee-js throws.
+const { z } = require('zod');
+
 const READ_TIMEOUT_MS = 10_000;
 // The controller's own bound on the retrieval check (its 30 s `observe`).
 const VERIFY_TIMEOUT_MS = 30_000;
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_ERROR_BYTES = 64 * 1024;
-// bee-js's `normalizeCurrentPrice` floor.
-const MIN_CURRENT_PRICE = 24_000;
 
-// core-sdk's `Bytes` reads hex of its length, either case, an optional 0x.
-const BATCH_ID = /^(?:0x)?[0-9a-fA-F]{64}$/;
-const ADDRESS = /^(?:0x)?[0-9a-fA-F]{40}$/;
 const REFERENCE = /^(?:0x)?(?:[0-9a-fA-F]{64}){1,2}$/;
-// bee-js's `asNumberString`.
-const INTEGER_STRING = /^-?\d+$/;
 
-const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const lowerHex = (text) => text.replace(/^0x/, '').toLowerCase();
-const finite = (value) => typeof value === 'number' && Number.isFinite(value);
 
 /** bee-js http's `toBeeError`: what a failure before any reply reads as. */
 function transportError(err) {
@@ -151,72 +150,82 @@ async function jsonOf(response, signal) {
   return text ? JSON.parse(text) : null;
 }
 
-function schemaError(what) {
-  return new TypeError(`The node's ${what} reply is not one bee-js reads`);
+/**
+ * `new BatchId(text)` (`length` 32) and `new EthAddress(text)` (20) of
+ * core-sdk 0.2.2, bee-js's, for a string (dist/bytes/index.cjs: `Bytes`'s
+ * constructor, with `HEX_PATTERN` and `hexToUint8Array`): the same checks
+ * in the same order, each failure its error and text; the bytes as
+ * `toHex()` gives them, lowercase without 0x.
+ */
+function hexBytes(text, length) {
+  if (!text) throw new Error(`Bytes#constructor: constructor parameter is falsy: ${text}`);
+  if (!/^(0x)?[0-9a-fA-F]*$/i.test(text) || text.replace(/^0x/i, '').length % 2 !== 0) {
+    throw new Error(`Bytes#constructor: invalid hex string: ${text}`);
+  }
+  const hex = text.replace(/^0x/i, '').toLowerCase();
+  if (hex.length / 2 !== length) {
+    throw new Error(`Bytes#checkByteLength: bytes length is ${hex.length / 2} but expected ${length}`);
+  }
+  return hex;
 }
 
 /**
- * `GetGlobalPostageBatchResponse` (bee-js 13.2.0, types/schema/stamps.js),
- * mapped: `batchID` and `owner` as lowercase hex, `value` the integer
- * string. Throws where its schema throws.
+ * bee-js 13.2.0's `asNumberString` (dist/cjs/utils/type.js) for the string
+ * its schemas hand it, with neither `min` nor `max`.
  */
+function asNumberString(value, options) {
+  if (typeof value !== 'string' || !/^-?\d+$/.test(value)) {
+    throw new TypeError(`${options?.name ?? 'value'} is not a valid integer string, got: ${value}`);
+  }
+  return value;
+}
+
+/** bee-js 13.2.0's `normalizeCurrentPrice` (dist/cjs/utils/workaround.js). */
+function normalizeCurrentPrice(currentPrice) {
+  if (!Number.isInteger(currentPrice)) return 24000;
+  if (currentPrice < 24000) return 24000;
+  return currentPrice;
+}
+
+/**
+ * bee-js 13.2.0's `GetGlobalPostageBatchResponse`
+ * (dist/cjs/types/schema/stamps.js), member for member; `batchID` and
+ * `owner` give the hex of the `BatchId` and `EthAddress` bee-js makes.
+ */
+const GetGlobalPostageBatchResponse = z.object({
+  batchID: z.string().transform((s) => hexBytes(s, 32)),
+  batchTTL: z.number(),
+  bucketDepth: z.number(),
+  depth: z.number(),
+  immutable: z.boolean(),
+  owner: z.string().transform((s) => hexBytes(s, 20)),
+  start: z.number(),
+  value: z.string().transform((s) => asNumberString(s, { name: 'value' })),
+});
+
+/**
+ * bee-js 13.2.0's `GetChainStateResponse` (dist/cjs/types/schema/states.js),
+ * member for member.
+ */
+const GetChainStateResponse = z.object({
+  block: z.number(),
+  chainTip: z.number(),
+  totalAmount: z.string().transform((s) => asNumberString(s, { name: 'totalAmount' })),
+  currentPrice: z
+    .string()
+    .transform(Number)
+    .transform((s) => normalizeCurrentPrice(s)),
+  minimumValidityBlocks: z.number().optional(),
+});
+
+/** A `/batches/<id>` reply as bee-js's `getGlobalPostageBatch` reads it: its schema's value, or its error. */
 function readGlobalBatch(data) {
-  if (!isObject(data)) throw schemaError('/batches');
-  const { batchID, batchTTL, bucketDepth, depth, immutable, owner, start, value } = data;
-  if (
-    typeof batchID !== 'string' ||
-    !BATCH_ID.test(batchID) ||
-    !finite(batchTTL) ||
-    !finite(bucketDepth) ||
-    !finite(depth) ||
-    typeof immutable !== 'boolean' ||
-    typeof owner !== 'string' ||
-    !ADDRESS.test(owner) ||
-    !finite(start) ||
-    typeof value !== 'string' ||
-    !INTEGER_STRING.test(value)
-  ) {
-    throw schemaError('/batches');
-  }
-  return {
-    batchID: lowerHex(batchID),
-    batchTTL,
-    bucketDepth,
-    depth,
-    immutable,
-    owner: lowerHex(owner),
-    start,
-    value,
-  };
+  return GetGlobalPostageBatchResponse.parse(data);
 }
 
-/**
- * `GetChainStateResponse` (bee-js 13.2.0, types/schema/states.js), mapped:
- * `currentPrice` as `Number` gives it, at least 24,000 and an integer
- * (`normalizeCurrentPrice`); `minimumValidityBlocks` only when sent.
- */
+/** A `/chainstate` reply as bee-js's `getChainState` reads it: its schema's value, or its error. */
 function readChainState(data) {
-  if (!isObject(data)) throw schemaError('/chainstate');
-  const { block, chainTip, totalAmount, currentPrice } = data;
-  const validity = Object.hasOwn(data, 'minimumValidityBlocks');
-  if (
-    !finite(block) ||
-    !finite(chainTip) ||
-    typeof totalAmount !== 'string' ||
-    !INTEGER_STRING.test(totalAmount) ||
-    typeof currentPrice !== 'string' ||
-    (validity && !finite(data.minimumValidityBlocks))
-  ) {
-    throw schemaError('/chainstate');
-  }
-  const price = Number(currentPrice);
-  return {
-    block,
-    chainTip,
-    totalAmount,
-    currentPrice: Number.isInteger(price) && price >= MIN_CURRENT_PRICE ? price : MIN_CURRENT_PRICE,
-    ...(validity && { minimumValidityBlocks: data.minimumValidityBlocks }),
-  };
+  return GetChainStateResponse.parse(data);
 }
 
 /**
@@ -226,10 +235,13 @@ function readChainState(data) {
  */
 function createNodeReads(deps = {}) {
   return Object.freeze({
-    /** bee-js's `stamp.getGlobal(id)`: refused, undialled, for an ID that isn't one. */
+    /**
+     * bee-js's `stamp.getGlobal(id)`: refused, undialled, for an ID that
+     * isn't one, with `new BatchId(id)`'s error.
+     */
     async getGlobalBatch(id) {
-      if (typeof id !== 'string' || !BATCH_ID.test(id)) throw new TypeError('Invalid batch ID');
-      const data = await nodeGet(`/batches/${lowerHex(id)}`, READ_TIMEOUT_MS, jsonOf, deps);
+      if (typeof id !== 'string') throw new TypeError('Invalid batch ID');
+      const data = await nodeGet(`/batches/${hexBytes(id, 32)}`, READ_TIMEOUT_MS, jsonOf, deps);
       return readGlobalBatch(data);
     },
 

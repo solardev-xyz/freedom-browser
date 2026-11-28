@@ -20,12 +20,16 @@
  *
  * Each case runs on `js` first and then on `core`, and on `core` its record
  * must equal `js`'s: the readiness answers and errors; the controller's
- * receipt (or error), its progress states and the approval cards; the
- * history rows; each upload the node took (its name, Swarm headers, entries
- * and reference); and the node calls made, each once (the readiness reads
- * its three in parallel, and bee-js's batch choice reads `/stamps` again
- * for a batch that isn't usable). On `core` each case also leaves the same core
- * running, the executor empty and the Swarm I/O pool at 0.
+ * receipt (or error), its progress states, the approval cards and the
+ * sleeps between its polls; the history rows; each upload the node took
+ * (its name, Swarm headers, entries and reference); and every call the
+ * node took, in order and as often as it came. Only the readiness's three
+ * reads, sent at once, are a group whose order is free (sorted); and a
+ * case names the calls bee-js alone makes (its batch choice reads `/stamps`
+ * again for a batch that isn't usable). Each case also names, in order,
+ * every `swarm.*` request main sends the core on each backend. On `core`
+ * each case also leaves the same core running, the executor empty and the
+ * Swarm I/O pool at 0.
  *
  * Skipped without the binary; FREEDOM_CORED_SWARM_TEST=1 requires it (npm
  * run core:download), as FREEDOM_CORED_PATH names one.
@@ -133,6 +137,25 @@ const rowOf = (row) => ({
 
 // ---- The cases ----------------------------------------------------------------
 
+// Main's requests to the core on `core`, in the order a publication sends
+// them: the card's batch (the list, then the chosen batch), the history
+// row, the readiness's batch (its /batches and /chainstate are the node's
+// transport's), the upload, one status poll (the node's tag is done at the
+// first), the row completed. With a stable address, after the poll come its
+// update, a read of it back and its manifest; and the card reads it first,
+// unless the controller has already moved it.
+const CARD = ['swarm.stamps', 'swarm.stamps'];
+const ROW = 'swarm.history';
+const READY = 'swarm.stamps';
+const UPLOAD = 'swarm.publish';
+const POLL = 'swarm.upload_status';
+const FEED_UPDATE = ['swarm.feed', 'swarm.feed', 'swarm.feed'];
+const PUBLISH = [...CARD, ROW, READY, UPLOAD, POLL, ROW];
+const PUBLISH_MOVED_FEED = [...CARD, ROW, READY, UPLOAD, POLL, ...FEED_UPDATE, ROW];
+const PUBLISH_FEED = ['swarm.feed', ...PUBLISH_MOVED_FEED];
+// On `js`, the vault's signature of each feed update (swarm-signer.js).
+const SIGN = 'swarm.sign_soc';
+
 const TEXT = { text: '<h1>hello from the agent</h1>', contentType: 'text/html' };
 const SITE = {
   kind: 'folder',
@@ -153,7 +176,7 @@ const NOTES = { kind: 'file', name: 'notes.md', contentType: 'text/markdown', da
 const CASES = [
   {
     name: 'readiness: Ant’s start=0 needs ten advancing blocks after the first confirmed read',
-    core: ['swarm.stamps'],
+    core: [READY, READY, READY],
     async run(world) {
       world.node.state.global[BATCH].start = 0;
       const readiness = world.readiness();
@@ -171,7 +194,7 @@ const CASES = [
   },
   {
     name: 'readiness: a genuine start; an expired batch and one without room are permanent; a chain out of schema is not',
-    core: ['swarm.stamps'],
+    core: [READY, READY, READY, READY],
     async run(world) {
       const readiness = world.readiness();
       const genuine = await settle(readiness.inspect(BATCH, 10));
@@ -182,21 +205,27 @@ const CASES = [
       const full = await settle(readiness.inspect(BATCH, 1_000_000));
       Object.assign(world.node.state.stamps[0], { depth: 22, utilization: 16 });
       world.node.state.chain = { block: '100', chainTip: 100, totalAmount: '5000', currentPrice: '24000' };
-      // Thrown where bee-js's schema throws, its text zod's on js.
-      const { error } = await settle(readiness.inspect(BATCH, 10));
-      const unread = { threw: Boolean(error), permanent: error?.permanent };
+      // Thrown where bee-js's schema throws, with zod's text on both.
+      const unread = await settle(readiness.inspect(BATCH, 10));
       return { genuine, expired, full, unread };
     },
     check(record) {
       expect(record.genuine.value).toMatchObject({ ready: true, firstConfirmedBlock: 80 });
       expect(record.expired.error).toMatchObject({ code: 'POSTAGE_UNAVAILABLE', permanent: true });
       expect(record.full.error).toMatchObject({ code: 'POSTAGE_CAPACITY_INSUFFICIENT', permanent: true });
-      expect(record.unread).toEqual({ threw: true, permanent: undefined });
+      expect(record.unread.error).toEqual({ message: expect.stringContaining('expected number, received string') });
+      expect(JSON.parse(record.unread.error.message)).toMatchObject([{ path: ['block'], code: 'invalid_type' }]);
     },
   },
   {
     name: 'readiness: the card’s batch, time left, cost and room; no usable batch, and none with room',
-    core: ['swarm.stamps'],
+    // The card's list and batch; the list for each select.
+    core: [...CARD, 'swarm.stamps', 'swarm.stamps'],
+    // With no usable batch with room and one that isn't usable, bee-js's
+    // choice reads /stamps a second time for the propagating batches
+    // (swarm-service.js getPropagatingBatchIds): the last select's second
+    // read. The core's list carries `propagating`, read once.
+    jsOnly: [[4, 'GET /stamps']],
     async run(world) {
       const readiness = world.readiness();
       const preview = await settle(readiness.preview('owner', 10_000, { files: 2 }));
@@ -225,7 +254,7 @@ const CASES = [
   },
   {
     name: 'publishes text: the row before the upload, the batch on the card, the tag confirmed, retrieval verified',
-    core: ['swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
+    core: PUBLISH,
     run: (world) => world.publish([{ input: TEXT }]),
     check(record) {
       expect(record.outcomes[0].value.publication).toMatchObject({
@@ -244,7 +273,7 @@ const CASES = [
   },
   {
     name: 'publishes one attached file with its name and type',
-    core: ['swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
+    core: PUBLISH,
     run: (world) => world.publish([{ input: { resourceId: 'file_aaaaaaaaaaaaaaaaaaaa' }, source: NOTES }]),
     check(record) {
       expect(record.outcomes[0].value.publication).toMatchObject({ state: 'completed', kind: 'file', name: 'notes.md' });
@@ -253,7 +282,7 @@ const CASES = [
   },
   {
     name: 'publishes a folder with nested files and a nested index document',
-    core: ['swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
+    core: PUBLISH,
     run: (world) =>
       // Not index.html, which a node is told by default when one is at the top.
       world.publish([{ input: { resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa', indexDocument: 'about/index.html' }, source: SITE }]),
@@ -265,7 +294,7 @@ const CASES = [
   },
   {
     name: 'a private draft link: encrypted, confirmed by its root’s tag',
-    core: ['swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
+    core: PUBLISH,
     run: (world) =>
       world.publish([{ input: { resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa', target: 'draft' }, source: SITE }]),
     check(record) {
@@ -277,7 +306,8 @@ const CASES = [
   },
   {
     name: 'a draft the node didn’t encrypt fails with its public reference',
-    core: ['swarm.history', 'swarm.publish', 'swarm.stamps'],
+    // No poll: the row failed with the reference, then with the text.
+    core: [...CARD, ROW, READY, UPLOAD, ROW, ROW],
     async run(world) {
       world.node.state.ignoreEncrypt = true;
       return world.publish([{ input: { ...TEXT, target: 'draft' } }]);
@@ -289,8 +319,8 @@ const CASES = [
   },
   {
     name: 'a stable address: created at index 0, then moved to the next version from another conversation',
-    core: ['swarm.feed', 'swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
-    feeds: true,
+    core: [...PUBLISH_FEED, ...PUBLISH_MOVED_FEED],
+    js: [SIGN, SIGN],
     run: (world) =>
       world.publish([
         { input: { ...TEXT, stableAddress: 'my-site' }, conversationId: 'conversation_one' },
@@ -306,8 +336,8 @@ const CASES = [
   },
   {
     name: 'a stable address the network already has: the card reads its version, the update goes above it',
-    core: ['swarm.feed', 'swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
-    feeds: true,
+    core: [...PUBLISH_FEED, ...PUBLISH_FEED],
+    js: [SIGN, SIGN],
     async run(world) {
       await world.publish([{ input: { ...TEXT, stableAddress: 'kept' } }]);
       // A fresh controller has no record of it.
@@ -320,7 +350,9 @@ const CASES = [
   },
   {
     name: 'peers that don’t know the batch yet: the same upload again with the same batch',
-    core: ['swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
+    // The refused upload, the readiness again after one retry delay, the same upload.
+    core: [...CARD, ROW, READY, UPLOAD, READY, UPLOAD, POLL, ROW],
+    sleeps: ['retry'],
     async run(world) {
       world.node.state.failUploads = [
         { status: 500, body: { code: 500, message: `pushsync: postage batch 0x${BATCH} rejected by 2 peer(s) as not found on-chain` } },
@@ -336,7 +368,7 @@ const CASES = [
   },
   {
     name: 'a refused upload is a known failure, the batch kept',
-    core: ['swarm.history', 'swarm.publish', 'swarm.stamps'],
+    core: [...CARD, ROW, READY, UPLOAD, ROW],
     async run(world) {
       world.node.state.failUploads = [{ status: 400, body: { code: 400, message: 'invalid content type' } }];
       return world.publish([{ input: TEXT }]);
@@ -348,7 +380,7 @@ const CASES = [
   },
   {
     name: 'retrieval that fails: completed, unverified, with bee-js’s text',
-    core: ['swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
+    core: PUBLISH,
     async run(world) {
       world.node.state.serveBytes = false;
       return world.publish([{ input: TEXT }]);
@@ -363,7 +395,8 @@ const CASES = [
   },
   {
     name: 'no batch with room: refused before any upload, with the capacity',
-    core: ['swarm.history', 'swarm.stamps'],
+    // The card's choice (no batch has room), the row, the choice again before the upload, the row failed.
+    core: ['swarm.stamps', ROW, 'swarm.stamps', ROW],
     async run(world) {
       world.node.state.stamps = [stamp(BATCH, { depth: 17 })];
       return world.publish([{ input: { resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa' }, source: { ...SITE, files: [{ path: 'big.bin', bytes: Buffer.alloc(100_000, 1) }] } }]);
@@ -454,6 +487,8 @@ async function startWorld(world, backend) {
   world.warnings = [];
   world.exits = [];
   world.sent = [];
+  world.sleeps = [];
+  world.parallel = [];
   world.beeLoaded = [];
   world.backend = backend;
   world.saved = process.env.FREEDOM_SWARM_BACKEND;
@@ -505,7 +540,27 @@ async function startWorld(world, backend) {
   const onCore = backend === 'core';
   world.rows = async () => (onCore ? await history.coreOps.getEntries() : history.getEntries());
   world.clearRows = async () => (onCore ? await history.coreOps.clearEntries() : history.clearEntries());
-  world.readiness = () => new SwarmPostageReadiness();
+  /**
+   * A readiness of the backend's own, its node calls observed: `inspect`
+   * sends its three reads at once (`Promise.all`), so their order at the
+   * node is free, and its calls are kept as a group (`world.parallel`). A
+   * read that fails ends it before the others land: the group closes once
+   * all three have reached the node, bounded.
+   */
+  world.readiness = () => {
+    const readiness = new SwarmPostageReadiness();
+    const inspect = readiness.inspect.bind(readiness);
+    readiness.inspect = async (...args) => {
+      const from = world.node.calls.length;
+      try {
+        return await inspect(...args);
+      } finally {
+        await until(() => world.node.calls.length - from >= 3);
+        world.parallel.push([from, world.node.calls.length]);
+      }
+    };
+    return readiness;
+  };
 
   /**
    * Publishes each of `steps` in turn with one controller (its default
@@ -527,9 +582,14 @@ async function startWorld(world, backend) {
       // A case that never gets its postage ends at the job's deadline.
       interactiveTimeoutMs: 30_000,
       jobTimeoutMs: 15_000,
-      readinessPollMs: 10,
-      retryDelayMs: 10,
-      progressPollMs: 10,
+      readinessPollMs: POLL_MS.readiness,
+      retryDelayMs: POLL_MS.retry,
+      progressPollMs: POLL_MS.progress,
+      // Each sleep between polls, by its loop: the schedule the record holds.
+      sleep: (ms) => {
+        world.sleeps.push(Object.keys(POLL_MS).find((loop) => POLL_MS[loop] === ms) ?? ms);
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      },
     });
     const outcomes = [];
     for (const step of steps) {
@@ -561,6 +621,20 @@ async function stopWorld(world) {
   if (world.dir) fs.rmSync(world.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
 
+/**
+ * The node's calls in order, each readiness group (`[from, to)` in
+ * `calls`, in order) one sorted array of its own.
+ */
+function traceOf(calls, groups) {
+  const trace = [];
+  let at = 0;
+  for (const [from, to] of groups) {
+    trace.push(...calls.slice(at, from), calls.slice(from, to).sort());
+    at = to;
+  }
+  return [...trace, ...calls.slice(at)];
+}
+
 /** Waits, bounded, for `predicate`. */
 async function until(predicate, ms = 5000) {
   for (let waited = 0; waited < ms && !predicate(); waited += 10) {
@@ -569,6 +643,9 @@ async function until(predicate, ms = 5000) {
 }
 
 const records = { js: new Map(), core: new Map() };
+
+// The controller's poll intervals, apart so each sleep names its loop.
+const POLL_MS = { readiness: 11, retry: 12, progress: 13 };
 
 for (const backend of ['js', 'core']) {
   describeIfCore(`the agent's Swarm modules on ${backend} (real freedom-cored)`, () => {
@@ -585,6 +662,8 @@ for (const backend of ['js', 'core']) {
       world.warnings.length = 0;
       await world.clearRows();
       world.sent.length = 0;
+      world.sleeps.length = 0;
+      world.parallel.length = 0;
     });
 
     test(`the switch reads ${backend}; the hello names swarm_stores only on core`, () => {
@@ -592,25 +671,33 @@ for (const backend of ['js', 'core']) {
       expect(world.storesNamed()).toBe(backend === 'core');
     });
 
-    for (const { name, run, check, core, feeds = false } of CASES) {
+    for (const { name, run, check, core, js = [], jsOnly = [], sleeps = [] } of CASES) {
       test(name, async () => {
         const answered = await run(world);
-        // Main's Swarm requests to the core: on core the agent's own; on js
-        // none but the vault's signatures of a feed update (swarm-signer.js).
-        const swarmMethods = [...new Set(world.sent.filter((m) => m.startsWith('swarm.')))].sort();
-        expect(swarmMethods).toEqual(backend === 'core' ? core : feeds ? ['swarm.sign_soc'] : []);
+        // Main's Swarm requests to the core, each in order: on core the
+        // agent's own; on js none but the vault's signature of each feed
+        // update (swarm-signer.js).
+        expect(world.sent.filter((m) => m.startsWith('swarm.'))).toEqual(backend === 'core' ? core : js);
         const record = {
           ...answered,
           history: (await world.rows()).map(rowOf),
           uploads: world.node.uploads.map((u) => ({ ...u })),
-          // Each call once: bee-js's choice reads /stamps again for a
-          // batch that isn't usable, and tags are polled until done.
-          calls: [...new Set(world.node.calls)].sort(),
+          sleeps: world.sleeps.slice(),
+          calls: traceOf(world.node.calls, world.parallel),
         };
         records[backend].set(name, record);
         check(record);
+        // Every poll ended its loop at the first read (the node's tag is
+        // done, the batch ready, at once): no sleep but a propagation
+        // retry's, so each status poll and readiness read is counted once.
+        expect(record.sleeps).toEqual(sleeps);
+        if (backend === 'js') {
+          for (const [at, call] of jsOnly) expect(record.calls[at]).toBe(call);
+        }
         if (backend === 'core') {
-          expect(record).toEqual(records.js.get(name));
+          const jsRecord = records.js.get(name);
+          const jsCalls = jsRecord.calls.filter((_, at) => !jsOnly.some(([only]) => only === at));
+          expect(record).toEqual({ ...jsRecord, calls: jsCalls });
           // The same core throughout, nothing refused, nothing held.
           await until(() => world.pool.held === 0 && world.swarmShell.stats().parents === 0);
           expect(world.exits).toEqual([]);

@@ -7,8 +7,10 @@
  * swarm-node-reads.js over ant-storage-api.js's transport (the core's
  * backend's) give the same values, or both throw. For a reply outside 2xx,
  * a body that isn't JSON and a connection the node drops, both throw the
- * same text with the same status; for a 2xx reply bee-js's schema refuses,
- * both throw.
+ * same text with the same status; for a 2xx reply bee-js's schema refuses
+ * (a member missing, of another type, or one its transform refuses), both
+ * throw the same error: the same class (zod's `ZodError`, or the
+ * transform's `Error` or `TypeError`), message and issues.
  */
 
 const mockNode = { url: null };
@@ -19,6 +21,7 @@ jest.mock('../service-registry', () => ({
 }));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }));
 
+const path = require('path');
 const { Bee } = require('@ethersphere/bee-js');
 const { startFakeHttpNode } = require('../../../test/helpers/fake-http-node');
 const reads = require('./swarm-node-reads');
@@ -97,13 +100,28 @@ async function bothBackends(js, core) {
   return { js: jsOut, core: coreOut, jsPaths, corePaths };
 }
 
-/** The two outcomes agree: equal values, or both thrown (with `sameText`, the same text and status). */
-function expectSame({ js, core, jsPaths, corePaths }, { sameText = true } = {}) {
+/** An error as the agent sees it: its class, name, message, status and (a ZodError's) issues. */
+const errorOf = (error) => ({
+  class: error.constructor,
+  name: error.name,
+  message: error.message,
+  status: error.status,
+  issues: error.issues,
+});
+
+/**
+ * The two outcomes agree: equal values, or both thrown with the same text
+ * and status (with `sameError`, the same error: its class too, its name
+ * and its issues).
+ */
+function expectSame({ js, core, jsPaths, corePaths }, { sameText = true, sameError = false } = {}) {
   expect(corePaths).toEqual(jsPaths);
   if (js.error) {
     expect(core.error).toBeInstanceOf(Error);
     expect(core.value).toBeUndefined();
-    if (sameText) {
+    if (sameError) {
+      expect(errorOf(core.error)).toEqual(errorOf(js.error));
+    } else if (sameText) {
       expect(core.error.message).toBe(js.error.message);
       expect(core.error.status).toBe(js.error.status);
     }
@@ -113,34 +131,51 @@ function expectSame({ js, core, jsPaths, corePaths }, { sameText = true } = {}) 
   expect(core.value).toEqual(js.value);
 }
 
+test('the zod the reads parse with is the one bee-js resolves', () => {
+  const beeJs = path.dirname(require.resolve('@ethersphere/bee-js'));
+  expect(require.resolve('zod')).toBe(require.resolve('zod', { paths: [beeJs] }));
+});
+
 describe('GET /batches/<id>: bee-js stamp.getGlobal and the transport agree', () => {
   const ok = (body) => ({ status: 200, body });
+  // The class of what bee-js throws for each reply it refuses: zod's
+  // ZodError, or a member's transform's own (core-sdk's Bytes,
+  // asNumberString).
   const cases = [
-    ['the node’s batch', ok(GLOBAL), true],
-    ['extra members dropped', ok({ ...GLOBAL, usable: true, label: 'x' }), true],
-    ['an ID and owner with 0x, in capitals', ok({ ...GLOBAL, batchID: `0x${BATCH.toUpperCase()}`, owner: `0x${OWNER.toUpperCase()}` }), true],
-    ['start 0 and an expired batch', ok({ ...GLOBAL, start: 0, batchTTL: 0 }), true],
-    ['a negative value string', ok({ ...GLOBAL, value: '-5' }), true],
-    ['no owner', ok({ ...GLOBAL, owner: undefined }), false],
-    ['a short owner', ok({ ...GLOBAL, owner: OWNER.slice(2) }), false],
-    ['a batch ID that is not hex', ok({ ...GLOBAL, batchID: `zz${BATCH.slice(2)}` }), false],
-    ['a value that is not an integer string', ok({ ...GLOBAL, value: '1.5' }), false],
-    ['a value as a number', ok({ ...GLOBAL, value: 5 }), false],
-    ['batchTTL as a string', ok({ ...GLOBAL, batchTTL: '5' }), false],
-    ['batchTTL past a double (JSON 1e400)', { status: 200, body: JSON.stringify(GLOBAL).replace('864000', '1e400') }, false],
-    ['immutable as a number', ok({ ...GLOBAL, immutable: 1 }), false],
-    ['an array', ok([GLOBAL]), false],
-    ['null', ok('null'), false],
-    ['an empty body', { status: 200, body: '' }, false],
+    ['the node’s batch', ok(GLOBAL), null],
+    ['extra members dropped', ok({ ...GLOBAL, usable: true, label: 'x' }), null],
+    ['an ID and owner with 0x, in capitals', ok({ ...GLOBAL, batchID: `0x${BATCH.toUpperCase()}`, owner: `0x${OWNER.toUpperCase()}` }), null],
+    ['an ID with 0X', ok({ ...GLOBAL, batchID: `0X${BATCH}` }), null],
+    ['start 0 and an expired batch', ok({ ...GLOBAL, start: 0, batchTTL: 0 }), null],
+    ['a negative value string', ok({ ...GLOBAL, value: '-5' }), null],
+    ['no owner', ok({ ...GLOBAL, owner: undefined }), 'ZodError'],
+    ['every member missing', ok({}), 'ZodError'],
+    ['no batch ID, the depth a string and immutable null', ok({ ...GLOBAL, batchID: undefined, depth: '22', immutable: null }), 'ZodError'],
+    ['a short owner', ok({ ...GLOBAL, owner: OWNER.slice(2) }), 'Error'],
+    ['an empty owner', ok({ ...GLOBAL, owner: '' }), 'Error'],
+    ['an owner of odd length', ok({ ...GLOBAL, owner: `${OWNER}a` }), 'Error'],
+    ['a batch ID that is not hex', ok({ ...GLOBAL, batchID: `zz${BATCH.slice(2)}` }), 'Error'],
+    ['a batch ID that is not hex and batchTTL a string: the transform throws first', ok({ ...GLOBAL, batchID: 'zz', batchTTL: '5' }), 'Error'],
+    ['a value that is not an integer string', ok({ ...GLOBAL, value: '1.5' }), 'TypeError'],
+    ['a value as a number', ok({ ...GLOBAL, value: 5 }), 'ZodError'],
+    ['batchTTL as a string', ok({ ...GLOBAL, batchTTL: '5' }), 'ZodError'],
+    ['batchTTL as a string beside extra members, which go unnamed', ok({ ...GLOBAL, usable: 'x', batchTTL: '5' }), 'ZodError'],
+    ['batchTTL past a double (JSON 1e400)', { status: 200, body: JSON.stringify(GLOBAL).replace('864000', '1e400') }, 'ZodError'],
+    ['immutable as a number', ok({ ...GLOBAL, immutable: 1 }), 'ZodError'],
+    ['start as a boolean and bucketDepth null', ok({ ...GLOBAL, start: false, bucketDepth: null }), 'ZodError'],
+    ['an array', ok([GLOBAL]), 'ZodError'],
+    ['null', ok('null'), 'ZodError'],
+    ['a number', ok('5'), 'ZodError'],
+    ['an empty body', { status: 200, body: '' }, 'ZodError'],
   ];
-  test.each(cases)('%s', async (_name, answer, valid) => {
+  test.each(cases)('%s', async (_name, answer, thrown) => {
     answers.set(`/batches/${BATCH}`, answer);
     const outcome = await bothBackends(
       async () => plainBatch(await bee.stamp.getGlobal(BATCH)),
       () => reads.getGlobalBatch(BATCH)
     );
-    expect(Boolean(outcome.js.value)).toBe(valid);
-    expectSame(outcome, { sameText: false });
+    expect(outcome.js.error?.constructor.name).toBe(thrown ?? undefined);
+    expectSame(outcome, { sameError: true });
   });
 
   test.each([
@@ -172,32 +207,40 @@ describe('GET /batches/<id>: bee-js stamp.getGlobal and the transport agree', ()
       () => reads.getGlobalBatch('ab')
     );
     expect(refused.jsPaths).toEqual([]);
-    expectSame(refused, { sameText: false });
+    expectSame(refused, { sameError: true });
   });
 });
 
 describe('GET /chainstate: bee-js status.getChainState and the transport agree', () => {
   const ok = (body) => ({ status: 200, body });
   const cases = [
-    ['the chain’s state', ok(CHAIN), true],
-    ['with minimumValidityBlocks', ok({ ...CHAIN, minimumValidityBlocks: 17280 }), true],
-    ['a price below the floor', ok({ ...CHAIN, currentPrice: '23999' }), true],
-    ['a price that is not a number', ok({ ...CHAIN, currentPrice: 'abc' }), true],
-    ['a fractional price', ok({ ...CHAIN, currentPrice: '24000.5' }), true],
-    ['an empty price', ok({ ...CHAIN, currentPrice: '' }), true],
-    ['extra members dropped', ok({ ...CHAIN, reserve: 3 }), true],
-    ['minimumValidityBlocks null', ok({ ...CHAIN, minimumValidityBlocks: null }), false],
-    ['a total that is not an integer string', ok({ ...CHAIN, totalAmount: 'x' }), false],
-    ['no chain tip', ok({ ...CHAIN, chainTip: undefined }), false],
-    ['the block as a string', ok({ ...CHAIN, block: '100' }), false],
-    ['the price as a number', ok({ ...CHAIN, currentPrice: 28000 }), false],
-    ['an empty body', { status: 200, body: '' }, false],
+    ['the chain’s state', ok(CHAIN), null],
+    ['with minimumValidityBlocks', ok({ ...CHAIN, minimumValidityBlocks: 17280 }), null],
+    ['a price below the floor', ok({ ...CHAIN, currentPrice: '23999' }), null],
+    ['a price that is not a number', ok({ ...CHAIN, currentPrice: 'abc' }), null],
+    ['a fractional price', ok({ ...CHAIN, currentPrice: '24000.5' }), null],
+    ['an empty price', ok({ ...CHAIN, currentPrice: '' }), null],
+    ['extra members dropped', ok({ ...CHAIN, reserve: 3 }), null],
+    ['minimumValidityBlocks null', ok({ ...CHAIN, minimumValidityBlocks: null }), 'ZodError'],
+    ['minimumValidityBlocks as a string', ok({ ...CHAIN, minimumValidityBlocks: '17280' }), 'ZodError'],
+    ['a total that is not an integer string', ok({ ...CHAIN, totalAmount: 'x' }), 'TypeError'],
+    ['a total that is not an integer string and the block a string', ok({ ...CHAIN, block: '100', totalAmount: 'x' }), 'TypeError'],
+    ['no chain tip', ok({ ...CHAIN, chainTip: undefined }), 'ZodError'],
+    ['every member missing', ok({}), 'ZodError'],
+    ['no total and the tip past a double (JSON 1e400)', { status: 200, body: JSON.stringify({ ...CHAIN, totalAmount: undefined }).replace('101', '1e400') }, 'ZodError'],
+    ['the block as a string', ok({ ...CHAIN, block: '100' }), 'ZodError'],
+    ['the block as a string beside an extra member, which goes unnamed', ok({ ...CHAIN, reserve: 'x', block: '100' }), 'ZodError'],
+    ['the price as a number', ok({ ...CHAIN, currentPrice: 28000 }), 'ZodError'],
+    ['the total as a number and the price null', ok({ ...CHAIN, totalAmount: 5, currentPrice: null }), 'ZodError'],
+    ['an array', ok([CHAIN]), 'ZodError'],
+    ['a string', ok('"ok"'), 'ZodError'],
+    ['an empty body', { status: 200, body: '' }, 'ZodError'],
   ];
-  test.each(cases)('%s', async (_name, answer, valid) => {
+  test.each(cases)('%s', async (_name, answer, thrown) => {
     answers.set('/chainstate', answer);
     const outcome = await bothBackends(() => bee.status.getChainState(), () => reads.getChainState());
-    expect(Boolean(outcome.js.value)).toBe(valid);
-    expectSame(outcome, { sameText: false });
+    expect(outcome.js.error?.constructor.name).toBe(thrown ?? undefined);
+    expectSame(outcome, { sameError: true });
   });
 
   test.each([
