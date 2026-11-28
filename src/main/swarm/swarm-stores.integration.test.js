@@ -1327,7 +1327,32 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
       repaired.identities[SHOP].identities = repaired.identities[SHOP].identities.filter(
         (identity) => identity.label !== 'Kept under another key'
       );
+      const seeded = fs.readFileSync(file, 'utf8');
       expect(await coreAnswers(place)).toEqual(repaired);
+      // The repairs are in memory only: the core's open and reads leave the
+      // file exactly as it was (Codex round 2 on #1389).
+      expect(fs.readFileSync(file, 'utf8')).toBe(seeded);
+
+      // The next feed-store change writes the sanitized map: the bad feed and
+      // the identity under another key gone, the valid state and the change kept.
+      const world = loadWorld({ userDataDir: tempDir('unused'), owners: unlockedOwners() });
+      const core = await startOnProfile(place, world);
+      const mark = watch.mark();
+      try {
+        await importVault(core);
+        const preview = await world.main.feeds.coreOps.previewAppScopedIdentity(APP);
+        await world.main.feeds.coreOps.createAppScopedIdentityAt(APP, preview.publisherKeyIndex, { activate: true });
+      } finally {
+        await core.stop();
+        expect(mainTouchesSince(mark)).toEqual([]);
+      }
+      const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+      expect(Object.keys(written.origins[BLOG].feeds)).toEqual(Object.keys(store.origins[BLOG].feeds).filter((name) => name !== 'broken'));
+      expect(written.origins[BLOG].feeds.notes).toEqual(store.origins[BLOG].feeds.notes);
+      expect(Object.keys(written.origins[SHOP].identities)).not.toContain('app-scoped:9');
+      expect(written.origins[SHOP].identities[shop.activeIdentityId]).toEqual(shop.identities[shop.activeIdentityId]);
+      expect(written.origins[SHOP].activeIdentityId).toBe(shop.activeIdentityId);
+      expect(Object.keys(written.origins[APP]?.identities ?? {})).toHaveLength(1);
     });
 
     test("store-shapes: a manifest record with a string revision is read from the file's .bak", async () => {
