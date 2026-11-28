@@ -170,6 +170,8 @@ function loadWorld({ userDataDir, kind = 'core', owners, nodeUrl = null }) {
     if (!response) throw new Error('fetch failed');
     return response;
   });
+  // A fresh registry with the mocks below (anchored on a module with no
+  // dependencies); the store modules are required into it after.
   const { ipcMain } = loadMainModule(require.resolve('../../shared/ipc-channels'), {
     userDataDir,
     electronOverrides: {
