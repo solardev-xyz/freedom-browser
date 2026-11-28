@@ -262,8 +262,14 @@ async function confirmAgain({ approvals, windowId, safeIndex, safeTxHash }) {
   const { KINDS } = require('../signing-confirmation');
   const outcome = await approvals.confirm(
     { windowId, kind: KINDS.SAFE_SEND, index: safeIndex, payload, feeChecked: false, built: true },
-    () => {
-      records.record(safeIndex, { address: facts.address, ...payload });
+    async () => {
+      // The entry read again at the decision (Codex round 1 on #1383): one
+      // discarded or replaced while the prompt waited records nothing, so a
+      // stale prompt never restores a dropped record nor stands over a newer
+      // SafeTx's. pendingFacts throws SAFE_DISCARDED unless the SafeTx shown
+      // is still the one pending, for this Safe on its chain.
+      const now = await pendingFacts(safeIndex, safeTxHash);
+      records.record(safeIndex, { address: now.address, chainId: now.chainId, safeTx: now.safeTx, safeTxHash: now.safeTxHash });
       return {};
     }
   );

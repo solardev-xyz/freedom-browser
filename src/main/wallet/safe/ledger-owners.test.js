@@ -659,6 +659,46 @@ describe("confirm again with no record (the plan's point 6)", () => {
     expect(ledgerRequests('safe.sign_owner')).toEqual([]);
   });
 
+  test.each([
+    ['discarded', () => null],
+    ['replaced by another SafeTx, which was approved and recorded', 'replace'],
+  ])('a confirm-again prompt still open while its SafeTx is %s: its approval records nothing (Codex round 1)', async (_case, change) => {
+    await setup();
+    let answer;
+    const prompts = [];
+    const approvals = createWalletApprovals({
+      walletPrompt: jest.fn((windowId, spec) => {
+        prompts.push({ windowId, ...spec });
+        return new Promise((resolve) => (answer = resolve));
+      }),
+      chromeWindowOf: () => null,
+      getDerivedWallets: async () => Object.values(mockRecords),
+      chainName: () => 'Gnosis Chain',
+      nativeSymbol: () => 'xDAI',
+      checkFees: jest.fn(async () => null),
+      checkAtApproval: jest.fn(async () => ({ askAgain: false })),
+    });
+    const confirming = coreSends.confirmAgain({ approvals, windowId: 1, safeIndex: SAFE_INDEX, safeTxHash: SAFE_TX_HASH });
+    for (let i = 0; i < 100 && prompts.length === 0; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    expect(prompts).toHaveLength(1);
+    // Window 2, meanwhile: the SafeTx discarded, or another one approved in its place.
+    const other = { ...SAFE_TX, nonce: 4 };
+    const otherHash = records.safeTxHashOf(SAFE, 100, other);
+    if (change === 'replace') {
+      world.entry = entryOf(other, { safeTxHash: otherHash });
+      records.record(SAFE_INDEX, { address: SAFE, chainId: 100, safeTx: other, safeTxHash: otherHash });
+    } else {
+      world.entry = change();
+      records.forget(SAFE_INDEX);
+    }
+    // Window 1's stale prompt is approved now.
+    answer({ approve: true, choices: {} });
+    await expect(confirming).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    if (change === 'replace') expect(records.recordFor(SAFE_INDEX)).toMatchObject({ hash: otherHash });
+    else expect(records.recordFor(SAFE_INDEX)).toBeNull();
+    expect(ledgerRequests('safe.sign_owner')).toEqual([]);
+  });
+
   test('confirmed again while a step of the Safe runs: SAFE_BUSY, nothing shown', async () => {
     await setup();
     const { approvals, prompts } = panel();
