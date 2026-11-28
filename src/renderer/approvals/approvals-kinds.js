@@ -901,12 +901,19 @@
     },
   });
 
+  // `safeTx`, on the core's Safe backend (design 0016, SAFE-3): what main
+  // shows of the SafeTx the core built beyond its call, its nonce
+  // (wallet-approvals.js `builtSafeTxView`, the SAFE-3 plan's [U] #15).
   const walletSafeSend = Object.freeze({
-    schema: record({ account: WALLET_ACCOUNT, chain: SEND_CHAIN, tx: TX, transfer: TRANSFER }),
+    schema: record(
+      { account: WALLET_ACCOUNT, chain: SEND_CHAIN, tx: TX, transfer: TRANSFER, safeTx: record({ nonce: NONCE }) },
+      { optional: ['safeTx'] }
+    ),
     heading: () => 'Confirm Transaction',
     approve: () => 'Confirm',
     render(view, ui, body) {
       body.append(ui.note('Your multi-owner account starts a transaction'), ui.own('From', walletAccountText(view.account)));
+      if (view.safeTx) body.append(ui.own('Safe transaction', `#${view.safeTx.nonce}`));
       txLines(ui, body, view);
       body.append(
         ui.own('Network fee', 'Paid by an owner account when it executes'),

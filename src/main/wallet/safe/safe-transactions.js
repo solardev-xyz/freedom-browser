@@ -39,6 +39,15 @@
  * core reports failed (or whose answer is lost) fails the step, with the
  * entry as the core holds it read again; an approval held for a SafeTx that
  * couldn't be saved is ended.
+ *
+ * On the core's Safe backend (FREEDOM_SAFE_BACKEND=core, development
+ * builds only; freedom-core design 0016, SAFE-3) each step is the core's
+ * (`core-sends.js`): the wallet's own send prepared, approved and proposed
+ * there, the board `safe.pending`'s (`getSafeSendState` and
+ * `getAllSafeSendStates` then resolve it), its owners `safe.sign_owner`'s
+ * and its discard `safe.discard`'s. Its execution is SAFE-3's PR 4b, and a
+ * site's send PR 7's: on the core both are refused until then. On js,
+ * everything here is as it was.
  */
 
 const { KINDS: PAYMENT_KINDS } = require('../tx-recorder');
@@ -56,6 +65,7 @@ const {
   DEPLOY_CHAIN_ID,
 } = require('./safe-service');
 const pendingStore = require('./pending-store');
+const { safeBackendKind } = require('./safe-backend-kind');
 const { getPending, setPending, clearPending, listPendingIndexes } = pendingStore;
 const safeApprovals = require('./safe-approvals');
 const {
@@ -75,6 +85,10 @@ const {
   collectFreeSignatures,
   signEntryOwner,
 } = require('./signature-collection');
+
+// Whether the process's Safes run on the core (`core-sends.js`).
+const onCore = () => safeBackendKind() === 'core';
+const core = () => require('./core-sends');
 
 // The signature-collection store over the persisted pending-SafeTx
 // entries (each `set` the core's, awaited); the SafeTx hash is the entry's
@@ -210,6 +224,8 @@ async function chainSafeNonce(safeAddress) {
  *   status: 'awaiting'|'superseded'}|null}
  */
 function getSafeSendState(safeIndex) {
+  // On the core, a promise of the core's board for the Safe.
+  if (onCore()) return core().readState(safeIndex);
   const pending = getPending(safeIndex);
   if (!pending) {
     return null;
@@ -280,6 +296,9 @@ function getSafeSendState(safeIndex) {
  * @returns {Promise<Object>} SafeSendState
  */
 async function startSafeSend({ safeIndex, tx, display, chainId, approval, reservation }) {
+  // On the core, the wallet's own send is proposed (`proposeSafeSend`), and
+  // a site's waits for SAFE-3's PR 7.
+  if (onCore()) throw core().siteSendRefused();
   let held = false;
   try {
     if (!safeApprovals.isApproval(approval)) throw new Error('This transaction was not confirmed');
@@ -365,6 +384,9 @@ function pendingExists() {
  * @returns {{ safeIndex: number, release: () => void }}
  */
 function reserveSafeSend(safeIndex) {
+  // A site's send (page/page-core-sends.js), refused on the core before its
+  // token is spent, until SAFE-3's PR 7.
+  if (onCore()) throw core().siteSendRefused();
   if (getPending(safeIndex)) throw pendingExists();
   return safeApprovals.reserveSend(safeIndex);
 }
@@ -398,6 +420,7 @@ function reserveSafeSend(safeIndex) {
  * @returns {Promise<Object>} SafeSendState
  */
 async function signSafePending(safeIndex, ownerIndex, { safeTxHash = null, approval = null } = {}) {
+  if (onCore()) return core().signOwner(safeIndex, ownerIndex, { safeTxHash, approval });
   let taken = approval === null;
   try {
     await pendingStore.ready;
@@ -434,6 +457,8 @@ async function signSafePending(safeIndex, ownerIndex, { safeTxHash = null, appro
  * is pending.
  */
 function pendingCall(safeIndex, safeTxHash) {
+  // On the core no owner is confirmed again: its proposal authorized them.
+  if (onCore()) return null;
   const pending = getPending(safeIndex);
   if (!pending || pending.safeTxHash !== safeTxHash || !pending.safeTxData) return null;
   const { to, value, data } = pending.safeTxData;
@@ -460,6 +485,7 @@ function pendingCall(safeIndex, safeTxHash) {
  *   `executed: {hash, explorerUrl}` (and the pending entry is cleared)
  */
 async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHash = null } = {}) {
+  if (onCore()) return core().execute(safeIndex, { feeConfirmation, safeTxHash });
   await pendingStore.ready;
   const record = getSafeRecord(safeIndex);
   const pending = pendingNamed(safeIndex, safeTxHash);
@@ -610,6 +636,8 @@ async function finishExecuted(safeIndex, pending) {
  * @returns {Array<Object>} SafeSendStates, oldest first
  */
 function getAllSafeSendStates() {
+  // On the core, a promise of the core's board (`safe.pending`).
+  if (onCore()) return core().readStates();
   return listPendingIndexes()
     .map((safeIndex) => getSafeSendState(safeIndex))
     .filter(Boolean)
@@ -625,6 +653,11 @@ function getAllSafeSendStates() {
  * between the two.
  */
 async function cancelSafeSend(safeIndex, { safeTxHash = null } = {}) {
+  if (onCore()) {
+    const outcome = await core().discard(safeIndex, { safeTxHash });
+    if (outcome) settled(outcome);
+    return;
+  }
   await pendingStore.ready;
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
@@ -648,7 +681,25 @@ async function cancelSafeSend(safeIndex, { safeTxHash = null } = {}) {
   );
 }
 
+/**
+ * The core's Safe backend only (`core-sends.js`): the chrome's confirmation
+ * of its own Safe send, the SafeTx prepared by the core, approved and its
+ * design 0016 `safe-send` minted (`wallet:confirm-signing`); and that
+ * token's SafeTx proposed (`wallet:safe-send`). Refused on js.
+ */
+function confirmSafeSend(options) {
+  if (!onCore()) return Promise.reject(new Error("The wallet's Safe sends don't run on the core"));
+  return core().confirmWalletSend(options);
+}
+
+function proposeSafeSend(options) {
+  if (!onCore()) return Promise.reject(new Error("The wallet's Safe sends don't run on the core"));
+  return core().propose(options);
+}
+
 module.exports = {
+  confirmSafeSend,
+  proposeSafeSend,
   startSafeSend,
   reserveSafeSend,
   pendingCall,

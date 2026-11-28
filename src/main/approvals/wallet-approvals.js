@@ -128,6 +128,18 @@ function transferOf(tx) {
 }
 
 /**
+ * What the wallet's Safe-send approval shows of the SafeTx the core built,
+ * beyond its recipient, amount and data (freedom-core design 0016, SAFE-3,
+ * the core's Safe backend): its nonce, as "Safe transaction #N". This is
+ * the SAFE-3 plan's [U] #15 option (a), built while the user decides; the
+ * one place to change, with `wallet.safe_send`'s template in
+ * approvals-kinds.js, for (b), all ten fields, or (c), today's view.
+ */
+function builtSafeTxView(safeTx) {
+  return { nonce: safeTx.nonce };
+}
+
+/**
  * @param {object} deps
  * @param {(windowId: number, spec: object) => Promise<object>} deps.walletPrompt
  * @param {(contents: object) => number|null} deps.chromeWindowOf
@@ -276,7 +288,7 @@ function createWalletApprovals({
    * Main's view of the request, for its kind's template in the document.
    * Null for an index-bound kind whose account main can't show.
    */
-  async function viewOf(kind, index, payload, { verdict, askAgain, replaced = null }) {
+  async function viewOf(kind, index, payload, { verdict, askAgain, replaced = null, built = false }) {
     const feeCheck = verdict ? { ...verdict } : null;
     let account = null;
     if (INDEX_BOUND.has(kind)) {
@@ -297,6 +309,18 @@ function createWalletApprovals({
         };
       }
       case 'safe-send': {
+        if (built) {
+          // The SafeTx the core built (`{ chainId, safeTx, safeTxHash }`,
+          // safe/core-sends.js), exactly as its token binds it.
+          const tx = txOf(payload.safeTx);
+          return {
+            account,
+            chain: chainOf(payload.chainId),
+            tx,
+            transfer: transferOf(tx),
+            safeTx: builtSafeTxView(payload.safeTx),
+          };
+        }
         const tx = txOf(payload.tx);
         return { account, chain: chainOf(payload.chainId), tx, transfer: transferOf(tx) };
       }
@@ -369,13 +393,15 @@ function createWalletApprovals({
    *
    * @param {object} request `{ sender, kind, index, payload, feeChecked }`,
    *   or `windowId` in place of `sender` for a step main itself runs in a
-   *   window (a Safe board's executor fee, `safe-boards.js`)
+   *   window (a Safe board's executor fee, `safe-boards.js`); `built`: a
+   *   `safe-send` whose payload is the SafeTx the core built, main's own
+   *   (safe/core-sends.js), never a chrome's request
    * @param {(fee: {feeAcknowledged: boolean}) => object} [onApproved] run
    *   on the approval, before it is released, told whether the user
    *   confirmed a fee above the threshold again; what it returns joins the
    *   answer.
    */
-  async function confirm({ sender, windowId: inWindow, kind, index, payload, feeChecked }, onApproved = () => ({})) {
+  async function confirm({ sender, windowId: inWindow, kind, index, payload, feeChecked, built = false }, onApproved = () => ({})) {
     const promptKind = PROMPT_KINDS[kind];
     if (!promptKind) throw new Error(`wallet-approvals: not a wallet kind: ${kind}`);
     let windowId = Number.isInteger(inWindow) ? inWindow : null;
@@ -391,7 +417,7 @@ function createWalletApprovals({
     let askAgain = false;
     const replaced = kind === 'intent-resend' ? replacedSince(payload) : null;
     for (;;) {
-      const view = await viewOf(kind, index, payload, { verdict, askAgain, replaced });
+      const view = await viewOf(kind, index, payload, { verdict, askAgain, replaced, built: built === true && kind === 'safe-send' });
       if (!view) return NO_ACCOUNT;
       let release;
       const released = new Promise((resolve) => {
