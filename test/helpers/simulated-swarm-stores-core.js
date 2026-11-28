@@ -54,6 +54,10 @@
  * `fetchManifest({ for, url })` answers a check's `shell.swarm_manifest`
  * as main's handler would (`{ status, body_base64 }` or `{ failed: true }`;
  * by default `{ failed: true }`, which the check reads as unresolved).
+ * `for` is the check's envelope ID, as the core names it: each request
+ * that passes `requires` takes the next ID (from 1), and its
+ * `onSent(id, generation)` runs with it before the op, `generation` being
+ * `sim.generation` (1), as main's client reports a request written.
  * `fail(method, params)`, when set, runs before each op and fails it by
  * throwing (its error, with `code` `storage` unless it set one, as a
  * protocol error). `calls` records `[method, op, caller]`. `references()`
@@ -177,9 +181,9 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
   // A check's fetch: main's `shell.swarm_manifest` answer as the
   // reference's `discover` reads a response; `{ failed: true }` throws, a
   // transport failure.
-  const manifestFetch = (key) => async (request) => {
+  const manifestFetch = (forId) => async (request) => {
     const answer = sim.fetchManifest
-      ? await sim.fetchManifest({ for: key, url: request.url })
+      ? await sim.fetchManifest({ for: forId, url: request.url })
       : null;
     if (!answer || answer.failed === true) throw new Error('fetch failed');
     const body = Buffer.from(answer.body_base64, 'base64');
@@ -304,11 +308,11 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
       check: [
         { key: S, url: S, eager: [B, false] },
         true,
-        ({ manifests }, m) =>
+        ({ manifests }, m, id) =>
           lock(m.key, () =>
             manifests.checkManifest(
               { origin: m.key, committedUrl: m.url, eager: m.eager },
-              { owner: 'page', fetchManifest: manifestFetch(m.key), fetchContext: {} }
+              { owner: 'page', fetchManifest: manifestFetch(id), fetchContext: {} }
             )
           ),
       ],
@@ -348,6 +352,10 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     if (options.requires && options.requires(hello) !== true) {
       throw new CoreError('requirement_unmet', "The core can't take this request");
     }
+    // Written: the request has its envelope ID.
+    sim.lastId += 1;
+    const id = sim.lastId;
+    options.onSent?.(id, sim.generation);
     if (!sim.moved) {
       throw new CoreError('not_moved', 'main still writes the Swarm stores', {
         store: SWARM_STORES,
@@ -386,13 +394,16 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     }
     let result;
     try {
-      result = await run(references(), members);
+      result = await run(references(), members, id);
     } catch (err) {
       return thrownAnswer(err);
     }
     return { result_typed: writeTyped(result) };
   };
 
+  // The envelope IDs: the generation's number, and the last ID written.
+  sim.generation = 1;
+  sim.lastId = 0;
   sim.stores = createSwarmStores({ request: sim.request });
   sim.references = references;
   sim.restart = () => {

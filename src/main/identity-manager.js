@@ -1644,18 +1644,20 @@ function removalRefusedBeforeCleanup(err) {
  * A Safe's exclusion is main's: taken before the request, refused
  * (SAFE_BUSY) while one of its steps runs or a send has reserved it, and
  * released after. Its half-signed state in main, keyed by wallet index (the
- * in-memory approval slots and SafeMessage session, and main's copy of its
- * pending entry), goes once the record has: a later account that reuses
- * the index must neither inherit nor be blocked by it.
+ * in-memory approval slots, its approval record on the core's Safe backend,
+ * the SafeMessage session, and main's copy of its pending entry), goes once
+ * the record has: a later account that reuses the index must neither
+ * inherit nor be blocked by it.
  *
  * A removal that fails after it may have reached the core's cleanup (a
  * `storage` or `not_moved` answer from a later step, or no answer at all)
  * may have ended the Safe's approvals and cleared its pending SafeTx in the
- * core while the account stays: main drops its own approval slots too, so
- * the Safe's next step asks for a new approval instead of presenting a
- * token the core ended, and reads the pending entry again. A refusal the
- * core answers before any cleanup (`invalid_argument`, carried as its
- * `data.code`) and a request never sent (`requirement_unmet`) leave them.
+ * core while the account stays: main drops its own approval slots and its
+ * approval record too, so the Safe's next step asks for a new approval
+ * instead of presenting a token the core ended, and reads the pending entry
+ * again. A refusal the core answers before any cleanup (`invalid_argument`,
+ * carried as its `data.code`) and a request never sent (`requirement_unmet`)
+ * leave them.
  *
  * @param {number} index - Wallet index (cannot be 0)
  * @param {'chrome'|null} [caller] - the chrome's request, or main's own
@@ -1677,12 +1679,14 @@ async function deleteDerivedWallet(index, caller = null) {
     } catch (err) {
       if (isSafe && !removalRefusedBeforeCleanup(err)) {
         safeApprovals.forgetSafe(index);
+        require('./wallet/safe/approval-records').forget(index);
         await require('./wallet/safe/pending-store').refreshPending(index);
       }
       throw err;
     }
     if (isSafe) {
       safeApprovals.forgetSafe(index);
+      require('./wallet/safe/approval-records').forget(index);
       require('./wallet/safe/message-sessions').discardSession(index);
       require('./wallet/safe/pending-store').forgetPending(index);
     }

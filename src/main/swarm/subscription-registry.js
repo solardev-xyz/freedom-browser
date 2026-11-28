@@ -50,8 +50,8 @@
  * test to the first check, before the caller's waits (`shell.swarm_ready`'s
  * `subscribe`, the JS provider's before its probe). `onRefused` hears each
  * refused open and each subscription a refusal ended, with the site's key
- * and whether Tor or a proxy is in the way (`via`), for the notice the
- * user is shown (SWM-7's PR 7.5).
+ * and whether Tor or a proxy is in the way (`via`; for an onion node,
+ * possibly neither), for the notice the user is shown (SWM-7's PR 7.5).
  */
 
 const crypto = require('crypto');
@@ -122,9 +122,14 @@ function proxyOrTorError(refusal) {
  * via }`: `via` is `tor` when what is in the way is Arti's endpoint, and
  * `proxy` for any other proxy. Freedom's Tor carries only `.onion` names
  * (tor-proxy.js), so Tor being on doesn't put a node at a normal address
- * behind it. An onion node is always refused (`tor`): only Tor reaches it,
- * and Node's socket would hand its name to the system resolver. A proxy
- * that can't be resolved is refused (`proxy`): fail closed. No node is
+ * behind it. An onion node is always refused, before any route is asked:
+ * only Tor reaches it, Node's socket would hand its name to the system
+ * resolver, and so could resolving its route (a PAC's `dnsResolve`, WPAD;
+ * Codex round 2 on #1382), so its name goes nowhere. Its `via` comes from
+ * main's own Tor state instead, for what the user is told
+ * (subscription-route-notices.js): `tor` while Arti runs (the socket would
+ * go around it), `onion` otherwise (Tor off: nothing here can carry it). A
+ * proxy that can't be resolved is refused (`proxy`): fail closed. No node is
  * none of this test's business (null): the open fails on its own.
  *
  * @param {string|null} nodeUrl - the node's API URL
@@ -133,12 +138,18 @@ function proxyOrTorError(refusal) {
  *   session's `resolveProxy`: `DIRECT`, or Chromium's proxy list
  * @param {() => (string|null)} [deps.torEndpoint] - Arti's SOCKS endpoint
  *   (`host:port`) while Tor runs, else null
- * @returns {Promise<null|{reason: string, via: 'tor'|'proxy'}>}
+ * @returns {Promise<null|{reason: string, via: 'tor'|'proxy'|'onion'}>}
  */
 async function routeRefusal(nodeUrl, { resolveProxy, torEndpoint = () => null }) {
   if (typeof nodeUrl !== 'string' || nodeUrl === '') return null;
   if (isLoopbackGatewayUrl(nodeUrl)) return null;
-  if (isOnionGatewayUrl(nodeUrl)) return { reason: PROXY_OR_TOR, via: 'tor' };
+  let arti;
+  try {
+    arti = torEndpoint()?.toLowerCase() ?? null;
+  } catch {
+    arti = null;
+  }
+  if (isOnionGatewayUrl(nodeUrl)) return { reason: PROXY_OR_TOR, via: arti ? 'tor' : 'onion' };
   let proxies;
   try {
     proxies = String(await resolveProxy(nodeUrl)).trim();
@@ -149,12 +160,6 @@ async function routeRefusal(nodeUrl, { resolveProxy, torEndpoint = () => null })
   // Chromium's list (`SOCKS5 127.0.0.1:19150; DIRECT`): its first entry is
   // what the session dials.
   const first = proxies.split(';')[0].trim().split(/\s+/)[1]?.toLowerCase() ?? '';
-  let arti;
-  try {
-    arti = torEndpoint()?.toLowerCase() ?? null;
-  } catch {
-    arti = null;
-  }
   return { reason: PROXY_OR_TOR, via: arti && first === arti ? 'tor' : 'proxy' };
 }
 

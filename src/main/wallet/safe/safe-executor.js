@@ -361,9 +361,11 @@ async function buildSafeTransaction({ chainId, safe, tx, provider }) {
  * recorded for; the core signs no SafeTx or SafeMessage without it. So does
  * a Ledger owner's on the core's Ledger backend (design 0016, "Approvals:
  * enforced"; the LDG-3 plan's point 11): its SafeTx goes as
- * `sign.typed_data` with the Ledger key, signed on the core's device lane,
- * never as `safe.sign_owner` before SAFE-3 (main's relay opens no such
- * parent). Any other device owner signs as before.
+ * `sign.typed_data` with the Ledger key, signed on the core's device lane.
+ * That is this JS Safe path's alone: on the core's Safe backend a Ledger
+ * owner signs through `safe.sign_owner` (SAFE-3's PR 8,
+ * ledger-owners.js), and signers.js refuses a Safe approval for a Ledger
+ * there. Any other device owner signs as before.
  *
  * @param {Object} params
  * @param {Object} params.typedData - From buildSafeTransaction

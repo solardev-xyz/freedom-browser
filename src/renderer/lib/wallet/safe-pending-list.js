@@ -5,6 +5,11 @@
  * signatures across ALL Safe accounts (hidden when none); it opens an
  * overview subscreen listing them, and each entry opens that
  * transaction's signing board.
+ *
+ * On the core's Safe backend (SAFE-3's PR 9) an entry says when it was
+ * started in an older version of Freedom (`older`), or its account was
+ * changed outside Freedom (`setupChanged`): its board offers less
+ * (safe-signing.js).
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
@@ -81,7 +86,7 @@ function renderList(states) {
         <span class="connect-ledger-account-path">
           ${escapeHtml(walletRecord(state.safeIndex)?.name || 'Safe account')} ·
           ${state.collected} of ${state.threshold} signatures ·
-          started ${escapeHtml(timeAgo(new Date(state.createdAt)).toLowerCase())}
+          started ${escapeHtml(timeAgo(new Date(state.createdAt)).toLowerCase())}${escapeHtml(standingNote(state))}
         </span>
       </div>
       <span class="safe-pending-item-chevron">›</span>
@@ -92,6 +97,17 @@ function renderList(states) {
     });
     listEl.appendChild(item);
   }
+}
+
+/**
+ * What an entry's row adds when its board offers less (the core's Safe
+ * backend): its account changed outside Freedom, or it was started in an
+ * older version. Nothing on js.
+ */
+export function standingNote(state) {
+  if (Array.isArray(state?.setupChanged)) return ' · account changed outside Freedom';
+  if (state?.older === true) return ' · from an older version of Freedom';
+  return '';
 }
 
 function capitalize(text) {

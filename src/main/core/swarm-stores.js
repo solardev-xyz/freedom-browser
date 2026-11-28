@@ -269,23 +269,25 @@ function coreRequest(method, params, context, options) {
  * client's `request` (the running core's by default).
  *
  * Each of `identities`, `history` and `manifest` is `(op, members = {},
- * { caller = 'shell', signal = null } = {})`: `members` the op's own as
- * JavaScript values, `caller` `'chrome'` for a chrome's request main
- * relays. It resolves with the op's result, or rejects with what the op
- * threw or the protocol's error (above).
+ * { caller = 'shell', signal = null, onSent = null } = {})`: `members` the
+ * op's own as JavaScript values, `caller` `'chrome'` for a chrome's request
+ * main relays, `onSent(id, generation)` the client's, once the request is
+ * written (a check's: the ID its `shell.swarm_manifest` names as `for`). It
+ * resolves with the op's result, or rejects with what the op threw or the
+ * protocol's error (above).
  *
  * @param {{ request?: Function }} [deps]
  */
 function createSwarmStores({ request = coreRequest } = {}) {
   const call =
     (method) =>
-    async (name, members = {}, { caller = 'shell', signal = null } = {}) => {
+    async (name, members = {}, { caller = 'shell', signal = null, onSent = null } = {}) => {
       const params = storeParams(method, name, members, caller);
       const answer = await request(
         method,
         params,
         { caller },
-        { watchdogMs: storeWatchdogMs(method, name), requires: REQUIRES, signal }
+        { watchdogMs: storeWatchdogMs(method, name), requires: REQUIRES, signal, onSent }
       );
       return readStoreAnswer(method, answer);
     };

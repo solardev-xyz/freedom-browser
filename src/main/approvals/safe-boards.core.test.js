@@ -202,3 +202,131 @@ describe("getSafeBoards' send steps on the core", () => {
     expect(mockPrompts.shown[1].view.notes).toEqual([{ owner: 1, note: 'failed', message: 'confirm again' }]);
   });
 });
+
+// SAFE-3's PR 9 (the plan's point 14, option (a)): an entry from an older
+// version, which no owner signs, and a Safe changed outside Freedom, in the
+// approvals document. Each view fits the panel's template.
+describe('an older entry, and a changed Safe, in the approvals document (PR 9)', () => {
+  const kinds = require('../../renderer/approvals/approvals-kinds.js');
+  const { PLAIN_TEXTS } = jest.requireActual('../wallet/safe/errors');
+  const fits = (prompt) =>
+    kinds.checkMessage({
+      handle: 'c'.repeat(64),
+      revision: 1,
+      guest: null,
+      kind: prompt.kind,
+      site: { key: 'freedom:wallet', label: 'Your wallet' },
+      view: prompt.view,
+    }).valid;
+  const EXECUTED = { hash: '0x' + 'ee'.repeat(32), explorerUrl: 'https://explorer.test/tx/ee' };
+  const DISCARD = { approve: true, choices: { action: 'discard' } };
+
+  beforeEach(() => {
+    transactions.getSafeSendState.mockImplementation(async () => mockBoard.state);
+    transactions.cancelSafeSend.mockResolvedValue(undefined);
+  });
+
+  test('below its threshold: no sweep; the board says it was started in an older version and offers only its discard', async () => {
+    mockBoard.state = { ...state(1), older: true };
+    mockPrompts.decisions.push(DISCARD, DISCARD);
+    expect(await getSafeBoards().openWalletBoard(3, 5)).toEqual({ outcome: 'discarded', safeTxHash: HASH });
+    expect(transactions.signSafePending).not.toHaveBeenCalled();
+    expect(transactions.executeSafePending).not.toHaveBeenCalled();
+    const [older, asked] = mockPrompts.shown;
+    expect(older.view.step).toBe('older');
+    expect(fits(older)).toBe(true);
+    expect(older.choices({ action: 'send' })).toBeNull();
+    expect(older.choices({ action: 'sign', owner: 1 })).toBeNull();
+    expect(older.choices({ action: 'retry' })).toBeNull();
+    expect(older.choices({ action: 'discard' })).toEqual({ action: 'discard' });
+    // The discard asked again, then done, naming the board's SafeTx.
+    expect(asked.view.step).toBe('discard');
+    expect(transactions.cancelSafeSend.mock.calls).toEqual([[5, { safeTxHash: HASH }]]);
+  });
+
+  test("at its threshold: not executed by itself; its Send executes it through the core's execution", async () => {
+    mockBoard.state = { ...state(2), older: true };
+    const shownWhenExecuted = [];
+    transactions.executeSafePending.mockImplementation(async () => {
+      shownWhenExecuted.push(mockPrompts.shown.length);
+      return { ...state(2), status: 'executed', executed: EXECUTED };
+    });
+    mockPrompts.decisions.push({ approve: true, choices: { action: 'send' } });
+    expect(await getSafeBoards().openWalletBoard(3, 5)).toEqual({
+      outcome: 'executed',
+      safeTxHash: HASH,
+      display: state(2).display,
+      executed: EXECUTED,
+    });
+    const [older] = mockPrompts.shown;
+    expect(older.view.step).toBe('older');
+    expect(fits(older)).toBe(true);
+    expect(older.choices({ action: 'send' })).toEqual({ action: 'send' });
+    expect(older.choices({ action: 'discard' })).toEqual({ action: 'discard' });
+    // Executed only after the board showed it and the user chose Send.
+    expect(shownWhenExecuted).toEqual([1]);
+    expect(transactions.executeSafePending.mock.calls).toEqual([[5, { safeTxHash: HASH }]]);
+    expect(transactions.signSafePending).not.toHaveBeenCalled();
+  });
+
+  test('its execution failing: "Try again" executes again, its discard still offered', async () => {
+    mockBoard.state = { ...state(2), older: true };
+    transactions.executeSafePending
+      .mockRejectedValueOnce(Object.assign(new Error(PLAIN_TEXTS.SAFE_NONCE_BEHIND), { code: 'SAFE_NONCE_BEHIND' }))
+      .mockImplementation(async () => ({ ...state(2), status: 'executed', executed: EXECUTED }));
+    mockPrompts.decisions.push({ approve: true, choices: { action: 'send' } }, { approve: true, choices: { action: 'retry' } });
+    expect(await getSafeBoards().openWalletBoard(3, 5)).toMatchObject({ outcome: 'executed' });
+    const retry = mockPrompts.shown[1];
+    expect(retry.view).toMatchObject({ step: 'retry', error: { code: 'failed', message: PLAIN_TEXTS.SAFE_NONCE_BEHIND } });
+    expect(fits(retry)).toBe(true);
+    expect(retry.choices({ action: 'discard' })).toEqual({ action: 'discard' });
+    expect(transactions.executeSafePending).toHaveBeenCalledTimes(2);
+  });
+
+  test('a changed Safe: only its discard, nothing signed or executed, what changed named', async () => {
+    // At its threshold, and from an older version too: the change decides.
+    mockBoard.state = { ...state(2), older: true, setupChanged: ['owners', 'threshold'] };
+    mockPrompts.decisions.push(DISCARD, DISCARD);
+    expect(await getSafeBoards().openWalletBoard(3, 5)).toEqual({ outcome: 'discarded', safeTxHash: HASH });
+    expect(transactions.signSafePending).not.toHaveBeenCalled();
+    expect(transactions.executeSafePending).not.toHaveBeenCalled();
+    const [changed] = mockPrompts.shown;
+    expect(changed.view).toMatchObject({ step: 'changed', changed: ['owners', 'threshold'] });
+    expect(fits(changed)).toBe(true);
+    for (const choice of [{ action: 'send' }, { action: 'retry' }, { action: 'sign', owner: 1 }]) {
+      expect(changed.choices(choice)).toBeNull();
+    }
+    expect(changed.choices({ action: 'discard' })).toEqual({ action: 'discard' });
+  });
+
+  test("an owner the core refuses changed: the row says so in the wallet's words, then the board offers only the discard", async () => {
+    mockBoard.state = state(0);
+    transactions.signSafePending.mockImplementation(async (_i, ownerIndex) => {
+      if (ownerIndex === undefined) return mockBoard.state;
+      mockBoard.state = { ...state(0), setupChanged: [] };
+      throw Object.assign(new Error(PLAIN_TEXTS.SAFE_CHANGED), { code: 'SAFE_CHANGED' });
+    });
+    mockPrompts.decisions.push({ approve: true, choices: { action: 'sign', owner: 1 } });
+    expect(await getSafeBoards().openWalletBoard(3, 5)).toEqual({ outcome: 'parked' });
+    const after = mockPrompts.shown[1];
+    expect(after.view).toMatchObject({ step: 'changed', changed: [] });
+    expect(after.view.notes).toEqual([{ owner: 1, note: 'failed', message: PLAIN_TEXTS.SAFE_CHANGED }]);
+    expect(fits(after)).toBe(true);
+  });
+
+  test.each(['SAFE_UNVERIFIED', 'SAFE_NONCE_BEHIND', 'SAFE_STORE_FULL'])(
+    "an owner the core refuses (%s): the row's note in the wallet's words",
+    async (code) => {
+      mockBoard.state = state(0);
+      transactions.signSafePending.mockImplementation(async (_i, ownerIndex) => {
+        if (ownerIndex === undefined) return mockBoard.state;
+        throw Object.assign(new Error(PLAIN_TEXTS[code]), { code });
+      });
+      mockPrompts.decisions.push({ approve: true, choices: { action: 'sign', owner: 1 } });
+      expect(await getSafeBoards().openWalletBoard(3, 5)).toEqual({ outcome: 'parked' });
+      const after = mockPrompts.shown[1];
+      expect(after.view).toMatchObject({ step: 'collect', notes: [{ owner: 1, note: 'failed', message: PLAIN_TEXTS[code] }] });
+      expect(fits(after)).toBe(true);
+    }
+  );
+});

@@ -250,7 +250,12 @@ describe('swarm-provider-ipc', () => {
   // chrome's route, which took a site from it, is gone.
   test('registers no chrome route, and main\'s dispatcher serves every method it knows', () => {
     expect(ipcHandlers['swarm:provider-execute']).toBeUndefined();
-    expect(Object.keys(ipcHandlers).filter((channel) => channel.startsWith('swarm:'))).toEqual([]);
+    // The one swarm: handler is question 4's line for the Nodes panel and
+    // Settings (subscription-route-notices.js, SWM-7's PR 7.5): a read of
+    // the node's route, not a route for a page's method.
+    expect(Object.keys(ipcHandlers).filter((channel) => channel.startsWith('swarm:'))).toEqual([
+      'swarm:messages-route-get',
+    ]);
     expect([...SWARM_PAGE_METHODS].sort()).toEqual([
       'swarm_createFeed',
       'swarm_getCapabilities',

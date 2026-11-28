@@ -420,6 +420,8 @@ function defaultDependencies() {
   const storeIsCore = () => require('../core/core-client').swarmStoresNamed();
   return {
     identityWalletEnabled: () => require('../settings-store').loadSettings()?.enableIdentityWallet === true,
+    // The JS backend's, with exactly its four arguments, until SWM-7's flip
+    // (PR 7.4) selects page-swarm-core.js's on the core's backend.
     execute: (method, params, key, meta) => provider().executeSwarmMethod(method, params, key, meta),
     // The grants the identity core writes (design 0012, APB-3), read as main
     // last read them; each write under `page` with the requester's
@@ -515,6 +517,17 @@ function createSwarmDispatchers(deps = {}) {
     grantFeedAccess,
     routeToSetup,
   } = { ...defaultDependencies(), ...deps };
+
+  /**
+   * The backend's call. The JS backend's `executeSwarmMethod` takes the
+   * first four (`method`, `params`, the key and `meta`) and nothing else, as
+   * it always has; the core's (page-swarm-core.js, SWM-7) also takes the
+   * request, `{ context, approval }`: the page request's PageContext,
+   * signal and answer, and how main approved it, `auto` for the site's
+   * rule, `user` for main's prompt, and null for a method without approval.
+   */
+  const executeFor = (context, approval, method, params, key, meta) =>
+    execute(method, params, key, meta, { context, approval });
 
   // document key -> { eager, promise }: the manifest check, once per document.
   const manifestChecks = new Map();
@@ -659,7 +672,7 @@ function createSwarmDispatchers(deps = {}) {
   // Permission-free: the document's key as it stands, resolving nothing.
   async function permissionFree(context) {
     const { requester, method, params } = context;
-    return execute(method, params, requester.key || KEYLESS_BUCKET);
+    return executeFor(context, null, method, params, requester.key || KEYLESS_BUCKET);
   }
 
   // Name-revalidated: before the key's first use, in the same run as it,
@@ -672,7 +685,7 @@ function createSwarmDispatchers(deps = {}) {
     // From here to the method's first use of the key, one run: no other
     // check can end the binding in between.
     if (!context.holdsKey()) return error(NO_ADDRESS);
-    const out = await execute(method, params, requester.key);
+    const out = await executeFor(context, null, method, params, requester.key);
     if (!NO_WAIT.has(method) && !(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     return out;
   }
@@ -709,7 +722,7 @@ function createSwarmDispatchers(deps = {}) {
       }
       if (!written) return error(NO_ADDRESS);
     }
-    const out = await execute('swarm_requestAccess', {}, key);
+    const out = await executeFor(context, null, 'swarm_requestAccess', {}, key);
     if (!out.error && !connectedBefore) context.afterAnswer(() => announce(context, 'connect'));
     return out;
   }
@@ -822,7 +835,7 @@ function createSwarmDispatchers(deps = {}) {
       armDocument(context);
       page.deliverTo = (data) => context.sendEvent(requester, 'message', data);
     }
-    const out = await execute(method, params, key, { page });
+    const out = await executeFor(context, isSend ? (ruled ? 'auto' : 'user') : null, method, params, key, { page });
     routeSetupFailure(context, out);
     if (out.error || isSend) return out;
     // After the method's wait: what reveals or binds the key goes out only
@@ -884,7 +897,7 @@ function createSwarmDispatchers(deps = {}) {
     } catch {
       // The request stands; the timestamp didn't change.
     }
-    const out = await execute(method, params, key, {
+    const out = await executeFor(context, ruled ? 'auto' : 'user', method, params, key, {
       page: {
         document: documentKeyOf(requester),
         effect: (run) => guardEffect(context, nameCheck, ruled ? 'publish' : null, run),
@@ -921,7 +934,7 @@ function createSwarmDispatchers(deps = {}) {
     }
     // From here to the read of the tag's owner, one run.
     if (!context.holdsKey()) return error(NO_ADDRESS);
-    const out = await execute(method, params, key);
+    const out = await executeFor(context, null, method, params, key);
     if (!(await context.nameHolds(keyless)) || !context.holdsKey()) return error(NO_ADDRESS);
     return out;
   }
@@ -1036,7 +1049,7 @@ function createSwarmDispatchers(deps = {}) {
     } catch {
       // The request stands; the timestamp didn't change.
     }
-    const out = await execute(method, params, key, {
+    const out = await executeFor(context, ruled ? 'auto' : 'user', method, params, key, {
       page: {
         document: documentKeyOf(requester),
         effect: (run) => guardEffect(context, nameCheck, ruled ? rule : null, run),
@@ -1058,7 +1071,7 @@ function createSwarmDispatchers(deps = {}) {
   // with no resolution, keyless or not.
   async function unsubscribe(context) {
     const { requester, params } = context;
-    return execute('swarm_unsubscribe', params, requester.key || KEYLESS_BUCKET, {
+    return executeFor(context, null, 'swarm_unsubscribe', params, requester.key || KEYLESS_BUCKET, {
       page: { document: documentKeyOf(requester) },
     });
   }

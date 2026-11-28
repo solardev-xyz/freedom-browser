@@ -252,6 +252,12 @@ describe('sending', () => {
     }
     expect(sent[0].options.signal).toBeNull();
     expect(sent[1].options.signal).toBe(controller.signal);
+    // `onSent` is the client's: a check's envelope ID is what the core's
+    // `shell.swarm_manifest` names as `for`.
+    const onSent = () => {};
+    await stores.manifest('check', { key: 'k', url: 'bzz://a/' }, { onSent });
+    expect(sent.at(-1).options.onSent).toBe(onSent);
+    expect(sent[0].options.onSent).toBeNull();
   });
 
   test("the module's calls go to the running core's client, and fail core_unavailable without one", async () => {
@@ -625,7 +631,8 @@ describe('the simulated core, on the reference modules', () => {
     expect(await sim.stores.manifest('check', { key, url })).toEqual({ kind: 'legacy' });
     expect(asked).toEqual([]);
     const consent = await sim.stores.manifest('check', { key, url, eager: true });
-    expect(asked).toEqual([{ for: key, url: `${key}/freedom-manifest.json` }]);
+    // `for` names the check's envelope ID: the requests before it took 1.
+    expect(asked).toEqual([{ for: 2, url: `${key}/freedom-manifest.json` }]);
     expect(consent).toMatchObject({ kind: 'consent', token: expect.any(String) });
     expect(consent.model).toMatchObject({ origin: key, name: 'Freedom Notes' });
     const refused = await sim.stores.manifest('decide', {

@@ -989,6 +989,27 @@ contextBridge.exposeInMainWorld('remoteSigner', {
   checkAccount: (index) => ipcRenderer.invoke('wallet:check-remote-wallet', index),
 });
 
+// Question 4 (freedom-core design 0015, Messaging): live messages to the
+// Swarm node in use are off while the session reaches it through a proxy or
+// Tor. Main words all of it (src/main/swarm/subscription-route-notices.js):
+// the Nodes panel's line while it applies ({ panel, settings }, each a
+// string or null; read, and pushed when it changes), and a notice when a
+// site's live messages are refused or ended, once per site per session
+// ({ site, text }).
+contextBridge.exposeInMainWorld('swarmMessages', {
+  getRoute: () => ipcRenderer.invoke('swarm:messages-route-get'),
+  onRoute: (callback) => {
+    const handler = (_event, value) => callback(value);
+    ipcRenderer.on('swarm:messages-route', handler);
+    return () => ipcRenderer.removeListener('swarm:messages-route', handler);
+  },
+  onNotice: (callback) => {
+    const handler = (_event, value) => callback(value);
+    ipcRenderer.on('swarm:messages-notice', handler);
+    return () => ipcRenderer.removeListener('swarm:messages-notice', handler);
+  },
+});
+
 contextBridge.exposeInMainWorld('swarmNode', {
   getStamps: () => ipcRenderer.invoke('swarm:get-stamps'),
   publishData: (data) => ipcRenderer.invoke('swarm:publish-data', data),

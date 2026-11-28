@@ -42,8 +42,18 @@
  * is the script's. `kill()` keeps the signal (a watchdog's SIGKILL) and
  * exits.
  *
+ * **A Ledger owner** (SAFE-3's PR 8): the core asks main for each APDU of
+ * a Ledger owner's `safe.sign_owner` or `safe.message_sign` as cored does,
+ * `shell.ledger_apdu { for, apdu, deadline_ms }` (`apdu(forId, apdu,
+ * deadlineMs)`, its ID), and reads main's reply as cored 0.30.0's lane does
+ * (fake-ledger-core.js `readLedgerReply`: a reply it wouldn't take is kept
+ * in `faults`); `reply(id)` is the reply read, `raw(id)` main's response,
+ * and `cancelAsk(id)` the core's cancel of its own ask.
+ *
  * `startSafeCore()` runs a real CoreClient against it, each process a new
- * FakeSafeCore with the same options.
+ * FakeSafeCore with the same options; with `relay` (the relay's deps), main's
+ * Ledger relay is registered on the client (core/ledger-relay.js, on the
+ * core's Ledger backend), as core-process.js registers it.
  */
 
 const { EventEmitter } = require('events');
@@ -51,6 +61,8 @@ const os = require('os');
 const { PassThrough, Writable } = require('stream');
 const { getAddress } = require('ethers');
 const { CoreClient } = require('../../src/main/core/core-client');
+const { registerLedgerRelay } = require('../../src/main/core/ledger-relay');
+const { ASKED, ReplyFault, readLedgerReply } = require('./fake-ledger-core');
 const {
   encodeFrame,
   CORE_KINDS,
@@ -408,6 +420,12 @@ class FakeSafeCore extends EventEmitter {
     this.refused = [];
     this.cancels = [];
     this.killed = null;
+    // Its own asks of main (`shell.ledger_apdu`), by ID: { params, asked,
+    // cancelled, reply, read }; and the parents whose first E0 1A has gone.
+    this.asks = new Map();
+    this.nextAsk = 1;
+    this.defined = new Set();
+    this.faults = [];
     this.decoder = new FrameDecoder({ kinds: CORE_KINDS });
     this.stdin = new Writable({
       write: (chunk, _encoding, callback) => {
@@ -424,6 +442,10 @@ class FakeSafeCore extends EventEmitter {
   }
 
   onMessage(message) {
+    if (message?.type === 'response' && this.asks.has(message.id)) {
+      this.readReply(message);
+      return;
+    }
     if (message?.type === 'cancel') {
       this.cancels.push(message.id);
       return;
@@ -470,6 +492,68 @@ class FakeSafeCore extends EventEmitter {
     this.stdout.write(encodeFrame({ type: 'response', id, result }));
   }
 
+  /** Main's reply to one of its asks, read as the lane reads it. */
+  readReply(message) {
+    const ask = this.asks.get(message.id);
+    if (ask.reply) {
+      this.faults.push({ id: message.id, category: 'ledger_reply_twice' });
+      return;
+    }
+    ask.reply = message;
+    try {
+      ask.read = readLedgerReply(message, ask.asked);
+      if (ask.read.cancelled && !ask.cancelled) {
+        this.faults.push({ id: message.id, category: 'ledger_uncancelled' });
+      }
+    } catch (err) {
+      if (!(err instanceof ReplyFault)) throw err;
+      this.faults.push({ id: message.id, category: err.category });
+    }
+    this.emit('reply', message.id);
+  }
+
+  /** `shell.ledger_apdu { for, apdu, deadline_ms }` for main's request `forId`: its ID. */
+  apdu(forId, apdu, deadlineMs = 15_000) {
+    const hex = Buffer.isBuffer(apdu) ? apdu.toString('hex') : apdu;
+    const definition = hex.slice(0, 4) === 'e01a';
+    const first = definition && !this.defined.has(forId);
+    if (definition) this.defined.add(forId);
+    const id = this.nextAsk++;
+    this.asks.set(id, {
+      params: { for: forId, apdu: hex, deadline_ms: deadlineMs },
+      asked: first ? ASKED.FIRST_DEFINITION : ASKED.OTHER,
+      cancelled: false,
+      reply: null,
+      read: null,
+    });
+    this.stdout.write(
+      encodeFrame({
+        type: 'request',
+        id,
+        method: 'shell.ledger_apdu',
+        params: { for: forId, apdu: hex, deadline_ms: deadlineMs },
+      })
+    );
+    return id;
+  }
+
+  /** Main's reply to the core's ask `id` as the lane read it, once it has come. */
+  reply(id) {
+    return this.asks.get(id)?.read ?? null;
+  }
+
+  /** Main's raw response to the core's ask `id`. */
+  raw(id) {
+    return this.asks.get(id)?.reply ?? null;
+  }
+
+  /** The core's cancel of its own ask `id`. */
+  cancelAsk(id) {
+    const ask = this.asks.get(id);
+    if (ask) ask.cancelled = true;
+    this.stdout.write(encodeFrame({ type: 'cancel', id }));
+  }
+
   fail(id, error) {
     this.stdout.write(encodeFrame({ type: 'response', id, error }));
   }
@@ -503,7 +587,7 @@ class FakeSafeCore extends EventEmitter {
  * started: `{ client, cores }`, `cores` every process it spawned, in
  * order. `log` is the client's.
  */
-async function startSafeCore({ log, ...options } = {}) {
+async function startSafeCore({ log, relay: relayDeps = null, ...options } = {}) {
   const cores = [];
   const client = new CoreClient({
     spawn: () => {
@@ -516,8 +600,11 @@ async function startSafeCore({ log, ...options } = {}) {
     log,
     grantRoot: os.tmpdir(),
   });
+  const relay = relayDeps
+    ? registerLedgerRelay(client, { backendKind: () => 'core', ...relayDeps })
+    : null;
   await client.start();
-  return { client, cores };
+  return { client, cores, relay };
 }
 
 module.exports = {

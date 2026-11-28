@@ -1847,6 +1847,45 @@ describe('identity-manager safe accounts', () => {
     ]);
   });
 
+  // SAFE-3's PR 6: the core backend's approval record of a Safe's SafeTx (in
+  // memory, by wallet index) goes with the Safe, and with a removal that
+  // failed after the core's cleanup, as its approval slots do.
+  test("a Safe's approval record goes with its deletion, and with a removal that failed after the core's cleanup", async () => {
+    await seedOwners();
+    const safe = await addSafe();
+    const records = require('./wallet/safe/approval-records');
+    const zero = '0x0000000000000000000000000000000000000000';
+    const safeTx = {
+      to: LEDGER_ADDRESS,
+      value: '1',
+      data: '0x',
+      operation: 0,
+      safeTxGas: '0',
+      baseGas: '0',
+      gasPrice: '0',
+      gasToken: zero,
+      refundReceiver: zero,
+      nonce: 0,
+    };
+    const safeTxHash = records.safeTxHashOf(safe.address, 100, safeTx);
+    const approve = () => records.record(safe.index, { address: safe.address, chainId: 100, safeTx, safeTxHash });
+    const { vaultBackend } = require('./core/vault-backend');
+
+    approve();
+    vaultBackend.sim.forget = () => {
+      throw Object.assign(new Error('Storage error'), { code: 'storage' });
+    };
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+      code: 'storage',
+    });
+    expect(records.recordFor(safe.index)).toBeNull();
+
+    approve();
+    vaultBackend.sim.forget = null;
+    await identityManager.deleteDerivedWallet(safe.index);
+    expect(records.recordFor(safe.index)).toBeNull();
+  });
+
   // Design 0013, "`accounts.remove`" (G12): the core ends a Safe's open
   // approvals, clears its pending entry (PRF-6(d)) and removes its record in
   // one request; main then drops its own slots, its copy of the pending

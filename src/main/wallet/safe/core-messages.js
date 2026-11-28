@@ -28,10 +28,11 @@
  *   core's ID, to `safe.message_sign`, `.message_state`, `.message_cancel`
  *   or `.message_complete`, as main's own (`shell`).
  * - **Owners:** `safe.message_sign` without an owner is the vault owners'
- *   sweep, with one that owner. A Ledger owner is refused here, unsent,
- *   until SAFE-3's PR 8 (main's binding of the SafeMessage): no device is
- *   asked for a Safe owner before then. A phone owner is the core's own
- *   refusal.
+ *   sweep, with one that owner. A Ledger owner (SAFE-3's PR 8,
+ *   ledger-owners.js) signs on the core's Ledger backend only, bound to
+ *   main's own SafeMessage for the page's request, which main keeps with
+ *   the session (in memory, as the session); on the JS Ledger backend it
+ *   is refused, unsent. A phone owner is the core's own refusal.
  * - **One session per Safe, main's** (the core's rule): while one is open
  *   for a live page, another start is SAFE_MESSAGE_EXISTS, unsent. One
  *   whose page has gone is cancelled first, as today's dead leftover is
@@ -51,6 +52,7 @@
 
 const { randomUUID } = require('crypto');
 const { codedError, SAFE_BUSY, SAFE_DISCARDED, SAFE_MESSAGE_EXISTS, SAFE_UNSUPPORTED } = require('./errors');
+const ledgerOwners = require('./ledger-owners');
 const safeApprovals = require('./safe-approvals');
 const {
   getSession,
@@ -243,6 +245,9 @@ async function start({ safeIndex, request, display, requester, authorization, pa
       session,
       safeIndex,
       hash: typeof answer.state?.hash === 'string' && HASH.test(answer.state.hash) ? answer.state.hash : null,
+      // The page's request as sent: a Ledger owner's SafeMessage is main's
+      // own of it (ledger-owners.js `signMessage`).
+      request: { method: request?.method, params: request?.params },
       requester: requester
         ? { origin: requester.origin ?? null, webContentsId: requester.webContentsId ?? null }
         : null,
@@ -269,15 +274,12 @@ async function start({ safeIndex, request, display, requester, authorization, pa
   }
 }
 
-function isLedgerOwner(ownerIndex) {
-  const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
-  return getWalletRecord(ownerIndex)?.type === WALLET_TYPES.LEDGER;
-}
-
 /**
  * One owner's signature (`ownerIndex`), or the vault owners' sweep (none),
  * through `safe.message_sign`, for the caller holding main's `token`.
- * Resolves the session's state.
+ * Resolves the session's state. A Ledger owner signs under main's binding
+ * of the page's request (ledger-owners.js `signMessage`), on the core's
+ * Ledger backend only.
  */
 async function sign(safeIndex, ownerIndex, token) {
   const entry = requireSession(safeIndex, token);
@@ -285,15 +287,18 @@ async function sign(safeIndex, ownerIndex, token) {
   if (owner !== undefined && (!Number.isSafeInteger(owner) || owner < 0)) {
     throw new Error('That account is not an owner of this Safe');
   }
-  if (owner !== undefined && isLedgerOwner(owner)) {
-    // SAFE-3's PR 8: a Ledger owner signs on the core only under main's
-    // binding of the SafeMessage.
-    throw codedError("A Ledger can't sign for a multi-owner account here yet", SAFE_UNSUPPORTED);
+  const ledger = owner !== undefined && ledgerOwners.isLedgerOwner(owner);
+  if (ledger && require('../ledger/ledger-backend-kind').ledgerBackendKind() !== 'core') {
+    // The SAFE-3 plan's point 4: a Ledger the JS backend drives signs for
+    // no Safe on the core.
+    throw codedError(ledgerOwners.UNAVAILABLE, SAFE_UNSUPPORTED);
   }
   safeApprovals.beginStep(safeIndex);
   let answer;
   try {
-    answer = await vault().safe.messageSign({ safe: safeIndex, session: entry.session, owner });
+    answer = ledger
+      ? await ledgerOwners.signMessage(safeIndex, owner, entry)
+      : await vault().safe.messageSign({ safe: safeIndex, session: entry.session, owner });
   } finally {
     safeApprovals.endStep(safeIndex);
   }
