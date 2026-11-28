@@ -58,9 +58,16 @@ const renderVerifyFailures = (reply) => {
 // on loopback). Main words it and says when (`panel`, a string or null): it
 // pushes the line when Tor or the node changes, and the panel reads it when
 // it opens and at the status poll's pace while it's open, since a system
-// proxy changes with no event. A failed read keeps the last line.
+// proxy changes with no event. A failed read keeps the last line. Main
+// numbers each read (`revision`): a reply or push older than the last one
+// applied is dropped, so a slow read's late reply never hides a newer line.
+let messagesRouteRevision = 0;
 const renderMessagesRoute = (route) => {
   if (!beeMessagesOffNotice) return;
+  if (Number.isSafeInteger(route?.revision)) {
+    if (route.revision < messagesRouteRevision) return;
+    messagesRouteRevision = route.revision;
+  }
   const text = typeof route?.panel === 'string' ? route.panel : '';
   beeMessagesOffNotice.textContent = text;
   beeMessagesOffNotice.hidden = text === '';

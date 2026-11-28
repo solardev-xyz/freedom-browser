@@ -91,10 +91,12 @@ function displaySite(site) {
 function createSubscriptionRouteNotices({ checkRoute, nodeUrl, noticeWindow, chromeWindows }) {
   // The sites told this session.
   const told = new Set();
-  // The lines last pushed (JSON), and the newest read: an older read that
-  // resolves late answers the newest read's lines, and never pushes its own.
+  // The lines last pushed (JSON).
   let pushed = null;
-  let newest = null;
+  // Each read's revision, from its start: a reply or push carries it, and a
+  // surface applies only one at least as new as the last it applied.
+  let started = 0;
+  let applied = 0;
 
   function send(win, channel, payload) {
     if (!win || win.isDestroyed?.() || win.webContents?.isDestroyed?.()) return false;
@@ -139,20 +141,20 @@ function createSubscriptionRouteNotices({ checkRoute, nodeUrl, noticeWindow, chr
   }
 
   /**
-   * The lines now, pushed to every browser window when they changed since
-   * the last push. A read that a newer one overtook answers the newest
-   * read's lines, so a surface's late reply never stands over a newer push.
-   * @returns {Promise<{panel: string|null, settings: string|null}>}
+   * The lines now, with the read's `revision` (its start order), pushed to
+   * every browser window when they changed since the last push. Each read
+   * settles on its own, however slow the route test (Codex round 3 on
+   * #1382: chasing newer reads starved under a slow PAC); a read a newer one
+   * already settled past pushes nothing, and a surface drops a reply older
+   * than what it last applied, so a late reply never stands over a newer one.
+   * @returns {Promise<{panel: string|null, settings: string|null, revision: number}>}
    */
   async function refresh() {
-    let read = lines();
-    newest = read;
-    let now = await read;
-    while (newest !== read) {
-      read = newest;
-      now = await read;
-    }
-    const key = JSON.stringify(now);
+    const revision = ++started;
+    const now = { ...(await lines()), revision };
+    if (revision < applied) return now;
+    applied = revision;
+    const key = JSON.stringify({ panel: now.panel, settings: now.settings });
     if (key !== pushed) {
       pushed = key;
       let windows;

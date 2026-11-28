@@ -103,8 +103,15 @@ function fakeWindow() {
   return { webContents: { send: jest.fn(), isDestroyed: () => false }, isDestroyed: () => false };
 }
 
+// What was sent on a channel; a route push's revision left out (it orders replies, ant-ui.js).
 const sent = (win, channel) =>
-  win.webContents.send.mock.calls.filter(([name]) => name === channel).map(([, payload]) => payload);
+  win.webContents.send.mock.calls
+    .filter(([name]) => name === channel)
+    .map(([, payload]) => {
+      if (channel !== IPC.SWARM_MESSAGES_ROUTE) return payload;
+      const { revision: _revision, ...rest } = payload;
+      return rest;
+    });
 
 /** A browser session: the provider and its registry loaded afresh, and wired. */
 function startSession() {
@@ -280,10 +287,10 @@ describe("the Nodes panel's and Settings' line", () => {
     mockServices.url = url;
     mockServices.tor = tor;
     proxy = answer;
-    expect(await read()).toEqual(expected);
+    expect(await read()).toMatchObject(expected);
   });
 
-  test('a slow read, then a newer push, then the slow read lands: it answers the newest lines', async () => {
+  test('a slow read, then a newer push, then the slow read lands: it answers its own older revision', async () => {
     let answer;
     mockResolveProxy.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
     // The panel opens and reads; its read waits on resolveProxy.
@@ -294,9 +301,15 @@ describe("the Nodes panel's and Settings' line", () => {
     proxy = PROXY;
     await serviceChanged('ant');
     expect(sent(mockWindows.all[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([lines('your proxy')]);
-    // The slow read's own answer (DIRECT, from before) lands last.
+    const pushed = mockWindows.all[0].webContents.send.mock.calls
+      .filter(([name]) => name === IPC.SWARM_MESSAGES_ROUTE)
+      .map(([, payload]) => payload.revision);
+    // The slow read's own answer (DIRECT, from before) lands last, with its
+    // own, older revision: the panel drops it (ant-ui.js), and main pushes nothing.
     answer('DIRECT');
-    expect(await slow).toEqual(lines('your proxy'));
+    const late = await slow;
+    expect(late).toMatchObject(NO_LINES);
+    expect(late.revision).toBeLessThan(pushed.at(-1));
     expect(sent(mockWindows.all[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([lines('your proxy')]);
   });
 
@@ -316,7 +329,7 @@ describe("the Nodes panel's and Settings' line", () => {
     // A proxy comes on with no event, and the node moves back: a surface's
     // next read finds it, and every window hears.
     mockServices.url = REMOTE;
-    expect(await read()).toEqual(lines('your proxy'));
+    expect(await read()).toMatchObject(lines('your proxy'));
     // Tor off, no proxy.
     mockServices.tor = null;
     proxy = 'DIRECT';

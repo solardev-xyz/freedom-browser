@@ -47,8 +47,17 @@ function fakeWindow() {
   return { webContents: { send: jest.fn() }, isDestroyed: () => false };
 }
 
+// What was sent on a channel; a route push's revision checked apart (revisions()).
 const sent = (win, channel) =>
-  win.webContents.send.mock.calls.filter(([name]) => name === channel).map(([, payload]) => payload);
+  win.webContents.send.mock.calls
+    .filter(([name]) => name === channel)
+    .map(([, payload]) => {
+      if (channel !== IPC.SWARM_MESSAGES_ROUTE) return payload;
+      const { revision: _revision, ...lines } = payload;
+      return lines;
+    });
+const revisions = (win) =>
+  win.webContents.send.mock.calls.filter(([name]) => name === IPC.SWARM_MESSAGES_ROUTE).map(([, p]) => p.revision);
 
 let world;
 
@@ -213,7 +222,7 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
     ['a remote external node reached directly', REMOTE, 'DIRECT', null, NO_LINES],
   ])('%s', async (_case, node, proxy, tor, lines) => {
     Object.assign(world, { node, proxy, tor });
-    expect(await session().refresh()).toEqual(lines);
+    expect(await session().refresh()).toMatchObject(lines);
   });
 
   test.each([
@@ -222,21 +231,21 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
     ['the bundled node', BUNDLED],
   ])('never for %s, with a proxy and Tor on: its proxy is never asked', async (_case, node) => {
     Object.assign(world, { node, proxy: `SOCKS5 ${ARTI}`, tor: ARTI });
-    expect(await session().refresh()).toEqual(NO_LINES);
+    expect(await session().refresh()).toMatchObject(NO_LINES);
     expect(world.resolveProxy).not.toHaveBeenCalled();
   });
 
   test('no node in use: no line', async () => {
     world.node = null;
     world.proxy = PROXY;
-    expect(await session().refresh()).toEqual(NO_LINES);
+    expect(await session().refresh()).toMatchObject(NO_LINES);
   });
 
   test("a proxy that can't be resolved: the line says so, as the refusal does (fail closed)", async () => {
     world.resolveProxy = jest.fn(async () => {
       throw new Error('resolver gone');
     });
-    expect(await session().refresh()).toEqual(PROXY_LINES);
+    expect(await session().refresh()).toMatchObject(PROXY_LINES);
   });
 
   test('a route test that throws says nothing', async () => {
@@ -248,7 +257,7 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
       noticeWindow: () => null,
       chromeWindows: () => world.windows,
     });
-    expect(await notices.refresh()).toEqual(NO_LINES);
+    expect(await notices.refresh()).toMatchObject(NO_LINES);
   });
 
   test('pushed to every browser window when it changes, and only then', async () => {
@@ -264,43 +273,43 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
   test('it follows Tor, the proxy and the node, each change pushed', async () => {
     const notices = session();
     const pushes = () => sent(world.windows[0], IPC.SWARM_MESSAGES_ROUTE);
-    expect(await notices.refresh()).toEqual(NO_LINES);
+    expect(await notices.refresh()).toMatchObject(NO_LINES);
 
     // A proxy comes on (a system or PAC proxy: read at the next poll).
     world.proxy = PROXY;
-    expect(await notices.refresh()).toEqual(PROXY_LINES);
+    expect(await notices.refresh()).toMatchObject(PROXY_LINES);
 
     // Tor takes over the route: Arti's endpoint is what's in the way.
     world.tor = ARTI;
     world.proxy = `SOCKS5 ${ARTI}`;
-    expect(await notices.refresh()).toEqual(TOR_LINES);
+    expect(await notices.refresh()).toMatchObject(TOR_LINES);
 
     // The node moves to loopback: nothing goes around anything.
     world.node = LOOPBACK_EXTERNAL;
-    expect(await notices.refresh()).toEqual(NO_LINES);
+    expect(await notices.refresh()).toMatchObject(NO_LINES);
 
     // Back to the remote node, which Tor's PAC sends DIRECT.
     world.node = REMOTE;
     world.proxy = 'DIRECT';
-    expect(await notices.refresh()).toEqual(NO_LINES);
+    expect(await notices.refresh()).toMatchObject(NO_LINES);
 
     // The bundled node, with a proxy on.
     world.node = BUNDLED;
     world.proxy = PROXY;
-    expect(await notices.refresh()).toEqual(NO_LINES);
+    expect(await notices.refresh()).toMatchObject(NO_LINES);
 
     // An onion node through Tor, then with Tor off.
     world.node = ONION;
     world.proxy = `SOCKS5 ${ARTI}`;
-    expect(await notices.refresh()).toEqual(TOR_LINES);
+    expect(await notices.refresh()).toMatchObject(TOR_LINES);
     world.tor = null;
     world.proxy = 'DIRECT';
-    expect(await notices.refresh()).toEqual(ONION_LINES);
+    expect(await notices.refresh()).toMatchObject(ONION_LINES);
 
     expect(pushes()).toEqual([NO_LINES, PROXY_LINES, TOR_LINES, NO_LINES, TOR_LINES, ONION_LINES]);
   });
 
-  test("a read a newer one overtook answers the newest read's lines, and never pushes its own", async () => {
+  test('each read settles with its own revision; one a newer read settled past pushes nothing', async () => {
     let answer;
     world.resolveProxy = jest
       .fn()
@@ -309,32 +318,43 @@ describe('the Nodes panel and Settings line: while the node in use is refused', 
     const notices = session();
     const older = notices.refresh();
     await Promise.resolve();
-    expect(await notices.refresh()).toEqual(NO_LINES);
+    expect(await notices.refresh()).toEqual({ ...NO_LINES, revision: 2 });
     answer(PROXY);
-    expect(await older).toEqual(NO_LINES);
+    // The older read answers its own lines and revision: a surface that
+    // applied revision 2 drops it (ant-ui.js), and main pushes nothing for it.
+    expect(await older).toEqual({ ...PROXY_LINES, revision: 1 });
     expect(sent(world.windows[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([NO_LINES]);
+    expect(revisions(world.windows[0])).toEqual([2]);
   });
 
-  test('a read overtaken by one still under way waits for it', async () => {
+  test('reads arriving faster than the route test still each settle (Codex round 3 on #1382)', async () => {
     const answers = [];
     world.resolveProxy = jest.fn(() => new Promise((resolve) => answers.push(resolve)));
     const notices = session();
-    const first = notices.refresh();
-    await Promise.resolve();
-    const second = notices.refresh();
-    await Promise.resolve();
-    expect(answers).toHaveLength(2);
-    // The first read's answer lands first, while the second is under way.
-    answers[0]('DIRECT');
-    let firstDone = false;
-    first.then(() => (firstDone = true));
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    expect(firstDone).toBe(false);
-    expect(sent(world.windows[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([]);
-    answers[1](PROXY);
-    expect(await first).toEqual(PROXY_LINES);
-    expect(await second).toEqual(PROXY_LINES);
-    expect(sent(world.windows[0], IPC.SWARM_MESSAGES_ROUTE)).toEqual([PROXY_LINES]);
+    const reads = [];
+    // Every read is overtaken by the next before it settles, as a 5 s poll
+    // over a route test slower than 5 s would do.
+    for (let i = 0; i < 6; i += 1) {
+      reads.push(notices.refresh());
+      await Promise.resolve();
+      if (i > 0) answers[i - 1](i % 2 ? PROXY : 'DIRECT');
+      await Promise.resolve();
+    }
+    answers[5]('DIRECT');
+    const settled = await Promise.all(reads);
+    expect(settled.map((read) => read.revision)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(settled.map(({ revision: _r, ...lines }) => lines)).toEqual([
+      PROXY_LINES,
+      NO_LINES,
+      PROXY_LINES,
+      NO_LINES,
+      PROXY_LINES,
+      NO_LINES,
+    ]);
+    // Pushed in revision order, each a change.
+    const pushed = revisions(world.windows[0]);
+    expect([...pushed].sort((x, y) => x - y)).toEqual(pushed);
+    expect(sent(world.windows[0], IPC.SWARM_MESSAGES_ROUTE).at(-1)).toEqual(NO_LINES);
   });
 
   test('a window that fails to take the push stops none of the others', async () => {
