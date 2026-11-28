@@ -729,6 +729,40 @@ describe("shell.swarm_manifest: main fetches a running check's manifest on its w
     expect(started.pool.held).toBe(0);
   });
 
+  test('the capped body is held in storage of the cap only, never a larger piece it came in', async () => {
+    const { _readAskedBodyForTests: readAskedBody } = require('./permission-manifests');
+    const cap = 8 * KIB + 1;
+    const stream = (pieces) =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            const next = pieces.shift();
+            if (next) controller.enqueue(next);
+            else controller.close();
+          },
+        }),
+        { status: 200 }
+      );
+    // One 64 KiB piece: the answer's backing store is the cap, not the piece.
+    const one = await readAskedBody(stream([new Uint8Array(64 * KIB).fill(0x61)]));
+    expect(one.length).toBe(cap);
+    expect(one.buffer.byteLength).toBe(cap);
+    // Many small pieces past the cap: the same.
+    const many = await readAskedBody(stream(Array.from({ length: 20 }, () => new Uint8Array(KIB).fill(0x62))));
+    expect(many.length).toBe(cap);
+    expect(many.buffer.byteLength).toBe(cap);
+    // A short body keeps its own bytes in the cap's storage.
+    const short = await readAskedBody(stream([new Uint8Array(100).fill(0x63)]));
+    expect(short.toString()).toBe('c'.repeat(100));
+    expect(short.buffer.byteLength).toBe(cap);
+    // A body without a reader: copied out of its buffer, not a view of it.
+    const big = new ArrayBuffer(64 * KIB);
+    const unread = await readAskedBody({ status: 200, body: null, arrayBuffer: async () => big });
+    expect(unread.length).toBe(cap);
+    expect(unread.buffer).not.toBe(big);
+    expect(unread.buffer.byteLength).toBe(cap);
+  });
+
   test('a fetch that throws, or a body that breaks, answers { failed: true }', async () => {
     await start();
     const { checking, check } = await sendCheck();

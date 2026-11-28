@@ -964,15 +964,20 @@ function readManifestAsk(params) {
  * the body. A read that fails, stalls or is cancelled (`signal`) throws.
  */
 async function readAskedBody(response, signal, idleTimeoutMs = BODY_IDLE_TIMEOUT_MS) {
+  // The capped bytes go into storage of exactly the cap that main owns, so
+  // nothing larger than the charge stays reachable from the answer (a short
+  // view of a copied 64 KiB piece would keep the whole piece alive).
+  const body = Buffer.alloc(ASK_MOST);
   const reader = response.body?.getReader?.();
   if (!reader) {
-    const buffer = Buffer.from(await withIdleDeadline(response.arrayBuffer(), idleTimeoutMs));
-    return buffer.subarray(0, ASK_MOST);
+    const whole = new Uint8Array(await withIdleDeadline(response.arrayBuffer(), idleTimeoutMs));
+    const take = Math.min(whole.length, ASK_MOST);
+    body.set(whole.subarray(0, take));
+    return body.subarray(0, take);
   }
   const stop = () => reader.cancel().catch(() => {});
   signal?.addEventListener('abort', stop, { once: true });
   try {
-    const chunks = [];
     let length = 0;
     while (length < ASK_MOST) {
       if (signal?.aborted) throw new Error('manifest fetch cancelled');
@@ -984,13 +989,14 @@ async function readAskedBody(response, signal, idleTimeoutMs = BODY_IDLE_TIMEOUT
         throw err;
       }
       if (chunk.done) break;
-      const piece = Buffer.from(chunk.value);
-      chunks.push(piece.subarray(0, ASK_MOST - length));
-      length += piece.length;
+      const value = chunk.value instanceof Uint8Array ? chunk.value : new Uint8Array(chunk.value);
+      const take = Math.min(value.length, ASK_MOST - length);
+      body.set(value.subarray(0, take), length);
+      length += take;
     }
     if (signal?.aborted) throw new Error('manifest fetch cancelled');
     if (length >= ASK_MOST) await stop();
-    return Buffer.concat(chunks);
+    return body.subarray(0, length);
   } finally {
     signal?.removeEventListener('abort', stop);
   }
@@ -1173,6 +1179,7 @@ module.exports = {
   MAX_PAGE_TOKENS,
   _pageTokenCountForTests: () => pageTokens.size,
   _manifestAskCountForTests: () => manifestAsks.size,
+  _readAskedBodyForTests: readAskedBody,
   detachManaged,
   disconnect,
   getRecord,
