@@ -402,6 +402,9 @@ describe('default list download (the node’s transport)', () => {
     return { signal: controller.signal, progress, stop: () => clearTimeout(timer) };
   }
 
+  // Eight `chunk<i>\n` pieces: the list's signed size.
+  const TRICKLED_BYTES = 8 * 'chunk0\n'.length;
+
   // The transport's modules load on its first call; load them before any
   // inactivity window starts, as main has by then.
   beforeAll(() => require('../swarm/bzz-protocol'));
@@ -413,7 +416,7 @@ describe('default list download (the node’s transport)', () => {
     const srv = await trickleServer({ chunks: 8, gapMs: 25 });
     const w = watch(100); // whole body takes ~200 ms
     try {
-      const blob = await _defaultDownloadBlob(REF_ADS, w);
+      const blob = await _defaultDownloadBlob(REF_ADS, { ...w, bytes: TRICKLED_BYTES });
       expect(blob.toString()).toBe([...Array(8).keys()].map((i) => `chunk${i}\n`).join(''));
       expect(srv.urls).toEqual([`/bytes/${REF_ADS}`]);
     } finally {
@@ -426,7 +429,9 @@ describe('default list download (the node’s transport)', () => {
     const srv = await trickleServer({ chunks: 8, gapMs: 10, stallAfter: 2 });
     const w = watch(80);
     try {
-      await expect(_defaultDownloadBlob(REF_ADS, w)).rejects.toThrow();
+      await expect(
+        _defaultDownloadBlob(REF_ADS, { ...w, bytes: TRICKLED_BYTES })
+      ).rejects.toThrow();
       await new Promise((r) => setTimeout(r, 50));
       expect(srv.closed).toEqual([false]); // closed by us, before the server ended it
     } finally {
@@ -463,7 +468,7 @@ describe('the default feed read and list download, over a loopback node', () => 
 
   let node;
   let feed; // (req, res, entry) => void, for FEED_PATH
-  let blobs; // ref → Buffer, for /bytes/<ref>
+  let blobs; // ref → Buffer, or its own reply (req, res, entry), for /bytes/<ref>
 
   const json = (res, status, value, headers = {}) => {
     const body = Buffer.from(JSON.stringify(value));
@@ -488,8 +493,10 @@ describe('the default feed read and list download, over a loopback node', () => 
         if (req.url === FEED_PATH && feed) return feed(req, res, entry);
         const blob = req.url.match(/^\/bytes\/([0-9a-f]+)$/);
         if (blob && blobs.has(blob[1])) {
+          const list = blobs.get(blob[1]);
+          if (typeof list === 'function') return list(req, res, entry);
           res.writeHead(200, { 'content-type': 'application/octet-stream' });
-          res.end(blobs.get(blob[1]));
+          res.end(list);
           return;
         }
         json(res, 404, { code: 404, message: 'Not Found' });
@@ -634,14 +641,87 @@ describe('the default feed read and list download, over a loopback node', () => 
   test('with no node URL nothing is dialled', async () => {
     mockRegistry.url = null;
     await expect(_defaultReadFeed()).rejects.toThrow('Swarm node is not ready');
-    await expect(_defaultDownloadBlob(REF_ADS, {})).rejects.toThrow('Swarm node is not ready');
+    await expect(_defaultDownloadBlob(REF_ADS, { bytes: ADS.length })).rejects.toThrow(
+      'Swarm node is not ready'
+    );
     expect(node.requests).toEqual([]);
   });
 
-  test('a list download that fails its status, or names no reference, fails', async () => {
-    await expect(_defaultDownloadBlob('cc'.repeat(32), {})).rejects.toThrow(/404/);
-    await expect(_defaultDownloadBlob('not a ref', {})).rejects.toThrow(/not a Swarm reference/);
+  test('a list download that fails its status, names no reference, or has no signed size, fails', async () => {
+    await expect(_defaultDownloadBlob('cc'.repeat(32), { bytes: 1 })).rejects.toThrow(/404/);
+    await expect(_defaultDownloadBlob('not a ref', { bytes: 1 })).rejects.toThrow(
+      /not a Swarm reference/
+    );
+    for (const bytes of [undefined, 0, -1, 1.5, '15']) {
+      await expect(_defaultDownloadBlob(REF_ADS, { bytes })).rejects.toThrow(TypeError);
+    }
     expect(node.requests.map((r) => r.url)).toEqual([`/bytes/${'cc'.repeat(32)}`]);
+  });
+
+  describe('a list is held to the size its manifest entry signed', () => {
+    const listReply =
+      (body, headers = {}) =>
+      (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/octet-stream', ...headers });
+        res.end(body);
+      };
+    const download = () => _defaultDownloadBlob(REF_ADS, { bytes: ADS.length });
+
+    test('a declared length that matches: the list', async () => {
+      blobs.set(REF_ADS, listReply(ADS, { 'content-length': ADS.length }));
+      await expect(download()).resolves.toEqual(ADS);
+    });
+
+    test('a declared length that differs is refused before the body is read', async () => {
+      // One longer and one shorter: Node's server sends what it declared.
+      const longer = Buffer.concat([ADS, Buffer.from('x')]);
+      blobs.set(REF_ADS, listReply(longer, { 'content-length': longer.length }));
+      await expect(download()).rejects.toMatchObject({ reason: 'size_mismatch' });
+      const shorter = ADS.subarray(1);
+      blobs.set(REF_ADS, listReply(shorter, { 'content-length': shorter.length }));
+      await expect(download()).rejects.toMatchObject({ reason: 'size_mismatch' });
+      // A large one: its body is let go, not drained.
+      const total = 64 * 1024 * 1024;
+      blobs.set(REF_ADS, (_req, res, entry) => {
+        res.writeHead(200, { 'content-length': total });
+        streamBody(entry, { total });
+      });
+      await expect(download()).rejects.toMatchObject({ reason: 'size_mismatch' });
+      await node.requests[2].done;
+      expect(node.requests[2].aborted).toBe(true);
+      expect(node.requests[2].bytesSent).toBeLessThan(total);
+    });
+
+    test('a body with no declared length is cancelled as soon as it passes the size', async () => {
+      // A node that never ends the list, and would keep the inactivity timer alive.
+      blobs.set(REF_ADS, (_req, res, entry) => {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        streamBody(entry);
+      });
+      await expect(download()).rejects.toMatchObject({
+        reason: 'size_mismatch',
+        message: expect.stringMatching(/more than the 15 bytes/),
+      });
+      await node.requests[0].done;
+      expect(node.requests[0].aborted).toBe(true);
+    });
+
+    test('a body one byte past the size is cut off at that byte', async () => {
+      blobs.set(REF_ADS, (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.write(ADS);
+        setTimeout(() => res.end('x'), 20);
+      });
+      await expect(download()).rejects.toMatchObject({ reason: 'size_mismatch' });
+    });
+
+    test('a body that ends short of the size is refused', async () => {
+      blobs.set(REF_ADS, listReply(ADS.subarray(0, 5)));
+      await expect(download()).rejects.toMatchObject({
+        reason: 'size_mismatch',
+        message: expect.stringMatching(/sent 5 of the list's 15 bytes/),
+      });
+    });
   });
 
   test('a whole cycle on the default IO applies the update, as with injected IO', async () => {
@@ -685,6 +765,25 @@ describe('the default feed read and list download, over a loopback node', () => 
         blobs.set(REF_PRIV, Buffer.from('tampered'));
       },
       { status: 'hash_mismatch', reason: 'privacy' },
+    ],
+    [
+      'a list is its signed size but not its bytes',
+      async () => {
+        feed = entryReply(JSON.stringify(await signedManifest(5)));
+        blobs.set(REF_PRIV, Buffer.alloc(PRIV.length, 0x78));
+      },
+      { status: 'hash_mismatch', reason: 'privacy' },
+    ],
+    [
+      'a list never ends',
+      async () => {
+        feed = entryReply(JSON.stringify(await signedManifest(5)));
+        blobs.set(REF_ADS, (_req, res, entry) => {
+          res.writeHead(200, { 'content-type': 'application/octet-stream' });
+          streamBody(entry);
+        });
+      },
+      { status: 'hash_mismatch', reason: 'ads' },
     ],
   ])('a whole cycle where %s ends as it did', async (_name, arrange, expected) => {
     await arrange();

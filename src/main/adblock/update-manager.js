@@ -150,6 +150,16 @@ function entryTooLarge(actual) {
   return err;
 }
 
+/**
+ * A list whose size isn't the one its signed manifest entry gives
+ * (`bytes`): not the list the manifest signed, as a hash mismatch is.
+ */
+function listSizeMismatch(message) {
+  const err = new Error(message);
+  err.reason = 'size_mismatch';
+  return err;
+}
+
 /** A reply that isn't the content: its body let go, the status thrown. */
 function nodeRefused(response, path) {
   response.body?.cancel().catch(() => {});
@@ -212,17 +222,40 @@ async function defaultReadFeed({ signal } = {}) {
  * for the inactivity timeout above: progress() once the headers are in, and
  * on each chunk. The abort signal handed in is what stops the transfer: it
  * aborts the dial, and once the headers are in, cancels the body
- * (ant-storage-api's `readBody`), which releases the connection. No size
- * cap, as bee-js had none: the list's sha256 is checked after.
+ * (ant-storage-api's `readBody`), which releases the connection.
+ *
+ * `bytes` is the list's size from its verified manifest entry, and the body
+ * is held to it, so a node can't grow main's memory with a list that never
+ * ends while it keeps the inactivity timer alive: a declared length that
+ * differs is refused before the body is read, a body is cancelled as soon
+ * as it passes `bytes`, and one that ends short of it is refused. Each
+ * fails with `reason: 'size_mismatch'` (runUpdateOnce's hash_mismatch); the
+ * caller checks the sha256 after.
  */
-async function defaultDownloadBlob(ref, { signal, progress = () => {} } = {}) {
+async function defaultDownloadBlob(ref, { signal, progress = () => {}, bytes } = {}) {
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+    throw new TypeError('a list download needs the size its manifest entry signed');
+  }
   const { antGet, readBody } = require('../swarm/ant-storage-api');
   const path = `/bytes/${referenceHex(ref)}`;
   const response = await antGet(path, { headers: { accept: ACCEPT }, signal });
   if (!response.ok) throw nodeRefused(response, path);
+  const declared = declaredLength(response);
+  if (declared !== null && declared !== bytes) {
+    response.body?.cancel().catch(() => {});
+    throw listSizeMismatch(`the node declared ${declared} bytes for a ${bytes}-byte list`);
+  }
   progress();
-  const blob = await readBody(response, signal, () => progress());
+  const blob = await readBody(response, signal, (_bytes, total) => {
+    if (total > bytes) {
+      throw listSizeMismatch(`the node sent more than the ${bytes} bytes of the list`);
+    }
+    progress();
+  });
   if (signal?.aborted) throw signal.reason;
+  if (blob.length !== bytes) {
+    throw listSizeMismatch(`the node sent ${blob.length} of the list's ${bytes} bytes`);
+  }
   return blob;
 }
 
@@ -257,9 +290,11 @@ function readAppliedState(updatedDir) {
  * @param {object} [io]
  * @param {(opts: {signal: AbortSignal}) => Promise<object|null>} [io.readFeed]
  *   - the signal aborts once the read has run timeoutMs
- * @param {(ref: string, opts: {signal: AbortSignal, progress: () => void}) => Promise<Buffer>} [io.downloadBlob]
+ * @param {(ref: string, opts: {signal: AbortSignal, progress: () => void, bytes: number}) => Promise<Buffer>} [io.downloadBlob]
  *   - call progress() on each sign of life; the download fails after
  *     timeoutMs without one
+ *   - `bytes` is the list's size from its verified manifest entry; a
+ *     download that finds another size fails with `reason: 'size_mismatch'`
  * @param {string} [io.root] - override userData/adblock (tests)
  * @param {() => Promise<void>} [io.activate] - override refreshEngine (tests)
  * @param {number} [io.timeoutMs] - override IO_TIMEOUT_MS (tests)
@@ -348,12 +383,20 @@ async function runUpdateOnce(io = {}) {
     }
     if (!blob) {
       try {
-        blob = await withInactivityTimeout((opts) => downloadBlob(entry.ref, opts), timeoutMs);
+        blob = await withInactivityTimeout(
+          (opts) => downloadBlob(entry.ref, { ...opts, bytes: entry.bytes }),
+          timeoutMs
+        );
       } catch (err) {
+        // Not the size the manifest signed: not its list, as below.
+        if (err?.reason === 'size_mismatch') {
+          log.warn(`[adblock-update] size mismatch for ${entry.category}: ${err.message}`);
+          return { status: 'hash_mismatch', reason: entry.category };
+        }
         log.warn(`[adblock-update] download failed for ${entry.category}: ${err.message}`);
         return { status: 'download_failed', reason: entry.category };
       }
-      if (sha256Hex(blob) !== entry.sha256) {
+      if (blob.length !== entry.bytes || sha256Hex(blob) !== entry.sha256) {
         log.warn(`[adblock-update] sha256 mismatch for ${entry.category} — aborting`);
         return { status: 'hash_mismatch', reason: entry.category };
       }

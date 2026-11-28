@@ -243,7 +243,11 @@ describe('a remote node: the feed read and the lists on the default session’s 
     const progress = jest.fn();
 
     await expect(
-      _defaultDownloadBlob(REF_ADS, { signal: new AbortController().signal, progress })
+      _defaultDownloadBlob(REF_ADS, {
+        signal: new AbortController().signal,
+        progress,
+        bytes: ADS.length,
+      })
     ).resolves.toEqual(ADS);
 
     expect(
@@ -292,13 +296,53 @@ describe('a remote node: the feed read and the lists on the default session’s 
     });
     const controller = new AbortController();
     const progress = jest.fn();
-    const downloading = _defaultDownloadBlob(REF_ADS, { signal: controller.signal, progress });
+    const downloading = _defaultDownloadBlob(REF_ADS, {
+      signal: controller.signal,
+      progress,
+      bytes: ADS.length,
+    });
     await new Promise((resolve) => {
       const wait = () => (progress.mock.calls.length >= 2 ? resolve() : setImmediate(wait));
       wait();
     });
     controller.abort(new Error('no progress'));
     await expect(downloading).rejects.toThrow('no progress');
+    expect(dials[0].request.aborted).toBe(true);
+  });
+
+  test('a list body past its signed size: cancelled at that piece, the request let go, the cycle a hash mismatch', async () => {
+    const manifest = await signedManifest(5);
+    const dials = playChromium({
+      answer: (dial) =>
+        dial.path === `/bytes/${REF_ADS}`
+          ? // More than the list, and no end: a node feeding the inactivity timer.
+            { status: 200, chunks: [ADS, Buffer.from('more')], end: false }
+          : nodeAnswers(manifest)(dial),
+    });
+    const result = await runUpdateOnce({
+      root,
+      trustConfigured: true,
+      sigAddress: SIGNER.address,
+      activate: jest.fn(() => Promise.resolve()),
+    });
+    expect(result).toEqual({ status: 'hash_mismatch', reason: 'ads' });
+    expect(dials.map(({ path: p }) => p)).toEqual([FEED_PATH, `/bytes/${REF_ADS}`]);
+    expect(dials[1].request.aborted).toBe(true);
+    expect(fs.existsSync(path.join(root, 'updated'))).toBe(false);
+  });
+
+  test('a list declared at another size: refused before its body is read', async () => {
+    const dials = playChromium({
+      answer: () => ({
+        status: 200,
+        headers: { 'content-length': String(ADS.length + 1) },
+        chunks: [],
+        end: false,
+      }),
+    });
+    await expect(_defaultDownloadBlob(REF_ADS, { bytes: ADS.length })).rejects.toMatchObject({
+      reason: 'size_mismatch',
+    });
     expect(dials[0].request.aborted).toBe(true);
   });
 });
