@@ -116,7 +116,15 @@ FREEDOM_CORE_SWARM_VECTORS=../freedom-core/vectors \
 
 ### Ledger through the core (freedom-cored)
 
-The Ledger moves into freedom-cored (freedom-core design 0016, LDG-3): the core builds and checks every APDU, and main carries each one to the device. Main's HID device (`src/main/wallet/ledger/hid-device.js`) is built; nothing calls it until LDG-3's relay, and `src/main/wallet/ledger/transport.js` still serves every Ledger request.
+The Ledger moves into freedom-cored (freedom-core design 0016, LDG-3): the core builds and checks every APDU, and main carries each one to the device, through its relay for the core's `shell.ledger_apdu` (`src/main/core/ledger-relay.js`) and its HID device (`src/main/wallet/ledger/hid-device.js`). It runs behind a switch, read once per process: `FREEDOM_LEDGER_BACKEND=core` turns it on in a development build, and `js` (the default, and any other value, which is warned of) keeps hw-app-eth in main (`src/main/wallet/ledger/transport.js` and `signer.js`). Packaged builds always run `js` until LDG-3's last step makes the core the default.
+
+```bash
+FREEDOM_LEDGER_BACKEND=core npm start
+```
+
+On `core`, discovery and adding (Connect Hardware Wallet), every Ledger signature (the send screen, a page's requests, a Ledger owner's Safe signatures) and a Ledger's x402 payments go through the core; the send screen's Cancel and the approvals panel's Reject stop the device while it waits, and a Ledger that can show only hashes (a Nano S) gets the hash-only warning first.
+
+The HID device:
 
 - **One per operation.** It opens at the operation's first APDU, exchanges one APDU at a time under the APDU's `deadline_ms` (no answer in 15 s is `unresponsive`; in 5 minutes, for the APDU the user confirms, `timeout`), and lets go at once on `detach()`, on the core's cancel and on any failure, without waiting for the exchange in flight. It fails only as `not_found`, `busy`, `disconnected`, `unresponsive` or `timeout`.
 - **node-hid runs in a utility process, the HID host** (`src/main/wallet/ledger/hid-host.js`), never in main (the LDG-3 plan's R1). node-hid's close can free memory a pending Windows read or write still owns: 2.1.2's and 3.4.0's alike (the host's header has the lines). So whenever an exchange may be in flight (a cancel, a deadline, a failure), main kills the host, and the OS closes the handle and finishes the pending I/O. The host closes a handle itself only once its last exchange was answered, when nothing is pending. The next operation forks a new host only after the old one has exited, so the old handle is closed before the new one opens (R5). The host's exit fails the exchange in flight `disconnected`.
@@ -155,6 +163,37 @@ ELECTRON_RUN_AS_NODE=1 npx electron scripts/ledger-record.js --model <nanoSP|nan
 ```
 
 It asks for the firmware version (or takes `--firmware <version>`), then says what to do on the device at each step: transactions, a message, typed data field by field, the name-edge cases, adding an account, a rejection, a contract call with blind signing off and then on, an unplug, and a cancel while the old prompt shows; on a Nano S, only the hash-only cases. Each step's APDUs are main's own stream (the core's, by the joint contract), or the reference's for F-2's non-ASCII names; each exchange is timed (R3), and an answer held until the user goes on is marked (R2). The file is written after every step, never over an existing one. `scripts/ledger-record.test.js` runs it whole against the fake node-hid.
+
+**The gates against the real core** (the LDG-3 plan's PR 12). Main's Ledger paths on `core`, end to end through the freedom-cored the build pins, main's relay and its HID layer (the hosts in-process, over `test/helpers/fake-node-hid.js`), with a Ledger answering from freedom-core's `vectors/ledger.json` (`test/helpers/ledger-reference-device.js`: each APDU gets the answer the reference's device gave that very APDU, so a byte of the core's stream the recording doesn't hold fails the case):
+
+- `src/main/wallet/ledger/ledger-gates.integration.test.js`: discovery with records; adding an account; `sign.transaction` type 0 and type 2, `sign.message` and `sign.typed_data`, each result the reference's byte for byte; the hash-only flow with main's own warning (nothing more reaches the device until the notice is on screen; a notice in a hidden window gives `LEDGER_UNKNOWN`); a rejection on the device; Cancel and Reject while the device waits; main's 15 s and 5-minute deadlines; and an unplug.
+- `src/main/x402/sign-flow-ledger.integration.test.js`: an x402 payment the panel approved, from the detector to the header, with main's rebuild checked before the device and `x402.settle { reservation, typed_data }` through the relay.
+- `src/main/core/ledger-relay.integration.test.js` and `src/main/wallet/ledger/core-accounts.integration.test.js`: each form of the relay's answer, and discovery and adding as `core-accounts.js` sends them.
+
+The core ends the connection (exit 76) on any reply of main's its strict reader doesn't take, so each case checks the core is still the process it started, and the last case of the gates shows that check catching a reply with one member too many. Main's deadlines are fired by the test while the device waits, never by the clock, so no case depends on timing. They need the binary and the Ledger vectors at CI's pin (freedom-core `b4e0cef4`, the commit cored 0.30.0 was built from); CI's `e2e-desktop` job runs them on each OS.
+
+```bash
+node scripts/fetch-freedom-cored.js
+FREEDOM_CORED_LEDGER_TEST=1 FREEDOM_CORE_LEDGER_VECTORS=../freedom-core/vectors \
+  npx jest src/main/core/ledger-relay.integration.test.js \
+    src/main/wallet/ledger/core-accounts.integration.test.js \
+    src/main/wallet/ledger/ledger-gates.integration.test.js \
+    src/main/x402/sign-flow-ledger.integration.test.js
+```
+
+**The device session** (the LDG-3 plan's §5: by hand, once, before the core becomes the default) covers what no fake shows: R1's close during a read on each OS, R2's per-field wait, R3's time per APDU, R5, R9, unplugging, cancelling and the hash-only signature.
+
+1. **Recordings,** with `scripts/ledger-record.js` above, on each model at hand (a Nano S Plus, a Nano X, a Stax or Flex, and a Nano S for the hash-only cases). Update the firmware and the Ethereum app in Ledger Live and note both versions, quit Ledger Live, reset the device and restore the public test phrase, then follow the recorder's prompts; on Linux, install Ledger's udev rules first. The files hold public keys, addresses and signatures of the public phrase only; they become freedom-core's `vectors/ledger-devices.json`, which the core replays.
+2. **Manual checks,** in a development build with `FREEDOM_LEDGER_BACKEND=core` (your own seed is fine: nothing is sent), on each OS at hand:
+   - M1: add an account and confirm its address on the device;
+   - M2: a dApp's `personal_sign` and typed data;
+   - M3: Reject in the panel while the device waits, then reject on the device; the next request works;
+   - M4: Cancel in the send screen at the device's prompt; nothing is sent;
+   - M5: unplug mid-signature, plug back in;
+   - M6: leave a prompt for 5 minutes and see the timeout message;
+   - M7: open Connect Hardware Wallet while a signature waits and see the busy message;
+   - M8: Ledger Live open at the same time;
+   - M9: on a Nano S, typed data: the two-hash warning appears before the device shows the hashes, and they match.
 
 ### Experimental Windows Agent workspace backend
 
