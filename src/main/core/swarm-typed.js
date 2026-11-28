@@ -5,10 +5,10 @@
  *
  * `swarm.request` carries a page's params in a typed form, because the
  * reference's validators read JavaScript types that JSON loses. Main writes
- * that form (SWM-7's encoder) and binds its operation grammar to what it
- * sent, never to the core's word (swarm-grammar.js). This module is the
- * reader the grammar takes them from, and the writer of the Swarm store
- * ops' members (`writeTyped`, below):
+ * that form (`writePageParams`, below) and binds its operation grammar to
+ * what it sent, never to the core's word (swarm-grammar.js). This module is
+ * the reader the grammar takes them from, the writer of a page's params,
+ * and the writer of the Swarm store ops' members (`writeTyped`, below):
  *
  * - **Values:** `{ string }`, `{ number: String(n) }` (`-0`, `NaN` and the
  *   infinities included), `{ bigint }`, `{ boolean }`, `{ null: true }`,
@@ -29,6 +29,23 @@
  * Read strictly: a tag this form doesn't have, a member past the tag's, a
  * value of another type, a duplicate key or base64 that isn't its bytes'
  * throws a `TypedFormError`. Main wrote the form, so a throw is main's bug.
+ *
+ * **A page's params** (design 0015, "Main's encoding of a request"; SWM-7):
+ * `writePageParams(method, params)` writes them as the vectors' generator
+ * does (`formats.typed`). Where a method reads data (`data` for the
+ * uploads, the sends and the writes; each `files[i].bytes` of
+ * `swarm_publishFiles`), a value `normalizeBytes` accepts is its bytes,
+ * and a string there is its UTF-8 (`Buffer.from(s, 'utf-8')`, a lone
+ * surrogate as U+FFFD), except at a file's `bytes`, which takes no string:
+ * inline up to 64 KiB, as long as the params' inline data stays within
+ * 256 KiB (one frame holds the request), else a part, numbered from 0 in
+ * the order written, which the core pulls with `shell.swarm_part` and main
+ * streams from the bytes it holds (`parts`: the page's own view where it
+ * sent one, a copy for a string or a `{ type: 'Buffer', data }`). A value
+ * there that `normalizeBytes` refuses keeps its plain tag. Bytes anywhere
+ * else are `bytes_elsewhere`, inline. Everything else is a plain tag, as
+ * `writeTyped` writes it, a string with a lone surrogate as it is (fc-json
+ * reads the escape `JSON.stringify` gives it).
  *
  * **The store ops** (design 0015, D5 and D7; SWM-6): `swarm.identities`,
  * `swarm.history` and `swarm.manifest` take each member of their params as
@@ -319,6 +336,137 @@ function writeValue(value, holding) {
   }
 }
 
+/** The methods whose `data` is data (design 0015, Main's encoding). */
+const DATA_METHODS = new Set([
+  'swarm_publishData',
+  'swarm_publishChunk',
+  'swarm_writeSingleOwnerChunk',
+  'swarm_writeFeedEntry',
+  'swarm_sendPss',
+  'swarm_sendGsoc',
+]);
+
+/**
+ * The most of a page's data the params carry inline, all values together:
+ * the rest goes as parts, so the request stays within one frame (1 MiB)
+ * with room for everything else in it.
+ */
+const INLINE_TOTAL = 256 * 1024;
+
+/**
+ * What a position of `method`'s params reads: `'data'` (bytes, or a
+ * string's UTF-8), `'bytes'` (bytes only: a string there keeps its tag), or
+ * false.
+ */
+function dataAt(method, path) {
+  if (DATA_METHODS.has(method) && path.length === 1 && path[0] === 'data') return 'data';
+  if (method === 'swarm_publishFiles' && path.length === 3 && path[0] === 'files' && path[2] === 'bytes') {
+    return 'bytes';
+  }
+  return false;
+}
+
+const isBufferJson = (value) =>
+  value !== null && typeof value === 'object' && value.type === 'Buffer' && Array.isArray(value.data);
+
+/** What JavaScript held: `Buffer`, `Uint8Array`, `ArrayBuffer` or `BufferJSON`. */
+function kindOf(value) {
+  if (Buffer.isBuffer(value)) return 'Buffer';
+  if (value instanceof Uint8Array) return 'Uint8Array';
+  if (value instanceof ArrayBuffer) return 'ArrayBuffer';
+  return 'BufferJSON';
+}
+
+/**
+ * The bytes `normalizeBytes` (or a string's UTF-8) gives for `value`, as a
+ * view, with whether making it copied anything; or null.
+ */
+function dataBytes(value) {
+  if (typeof value === 'string') return { view: Buffer.from(value, 'utf-8'), kind: 'string', copied: true };
+  if (value instanceof Uint8Array) return { view: value, kind: kindOf(value), copied: false };
+  if (value instanceof ArrayBuffer) return { view: new Uint8Array(value), kind: 'ArrayBuffer', copied: false };
+  if (isBufferJson(value)) return { view: Buffer.from(value.data), kind: 'BufferJSON', copied: true };
+  return null;
+}
+
+/** Base64 of a view's own bytes (never the rest of its buffer). */
+const base64Of = (view) => Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString('base64');
+
+/**
+ * Writes a page's params for `method` in the typed form (above, "A page's
+ * params"). Throws a `TypedFormError` for a value the form has no tag for
+ * (a symbol, a function) or one that holds itself; page-requests' walk
+ * lets neither through.
+ *
+ * @param {string} method
+ * @param {*} params - as the page sent them
+ * @returns {{ typed: object, parts: Map<number, Uint8Array>, copies: number }}
+ *   the typed params; each part's bytes by its number; and how many of
+ *   those bytes main copied to make them (a string's UTF-8, a
+ *   `{ type: 'Buffer', data }`), the inline ones included
+ */
+function writePageParams(method, params) {
+  const parts = new Map();
+  const state = { inline: 0, copies: 0 };
+  const holding = new Set();
+  const write = (value, path) => {
+    const reads = dataAt(method, path);
+    if (reads && (reads === 'data' || typeof value !== 'string')) {
+      const bytes = dataBytes(value);
+      if (bytes) {
+        const length = bytes.view.byteLength;
+        if (bytes.copied) state.copies += length;
+        const tag = bytes.kind === 'string' ? { string_bytes: length } : { bytes: length, kind: bytes.kind };
+        if (length <= INLINE_BYTES && state.inline + length <= INLINE_TOTAL) {
+          state.inline += length;
+          return { ...tag, base64: base64Of(bytes.view) };
+        }
+        const part = parts.size;
+        parts.set(part, bytes.view);
+        return { ...tag, part };
+      }
+    }
+    switch (typeof value) {
+      case 'string':
+        return { string: value };
+      case 'number':
+        return { number: numberText(value) };
+      case 'bigint':
+        return { bigint: value.toString() };
+      case 'boolean':
+        return { boolean: value };
+      case 'undefined':
+        return { undefined: true };
+      case 'object':
+        break;
+      default:
+        throw new TypedFormError(`a ${typeof value} has no typed form`);
+    }
+    if (value === null) return { null: true };
+    if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+      // Bytes where no method reads them: their kind and bytes, all the same.
+      const view = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+      return { bytes_elsewhere: view.byteLength, kind: kindOf(value), base64: base64Of(view) };
+    }
+    if (holding.has(value)) throw new TypedFormError('a value holds itself');
+    holding.add(value);
+    try {
+      if (Array.isArray(value)) {
+        const items = new Array(value.length);
+        for (let i = 0; i < value.length; i++) {
+          items[i] = Object.hasOwn(value, i) ? write(value[i], [...path, i]) : { hole: true };
+        }
+        return { array: items };
+      }
+      return { object: Object.keys(value).map((key) => [key, write(value[key], [...path, key])]) };
+    } finally {
+      holding.delete(value);
+    }
+  };
+  const typed = write(params, []);
+  return { typed, parts, copies: state.copies };
+}
+
 /** `!!value`, with data read as the page held it (a string's by its length). */
 function truthy(value) {
   if (value instanceof SwarmData) return value.isString ? value.length > 0 : true;
@@ -348,6 +496,7 @@ function isNullish(value) {
 
 module.exports = {
   INLINE_BYTES,
+  INLINE_TOTAL,
   SwarmData,
   TypedFormError,
   isNullish,
@@ -356,5 +505,6 @@ module.exports = {
   readTyped,
   truthy,
   truthyParam,
+  writePageParams,
   writeTyped,
 };

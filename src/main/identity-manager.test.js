@@ -644,6 +644,64 @@ describe('identity-manager wallet deletion', () => {
     expect(readVaultMeta().activeWalletIndex).toBe(2);
   });
 
+  // freedom-core design 0015, D3 and D8 (the SWM-6 to SWM-9 plan's PR 6.2):
+  // once the feed store is the core's, the references are its shell op's,
+  // awaited and kept in its order (ICU root collation), and main's own
+  // store is never read.
+  test("on the core's feed store, the references are the core's, in its order", async () => {
+    // The core-client mock is this test's alone.
+    try {
+      const references = [
+        { origin: 'a_b.eth', identityId: 'ethereum-wallet:2', active: true, feedNames: [], feedCount: 0 },
+        { origin: 'a-b.eth', identityId: 'ethereum-wallet:2', active: true, feedNames: [], feedCount: 0 },
+        { origin: 'ab.eth', identityId: 'ethereum-wallet:2', active: false, feedNames: ['blog'], feedCount: 1 },
+      ];
+      const coreReferences = jest.fn(async () => references);
+      identityManager = loadMainModule(require.resolve('./identity-manager'), {
+        userDataDir: tmpDir,
+        extraMocks: {
+          ...vaultBackendMocks(backend),
+          [require.resolve('./core/core-client')]: () => ({
+            ...jest.requireActual('./core/core-client'),
+            swarmStoresNamed: () => true,
+          }),
+          [require.resolve('./swarm/feed-store')]: () => ({
+            getEthereumWalletIdentityReferences: (...args) =>
+              mockGetEthereumWalletIdentityReferences(...args),
+            coreOps: { getEthereumWalletIdentityReferences: coreReferences },
+          }),
+        },
+      }).mod;
+      writeVaultMeta({
+        activeWalletIndex: 0,
+        derivedWallets: [
+          { index: 0, name: 'Main Wallet', address: '0x0' },
+          { index: 2, name: 'Trading Wallet', address: '0x2' },
+        ],
+      });
+
+      await expect(identityManager.deleteDerivedWallet(2)).rejects.toMatchObject({
+        code: 'SWARM_PUBLISHER_IDENTITY_WALLET_IN_USE',
+        references,
+      });
+      expect(coreReferences).toHaveBeenCalledWith(2);
+
+      // Unreferenced, the removal goes ahead.
+      coreReferences.mockResolvedValueOnce([]);
+      await identityManager.deleteDerivedWallet(2);
+      expect(readVaultMeta().derivedWallets.map((wallet) => wallet.index)).toEqual([0]);
+      expect(mockGetEthereumWalletIdentityReferences).not.toHaveBeenCalled();
+
+      // A failed op refuses the removal before the core is asked to remove.
+      coreReferences.mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'busy' }));
+      const removals = backend.sim.calls.filter(([method]) => method === 'accounts.remove').length;
+      await expect(identityManager.deleteDerivedWallet(0)).rejects.toMatchObject({ code: 'busy' });
+      expect(backend.sim.calls.filter(([method]) => method === 'accounts.remove')).toHaveLength(removals);
+    } finally {
+      jest.dontMock(require.resolve('./core/core-client'));
+    }
+  });
+
   test('deletes unreferenced derived wallet and resets active wallet', async () => {
     writeVaultMeta({
       activeWalletIndex: 2,
@@ -1787,6 +1845,45 @@ describe('identity-manager safe accounts', () => {
       'safe_pending.list',
       'safe_pending.set',
     ]);
+  });
+
+  // SAFE-3's PR 6: the core backend's approval record of a Safe's SafeTx (in
+  // memory, by wallet index) goes with the Safe, and with a removal that
+  // failed after the core's cleanup, as its approval slots do.
+  test("a Safe's approval record goes with its deletion, and with a removal that failed after the core's cleanup", async () => {
+    await seedOwners();
+    const safe = await addSafe();
+    const records = require('./wallet/safe/approval-records');
+    const zero = '0x0000000000000000000000000000000000000000';
+    const safeTx = {
+      to: LEDGER_ADDRESS,
+      value: '1',
+      data: '0x',
+      operation: 0,
+      safeTxGas: '0',
+      baseGas: '0',
+      gasPrice: '0',
+      gasToken: zero,
+      refundReceiver: zero,
+      nonce: 0,
+    };
+    const safeTxHash = records.safeTxHashOf(safe.address, 100, safeTx);
+    const approve = () => records.record(safe.index, { address: safe.address, chainId: 100, safeTx, safeTxHash });
+    const { vaultBackend } = require('./core/vault-backend');
+
+    approve();
+    vaultBackend.sim.forget = () => {
+      throw Object.assign(new Error('Storage error'), { code: 'storage' });
+    };
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+      code: 'storage',
+    });
+    expect(records.recordFor(safe.index)).toBeNull();
+
+    approve();
+    vaultBackend.sim.forget = null;
+    await identityManager.deleteDerivedWallet(safe.index);
+    expect(records.recordFor(safe.index)).toBeNull();
   });
 
   // Design 0013, "`accounts.remove`" (G12): the core ends a Safe's open

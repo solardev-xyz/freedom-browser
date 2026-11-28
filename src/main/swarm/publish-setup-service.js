@@ -1692,10 +1692,9 @@ function getPublishSetupService() {
       getNodeStatus: antManager.getStatus,
       getRegistryMode: () => getRegistry().ant?.mode,
       getNodeStartedAt: antManager.getSpawnedAt,
-      restartNode: async () => {
-        await antManager.stopAnt();
-        await antManager.startAnt();
-      },
+      // A restart, which the Swarm subscriptions on the bundled node wait
+      // through (ant-manager's restartingUrl).
+      restartNode: () => antManager.restartAnt(),
       getTransactionStatus,
       getWalletTxCount: async (address) => {
         const chainData = require('../networks/chain-data');

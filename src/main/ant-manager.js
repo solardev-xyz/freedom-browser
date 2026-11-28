@@ -58,6 +58,12 @@ let antProcess = null;
 let antSpawnedAt = null;
 let healthCheckInterval = null;
 let pendingStart = false;
+// While restartAnt() restarts the node, `{ url }`, the bundled node's URL
+// (null for any other node), else null. The Swarm subscriptions on that node
+// wait for it to come back at that URL instead of ending
+// (swarm/subscription-registry.js, design 0015's question 4). A stop, a
+// disable, or the clear of an external node is no restart.
+let restartingFrom = null;
 let forceKillTimeout = null;
 let chainBridge = null;
 let startGeneration = 0;
@@ -1440,6 +1446,32 @@ const START_SETTLE_TIMEOUT_MS = 90_000;
  * Resolves once the node is no longer STARTING (RUNNING, ERROR or STOPPED),
  * or after `timeoutMs`.
  */
+/**
+ * Stops the node and starts it again (resolving once the start returns, as
+ * a stop then a start does). A bundled node's URL is `restartingUrl()` from
+ * the stop until the start settles.
+ */
+async function restartAnt() {
+  const restart = { url: currentMode === MODE.BUNDLED && currentApiUrl ? currentApiUrl : null };
+  restartingFrom = restart;
+  const done = () => {
+    if (restartingFrom === restart) restartingFrom = null;
+  };
+  try {
+    await stopAnt();
+    await startAnt();
+  } catch (err) {
+    done();
+    throw err;
+  }
+  waitForStartSettled().then(done, done);
+}
+
+/** The bundled node's URL while restartAnt() restarts it, else null. */
+function restartingUrl() {
+  return restartingFrom?.url ?? null;
+}
+
 function waitForStartSettled(timeoutMs = START_SETTLE_TIMEOUT_MS) {
   if (currentState !== STATUS.STARTING) return Promise.resolve();
   return new Promise((resolve) => {
@@ -1535,6 +1567,8 @@ module.exports = {
   hasLiveProcess,
   startAnt,
   stopAnt,
+  restartAnt,
+  restartingUrl,
   getActivePort,
   getStatus,
   externalVerifyFailures,
