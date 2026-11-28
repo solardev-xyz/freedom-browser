@@ -518,6 +518,9 @@ async function proposeForSite({ safeIndex, payload, token, handle, page, display
       { safe: safeIndex, safe_tx_hash: safeTxHash, authorization: { token, handle }, display },
       page
     );
+    // A fresh site proposal is the site's, whatever an earlier one with the
+    // same hash was withdrawn from.
+    withdrawn.delete(String(safeTxHash).toLowerCase());
     return remember(safeIndex, answer);
   } catch (err) {
     await approvalRecords.dropped(safeIndex, safeTxHash, 'propose_failed');
@@ -600,6 +603,10 @@ async function discard(safeIndex, { safeTxHash = null } = {}) {
     await vault().safe.discard({ safe: safeIndex, safe_tx_hash: named });
     boards.delete(safeIndex);
     asks.delete(safeIndex);
+    // A discard doesn't advance the nonce: the same call proposed again has
+    // the same hash, and must not inherit the old withdrawal (Codex round 1
+    // on #1384).
+    if (typeof named === 'string') withdrawn.delete(named.toLowerCase());
   } finally {
     safeApprovals.endStep(safeIndex);
     await refreshCopy(safeIndex);

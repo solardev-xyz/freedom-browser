@@ -442,6 +442,34 @@ describe("a site's send on the core: recorded, proposed under the page, its boar
     expect(mockRecorded.map((r) => r.context.origin)).toEqual([undefined]);
   });
 
+  test("withdrawn, discarded, then the same SafeTx proposed again by a site: the new one is the site's, its page gone executes nothing (Codex round 1)", async () => {
+    await setup();
+    const first = pageRequest();
+    const firstAnswer = first.sends.device(first.context, DEVICE, PAGE);
+    await until(() => first.prompts.length === 1);
+    first.controller.abort();
+    await firstAnswer;
+    // The first execution withdraws it from its site.
+    await expect(transactions.executeSafePending(5, { safeTxHash: SAFE_TX_HASH })).rejects.toMatchObject({
+      code: 'SAFE_SITE_WITHDRAWN',
+    });
+    // Discarded (the nonce doesn't move), then the same call proposed again.
+    await transactions.cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH });
+    const second = pageRequest();
+    const secondAnswer = second.sends.device(second.context, DEVICE, PAGE);
+    await until(() => second.prompts.length === 1);
+    expect(fake.sent('safe.propose')).toHaveLength(2);
+    // Its page goes: the new proposal is the site's, so its execution meets
+    // the site's guard, and nothing is sent.
+    second.controller.abort();
+    await secondAnswer;
+    await expect(transactions.executeSafePending(5, { safeTxHash: SAFE_TX_HASH })).rejects.toMatchObject({
+      code: 'SAFE_SITE_WITHDRAWN',
+    });
+    expect(fake.sent('safe.execute')).toEqual([]);
+    expect(fake.sent('sign.transaction')).toEqual([]);
+  });
+
   test('a held execution of the site (committed, not sent) is withdrawn from its site in the journal first', async () => {
     await setup();
     const { context, sends, prompts, state } = pageRequest();
