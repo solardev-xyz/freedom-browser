@@ -899,14 +899,15 @@ contextBridge.exposeInMainWorld('wallet', {
     ipcRenderer.invoke('wallet:safe-send', safeIndex, tx, display, chainId, authorization),
   // `authorization`: `{ confirmation }`, a 'safe-send' token confirming the
   // pending SafeTx again when main holds no Safe approval for it.
-  safeSign: (safeIndex, ownerIndex, authorization) =>
-    authorization === undefined
-      ? ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex)
-      : ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex, authorization),
+  // `safeTxHash` (and `options.safeTxHash`): the SafeTx the board shows,
+  // which each step names (required on the core's Safe backend, SAFE-3).
+  safeSign: (safeIndex, ownerIndex, authorization, safeTxHash) =>
+    ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex, authorization ?? null, safeTxHash ?? null),
   safeExecute: (safeIndex, options) =>
     ipcRenderer.invoke('wallet:safe-execute', safeIndex, options),
   safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),
-  safeCancelPending: (index) => ipcRenderer.invoke('wallet:safe-cancel-pending', index),
+  safeCancelPending: (index, safeTxHash) =>
+    ipcRenderer.invoke('wallet:safe-cancel-pending', index, safeTxHash ?? null),
   safePendingList: () => ipcRenderer.invoke('wallet:safe-pending-list'),
   // With the approvals document on (0011 APS-3b): main runs the Safe's board
   // in the window's panel; resolves with how it ended.

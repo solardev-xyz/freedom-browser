@@ -104,15 +104,17 @@ let boardEpoch = 0;
 /** Whether a captured epoch belongs to a superseded board session. */
 const isStale = (epoch) => epoch !== boardEpoch;
 
+// The SafeTx a send board shows, which each of its steps names (main
+// refuses a step for another on the core's Safe backend: SAFE-3).
+const shownSafeTx = () => state?.safeTxHash ?? null;
+
 // The IPC surface per board kind — everything else is shared.
 const KIND_API = {
   send: {
     state: (safeIndex) => window.wallet.safeState(safeIndex),
     sign: (safeIndex, ownerIndex, authorization) =>
-      authorization === undefined
-        ? window.wallet.safeSign(safeIndex, ownerIndex)
-        : window.wallet.safeSign(safeIndex, ownerIndex, authorization),
-    cancel: (safeIndex) => window.wallet.safeCancelPending(safeIndex),
+      window.wallet.safeSign(safeIndex, ownerIndex, authorization, shownSafeTx()),
+    cancel: (safeIndex) => window.wallet.safeCancelPending(safeIndex, shownSafeTx()),
   },
   message: {
     state: (safeIndex) => window.wallet.safeMessageState(safeIndex, messageToken),
@@ -578,9 +580,10 @@ async function executeNow(feeConfirmation) {
   feeAsk = null;
   render();
 
+  const safeTxHash = shownSafeTx();
   const result = await (feeConfirmation
-    ? window.wallet.safeExecute(boardSafeIndex, { feeConfirmation })
-    : window.wallet.safeExecute(boardSafeIndex));
+    ? window.wallet.safeExecute(boardSafeIndex, { feeConfirmation, safeTxHash })
+    : window.wallet.safeExecute(boardSafeIndex, { safeTxHash }));
   if (isStale(epoch)) return;
   if (result.success && result.state?.status === 'executed') {
     state = result.state; // pre-clear snapshot — display survives for the summary
@@ -665,7 +668,7 @@ async function handleDiscard() {
       return;
     }
     const epoch = boardEpoch;
-    const result = await window.wallet.safeCancelPending(boardSafeIndex);
+    const result = await window.wallet.safeCancelPending(boardSafeIndex, shownSafeTx());
     if (isStale(epoch) || !result.success) return;
     // A page's send: main heard the discard itself, and answers the page.
     if (pageBoard?.kind === 'send') pageBoard = null;

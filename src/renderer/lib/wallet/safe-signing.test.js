@@ -129,7 +129,10 @@ describe("safe signing board — the executor's fee", () => {
     feeCheck,
     offer: OFFER,
   });
+  // The SafeTx the board shows, which each step names (SAFE-3).
+  const SHOWN = '0x' + 'cd'.repeat(32);
   const sendState = () => ({
+    safeTxHash: SHOWN,
     status: 'collecting',
     collected: 2,
     threshold: 2,
@@ -179,7 +182,7 @@ describe("safe signing board — the executor's fee", () => {
   test("a fee that needs the user: shown, and nothing signed until it's confirmed", async () => {
     const { walletMocks, content } = await openStoppedBoard();
     expect(walletMocks.safeExecute).toHaveBeenCalledTimes(1);
-    expect(walletMocks.safeExecute).toHaveBeenCalledWith(5);
+    expect(walletMocks.safeExecute).toHaveBeenCalledWith(5, { safeTxHash: SHOWN });
     expect(content.innerHTML).toContain('Confirm the network fee');
     expect(content.innerHTML).toContain('Up to 0.0003 xDAI');
     expect(content.innerHTML).toContain("Couldn't compare this fee with today's network fee");
@@ -197,7 +200,7 @@ describe("safe signing board — the executor's fee", () => {
     await click(confirmButton);
     const { executorIndex: _executor, ...payload } = OFFER;
     expect(walletMocks.confirmSigning).toHaveBeenCalledWith('executor-send', 0, payload);
-    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5, { feeConfirmation: CONFIRMED });
+    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5, { feeConfirmation: CONFIRMED, safeTxHash: SHOWN });
   });
 
   test('above the threshold: the ratio, and the confirmation says it was seen', async () => {
@@ -230,7 +233,7 @@ describe("safe signing board — the executor's fee", () => {
       expect.anything(),
       { feeAcknowledged: true }
     );
-    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5, { feeConfirmation: CONFIRMED });
+    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5, { feeConfirmation: CONFIRMED, safeTxHash: SHOWN });
   });
 
   test('a failed execution stays retryable, and "Try again" is judged again', async () => {
@@ -244,7 +247,7 @@ describe("safe signing board — the executor's fee", () => {
     expect(content.innerHTML).toContain('Insufficient funds for transaction');
     await click(retryButton);
     // A new quote, judged again: no confirmation rides along.
-    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5);
+    expect(walletMocks.safeExecute).toHaveBeenLastCalledWith(5, { safeTxHash: SHOWN });
     expect(content.innerHTML).toContain('Confirm fee and execute');
   });
 });
@@ -473,10 +476,32 @@ describe("safe signing board — a page's Safe send (0011 PRQ-5b)", () => {
       tx: { to: '0xabc', value: '0', data: '0x01' },
       chainId: 100,
     });
+    // Each names the SafeTx the board shows (SAFE-3).
     expect(walletMocks.safeSign.mock.calls).toEqual([
-      [5, 1],
-      [5, 1, { confirmation: 'token-1' }],
+      [5, 1, undefined, '0xsafetx'],
+      [5, 1, { confirmation: 'token-1' }, '0xsafetx'],
     ]);
+  });
+
+  // SAFE-3: a step acts only on the SafeTx the board shows. Main refuses
+  // one naming another (wallet-ipc.js, the core's Safe backend).
+  test('the sweep and the discard name the SafeTx the board shows', async () => {
+    const { walletMocks, show } = await loadSendBoard();
+    const discardButton = createElement('button');
+    const byId = global.document.getElementById;
+    global.document.getElementById = (id) => (id === 'safe-signing-discard' ? discardButton : byId(id));
+    const confirmSpy = jest.fn(() => true);
+    global.confirm = confirmSpy;
+    show();
+    await flushMicrotasks();
+    expect(walletMocks.safeSign).toHaveBeenCalledWith(5, undefined, undefined, '0xsafetx');
+    discardButton.dispatch('click');
+    await flushMicrotasks();
+    // (Each render adds its listener to this one stub button.)
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(walletMocks.safeCancelPending).toHaveBeenCalledWith(5, '0xsafetx');
+    expect(walletMocks.safeCancelPending.mock.calls.every((call) => call[1] === '0xsafetx')).toBe(true);
+    delete global.confirm;
   });
 
   test('at the threshold it executes as before; main closing the prompt meanwhile keeps the board to its summary', async () => {
@@ -487,7 +512,7 @@ describe("safe signing board — a page's Safe send (0011 PRQ-5b)", () => {
     walletMocks.safeExecute.mockReturnValue(execution.promise);
     show();
     await flushMicrotasks();
-    expect(walletMocks.safeExecute).toHaveBeenCalledWith(5);
+    expect(walletMocks.safeExecute).toHaveBeenCalledWith(5, { safeTxHash: '0xsafetx' });
     // Main heard the execution and answered the page: its prompt closes.
     expect(renderer.close('h1')).toBe(true);
     expect(screen.classList.contains('hidden')).toBe(false);

@@ -1643,6 +1643,33 @@ async function handleSendPasswordUnlock() {
   }
 }
 
+/**
+ * The confirmation of a Safe send. On the core's Safe backend with the
+ * approvals document off (freedom-core design 0016, SAFE-3), main answers
+ * the first request SAFE_TX_PREPARED with the SafeTx the core built after
+ * this screen's review (`prepared`: `{ id, nonce }`): the user confirms it,
+ * shown as "Safe transaction #N" beside the recipient and the amount, and
+ * only then is its token minted, for exactly that SafeTx. Elsewhere (the
+ * approvals document shows it, or js) the first request's token is the
+ * answer. `ask` shows the text and resolves the user's yes or no.
+ */
+async function confirmSafeSend(safeIndex, request, shown, ask = (text) => window.confirm(text)) {
+  try {
+    return await confirmSigning('safe-send', safeIndex, request);
+  } catch (err) {
+    if (err?.code !== 'SAFE_TX_PREPARED' || !err.prepared) throw err;
+    if (!(await ask(safeTxConfirmText(err.prepared, shown)))) {
+      throw Object.assign(new Error('Transaction cancelled'), { code: 'USER_REJECTED' });
+    }
+    return confirmSigning('safe-send', safeIndex, { ...request, prepared: err.prepared.id });
+  }
+}
+
+/** What the chrome's own confirmation of a prepared SafeTx shows (`confirmSafeSend`). */
+function safeTxConfirmText(prepared, { toAddress, amount, symbol }) {
+  return `Send Safe transaction #${prepared.nonce}?\n\nTo: ${toAddress}\nAmount: ${amount} ${symbol}`;
+}
+
 async function handleSendConfirm() {
   const safe = activeSafeWallet();
   // Nothing is confirmed before the fee check's verdict is shown, and a
@@ -1730,7 +1757,11 @@ async function handleSendConfirm() {
         // The chain the user actually composed on — main refuses anything
         // the Safe does not live on rather than rebasing the calldata.
         sendTxState.chainId,
-        await confirmSigning('safe-send', safe.index, { tx: safeTx, chainId: sendTxState.chainId })
+        await confirmSafeSend(safe.index, { tx: safeTx, chainId: sendTxState.chainId }, {
+          toAddress: display.toAddress,
+          amount: sendTxState.amount,
+          symbol: token.symbol,
+        })
       );
       if (!created.success) {
         throw new Error(created.error || 'Failed to create the transaction');
@@ -1795,6 +1826,7 @@ async function handleSendConfirm() {
 }
 
 export const __test__ = {
+  confirmSafeSend,
   lookupPrimaryNameForAddress,
   showSendSuccessView,
   renderRecipientReview,

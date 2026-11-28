@@ -7,7 +7,8 @@
  * reference's validators read JavaScript types that JSON loses. Main writes
  * that form (SWM-7's encoder) and binds its operation grammar to what it
  * sent, never to the core's word (swarm-grammar.js). This module is the
- * reader the grammar takes them from:
+ * reader the grammar takes them from, and the writer of the Swarm store
+ * ops' members (`writeTyped`, below):
  *
  * - **Values:** `{ string }`, `{ number: String(n) }` (`-0`, `NaN` and the
  *   infinities included), `{ bigint }`, `{ boolean }`, `{ null: true }`,
@@ -28,6 +29,16 @@
  * Read strictly: a tag this form doesn't have, a member past the tag's, a
  * value of another type, a duplicate key or base64 that isn't its bytes'
  * throws a `TypedFormError`. Main wrote the form, so a throw is main's bug.
+ *
+ * **The store ops** (design 0015, D5 and D7; SWM-6): `swarm.identities`,
+ * `swarm.history` and `swarm.manifest` take each member of their params as
+ * a typed value, since the reference reads the chrome's IPC values by
+ * their JavaScript types (a label that isn't a string, an `activate` that
+ * isn't `true`, an identity id of any type), and answer `{ result_typed }`
+ * or `{ error_typed }`. `writeTyped` writes a member: the values above but
+ * data and bytes, which no store holds (the core refuses them,
+ * `invalid_argument`). `readPlain` reads an answer: `readTyped` with no
+ * data or bytes tag, which no store op answers.
  */
 
 /** Inline bytes are at most 64 KiB; past that they come as a part. */
@@ -130,6 +141,22 @@ function only(typed, allowed) {
  * @returns {*} the value as JavaScript held it
  */
 function readTyped(typed) {
+  return readValue(typed, false);
+}
+
+/**
+ * Reads one typed value that holds no data or bytes (a store op's answer,
+ * design 0015, D5): `readTyped`, with a `bytes`, `string_bytes` or
+ * `bytes_elsewhere` tag anywhere in it a `TypedFormError` too.
+ *
+ * @param {object} typed
+ * @returns {*}
+ */
+function readPlain(typed) {
+  return readValue(typed, true);
+}
+
+function readValue(typed, plain) {
   if (typed === null || typeof typed !== 'object' || Array.isArray(typed)) {
     throw new TypedFormError('a value is not an object of one tag');
   }
@@ -167,7 +194,7 @@ function readTyped(typed) {
           typeof item === 'object' &&
           Object.keys(item).length === 1 &&
           item.hole === true;
-        if (!hole) out[i] = readTyped(item);
+        if (!hole) out[i] = readValue(item, plain);
       });
       return out;
     }
@@ -182,7 +209,7 @@ function readTyped(typed) {
         if (Object.hasOwn(out, pair[0])) throw new TypedFormError('a key twice');
         // An own property, whatever its name: `__proto__` included.
         Object.defineProperty(out, pair[0], {
-          value: readTyped(pair[1]),
+          value: readValue(pair[1], plain),
           enumerable: true,
           writable: true,
           configurable: true,
@@ -192,6 +219,7 @@ function readTyped(typed) {
     }
     case 'bytes':
     case 'string_bytes': {
+      if (plain) throw new TypedFormError(`${tag} where no bytes can be`);
       const string = tag === 'string_bytes';
       only(typed, string ? ['base64', 'part'] : ['kind', 'base64', 'part']);
       const kind = string ? 'string' : typed.kind;
@@ -209,11 +237,85 @@ function readTyped(typed) {
       return new SwarmData(kind, content, null, typed.part);
     }
     case 'bytes_elsewhere':
+      if (plain) throw new TypedFormError(`${tag} where no bytes can be`);
       only(typed, ['kind', 'base64']);
       if (!BYTES_KINDS.includes(typed.kind)) throw new TypedFormError('bytes of an unknown kind');
       return heldBytes(typed.kind, inlineBytes(content, typed.base64));
     default:
       throw new TypedFormError(`an unknown tag ${tag}`);
+  }
+}
+
+/** `String(n)`, with `-0` written as such (the text `readNumber` takes). */
+function numberText(n) {
+  return Object.is(n, -0) ? '-0' : String(n);
+}
+
+/**
+ * Whether `value` is a plain object: of no class but `Object` (any realm's,
+ * as `structuredClone` makes them), or of none.
+ */
+function isPlainObject(value) {
+  const proto = Object.getPrototypeOf(value);
+  return proto === null || Object.getPrototypeOf(proto) === null;
+}
+
+/**
+ * Writes one value in the typed form, as a store op's member (design 0015,
+ * D7: `formats.typed`): `{ string }`, `{ number: String(n) }` (`-0`, `NaN`
+ * and the infinities included), `{ bigint }`, `{ boolean }`,
+ * `{ null: true }`, `{ undefined: true }`, `{ array }` with `{ hole: true }`
+ * for a hole, and `{ object: [[key, value], …] }` for a plain object, its
+ * own enumerable string keys in `Object.keys` order (`__proto__` among
+ * them when it is an own key). `readTyped` reads back what it wrote.
+ *
+ * Anything else is no value a store holds, and throws a `TypedFormError`,
+ * unsent: a symbol, a function, bytes (a Buffer, a typed array, an
+ * ArrayBuffer: the page's data is SWM-7's encoder's), an object of
+ * another class (a Date, a Map, an Error), or a value that holds itself.
+ *
+ * @param {*} value
+ * @returns {object}
+ */
+function writeTyped(value) {
+  return writeValue(value, new Set());
+}
+
+function writeValue(value, holding) {
+  switch (typeof value) {
+    case 'string':
+      return { string: value };
+    case 'number':
+      return { number: numberText(value) };
+    case 'bigint':
+      return { bigint: value.toString() };
+    case 'boolean':
+      return { boolean: value };
+    case 'undefined':
+      return { undefined: true };
+    case 'object':
+      break;
+    default:
+      throw new TypedFormError(`a ${typeof value} has no typed form`);
+  }
+  if (value === null) return { null: true };
+  if (holding.has(value)) throw new TypedFormError('a value holds itself');
+  holding.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const items = new Array(value.length);
+      for (let i = 0; i < value.length; i++) {
+        items[i] = Object.hasOwn(value, i) ? writeValue(value[i], holding) : { hole: true };
+      }
+      return { array: items };
+    }
+    if (!isPlainObject(value)) {
+      const name = value.constructor?.name || 'unnamed';
+      throw new TypedFormError(`an object of class ${name} is no store value`);
+    }
+    return { object: Object.keys(value).map((key) => [key, writeValue(value[key], holding)]) };
+  } finally {
+    holding.delete(value);
   }
 }
 
@@ -250,7 +352,9 @@ module.exports = {
   TypedFormError,
   isNullish,
   param,
+  readPlain,
   readTyped,
   truthy,
   truthyParam,
+  writeTyped,
 };
