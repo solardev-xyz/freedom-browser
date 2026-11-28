@@ -327,6 +327,24 @@ describe('confirming a fee main stopped its own transaction for', () => {
     );
   });
 
+  // freedom-core design 0016, SAFE-3 (the plan's point 8): the identity
+  // core's offer is the ask main holds; each press answers that ask's ID,
+  // and main asks a fee above the threshold again before it sends
+  // `fee_ack`. Nothing is minted for it.
+  test("the core's offer is confirmed by its ask's ID, press by press: no executor-send token minted", async () => {
+    const offer = { feeAskId: 'ask-1', feeAskAgain: false, safeIndex: 5, executorIndex: 0, chainId: 100, to: OFFER.to, value: '0' };
+    const above = { ...VERDICT, above: true };
+    await expect(feeCheck.confirmOfferedFee(offer, above)).resolves.toEqual({ feeAskId: 'ask-1' });
+    // Main's second ask, under a new ID: the second press answers that one.
+    await expect(feeCheck.confirmOfferedFee({ ...offer, feeAskId: 'ask-2', feeAskAgain: true }, above)).resolves.toEqual({
+      feeAskId: 'ask-2',
+    });
+    expect(window.wallet.confirmSigning).not.toHaveBeenCalled();
+    // No bare acknowledgement: an offer without an ask is today's, minted.
+    await feeCheck.confirmOfferedFee({ ...OFFER, feeAck: true }, VERDICT);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledTimes(1);
+  });
+
   test("main's ask-again reaches the screen with its verdict", async () => {
     window.wallet.confirmSigning.mockResolvedValueOnce({
       success: false,
