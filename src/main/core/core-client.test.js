@@ -553,52 +553,101 @@ describe('CoreClient', () => {
   });
 
   // The SWM-6 to SWM-9 plan, point 1 (design 0015's 2026-11-28
-  // amendment): the store move follows the switch, read once per process.
+  // amendment): the store move follows the switch, read once per process;
+  // from SWM-7's flip (PR 7.4) the build's hello names the Swarm stores on
+  // `core`, and never on `js`.
   describe('the Swarm stores follow the switch', () => {
-    test('storeMovedFor names swarm_stores only for core, and only when a test asks', () => {
+    test('storeMovedFor names swarm_stores exactly for core', () => {
       expect(storeMovedFor('js')).toBe(STORE_MOVED);
-      expect(storeMovedFor('core')).toBe(STORE_MOVED);
+      const named = storeMovedFor('core');
+      expect(named).toEqual([...STORE_MOVED, 'swarm_stores']);
+      expect(named).toEqual(STORES.filter((name) => named.includes(name)));
+      expect(Object.isFrozen(named)).toBe(true);
+      expect(storeMovedFor('core', { swarmStores: true })).toEqual(named);
       expect(storeMovedFor('js', { swarmStores: true })).toBe(STORE_MOVED);
+      // A test may still choose a hello without them on core.
       expect(storeMovedFor('core', { swarmStores: false })).toBe(STORE_MOVED);
       expect(storeMovedFor('core', { swarmStores: 'yes' })).toBe(STORE_MOVED);
-      const chosen = storeMovedFor('core', { swarmStores: true });
-      expect(chosen).toEqual([...STORE_MOVED, 'swarm_stores']);
-      expect(chosen).toEqual(STORES.filter((name) => chosen.includes(name)));
-      expect(Object.isFrozen(chosen)).toBe(true);
       for (const backend of ['rust', '', undefined, null, 'CORE']) {
         expect(() => storeMovedFor(backend)).toThrow(TypeError);
       }
     });
 
-    test.each(['js', 'core'])(
-      "the build's hello on %s names set A, never swarm_stores",
-      (backend) => {
-        const saved = process.env.FREEDOM_SWARM_BACKEND;
-        process.env.FREEDOM_SWARM_BACKEND = backend;
-        try {
-          // A process of its own: made, and its switch read, inside it.
-          jest.isolateModules(() => {
-            const { CoreClient: Isolated } = require('./core-client');
-            const { swarmBackendKind } = require('../swarm/swarm-backend-kind');
-            const client = new Isolated({
-              spawn: jest.fn(),
-              command: '/bin/freedom-cored',
-              args: ['serve'],
-              log: quietLog(),
-              grantRoot: os.tmpdir(),
-              shellVersion: 'jest',
-            });
-            // The client read the switch as it was made, and latched it.
-            process.env.FREEDOM_SWARM_BACKEND = backend === 'js' ? 'core' : 'js';
-            expect(swarmBackendKind()).toBe(backend);
-            const sent = client.service.helloParams(client).store_moved;
-            expect(sent).toEqual([...STORE_MOVED]);
-            expect(sent).not.toContain('swarm_stores');
+    /**
+     * `fn` in a process of its own (a fresh registry) whose switch reads
+     * `backend`, packaged when `packaged`: the client is made, and its
+     * switch read, inside it.
+     */
+    function inProcess(backend, fn, { packaged = false } = {}) {
+      const saved = process.env.FREEDOM_SWARM_BACKEND;
+      process.env.FREEDOM_SWARM_BACKEND = backend;
+      try {
+        jest.isolateModules(() => {
+          jest.doMock('electron', () => ({ app: { isPackaged: packaged } }), { virtual: true });
+          const isolated = require('./core-client');
+          const { swarmBackendKind } = require('../swarm/swarm-backend-kind');
+          const client = new isolated.CoreClient({
+            spawn: jest.fn(),
+            command: '/bin/freedom-cored',
+            args: ['serve'],
+            log: quietLog(),
+            grantRoot: os.tmpdir(),
+            shellVersion: 'jest',
           });
-        } finally {
-          if (saved === undefined) delete process.env.FREEDOM_SWARM_BACKEND;
-          else process.env.FREEDOM_SWARM_BACKEND = saved;
-        }
+          // The client read the switch as it was made, and latched it.
+          process.env.FREEDOM_SWARM_BACKEND = backend === 'js' ? 'core' : 'js';
+          fn({ client, isolated, kind: swarmBackendKind() });
+          jest.dontMock('electron');
+        });
+      } finally {
+        if (saved === undefined) delete process.env.FREEDOM_SWARM_BACKEND;
+        else process.env.FREEDOM_SWARM_BACKEND = saved;
+      }
+    }
+
+    test("the build's hello on js names set A alone, as before the flip", () => {
+      inProcess('js', ({ client, isolated, kind }) => {
+        expect(kind).toBe('js');
+        const sent = client.service.helloParams(client).store_moved;
+        expect(sent).toEqual([...STORE_MOVED]);
+        expect(sent).not.toContain('swarm_stores');
+        expect(isolated.swarmStoresNamed()).toBe(false);
+      });
+    });
+
+    test("the build's hello on core names set A and swarm_stores, and takes their echo", async () => {
+      let client;
+      inProcess('core', (made) => {
+        expect(made.kind).toBe('core');
+        client = made.client;
+        const sent = client.service.helloParams(client).store_moved;
+        expect(sent).toEqual([...STORE_MOVED, 'swarm_stores']);
+        expect(made.isolated.swarmStoresNamed()).toBe(true);
+      });
+      // The core's echo of both is a valid hello; an echo without the Swarm
+      // stores reads as their not being taken, and their requests fail
+      // requirement_unmet in main.
+      const named = [...STORE_MOVED, 'swarm_stores'];
+      expect(client.service.validHello(helloResult({ store_moved: named }))).not.toBeNull();
+      const without = client.service.validHello(helloResult({ store_moved: [...STORE_MOVED] }));
+      expect(without).not.toBeNull();
+      expect(requiresStore('swarm_stores')(without)).toBe(false);
+    });
+
+    // U-2 (the SWM-6 to SWM-9 plan, point 15) is open; until it is
+    // answered, the core's backend is a development build's alone.
+    test.each(['core', 'js'])(
+      "a packaged build's hello names set A alone, FREEDOM_SWARM_BACKEND=%s",
+      (backend) => {
+        inProcess(
+          backend,
+          ({ client, isolated, kind }) => {
+            expect(kind).toBe('js');
+            expect(client.service.helloParams(client).store_moved).toEqual([...STORE_MOVED]);
+            expect(isolated.swarmStoresNamed()).toBe(false);
+          },
+          { packaged: true }
+        );
       }
     );
 
@@ -617,12 +666,12 @@ describe('CoreClient', () => {
         });
         expect(swarmBackendKind).toHaveBeenCalledTimes(1);
         expect(swarmBackendKind).toHaveBeenCalledWith();
-        expect(client.service.helloParams(client).store_moved).toEqual([...built]);
+        expect(client.service.helloParams(client).store_moved).toEqual([...built, 'swarm_stores']);
         jest.dontMock('../swarm/swarm-backend-kind');
       });
     });
 
-    test("a test-chosen hello names swarm_stores, takes the core's echo of it, and holds the store's requests to it", async () => {
+    test("a hello naming swarm_stores takes the core's echo of it, and holds the store's requests to it", async () => {
       const chosen = storeMovedFor('core', { swarmStores: true });
       for (const echo of [[], [...STORE_MOVED], [...chosen], ['swarm_stores']]) {
         const { client, children } = makeClient([
@@ -636,7 +685,7 @@ describe('CoreClient', () => {
         expect(hello.store_moved).toEqual(echo);
         expect(requiresStore('swarm_stores')(hello)).toBe(echo.includes('swarm_stores'));
       }
-      // The build's hello takes no echo of it: main never sent it.
+      // A hello without it (js's) takes no echo of it: main never sent it.
       expect(
         coreInternal.validHello(helloResult({ store_moved: ['swarm_stores'] }), STORE_MOVED)
       ).toBeNull();

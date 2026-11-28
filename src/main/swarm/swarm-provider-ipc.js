@@ -49,6 +49,7 @@ const { isNoUsableBatchError } = require('./batch-errors');
 const { resolveSwarmSigner, getIdentityMode } = require('./swarm-signer');
 const { ETHEREUM_WALLET_MODE, ETHEREUM_WALLET_UNAVAILABLE } = require('./removed-identity-mode');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
+const { assertJsBackend } = require('./swarm-backend-kind');
 const log = require('electron-log');
 
 const LIMITS = {
@@ -445,7 +446,12 @@ function permissionFreeReadMeter(origin) {
 }
 
 /**
- * Execute a Swarm provider method.
+ * Execute a Swarm provider method: the JS backend's, which runs only in a
+ * process whose Swarm backend is `js` (swarm-backend-kind.js). On `core`
+ * (SWM-7's flip, PR 7.4) window.swarm goes through the core
+ * (page/page-swarm-core.js), and the feed store and publish history this
+ * provider writes are the core's: a call that reaches it there is main's
+ * bug, answered `-32603` with nothing read or written, never run.
  * @param {string} method
  * @param {*} params
  * @param {string} origin - The requester's attested key (page/page-swarm.js)
@@ -469,6 +475,8 @@ function permissionFreeReadMeter(origin) {
  */
 async function executeSwarmMethod(method, params, origin, meta) {
   try {
+    assertJsBackend('The JS Swarm provider');
+
     if (!method || typeof method !== 'string') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'Method is required' } };
     }
@@ -2405,10 +2413,15 @@ function handleUnsubscribe(params, origin, meta) {
 /**
  * Read-only pre-flight: is the Bee HTTP API reachable?
  * Intentionally separate from checkSwarmPreFlight — reads don't need
- * mode, readiness, or stamp checks.
+ * mode, readiness, or stamp checks. The JS provider's own: on the core's
+ * backend it rejects before it reads the node's URL (`assertJsBackend`).
+ * @param {string|null} [givenUrl] - the node to probe; the session's Ant API
+ *   URL when omitted
  * @returns {{ ok: boolean, reason?: string }}
  */
-async function checkBeeReachable(beeUrl = getAntApiUrl()) {
+async function checkBeeReachable(givenUrl) {
+  assertJsBackend("The JS Swarm provider's node probe");
+  const beeUrl = givenUrl === undefined ? getAntApiUrl() : givenUrl;
   // Global `fetch` (undici), which never sees `session.setProxy` — so an
   // external Ant API on a `.onion` host is handed to the system resolver
   // instead of Tor, the shape #355 fixed for the external IPFS gateway.
@@ -2436,9 +2449,12 @@ async function checkBeeReachable(beeUrl = getAntApiUrl()) {
  * setup service, the one place that reads the node's chain init, mode, peer
  * readiness and usable stamps (publish-setup-service.js). `reason` is one of
  * `node-stopped`, `node-not-ready`, `ultra-light-mode`, `no-usable-stamps`.
+ * The JS provider's own: on the core's backend it rejects before asking
+ * (`assertJsBackend`); the core's ready check is swarm-shell.js's.
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
 async function checkSwarmPreFlight() {
+  assertJsBackend("The JS Swarm provider's publish pre-flight");
   try {
     const readiness = await getPublishReadiness();
     return readiness.ok ? { ok: true } : { ok: false, reason: readiness.reason };

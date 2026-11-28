@@ -30,7 +30,7 @@
  * SWM-9 plan's PR 6.2): main's own file, swarm-feeds.json, unless this
  * process's hello names `swarm_stores` (core-client.js
  * `swarmStoresNamed()`: a process on the core's Swarm backend, from SWM-7's
- * flip, PR 7.4; until then only tests). Then the file is the core's, and
+ * flip, PR 7.4; on `js`, no build's). Then the file is the core's, and
  * main never opens it:
  * - the chrome's handlers (`registerFeedStoreIpc`) relay each request to
  *   the core's `swarm.identities` op named by its channel, as `chrome`;
@@ -39,12 +39,14 @@
  *   main's own `swarm.identities` ops, as `shell`; their callers pick these
  *   or the functions below by `swarmStoresNamed()`;
  * - every function below that reads or writes the file throws, unrun
- *   (`loadFeeds`). Among them are the JS provider's direct calls
+ *   (`loadFeeds`, or before its arguments are read where it checks them
+ *   first). Among them are the JS provider's direct calls
  *   (swarm-provider-ipc.js: `getOriginEntry`, `getFeed`, `setFeed`,
  *   `updateFeedReference`, `getAllFeeds`, `isIdentitySharedWithOtherOrigins`,
  *   `hasFeedGrant`), which have no core op: the JS provider can't run on
- *   such a process (the plan's point 1; PR 7.4 sends its methods to the
- *   core), so they are refused rather than built.
+ *   such a process (the plan's point 1; from PR 7.4 its methods go to the
+ *   core, and it refuses to run there), so they are refused rather than
+ *   built.
  */
 
 const { ipcMain } = require('electron');
@@ -514,6 +516,8 @@ function getOriginEntry(origin) {
  * @returns {Object} The origin entry
  */
 function setOriginEntry(origin, data) {
+  // Refused before its arguments are read, as every path here is.
+  assertMainStore();
   assertAvailableMode(data.identityMode);
 
   const store = loadFeeds();
@@ -662,6 +666,8 @@ async function enrichIdentityOwner(identity, options = {}) {
  * @returns {boolean}
  */
 function isIdentitySharedWithOtherOrigins(origin, identity) {
+  // Refused even where the identity alone would answer.
+  assertMainStore();
   const mode = identity?.mode || identity?.identityMode || null;
   if (mode !== 'app-scoped') return true;
   if (typeof identity.publisherKeyIndex !== 'number') return true;
@@ -812,8 +818,9 @@ function ensureAntWalletIdentity(origin, options = {}) {
   return getOriginEntry(origin);
 }
 
-function activateIdentity(origin, identityId, { source = 'user' } = {}) {
+function activateIdentity(origin, identityId, options = {}) {
   const store = loadFeeds();
+  const { source = 'user' } = options;
   const key = normalizeOrigin(origin);
   const entry = store.origins[key];
   if (!entry) {
@@ -947,6 +954,7 @@ function getAllOriginEntries() {
 }
 
 function getEthereumWalletIdentityReferences(walletIndex) {
+  assertMainStore();
   if (typeof walletIndex !== 'number' || !Number.isInteger(walletIndex) || walletIndex < 0) {
     throw new Error('Wallet index must be a non-negative integer');
   }
@@ -1046,8 +1054,9 @@ function assertFeedGrantable(origin) {
  * @param {string} origin
  * @param {{source?: string}} [options]
  */
-function grantFeedAccess(origin, { source = 'user' } = {}) {
+function grantFeedAccess(origin, options = {}) {
   const store = loadFeeds();
+  const { source = 'user' } = options;
   const key = normalizeOrigin(origin);
   if (!store.origins[key]) return;
   assertFeedGrantable(key);
@@ -1062,8 +1071,9 @@ function grantFeedAccess(origin, { source = 'user' } = {}) {
  * @param {string} origin
  * @param {{source?: string}} [options]
  */
-function revokeFeedAccess(origin, { source = 'user' } = {}) {
+function revokeFeedAccess(origin, options = {}) {
   const store = loadFeeds();
+  const { source = 'user' } = options;
   const key = normalizeOrigin(origin);
   if (!store.origins[key]) return;
   store.origins[key].feedGranted = false;

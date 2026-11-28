@@ -6,14 +6,14 @@
  * `swarm-manifest-grants.json`, with its projections onto the Swarm grants)
  * and `swarm.history` (the publish history, `publish-history.sqlite`).
  *
- * **Unused until SWM-7's flip.** The core serves these only once a hello
- * names `swarm_stores` (D3; `not_moved` before), and no build's hello does
- * until PR 7.4 (core-client.js `storeMovedFor`). So every call goes with
+ * **On the core's backend from SWM-7's flip.** The core serves these only
+ * once a hello names `swarm_stores` (D3; `not_moved` before), which a
+ * build's hello does on the core's Swarm backend from PR 7.4, and never on
+ * `js` (core-client.js `storeMovedFor`). So every call goes with
  * `requires: requiresStore('swarm_stores')`, and on any process whose hello
  * didn't echo the name it fails `requirement_unmet` in main, unsent. PRs
- * 6.2 to 6.4 make feed-store.js, permission-manifests.js and
- * publish-history.js clients of these on the core's backend; nothing in
- * production calls them yet.
+ * 6.2 to 6.4 made feed-store.js, permission-manifests.js and
+ * publish-history.js clients of these on the core's backend.
  *
  * **The wire form** (D5, D7; fc-swarm-provider's `ops::Members`): params
  * are `{ op, ...members }`, `op` a string naming the op and each member a

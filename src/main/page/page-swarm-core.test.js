@@ -842,7 +842,7 @@ describe('swarm_unsubscribe never reaches the core (D5)', () => {
   });
 });
 
-describe('the JS path, unchanged until the flip', () => {
+describe('the JS path, unchanged on js (SWM-7\'s flip picks it by the switch)', () => {
   test("page-swarm.js's own execute is the JS backend's, with exactly its four arguments", async () => {
     const dispatchers = createSwarmDispatchers({ identityWalletEnabled: () => true });
     const context = {

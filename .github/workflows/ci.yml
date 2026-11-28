@@ -1172,6 +1172,28 @@ jobs:
         env:
           FREEDOM_CORED_STORES_TEST: '1'
 
+      # freedom-core design 0015, SWM-7 (the SWM-6 to SWM-9 plan's PR 7.4,
+      # the flip): a development build with FREEDOM_SWARM_BACKEND=core, as
+      # main runs it. The build's own hello names `swarm_stores` and the
+      # pinned core takes it; page-swarm.js's default deps send every
+      # window.swarm method but swarm_unsubscribe to the core as one
+      # swarm.request, and the JS provider is never called. A whole session
+      # against a node on loopback that stores what it is sent, a method of
+      # each family: connect, capabilities, publishData, publishFiles and
+      # its upload status, a chunk published and read back, a feed created,
+      # an entry written and read back, the feeds listed, the messaging
+      # identity, a PSS and a GSOC subscription on what the core derived (a
+      # message delivered to the document), a GSOC send and an unsubscribe.
+      # An fs and better-sqlite3 spy over the whole session shows main
+      # touches none of the three stores' files, and on Linux holds none
+      # open, while the core wrote them; a Worker spy shows the GSOC worker
+      # idle while the core mined.
+      - name: window.swarm through the core, the build's own flip (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-swarm-flip.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
       # freedom-core design 0013, "The intent journal" (PRF-6(b2)): this
       # build names `intents`, so the core is wallet-intents.jsonl's one
       # writer. Main's intent store, nonce reservations and send path
