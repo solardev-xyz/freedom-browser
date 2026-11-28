@@ -112,6 +112,81 @@ function dataOf(spec) {
   return content(spec.seed, spec.length);
 }
 
+/** A part's bytes, as the file describes them. */
+function partOf(part) {
+  if (part.seed !== undefined) return content(part.seed, part.length);
+  return Buffer.from(part.repeat.repeat(part.count), 'utf-8');
+}
+
+/** A part's JavaScript value: a string for a repeated unit, else bytes. */
+function bytesValue(kind, bytes) {
+  switch (kind) {
+    case 'Buffer':
+      return Buffer.from(bytes);
+    case 'Uint8Array':
+      return new Uint8Array(bytes);
+    case 'ArrayBuffer':
+      return new Uint8Array(bytes).buffer;
+    default:
+      return { type: 'Buffer', data: [...bytes] };
+  }
+}
+
+/**
+ * The value a page held, rebuilt from a `methods` step's typed form and its
+ * `parts` (each data value as its kind: a Buffer, a Uint8Array, an
+ * ArrayBuffer, a `{ type: 'Buffer', data }` or a string; a part from its
+ * content or its repeated unit).
+ */
+function heldOf(typed, parts) {
+  const [tag] = Object.keys(typed);
+  const value = typed[tag];
+  switch (tag) {
+    case 'string':
+      return value;
+    case 'string_json':
+      return JSON.parse(value);
+    case 'string_repeat':
+      return value.repeat(typed.count);
+    case 'number':
+      return Number(value);
+    case 'bigint':
+      return BigInt(value);
+    case 'boolean':
+      return value;
+    case 'null':
+      return null;
+    case 'undefined':
+      return undefined;
+    case 'array': {
+      const out = new Array(value.length);
+      value.forEach((item, i) => {
+        if (!item.hole) out[i] = heldOf(item, parts);
+      });
+      return out;
+    }
+    case 'object': {
+      const out = {};
+      for (const [key, member] of value) {
+        Object.defineProperty(out, key, { value: heldOf(member, parts), enumerable: true, writable: true, configurable: true });
+      }
+      return out;
+    }
+    case 'bytes':
+    case 'bytes_elsewhere': {
+      const bytes = typed.base64 !== undefined ? Buffer.from(typed.base64, 'base64') : partOf(parts[typed.part]);
+      return bytesValue(typed.kind, bytes);
+    }
+    case 'string_bytes': {
+      if (typed.base64 !== undefined) return Buffer.from(typed.base64, 'base64').toString('utf-8');
+      const part = parts[typed.part];
+      return part.repeat !== undefined ? part.repeat.repeat(part.count) : partOf(part).toString('utf-8');
+    }
+    default:
+      throw new Error(`no tag ${tag}`);
+  }
+}
+
 /** The roots the reference read back after each `POST /bytes` of a scenario's methods case, in order. */
 function uploadReferences(scenario, grammar, swarm) {
   let from = scenario.from;
@@ -247,6 +322,7 @@ module.exports = {
   contentSlice,
   coreCall,
   dataOf,
+  heldOf,
   partBytes,
   playScenario,
   replyOf,
