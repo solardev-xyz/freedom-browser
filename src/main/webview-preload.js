@@ -1781,10 +1781,16 @@ const PAGE_REQUEST_LIMITS = Object.freeze({
 });
 
 // Today's Swarm payload limits (`LIMITS` in swarm-provider-ipc.js), which
-// the two methods that carry data or files may fill, plus 64 KiB for the
-// rest of the request.
+// the three methods that carry data or files may fill, plus 64 KiB for the
+// rest of the request. A feed entry has publishData's limit, `maxDataBytes`,
+// and its error (freedom-core design 0015, F-4 and question 3, and its
+// amendment to 0011's size table).
 const PAGE_REQUEST_PAYLOADS = Object.freeze({
   'swarm:swarm_publishData': Object.freeze({
+    limit: 10 * 1024 * 1024,
+    message: 'Payload exceeds maximum size of 10485760 bytes',
+  }),
+  'swarm:swarm_writeFeedEntry': Object.freeze({
     limit: 10 * 1024 * 1024,
     message: 'Payload exceeds maximum size of 10485760 bytes',
   }),

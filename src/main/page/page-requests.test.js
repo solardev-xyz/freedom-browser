@@ -1092,6 +1092,9 @@ describe('reservations and tickets', () => {
       ['__proto__', 2 * MiB],
       ['swarm_publishData', MiB],
       ['swarm_publishData', 10 * MiB + 64 * 1024 + 1],
+      ['swarm_writeFeedEntry', MiB],
+      ['swarm_writeFeedEntry', 10 * MiB + 64 * 1024 + 1],
+      ['swarm_updateFeed', 2 * MiB],
       ['swarm_publishFiles', 50 * MiB + 64 * 1024 + 1],
       ['swarm_publishData', 2.5 * MiB + 0.5],
       ['swarm_publishData', '3000000'],
@@ -1157,6 +1160,65 @@ describe('reservations and tickets', () => {
     // Presented again: it is gone.
     expect(await a.upload(ticket)).toEqual(LIMIT);
     expect(held.calls).toHaveLength(1);
+  });
+
+  // freedom-core design 0015's amendment to 0011: a feed entry has
+  // publishData's size class, to match F-4's 10 MiB bound (question 3).
+  test('a feed entry has publishData\'s class: 1 MiB + 1 needs a ticket, 10 MiB passes on one, past 10 MiB + 64 KiB is refused at the boundary', async () => {
+    const dispatch = jest.fn(async (context) => ({ result: { index: 0, bytes: context.params.data.byteLength } }));
+    const env = setup({ dispatch });
+    const page = env.tab();
+    const method = 'swarm_writeFeedEntry';
+    const base = measure(page, 'swarm', method, { name: 'blog', data: new Uint8Array(0) }).size;
+    const entry = (bytes) => ({ name: 'blog', data: new Uint8Array(bytes) });
+    const sizeOf = (params) => measure(page, 'swarm', method, params).size;
+    const write = (params, ticket) => page.send({ provider: 'swarm', method, params, ...(ticket ? { ticket } : {}) });
+
+    // Over 1 MiB with no ticket: refused, unrecorded; on its ticket, served.
+    const justOver = entry(MiB + 1 - base);
+    expect(sizeOf(justOver)).toBe(MiB + 1);
+    expect(await write(justOver)).toEqual(LIMIT);
+    expect(env.trace.filter((e) => e.kind === 'refused').map((e) => e.reason)).toEqual(['ticket']);
+    const first = await page.reserve(method, MiB + 1);
+    expect(first.ticket).toMatch(TICKET);
+    expect(await write(justOver, first.ticket)).toEqual({ result: { index: 0, bytes: MiB + 1 - base } });
+
+    // A 10 MiB entry, the bound itself, on its ticket: it reaches the
+    // dispatcher whole, charged the most a request of its size can be.
+    const tenMiB = entry(10 * MiB);
+    const size = sizeOf(tenMiB);
+    expect(size).toBe(10 * MiB + base);
+    const second = await page.reserve(method, size);
+    expect(second.ticket).toMatch(TICKET);
+    const key = Object.keys(env.requests.stats().documents)[0];
+    expect(env.requests.stats().documents[key].bytes).toBe(largestChargeOf('swarm', method, size));
+    expect(await write(tenMiB, second.ticket)).toEqual({ result: { index: 0, bytes: 10 * MiB } });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+
+    // The class's own size, exactly, passes; one byte more is refused before
+    // main records it, with publishData's error, and takes no ticket either.
+    const max = 10 * MiB + 64 * 1024;
+    const exact = entry(max - base);
+    const third = await page.reserve(method, max);
+    expect(await write(exact, third.ticket)).toEqual({ result: { index: 0, bytes: max - base } });
+    const over = entry(max + 1 - base);
+    expect(await page.reserve(method, max + 1)).toEqual({ error: { code: -32602, message: 'Invalid parameters' } });
+    const tooLarge = {
+      error: {
+        code: -32602,
+        message: 'Payload exceeds maximum size of 10485760 bytes',
+        data: { reason: 'payload_too_large', limit: 10 * MiB, actual: max + 1 },
+      },
+    };
+    expect(await write(over)).toEqual(tooLarge);
+    // A string entry is measured by its UTF-8, as the backends count it.
+    const text = { name: 'blog', data: '\u00e9'.repeat((max + 2 - base) / 2) };
+    expect(sizeOf(text)).toBe(max + 2);
+    expect(await write(text)).toEqual({ error: { ...tooLarge.error, data: { ...tooLarge.error.data, actual: max + 2 } } });
+    expect(dispatch).toHaveBeenCalledTimes(3);
+    expect(recorded(env.trace)).toHaveLength(3);
+    expect(env.trace.filter((e) => e.kind === 'refused').map((e) => e.reason)).toEqual(['ticket', 'size', 'size']);
+    expect(env.requests.stats()).toEqual(expect.objectContaining({ turns: 0, tickets: 0, browser: { requests: 0, bytes: 0 } }));
   });
 
   test('a ticket presented by another guest, for another method, or with more bytes: refused, burnt, its charge and turn freed', async () => {

@@ -35,6 +35,13 @@
  * - **The GSOC worker idle:** a spy on `worker_threads.Worker` sees no
  *   worker constructed while the core mined the GSOC subscription's and
  *   send's keys.
+ * - **A feed entry's size class through main's page-requests** (design
+ *   0015's amendment to 0011: `publishData`'s, to match F-4's 10 MiB bound,
+ *   question 3): the real page-documents and page-requests in front of the
+ *   dispatcher, a 2 MiB entry needs and takes its ticket, reaches the core
+ *   and goes to the node whole; a 10 MiB + 1 entry, within the request's
+ *   64 KiB, reaches the core and gets its `payload_too_large` before any
+ *   node call.
  *
  * Skipped without the binary; FREEDOM_CORED_STORES_TEST=1 requires it (npm
  * run core:download), as FREEDOM_CORED_PATH names one.
@@ -45,8 +52,11 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const coreSdk = require('@ethersphere/core-sdk');
+const crypto = require('crypto');
+const { EventEmitter } = require('events');
 const { openFiles, watchFileTouches } = require('../../../test/helpers/store-handover');
 const { startFakeHttpNode } = require('../../../test/helpers/fake-http-node');
+const { splitTree } = require('../../../test/helpers/swarm-contract-node');
 
 jest.setTimeout(180_000);
 
@@ -115,12 +125,15 @@ const TAG = 101;
  * A node on loopback that stores what it is sent, as Bee and Ant answer:
  * `/node`, `/stamps`, `/addresses`, a tag, chunks posted and read back
  * (their addresses computed with core-sdk), SOCs posted and read back as
- * the node stores them (identifier, signature, span, payload), a `/bzz`
- * upload and a feed manifest. Each request is kept as `METHOD path`.
+ * the node stores them (identifier, signature, span, payload), data posted
+ * to `/bytes` (its chunk tree's root, as core-sdk splits it; each body's
+ * length and SHA-256 kept in `uploads`), a `/bzz` upload and a feed
+ * manifest. Each request is kept as `METHOD path`.
  */
 async function startStoringNode() {
   const chunks = new Map();
   const calls = [];
+  const uploads = [];
   const json = (res, status, body, headers = {}) => {
     const text = JSON.stringify(body);
     res.writeHead(status, {
@@ -134,7 +147,7 @@ async function startStoringNode() {
     handler: (req, res) => {
       const parts = [];
       req.on('data', (part) => parts.push(part));
-      req.on('end', () => {
+      req.on('end', async () => {
         const body = Buffer.concat(parts);
         const url = new URL(req.url, 'http://node');
         const { pathname } = url;
@@ -177,6 +190,12 @@ async function startStoringNode() {
           chunks.set(address, Buffer.concat([Buffer.from(identifier, 'hex'), Buffer.from(signature, 'hex'), body]));
           return json(res, 201, { reference: address });
         }
+        if (req.method === 'POST' && pathname === '/bytes') {
+          const tree = await splitTree(coreSdk, body);
+          for (const chunk of tree.chunks) chunks.set(chunk.address, chunk.wire);
+          uploads.push({ bytes: body.length, sha256: crypto.createHash('sha256').update(body).digest('hex') });
+          return json(res, 201, { reference: tree.root.address }, { 'swarm-tag': '0' });
+        }
         if (req.method === 'POST' && pathname === '/bzz') {
           return json(res, 201, { reference: 'b2'.repeat(32) }, { 'swarm-tag': String(TAG) });
         }
@@ -187,7 +206,7 @@ async function startStoringNode() {
       });
     },
   });
-  return Object.assign(node, { calls, chunks });
+  return Object.assign(node, { calls, chunks, uploads });
 }
 
 /** Global WebSocket as a fake that opens at once and records its URL; its sockets in `sockets`. */
@@ -387,7 +406,7 @@ describeIfCore("window.swarm on the core's backend, the build's own flip (real f
       prepareRadicleDataDir: async () => {},
     }));
     mock('profile-resolver.js', () => ({ getActiveProfile: () => ({ id: 'default' }) }));
-    mock('windows/request-window.js', () => ({ forSenderWindow: (fn) => fn }));
+    mock('windows/request-window.js', () => ({ forSenderWindow: (fn) => fn, runInWindow: (_windowId, fn) => fn() }));
     mock('core/node-identity-guard.js', () => ({
       blockNode() {},
       unblockNode() {},
@@ -568,6 +587,140 @@ describeIfCore("window.swarm on the core's backend, the build's own flip (real f
       expect.objectContaining({ name: 'blog', topic: state.feed.topic, owner: state.feed.owner }),
     ]);
     expect(listed.requests).toBe(1);
+  });
+
+  /**
+   * Main's real page-documents and page-requests in front of the
+   * dispatcher, for one tab on the site: its document says hello and is in
+   * front, its prompts go to the chrome (`prompts`), and `decide` answers
+   * them as the chrome does.
+   */
+  function throughPageRequests() {
+    const CHROME_URL = 'file:///app/src/renderer/index.html';
+    const CHROME = 501;
+    class Guest extends EventEmitter {
+      constructor() {
+        super();
+        this.id = GUEST;
+        this.hostWebContents = { id: CHROME, isDestroyed: () => false, mainFrame: { url: CHROME_URL } };
+        this.mainFrame = this.frame('about:blank');
+      }
+
+      frame(url) {
+        return { url, frameTreeNodeId: 1000 + GUEST, processId: 1, routingId: (this.routing = (this.routing || 0) + 1), detached: false, send() {} };
+      }
+
+      isDestroyed() {
+        return false;
+      }
+
+      getType() {
+        return 'webview';
+      }
+
+      getURL() {
+        return this.mainFrame.url;
+      }
+
+      commit(url) {
+        this.mainFrame.detached = true;
+        this.mainFrame = this.frame(url);
+        this.emit('did-frame-navigate', {}, url, 200, 'OK', true, 1, this.mainFrame.routingId);
+      }
+    }
+    const { createPageDocuments } = require(SRC_PATH('page/page-documents.js'));
+    const { createPageRequests } = require(SRC_PATH('page/page-requests.js'));
+    const { measurePageRequest } = require(path.join(SRC, '..', 'shared', 'page-request-bounds.js'));
+    const guest = new Guest();
+    const sent = [];
+    const trace = [];
+    const requests = createPageRequests({
+      documents: createPageDocuments({
+        isPrivateWebContents: () => false,
+        isChromeIndexUrl: (url) => url === CHROME_URL,
+        isAgentPage: () => false,
+        windowIdOf: () => 1,
+        resolveEnsContent: async () => ({ type: 'not_found' }),
+      }),
+      webContentsFromId: (id) => (id === GUEST ? guest : null),
+      dispatchers,
+      hooks: { onTrace: (entry) => trace.push(entry) },
+      chromeWindowOf: (contents) => (contents?.id === CHROME ? 1 : null),
+      sendToWindow: (windowId, channel, payload) => sent.push([windowId, channel, payload]),
+      watchWindow: () => {},
+      isAgentGuest: () => false,
+    });
+    requests.track(guest);
+    guest.commit(`${KEY}/`);
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const event = { sender: guest, senderFrame: guest.mainFrame };
+    expect(requests.hello(event, { nonce }).ok).toBe(true);
+    requests.foreground({ sender: { id: CHROME } }, { guest: GUEST });
+    return {
+      trace,
+      prompts: () => sent.filter(([, channel]) => channel === 'page:prompt').map(([, , payload]) => payload),
+      decide: (handle, choices) => requests.decide({ sender: { id: CHROME } }, { handle, approve: true, choices }),
+      size: (method, params) => measurePageRequest({ nonce, provider: 'swarm', method, params }, Infinity).size,
+      reserve: (method, bytes) => requests.reserve(event, { nonce, method, bytes }),
+      request: (method, params, ticket) =>
+        requests.request(event, { nonce, provider: 'swarm', method, params, ...(ticket ? { ticket } : {}) }),
+    };
+  }
+
+  // Design 0015's amendment to 0011: a feed entry has publishData's size
+  // class (10 MiB plus 64 KiB, a ticket), to match F-4's bound (question 3).
+  test("a feed entry through main's page-requests: 2 MiB takes its ticket and reaches the core and the node whole; 10 MiB + 1 gets the core's payload_too_large", async () => {
+    const MiB = 1024 * 1024;
+    const tab = throughPageRequests();
+    const method = 'swarm_writeFeedEntry';
+    const sends = () => world.sent.filter((name) => name === 'swarm.request').length;
+    const nodeCalls = () => world.node.calls.length;
+
+    // 2 MiB, which only a page-request size of publishData's class lets
+    // through: refused with no ticket, before main records it.
+    const data = crypto.randomBytes(2 * MiB);
+    const twoMiB = { name: 'blog', data: new Uint8Array(data), index: 1 };
+    const before = sends();
+    expect(await tab.request(method, twoMiB)).toEqual({ error: { code: -32005, message: 'Limit exceeded' } });
+    expect(sends()).toBe(before);
+    const first = await tab.reserve(method, tab.size(method, twoMiB));
+    expect(first).toEqual({ ticket: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const answer = tab.request(method, twoMiB, first.ticket);
+    // The feed's prompt, answered with the rule for the next write.
+    for (let i = 0; i < 200 && tab.prompts().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    const [prompt] = tab.prompts();
+    expect(prompt).toMatchObject({ kind: 'swarm.feed', view: { method } });
+    expect(await tab.decide(prompt.handle, { identity: prompt.view.activeIdentityId, alwaysAllow: true })).toEqual({ ok: true });
+    expect(await answer).toEqual({ result: { index: 1 } });
+    // One swarm.request, and the node got the whole entry, then its SOC.
+    expect(sends()).toBe(before + 1);
+    expect(world.node.uploads.at(-1)).toEqual({
+      bytes: 2 * MiB,
+      sha256: crypto.createHash('sha256').update(data).digest('hex'),
+    });
+    expect(world.node.calls.slice(-2)).toEqual(['POST /bytes', expect.stringMatching(/^POST \/soc\//)]);
+
+    // One byte past 10 MiB, within the request's own 64 KiB: past the page
+    // boundary on its ticket, then the core's own refusal, with no node call.
+    const over = { name: 'blog', data: new Uint8Array(10 * MiB + 1), index: 2 };
+    expect(tab.size(method, over)).toBeLessThanOrEqual(10 * MiB + 64 * 1024);
+    const second = await tab.reserve(method, tab.size(method, over));
+    expect(second).toEqual({ ticket: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const calls = nodeCalls();
+    const uploads = world.node.uploads.length;
+    expect(await tab.request(method, over, second.ticket)).toEqual({
+      error: {
+        code: -32602,
+        message: 'Payload exceeds maximum size of 10485760 bytes',
+        data: { reason: 'payload_too_large', limit: 10485760, actual: 10485761 },
+      },
+    });
+    expect(sends()).toBe(before + 2);
+    expect(nodeCalls()).toBe(calls);
+    expect(world.node.uploads).toHaveLength(uploads);
+    // The rule answered it: no second prompt.
+    expect(tab.prompts()).toHaveLength(1);
+    expect(tab.trace.filter((entry) => entry.kind === 'ticket-burnt')).toHaveLength(2);
   });
 
   test('messaging: the identity, a PSS and a GSOC subscription, a delivery, a GSOC send, an unsubscribe', async () => {

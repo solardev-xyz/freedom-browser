@@ -41,7 +41,7 @@ jest.mock('../identity-manager', () => ({
 
 // The identity core and the node: what was signed and written, and the
 // waits a test may hold.
-const mockNode = { writes: [], signals: [], socs: [], sign: null, write: null, readiness: null };
+const mockNode = { writes: [], signals: [], socs: [], entries: [], sign: null, write: null, readiness: null };
 function mockAborted(signal) {
   return new Promise((_resolve, reject) => {
     const stop = () => {
@@ -80,7 +80,12 @@ jest.mock('../swarm/feed-service', () => ({
     }),
   updateFeed: (signer, topic, reference, batchId, options) => mockWrite('updateFeed', true, options, { index: 3 }, signer),
   writeFeedPayload: (signer, topic, data, options) => {
+    // As feed-service: a string's UTF-8, and for more than one chunk the
+    // upload's body, each reported; the entry's bytes, recorded.
+    const bytes = typeof data === 'string' ? Buffer.byteLength(data, 'utf-8') : data.length;
     if (typeof data === 'string') options?.copied?.('payload');
+    mockNode.entries.push(bytes);
+    if (bytes > 4096) options?.copied?.('upload');
     return mockWrite('writeFeedEntry', true, options, { index: 4 }, signer);
   },
   readFeedPayload: jest.fn(),
@@ -134,6 +139,7 @@ const permissions = require('../swarm/swarm-permissions');
 const feeds = require('../swarm/feed-store');
 const manifests = require('../swarm/permission-manifests');
 const { registerSwarmProviderIpc } = require('../swarm/swarm-provider-ipc');
+const { measurePageRequest } = require('../../shared/page-request-bounds');
 
 registerSwarmProviderIpc();
 permissions.registerSwarmPermissionsIpc();
@@ -281,6 +287,11 @@ function setup() {
       guest,
       nonce: n,
       ask: (method, params = {}) => requests.request(eventFrom(guest), { nonce: n, provider: 'swarm', method, params }),
+      // A large request as the preload sends it: its turn first, then the
+      // request on its ticket.
+      reserve: (method, bytes) => requests.reserve(eventFrom(guest), { nonce: n, method, bytes }),
+      send: (fields) => requests.request(eventFrom(guest), { nonce: n, provider: 'swarm', ...fields }),
+      size: (method, params) => measurePageRequest({ nonce: n, provider: 'swarm', method, params }, Infinity).size,
     };
   }
 
@@ -344,6 +355,7 @@ beforeEach(async () => {
   mockNode.writes = [];
   mockNode.signals = [];
   mockNode.socs = [];
+  mockNode.entries = [];
   mockNode.sign = null;
   mockNode.write = null;
   mockNode.readiness = null;
@@ -760,6 +772,55 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
     mockNode.readiness = { ok: false, reason: 'no-usable-stamps' };
     expect((await page.ask('swarm_createFeed', { name: 'other' })).error).toMatchObject({ code: 4900, data: { reason: 'no-usable-stamps' } });
     expect(env.state.routed).toEqual([{ key: KEY_A, reason: 'no-usable-stamps' }]);
+  });
+});
+
+// freedom-core design 0015's amendment to 0011: a feed entry has
+// publishData's size class, and F-4's bound (question 3), which the JS
+// backend checks too (#1233).
+describe('a feed entry\'s size on the JS backend, through main', () => {
+  const MiB = 1024 * 1024;
+  const TOO_LARGE = (actual) => ({
+    error: {
+      code: -32602,
+      message: 'Payload exceeds maximum size of 10485760 bytes',
+      data: { reason: 'payload_too_large', limit: 10 * MiB, actual },
+    },
+  });
+
+  test('over 1 MiB it needs its ticket; 2 MiB is written on one, with each copy charged; past 10 MiB the backend refuses it before any signature or write', async () => {
+    const env = setup();
+    await grantFeeds(KEY_A, { feeds: true });
+    const page = env.tab();
+    const method = 'swarm_writeFeedEntry';
+    const onTicket = async (params) => {
+      const { ticket } = await page.reserve(method, page.size(method, params));
+      expect(ticket).toEqual(expect.any(String));
+      return page.send({ method, params, ticket });
+    };
+
+    const twoMiB = { name: 'blog', data: new Uint8Array(2 * MiB).fill(7) };
+    expect(await page.ask(method, twoMiB)).toEqual({ error: { code: -32005, message: 'Limit exceeded' } });
+    expect(mockNode.entries).toEqual([]);
+    expect(await onTicket(twoMiB)).toEqual({ result: { index: 4 } });
+    expect(mockNode.entries).toEqual([2 * MiB]);
+    expect(env.copies.map((c) => [c.label, c.inPlace])).toEqual([
+      ['normalizeBytes', true],
+      ['upload', true],
+    ]);
+
+    // One byte past 10 MiB, within the request's own 64 KiB: the backend's
+    // refusal, before the identity core signs anything or the node is asked.
+    const socs = mockNode.socs.length;
+    const binary = { name: 'blog', data: new Uint8Array(10 * MiB + 1) };
+    expect(await onTicket(binary)).toEqual(TOO_LARGE(10 * MiB + 1));
+    // Counted in UTF-8 bytes, as the core counts a string.
+    const text = { name: 'blog', data: 'x'.repeat(10 * MiB - 1) + '\u00e9' };
+    expect(await onTicket(text)).toEqual(TOO_LARGE(10 * MiB + 1));
+    expect(mockNode.entries).toEqual([2 * MiB]);
+    expect(mockNode.socs).toHaveLength(socs);
+    expect(mockNode.writes).toEqual(['writeFeedEntry']);
+    expect(env.requests.stats()).toMatchObject({ records: 0 });
   });
 });
 

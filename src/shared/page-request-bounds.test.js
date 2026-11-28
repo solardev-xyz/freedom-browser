@@ -32,23 +32,36 @@ describe('the size walk (freedom-core design 0011, "The size and the charge")', 
     expect(block(shared).length).toBeGreaterThan(2000);
   });
 
-  test('the two uploads\' sizes are today\'s payload limits plus 64 KiB; every other method 1 MiB', () => {
+  test('the three payload classes are today\'s payload limits plus 64 KiB; every other method 1 MiB', () => {
     const swarm = fs.readFileSync(path.join(__dirname, '..', 'main', 'swarm', 'swarm-provider-ipc.js'), 'utf8');
     expect(swarm).toContain('maxDataBytes: 10 * 1024 * 1024,');
     expect(swarm).toContain('maxFilesBytes: 50 * 1024 * 1024,');
-    // Each oversized error is the one the method gives today.
-    expect(swarm).toContain('message: `Payload exceeds maximum size of ${LIMITS.maxDataBytes} bytes`');
-    expect(swarm).toContain('message: `Total size exceeds maximum of ${LIMITS.maxFilesBytes} bytes`');
+    // Each oversized error is the one the method gives today, a feed
+    // entry's in its own handler (publishData's, #1233; freedom-core design
+    // 0015, F-4 and question 3).
+    const handler = (name) => swarm.slice(swarm.indexOf(`async function ${name}(`), swarm.indexOf('\n}\n', swarm.indexOf(`async function ${name}(`)));
+    const dataTooLarge = 'message: `Payload exceeds maximum size of ${LIMITS.maxDataBytes} bytes`';
+    expect(handler('handlePublishData')).toContain(dataTooLarge);
+    expect(handler('handleWriteFeedEntry')).toContain(dataTooLarge);
+    expect(handler('handlePublishFiles')).toContain('message: `Total size exceeds maximum of ${LIMITS.maxFilesBytes} bytes`');
     expect(PAGE_REQUEST_PAYLOADS['swarm:swarm_publishData'].message).toBe(`Payload exceeds maximum size of ${10 * MiB} bytes`);
+    expect(PAGE_REQUEST_PAYLOADS['swarm:swarm_writeFeedEntry']).toEqual(PAGE_REQUEST_PAYLOADS['swarm:swarm_publishData']);
     expect(PAGE_REQUEST_PAYLOADS['swarm:swarm_publishFiles'].message).toBe(`Total size exceeds maximum of ${50 * MiB} bytes`);
+    expect(Object.keys(PAGE_REQUEST_PAYLOADS).sort()).toEqual(
+      ['swarm:swarm_publishData', 'swarm:swarm_publishFiles', 'swarm:swarm_writeFeedEntry'].sort()
+    );
 
     expect(pageRequestMaxBytes('swarm', 'swarm_publishData')).toBe(10 * MiB + 64 * 1024);
+    expect(pageRequestMaxBytes('swarm', 'swarm_writeFeedEntry')).toBe(10 * MiB + 64 * 1024);
     expect(pageRequestMaxBytes('swarm', 'swarm_publishFiles')).toBe(50 * MiB + 64 * 1024);
     for (const [provider, method] of [
       ['swarm', 'swarm_readChunk'],
+      ['swarm', 'swarm_updateFeed'],
+      ['swarm', 'swarm_publishChunk'],
       ['ethereum', 'eth_call'],
       ['radicle', 'radicle_createIssue'],
       ['ethereum', 'swarm_publishData'],
+      ['ethereum', 'swarm_writeFeedEntry'],
       ['swarm', '__proto__'],
       ['swarm', 'hasOwnProperty'],
     ]) {
@@ -69,6 +82,7 @@ describe('the size walk (freedom-core design 0011, "The size and the charge")', 
       ['swarm', 'swarm_readChunk', (data) => ({ data })],
       ['ethereum', 'eth_call', (data) => [data]],
       ['swarm', 'swarm_publishData', (data) => ({ data })],
+      ['swarm', 'swarm_writeFeedEntry', (data) => ({ data })],
       ['swarm', 'swarm_publishFiles', (data) => ({ data })],
     ]) {
       const max = pageRequestMaxBytes(provider, method);
@@ -225,6 +239,13 @@ describe('the size walk (freedom-core design 0011, "The size and the charge")', 
       code: -32602,
       message: 'Payload exceeds maximum size of 10485760 bytes',
       data: { reason: 'payload_too_large', limit: 10 * MiB, actual: 11 * MiB },
+    });
+    // A feed entry's is publishData's, as the backends answer one past
+    // 10 MiB (payload_too_large, with limit and actual).
+    expect(pageRequestWalkError('size', 'swarm', 'swarm_writeFeedEntry', 10 * MiB + 64 * 1024 + 1)).toEqual({
+      code: -32602,
+      message: 'Payload exceeds maximum size of 10485760 bytes',
+      data: { reason: 'payload_too_large', limit: 10 * MiB, actual: 10 * MiB + 64 * 1024 + 1 },
     });
     expect(pageRequestWalkError('size', 'swarm', 'swarm_publishFiles', 51 * MiB)).toEqual({
       code: -32602,
