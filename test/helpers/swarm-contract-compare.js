@@ -482,16 +482,25 @@ const KNOWN_CORE_VECTOR_DIFFERENCES = Object.freeze({
 });
 
 /**
- * The deviation a case is held to on `backend`, or null for the
- * reference's answers. Every deviation is the core's; `subscribe-proxy`'s
+ * The deviations both backends run, held on `js` too: `subscribe-proxy`'s
  * refusal is main's own route test (subscription-registry.js, SWM-7's PR
- * 7.3), which both backends run, so a case with a proxy on is held to it
- * on `js` too. A known core-vectors difference
+ * 7.3); `feed-entry-bound` is question 3's 10 MiB cap on a feed entry
+ * (freedom-core design 0015, F-4), which the JS provider checks too since
+ * #1233's check came to `integration/rust-core` with the feed entry's page
+ * size class (swarm-provider-ipc.js `handleWriteFeedEntry`), so a page gets
+ * the same refusal, before any node call, on either.
+ */
+const ON_BOTH = new Set(['subscribe-proxy', 'feed-entry-bound']);
+
+/**
+ * The deviation a case is held to on `backend`, or null for the
+ * reference's answers. Every other deviation is the core's alone
+ * (`ON_BOTH`). A known core-vectors difference
  * (`KNOWN_CORE_VECTOR_DIFFERENCES`) is held to the reference on both.
  */
 function deviationOn(backend, kase) {
   if (!kase.deviation || Object.hasOwn(KNOWN_CORE_VECTOR_DIFFERENCES, kase.id)) return null;
-  if (kase.deviation === 'subscribe-proxy') return 'subscribe-proxy';
+  if (ON_BOTH.has(kase.deviation)) return kase.deviation;
   return backend === 'core' ? kase.deviation : null;
 }
 

@@ -107,6 +107,10 @@
  *     its choices, and on approval main creates or activates that identity
  *     and grants feed access itself, with "always allow" the rule, under
  *     the key's lock once the name answers again.
+ *   - A feed entry has `publishData`'s size class (freedom-core design
+ *     0015's amendment to 0011, F-4): up to 10 MiB of data plus 64 KiB,
+ *     over 1 MiB on its ticket (`page:reserve`), and each copy main makes of
+ *     its bytes is reported against the request's charge.
  *   - Each write is its effect, guarded after the method's last wait (the
  *     identity core's signature among them) and run in the same run as its
  *     checks, by the services themselves (`guard(send)`): the guard owns the

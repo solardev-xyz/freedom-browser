@@ -3250,6 +3250,43 @@ describe('page request sizes and tickets', () => {
     ]);
   });
 
+  // freedom-core design 0015's amendment to 0011: publishData's class.
+  test('a feed entry over 1 MiB reserves its turn; one past 10 MiB + 64 KiB is answered here, as publishData\'s', async () => {
+    const answers = [];
+    const { ipcRenderer, nonce } = load(
+      (channel, payload) =>
+        new Promise((resolve) => {
+          answers.push({ channel, payload, resolve });
+        })
+    );
+    const max = 10 * MiB + 64 * 1024;
+    const entry = sized(nonce, 'swarm_writeFeedEntry', max, (n) => new Uint8Array(n));
+    ask(1, 'swarm_writeFeedEntry', sized(nonce, 'swarm_writeFeedEntry', max + 1, (n) => new Uint8Array(n)));
+    ask(2, 'swarm_writeFeedEntry', entry);
+    await settle();
+    expect(sent(ipcRenderer)).toEqual([['page:reserve', { nonce, method: 'swarm_writeFeedEntry', bytes: max }]]);
+    answers[0].resolve({ ticket: 'b'.repeat(64) });
+    await settle();
+    expect(sent(ipcRenderer)[1]).toEqual([
+      'page:request',
+      { nonce, provider: 'swarm', method: 'swarm_writeFeedEntry', params: entry, ticket: 'b'.repeat(64) },
+    ]);
+    answers[1].resolve({ result: { index: 0 } });
+    await settle();
+    expect(posted()).toEqual([
+      {
+        type: 'FREEDOM_SWARM_RESPONSE',
+        id: 1,
+        error: {
+          code: -32602,
+          message: 'Payload exceeds maximum size of 10485760 bytes',
+          data: { reason: 'payload_too_large', limit: 10 * MiB, actual: max + 1 },
+        },
+      },
+      { type: 'FREEDOM_SWARM_RESPONSE', id: 2, result: { index: 0 }, error: undefined },
+    ]);
+  });
+
   test('a value main doesn\'t take is answered here, and never sent', async () => {
     const { ipcRenderer } = load(async () => ({ result: 'ok' }));
     ask(1, 'swarm_readChunk', { value: new Map() });

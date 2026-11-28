@@ -12,8 +12,11 @@
 // spec and serve them with a dispatcher that makes the copies design 0011's
 // "Copies" table counts for each: for `swarm_publishFiles` normalizeBytes'
 // copy and 1 MiB of stream buffers, for `swarm_publishData` normalizeBytes'
-// copy and fetch's copy of the body, and for every other method the JSON for
-// the core and that JSON's bytes.
+// copy and fetch's copy of the body, for `swarm_writeFeedEntry` (publishData's
+// size class, freedom-core design 0015's amendment to 0011) its JS backend's:
+// a string's UTF-8 and bee-js's fetch's three copies of the body
+// (page-budgets.js), and for every other method the JSON for the core and
+// that JSON's bytes.
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
@@ -126,6 +129,22 @@ async function instrument(electronApp) {
           const bytes = normalizeBytes(data);
           copy('normalizeBytes', bytes, bytes === data || !(data instanceof Uint8Array) ? 0 : bytes.byteLength);
           copy('fetch', Buffer.from(bytes));
+        } else {
+          copy('validated', null, 0);
+        }
+      } else if (method === 'swarm_writeFeedEntry') {
+        // feed-service.js: a string's UTF-8; normalizeBytes' view of binary
+        // data; then fetch's three copies of the body as it is sent.
+        let bytes = null;
+        if (typeof data === 'string') {
+          bytes = Buffer.from(data, 'utf8');
+          copy('payload', bytes);
+        } else if (isBinary(data)) {
+          bytes = data instanceof ArrayBuffer ? Buffer.from(data) : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+          copy('normalizeBytes', bytes, 0);
+        }
+        if (bytes) {
+          for (let i = 0; i < 3; i += 1) copy('upload', Buffer.from(bytes));
         } else {
           copy('validated', null, 0);
         }
@@ -302,7 +321,8 @@ test('every method\'s largest legal request, in each worst form, stays within it
 
   const FORMS = ['u8', 'two-byte', 'control', 'two-byte-control', 'values'];
   const formsOf = (method) => (method === 'swarm_publishFiles' ? ['u8', 'two-byte', 'values'] : FORMS);
-  const groupOf = (method) => (method === 'swarm_publishFiles' || method === 'swarm_publishData' ? method : 'other');
+  const UPLOADS = ['swarm_publishFiles', 'swarm_publishData', 'swarm_writeFeedEntry'];
+  const groupOf = (method) => (UPLOADS.includes(method) ? method : 'other');
 
   // Each path once first, unmeasured: the first request down a path makes
   // main compile its code (bytecode and feedback), which main keeps

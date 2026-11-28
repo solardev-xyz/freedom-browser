@@ -15,15 +15,16 @@
  * `swarm_publishFiles` 1 MiB of stream buffers, and 64 KiB for main's own
  * bookkeeping of the request.
  *
- * A request over 1 MiB (only the two Swarm uploads allow one) first reserves
- * a turn (`page:reserve`). The browser grants two at a time, from the
- * oldest waiting reservation whose largest charge fits, after checking its
- * document again. The ticket is 32 random bytes bound to that document,
+ * A request over 1 MiB (only the Swarm methods with a payload class allow
+ * one: the two uploads and a feed entry, shared/page-request-bounds.js)
+ * first reserves a turn (`page:reserve`). The browser grants two at a time,
+ * from the oldest waiting reservation whose largest charge fits, after
+ * checking its document again. The ticket is 32 random bytes bound to that document,
  * spent once, and released when its document goes or after 30 s unused.
  */
 
 const crypto = require('crypto');
-const { PAGE_REQUEST_LIMITS, pageRequestMaxBytes } = require('../../shared/page-request-bounds');
+const { PAGE_REQUEST_LIMITS, PAGE_REQUEST_PAYLOADS, pageRequestMaxBytes } = require('../../shared/page-request-bounds');
 
 const MiB = 1024 * 1024;
 
@@ -40,7 +41,16 @@ const BUDGETS = Object.freeze({
 // (a string's UTF-8). Since PRQ-7c both send through
 // `swarm/page-upload.js`, which copies no body (fetch held more than one
 // copy, past these charges), and normalizeBytes makes a view: their measured
-// peaks stay well within, and no bound depends on the copies they skip. Every
+// peaks stay well within, and no bound depends on the copies they skip.
+// `swarm_writeFeedEntry` (publishData's class since freedom-core design
+// 0015's amendment to 0011), on the worse of its two backends, the JS one,
+// which packaged builds run: the IPC value (a string two bytes a character),
+// a string's UTF-8 (feed-service.js, `payload`), and bee-js's fetch of an
+// entry over one chunk (`upload`), which held three copies of the body at
+// its peak, measured in Electron 45 (Node 24.22, undici 7.30) uploading 1 to
+// 10 MiB to a node that read it slowly: 2 + 1 + 3 = 6. On the core's backend
+// main holds the IPC value and a string's UTF-8 (swarm-typed.js,
+// `typed-data`), and streams the rest as parts a window at a time: 3. Every
 // other method: the IPC value (two bytes a character), its JSON for the
 // core or a node and that JSON's bytes. V8 holds the JSON of a string with
 // any character past U+00FF at two bytes a character, so a control
@@ -50,6 +60,7 @@ const BUDGETS = Object.freeze({
 const COPIES = Object.freeze({
   'swarm:swarm_publishFiles': 2,
   'swarm:swarm_publishData': 3,
+  'swarm:swarm_writeFeedEntry': 6,
 });
 const DEFAULT_COPIES = 24;
 const STREAM_BYTES = Object.freeze({ 'swarm:swarm_publishFiles': MiB });
@@ -63,7 +74,13 @@ const REQUEST_BYTES = 64 * 1024;
 
 // Large requests (design 0011, "The numbers", proposed).
 const TICKETS = Object.freeze({ turns: 2, waiting: 16, unusedMs: 30_000, bytes: 32 });
-const LARGE_METHODS = new Set(['swarm_publishData', 'swarm_publishFiles']);
+// The methods a request over 1 MiB may be: the Swarm ones with a payload
+// class, so each method that may carry more has a ticket to carry it on.
+const LARGE_METHODS = new Set(
+  Object.keys(PAGE_REQUEST_PAYLOADS)
+    .filter((key) => key.startsWith('swarm:'))
+    .map((key) => key.slice('swarm:'.length))
+);
 
 const own = (table, key) => (Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined);
 const copiesOf = (provider, method) => own(COPIES, `${provider}:${method}`) ?? DEFAULT_COPIES;

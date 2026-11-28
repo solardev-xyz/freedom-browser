@@ -19,10 +19,10 @@
  *     surrogate as U+FFFD, three bytes), the bytes of binary data (a
  *     Uint8Array at its buffer's whole length), and 32 per BigInt. Numbers,
  *     booleans, null and undefined add nothing to the size, only a value.
- *   - Past its method's size (`size`): `swarm_publishData` and
- *     `swarm_publishFiles` may carry their payload limit plus 64 KiB, every
- *     other method 1 MiB. A request over 1 MiB needs a ticket first
- *     (`page:reserve`).
+ *   - Past its method's size (`size`): `swarm_publishData`,
+ *     `swarm_writeFeedEntry` and `swarm_publishFiles` may carry their payload
+ *     limit plus 64 KiB, every other method 1 MiB. A request over 1 MiB needs
+ *     a ticket first (`page:reserve`).
  *
  * The walk stops at the first limit it passes, so a hostile request costs
  * no more than its limit to measure.
@@ -43,10 +43,16 @@ const PAGE_REQUEST_LIMITS = Object.freeze({
 });
 
 // Today's Swarm payload limits (`LIMITS` in swarm-provider-ipc.js), which
-// the two methods that carry data or files may fill, plus 64 KiB for the
-// rest of the request.
+// the three methods that carry data or files may fill, plus 64 KiB for the
+// rest of the request. A feed entry has publishData's limit, `maxDataBytes`,
+// and its error (freedom-core design 0015, F-4 and question 3, and its
+// amendment to 0011's size table).
 const PAGE_REQUEST_PAYLOADS = Object.freeze({
   'swarm:swarm_publishData': Object.freeze({
+    limit: 10 * 1024 * 1024,
+    message: 'Payload exceeds maximum size of 10485760 bytes',
+  }),
+  'swarm:swarm_writeFeedEntry': Object.freeze({
     limit: 10 * 1024 * 1024,
     message: 'Payload exceeds maximum size of 10485760 bytes',
   }),

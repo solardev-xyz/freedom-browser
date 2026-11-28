@@ -17,8 +17,9 @@
  *   feed store's text, the publish history's rows), against the
  *   reference's (test/helpers/swarm-contract-compare.js). On `core` the
  *   cases in the file's `deviations` map are asserted as the deviation each
- *   names, and only there (`subscribe-proxy` is main's own route test, so
- *   on both); main's executor sends its own headers first, which aren't
+ *   names, and only there (`subscribe-proxy` is main's own route test, and
+ *   `feed-entry-bound`, F-4's 10 MiB cap, the JS provider checks too, so
+ *   both on both); main's executor sends its own headers first, which aren't
  *   compared; the core's clock writes its times (store timestamps, a tar's
  *   mtimes, a feed update's time and so its signature, which the node
  *   checks), held to the run's window; and the core's vault always holds
