@@ -9,6 +9,15 @@ jest.mock('./service', () => ({
   refreshEngine: jest.fn(() => Promise.resolve()),
   getEnabledFeedCategories: jest.fn(() => ['ads', 'privacy']),
 }));
+// The node the default IO reads (ant-storage-api.js, on its transport): a
+// loopback one here, over real HTTP. A remote one's dials are in
+// update-manager.transport.test.js.
+const mockRegistry = { url: null };
+jest.mock('../service-registry', () => ({
+  MODE: { BUNDLED: 'bundled', EXTERNAL: 'external', REUSED: 'reused' },
+  getAntApiUrl: () => mockRegistry.url,
+  getService: () => ({ mode: 'bundled' }),
+}));
 
 const { loadSettings } = require('../settings-store');
 const { getEnabledFeedCategories } = require('./service');
@@ -263,6 +272,19 @@ describe('runUpdateOnce', () => {
     expect(opts.downloadBlob).not.toHaveBeenCalled();
   });
 
+  test('a feed read past the timeout has its signal aborted', async () => {
+    let signal;
+    const opts = io({
+      readFeed: jest.fn((ctx) => {
+        signal = ctx.signal;
+        return new Promise(() => {});
+      }),
+      timeoutMs: 20,
+    });
+    expect(await runUpdateOnce(opts)).toEqual({ status: 'feed_unavailable' });
+    expect(signal.aborted).toBe(true);
+  });
+
   test('a list download that never answers ends the cycle, leaving prior state', async () => {
     const opts = io({
       readFeed: async () => signedManifest(2),
@@ -340,16 +362,17 @@ describe('runUpdateOnce', () => {
   });
 });
 
-describe('default list download (bee-js stream)', () => {
+describe('default list download (the node’s transport)', () => {
   const http = require('http');
-  const { Bee } = require('@ethersphere/bee-js');
   const { _defaultDownloadBlob } = require('./update-manager');
 
   // Serves /bytes/<ref> as `chunks` pieces, `gapMs` apart; with `stallAfter`,
   // stops writing (keeps the connection open) after that many pieces.
   async function trickleServer({ chunks, gapMs, stallAfter = Infinity }) {
     const closed = [];
+    const urls = [];
     const server = http.createServer((req, res) => {
+      urls.push(req.url);
       res.writeHead(200, { 'content-type': 'application/octet-stream' });
       let sent = 0;
       const tick = () => {
@@ -363,8 +386,8 @@ describe('default list download (bee-js stream)', () => {
       res.on('close', () => closed.push(res.writableEnded));
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
-    const bee = new Bee(`http://127.0.0.1:${server.address().port}`);
-    return { bee, closed, close: () => new Promise((r) => server.close(r)) };
+    mockRegistry.url = `http://127.0.0.1:${server.address().port}`;
+    return { closed, urls, close: () => new Promise((r) => server.close(r)) };
   }
 
   // Mirrors runUpdateOnce: an inactivity timer reset by progress().
@@ -379,12 +402,20 @@ describe('default list download (bee-js stream)', () => {
     return { signal: controller.signal, progress, stop: () => clearTimeout(timer) };
   }
 
+  // The transport's modules load on its first call; load them before any
+  // inactivity window starts, as main has by then.
+  beforeAll(() => require('../swarm/bzz-protocol'));
+  afterEach(() => {
+    mockRegistry.url = null;
+  });
+
   test('streams a slow-but-steady body past the timeout', async () => {
     const srv = await trickleServer({ chunks: 8, gapMs: 25 });
     const w = watch(100); // whole body takes ~200 ms
     try {
-      const blob = await _defaultDownloadBlob(REF_ADS, w, srv.bee);
+      const blob = await _defaultDownloadBlob(REF_ADS, w);
       expect(blob.toString()).toBe([...Array(8).keys()].map((i) => `chunk${i}\n`).join(''));
+      expect(srv.urls).toEqual([`/bytes/${REF_ADS}`]);
     } finally {
       w.stop();
       await srv.close();
@@ -395,12 +426,283 @@ describe('default list download (bee-js stream)', () => {
     const srv = await trickleServer({ chunks: 8, gapMs: 10, stallAfter: 2 });
     const w = watch(80);
     try {
-      await expect(_defaultDownloadBlob(REF_ADS, w, srv.bee)).rejects.toThrow();
+      await expect(_defaultDownloadBlob(REF_ADS, w)).rejects.toThrow();
       await new Promise((r) => setTimeout(r, 50));
       expect(srv.closed).toEqual([false]); // closed by us, before the server ended it
     } finally {
       w.stop();
       await srv.close();
     }
+  });
+});
+
+describe('the default feed read and list download, over a loopback node', () => {
+  const {
+    startFakeHttpNode,
+    streamBody,
+    waitFor,
+  } = require('../../../test/helpers/fake-http-node');
+  const { FEED_TOPIC } = require('./feed-config');
+  const {
+    _defaultReadFeed,
+    _defaultDownloadBlob,
+    _feedTopicHex,
+    MANIFEST_MAX_BYTES,
+  } = require('./update-manager');
+  const CID_FIXTURE = require('../../../test/fixtures/swarm-cid/bee-js-13.2.0.json');
+
+  // The production publisher's address, as bee-js's EthAddress writes it.
+  const OWNER = 'b818ff019bc15bc3dfbdad4ce0ab66a6f74e8f1e';
+  // bee-js 13.2.0's Topic.fromString(FEED_TOPIC), recorded in the fixture.
+  const TOPIC = CID_FIXTURE.topics.find((t) => t.value === FEED_TOPIC).hex;
+  const FEED_PATH = `/feeds/${OWNER}/${TOPIC}`;
+  const INDEX_HEADERS = {
+    'swarm-feed-index': '0000000000000003',
+    'swarm-feed-index-next': '0000000000000004',
+  };
+
+  let node;
+  let feed; // (req, res, entry) => void, for FEED_PATH
+  let blobs; // ref → Buffer, for /bytes/<ref>
+
+  const json = (res, status, value, headers = {}) => {
+    const body = Buffer.from(JSON.stringify(value));
+    res.writeHead(status, {
+      'content-type': 'application/json',
+      'content-length': body.length,
+      ...headers,
+    });
+    res.end(body);
+  };
+  const entryReply =
+    (payload, headers = INDEX_HEADERS) =>
+    (_req, res) => {
+      const body = Buffer.from(payload);
+      res.writeHead(200, { 'content-length': body.length, ...headers });
+      res.end(body);
+    };
+
+  beforeAll(async () => {
+    node = await startFakeHttpNode({
+      handler(req, res, entry) {
+        if (req.url === FEED_PATH && feed) return feed(req, res, entry);
+        const blob = req.url.match(/^\/bytes\/([0-9a-f]+)$/);
+        if (blob && blobs.has(blob[1])) {
+          res.writeHead(200, { 'content-type': 'application/octet-stream' });
+          res.end(blobs.get(blob[1]));
+          return;
+        }
+        json(res, 404, { code: 404, message: 'Not Found' });
+      },
+    });
+  });
+  afterAll(() => node.close());
+  beforeEach(() => {
+    mockRegistry.url = node.origin;
+    node.requests.length = 0;
+    feed = null;
+    blobs = new Map([
+      [REF_ADS, ADS],
+      [REF_PRIV, PRIV],
+    ]);
+  });
+  afterEach(() => {
+    mockRegistry.url = null;
+  });
+
+  test('the feed topic is bee-js’s: keccak256 of the UTF-8, for the list’s topic and others', () => {
+    expect(_feedTopicHex(FEED_TOPIC)).toBe(
+      '96741f799248290fa67445649f572f1c773238c1f07e2e98643c625370f9bc15'
+    );
+    for (const { value, hex } of CID_FIXTURE.topics) expect(_feedTopicHex(value)).toBe(hex);
+  });
+
+  test('reads the manifest from the feed’s latest entry: one GET, as bee-js asked', async () => {
+    feed = entryReply(JSON.stringify({ schema: 1, version: 7 }));
+    await expect(_defaultReadFeed()).resolves.toEqual({ schema: 1, version: 7 });
+    expect(node.requests.map((r) => [r.method, r.url])).toEqual([['GET', FEED_PATH]]);
+    expect(node.requests[0].headers).toMatchObject({
+      accept: 'application/json, text/plain, */*',
+      'accept-encoding': 'identity',
+    });
+  });
+
+  test('a body with no declared length is read to its end', async () => {
+    feed = (_req, res) => {
+      res.writeHead(200, INDEX_HEADERS);
+      res.write('{"schema":1,');
+      res.end('"version":8}');
+    };
+    await expect(_defaultReadFeed()).resolves.toEqual({ schema: 1, version: 8 });
+  });
+
+  test('a null entry reads as null (the cycle’s feed_empty)', async () => {
+    feed = entryReply('null');
+    await expect(_defaultReadFeed()).resolves.toBeNull();
+  });
+
+  test.each([
+    ['a 404', (_req, res) => json(res, 404, { code: 404, message: 'Not Found' }), /Feed is empty/],
+    ['a 500', (_req, res) => json(res, 500, { code: 500, message: 'x' }), /Feed is empty/],
+    ['a 503', (_req, res) => json(res, 503, { code: 503, message: 'x' }), /503/],
+    [
+      'a redirect, which is not followed',
+      (_req, res) => {
+        res.writeHead(302, { location: '/feeds/elsewhere' });
+        res.end();
+      },
+      /302/,
+    ],
+    [
+      'no swarm-feed-index',
+      entryReply('{}', { 'swarm-feed-index-next': '0000000000000001' }),
+      /swarm-feed-index!/,
+    ],
+    [
+      'no swarm-feed-index-next',
+      entryReply('{}', { 'swarm-feed-index': '0000000000000000' }),
+      /swarm-feed-index-next!/,
+    ],
+    [
+      'an index that is not 8 bytes',
+      entryReply('{}', { ...INDEX_HEADERS, 'swarm-feed-index': '03' }),
+      /not a feed index/,
+    ],
+    ['a body that is not JSON', entryReply('not json'), SyntaxError],
+    ['an empty body', entryReply(''), SyntaxError],
+    [
+      'a body shorter than it declared',
+      (_req, res) => {
+        res.writeHead(200, { 'content-length': 10, ...INDEX_HEADERS });
+        res.write('{}');
+        res.destroy();
+      },
+      /./,
+    ],
+  ])('%s fails the read', async (_name, reply, error) => {
+    feed = reply;
+    await expect(_defaultReadFeed()).rejects.toThrow(error);
+  });
+
+  test('an entry declared past the cap is refused before its body is read', async () => {
+    feed = entryReply(Buffer.alloc(MANIFEST_MAX_BYTES + 1, 0x20));
+    await expect(_defaultReadFeed()).rejects.toMatchObject({
+      reason: 'data_too_large',
+      limit: MANIFEST_MAX_BYTES,
+      actual: MANIFEST_MAX_BYTES + 1,
+    });
+    // A large one: its body is let go, not drained.
+    const total = MANIFEST_MAX_BYTES * 64;
+    feed = (_req, res, entry) => {
+      res.writeHead(200, { 'content-length': total, ...INDEX_HEADERS });
+      streamBody(entry, { total });
+    };
+    await expect(_defaultReadFeed()).rejects.toMatchObject({ actual: total });
+    await node.requests[1].done;
+    expect(node.requests[1].aborted).toBe(true);
+    expect(node.requests[1].bytesSent).toBeLessThan(total);
+  });
+
+  test('an entry with no declared length is cut off once it passes the cap', async () => {
+    feed = (_req, res, entry) => {
+      res.writeHead(200, INDEX_HEADERS);
+      streamBody(entry);
+    };
+    await expect(_defaultReadFeed()).rejects.toMatchObject({
+      reason: 'data_too_large',
+      limit: MANIFEST_MAX_BYTES,
+    });
+    await node.requests[0].done;
+    expect(node.requests[0].aborted).toBe(true);
+    expect(node.requests[0].bytesSent).toBeLessThan(MANIFEST_MAX_BYTES * 4);
+  });
+
+  test('a read the signal ends lets its connection go', async () => {
+    feed = (_req, res) => {
+      res.writeHead(200, INDEX_HEADERS);
+      res.write('{"schema":');
+    };
+    const controller = new AbortController();
+    const reading = _defaultReadFeed({ signal: controller.signal });
+    await waitFor(() => node.requests.length === 1, { what: 'the feed read' });
+    controller.abort(new Error('timed out'));
+    await expect(reading).rejects.toThrow('timed out');
+    await node.requests[0].done;
+    expect(node.requests[0].aborted).toBe(true);
+  });
+
+  test('with no node URL nothing is dialled', async () => {
+    mockRegistry.url = null;
+    await expect(_defaultReadFeed()).rejects.toThrow('Swarm node is not ready');
+    await expect(_defaultDownloadBlob(REF_ADS, {})).rejects.toThrow('Swarm node is not ready');
+    expect(node.requests).toEqual([]);
+  });
+
+  test('a list download that fails its status, or names no reference, fails', async () => {
+    await expect(_defaultDownloadBlob('cc'.repeat(32), {})).rejects.toThrow(/404/);
+    await expect(_defaultDownloadBlob('not a ref', {})).rejects.toThrow(/not a Swarm reference/);
+    expect(node.requests.map((r) => r.url)).toEqual([`/bytes/${'cc'.repeat(32)}`]);
+  });
+
+  test('a whole cycle on the default IO applies the update, as with injected IO', async () => {
+    const manifest = await signedManifest(5);
+    feed = entryReply(JSON.stringify(manifest));
+    const result = await runUpdateOnce({
+      root,
+      trustConfigured: true,
+      sigAddress: SIGNER.address,
+      activate: jest.fn(() => Promise.resolve()),
+    });
+    expect(result).toEqual({ status: 'applied', version: 5 });
+    expect(fs.readFileSync(path.join(root, 'updated', 'easylist.txt'))).toEqual(ADS);
+    expect(fs.readFileSync(path.join(root, 'updated', 'easyprivacy.txt'))).toEqual(PRIV);
+    expect(node.requests.map((r) => r.url)).toEqual([
+      FEED_PATH,
+      `/bytes/${REF_ADS}`,
+      `/bytes/${REF_PRIV}`,
+    ]);
+  });
+
+  test.each([
+    [
+      'the feed fails',
+      () => (feed = (_req, res) => json(res, 503, {})),
+      { status: 'feed_unavailable' },
+    ],
+    ['the feed is empty', () => (feed = entryReply('null')), { status: 'feed_empty' }],
+    [
+      'a list fails',
+      async () => {
+        feed = entryReply(JSON.stringify(await signedManifest(5)));
+        blobs.delete(REF_ADS);
+      },
+      { status: 'download_failed', reason: 'ads' },
+    ],
+    [
+      'a list is not what the manifest signed',
+      async () => {
+        feed = entryReply(JSON.stringify(await signedManifest(5)));
+        blobs.set(REF_PRIV, Buffer.from('tampered'));
+      },
+      { status: 'hash_mismatch', reason: 'privacy' },
+    ],
+  ])('a whole cycle where %s ends as it did', async (_name, arrange, expected) => {
+    await arrange();
+    const result = await runUpdateOnce({
+      root,
+      trustConfigured: true,
+      sigAddress: SIGNER.address,
+      activate: jest.fn(() => Promise.resolve()),
+    });
+    expect(result).toEqual(expected);
+    expect(fs.existsSync(path.join(root, 'updated'))).toBe(false);
+  });
+
+  test('a feed read past the cycle’s timeout is cancelled', async () => {
+    feed = () => {}; // never answers
+    const result = await runUpdateOnce({ root, trustConfigured: true, timeoutMs: 50 });
+    expect(result).toEqual({ status: 'feed_unavailable' });
+    await waitFor(() => node.requests[0]?.closed, { what: 'the dial to close' });
+    expect(node.requests[0].aborted).toBe(true);
   });
 });
