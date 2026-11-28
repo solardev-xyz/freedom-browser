@@ -562,6 +562,23 @@ const pickLedgerThenReject = (view, n) =>
   n === 1 ? { action: 'sign', owner: LEDGER_INDEX } : null;
 
 describe("confirm again with no record (the plan's point 6)", () => {
+  test("approved, then main restarts (or an older build ran between): the owner's turn asks for a new approval before the device, nothing sent", async () => {
+    await setup();
+    recordApproval();
+    // A restart: the records were in memory only.
+    records._reset();
+    world.lane = lane(txStream().apdus, { done: () => board(true) });
+    await expect(
+      coreSends.signOwner(SAFE_INDEX, LEDGER_INDEX, { safeTxHash: SAFE_TX_HASH })
+    ).rejects.toMatchObject({
+      code: 'SAFE_APPROVAL_NEEDED',
+      message: 'Confirm this transaction again before this Ledger signs it',
+    });
+    expect(ledgerRequests('safe.sign_owner')).toEqual([]);
+    expect(devices.events).toEqual([]);
+    expect(records.recordFor(SAFE_INDEX)).toBeNull();
+  });
+
   test("after a restart: the board shows wallet.safe_send from the entry's fields, main records it on the approval, nothing minted, and the owner signs", async () => {
     await setup();
     // A restart: main holds no record.
