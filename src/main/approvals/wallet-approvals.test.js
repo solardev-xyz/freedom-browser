@@ -259,6 +259,39 @@ describe('a step main runs in a window: a Safe board\'s executor fee (APS-3b)', 
     expect(env.prompts.map((prompt) => prompt.windowId)).toEqual([4]);
     expect((await env.approvals.confirm({ kind: 'executor-send', index, payload, feeChecked: true })).code).toBe('NO_WINDOW');
   });
+
+  // freedom-core design 0016, SAFE-3 (the plan's point 8): the identity
+  // core's offer, with its verdict (`safe.execute`'s `{ fee_check }`).
+  test("the core's offer: shown with the core's verdict, judged by main no more, asked again above the threshold", async () => {
+    const env = setup({ verdict: BELOW });
+    const offer = { chainId: 100, to: SAFE, value: '0' };
+    const done = jest.fn(() => ({}));
+    expect(
+      await env.approvals.confirm({ windowId: 4, kind: 'executor-send', index: 0, payload: offer, verdict: { ...ABOVE, askAgain: true } }, done)
+    ).toEqual({ approved: true });
+    expect(env.prompts.map((prompt) => [prompt.kind, prompt.view.feeAskAgain])).toEqual([
+      ['wallet.executor_send', false],
+      ['wallet.executor_send', true],
+    ]);
+    expect(env.prompts[0].view).toEqual({
+      account: { index: 0, name: 'Main Wallet', address: ACTIVE, type: 'mnemonic' },
+      chain: { id: 100, name: 'Gnosis Chain', symbol: 'xDAI' },
+      tx: { to: SAFE, value: '0', data: '0x' },
+      fee: null,
+      feeCheck: ABOVE,
+      feeAskAgain: false,
+    });
+    expect(kinds.checkMessage(message('wallet.executor_send', env.prompts[1].view)).valid).toBe(true);
+    expect(done).toHaveBeenCalledWith({ feeAcknowledged: true });
+    expect(env.checkAtApproval).not.toHaveBeenCalled();
+
+    // Within the threshold: one press. A rejection says no.
+    const below = setup();
+    expect(await below.approvals.confirm({ windowId: 4, kind: 'executor-send', index: 0, payload: offer, verdict: BELOW })).toEqual({ approved: true });
+    expect(below.prompts).toHaveLength(1);
+    below.decisions.push({ approve: false, choices: {} });
+    expect(await below.approvals.confirm({ windowId: 4, kind: 'executor-send', index: 0, payload: offer, verdict: BELOW })).toEqual(REJECTED);
+  });
 });
 
 // APS-4: a held payment's resend asked again by the chrome, because the

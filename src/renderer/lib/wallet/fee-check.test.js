@@ -327,6 +327,14 @@ describe('confirming a fee main stopped its own transaction for', () => {
     );
   });
 
+  // freedom-core design 0016, SAFE-3 (the plan's point 8): the identity
+  // core's offer is acknowledged, its `fee_ack`; nothing is minted for it.
+  test("the core's offer is confirmed by acknowledging it: no executor-send token minted", async () => {
+    const offer = { feeAck: true, safeIndex: 5, executorIndex: 0, chainId: 100, to: OFFER.to, value: '0' };
+    await expect(feeCheck.confirmOfferedFee(offer, { ...VERDICT, above: true })).resolves.toEqual({ feeAck: true });
+    expect(window.wallet.confirmSigning).not.toHaveBeenCalled();
+  });
+
   test("main's ask-again reaches the screen with its verdict", async () => {
     window.wallet.confirmSigning.mockResolvedValueOnce({
       success: false,

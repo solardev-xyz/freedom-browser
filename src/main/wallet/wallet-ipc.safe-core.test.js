@@ -3,8 +3,10 @@
  * 0016, SAFE-3's PR 4a; safe/safe-backend-kind.js): on the core, the
  * chrome's confirmation of its own Safe send is the core's (prepared,
  * approved, minted: `confirmSafeSend`) and its send a proposal
- * (`proposeSafeSend`); no owner is confirmed again. On js, every handler
- * takes today's path and never the core's. What the core's path does is
+ * (`proposeSafeSend`); no owner is confirmed again; its execution names
+ * the board's SafeTx, the executor's fee acknowledged
+ * (`executeChromeSafeSend`, SAFE-3's PR 4b). On js, every handler takes
+ * today's path and never the core's. What the core's path does is
  * safe/core-sends.test.js's.
  */
 
@@ -45,6 +47,8 @@ jest.mock('./safe/safe-transactions', () => ({
   getSafeSendState: jest.fn(() => null),
   getAllSafeSendStates: jest.fn(() => []),
   pendingCall: jest.fn(() => null),
+  executeSafePending: jest.fn(async () => ({ status: 'executed' })),
+  executeChromeSafeSend: jest.fn(async () => ({ status: 'executed' })),
 }));
 let mockWalletApprovals = null;
 jest.mock('../approvals/wallet-approvals', () => ({
@@ -153,6 +157,35 @@ describe('on the core', () => {
     expect(transactions.signSafePending).toHaveBeenCalledWith(7, 1);
   });
 
+  test("the execution names the board's SafeTx, its fee acknowledged in the window's document when it is on", async () => {
+    mockWalletApprovals = { confirm: jest.fn() };
+    const options = { safeTxHash: BOARD.safeTxHash, feeConfirmation: { feeAck: true } };
+    expect(await handlers['wallet:safe-execute']({ sender: CHROME }, 7, options)).toEqual({ success: true, state: { status: 'executed' } });
+    expect(transactions.executeChromeSafeSend).toHaveBeenCalledWith({
+      sender: CHROME,
+      safeIndex: 7,
+      safeTxHash: BOARD.safeTxHash,
+      feeConfirmation: { feeAck: true },
+      approvals: mockWalletApprovals,
+    });
+    expect(transactions.executeSafePending).not.toHaveBeenCalled();
+    // The fee asked: its verdict and the core's offer reach the chrome.
+    const offer = { feeAck: true, safeIndex: 7, executorIndex: 0, chainId: 100, to: '0x' + '77'.repeat(20), value: '0' };
+    transactions.executeChromeSafeSend.mockRejectedValueOnce(
+      Object.assign(new Error('fee'), { code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeCheck: { above: true }, offer })
+    );
+    expect(await handlers['wallet:safe-execute']({ sender: CHROME }, 7, { safeTxHash: BOARD.safeTxHash })).toEqual({
+      success: false,
+      error: 'fee',
+      code: 'FEE_CHECK_NEEDS_CONFIRMATION',
+      feeCheck: { above: true },
+      offer,
+    });
+    expect(transactions.executeChromeSafeSend).toHaveBeenLastCalledWith(
+      expect.objectContaining({ safeTxHash: BOARD.safeTxHash, feeConfirmation: null })
+    );
+  });
+
   test("the pending list and a Safe's state are the core's board, read", async () => {
     transactions.getAllSafeSendStates.mockResolvedValueOnce([BOARD]);
     expect(await handlers['wallet:safe-pending-list']({})).toEqual({ success: true, states: [BOARD] });
@@ -177,6 +210,13 @@ describe('on js', () => {
     expect(transactions.startSafeSend).toHaveBeenCalledTimes(1);
     expect(transactions.confirmSafeSend).not.toHaveBeenCalled();
     expect(transactions.proposeSafeSend).not.toHaveBeenCalled();
+  });
+
+  test("the execution is today's: executeSafePending with the chrome's fee confirmation", async () => {
+    const feeConfirmation = { confirmation: 'tok', gasLimit: '1', fees: { gasPrice: '1' } };
+    await handlers['wallet:safe-execute']({ sender: CHROME }, 7, { feeConfirmation });
+    expect(transactions.executeSafePending).toHaveBeenCalledWith(7, { feeConfirmation });
+    expect(transactions.executeChromeSafeSend).not.toHaveBeenCalled();
   });
 
   test('the built form is no binding of js: a payload naming a SafeTx binds its call alone, as today', () => {

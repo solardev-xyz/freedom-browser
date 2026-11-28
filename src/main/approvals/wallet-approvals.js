@@ -368,6 +368,11 @@ function createWalletApprovals({
     }
   }
 
+  function withoutAskAgain(given) {
+    const { askAgain: _askAgain, ...verdict } = given;
+    return verdict;
+  }
+
   async function verdictFor(payload) {
     try {
       return (await checkFees(payload)) || null;
@@ -395,13 +400,20 @@ function createWalletApprovals({
    *   or `windowId` in place of `sender` for a step main itself runs in a
    *   window (a Safe board's executor fee, `safe-boards.js`); `built`: a
    *   `safe-send` whose payload is the SafeTx the core built, main's own
-   *   (safe/core-sends.js), never a chrome's request
+   *   (safe/core-sends.js), never a chrome's request; `verdict`: an
+   *   `executor-send` whose fee the core offered and judged (`safe.execute`'s
+   *   `{ fee_check }`, safe/core-sends.js), shown with the core's verdict and
+   *   judged by main no more: above the threshold the prompt is shown again,
+   *   asking, and nothing is minted on its approval (the core's `fee_ack`)
    * @param {(fee: {feeAcknowledged: boolean}) => object} [onApproved] run
    *   on the approval, before it is released, told whether the user
    *   confirmed a fee above the threshold again; what it returns joins the
    *   answer.
    */
-  async function confirm({ sender, windowId: inWindow, kind, index, payload, feeChecked, built = false }, onApproved = () => ({})) {
+  async function confirm(
+    { sender, windowId: inWindow, kind, index, payload, feeChecked, built = false, verdict: offered = null },
+    onApproved = () => ({})
+  ) {
     const promptKind = PROMPT_KINDS[kind];
     if (!promptKind) throw new Error(`wallet-approvals: not a wallet kind: ${kind}`);
     let windowId = Number.isInteger(inWindow) ? inWindow : null;
@@ -413,7 +425,9 @@ function createWalletApprovals({
       }
     }
     if (!Number.isInteger(windowId)) return NO_WINDOW;
-    let verdict = feeChecked ? await verdictFor(payload) : null;
+    // The core's verdict on its own offer, as it gave it.
+    const coreJudged = kind === 'executor-send' && offered !== null && typeof offered === 'object';
+    let verdict = coreJudged ? withoutAskAgain(offered) : feeChecked ? await verdictFor(payload) : null;
     let askAgain = false;
     const replaced = kind === 'intent-resend' ? replacedSince(payload) : null;
     for (;;) {
@@ -435,7 +449,12 @@ function createWalletApprovals({
         });
         if (decision?.error) return LIMITED;
         if (decision?.approve !== true) return REJECTED;
-        if (feeChecked) {
+        if (coreJudged && verdict.above === true && !askAgain) {
+          // Above the threshold: the second press confirms it.
+          askAgain = true;
+          continue;
+        }
+        if (feeChecked && !coreJudged) {
           // The fee at the press (design 0005, A): above the threshold and
           // not yet confirmed again, the prompt is shown again, asking.
           const atPress = await checkAtApproval(payload, { acknowledged: askAgain });
@@ -453,7 +472,7 @@ function createWalletApprovals({
           // again here, as main's own check asks.
           minted = await onApproved({ feeAcknowledged: askAgain });
         } catch (err) {
-          if (feeChecked && err?.code === FEE_CHECK_ASK_AGAIN && err.feeCheck && !askAgain) {
+          if (feeChecked && !coreJudged && err?.code === FEE_CHECK_ASK_AGAIN && err.feeCheck && !askAgain) {
             verdict = { ...err.feeCheck };
             askAgain = true;
             continue;

@@ -783,12 +783,24 @@ function registerWalletIpc() {
     })
   );
 
-  handle(
-    'wallet:safe-execute',
-    safeStateHandler((safeIndex, options) => {
+  handle('wallet:safe-execute', (event, safeIndex, options) =>
+    safeStateHandler((index, given) => {
+      // On the core's Safe backend: the SafeTx the board shows, executed by
+      // the core's prepared send; the executor's fee acknowledged, asked in
+      // the window's approvals document when it is on (safe/core-sends.js).
+      if (safeBackendKind() === 'core') {
+        const { executeChromeSafeSend } = require('./safe/safe-transactions');
+        return executeChromeSafeSend({
+          sender: event?.sender,
+          safeIndex: index,
+          safeTxHash: given?.safeTxHash ?? null,
+          feeConfirmation: given?.feeConfirmation ?? null,
+          approvals: require('../approvals/wallet-approvals').getWalletApprovals(),
+        });
+      }
       const { executeSafePending } = require('./safe/safe-transactions');
-      return executeSafePending(safeIndex, { feeConfirmation: options?.feeConfirmation });
-    })
+      return executeSafePending(index, { feeConfirmation: given?.feeConfirmation });
+    })(event, safeIndex, options)
   );
 
   handle(

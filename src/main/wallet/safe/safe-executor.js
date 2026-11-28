@@ -699,4 +699,6 @@ module.exports = {
   withdrawExecutionSite,
   deploySafe,
   pickDefaultExecutor,
+  execIntentKey,
+  deployIntentKey,
 };

@@ -44,9 +44,12 @@
  * builds only; freedom-core design 0016, SAFE-3) each step is the core's
  * (`core-sends.js`): the wallet's own send prepared, approved and proposed
  * there, the board `safe.pending`'s (`getSafeSendState` and
- * `getAllSafeSendStates` then resolve it), its owners `safe.sign_owner`'s
- * and its discard `safe.discard`'s. Its execution is SAFE-3's PR 4b, and a
- * site's send PR 7's: on the core both are refused until then. On js,
+ * `getAllSafeSendStates` then resolve it), its owners `safe.sign_owner`'s,
+ * its discard `safe.discard`'s, and its execution `safe.execute`'s, signed
+ * by the executor with the core's token, journaled and broadcast, then
+ * told (`safe.executed`): the executor's fee the core's check stops is
+ * acknowledged (`fee_ack`), never confirmed with a token. A site's send is
+ * SAFE-3's PR 7's: on the core it is refused until then. On js,
  * everything here is as it was.
  */
 
@@ -485,7 +488,15 @@ function pendingCall(safeIndex, safeTxHash) {
  *   `executed: {hash, explorerUrl}` (and the pending entry is cleared)
  */
 async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHash = null } = {}) {
-  if (onCore()) return core().execute(safeIndex, { feeConfirmation, safeTxHash });
+  if (onCore()) {
+    // `feeConfirmation`: `{ feeAck: true }`, the user's confirmation of the
+    // fee the core offered; `safeTxHash` required (core-sends.js).
+    const state = await core().execute(safeIndex, { feeConfirmation, safeTxHash });
+    if (state?.status === 'executed') {
+      settled({ safeIndex, safeTxHash: state.safeTxHash, outcome: 'executed', hash: state.executed.hash });
+    }
+    return state;
+  }
   await pendingStore.ready;
   const record = getSafeRecord(safeIndex);
   const pending = pendingNamed(safeIndex, safeTxHash);
@@ -697,9 +708,32 @@ function proposeSafeSend(options) {
   return core().propose(options);
 }
 
+/**
+ * The core's Safe backend only: the chrome's execution of the SafeTx
+ * `safeTxHash` its board shows (`wallet:safe-execute`). Its fee
+ * confirmation is the chrome's acknowledgement of the fee the core offered
+ * (`{ feeAck: true }`): with the approvals document on (`approvals`), asked
+ * in the window's panel first, the chrome's word counting for nothing; with
+ * it off, the chrome's own confirmation, as today. Refused on js.
+ *
+ * @param {{ sender: object, safeIndex: number, safeTxHash?: string,
+ *   feeConfirmation?: object, approvals: object|null }} options
+ */
+async function executeChromeSafeSend({ sender, safeIndex, safeTxHash = null, feeConfirmation = null, approvals }) {
+  if (!onCore()) throw new Error("The wallet's Safe sends don't run on the core");
+  let confirmed = feeConfirmation ?? null;
+  if (confirmed?.feeAck === true && approvals) {
+    const outcome = await core().confirmOfferedFee({ approvals, sender, safeIndex });
+    if (!outcome.approved) throw codedError(outcome.error, outcome.code);
+    confirmed = outcome.feeConfirmation;
+  }
+  return executeSafePending(safeIndex, { feeConfirmation: confirmed, safeTxHash });
+}
+
 module.exports = {
   confirmSafeSend,
   proposeSafeSend,
+  executeChromeSafeSend,
   startSafeSend,
   reserveSafeSend,
   pendingCall,
