@@ -59,11 +59,15 @@
  *   Main writes none of the four files. Reverting a move gives the file back
  *   to main: the core then writes nothing in it, and older builds still read
  *   it (Q10).
- * - **`store_moved`** (design 0013, "One writer per store") names the set-A
- *   stores (`STORES`) whose only writer is the core: `STORE_MOVED`, a
- *   property of the build: `vault_meta` from PRF-6(a), `intents`
- *   (PRF-6(b2)), whose every write main sends to the core's `intents.*`
- *   (wallet/intent-store.js), `payments` (PRF-6(c)), whose every read and
+ * - **`store_moved`** (design 0013, "One writer per store") names the
+ *   stores (`STORES`) whose only writer is the core: set A's
+ *   (`STORE_MOVED`), a property of the build, and on the core's Swarm
+ *   backend from SWM-7's flip the Swarm stores (`swarm_stores`, design
+ *   0015, D3), so the list is `storeMovedFor` the backend the process read
+ *   once at its start (`swarmBackendKind()`). Set A's: `vault_meta` from
+ *   PRF-6(a), `intents` (PRF-6(b2)), whose every write main sends to the
+ *   core's `intents.*` (wallet/intent-store.js), `payments` (PRF-6(c)),
+ *   whose every read and
  *   write main sends to the core's `payments.*` (payment-history.js),
  *   `safe_pending` (PRF-6(d)), whose every write main sends to the core's
  *   `safe_pending.*` (wallet/safe/pending-store.js), and `rpc_api_keys`
@@ -133,31 +137,84 @@ const CORE_VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 
 /**
  * The set-A stores (design 0013, "One writer per store: `store_moved`"),
- * each of which main hands to the core by naming it in the hello's
- * `store_moved`, in the core's order.
+ * in the core's order.
  */
-const STORES = Object.freeze(['vault_meta', 'intents', 'payments', 'safe_pending', 'rpc_api_keys']);
-
-/**
- * The stores this build names in every hello's `store_moved`, whose only
- * writer is then the core. It is a property of the build, never a run-time
- * switch: each PRF-6 step adds its store's name in the change that deletes
- * main's writer for it, in `STORES` order. `vault_meta` from PRF-6(a):
- * identity-manager.js writes `vault-meta.json` nowhere. `intents` from
- * PRF-6(b2): the intent journal's every write goes to the core. `payments`
- * from PRF-6(c): main opens `payment-history.sqlite` nowhere, and reads and
- * writes it only through the core. `safe_pending` from PRF-6(d): main keeps
- * a copy of `safe-pending.json` and writes it nowhere. `rpc_api_keys` from
- * PRF-6(e): the RPC API keys are the core's (wallet/rpc-manager.js). With
- * it, every set-A store is the core's.
- */
-const STORE_MOVED = Object.freeze([
+const SET_A_STORES = Object.freeze([
   'vault_meta',
   'intents',
   'payments',
   'safe_pending',
   'rpc_api_keys',
 ]);
+
+/**
+ * The three Swarm stores' one name (freedom-core design 0015, D3): the feed
+ * store (`swarm-feeds.json`), the manifest store
+ * (`swarm-manifest-grants.json`) and the publish history
+ * (`publish-history.sqlite`), which move together.
+ */
+const SWARM_STORES = 'swarm_stores';
+
+/**
+ * Every store main can hand to the core by naming it in the hello's
+ * `store_moved`, in the core's order (freedom-cored's `serve.rs`
+ * `STORES`): set A, then the Swarm stores.
+ */
+const STORES = Object.freeze([...SET_A_STORES, SWARM_STORES]);
+
+/**
+ * The set-A stores every hello of this build names in `store_moved`,
+ * whatever serves Swarm, whose only writer is then the core. Each PRF-6
+ * step added its store's name in the change that deleted main's writer for
+ * it, in `STORES` order. `vault_meta` from PRF-6(a): identity-manager.js
+ * writes `vault-meta.json` nowhere. `intents` from PRF-6(b2): the intent
+ * journal's every write goes to the core. `payments` from PRF-6(c): main
+ * opens `payment-history.sqlite` nowhere, and reads and writes it only
+ * through the core. `safe_pending` from PRF-6(d): main keeps a copy of
+ * `safe-pending.json` and writes it nowhere. `rpc_api_keys` from PRF-6(e):
+ * the RPC API keys are the core's (wallet/rpc-manager.js). With it, every
+ * set-A store is the core's.
+ */
+const STORE_MOVED = Object.freeze([...SET_A_STORES]);
+
+/**
+ * Whether a hello names `swarm_stores` on the core's Swarm backend: false
+ * until SWM-7's flip (the SWM-6 to SWM-9 plan's PR 7.4), which sets it in
+ * the change that makes main's writers of the three files unable to run on
+ * `core`. Until then only tests name the Swarm stores
+ * (`storeMovedFor(backend, { swarmStores: true })`).
+ */
+const SWARM_STORES_NAMED = false;
+
+/**
+ * The stores a hello names in `store_moved` for a process whose Swarm
+ * backend is `backend` (`js` or `core`, swarm/swarm-backend-kind.js).
+ *
+ * Set A's names are a property of the build (`STORE_MOVED`). The Swarm
+ * stores' name depends on the backend, and so is not: on `js` the JS
+ * provider writes the feed store and the history through functions the
+ * core has no op for (feed-store.js's `setFeed`, `updateFeedReference`,
+ * and the rest; publish-history.js's `addEntry` and `updateEntry`), so the
+ * stores move with the switch (design 0015's 2026-11-28 amendment, "SWM-6
+ * to SWM-9's plan", point 1). It is still never a run-time switch: the
+ * backend is read once, at the process's first ask
+ * (`swarmBackendKind()`), so the list is fixed for the process, and every
+ * hello it sends names the same stores. `swarm_stores` is named only for
+ * `core`, and only once `swarmStores` is true (`SWARM_STORES_NAMED`, false
+ * in every build until PR 7.4). Throws a TypeError for another backend.
+ *
+ * @param {'js'|'core'} backend
+ * @param {{ swarmStores?: boolean }} [options]
+ * @returns {readonly string[]} frozen, in `STORES` order
+ */
+function storeMovedFor(backend, { swarmStores = SWARM_STORES_NAMED } = {}) {
+  if (backend !== 'js' && backend !== 'core') {
+    throw new TypeError(`unknown Swarm backend ${backend}`);
+  }
+  return backend === 'core' && swarmStores === true
+    ? Object.freeze([...STORE_MOVED, SWARM_STORES])
+    : STORE_MOVED;
+}
 
 /**
  * The hello answer's `store_moved`: the names of `sent` whose store the core
@@ -266,8 +323,8 @@ function validNodeRecovery(value) {
 
 /**
  * freedom-cored, as the shared client supervises it, with the hello naming
- * `storeMoved` (the build's `STORE_MOVED`; tests name others) and taking an
- * echo of those names only.
+ * `storeMoved` (the process's `storeMovedFor(swarmBackendKind())`; tests
+ * name others) and taking an echo of those names only.
  */
 function coreService(storeMoved = STORE_MOVED) {
   return Object.freeze({
@@ -291,11 +348,12 @@ function coreService(storeMoved = STORE_MOVED) {
       // 0013, PRF-8b-lite): only when the client was given one.
       ...(client.userDataDir === null ? {} : { user_data_dir: client.userDataDir }),
       grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
-      // The set-A stores the core writes from then on (design 0013):
+      // The stores the core writes from then on: set A (design 0013):
       // vault-meta.json (PRF-6(a)), the intent journal (PRF-6(b2)), the
       // payment history (PRF-6(c)), safe-pending.json (PRF-6(d)) and the RPC
-      // API keys (PRF-6(e)). The core echoes those it took; 0.22.0 ignores
-      // the field.
+      // API keys (PRF-6(e)); and, on the core's Swarm backend from SWM-7's
+      // flip, the Swarm stores (design 0015, D3; `storeMovedFor`). The core
+      // echoes those it took; 0.22.0 ignores the field.
       store_moved: [...storeMoved],
     }),
     validHello: (result) => validHello(result, storeMoved),
@@ -315,6 +373,14 @@ function coreService(storeMoved = STORE_MOVED) {
 }
 
 const CORE_SERVICE = coreService();
+
+/**
+ * The service for a process whose hello names `storeMoved`: the shared one
+ * for the build's set A alone.
+ */
+function coreServiceFor(storeMoved) {
+  return storeMoved === STORE_MOVED ? CORE_SERVICE : coreService(storeMoved);
+}
 
 /**
  * A request's `requires` (service-client.js) for store `name`'s requests:
@@ -364,7 +430,11 @@ class CoreClient extends ServiceClient {
     const userData = userDataDir === undefined ? null : path.resolve(userDataDir);
     const grantArgs = options.grantArgs !== false;
     const args = grantArgs ? withGrantArgs(options.args, root, userData) : options.args;
-    super({ ...options, args, service: CORE_SERVICE });
+    // The hello's stores: set A, and the Swarm stores for a process the
+    // switch, read once, runs on the core (`storeMovedFor`; none until
+    // SWM-7's flip).
+    const backend = require('../swarm/swarm-backend-kind').swarmBackendKind();
+    super({ ...options, args, service: coreServiceFor(storeMovedFor(backend)) });
     this.autoLockMs = options.autoLockMs ?? 15 * 60 * 1000;
     this.grantRoot = root;
     this.userDataDir = userData;
@@ -405,8 +475,11 @@ module.exports = {
   MAX_WRITE_BYTES,
   POOL_BYTES,
   POOL_EXEMPT_BYTES,
+  SET_A_STORES,
+  SWARM_STORES,
   STORES,
   STORE_MOVED,
+  storeMovedFor,
   requiresStore,
   // For tests.
   _internal: { coreService, validHello, withGrantArgs },

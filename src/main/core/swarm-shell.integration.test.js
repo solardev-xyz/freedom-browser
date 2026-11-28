@@ -580,12 +580,13 @@ describePeaksScripted(
       });
       mockRegistry.url = node.origin;
       const pool = new SwarmIoPool();
+      // The registry admits parents as on the core's backend: the switch
+      // itself is read once per process (swarm-backend-kind.js), and this
+      // case is the pool's.
       const harness = await startSwarmCore({
         log: { info() {}, warn() {}, error() {}, debug() {} },
-        deps: { nodeUrl: () => node.origin, pool },
+        deps: { nodeUrl: () => node.origin, pool, backendKind: () => 'core' },
       });
-      const savedSwitch = process.env.FREEDOM_SWARM_BACKEND;
-      process.env.FREEDOM_SWARM_BACKEND = 'core';
       const parents = [];
       try {
         const core = harness.core();
@@ -649,8 +650,6 @@ describePeaksScripted(
         // this process beside it.
         expect(peak.up).toBeLessThan(2 * 64 * MIB);
       } finally {
-        if (savedSwitch === undefined) delete process.env.FREEDOM_SWARM_BACKEND;
-        else process.env.FREEDOM_SWARM_BACKEND = savedSwitch;
         for (const p of parents) p.handle?.close();
         await harness.client.stop();
         await node.close();
