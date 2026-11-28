@@ -29,10 +29,12 @@
  *   answered for each Safe is kept for the approvals document's board,
  *   which reads between its steps without waiting (`cachedState`).
  * - **Owners** sign through `safe.sign_owner`: without an owner the vault
- *   owners' sweep, with one that owner. A Ledger owner is refused here,
- *   unsent, until SAFE-3's PR 8 (main's binding of the SafeTx, on PR 6's
- *   records): no device is asked for a Safe owner before then. A phone
- *   owner is the core's own refusal.
+ *   owners' sweep, with one that owner. A Ledger owner (SAFE-3's PR 8,
+ *   ledger-owners.js) signs on the core's Ledger backend only, under main's
+ *   binding of the pending entry's fields to the approval record below,
+ *   and with no record the board confirms the SafeTx again first
+ *   (SAFE_APPROVAL_NEEDED); on the JS Ledger backend it is refused,
+ *   unsent. A phone owner is the core's own refusal.
  * - **A discard** is `safe.discard`, naming the SafeTx the board showed.
  *   Every board step names that SafeTx, its sweep included: one that names
  *   none is refused here, unsent, so a step never acts on a SafeTx that
@@ -56,6 +58,25 @@
  *   anywhere) and broadcasts it, then tells the core (`safe.executed`).
  *   A "Try again" while the execution is held sends its bytes again, at
  *   its nonce, with nothing signed anew.
+ * - **An entry from an older version** (SAFE-3's PR 9; the plan's point
+ *   14, option (a)): one pending from before the update carries no
+ *   proposal mark of the core's, so `safe.sign_owner` would refuse it
+ *   (`not_proposed`). The board's state says so (`older`, `olderEntry`):
+ *   the core's `proposed` where its hello's `safe3` gives it, else main's
+ *   read-only copy of the entry (pending-store.js, `safe_pending.get`'s
+ *   mark), else a `not_proposed` the core answered for that SafeTx. Its
+ *   signing is refused here, unsent; its discard is as any; its execution
+ *   runs as any once it has its threshold, and is refused, unsent, below
+ *   it. What the board offers for one is the chrome's and the approvals
+ *   document's (`older` steps): Discard, and Send at the threshold.
+ * - **A changed setup:** what `safe.status` read last of the Safe's setup
+ *   (`noteSetup`, core-accounts.js), or a step the core refused `changed`,
+ *   goes on the board's state (`setupChanged`, what changed as the core
+ *   names it, `[]` when it named nothing), until a status or a step that
+ *   read the Safe finds it unchanged. The board then offers only Discard.
+ * - **Plain texts:** a core refusal of a step whose code errors.js gives a
+ *   text (`unverified`, `nonce_behind`, `store_full`, `self_call`,
+ *   `changed`, `not_proposed`) carries that text, its code kept.
  *
  * - **A site's send** (SAFE-3's PR 7; design 0016, C1, the hello's
  *   `safe3`): the core prepares it before its own prompt and answers the
@@ -72,8 +93,9 @@
  * Each step holds main's own step exclusion for the Safe, as today's path
  * does, and then reads the core's entry into main's read-only copy
  * (pending-store.js `refreshPending`; the SAFE-3 plan's point 3, the copy
- * PR 8's binding reads). A refusal of the core's keeps its code
- * (wallet/safe/errors.js): nothing here falls back to main's own path.
+ * a Ledger owner's binding reads, ledger-owners.js). A refusal of the
+ * core's keeps its code (wallet/safe/errors.js): nothing here falls back
+ * to main's own path.
  *
  * - **The approval records** (SAFE-3's PR 6, the plan's point 5;
  *   approval-records.js, in memory only): at the user's decision, before
@@ -83,21 +105,26 @@
  *   prepare too, so a SafeTx that doesn't hash to it is never shown). The
  *   record is dropped on a failed mint or propose, before `safe.discard`,
  *   when `safe.execute` answers the SafeTx superseded, and before
- *   `safe.executed` (`approvalRecords`, below). PR 8's binding of a Ledger
- *   owner's SafeTx reads it.
+ *   `safe.executed` (`approvalRecords`, below). A Ledger owner's
+ *   signature is bound to it (ledger-owners.js), and the board's "confirm
+ *   again" step for a Ledger owner records it anew (`confirmAgain`).
  */
 
 const crypto = require('crypto');
 const { Interface, ZeroAddress } = require('ethers');
 const {
   codedError,
+  plainText,
   SAFE_BUSY,
+  SAFE_CHANGED,
   SAFE_DISCARDED,
   SAFE_NEEDS_FUNDS,
   SAFE_SITE_WITHDRAWN,
+  SAFE_NOT_PROPOSED,
   SAFE_UNSUPPORTED,
 } = require('./errors');
 const records = require('./approval-records');
+const ledgerOwners = require('./ledger-owners');
 const safeApprovals = require('./safe-approvals');
 
 // The SafeTxs main minted a wallet `safe-send` for, by token: { safeIndex,
@@ -117,6 +144,18 @@ const SAFE_TX_PREPARED = 'SAFE_TX_PREPARED';
 
 // The board's last state of each Safe, by its index, as the core gave it.
 const boards = new Map();
+
+// The SafeTx whose signing the core refused `not_proposed`, by its Safe's
+// index (one pending per Safe): an entry from an older version, where the
+// core's state doesn't say (`olderEntry`). Dropped with the entry.
+const unmarked = new Map();
+
+// What changed of each Safe's setup, by its index, as `safe.status` or a
+// step's `changed` refusal said last (`noteSetup`, `learned`): the core's
+// names, `[]` for none named. Dropped once the Safe reads unchanged.
+const setups = new Map();
+// The names `safe.status`'s `setup` gives what changed (design 0016, API).
+const SETUP_NAMES = new Set(['singleton', 'owners', 'threshold', 'guard', 'handler', 'module']);
 
 /** How many fees one execution asks about, across its round trips, before it stops. */
 const MAX_FEE_ASKS = 3;
@@ -250,7 +289,96 @@ function refreshCopy(safeIndex) {
 const isState = (state) =>
   state !== null && typeof state === 'object' && Number.isSafeInteger(state.safeIndex) && typeof state.safeTxHash === 'string';
 
-/** A step's answer, the board's state: kept for the Safe, and returned. */
+const sameHash = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+
+/**
+ * Whether main's copy of an entry carries the core's proposal mark for the
+ * SafeTx `safeTxHash`, as the core writes it (`coreProposal: { chainId,
+ * safeAddress, safeTxHash }`, the entry's own chain, Safe and hash). The
+ * core reads it more strictly (its address checksummed, its hash
+ * recomputed): one main takes as marked and the core doesn't is still
+ * refused `not_proposed`, and learned then.
+ */
+function markedByCore(entry, safeTxHash) {
+  const mark = entry.coreProposal;
+  return (
+    isObject(mark) &&
+    mark.chainId === 100 &&
+    entry.chainId === 100 &&
+    sameHash(mark.safeAddress, entry.safeAddress) &&
+    sameHash(mark.safeTxHash, safeTxHash)
+  );
+}
+
+/**
+ * Whether the Safe's pending SafeTx `safeTxHash` was started in an older
+ * version, its entry with no proposal mark of the core's (the plan's point
+ * 14): the core's `proposed` where its state has it (`proposed`, under
+ * the hello's `safe3`); else a `not_proposed` the core answered for that
+ * SafeTx (`unmarked`); else main's read-only copy of the entry, while it
+ * holds that SafeTx. Unknown (no copy of it) is false: the core decides.
+ */
+function olderEntry(safeIndex, safeTxHash, proposed) {
+  if (typeof proposed === 'boolean') return !proposed;
+  if (sameHash(unmarked.get(safeIndex), safeTxHash)) return true;
+  const entry = require('./pending-store').getPending(safeIndex);
+  if (!isObject(entry) || !sameHash(entry.safeTxHash, safeTxHash)) return false;
+  return !markedByCore(entry, safeTxHash);
+}
+
+/**
+ * The board's state as main shows it (a copy): the core's, with what main
+ * knows of its entry and its Safe, each only where it holds: `older: true`
+ * (`olderEntry`), and `setupChanged`, what changed of the Safe's setup
+ * (`setups`).
+ */
+function shownState(state) {
+  const shown = { ...state };
+  if (olderEntry(state.safeIndex, state.safeTxHash, state.proposed)) shown.older = true;
+  const changed = setups.get(state.safeIndex);
+  if (changed) shown.setupChanged = [...changed];
+  return shown;
+}
+
+/**
+ * What `safe.status` read of Safe `safeIndex`'s setup (design 0016, API,
+ * `setup`), for its board: `changed` keeps what changed (the core's names);
+ * `unchanged` drops it; anything else (`unverified`, `not_deployed`, none)
+ * says nothing of it, and keeps what was known.
+ */
+function noteSetup(safeIndex, setup) {
+  if (!Number.isSafeInteger(safeIndex) || !isObject(setup)) return;
+  if (setup.state === 'unchanged') {
+    setups.delete(safeIndex);
+  } else if (setup.state === 'changed') {
+    const names = Array.isArray(setup.changed) ? setup.changed.filter((name) => SETUP_NAMES.has(name)) : [];
+    setups.set(safeIndex, [...new Set(names)]);
+  }
+}
+
+/**
+ * A core refusal of a step for Safe `safeIndex` (its SafeTx `safeTxHash`,
+ * where one was named), learned and returned in the wallet's words:
+ * `not_proposed` marks that SafeTx as from an older version, `changed`
+ * marks the Safe's setup changed (naming nothing), and a code errors.js
+ * gives a text takes it (`plainText`), its code and data kept.
+ */
+function learned(safeIndex, safeTxHash, err) {
+  if (err?.code === SAFE_NOT_PROPOSED && typeof safeTxHash === 'string') unmarked.set(safeIndex, safeTxHash);
+  // The core's current refusal names nothing: it replaces whatever an
+  // earlier status named, which may no longer be what changed.
+  if (err?.code === SAFE_CHANGED) setups.set(safeIndex, []);
+  const text = plainText(err?.code);
+  if (text && err instanceof Error) err.message = text;
+  return err;
+}
+
+/** A step that read the Safe and went on: its setup is unchanged. */
+function readUnchanged(safeIndex) {
+  setups.delete(safeIndex);
+}
+
+/** A step's answer, the board's state: kept for the Safe, and returned as main shows it. */
 function remember(safeIndex, answer) {
   if (!isState(answer) || answer.safeIndex !== safeIndex) {
     throw new Error("The identity core answered no state of this account's transaction");
@@ -260,7 +388,7 @@ function remember(safeIndex, answer) {
     console.warn('[SafeCore] A Safe transaction was saved, but it may not survive a power loss yet');
   }
   boards.set(safeIndex, state);
-  return state;
+  return shownState(state);
 }
 
 /**
@@ -272,7 +400,13 @@ function remember(safeIndex, answer) {
 async function prepare(safeIndex, request) {
   const call = callOf(request?.tx);
   const chainId = chainOf(request?.chainId);
-  const answer = await vault().safe.prepare({ safe: safeIndex, chain_id: chainId, tx: call });
+  let answer;
+  try {
+    answer = await vault().safe.prepare({ safe: safeIndex, chain_id: chainId, tx: call });
+  } catch (err) {
+    throw learned(safeIndex, null, err);
+  }
+  readUnchanged(safeIndex);
   const payload = { chainId, safeTx: answer?.safe_tx, safeTxHash: answer?.safe_tx_hash };
   const { KINDS, bindingFor } = signing();
   const facts = bindingFor(KINDS.SAFE_SEND, safeIndex, payload);
@@ -428,12 +562,15 @@ async function propose({ safeIndex, tx, chainId, display, authorization }) {
       authorization: { token: confirmation.token },
       display,
     });
+    // The core read the Safe and marked the entry it wrote.
+    readUnchanged(safeIndex);
+    unmarked.delete(safeIndex);
     return remember(safeIndex, answer);
   } catch (err) {
     await approvalRecords.dropped(safeIndex, safeTxHash, 'propose_failed');
     // Burnt by the core however its propose ended; one never sent is burnt here.
     signing().discardConfirmation(token);
-    throw err;
+    throw learned(safeIndex, null, err);
   } finally {
     reservation.release();
     await refreshCopy(safeIndex);
@@ -533,29 +670,28 @@ async function proposeForSite({ safeIndex, payload, token, handle, page, display
   }
 }
 
-/** Every pending SafeTx's state, the core's board (`safe.pending`), oldest first. */
+/** Every pending SafeTx's state, the core's board (`safe.pending`), oldest first, as main shows it. */
 async function readStates() {
   const reply = await vault().safe.pending();
   const states = Array.isArray(reply?.states) ? reply.states.filter(isState) : [];
   boards.clear();
   for (const state of states) boards.set(state.safeIndex, state);
-  return states;
+  for (const [safeIndex, hash] of [...unmarked]) {
+    if (!sameHash(boards.get(safeIndex)?.safeTxHash, hash)) unmarked.delete(safeIndex);
+  }
+  return states.map(shownState);
 }
 
 /** The Safe's pending SafeTx's state, the core's board read again, or null. */
 async function readState(safeIndex) {
   await readStates();
-  return boards.get(safeIndex) ?? null;
+  return cachedState(safeIndex);
 }
 
-/** The Safe's last state main read or a step answered, or null. */
+/** The Safe's last state main read or a step answered, as main shows it, or null. */
 function cachedState(safeIndex) {
-  return boards.get(safeIndex) ?? null;
-}
-
-function isLedgerOwner(ownerIndex) {
-  const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
-  return getWalletRecord(ownerIndex)?.type === WALLET_TYPES.LEDGER;
+  const state = boards.get(safeIndex);
+  return state ? shownState(state) : null;
 }
 
 /**
@@ -564,21 +700,35 @@ function isLedgerOwner(ownerIndex) {
  * showed (`safeTxHash`, required: none is refused unsent, and another
  * pending is the core's SAFE_DISCARDED). Resolves the
  * board's state. No owner needs a confirmation of its own on the core: its
- * proposal authorized them, so `approval` is refused.
+ * proposal authorized them, so `approval` is refused. An entry from an
+ * older version (`olderEntry`) is refused, unsent, SAFE_NOT_PROPOSED, as
+ * the core would refuse it. A Ledger owner signs under main's binding
+ * (ledger-owners.js `signPending`): with no approval record that binds the
+ * pending SafeTx, SAFE_APPROVAL_NEEDED, unsent, for the board to confirm it
+ * again; on the JS Ledger backend, refused unsent.
  */
 async function signOwner(safeIndex, ownerIndex, { safeTxHash = null, approval = null } = {}) {
   if (approval !== null) throw new Error('This transaction was not confirmed');
   const named = shown(safeTxHash);
   const owner = ownerIndex === undefined || ownerIndex === null ? undefined : ownerIndex;
-  if (owner !== undefined && isLedgerOwner(owner)) {
-    // SAFE-3's PR 8: a Ledger owner signs on the core only under main's
-    // binding of the SafeTx (and PR 6's record of its approval).
-    throw codedError("A Ledger can't sign for a multi-owner account here yet", SAFE_UNSUPPORTED);
+  const board = boards.get(safeIndex);
+  if (olderEntry(safeIndex, named, sameHash(board?.safeTxHash, named) ? board.proposed : undefined)) {
+    throw codedError(plainText(SAFE_NOT_PROPOSED), SAFE_NOT_PROPOSED);
+  }
+  const ledger = owner !== undefined && ledgerOwners.isLedgerOwner(owner);
+  if (ledger && require('../ledger/ledger-backend-kind').ledgerBackendKind() !== 'core') {
+    // The plan's point 4: a Ledger the JS backend drives signs for no Safe
+    // on the core.
+    throw codedError(ledgerOwners.UNAVAILABLE, SAFE_UNSUPPORTED);
   }
   safeApprovals.beginStep(safeIndex);
   try {
-    const answer = await vault().safe.signOwner({ safe: safeIndex, owner, safe_tx_hash: named });
+    const answer = ledger
+      ? await ledgerOwners.signPending(safeIndex, owner, named)
+      : await vault().safe.signOwner({ safe: safeIndex, owner, safe_tx_hash: named });
     return remember(safeIndex, answer);
+  } catch (err) {
+    throw learned(safeIndex, named, err);
   } finally {
     safeApprovals.endStep(safeIndex);
     await refreshCopy(safeIndex);
@@ -600,13 +750,18 @@ async function discard(safeIndex, { safeTxHash = null } = {}) {
   safeApprovals.beginStep(safeIndex);
   try {
     await approvalRecords.dropped(safeIndex, named, 'discard');
-    await vault().safe.discard({ safe: safeIndex, safe_tx_hash: named });
+    try {
+      await vault().safe.discard({ safe: safeIndex, safe_tx_hash: named });
+    } catch (err) {
+      throw learned(safeIndex, named, err);
+    }
     boards.delete(safeIndex);
     asks.delete(safeIndex);
     // A discard doesn't advance the nonce: the same call proposed again has
     // the same hash, and must not inherit the old withdrawal (Codex round 1
     // on #1384).
     if (typeof named === 'string') withdrawn.delete(named.toLowerCase());
+    unmarked.delete(safeIndex);
   } finally {
     safeApprovals.endStep(safeIndex);
     await refreshCopy(safeIndex);
@@ -867,6 +1022,7 @@ async function finishExecuted(safeIndex, done) {
   }
   unfinished.delete(safeIndex);
   boards.delete(safeIndex);
+  unmarked.delete(safeIndex);
   return { ...done.state, status: 'executed', executed: done.executed };
 }
 
@@ -925,10 +1081,23 @@ async function execute(safeIndex, { feeConfirmation = null, safeTxHash = null, a
     // Broadcast before, but the core not told: told now, executed no more.
     const done = unfinished.get(safeIndex);
     if (done && done.state.safeTxHash.toLowerCase() === named) return await finishExecuted(safeIndex, done);
-    let state = cachedState(safeIndex);
-    if (state?.safeTxHash?.toLowerCase() !== named) state = await readState(safeIndex);
-    if (state?.safeTxHash?.toLowerCase() !== named) {
+    // The core's state, as it gave it.
+    let state = boards.get(safeIndex) ?? null;
+    if (!sameHash(state?.safeTxHash, named)) {
+      await readStates();
+      state = boards.get(safeIndex) ?? null;
+    }
+    if (!sameHash(state?.safeTxHash, named)) {
       throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
+    }
+    // An entry from an older version: no owner adds a signature to it, so
+    // it executes only with the signatures it has (the plan's point 14).
+    if (olderEntry(safeIndex, state.safeTxHash, state.proposed) && !(state.collected >= state.threshold)) {
+      throw codedError(
+        `This transaction was started in an older version of Freedom and has ${state.collected} of ` +
+          `${state.threshold} signatures: its owners can't add more here. Discard it and send it again.`,
+        SAFE_NOT_PROPOSED
+      );
     }
     const chainId = state.chainId;
     if (!Number.isSafeInteger(chainId) || chainId <= 0) {
@@ -1021,11 +1190,18 @@ async function withdrawSite(state, intentKey) {
 async function executeOnce(safeIndex, { state, record, named, chainId, intentKey, confirmed, site, guard, asker, setToken }) {
   const { heldIntentFor } = require('../transaction-service');
   const held = await heldIntentFor(intentKey);
-  const answer = await vault().safe.execute({
-    safe: safeIndex,
-    safe_tx_hash: state.safeTxHash,
-    ...(confirmed ? { fee_ack: true } : {}),
-  });
+  let answer;
+  try {
+    answer = await vault().safe.execute({
+      safe: safeIndex,
+      safe_tx_hash: state.safeTxHash,
+      ...(confirmed ? { fee_ack: true } : {}),
+    });
+  } catch (err) {
+    throw learned(safeIndex, state.safeTxHash, err);
+  }
+  // Any answer came after the core's reads found the setup unchanged.
+  readUnchanged(safeIndex);
 
   if (isObject(answer?.superseded)) {
     asks.delete(safeIndex);
@@ -1105,6 +1281,21 @@ async function executeOnce(safeIndex, { state, record, named, chainId, intentKey
   return { executed: { hash: result.hash, explorerUrl: result.explorerUrl ?? null } };
 }
 
+/**
+ * The board's "confirm again" for a Ledger owner of Safe `safeIndex` with
+ * no approval record (the SAFE-3 plan's point 6; ledger-owners.js
+ * `confirmAgain`): the pending SafeTx `safeTxHash` shown in window
+ * `windowId`'s approvals document from the entry's fields, recorded on the
+ * user's approval, nothing minted. Refused (SAFE_BUSY) while a step of the
+ * Safe runs. Resolves whether it was approved.
+ */
+async function confirmAgain({ approvals, windowId, safeIndex, safeTxHash }) {
+  if (safeApprovals.stepRunning(safeIndex)) {
+    throw codedError('Wait for the current step to finish first', SAFE_BUSY);
+  }
+  return ledgerOwners.confirmAgain({ approvals, windowId, safeIndex, safeTxHash: shown(safeTxHash) });
+}
+
 /** Tests: nothing held. */
 function _reset() {
   prepared.clear();
@@ -1113,6 +1304,8 @@ function _reset() {
   asks.clear();
   unfinished.clear();
   withdrawn.clear();
+  unmarked.clear();
+  setups.clear();
 }
 
 module.exports = {
@@ -1123,8 +1316,10 @@ module.exports = {
   confirmOfferedFee,
   confirmFeeOnChrome,
   confirmWalletSend,
+  confirmAgain,
   discard,
   execute,
+  noteSetup,
   propose,
   readState,
   readStates,

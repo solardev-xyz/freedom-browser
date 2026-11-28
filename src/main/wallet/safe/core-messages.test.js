@@ -12,7 +12,8 @@
  *   `.message_cancel` and `.message_complete`, each named by main's own
  *   token for the session (the SAFE-3 plan's point 7) and checked against
  *   the session it was issued for before anything is sent;
- * - a Ledger owner is refused in main, unsent, until PR 8;
+ * - a Ledger owner on the JS Ledger backend is refused in main, unsent (its
+ *   path on the core's is ledger-owners.test.js's);
  * - the core's session ID reaches nothing the renderer or the page gets;
  * - the hello declares `safe3` (SAFE-3's PR 7), and each step above runs
  *   under it as before.
@@ -526,7 +527,7 @@ describe("the board's calls, named by main's token", () => {
     expect(methods()).toEqual(['safe.message_start']);
   });
 
-  test('a Ledger owner is refused in main before any device is asked, until PR 8', async () => {
+  test('a Ledger owner on the JS Ledger backend is refused in main before any device is asked', async () => {
     await setup({ unlocked: false });
     const { token } = await startByToken();
     const before = methods().length;

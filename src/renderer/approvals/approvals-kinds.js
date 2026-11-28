@@ -1113,8 +1113,20 @@
     collected: integer({ min: 0, max: 256 }),
     owners: list(64, BOARD_OWNER),
     notes: list(64, record({ owner: integer({ min: 0 }), note: oneOf('declined', 'failed', 'locked'), message: nullable(text(300)) })),
-    step: oneOf('collect', 'retry', 'superseded', 'discard'),
+    // `older` and `changed`, a send's on the core's Safe backend (SAFE-3's
+    // PR 9, safe-boards.js): an entry from an older version, and a Safe
+    // changed outside Freedom.
+    step: oneOf('collect', 'retry', 'superseded', 'discard', 'older', 'changed'),
     error: nullable(record({ code: oneOf('needs-funds', 'fee', 'locked', 'failed'), message: nullable(text(300)) })),
+  });
+  // What changed of a Safe's setup, in the core's names (design 0016).
+  const SETUP_CHANGES = Object.freeze({
+    singleton: 'its Safe version',
+    owners: 'its owners',
+    threshold: 'how many owners must sign',
+    guard: 'its transaction guard',
+    handler: 'its fallback handler',
+    module: 'its modules',
   });
   const OWNER_TYPES = Object.freeze({ ledger: 'Ledger', remote: 'Phone', mnemonic: 'This browser' });
   const NOTE_COPY = Object.freeze({
@@ -1133,17 +1145,36 @@
     retry: 'Collect signatures',
     superseded: 'Transaction outdated',
     discard: 'Discard transaction?',
+    older: 'Transaction from an older version',
+    changed: 'Account changed outside Freedom',
   });
+  // The copy for the core's two states that offer less (SAFE-3's PR 9).
+  const OLDER_COPY = Object.freeze({
+    lead: "This transaction was started in an older version of Freedom, so its owners can't sign it here.",
+    send: 'It already has enough signatures, so you can still send it.',
+    discard: 'Discard it and send it again.',
+  });
+  const CHANGED_COPY = "This account was changed outside Freedom, so Freedom can't sign or send this transaction.";
 
   const ownerName = (owner) => owner.name || `Account ${owner.index}`;
   const retryLabel = (view) => (view.error?.code === 'needs-funds' ? "I've added funds: try again" : 'Try again');
+  // An older entry with its threshold: it can still be sent.
+  const olderSendable = (view) => view.step === 'older' && view.collected >= view.threshold;
 
   /** A radio's value, as the decision's choices. */
   function boardChoice(value) {
     if (value === 'discard') return { action: 'discard' };
     if (value === 'retry') return { action: 'retry' };
+    if (value === 'send') return { action: 'send' };
     const owner = typeof value === 'string' ? /^owner:([0-9]{1,9})$/.exec(value) : null;
     return owner ? { action: 'sign', owner: Number(owner[1]) } : null;
+  }
+
+  /** What changed of the Safe, in words: "its owners and its modules". */
+  function changesText(changed) {
+    const words = (changed || []).map((name) => SETUP_CHANGES[name]).filter(Boolean);
+    if (words.length <= 1) return words[0] || '';
+    return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
   }
 
   /** The signatures: how many, and each owner's, with main's note for it. */
@@ -1180,8 +1211,23 @@
       );
       return { choices: () => ({ action: 'discard' }) };
     }
+    if (view.step === 'changed') {
+      const what = changesText(view.changed);
+      body.append(ui.warning(CHANGED_COPY));
+      if (what) body.append(ui.own('What changed', what));
+      body.append(ui.note('Discard it. The signatures it has are deleted.'));
+      return { choices: () => ({ action: 'discard' }) };
+    }
     const options = [];
-    if (view.step === 'retry') {
+    if (view.step === 'older') {
+      body.append(ui.warning(OLDER_COPY.lead));
+      if (!olderSendable(view)) {
+        body.append(ui.note(OLDER_COPY.discard));
+        return { choices: () => ({ action: 'discard' }) };
+      }
+      body.append(ui.note(OLDER_COPY.send));
+      options.push({ value: 'send', label: 'Send this transaction', detail: 'With the signatures it has' });
+    } else if (view.step === 'retry') {
       body.append(ui.warning(ERROR_COPY[view.error?.code] || ERROR_COPY.failed));
       if (view.error?.message) body.append(ui.own('Reason', view.error.message));
       options.push({ value: 'retry', label: retryLabel(view) });
@@ -1200,6 +1246,7 @@
       const choice = boardChoice(value);
       if (choice?.action === 'discard') return 'Discard';
       if (choice?.action === 'retry') return retryLabel(view);
+      if (choice?.action === 'send') return 'Send';
       return 'Sign';
     };
     return {
@@ -1210,7 +1257,8 @@
 
   function boardApprove(view) {
     if (view.step === 'discard') return 'Discard';
-    if (view.step === 'superseded') return 'Discard transaction';
+    if (view.step === 'superseded' || view.step === 'changed') return 'Discard transaction';
+    if (view.step === 'older') return olderSendable(view) ? 'Send' : 'Discard transaction';
     if (view.step === 'retry') return retryLabel(view);
     return view.owners.some((owner) => !owner.signed) ? 'Sign' : 'Discard';
   }
@@ -1232,8 +1280,19 @@
     },
   });
 
-  // A send's board: the SafeTx main holds, as it executes it.
-  const SAFE_SEND_BOARD = record({ ...BOARD_FIELDS, chain: SEND_CHAIN, tx: TX, transfer: TRANSFER, executor: nullable(BOARD_ACCOUNT) });
+  // A send's board: the SafeTx main holds, as it executes it; a changed
+  // Safe's (step `changed`) names what changed.
+  const SAFE_SEND_BOARD = record(
+    {
+      ...BOARD_FIELDS,
+      chain: SEND_CHAIN,
+      tx: TX,
+      transfer: TRANSFER,
+      executor: nullable(BOARD_ACCOUNT),
+      changed: list(6, oneOf(...Object.keys(SETUP_CHANGES))),
+    },
+    { optional: ['changed'] }
+  );
 
   function safeSendBoard(lead) {
     return Object.freeze({
@@ -1245,10 +1304,17 @@
         body.append(ui.note(lead), ui.own('From', accountText(view.safe)));
         txLines(ui, body, view);
         boardRows(view, ui, body);
-        body.append(
-          ui.own('Network fee', view.executor ? `Paid by ${accountText(view.executor)} when it executes` : 'Paid by an owner account when it executes'),
-          ui.note('It executes once enough owners have signed. You can leave: the transaction waits, and you can continue it from the wallet.')
-        );
+        // No fee where nothing can execute: a changed Safe, an older entry below its threshold.
+        if (view.step !== 'changed' && (view.step !== 'older' || olderSendable(view))) {
+          body.append(
+            ui.own('Network fee', view.executor ? `Paid by ${accountText(view.executor)} when it executes` : 'Paid by an owner account when it executes')
+          );
+        }
+        if (view.step !== 'changed' && view.step !== 'older') {
+          body.append(
+            ui.note('It executes once enough owners have signed. You can leave: the transaction waits, and you can continue it from the wallet.')
+          );
+        }
         return boardForm(view, ui, body, { send: true });
       },
     });

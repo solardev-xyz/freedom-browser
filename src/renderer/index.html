@@ -32,6 +32,24 @@
         </button>
       </div>
     </div>
+    <!-- A site's live Swarm messages were refused, or ended, because they
+         would go around Tor or the proxy to the external Swarm node
+         (freedom-core design 0015, Messaging, question 4). Once per site
+         per session, worded by main (swarm/subscription-route-notices.js);
+         shown by swarm-messages-notice.js. -->
+    <div id="swarm-messages-notice" class="update-toast" role="status" hidden>
+      <div class="update-toast-content">
+        <span id="swarm-messages-notice-text"></span>
+        <button
+          id="swarm-messages-notice-close"
+          class="update-toast-close"
+          type="button"
+          aria-label="Dismiss live messages notice"
+        >
+          ×
+        </button>
+      </div>
+    </div>
     <!-- Update Toast Notification -->
     <div id="update-toast" class="update-toast" hidden>
       <div class="update-toast-content">
@@ -894,6 +912,13 @@
             <p id="bee-verify-failed-notice" class="bee-info-notice" role="status" hidden>
               Your external node served content that failed verification
             </p>
+            <!-- Live messages to the Swarm node in use are off while the
+                 session reaches it through a proxy or Tor (freedom-core
+                 design 0015, Messaging, question 4): an external node not on
+                 loopback, never the bundled node. Main words it and says
+                 when (swarm/subscription-route-notices.js); shown by
+                 ant-ui.js. -->
+            <p id="bee-messages-off-notice" class="bee-info-notice" role="status" hidden></p>
             <div class="bee-info-row node-status-row" id="bee-status-row">
               <span class="bee-info-label" id="bee-status-label"></span>
               <span id="bee-status-value"></span>

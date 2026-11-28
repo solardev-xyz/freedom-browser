@@ -18,6 +18,11 @@
  *   `typed-data-byte` family (each data byte of each `E0 1A` and `E0 1C` of
  *   each honest stream, XOR 0x01; 15,620), `same_shape` (76), `name_ascii`
  *   (24) and `safe_changes` (15);
+ * - main's own SafeTx and SafeMessage (SAFE-3's PR 8, `safeTxTypedData` and
+ *   `safeMessageTypedData`), built from a pending entry's fields and a
+ *   digest: the core's stream for `typed-safe-tx` and `typed-safe-message`,
+ *   byte for byte, under the case's hash, and each `safe_changes` entry's
+ *   own stream from the changed fields or digest;
  * - typed data whose ethers hash isn't `expected_hash`, refused before the
  *   first APDU in both branches;
  * - `BOUNDS` and the rows' headers, the file's;
@@ -46,7 +51,13 @@
 const fs = require('fs');
 const path = require('path');
 const { TypedDataEncoder, concat, keccak256 } = require('ethers');
-const { BOUNDS, HEADER, bindTypedData } = require('./apdu-binding');
+const {
+  BOUNDS,
+  HEADER,
+  bindTypedData,
+  safeMessageTypedData,
+  safeTxTypedData,
+} = require('./apdu-binding');
 
 function ledgerVectorsDir() {
   if (process.env.FREEDOM_CORE_LEDGER_VECTORS) return process.env.FREEDOM_CORE_LEDGER_VECTORS;
@@ -344,6 +355,62 @@ describeIfVectors(
       }
       expect(wrong).toStrictEqual([]);
       expect(grammar.safe_changes).toHaveLength(15);
+    });
+
+    test("main's own SafeTx and SafeMessage, built from the entry's fields and the digest: the core's stream byte for byte (SAFE-3's PR 8)", () => {
+      const tx = caseById.get('typed-safe-tx');
+      const fromFields = safeTxTypedData({
+        safeAddress: tx.request.typed_data.domain.verifyingContract,
+        safeTx: tx.request.typed_data.message,
+      });
+      expect(fromFields.hash).toBe(tx.request.expected_hash);
+      const txStream = mainStream(tx, { typedData: fromFields.typedData, expectedHash: fromFields.hash });
+      expect(txStream.apdus).toStrictEqual(honest.get('typed-safe-tx'));
+      // As fc-safe reads an entry back: hex quantities, any address case.
+      const written = { ...tx.request.typed_data.message };
+      written.value = '0x' + BigInt(written.value).toString(16);
+      written.nonce = '0x3';
+      written.to = written.to.toLowerCase();
+      const fromWritten = safeTxTypedData({
+        safeAddress: tx.request.typed_data.domain.verifyingContract.toLowerCase(),
+        safeTx: written,
+      });
+      expect(fromWritten.hash).toBe(tx.request.expected_hash);
+      expect(
+        mainStream(tx, { typedData: fromWritten.typedData, expectedHash: fromWritten.hash }).apdus
+      ).toStrictEqual(honest.get('typed-safe-tx'));
+
+      const msg = caseById.get('typed-safe-message');
+      const fromDigest = safeMessageTypedData({
+        safeAddress: msg.request.typed_data.domain.verifyingContract,
+        digest: msg.request.typed_data.message.message,
+      });
+      expect(fromDigest.hash).toBe(msg.request.expected_hash);
+      expect(
+        mainStream(msg, { typedData: fromDigest.typedData, expectedHash: fromDigest.hash }).apdus
+      ).toStrictEqual(honest.get('typed-safe-message'));
+
+      // Each safe_changes entry, main holding the changed SafeTx or
+      // SafeMessage, is the entry's own stream from main's builder.
+      const wrong = [];
+      for (const s of grammar.safe_changes) {
+        const { domain, message } = s.typed_data;
+        const own =
+          s.case === 'typed-safe-tx'
+            ? safeTxTypedData({ safeAddress: domain.verifyingContract, safeTx: message })
+            : safeMessageTypedData({ safeAddress: domain.verifyingContract, digest: message.message });
+        const c = caseById.get(s.case);
+        const ours = mainStream(c, { typedData: own.typedData, expectedHash: own.hash });
+        const theirs = mainStream(c, { typedData: s.typed_data, expectedHash: ownHash(s.typed_data) });
+        // Main's builders are Gnosis's alone: for a changed chain main's
+        // stream stays the case's, and leaves the changed one where it does.
+        const want = domain.chainId === 100 ? theirs.apdus : honest.get(s.case);
+        if (ours.rule || !equal(ours.apdus, want)) wrong.push({ id: s.case, change: s.change });
+        if (domain.chainId !== 100 && ours.apdus[s.first_difference.at] === s.first_difference.apdu) {
+          wrong.push({ id: s.case, change: s.change, at: s.first_difference.at });
+        }
+      }
+      expect(wrong).toStrictEqual([]);
     });
 
     test("typed data whose ethers hash isn't expected_hash: refused before the first APDU, in both branches", () => {

@@ -614,3 +614,164 @@ describe('safe signing board — main runs it in the approvals panel (0011 APS-3
     ]);
   });
 });
+
+// SAFE-3's PR 9 (the core's Safe backend; the plan's point 14, option (a)):
+// main's state says a send was started in an older version of Freedom (no
+// owner signs it here) or its account changed outside Freedom (nothing
+// signs or executes for it). A state on js says neither.
+describe('safe signing board — an older send, and a changed account (SAFE-3 PR 9)', () => {
+  const { PLAIN_TEXTS } = require('../../../main/wallet/safe/errors');
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
+    delete global.confirm;
+    jest.restoreAllMocks();
+  });
+
+  const SHOWN = '0x' + 'cd'.repeat(32);
+  const sendState = (overrides = {}) => ({
+    safeIndex: 5,
+    safeTxHash: SHOWN,
+    status: 'awaiting',
+    collected: 1,
+    threshold: 2,
+    createdAt: '2026-07-12T00:00:00.000Z',
+    display: { toAddress: '0xabc', amount: '1000', symbol: 'xDAI' },
+    executorIndex: 0,
+    owners: [
+      { index: 0, type: 'mnemonic', signed: true },
+      { index: 1, type: 'mnemonic', signed: false },
+      { index: 2, type: 'mnemonic', signed: false },
+    ],
+    ...overrides,
+  });
+  const READY = { collected: 2, owners: [{ index: 0, type: 'mnemonic', signed: true }, { index: 1, type: 'mnemonic', signed: true }] };
+
+  /** The wallet's own board on the chrome (no approvals document), showing `shown`. */
+  async function openWith(shown) {
+    const board = await loadBoard();
+    const content = global.document.getElementById('safe-signing-content');
+    const title = global.document.getElementById('safe-signing-title');
+    const buttons = {
+      send: createElement('button'),
+      discard: createElement('button'),
+      retry: createElement('button'),
+      // Owner 1's row button, in place before the board renders its listeners.
+      sign: createElement('button', { dataset: { signOwner: '1' } }),
+    };
+    content.appendChild(buttons.sign);
+    global.document.getElementById = (id) =>
+      ({
+        'sidebar-safe-signing': board.screen,
+        'safe-signing-content': content,
+        'safe-signing-send-older': buttons.send,
+        'safe-signing-discard': buttons.discard,
+        'safe-signing-retry-execute': buttons.retry,
+      })[id] ?? null;
+    Object.assign(board.walletMocks, {
+      safeState: jest.fn(async () => ({ success: true, state: shown })),
+      safeSign: jest.fn(async () => ({ success: true, state: shown })),
+      safeCancelPending: jest.fn(async () => ({ success: true })),
+      safeExecute: jest.fn(async () => ({
+        success: true,
+        state: { ...shown, status: 'executed', executed: { hash: '0xexec' } },
+      })),
+    });
+    global.confirm = jest.fn(() => true);
+    await board.mod.openSafeSigningBoard(5);
+    await flushMicrotasks();
+    return { ...board, content, title, buttons };
+  }
+
+  const click = async (button) => {
+    button.dispatch('click');
+    await flushMicrotasks();
+  };
+
+  test('older, below its threshold: nothing signed or executed by itself; it says so, and Discard works', async () => {
+    const { walletMocks, content, title, buttons } = await openWith(sendState({ older: true }));
+    expect(walletMocks.safeSign).not.toHaveBeenCalled();
+    expect(walletMocks.safeExecute).not.toHaveBeenCalled();
+    expect(title.textContent).toBe('Transaction from an older version');
+    expect(content.innerHTML).toContain("This transaction was started in an older version of Freedom, so its owners can't sign it here.");
+    expect(content.innerHTML).toContain('Discard it and send it again.');
+    expect(content.innerHTML).toContain("Can't sign here");
+    expect(content.innerHTML).not.toContain('data-sign-owner');
+    expect(content.innerHTML).not.toContain('safe-signing-send-older');
+    expect(content.innerHTML).toContain('Discard transaction');
+    await click(buttons.discard);
+    expect(walletMocks.safeCancelPending).toHaveBeenCalledWith(5, SHOWN);
+  });
+
+  test('older, at its threshold: not executed by itself; its Send executes it, naming the SafeTx shown', async () => {
+    const { walletMocks, content, buttons } = await openWith(sendState({ older: true, ...READY }));
+    expect(walletMocks.safeExecute).not.toHaveBeenCalled();
+    expect(content.innerHTML).toContain('It already has enough signatures, so you can still send it.');
+    expect(content.innerHTML).toContain('safe-signing-send-older');
+    expect(content.innerHTML).toContain('Discard transaction');
+    await click(buttons.send);
+    expect(walletMocks.safeExecute).toHaveBeenCalledTimes(1);
+    expect(walletMocks.safeExecute).toHaveBeenCalledWith(5, { safeTxHash: SHOWN });
+    expect(content.innerHTML).toContain('Sent!');
+  });
+
+  test('older, its Send failing: the reason in the wallet\'s words, and "Try again" sends it again', async () => {
+    const { walletMocks, content, buttons } = await openWith(sendState({ older: true, ...READY }));
+    walletMocks.safeExecute.mockResolvedValueOnce({ success: false, code: 'SAFE_NONCE_BEHIND', error: PLAIN_TEXTS.SAFE_NONCE_BEHIND });
+    await click(buttons.send);
+    expect(content.innerHTML).toContain(PLAIN_TEXTS.SAFE_NONCE_BEHIND);
+    // The error's own retry stands in for Send.
+    expect(content.innerHTML).not.toContain('safe-signing-send-older');
+    await click(buttons.retry);
+    // (Each render adds its listener to the one stub button: count none.)
+    expect(walletMocks.safeExecute.mock.calls.length).toBeGreaterThan(1);
+    expect(walletMocks.safeExecute.mock.calls.every((call) => call[1].safeTxHash === SHOWN)).toBe(true);
+    expect(content.innerHTML).toContain('Sent!');
+  });
+
+  test('a changed account: only Discard, nothing signed or executed, what changed named', async () => {
+    const shown = sendState({ ...READY, older: true, setupChanged: ['owners'] });
+    const { walletMocks, content, title, buttons } = await openWith(shown);
+    expect(walletMocks.safeSign).not.toHaveBeenCalled();
+    expect(walletMocks.safeExecute).not.toHaveBeenCalled();
+    expect(title.textContent).toBe('Account changed outside Freedom');
+    expect(content.innerHTML).toContain("This account was changed outside Freedom, so Freedom can't sign or send this transaction.");
+    expect(content.innerHTML).toContain('What changed: its owners.');
+    expect(content.innerHTML).not.toContain('safe-signing-send-older');
+    expect(content.innerHTML).not.toContain('Network fee');
+    await click(buttons.discard);
+    expect(walletMocks.safeCancelPending).toHaveBeenCalledWith(5, SHOWN);
+    expect(walletMocks.safeExecute).not.toHaveBeenCalled();
+  });
+
+  test('an owner refused SAFE_NOT_PROPOSED: the row says so in the wallet\'s words, then the board shows it as older', async () => {
+    const { walletMocks, content, buttons } = await openWith(sendState());
+    walletMocks.safeSign.mockResolvedValueOnce({ success: false, code: 'SAFE_NOT_PROPOSED', error: PLAIN_TEXTS.SAFE_NOT_PROPOSED });
+    walletMocks.safeState.mockResolvedValue({ success: true, state: sendState({ older: true }) });
+    buttons.sign.dispatch('click');
+    await flushMicrotasks();
+    expect(content.innerHTML).toContain(PLAIN_TEXTS.SAFE_NOT_PROPOSED);
+    expect(content.innerHTML).toContain('started in an older version of Freedom');
+    expect(content.innerHTML).not.toContain('data-sign-owner');
+  });
+
+  test.each(['SAFE_UNVERIFIED', 'SAFE_NONCE_BEHIND', 'SAFE_STORE_FULL', 'SAFE_SELF_CALL'])(
+    "an owner refused %s: the row's note in the wallet's words",
+    async (code) => {
+      const { walletMocks, content, buttons } = await openWith(sendState());
+      walletMocks.safeSign.mockResolvedValueOnce({ success: false, code, error: PLAIN_TEXTS[code] });
+      buttons.sign.dispatch('click');
+      await flushMicrotasks();
+      expect(content.innerHTML).toContain(PLAIN_TEXTS[code]);
+    }
+  );
+
+  test('a state with neither (js): swept and executed at its threshold, as before', async () => {
+    const { walletMocks } = await openWith(sendState({ ...READY }));
+    expect(walletMocks.safeExecute).toHaveBeenCalledWith(5, { safeTxHash: SHOWN });
+    const below = await openWith(sendState());
+    expect(below.walletMocks.safeSign).toHaveBeenCalledWith(5, undefined, undefined, SHOWN);
+  });
+});

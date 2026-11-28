@@ -611,3 +611,25 @@
   flex: 1 1 230px;
   line-height: 1.5;
 }
+
+/* Question 4's notice (freedom-core design 0015, Messaging): a site's live
+   messages refused or ended, one sentence per site. It sits above the other
+   corner toasts while they show (swarm-messages-notice.js sets its bottom). */
+#swarm-messages-notice {
+  max-width: min(520px, calc(100vw - 32px));
+}
+
+#swarm-messages-notice .update-toast-content {
+  align-items: flex-start;
+}
+
+#swarm-messages-notice-text {
+  display: flex;
+  flex: 1 1 230px;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

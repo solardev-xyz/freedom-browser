@@ -41,6 +41,7 @@ const {
 const { addEntry, updateEntry } = require('./publish-history');
 const messagingService = require('./messaging-service');
 const subscriptionRegistry = require('./subscription-registry');
+const { registerSubscriptionRouteNotices } = require('./subscription-route-notices');
 const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
@@ -2453,12 +2454,20 @@ async function checkSwarmPreFlight() {
  * `resolveProxy` for the node's URL (Tor's `.onion` PAC and any proxy apply
  * to it as to every session), Arti's endpoint while Tor runs, and a test of
  * every open socket again when the node's URL or Tor's state changes. Both
- * backends' subscriptions go through this registry. There is no IPC
- * handler: every window.swarm method comes through main's own page
- * dispatcher (freedom-core design 0011, PRQ-7d).
+ * backends' subscriptions go through this registry. The user is told
+ * (question 4's condition, SWM-7's PR 7.5): each refusal reaches main's
+ * notices (subscription-route-notices.js), and the Nodes panel's and
+ * Settings' line is read again at the same changes. There is no IPC
+ * handler for a window.swarm method: each comes through main's own page
+ * dispatcher (freedom-core design 0011, PRQ-7d). The one handler here is
+ * that line's read.
  */
 function registerSwarmProviderIpc() {
   const services = require('../service-registry');
+  const notices = registerSubscriptionRouteNotices({
+    checkRoute: (url) => subscriptionRegistry.checkRoute(url),
+    nodeUrl: () => getAntApiUrl() || null,
+  });
   subscriptionRegistry.configure({
     openSocket: messagingService.openSubscriptionSocket,
     deliver: deliverToDocument,
@@ -2470,16 +2479,21 @@ function registerSwarmProviderIpc() {
       // The bundled node's restart, the one clear its subscriptions wait through.
       restartingUrl: () => require('../ant-manager').restartingUrl(),
     },
+    onRefused: notices.onRefused,
   });
 
   // Live messaging subscriptions must not outlive the origin's grant.
   onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
 
-  // Nor a route that now goes through a proxy or Tor.
+  // Nor a route that now goes through a proxy or Tor; and the line saying
+  // so follows the route.
   services.onServiceChange((service) => {
     if (service !== 'ant' && service !== 'tor') return;
     subscriptionRegistry.recheckRoutes().catch((err) => {
       log.error('[SwarmProvider] subscription route check failed:', err.message);
+    });
+    notices.refresh().catch((err) => {
+      log.error('[SwarmProvider] live messages line failed:', err.message);
     });
   });
 

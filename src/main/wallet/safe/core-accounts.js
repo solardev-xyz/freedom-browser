@@ -14,7 +14,9 @@
  *   setup, or a Safe not deployed, is reported, never thrown. A Safe the
  *   core reports deployed from an unverified answer has `setup` naming the
  *   code read unverified, and its record stays unmarked
- *   (renderer/lib/wallet/safe-status.js says so).
+ *   (renderer/lib/wallet/safe-status.js says so). What it shows of the
+ *   setup also goes on the Safe's pending transaction's board
+ *   (core-sends.js `noteSetup`).
  * - **Activate:** `safe.deploy` reads the code and the executor's balance,
  *   prices the deployment and judges its fee, and answers `{ deployed:
  *   true }`, `{ send }` or `{ fee_check }`.
@@ -142,7 +144,12 @@ async function createSafeAccount({ name, ownerIndexes, threshold }) {
  */
 async function getSafeStatus(index) {
   getSafeRecord(index);
-  return vault().safe.status({ safe: index });
+  const status = await vault().safe.status({ safe: index });
+  // What the reads show of its setup goes on its pending transaction's
+  // board too (core-sends.js, SAFE-3's PR 9): a changed Safe's offers
+  // only the discard.
+  require('./core-sends').noteSetup(index, status?.setup);
+  return status;
 }
 
 /**

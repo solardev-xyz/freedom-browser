@@ -1037,6 +1037,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # freedom-core design 0015, D3, D6 and D17 (the SWM-6 to SWM-9 plan's
+      # PR 6.3): with a hello the test chooses naming `swarm_stores` (no
+      # build names it before PR 7.4), main's permission manifests are a
+      # client of the pinned core's `swarm.manifest`: the store cases of
+      # permission-manifests' two suites through the page path and the
+      # chrome's handlers, each check's manifest fetched by main's own
+      # `shell.swarm_manifest` handler, each answer and fetch equal to the
+      # reference's for the same sequence and the core's manifest store,
+      # grants and feed store ending as the reference's; site keys given
+      # unnormalized among them; an fs spy shows main opens no
+      # manifest-store file.
+      - name: The permission manifests through the core (real freedom-cored, a chosen hello)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/swarm/permission-manifests.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
       # freedom-core design 0013, "One writer per store: `store_moved`":
       # the build's hello names vault_meta (PRF-6(a)), intents (PRF-6(b2)),
       # payments (PRF-6(c)) and safe_pending (PRF-6(d)), and the pinned core

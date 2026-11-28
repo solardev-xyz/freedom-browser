@@ -13,6 +13,7 @@ const {
   GrammarError,
   HEADERS,
   MAX_INDEX,
+  OPERATIONS,
   ROWS,
   apdu,
   checkedRecords,
@@ -163,7 +164,7 @@ describe('the parents that open an operation', () => {
     expect(operationOf('x402.settle', { reservation: 'r', typed_data: {} })).toBe('x402.settle');
   });
 
-  test("a vault key's sign.*, x402.settle's other forms, the Safe owners' rows until SAFE-3 and any other method open none", () => {
+  test("a vault key's sign.*, x402.settle's other forms, the Safe rows' sweep and any other method open none", () => {
     for (const method of ['sign.transaction', 'sign.message', 'sign.typed_data']) {
       expect(operationOf(method, { key: { kind: 'account', index: 0 } })).toBeNull();
       expect(operationOf(method, {})).toBeNull();
@@ -171,11 +172,24 @@ describe('the parents that open an operation', () => {
     }
     expect(operationOf('x402.settle', { reservation: 'r', signature: '0x' })).toBeNull();
     expect(operationOf('x402.settle', { reservation: 'r', outcome: 'withheld' })).toBeNull();
-    expect(operationOf('safe.sign_owner', { safe: 1, owner: 1000000 })).toBeNull();
-    expect(operationOf('safe.message_sign', { safe: 1, session: 's', owner: 1000000 })).toBeNull();
+    // The vault owners' sweep names no owner: no device.
+    expect(operationOf('safe.sign_owner', { safe: 1, safe_tx_hash: '0x' + '1'.repeat(64) })).toBeNull();
+    expect(operationOf('safe.message_sign', { safe: 1, session: 's' })).toBeNull();
+    expect(operationOf('safe.sign_owner', { safe: 1, owner: null })).toBeNull();
+    expect(operationOf('safe.sign_owner', { safe: 1, owner: -1 })).toBeNull();
+    expect(operationOf('safe.message_sign', { safe: 1, session: 's', owner: '2' })).toBeNull();
     expect(operationOf('sign.soc', { key: KEY })).toBeNull();
+  });
+
+  test("the Safe rows (SAFE-3's PR 8): an owner named opens its row, typed data's stream around main's binding", () => {
+    expect(operationOf('safe.sign_owner', { safe: 1, owner: 1000000 })).toBe('safe.sign_owner');
+    expect(operationOf('safe.message_sign', { safe: 1, session: 's', owner: 1000000 })).toBe(
+      'safe.message_sign'
+    );
+    expect(OPERATIONS).toEqual(expect.arrayContaining(['safe.sign_owner', 'safe.message_sign']));
+    // Without main's binding there is no stream to admit.
     expect(() => new Admission({ operation: 'safe.sign_owner', path: LIVE_0 })).toThrow(
-      'No Ledger operation'
+      'no typed-data APDUs'
     );
   });
 });

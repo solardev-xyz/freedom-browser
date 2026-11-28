@@ -7,7 +7,8 @@
  * each to main as one `shell.ledger_apdu { for, apdu, deadline_ms }`;
  * main admits it by the grammar for the parent `for` names (one of main's
  * own requests: a Ledger key's `sign.*`, `ledger.accounts`, `ledger.add`,
- * `x402.settle { reservation, typed_data }`), carries it to the device in
+ * `x402.settle { reservation, typed_data }`, and a Safe's Ledger owner's
+ * `safe.sign_owner` or `safe.message_sign`), carries it to the device in
  * one exchange, and answers the device's bytes.
  *
  * - **The switch** (wallet/ledger/ledger-backend-kind.js, point 14):
@@ -24,8 +25,12 @@
  *   the core can ask anything for it. Its end (`close()`, its controller's
  *   abort, the core's exit) closes its device, and every later APDU of it
  *   is refused `ended`; a `for` naming no parent main opened is `parent`.
- *   The Safe rows aren't parents until SAFE-3 (`safe.sign_owner`,
- *   `safe.message_sign`: rule `parent`, plan point 11).
+ *   The Safe rows (`safe.sign_owner`, `safe.message_sign`; SAFE-3's PR 8)
+ *   are parents only for a Ledger owner main has bound: their typed data
+ *   is main's own (`typedData`, with its hash `expectedHash`), the SafeTx
+ *   from the pending entry's fields under main's approval record, or the
+ *   SafeMessage from the page's own request (wallet/safe/ledger-owners.js).
+ *   Without it the row opens none (`parent`).
  * - **Read strictly:** the params are exactly `{ for, apdu, deadline_ms }`:
  *   `for` a request ID (else `parent`), `apdu` hex of 5 to 260 bytes and
  *   `deadline_ms` 15000 or 300000 (else `header`: the request isn't an APDU
@@ -97,13 +102,16 @@
  *     handle.cancel();     // the user's Cancel: main's own cancel
  *     handle.stopped;      // beforeSign's error, once it refused
  *     handle.signed;       // whether the device's signature may have left main
+ *     handle.refused;      // the rule its first refused APDU was, or null
  *
  * - `path`: the account's path text from main's record snapshot, for every
- *   signature (`sign.*`, `x402.settle`); `records`: `ledger.accounts`'
- *   unmatched records as `getLedgerRecordsToCheck` lists them, and only
- *   once the core reads them (`vault_meta` moved), else none;
- *   `expectedHash`: `x402.settle`'s, main's own hash of its rebuild
- *   (`sign.typed_data` takes its params' `expected_hash`).
+ *   signature (`sign.*`, `x402.settle`, the Safe rows); `records`:
+ *   `ledger.accounts`' unmatched records as `getLedgerRecordsToCheck`
+ *   lists them, and only once the core reads them (`vault_meta` moved),
+ *   else none; `expectedHash`: `x402.settle`'s and the Safe rows', main's
+ *   own hash of what it holds (`sign.typed_data` takes its params'
+ *   `expected_hash`); `typedData`: the Safe rows', main's own typed data
+ *   (`x402.settle` and `sign.typed_data` take their params').
  * - `hashOnlySurface({ domainSeparator, structHash, signal, cancel })`:
  *   puts the hash-only warning with those two hashes (`0x` hex, main's
  *   binding's) on screen in the surface that waits on the device, and
@@ -126,7 +134,7 @@
 const defaultLog = require('../logger');
 const { ShellError } = require('./core-client');
 const { apduWatchdogMs } = require('./core-deadlines');
-const { Admission, GrammarError, operationOf } = require('./ledger-grammar');
+const { Admission, GrammarError, SAFE_OPERATIONS, operationOf } = require('./ledger-grammar');
 const { bindTypedData } = require('../wallet/ledger/apdu-binding');
 
 /** The core's request to main. */
@@ -152,7 +160,13 @@ const ANSWER_MAX = 260;
 const FAILURES = new Set(['not_found', 'busy', 'disconnected', 'unresponsive', 'timeout']);
 
 /** The operations with a signature's head (the address check, then `B0 01`). */
-const SIGNATURES = new Set(['sign.transaction', 'sign.message', 'sign.typed_data', 'x402.settle']);
+const SIGNATURES = new Set([
+  'sign.transaction',
+  'sign.message',
+  'sign.typed_data',
+  'x402.settle',
+  ...SAFE_OPERATIONS,
+]);
 const HEAD_ROWS = new Set(['signature.first', 'signature.second']);
 
 const MEMBERS = ['for', 'apdu', 'deadline_ms'];
@@ -245,24 +259,31 @@ class LedgerRelay {
    * `{ ok: false, rule, reason, check? }` when main can't derive its stream
    * (the core refuses the same before the first APDU), or it opens no
    * operation (`parent`: a vault key's `sign.*`, `x402.settle` but its
-   * Ledger form, and `safe.sign_owner` and `safe.message_sign` until
-   * SAFE-3).
+   * Ledger form, and a Safe row with no owner, or without main's own
+   * typed data and its hash).
    *
    * @param {object} capture
    * @param {string} capture.method - the parent's method
    * @param {object} capture.params - the params main sends it with
    * @param {string} [capture.path] - the account's path, from main's record
    * @param {object[]} [capture.records] - `ledger.accounts`' unmatched records
-   * @param {string} [capture.expectedHash] - `x402.settle`'s typed data's hash
+   * @param {string} [capture.expectedHash] - `x402.settle`'s and the Safe
+   *   rows' typed data's hash, main's own
+   * @param {object} [capture.typedData] - the Safe rows' typed data, main's
+   *   own (the SafeTx or SafeMessage it binds)
    */
-  prepare({ method, params, path, records, expectedHash } = {}) {
+  prepare({ method, params, path, records, expectedHash, typedData: own } = {}) {
     const operation = operationOf(method, params);
     if (operation === null) return { ok: false, rule: 'parent', reason: 'no-operation' };
+    const safe = SAFE_OPERATIONS.includes(operation);
+    if (safe && (own === undefined || own === null || typeof expectedHash !== 'string')) {
+      return { ok: false, rule: 'parent', reason: 'no-binding' };
+    }
     let typedData;
     let hashes = null;
-    if (operation === 'sign.typed_data' || operation === 'x402.settle') {
+    if (operation === 'sign.typed_data' || operation === 'x402.settle' || safe) {
       const binding = bindTypedData({
-        typedData: params.typed_data,
+        typedData: safe ? own : params.typed_data,
         expectedHash: operation === 'sign.typed_data' ? params.expected_hash : expectedHash,
       });
       if (binding.rule) {
@@ -309,7 +330,8 @@ class LedgerRelay {
    *   check, before the first APDU after `B0 01`: throws to refuse
    * @param {Function} [capture.hashOnlySurface] - the hash-only warning's
    *   surface (the module's comment)
-   * @returns {{ operation: string|null, close(): void, cancel(): void, stopped: *, signed: boolean }}
+   * @returns {{ operation: string|null, close(): void, cancel(): void, stopped: *, signed: boolean,
+   *   refused: string|null }}
    */
   open({ generation, id } = {}, capture = {}) {
     if (this.backendKind() !== 'core') {
@@ -380,6 +402,11 @@ class LedgerRelay {
       },
       get signed() {
         return entry.signed;
+      },
+      // The rule of its first refused APDU (a refusal's own, before any
+      // byte of it reached the device), or null.
+      get refused() {
+        return entry.refused;
       },
     };
   }

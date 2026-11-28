@@ -5,8 +5,10 @@
  * (reply.rs), through a real CoreClient, with a scripted device behind the
  * relay that records every byte it is sent (the transport spy):
  * - the strict reader and the parent registry: a parent main didn't send,
- *   one that ended, the Safe rows until SAFE-3, the JS backend (every APDU
- *   `parent`);
+ *   one that ended, the JS backend (every APDU `parent`); the Safe rows
+ *   (SAFE-3's PR 8) a parent only for a named owner with main's own typed
+ *   data, admitted as typed data's stream, and an APDU outside the row
+ *   refused before the device;
  * - the relay's refusals in LDG-3's row, each answered before a byte
  *   reaches the device and logged with its rule only, never an APDU's
  *   bytes, the device closed after; every later APDU of that parent
@@ -45,6 +47,11 @@ jest.mock('../logger', () => ({
 const { TypedDataEncoder, hexlify, toUtf8Bytes } = require('ethers');
 const log = require('../logger');
 const { LedgerRelay, readAsk, HASH_ONLY_WAIT_MS } = require('./ledger-relay');
+const {
+  safeMessageDigest,
+  safeMessageTypedData,
+  safeTxTypedData,
+} = require('../wallet/ledger/apdu-binding');
 const { apduWatchdogMs } = require('./core-deadlines');
 const {
   fakeClock,
@@ -98,6 +105,27 @@ const MAIL = {
 };
 const MAIL_HASH = TypedDataEncoder.hash(MAIL.domain, MAIL.types, MAIL.message);
 const TYPED = { key: LEDGER, typed_data: MAIL, expected_hash: MAIL_HASH };
+// A Safe's Ledger owner (SAFE-3's PR 8): main's own SafeTx and SafeMessage.
+const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+const SAFE_TX = safeTxTypedData({
+  safeAddress: SAFE_ADDRESS,
+  safeTx: {
+    to: '0x' + '22'.repeat(20),
+    value: '1000',
+    data: '0xa9059cbb',
+    operation: 0,
+    safeTxGas: '0',
+    baseGas: '0',
+    gasPrice: '0',
+    gasToken: '0x' + '00'.repeat(20),
+    refundReceiver: '0x' + '00'.repeat(20),
+    nonce: 4,
+  },
+});
+const SAFE_MESSAGE = safeMessageTypedData({
+  safeAddress: SAFE_ADDRESS,
+  digest: safeMessageDigest({ method: 'personal_sign', params: ['0x68656c6c6f', '0x' + '33'.repeat(20)] }),
+});
 
 const PARENTS = {
   message: { method: 'sign.message', params: MESSAGE, capture: { path: PATH } },
@@ -109,6 +137,16 @@ const PARENTS = {
     capture: { records: [{ path: "44'/60'/0'/7", address: '0x' + '11'.repeat(20) }] },
   },
   add: { method: 'ledger.add', params: { scheme: 'legacy', index: 3 }, capture: {} },
+  safeTx: {
+    method: 'safe.sign_owner',
+    params: { safe: 5, owner: 1000000, safe_tx_hash: SAFE_TX.hash },
+    capture: { path: PATH, typedData: SAFE_TX.typedData, expectedHash: SAFE_TX.hash },
+  },
+  safeMessage: {
+    method: 'safe.message_sign',
+    params: { safe: 5, session: 'a1'.repeat(16), owner: 1000000 },
+    capture: { path: PATH, typedData: SAFE_MESSAGE.typedData, expectedHash: SAFE_MESSAGE.hash },
+  },
 };
 
 const hex = (bytes) => Buffer.from(bytes).toString('hex');
@@ -295,8 +333,9 @@ describe('the parent registry', () => {
   });
 
   test.each([
-    ['safe.sign_owner', { safe: 0, owner: 1 }],
-    ['safe.message_sign', { safe: 0, session: 'a', owner: 1 }],
+    // The vault owners' sweep: no owner, no device.
+    ['safe.sign_owner', { safe: 0 }],
+    ['safe.message_sign', { safe: 0, session: 'a' }],
     ['sign.message', { key: { kind: 'account', index: 0 }, message: '0x01' }],
     ['x402.settle', { reservation: 'r', signature: '0x01' }],
   ])(
@@ -318,6 +357,104 @@ describe('the parent registry', () => {
       expect(devices.bytes()).toEqual([]);
     }
   );
+
+  test.each([['safeTx'], ['safeMessage']])(
+    "a Safe row (%s) without main's own typed data opens no operation: refused parent, nothing reaching the device",
+    async (which) => {
+      await start();
+      const { method, params } = PARENTS[which];
+      const relay = started.relay;
+      for (const capture of [{ path: PATH }, { path: PATH, typedData: SAFE_TX.typedData }]) {
+        expect(relay.prepare({ method, params, ...capture })).toEqual({
+          ok: false,
+          rule: 'parent',
+          reason: 'no-binding',
+        });
+      }
+      const parent = parentOf(started.client, relay, { method, params, capture: { path: PATH } });
+      await until(() => parent.handle, 'the parent');
+      expect(parent.handle.operation).toBeNull();
+      const address = streamOf(PARENTS.message)[0].apdu;
+      expect(await ask(parent, address)).toEqual({ refused: 'parent' });
+      expect(await ask(parent, address)).toEqual({ refused: 'ended' });
+      expect(devices.bytes()).toEqual([]);
+    }
+  );
+
+  test.each([['safeTx'], ['safeMessage']])(
+    "a Safe row (%s) with main's own typed data: typed data's stream admitted, byte for byte, and the device sees exactly it",
+    async (which) => {
+      await start();
+      const stream = streamOf(PARENTS[which]);
+      const parent = open(which);
+      await until(() => parent.handle, 'the parent');
+      expect(parent.handle.operation).toBe(PARENTS[which].method);
+      const replies = await play(parent, stream);
+      expect(replies.every((r) => r.answer?.toString('hex') === '9000')).toBe(true);
+      expect(devices.bytes()).toEqual(stream.map((s) => s.apdu));
+      expect(new Set(stream.map((s) => s.row))).toEqual(
+        new Set([
+          'signature.first',
+          'signature.second',
+          'sign.typed_data.definitions',
+          'sign.typed_data.values',
+          'sign.typed_data.sign',
+        ])
+      );
+      expect(stream.at(-1).ms).toBe(300_000);
+      expect(parent.handle.refused).toBeNull();
+    }
+  );
+
+  test.each([
+    ["a transaction's first piece", (stream) => 'e0040000' + stream[2].apdu.slice(8), 'header'],
+    ["a message's first piece", (stream) => 'e0080000' + stream[2].apdu.slice(8), 'header'],
+    ['the address shown (ledger.add)', (stream) => 'e0020100' + stream[0].apdu.slice(8), 'header'],
+    ['the address check again', (stream) => stream[0].apdu, 'count'],
+    ['the hash-only APDU without its 6D00', (stream) => 'e00c000055' + stream[0].apdu.slice(10) + '11'.repeat(64), 'order'],
+    ['its own E0 0C before the fields', (stream) => stream.at(-1).apdu, 'order'],
+  ])(
+    "a Safe parent's APDU outside its row (%s) is refused before the device, and every later one ended",
+    async (_name, outside, rule) => {
+      await start();
+      for (const which of ['safeTx', 'safeMessage']) {
+        const stream = streamOf(PARENTS[which]);
+        const parent = open(which);
+        await until(() => parent.handle, 'the parent');
+        await play(parent, stream, 2);
+        const before = devices.bytes().length;
+        const reply = await ask(parent, outside(stream));
+        expect(reply).toEqual({ refused: rule });
+        expect(parent.handle.refused).toBe(reply.refused);
+        expect(await ask(parent, stream[2].apdu)).toEqual({ refused: 'ended' });
+        // Nothing of it, or after it, reached the device.
+        expect(devices.bytes()).toHaveLength(before);
+        parent.handle.close();
+      }
+    }
+  );
+
+  test("a Safe parent's SafeTx with one field changed in the core's stream: refused payload before that APDU reaches the device", async () => {
+    await start();
+    const stream = streamOf(PARENTS.safeTx);
+    // The core's SafeTx another nonce: its last value APDU differs.
+    const other = safeTxTypedData({
+      safeAddress: SAFE_ADDRESS,
+      safeTx: { ...SAFE_TX.typedData.message, nonce: 5 },
+    });
+    const changed = streamOf({
+      ...PARENTS.safeTx,
+      capture: { path: PATH, typedData: other.typedData, expectedHash: other.hash },
+    });
+    const at = changed.findIndex((s, k) => s.apdu !== stream[k].apdu);
+    expect(at).toBeGreaterThan(2);
+    const parent = open('safeTx');
+    await until(() => parent.handle, 'the parent');
+    await play(parent, changed, at);
+    expect(await ask(parent, changed[at].apdu)).toEqual({ refused: 'payload' });
+    expect(parent.handle.refused).toBe('payload');
+    expect(devices.bytes()).toEqual(stream.slice(0, at).map((s) => s.apdu));
+  });
 
   test('what main cannot derive is refused before the first APDU, by prepare and on the wire', async () => {
     await start();

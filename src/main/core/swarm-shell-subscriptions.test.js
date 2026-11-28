@@ -180,6 +180,8 @@ describe('through the client: question 4 and D16', () => {
     expect(onion.ready.result).toEqual({ ok: false, reason: 'proxy-or-tor' });
     expect(tor.at.dials).toHaveLength(0);
     expect(onion.at.dials).toHaveLength(0);
+    // The onion node is refused before its route is asked; Arti runs in this
+    // world, so its refusal names Tor (Codex round 2 on #1382).
     expect(refused.map((event) => event.via)).toEqual(['tor', 'tor']);
   });
 

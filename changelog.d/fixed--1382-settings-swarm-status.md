@@ -1,0 +1,1 @@
+- Settings > Nodes shows the Swarm node's status, where it always said "Not running" ([#1382](https://github.com/solardev-xyz/freedom-browser/pull/1382))
