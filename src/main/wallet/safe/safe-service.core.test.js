@@ -415,6 +415,21 @@ describe('status, on the core', () => {
     expectNothingOfTodays();
   });
 
+  // SAFE-3's PR 9: the board of the Safe's pending transaction hears it.
+  test("what it read of the setup goes on the pending transaction's board: changed, until it reads unchanged", async () => {
+    const coreSends = require('./core-sends');
+    const noted = jest.spyOn(coreSends, 'noteSetup');
+    answers['safe.status'] = { ...DEPLOYED, setup: { state: 'changed', changed: ['owners'] } };
+    await service.getSafeStatus(5);
+    answers['safe.status'] = DEPLOYED;
+    await service.getSafeStatus(5);
+    expect(noted.mock.calls).toEqual([
+      [5, { state: 'changed', changed: ['owners'] }],
+      [5, { state: 'unchanged' }],
+    ]);
+    noted.mockRestore();
+  });
+
   test("a code read nothing answered is the core's refusal, SAFE_UNVERIFIED; a non-Safe asks nothing", async () => {
     answers['safe.status'] = refused(
       'unverified',
