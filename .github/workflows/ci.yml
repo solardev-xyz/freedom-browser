@@ -1068,6 +1068,23 @@ jobs:
         env:
           FREEDOM_CORED_STORES_TEST: '1'
 
+      # freedom-core design 0015, `swarm.history` with core PR K1's add and
+      # update (cored 0.33.0), D3, D7 and D10 (the SWM-6 to SWM-9 plan's PR
+      # 6.4 and point 2): with a hello the test chooses naming
+      # `swarm_stores`, main's publish history is a client of the pinned
+      # core's `swarm.history`: publish-history.test.js's cases through the
+      # chrome's handlers and main's own calls, each answer equal to the
+      # reference's and the rows and legacy files ending as the reference's;
+      # an fs and better-sqlite3 spy shows main opens no publish-history
+      # file; js→core→js leaves no row twice, in both profile layouts; the
+      # agent's freedom://agent row is the core's before the upload and
+      # updated after it.
+      - name: The publish history through the core (real freedom-cored, a chosen hello)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/swarm/publish-history.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
       # freedom-core design 0013, "The intent journal" (PRF-6(b2)): this
       # build names `intents`, so the core is wallet-intents.jsonl's one
       # writer. Main's intent store, nonce reservations and send path

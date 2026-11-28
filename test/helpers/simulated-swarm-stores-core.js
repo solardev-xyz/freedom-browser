@@ -47,7 +47,9 @@
  * again (fc-swarm-provider's `stores`), where the reference normalizes each
  * (`normalizeOrigin`). So a key main sends that isn't normalized is
  * recorded in `unnormalized` (`[method, op, member, value]`), which a
- * suite checks is empty.
+ * suite checks is empty. A history row's site (`add`'s `entry.origin`,
+ * member `entry.origin`) is checked too: the core stores it as given, as
+ * the reference does, and main sends it as its key.
  *
  * `fetchManifest({ for, url })` answers a check's `shell.swarm_manifest`
  * as main's handler would (`{ status, body_base64 }` or `{ failed: true }`;
@@ -365,8 +367,12 @@ function simulatedSwarmStores({ moved = true, fetchManifest = null, fail = null 
     const members = readMembers(method, name, params, spec);
     sim.calls.push([method, name, caller]);
     const { normalizeOrigin } = require('../../src/shared/origin-utils');
-    for (const member of ['origin', 'key']) {
-      const value = members[member];
+    const sites = [
+      ['origin', members.origin],
+      ['key', members.key],
+      ['entry.origin', method === 'swarm.history' ? members.entry?.origin : undefined],
+    ];
+    for (const [member, value] of sites) {
       if (typeof value === 'string' && normalizeOrigin(value) !== value) {
         sim.unnormalized.push([method, name, member, value]);
       }

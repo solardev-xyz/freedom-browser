@@ -146,7 +146,7 @@ beforeEach(() => {
     },
   };
   sim.calls.length = 0;
-  if (sim.unnormalized) sim.unnormalized.length = 0;
+  sim.unnormalized.length = 0;
   sim.fail = null;
   mockOpens.length = 0;
   // A new world: the core's history opens again, on the test's root.
@@ -295,7 +295,7 @@ describe("publish-history.js's cases on the simulated core", () => {
       // The core was asked each op once, as the caller main relays it for,
       // each site by its permission key.
       expect(sim.calls).toEqual(kase.steps.map(askedOf));
-      if (sim.unnormalized) expect(sim.unnormalized).toEqual([]);
+      expect(sim.unnormalized).toEqual([]);
       // The rows and the legacy files end as the reference's.
       expect(coreFiles).toEqual(legacyFiles(referenceDir));
       expect(readRows(coreDir)).toEqual(readRows(referenceDir));
@@ -345,6 +345,12 @@ describe("on the core's history, main never opens it", () => {
     expect(origins.sort()).toEqual(
       ['https://app.example', 'freedom://publish', 'freedom://agent', null].sort()
     );
+    expect(sim.unnormalized).toEqual([]);
+    // Sent as it was given, the core would have stored it verbatim.
+    await sim.stores.history('add', { entry: { origin: 'HTTPS://App.Example/path' } });
+    expect(sim.unnormalized).toEqual([
+      ['swarm.history', 'add', 'entry.origin', 'HTTPS://App.Example/path'],
+    ]);
     // Each request went as `shell`, with swarm_stores required.
     for (const [method, , context, options] of sent) {
       expect(method).toBe('swarm.history');
