@@ -1618,6 +1618,10 @@ const renderProfileNodes = (profile, registry, settings) => {
 
 const refreshProfileSection = async (force = false) => {
   if (!profileFields.nodesCard) return;
+  // Before the focus guard: the route read sets only the note, never the
+  // focused controls, and a system or PAC proxy change has no event to wait
+  // for (Codex round 5 on #1382).
+  refreshSwarmMessagesRoute();
   if (
     !force &&
     document.activeElement &&
@@ -1628,7 +1632,6 @@ const refreshProfileSection = async (force = false) => {
   }
 
   const seq = ++profileRefreshSeq;
-  refreshSwarmMessagesRoute();
   try {
     const [profile, registry, settings] = await Promise.all([
       freedomAPI.getActiveProfile?.(),

@@ -136,9 +136,16 @@ describe('the live messages note under the external Swarm node', () => {
   });
 
   test("main's answer is read at each refresh but apart from the section, so neither holds the other back", () => {
-    expect(SCRIPT).toMatch(/const seq = \+\+profileRefreshSeq;\n\s+refreshSwarmMessagesRoute\(\);/);
     const refresh = SCRIPT.slice(SCRIPT.indexOf('const refreshProfileSection = '));
-    expect(refresh.slice(0, refresh.indexOf('\n};\n'))).not.toContain('getSwarmMessagesRoute');
+    const body = refresh.slice(0, refresh.indexOf('\n};\n'));
+    expect(body).not.toContain('getSwarmMessagesRoute');
+    // Started before the focus guard, so a focused Nodes control holds back
+    // the section's render but never the route poll (Codex round 5).
+    const routeAt = body.indexOf('refreshSwarmMessagesRoute();');
+    const guardAt = body.indexOf('document.activeElement');
+    expect(routeAt).toBeGreaterThan(0);
+    expect(guardAt).toBeGreaterThan(routeAt);
+    expect(body.match(/refreshSwarmMessagesRoute\(\);/g)).toHaveLength(1);
     // Settings only, as the policy has it.
     expect(PRELOAD).toMatch(
       /getSwarmMessagesRoute: guardSettingsPage\('getSwarmMessagesRoute', \(\) =>\s+ipcRenderer\.invoke\('swarm:messages-route-get'\)/
@@ -174,5 +181,40 @@ describe('the live messages note under the external Swarm node', () => {
     pending[3].reject(new Error('gone'));
     await failed;
     expect(swarm.note.textContent).toBe(TOR.settings);
+  });
+
+  test('a focused Nodes control holds back the section render, never the route poll (Codex round 5)', async () => {
+    const start = SCRIPT.indexOf('let swarmMessagesRoute = null;');
+    const refreshAt = SCRIPT.indexOf('const refreshSwarmMessagesRoute = ', start);
+    const helpers = SCRIPT.slice(start, SCRIPT.indexOf('\n};\n', refreshAt) + '\n};\n'.length);
+    const sectionAt = SCRIPT.indexOf('const refreshProfileSection = ');
+    const section = SCRIPT.slice(sectionAt, SCRIPT.indexOf('\n};\n', sectionAt) + '\n};\n'.length);
+    const focused = { id: 'profile-bee-api' };
+    const swarm = row();
+    swarm.querySelector = ((inner) => (selector) =>
+      selector === '[data-node-mode]' ? { value: 'external' } : inner(selector))(swarm.querySelector);
+    const nodesCard = { contains: (el) => el === focused, querySelector: () => swarm };
+    const freedomAPI = {
+      getSwarmMessagesRoute: jest.fn(async () => ({ ...PROXY, revision: 1 })),
+      getActiveProfile: jest.fn(async () => ({})),
+      getServiceRegistry: jest.fn(async () => ({})),
+      getSettings: jest.fn(async () => ({})),
+    };
+    const run = new Function(
+      'freedomAPI',
+      'profileFields',
+      'document',
+      `let profileRefreshSeq = 0; let activeProfileId = null; let savedProfileName = '';
+       const nodeDrafts = new Map(); const renderProfileNodes = () => {};
+       ${helpers}\n${section}\nreturn refreshProfileSection;`
+    )(freedomAPI, { nodesCard, nameInput: null }, { activeElement: focused });
+    await run();
+    await new Promise((resolve) => setImmediate(resolve));
+    // The section skipped its render while the field has focus...
+    expect(freedomAPI.getActiveProfile).not.toHaveBeenCalled();
+    // ...but main's route was read and the note set from it.
+    expect(freedomAPI.getSwarmMessagesRoute).toHaveBeenCalledTimes(1);
+    expect(swarm.note.hidden).toBe(false);
+    expect(swarm.note.textContent).toBe(PROXY.settings);
   });
 });
