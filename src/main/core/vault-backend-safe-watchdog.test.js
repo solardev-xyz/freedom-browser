@@ -19,6 +19,13 @@
 const { METHOD_CLASSES } = require('./core-deadlines');
 const { SESSION_ID, startSafeCore } = require('../../../test/helpers/fake-safe-core');
 
+// The core's Safe backend: the hello declares `safe3`, which a site's
+// `safe.propose` needs (SAFE-3's PR 7).
+jest.mock('../wallet/safe/safe-backend-kind', () => ({
+  safeBackendKind: () => 'core',
+  readSafeBackendKind: () => 'core',
+}));
+
 const ticks = async (n = 5) => {
   for (let i = 0; i < n; i += 1) await new Promise(setImmediate);
 };

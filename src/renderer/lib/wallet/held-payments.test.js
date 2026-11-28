@@ -802,3 +802,74 @@ describe("payments waiting: Couldn't confirm", () => {
     ).toBe("Couldn't confirm");
   });
 });
+
+// A Safe's held activation on the identity core's Safe backend (freedom-core
+// design 0016, C1; SAFE-3's PR 7): its speed-up is the activation's own, the
+// core's deployment at its quote signed at the held nonce.
+describe("payments waiting: a Safe's held activation on the core", () => {
+  const activation = (overrides = {}) =>
+    held({
+      intentId: 'deploy',
+      kind: 'safe-deploy',
+      walletIndex: null,
+      attention: 'uncertain',
+      lastOutcome: { outcome: 'uncertain', reasonClass: null },
+      replacement: 'speed-up',
+      safeActivation: 9,
+      fields: { type: 2, to: TOKEN, value: '0', data: '0x1688f0b9', gasLimit: '300000', maxFeePerGas: '2', maxPriorityFeePerGas: '1' },
+      ...overrides,
+    });
+
+  test('Speed up asks once, then activates again with speedUp: no intent-replace token, no fees of main\'s', async () => {
+    const payment = activation();
+    const { mod, elements } = await load([payment]);
+    window.wallet.activateSafe = jest.fn().mockResolvedValue({ success: true, safeAddress: TOKEN, hash: '0x' + 'cd'.repeat(32) });
+    await mod.openHeldPayments();
+    expect(markup(elements)).toContain('Speed up');
+    await mod.handleAction('replace', payment);
+    expect(window.wallet.intentReplacementFees).not.toHaveBeenCalled();
+    expect(markup(elements)).toContain("signed again at today's network fee");
+    expect(markup(elements)).toContain('data-action="confirm-activation"');
+    await mod.handleAction('confirm-activation', payment);
+    expect(window.wallet.activateSafe).toHaveBeenCalledWith(9, { speedUp: true });
+    expect(window.wallet.confirmSigning).not.toHaveBeenCalled();
+    expect(window.wallet.intentReplace).not.toHaveBeenCalled();
+    expect(markup(elements)).toContain('Replaced with a higher fee');
+  });
+
+  test("the core's fee asked here with the panel off: its verdict shown, its ask's ID back, Send anyway on the second ask", async () => {
+    const payment = activation();
+    const { mod, elements } = await load([payment]);
+    const verdict = { maxCost: '930000000000000', comparable: true, ratio: '20', above: true, oneEndpoint: false };
+    window.wallet.activateSafe = jest
+      .fn()
+      .mockResolvedValueOnce({ success: false, code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeCheck: verdict, feeAskId: 'ask-1', feeAskAgain: false })
+      .mockResolvedValueOnce({ success: false, code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeCheck: verdict, feeAskId: 'ask-2', feeAskAgain: true })
+      .mockResolvedValueOnce({ success: true, hash: '0x' + 'cd'.repeat(32) });
+    await mod.openHeldPayments();
+    await mod.handleAction('replace', payment);
+    await mod.handleAction('confirm-activation', payment);
+    expect(markup(elements)).toContain('20× today');
+    expect(markup(elements)).toContain('Confirm the network fee');
+    await mod.handleAction('confirm-activation', payment);
+    expect(window.wallet.activateSafe).toHaveBeenLastCalledWith(9, { speedUp: true, feeAskId: 'ask-1' });
+    expect(markup(elements)).toContain('Send anyway');
+    await mod.handleAction('confirm-activation', payment);
+    expect(window.wallet.activateSafe).toHaveBeenLastCalledWith(9, { speedUp: true, feeAskId: 'ask-2' });
+    expect(window.wallet.activateSafe).toHaveBeenCalledTimes(3);
+    expect(markup(elements)).toContain('Replaced with a higher fee');
+  });
+
+  test("a fee not high enough yet says so; nothing else is offered in its place", async () => {
+    const payment = activation();
+    const { mod, elements } = await load([payment]);
+    window.wallet.activateSafe = jest
+      .fn()
+      .mockResolvedValue({ success: false, code: 'INTENT_FEE_TOO_LOW', error: 'A replacement must raise the fee by at least 10%.' });
+    await mod.openHeldPayments();
+    await mod.handleAction('replace', payment);
+    await mod.handleAction('confirm-activation', payment);
+    expect(markup(elements)).toContain("isn't high enough yet to speed this activation up");
+    expect(window.wallet.intentReplace).not.toHaveBeenCalled();
+  });
+});

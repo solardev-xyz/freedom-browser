@@ -841,6 +841,100 @@ async function replaceIntent(intentId, fees, signer) {
 }
 
 /**
+ * Replace a held intent at its nonce with a transaction prepared whole
+ * elsewhere, a Safe deployment's speed-up (freedom-core design 0016,
+ * SAFE-3's C1: `safe.deploy`'s send, its `executor-send` token leaving the
+ * nonce to main): `params` (main's form, as signAndSendTransaction takes
+ * it: to, value, data, gas limit and fees, on the intent's chain) signed at
+ * the intent's nonce, and nothing else changed. It must pay what the
+ * intent pays (its to, value and data, the journal's own rule for a
+ * replacement), and each of its fees must be at least 10% above the
+ * intent's latest (INTENT_FEE_TOO_LOW, nothing signed, otherwise: a node
+ * would refuse it). Under the account's lock, as replaceIntent, whose
+ * outcome it has.
+ *
+ * @param {string} intentId
+ * @param {Object} params - to, value, data, gasLimit, chainId, and
+ *   {maxFeePerGas, maxPriorityFeePerGas} or {gasPrice}
+ * @param {import('./signers').Signer} signer - the intent's own account
+ * @returns {Promise<Object>} as signAndSendTransaction, with `replaced: true`
+ */
+async function replaceIntentWith(intentId, params, signer) {
+  const store = getIntentStore();
+  await store.ready;
+  const intent = await heldIntent(store, intentId);
+  const feesOf = (given) =>
+    given?.gasPrice !== undefined && given?.gasPrice !== null
+      ? { gasPrice: given.gasPrice }
+      : { maxFeePerGas: given?.maxFeePerGas, maxPriorityFeePerGas: given?.maxPriorityFeePerGas };
+  const samePayment = (fields) => {
+    try {
+      return (
+        String(fields.to).toLowerCase() === String(params.to).toLowerCase() &&
+        BigInt(fields.value ?? 0) === BigInt(params.value ?? 0) &&
+        String(fields.data ?? '0x').toLowerCase() === String(params.data ?? '0x').toLowerCase()
+      );
+    } catch {
+      return false;
+    }
+  };
+  const notSame = () => {
+    const error = new Error("This replacement doesn't pay what the waiting payment pays. Nothing was sent.");
+    error.code = 'INTENT_REPLACEMENT_MISMATCH';
+    return error;
+  };
+  if (Number(params?.chainId) !== intent.chainId || !samePayment(intent.fields)) throw notSame();
+  replacementFeesFor(intent.fields, feesOf(params));
+
+  let committed = null;
+  let handoff;
+  try {
+    handoff = await withAccountLock(
+      { chainId: intent.chainId, sender: intent.sender },
+      async () => {
+        // As it stands under the lock: another replacement may have landed.
+        const current = await heldIntent(store, intentId);
+        if (!samePayment(current.fields)) throw notSame();
+        const fees = replacementFeesFor(current.fields, feesOf(params));
+        if (String(await signer.getAddress()).toLowerCase() !== current.sender) {
+          const error = new Error("This payment's account is not the one asked to sign it.");
+          error.code = 'INTENT_KEY_MISMATCH';
+          throw error;
+        }
+        const tx = buildTransaction({
+          to: params.to,
+          value: params.value,
+          data: params.data,
+          gasLimit: params.gasLimit,
+          ...fees,
+          nonce: current.nonce,
+          chainId: current.chainId,
+        });
+        const raw = await signer.signTransaction(tx);
+        committed = await store.commit({
+          intentId,
+          chainId: current.chainId,
+          sender: current.sender,
+          nonce: current.nonce,
+          hash: keccak256(raw),
+          raw,
+          via: 'replacement',
+        });
+        return store.handoff(intentId, committed.hash);
+      }
+    );
+  } catch (err) {
+    console.error('[TransactionService] Replacement failed:', err);
+    if (committed) throw notSent(err, intentId);
+    const error = toSendError(err);
+    error.intentId = intentId;
+    throw error;
+  }
+  console.log(`[TransactionService] Replacing intent ${intentId} at nonce ${committed.nonce}`);
+  return broadcastIntent(committed, handoff, { replaced: true });
+}
+
+/**
  * The held intent an intent key names (`safe-exec:<chain>:<safeTxHash>`,
  * `safe-deploy:<chain>:<safeAddress>`), or null.
  */
@@ -1140,6 +1234,7 @@ module.exports = {
   signAndSendTransaction,
   resendIntent,
   replaceIntent,
+  replaceIntentWith,
   replacementFees,
   heldIntentFor,
   getTransactionStatus,

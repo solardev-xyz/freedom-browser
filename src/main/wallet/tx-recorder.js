@@ -29,6 +29,7 @@ const {
   signAndSendTransaction,
   resendIntent,
   replaceIntent,
+  replaceIntentWith,
   waitForTransaction,
 } = require('./transaction-service');
 const { getIntentStore } = require('./intent-store');
@@ -527,6 +528,29 @@ async function replaceAndRecord(intentId, fees, signer) {
   });
 }
 
+/**
+ * Replace a held intent at its nonce with a transaction prepared whole
+ * (replaceIntentWith: a Safe deployment's speed-up, `safe.deploy`'s send)
+ * and keep its history row, which then names the replacement's hash.
+ * Throws as replaceIntentWith does.
+ *
+ * @param {string} intentId
+ * @param {Object} params
+ * @param {import('./signers').Signer} signer
+ */
+async function replaceWithAndRecord(intentId, params, signer) {
+  const response = await replaceIntentWith(intentId, params, signer);
+  const intent = await getIntentStore().get(intentId);
+  return recordSend(response, {
+    kind: intent?.context?.kind ?? KINDS.WALLET_SEND,
+    chainId: response.chainId,
+    fromAddress: response.from,
+    ...paymentOf(intent?.fields),
+    origin: intent?.context?.origin ?? null,
+    metadata: undefined,
+  });
+}
+
 // A settled intent's history status, by its label at the finalized block,
 // and a closed one's: closed by hand, whether it paid unconfirmed.
 const SETTLED_STATUS = Object.freeze({
@@ -604,6 +628,7 @@ module.exports = {
   signAndRecord,
   resendAndRecord,
   replaceAndRecord,
+  replaceWithAndRecord,
   recordSettlement,
   resumePhoneChecks,
   attachPhoneEvents,

@@ -869,6 +869,86 @@ describe('Safe', () => {
   });
 });
 
+describe("a Safe deployment's speed-up (replaceIntentWith, SAFE-3's PR 7)", () => {
+  const FACTORY = '0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67';
+  const SAFE = '0x' + '5a'.repeat(20);
+  const KEY = `safe-deploy:100:${SAFE}`;
+  const DEPLOY = { to: FACTORY, value: '0', data: '0x1688f0b9' + '00'.repeat(32), chainId: CHAIN };
+  // The held deployment, at 2 gwei, its broadcast's reply lost.
+  async function held(tx) {
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw new Error('freedom-cored exited');
+    });
+    const first = await tx.signAndSendTransaction(
+      { ...DEPLOY, gasLimit: '300000', maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000' },
+      signer,
+      { intentKey: KEY, context: { kind: 'safe-deploy' } }
+    );
+    expect(first).toMatchObject({ outcome: 'uncertain', nonce: 7 });
+    return first;
+  }
+  // The core's deployment now (`safe.deploy`'s send, main's form): its own
+  // estimate and quote.
+  const quoted = (fees = {}) => ({
+    ...DEPLOY,
+    gasLimit: '310000',
+    maxFeePerGas: '3000000000',
+    maxPriorityFeePerGas: '1500000000',
+    ...fees,
+  });
+
+  test("signed exactly as given at the held nonce, committed as the intent's replacement, then broadcast", async () => {
+    const { tx, store } = start();
+    const first = await held(tx);
+    const result = await tx.replaceIntentWith(first.intentId, quoted(), signer);
+    expect(result).toMatchObject({ replaced: true, nonce: 7, intentId: first.intentId, outcome: 'sent' });
+    const raw = broadcastRaws().at(-1);
+    const parsed = Transaction.from(raw);
+    expect(parsed.nonce).toBe(7);
+    expect(parsed.gasLimit).toBe(310000n);
+    expect(parsed.maxFeePerGas).toBe(3000000000n);
+    expect(parsed.maxPriorityFeePerGas).toBe(1500000000n);
+    expect(parsed.to).toBe(FACTORY);
+    expect(parsed.data).toBe(DEPLOY.data);
+    const view = await store.get(first.intentId);
+    expect(view.hashes.map((entry) => entry.hash)).toEqual([first.hash, keccak256(raw)]);
+    expect(await store.byKey(KEY)).toMatchObject({ intentId: first.intentId });
+    // No new nonce was read: the intent keeps its one.
+    expect(pendingReads()).toHaveLength(1);
+  });
+
+  test('a fee not 10% above the held one, another payment, another account: refused, nothing signed or sent', async () => {
+    const { tx } = start();
+    const first = await held(tx);
+    const signed = signer.signTransaction.mock.calls.length;
+    const sends = broadcastRaws().length;
+    await expect(
+      tx.replaceIntentWith(first.intentId, quoted({ maxFeePerGas: '2100000000' }), signer)
+    ).rejects.toMatchObject({ code: 'INTENT_FEE_TOO_LOW' });
+    await expect(
+      tx.replaceIntentWith(first.intentId, quoted({ maxPriorityFeePerGas: '1050000000' }), signer)
+    ).rejects.toMatchObject({ code: 'INTENT_FEE_TOO_LOW' });
+    await expect(
+      tx.replaceIntentWith(first.intentId, { ...quoted(), data: '0x1688f0b9' + '11'.repeat(32) }, signer)
+    ).rejects.toMatchObject({ code: 'INTENT_REPLACEMENT_MISMATCH' });
+    await expect(tx.replaceIntentWith(first.intentId, { ...quoted(), value: '1' }, signer)).rejects.toMatchObject({
+      code: 'INTENT_REPLACEMENT_MISMATCH',
+    });
+    await expect(tx.replaceIntentWith(first.intentId, { ...quoted(), chainId: 1 }, signer)).rejects.toMatchObject({
+      code: 'INTENT_REPLACEMENT_MISMATCH',
+    });
+    const bob = new Wallet('0x' + '59'.repeat(32));
+    await expect(
+      tx.replaceIntentWith(first.intentId, quoted(), {
+        getAddress: async () => bob.address,
+        signTransaction: (t) => bob.signTransaction(t),
+      })
+    ).rejects.toMatchObject({ code: 'INTENT_KEY_MISMATCH' });
+    expect(signer.signTransaction.mock.calls).toHaveLength(signed);
+    expect(broadcastRaws()).toHaveLength(sends);
+  });
+});
+
 describe('review fixes (#706)', () => {
   const { ownerWallet } = require('./safe/__tests__/helpers/test-owners');
   const deployment = {
@@ -1140,15 +1220,16 @@ describe('the only way to sign, and to read pending', () => {
 
   // The signing site is in the callback of an account-lock call: a new
   // intent's `reserve(...)` in `commitNewIntent`, or a replacement's
-  // `withAccountLock(...)` (no pending read) in `replaceIntent`.
-  const LOCKED_SIGNING = { reserve: 'commitNewIntent', withAccountLock: 'replaceIntent' };
+  // `withAccountLock(...)` (no pending read) in `replaceIntent` or
+  // `replaceIntentWith` (a Safe deployment's speed-up, SAFE-3's PR 7).
+  const LOCKED_SIGNING = { reserve: ['commitNewIntent'], withAccountLock: ['replaceIntent', 'replaceIntentWith'] };
 
   function inAccountLock(site, { parents, functionOf }) {
     const callback = functionOf(site);
     const call = parents.get(callback);
     if (call?.type !== 'CallExpression' || call.arguments[1] !== callback) return false;
     const lock = Object.keys(LOCKED_SIGNING).find((name) => isName(call.callee, name));
-    return Boolean(lock) && functionOf(call)?.id?.name === LOCKED_SIGNING[lock];
+    return Boolean(lock) && LOCKED_SIGNING[lock].includes(functionOf(call)?.id?.name);
   }
 
   // The pending read is `readPending`, read once: as the reservation's
@@ -1194,7 +1275,9 @@ describe('the only way to sign, and to read pending', () => {
     // nonce comes from it.
     expect(Object.keys(pending).sort()).toEqual(['domains/service.js', SERVICE]);
 
-    expect(service.signing).toHaveLength(2);
+    // A new intent's signature, a replacement's, and a Safe deployment's
+    // speed-up's (`replaceIntentWith`, SAFE-3's PR 7).
+    expect(service.signing).toHaveLength(3);
     for (const site of service.signing) expect(inAccountLock(site, service)).toBe(true);
     expect(service.pending).toHaveLength(1);
     expect(readOnlyByReservation(service.pending[0], service)).toBe(true);

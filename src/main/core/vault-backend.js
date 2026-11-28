@@ -40,7 +40,7 @@ const {
   watchdogMs,
 } = require('./core-deadlines');
 const { keyStoreMessage } = require('./key-store-messages');
-const { requiresStore } = require('./core-client');
+const { requiresStore, requiresSafe3 } = require('./core-client');
 const { coreSafeCode } = require('../wallet/safe/errors');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
@@ -63,6 +63,10 @@ const SAFE_PENDING = requiresStore('safe_pending');
 // core's store (design 0016, SAFE-3): they read the Safe's record from
 // `vault-meta.json` too, so they go only to a core whose hello echoed both.
 const SAFE_RECORD_AND_PENDING = (hello) => VAULT_META(hello) && SAFE_PENDING(hello);
+// A site's `safe.propose` (design 0016, SAFE-3's C1): only to a core that
+// took the hello's `safe3` too, under which its page's `safe-send` binds
+// the SafeTx the core built before the page's prompt.
+const SITE_SAFE_PROPOSE = (hello) => SAFE_RECORD_AND_PENDING(hello) && requiresSafe3(hello);
 // The RPC-key requests' `requires` (PRF-6(e)).
 const RPC_KEYS = Object.freeze({ requires: requiresStore('rpc_api_keys') });
 // The mutations that write vault-meta.json with the vault, and so their
@@ -1172,16 +1176,18 @@ const vaultBackend = {
     },
     /**
      * `{ safe, safe_tx_hash, authorization: { token, handle? }, display? }`
-     * → the board's state: a site's under `page` with its handle, the
+     * → the board's state: a site's under `page` with its handle (only to a
+     * core that took the hello's `safe3`, `SITE_SAFE_PROPOSE`), the
      * wallet's as `shell`. The token is burnt however it ends.
      */
     propose({ safe, safe_tx_hash, authorization, display }, page = null) {
       const { token, handle } = authorization ?? {};
+      const site = page !== null && typeof page === 'object';
       return safeCall(
         'safe.propose',
         given({ safe, safe_tx_hash, authorization: given({ token, handle }), display }),
         page,
-        SAFE_RECORD_AND_PENDING
+        site ? SITE_SAFE_PROPOSE : SAFE_RECORD_AND_PENDING
       );
     },
     /** `{ safe, fee_ack?, safe_tx_hash? }` → `{ send }`, `{ fee_check }` or `{ superseded }`. */
