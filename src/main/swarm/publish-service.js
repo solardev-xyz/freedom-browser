@@ -145,9 +145,9 @@ async function unsentRowOnCore(type, name, message) {
 }
 
 /**
- * Text for `swarm.publish`'s one `data` part: a string's UTF-8, or the
- * bytes of a buffer, as `publishData`'s `Buffer.byteLength` and bee-js read
- * them; anything else throws what `Buffer.byteLength` throws.
+ * The bytes of `swarm.publish`'s one `data` part: a string's UTF-8, or a
+ * buffer's own bytes, as `publishData`'s `Buffer.byteLength` and bee-js
+ * read them; anything else throws what `Buffer.byteLength` throws.
  */
 function dataBytes(data) {
   if (typeof data === 'string') return Buffer.from(data, 'utf8');
