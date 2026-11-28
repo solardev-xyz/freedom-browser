@@ -12,9 +12,12 @@
  *   `handle(…, { pool })` charges what it holds through its lease, which
  *   lasts until its reply's last byte is written, or a streamed reply's
  *   terminal, or until the reply is dropped (service-client.js);
- * - **main's own requests' fragmented responses** (`{ pool }` on a
- *   request): twice the size the begin declares, before the buffer for it
- *   is made, until the caller has the response;
+ * - **main's own requests' responses** (`{ pool }` on a request; design
+ *   0015, Results for pages): a fragmented one twice the size its begin
+ *   declares, before the buffer for it is made, and a whole one of 64 KiB
+ *   or more twice its payload's length as it is decoded; held until the
+ *   caller releases the result (`{ result, release }`), once it has handed
+ *   it on;
  * - **the streams main holds itself** (a `swarm.body`): a reservation of
  *   its own (`reserve`), until the stream's terminal.
  *

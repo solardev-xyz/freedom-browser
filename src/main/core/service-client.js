@@ -130,10 +130,14 @@
  * reply's last byte is written (a streamed reply's terminal), or until the
  * reply is dropped; a reply of 64 KiB or more is charged there for what
  * the handler didn't. A request main sends with `{ pool }` has its
- * fragmented response charged there, twice the size its begin declares,
- * before its buffer is made, until its caller has it; one main can't
- * charge is never held: it is read with no buffer and dropped, and the
- * caller gets `busy`.
+ * response charged there (design 0015, Results for pages): a fragmented
+ * one twice the size its begin declares, before its buffer is made; a
+ * whole one of 64 KiB or more twice its payload's length as it is decoded,
+ * before anything holds it past its frame. Its result goes to the caller
+ * with a release (`{ result, release }`), and stays charged until the
+ * caller calls it, once it has handed the result on (to the page). One
+ * main can't charge is never held: a fragmented one is read with no buffer
+ * and dropped, a whole one let go of, and the caller gets `busy`.
  *
  * **Idle watchdogs** (design 0015, D13): a request with no total deadline
  * goes with `idleWatchdogMs`, a hang watchdog whose deadline its progress
@@ -1040,8 +1044,9 @@ class ServiceClient extends EventEmitter {
    *   watchdog instead (see requestTo)
    * @param {number|null} [options.deviceWatchdogMs] - a device request's
    *   resettable watchdog instead (see requestTo)
-   * @param {object|null} [options.pool] - the pool its fragmented response
-   *   is charged to (see requestTo)
+   * @param {object|null} [options.pool] - the pool its response is
+   *   charged to; it then resolves with `{ result, release }` (see
+   *   requestTo)
    * @param {AbortSignal|null} [options.signal] - cancels it (see requestTo)
    * @param {Function|null} [options.onSent] - `(id, generation)` once it is
    *   written (see requestTo)
@@ -1192,12 +1197,20 @@ class ServiceClient extends EventEmitter {
    * never for an idle method: nothing is sent otherwise, and the request
    * fails `invalid_argument`.
    *
-   * `pool` charges the request's fragmented response, twice the size its
-   * begin declares, before its buffer is made, until the caller has it
-   * (design 0015, Results for pages). One main can't charge is never held:
-   * the caller gets `busy` at once, and the response is read to its end
-   * with no buffer and let go of. A response within one frame isn't
-   * charged (SWM-7).
+   * `pool` charges the request's response (design 0015, Results for
+   * pages): a fragmented one twice the size its begin declares, before its
+   * buffer is made; a whole one of POOL_EXEMPT_BYTES or more twice its
+   * payload's length as it is decoded, before anything holds it past its
+   * frame (a smaller one is charged nothing). One main can't charge is
+   * never held: the caller gets `busy` at once, and the response is let go
+   * of (a fragmented one read to its end with no buffer, its credit
+   * returned), the request ended as a response ends it. The request then
+   * resolves with `{ result, release }`: the charge is held until the
+   * caller calls `release()` (once; again does nothing), once it has
+   * handed the result on (page-requests, once the page has it), and from
+   * then on it is the caller's: the generation's end doesn't release it.
+   * An error releases it as it is answered, as does a result the caller no
+   * longer waits for (its signal answered it `cancelled`).
    *
    * `signal` cancels it (0001's `cancel`): the caller gets `cancelled` at
    * once and the process is told, unless its response came first. A signal
@@ -2150,13 +2163,22 @@ class ServiceClient extends EventEmitter {
   }
 
   /**
-   * Charges a request's fragmented response to `pool` (`requestTo`'s
-   * `pool`): twice the size its begin declares, before the buffer for it
-   * is made (`admitResponse`), until its caller has it. One that doesn't
-   * fit is never held: the caller is answered `busy` at once, and the
-   * response is read to its end with no buffer and let go of
-   * (`onDroppedResponse`). Its watchdog runs on to that end, as a cancelled
-   * request's does. The generation's retirement releases what it holds.
+   * Charges a request's response to `pool` (`requestTo`'s `pool`; design
+   * 0015, Results for pages): a fragmented one twice the size its begin
+   * declares, before the buffer for it is made (`admitResponse`); a whole
+   * one of POOL_EXEMPT_BYTES or more twice its payload's length as it is
+   * decoded (`onResponse`). One that doesn't fit is never held: the caller
+   * is answered `busy` at once, and the response is let go of
+   * (`onDroppedResponse`; a fragmented one is read to its end with no
+   * buffer first). Its watchdog runs on to that end, as a cancelled
+   * request's does.
+   *
+   * The result goes to the caller with its release, `{ result, release }`,
+   * and the charge is the caller's from then: held until it calls
+   * `release()`, once it has handed the result on. Until then the
+   * generation's retirement releases what the response holds. An error, or
+   * a result its caller no longer waits for (`entry.cancelled`), releases
+   * it at once.
    */
   chargeable(gen, entry, pool) {
     const settle = entry.settle;
@@ -2180,10 +2202,26 @@ class ServiceClient extends EventEmitter {
       return false;
     };
     entry.settle = (outcome) => {
-      release();
-      if (answered) return;
+      if (answered || outcome.error || entry.cancelled) {
+        release();
+        if (answered) return;
+        answered = true;
+        settle(outcome);
+        return;
+      }
       answered = true;
-      settle(outcome);
+      // Handed to the caller with the charge: nothing of the generation's
+      // releases it any more.
+      gen.charges.delete(release);
+      const charged = held;
+      held = 0;
+      let released = false;
+      const handedOn = () => {
+        if (released) return;
+        released = true;
+        pool.release(charged);
+      };
+      settle({ result: Object.freeze({ result: outcome.result, release: handedOn }) });
     };
   }
 
@@ -2196,11 +2234,13 @@ class ServiceClient extends EventEmitter {
   }
 
   /**
-   * A fragmented response main declined at its begin (`admitResponse`),
-   * read to its end with no buffer: its request ends as a response ends
-   * it, its caller has had `busy`, and the process's credit goes back.
+   * A response main declined (`chargeable`): a fragmented one at its begin
+   * (`admitResponse`), read to its end with no buffer, or a whole one as it
+   * was decoded (`whole`, `onResponse`). Its request ends as a response
+   * ends it, its caller has had `busy`, and for a fragmented one the
+   * process's credit goes back; a whole one took none.
    */
-  onDroppedResponse(gen, id) {
+  onDroppedResponse(gen, id, { whole = false } = {}) {
     const entry = gen.pending.get(id);
     if (!entry) return this.protocolFault(gen, 'unsolicited_response');
     if (gen.streams) {
@@ -2214,7 +2254,7 @@ class ServiceClient extends EventEmitter {
     this.idleEnded(gen, id);
     gen.pending.delete(id);
     entry.settle({ error: new CoreError('busy', 'No room for the response') });
-    if (!gen.distrusted) this.returnCredit(gen);
+    if (!whole && !gen.distrusted) this.returnCredit(gen);
     return undefined;
   }
 
@@ -2235,6 +2275,9 @@ class ServiceClient extends EventEmitter {
       this.writeCancel(gen, id);
       if (untilResponse) return;
       answered = true;
+      // The caller has its answer: a result that comes later is dropped,
+      // and its pool charge with it (`chargeable`).
+      entry.cancelled = true;
       settle({ error: cancelled() });
     };
     entry.settle = (outcome) => {
@@ -2362,7 +2405,7 @@ class ServiceClient extends EventEmitter {
       if (!delivery) continue;
       try {
         if (delivery.type === 'message') {
-          this.onMessage(gen, delivery.message);
+          this.onMessage(gen, delivery.message, delivery.size);
         } else if (delivery.type === 'response') {
           this.onFragmentedResponse(gen, delivery.id, delivery.message);
         } else if (delivery.type === 'dropped') {
@@ -2389,9 +2432,10 @@ class ServiceClient extends EventEmitter {
     if (!gen.exited && !gen.stopping) this.connectionFailed(gen, 'stdout_closed');
   }
 
-  onMessage(gen, message) {
+  /** A whole message of the process's: `size` its frame's payload length. */
+  onMessage(gen, message, size = 0) {
     if (!isObject(message)) return this.protocolFault(gen, 'not_object');
-    if (message.type === 'response') return this.onResponse(gen, message);
+    if (message.type === 'response') return this.onResponse(gen, message, size);
     if (message.type === 'event') return this.onEvent(gen, message);
     if (message.type === 'request') return this.onCoreRequest(gen, message);
     if (message.type === 'cancel') return this.onCoreCancel(gen, message);
@@ -2876,7 +2920,12 @@ class ServiceClient extends EventEmitter {
     gen.bulk = [];
   }
 
-  onResponse(gen, message) {
+  /**
+   * A response to one of main's requests: a whole one with its frame's
+   * payload length (`size`), or a fragmented one, reassembled, with none
+   * (charged at its begin).
+   */
+  onResponse(gen, message, size = 0) {
     const { id } = message;
     if (!Number.isSafeInteger(id) || id < 1) return this.protocolFault(gen, 'bad_id');
     const entry = gen.pending.get(id);
@@ -2898,6 +2947,13 @@ class ServiceClient extends EventEmitter {
       outcome = { error: new CoreError(error.code, error.message, error.data) };
     } else {
       outcome = { result: message.result };
+    }
+    // A whole response of POOL_EXEMPT_BYTES or more to a request sent with
+    // a pool, charged twice its payload as it is decoded, before anything
+    // holds it past its frame (design 0015, Results for pages). One main
+    // can't charge is let go of, as a fragmented one is at its begin.
+    if (entry.charge && size >= POOL_EXEMPT_BYTES && !entry.charge(2 * size)) {
+      return this.onDroppedResponse(gen, id, { whole: true });
     }
     let body = null;
     // A head that says `body: true` opens the stream of a stream request, as

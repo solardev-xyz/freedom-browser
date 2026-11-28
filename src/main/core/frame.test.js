@@ -45,6 +45,21 @@ describe('frames', () => {
     }
   });
 
+  test("a whole message comes with its payload's length, which the reassembler passes on", () => {
+    const values = [{}, { big: 'x'.repeat(70_000) }, { type: 'response', id: 7, result: 'é' }];
+    const stream = Buffer.concat(values.map(encodeFrame));
+    for (const size of [1, 4096, stream.length]) {
+      const frames = decodeAll(stream, size);
+      expect(frames.map((f) => f.size)).toEqual(
+        values.map((value) => Buffer.byteLength(JSON.stringify(value)))
+      );
+      const r = new Reassembler();
+      expect(frames.map((f) => r.push(f, () => false))).toEqual(
+        frames.map((f) => ({ type: 'message', message: f.message, size: f.size }))
+      );
+    }
+  });
+
   test('matches the Rust wire format', () => {
     // u32 BE length of kind + payload, kind 0x01, JSON payload.
     expect(encodeFrame({}).toString('hex')).toBe('00000003017b7d');
