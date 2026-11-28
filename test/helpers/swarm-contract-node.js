@@ -864,6 +864,8 @@ function testKeys(keysJson) {
 
 module.exports = {
   ContractNode,
+  feedIdentifier,
+  libraries,
   nodeWorld,
   requestRecord,
   splitTree,

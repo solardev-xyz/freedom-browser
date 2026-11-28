@@ -35,7 +35,9 @@
  *   one feed at once and to two, every subscription frame delivered, the
  *   node's subscription limit, GSOC's per-origin topic budget and its cache,
  *   a feed read on a node that is down, and two blob reads at once past the
- *   read budget: both backends must pass each with the same answers.
+ *   read budget: both backends must pass each with the same answers, every
+ *   request held to compareCase's per-request checks, and each step's
+ *   requests to the reference's as the vectors record them.
  * - **SW-1 through the pipe** (`SW1`): the vectors' raw-SOC cases under the
  *   Bee wallet, a shared index, an index only this site holds, a missing
  *   index and an Ethereum wallet identity first, each held to its recorded
@@ -59,6 +61,7 @@ const {
   KNOWN_CORE_VECTOR_DIFFERENCES,
   LEFT_OUT_ON_CORE,
   compareCase,
+  requestProblems,
   summary,
   timeFixer,
 } = require('../../../test/helpers/swarm-contract-compare');
@@ -120,7 +123,7 @@ describeIf(`window.swarm's contract on the ${BACKEND} backend: the provider suit
   let extra;
 
   beforeAll(async () => {
-    extra = await contractCases(vectors.swarm);
+    extra = await contractCases(vectors.swarm, vectors.keys);
   });
 
   afterAll(() => {
@@ -139,7 +142,15 @@ describeIf(`window.swarm's contract on the ${BACKEND} backend: the provider suit
   ])('%s', async (id) => {
     const kase = extra.find((one) => one.id === id);
     const record = await runCase(BACKEND, kase, env);
-    const problems = kase.check(record, { fixAt: timeFixer(BACKEND, kase, record) });
+    // compareCase's checks of every request (main's headers, framing, a
+    // SOC's signature), then the case's own, its requests' wire forms
+    // among them, and the WebSockets its base case opens.
+    const problems = record.steps.flatMap((step, k) => requestProblems(BACKEND, k, step.requests));
+    problems.push(...kase.check(record, { backend: BACKEND, fixAt: timeFixer(BACKEND, kase, record) }));
+    const sockets = kase.websockets || [];
+    if (JSON.stringify(record.websockets) !== JSON.stringify(sockets)) {
+      problems.push(`websockets: ${JSON.stringify(record.websockets)} against ${JSON.stringify(sockets)}`);
+    }
     if (record.exits?.length) problems.push(`the core exited: ${JSON.stringify(record.exits)}`);
     expect(problems).toEqual([]);
   });

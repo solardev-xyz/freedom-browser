@@ -795,17 +795,21 @@ const viaDispatcher = (step) => typeof step.method === 'string' && step.page !==
  * `core`, by root (the node's `verifiedWalk`): each built from the root's
  * tree, with the reference's status for its join and what the node
  * streamed for the core's ranged read of it (`from`: the step's first node
- * request), whose leaves the walk checks.
+ * request), whose leaves the walk checks. A behaviour case's step
+ * (swarm-contract-cases.js) names its joins itself (`joins`: each root and
+ * the status the reference's join of it is answered).
  */
 function walksOf(step, node, from) {
+  const joins = (step.requests || [])
+    .filter((request) => request.deviation === 'read-data-verified')
+    .map((request) => ({ root: request.path.slice('/bytes/'.length), status: request.status ?? null }));
+  joins.push(...(step.joins || []));
   const walks = {};
-  for (const request of step.requests || []) {
-    if (request.deviation !== 'read-data-verified') continue;
-    const root = request.path.slice('/bytes/'.length);
+  for (const { root, status } of joins) {
     const ranged = node.requests
       .slice(from)
-      .find((r) => r.method === 'GET' && r.path === request.path && r.headers.some(([name]) => name === 'range'));
-    walks[root] = node.verifiedWalk(root, { status: request.status ?? null, served: ranged?.served ?? null });
+      .find((r) => r.method === 'GET' && r.path === `/bytes/${root}` && r.headers.some(([name]) => name === 'range'));
+    walks[root] = node.verifiedWalk(root, { status, served: ranged?.served ?? null });
   }
   return walks;
 }
