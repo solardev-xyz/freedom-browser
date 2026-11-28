@@ -261,6 +261,9 @@ function hashSafeTransaction({ safeAddress, chainId, data }) {
  * Intent keys (transaction-service's signAndSendTransaction): a retry of
  * the same SafeTx execution, or of the same Safe's deployment, sends the
  * held intent's own bytes again at its one nonce instead of signing anew.
+ * The core's Safe backend journals its deployments under the same key
+ * (core-accounts.js), so a deployment held by either backend is sent again
+ * as it was by the other.
  */
 const execIntentKey = (chainId, safeTxHash) => `safe-exec:${chainId}:${safeTxHash.toLowerCase()}`;
 const deployIntentKey = (chainId, safeAddress) =>
@@ -690,6 +693,7 @@ function pickDefaultExecutor(ownerIndexes) {
 
 module.exports = {
   SAFE_VERSION,
+  deployIntentKey,
   pinnedSafeDeployment,
   predictSafeAddress,
   buildDeploymentTransaction,

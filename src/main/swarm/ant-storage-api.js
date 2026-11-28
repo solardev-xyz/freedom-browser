@@ -20,12 +20,26 @@
  * the request never left Freedom (no node URL), which matters for writes: a
  * write that timed out or lost its connection may still land on chain.
  *
- * Node's `fetch` never passes through `session.webRequest`, so the Ant API
- * guard does not see these calls (see ant-api-main-dials.js). Like the other
- * main-process Swarm call sites it does not honour `session.setProxy` (#360).
+ * Each call is one dial on the node's transport (`antBackend()`,
+ * bzz-protocol.js; freedom-core design 0015, The transport, which SWM-8
+ * moves main's own reads onto, closing F-6 for them), never retried:
+ *   - the bundled node, or any loopback one, with Node's `fetch` (undici),
+ *     outside `session.webRequest`, as before;
+ *   - a remote node on the default session's stack (`net.request`), so its
+ *     proxy, Tor and the onion gate apply (#360). A GET goes on that
+ *     session, announced to the Ant API guard with its one method and exact
+ *     URL for the dial's lifetime (ant-api-main-dials.js); a POST or PUT on
+ *     a write session of its own (ant-write-sessions.js), on that session's
+ *     proxy and a new connection, so Chromium sends it once, and it is
+ *     never announced.
+ * A call's timeout bounds the whole of it, its reply's body included, as
+ * `AbortSignal.timeout` on `fetch` did. Redirects are answered as they come,
+ * never followed (the transport's `redirect: 'manual'`).
  */
 
 const { getAntApiUrl } = require('../service-registry');
+const { OnionGateRefusal } = require('../ipfs/onion-gate');
+const { AntNotDialled } = require('./ant-write-sessions');
 
 const READ_TIMEOUT_MS = 10_000;
 // A quote reads the price oracle, both wallet balances and the chequebook
@@ -35,61 +49,155 @@ const QUOTE_TIMEOUT_MS = 30_000;
 // own 504 reaches us instead of a client-side abort.
 const WRITE_TIMEOUT_MS = 330_000;
 
-function apiBase() {
+function hasNodeUrl() {
   const base = getAntApiUrl();
-  return typeof base === 'string' && base ? base.replace(/\/+$/, '') : null;
+  return typeof base === 'string' && base.replace(/\/+$/, '') !== '';
 }
 
-function buildUrl(base, endpoint, query) {
+/**
+ * The node's transport, captured for one call. bzz-protocol.js is loaded on
+ * the first call, not with this module: it brings the dweb handler's graph,
+ * which this module's importers (readiness, the browsing credit, the agent)
+ * don't otherwise load, and main has loaded it by then for `bzz:`.
+ */
+function nodeBackend(transport) {
+  return require('./bzz-protocol').antBackend(transport);
+}
+
+/** `endpoint` with `query`'s set members, the path `request()` joins to the node's root. */
+function buildPath(endpoint, query) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query || {})) {
     if (value !== undefined && value !== null) params.set(key, String(value));
   }
   const qs = params.toString();
-  return `${base}${endpoint}${qs ? `?${qs}` : ''}`;
+  return `${endpoint}${qs ? `?${qs}` : ''}`;
 }
 
 // Errors (undici puts the socket's on `cause`) raised before a connection
 // existed: the request bytes never left Freedom. A reset or a socket closed
-// mid-request is not one of them; the node may have acted on it.
+// mid-request is not one of them; the node may have acted on it. The
+// transport reads Chromium's refused connection and unresolved name as
+// ECONNREFUSED and ENOTFOUND (bzz-protocol.js).
 const CONNECT_FAILURE_CODES = new Set([
   'ECONNREFUSED',
   'ENOTFOUND',
   'EAI_AGAIN',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
   'EADDRNOTAVAIL',
   'UND_ERR_CONNECT_TIMEOUT',
 ]);
 
-function isConnectFailure(err) {
-  const causes = [err, err?.cause, err?.cause?.cause];
-  return causes.some((e) => CONNECT_FAILURE_CODES.has(e?.code));
+// A lost route: before the request only when the socket's own `connect`
+// failed with it. The same codes from a write or read on a connected socket
+// may follow some or all of the request (Codex round 5 on #1369).
+const ROUTE_FAILURE_CODES = new Set(['EHOSTUNREACH', 'ENETUNREACH']);
+
+// The same failures on the session's stack (a remote node), as Chromium
+// names them: undici's others (EADDRNOTAVAIL, a connect timeout,
+// EAI_AGAIN), and a proxy the connection to the node had to go through
+// refusing or failing it, before the request was written.
+// Not `ERR_INTERNET_DISCONNECTED` or `ERR_ADDRESS_UNREACHABLE`: Chromium
+// also ends a request it already wrote with them when the connection or the
+// route is lost, so a write may have landed.
+const CHROMIUM_CONNECT_FAILURES = new Set([
+  'net::ERR_ADDRESS_INVALID',
+  'net::ERR_CONNECTION_TIMED_OUT',
+  'net::ERR_NAME_RESOLUTION_FAILED',
+  'net::ERR_PROXY_CONNECTION_FAILED',
+  'net::ERR_SOCKS_CONNECTION_FAILED',
+  'net::ERR_SOCKS_CONNECTION_HOST_UNREACHABLE',
+  'net::ERR_TUNNEL_CONNECTION_FAILED',
+]);
+
+/**
+ * Main's own refusals before the request existed, whenever they came, the
+ * call's deadline included: the onion gate's (onion-gate.js), and the
+ * transport's `AntNotDialled` (ant-write-sessions.js): a write session that
+ * couldn't be prepared, a write that ended while it waited for one or while
+ * it was prepared, the cap on abandoned dials.
+ */
+function neverDialled(err) {
+  return err instanceof OnionGateRefusal || err instanceof AntNotDialled;
 }
 
+function isConnectFailure(err) {
+  const causes = [err, err?.cause, err?.cause?.cause];
+  return causes.some(
+    (e) =>
+      CONNECT_FAILURE_CODES.has(e?.code) ||
+      (ROUTE_FAILURE_CODES.has(e?.code) && e?.syscall === 'connect') ||
+      CHROMIUM_CONNECT_FAILURES.has(String(e?.message || '').trim())
+  );
+}
+
+/**
+ * The reply's body as text, read until `signal` aborts: then the body is
+ * cancelled, so the transport lets its connection (and a write session) go,
+ * and the read fails with the abort's reason.
+ */
+async function readText(response, signal) {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const onAbort = () => reader.cancel(signal.reason).catch(() => {});
+  if (signal.aborted) onAbort();
+  else signal.addEventListener('abort', onAbort, { once: true });
+  const parts = [];
+  try {
+    for (;;) {
+      let next;
+      try {
+        next = await reader.read();
+      } catch (err) {
+        throw signal.aborted ? signal.reason : err;
+      }
+      if (signal.aborted) throw signal.reason;
+      if (next.done) break;
+      parts.push(next.value);
+    }
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+  return new TextDecoder().decode(Buffer.concat(parts));
+}
+
+/**
+ * One call of the node's API, on its transport (see the file header).
+ * `fetchImpl` is a test seam for the loopback dial.
+ */
 async function antRequest(
   method,
   endpoint,
   { query, body, timeoutMs = READ_TIMEOUT_MS, fetchImpl } = {}
 ) {
-  const base = apiBase();
-  if (!base) {
-    return { ok: false, status: 0, data: null, message: null, notSent: true };
-  }
+  const notSent = { ok: false, status: 0, data: null, message: null, notSent: true };
+  if (!hasNodeUrl()) return notSent;
 
+  const signal = AbortSignal.timeout(timeoutMs);
   let response;
   let text;
   try {
-    response = await (fetchImpl || fetch)(buildUrl(base, endpoint, query), {
+    const backend = nodeBackend(fetchImpl ? { fetchImpl } : {});
+    // The node went away since: nothing goes.
+    if (!backend.url) return notSent;
+    response = await backend.request({
+      path: buildPath(endpoint, query),
       method,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
+      // The call's timeout bounds it; the transport sets no deadline of its own.
+      headersTimeoutMs: null,
       ...(body === undefined
         ? {}
-        : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+        : {
+            headers: { 'Content-Type': 'application/json' },
+            body: new TextEncoder().encode(JSON.stringify(body)),
+          }),
     });
-    text = await response.text();
+    text = await readText(response, signal);
   } catch (err) {
-    const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    // The call's own deadline, never any abort: the session's stack fails a
+    // reply the node cut off mid-body with an AbortError, which undici
+    // reported as `terminated` (unreachable).
+    const timedOut = signal.aborted || err?.name === 'TimeoutError';
     return {
       ok: false,
       status: 0,
@@ -98,7 +206,7 @@ async function antRequest(
       timedOut,
       unreachable: !timedOut,
       // No connection was ever made, so a write cannot have reached the node.
-      refused: !timedOut && isConnectFailure(err),
+      refused: neverDialled(err) || (!timedOut && isConnectFailure(err)),
     };
   }
 
