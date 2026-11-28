@@ -277,3 +277,86 @@ describe('publish-history (sqlite)', () => {
     expect(mod.getEntries()).toHaveLength(0);
   });
 });
+
+// freedom-core design 0015, D10 (design 0017, C5): in a moved profile the
+// core copies the profile root's publish-history.json into the Freedom root,
+// imports the copy, renames it .migrated there, and drops the original only
+// at its own next start (payments_store.rs `hand_over_of`, step 4). A start
+// on main's own history before then retires the original as step 4 does,
+// and imports nothing; any other state imports as before.
+describe("publish-history (sqlite): the core's D10 hand-over, back on main's history", () => {
+  let userDataDir;
+  let freedomDir;
+  let mod;
+  const LEGACY = JSON.stringify({
+    version: 1,
+    entries: [
+      { type: 'data', name: 'legacy', status: 'completed', timestamp: '2026-04-15T19:30:32.540Z' },
+    ],
+  });
+
+  beforeEach(() => {
+    userDataDir = createTempUserDataDir();
+    freedomDir = path.join(userDataDir, 'freedom');
+    fs.mkdirSync(freedomDir);
+    fs.writeFileSync(path.join(freedomDir, 'layout.json'), JSON.stringify({ version: 1 }));
+    fs.writeFileSync(path.join(userDataDir, 'publish-history.json'), LEGACY);
+    mod = null;
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (mod?.closeDb) mod.closeDb();
+    removeTempUserDataDir(userDataDir);
+  });
+
+  const files = () => ({
+    root: fs.readdirSync(userDataDir).filter((name) => name.startsWith('publish-history')),
+    freedom: fs.readdirSync(freedomDir).filter((name) => name.startsWith('publish-history.json')),
+  });
+
+  test("the core's import stands: the original is removed, nothing imported", () => {
+    fs.writeFileSync(path.join(freedomDir, 'publish-history.json.migrated'), LEGACY);
+    ({ mod } = loadPublishHistoryModule({ userDataDir }));
+    expect(mod.getEntries()).toEqual([]);
+    expect(files()).toEqual({ root: [], freedom: ['publish-history.json.migrated'] });
+  });
+
+  test("the core's import stands beside a copy of the same bytes, which stays", () => {
+    fs.writeFileSync(path.join(freedomDir, 'publish-history.json.migrated'), LEGACY);
+    fs.writeFileSync(path.join(freedomDir, 'publish-history.json'), LEGACY);
+    ({ mod } = loadPublishHistoryModule({ userDataDir }));
+    expect(mod.getEntries()).toEqual([]);
+    expect(files()).toEqual({
+      root: [],
+      freedom: ['publish-history.json', 'publish-history.json.migrated'],
+    });
+  });
+
+  test.each([
+    ['a .migrated of other bytes', { 'publish-history.json.migrated': '{"entries":[]}' }],
+    [
+      'a conflicting copy beside a matching .migrated',
+      { 'publish-history.json.migrated': LEGACY, 'publish-history.json': '{"entries":[]}' },
+    ],
+    ["only the core's copy, not imported yet", { 'publish-history.json': LEGACY }],
+    ['no file in the Freedom root', {}],
+  ])('%s: imported as before', (_name, freedom) => {
+    for (const [name, text] of Object.entries(freedom)) {
+      fs.writeFileSync(path.join(freedomDir, name), text);
+    }
+    ({ mod } = loadPublishHistoryModule({ userDataDir }));
+    expect(mod.getEntries().map((entry) => entry.name)).toEqual(['legacy']);
+    expect(files().root).toEqual(['publish-history.json.migrated']);
+  });
+
+  test("the .migrated can't be made durable: the original stays, unimported", () => {
+    fs.writeFileSync(path.join(freedomDir, 'publish-history.json.migrated'), LEGACY);
+    jest.spyOn(fs, 'fsyncSync').mockImplementationOnce(() => {
+      throw new Error('EIO: i/o error, fsync');
+    });
+    ({ mod } = loadPublishHistoryModule({ userDataDir }));
+    expect(mod.getEntries()).toEqual([]);
+    expect(files().root).toEqual(['publish-history.json']);
+  });
+});

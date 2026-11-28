@@ -217,13 +217,13 @@ jobs:
       # reviewed commit: moved on purpose when the protocol's vectors, method
       # table, Radicle vectors, key-store vectors, layout vectors, Swarm
       # vectors or Ledger vectors change, never with freedom-core's main. It
-      # is the commit `cored-v0.32.0` was built from (0e01b95b). Each suite
+      # is the commit `cored-v0.33.0` was built from (7eea60ba). Each suite
       # fails if a file it is pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 0e01b95b5263fc9648cf0285386b08e9c842ae98
+          ref: 7eea60baaedd425a4956d7b8f5eddc137241673b
           path: .freedom-core
           persist-credentials: false
           # signing.json: fc-evm's typed-data vectors, which
@@ -255,7 +255,7 @@ jobs:
       # freedom-colibrid. A pin of its own, separate
       # from the one above and moved on purpose when the Colibri vectors
       # change: freedom-core's main where the file landed (00141d3b). The
-      # file and its fixtures are unchanged from there to 0e01b95b.
+      # file and its fixtures are unchanged from there to 7eea60ba.
       # The suites fail if the file FREEDOM_CORE_COLIBRI_VECTORS names, or
       # the fixtures beside it, are missing.
       - name: Check out freedom-core's Colibri vectors
@@ -1085,6 +1085,24 @@ jobs:
         env:
           FREEDOM_CORED_STORES_TEST: '1'
 
+      # freedom-core design 0015, `swarm.history` with core PR K1's add and
+      # update (cored 0.33.0), D3, D7 and D10 (the SWM-6 to SWM-9 plan's PR
+      # 6.4 and point 2): with a hello the test chooses naming
+      # `swarm_stores`, main's publish history is a client of the pinned
+      # core's `swarm.history`: publish-history.test.js's cases through the
+      # chrome's handlers and main's own calls, each answer equal to the
+      # reference's and the rows and legacy files ending as the reference's;
+      # an fs and better-sqlite3 spy shows main opens no publish-history
+      # file; js→core→js leaves no row twice, in both profile layouts, and
+      # so does core→js, main retiring a legacy file the core's hand-over
+      # imported; the agent's freedom://agent row is the core's before the
+      # upload and updated after it.
+      - name: The publish history through the core (real freedom-cored, a chosen hello)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/swarm/publish-history.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
       # freedom-core design 0013, "The intent journal" (PRF-6(b2)): this
       # build names `intents`, so the core is wallet-intents.jsonl's one
       # writer. Main's intent store, nonce reservations and send path
@@ -1325,14 +1343,14 @@ jobs:
       # doesn't take, so every case checks it is the core it started.
       # Nothing waits on the clock: main's deadlines are fired by the test
       # while the device waits, and the core's own timers (1 s later) are
-      # never reached. The vectors are those of the commit cored-v0.32.0 was
+      # never reached. The vectors are those of the commit cored-v0.33.0 was
       # built from, the `test` job's pin.
       - name: Check out freedom-core's Ledger vectors (LDG-3's gates)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 0e01b95b5263fc9648cf0285386b08e9c842ae98
+          ref: 7eea60baaedd425a4956d7b8f5eddc137241673b
           path: .freedom-core-ledger
           persist-credentials: false
           sparse-checkout: |
@@ -1593,7 +1611,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 0e01b95b5263fc9648cf0285386b08e9c842ae98
+          ref: 7eea60baaedd425a4956d7b8f5eddc137241673b
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
@@ -1729,7 +1747,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 0e01b95b5263fc9648cf0285386b08e9c842ae98
+          ref: 7eea60baaedd425a4956d7b8f5eddc137241673b
           path: .freedom-core
           persist-credentials: false
 
@@ -2128,7 +2146,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 0e01b95b5263fc9648cf0285386b08e9c842ae98
+          ref: 7eea60baaedd425a4956d7b8f5eddc137241673b
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |

@@ -13,13 +13,37 @@ const { File } = require('buffer');
 const { ipcMain, dialog, BrowserWindow } = require('electron');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError, isNoUsableBatchError } = require('./batch-errors');
-const { addEntry, updateEntry } = require('./publish-history');
+const publishHistory = require('./publish-history');
 const { isPrivateWebContents } = require('../private/private-windows');
 const log = require('electron-log');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { createPickTokenStore } = require('./publish-pick-tokens');
 const { getAntApiUrl } = require('../service-registry');
 const pageUpload = require('./page-upload');
+
+/** Whether `value` is a promise (any thenable). */
+function isThenable(value) {
+  return (
+    (typeof value === 'object' || typeof value === 'function') && typeof value?.then === 'function'
+  );
+}
+
+/**
+ * The freedom://publish handlers' own history write `name` (`addEntry` or
+ * `updateEntry`): publish-history.js's own function, answered in the run,
+ * while main writes publish-history.sqlite; once the history is the core's
+ * (this process's hello names `swarm_stores`, freedom-core design 0015, D3;
+ * the SWM-6 to SWM-9 plan's PR 6.4), its `swarm.history` `add` or `update`,
+ * as `shell` (publish-history.js `coreOps`), a promise. Each handler awaits
+ * a promise and never a plain answer, so on main's own store it runs as it
+ * always has.
+ */
+function writeHistory(name, ...args) {
+  const ops = require('../core/core-client').swarmStoresNamed()
+    ? publishHistory.coreOps
+    : publishHistory;
+  return ops[name](...args);
+}
 
 // What the user reads when a publish fails. A batch bought moments ago that
 // storer peers have not synced yet gets a "try again shortly" sentence
@@ -410,15 +434,20 @@ function registerPublishIpc() {
     if (!data && data !== '') {
       return { success: false, error: 'Data is required' };
     }
-    const historyEntry = addEntry({
+    const added = writeHistory('addEntry', {
       type: 'data',
       name: 'Text',
       status: 'uploading',
       origin: USER_ORIGIN,
     });
+    const historyEntry = isThenable(added) ? await added : added;
     try {
       const result = await publishData(data);
-      updateEntry(historyEntry.id, { status: 'completed', ...result });
+      const completed = writeHistory('updateEntry', historyEntry.id, {
+        status: 'completed',
+        ...result,
+      });
+      if (isThenable(completed)) await completed;
       return {
         success: true,
         reference: result.reference,
@@ -427,7 +456,11 @@ function registerPublishIpc() {
       };
     } catch (err) {
       log.error('[PublishService] Failed to publish data:', err.message);
-      updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
+      const failed = writeHistory('updateEntry', historyEntry.id, {
+        status: 'failed',
+        errorMessage: err.message,
+      });
+      if (isThenable(failed)) await failed;
       return publishFailure(err);
     }
   });
@@ -441,15 +474,20 @@ function registerPublishIpc() {
       return { success: false, error: `File not found: ${path.basename(filePath)}` };
     }
     const name = path.basename(filePath);
-    const historyEntry = addEntry({
+    const added = writeHistory('addEntry', {
       type: 'file',
       name,
       status: 'uploading',
       origin: USER_ORIGIN,
     });
+    const historyEntry = isThenable(added) ? await added : added;
     try {
       const result = await publishFile(filePath);
-      updateEntry(historyEntry.id, { status: 'completed', ...result });
+      const completed = writeHistory('updateEntry', historyEntry.id, {
+        status: 'completed',
+        ...result,
+      });
+      if (isThenable(completed)) await completed;
       return {
         success: true,
         reference: result.reference,
@@ -459,7 +497,11 @@ function registerPublishIpc() {
     } catch (err) {
       log.error('[PublishService] Failed to publish file:', err.message);
       const message = describePickedPathError(err, filePath);
-      updateEntry(historyEntry.id, { status: 'failed', errorMessage: message });
+      const failed = writeHistory('updateEntry', historyEntry.id, {
+        status: 'failed',
+        errorMessage: message,
+      });
+      if (isThenable(failed)) await failed;
       return publishFailure(err, message);
     }
   });
@@ -481,15 +523,20 @@ function registerPublishIpc() {
       return { success: false, error: `Directory not found: ${path.basename(dirPath)}` };
     }
     const name = path.basename(dirPath);
-    const historyEntry = addEntry({
+    const added = writeHistory('addEntry', {
       type: 'directory',
       name,
       status: 'uploading',
       origin: USER_ORIGIN,
     });
+    const historyEntry = isThenable(added) ? await added : added;
     try {
       const result = await publishDirectory(dirPath);
-      updateEntry(historyEntry.id, { status: 'completed', ...result });
+      const completed = writeHistory('updateEntry', historyEntry.id, {
+        status: 'completed',
+        ...result,
+      });
+      if (isThenable(completed)) await completed;
       return {
         success: true,
         reference: result.reference,
@@ -499,7 +546,11 @@ function registerPublishIpc() {
     } catch (err) {
       log.error('[PublishService] Failed to publish directory:', err.message);
       const message = describePickedPathError(err, dirPath);
-      updateEntry(historyEntry.id, { status: 'failed', errorMessage: message });
+      const failed = writeHistory('updateEntry', historyEntry.id, {
+        status: 'failed',
+        errorMessage: message,
+      });
+      if (isThenable(failed)) await failed;
       return publishFailure(err, message);
     }
   });
