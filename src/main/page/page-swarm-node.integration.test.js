@@ -32,9 +32,13 @@
  *     each file's bytes and metadata as antd stores them.
  *   - **To a node that keeps it (bee dev):** each backend's page call
  *     succeeds, and window.swarm on the core answers the reference the JS
- *     backend's call got (the root antd assembled from both tars). From
- *     that uploaded root every nested path resolves with the chunks the
- *     node stored, nothing seeded (only the two uploads ever wrote to it):
+ *     backend's call got: the manifest of exactly the page's paths, bytes
+ *     and index document with the types the node gives them (Bee takes a
+ *     file's type from Go's table and the host's, so on Windows and macOS
+ *     a `.js` file is `application/javascript`), which is the root antd
+ *     assembled exactly where those types are antd's (Linux). From that
+ *     uploaded root every nested path resolves with the chunks the node
+ *     stored, nothing seeded (only the two uploads ever wrote to it):
  *     the manifest walked over window.swarm's `readChunk` through the core
  *     (each file's `Content-Type` and `Filename`, its bytes by `readChunk`
  *     and by `readData`, the index document at `/`, a missing path
@@ -282,8 +286,10 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
   const shared = { gnosis: null, node: null, tap: null, nodeDir: null, bee: null, beeTap: null };
   // The manifest root antd assembled from each backend's nested tar.
   const roots = {};
-  // The reference each backend's nested publishFiles got from bee dev.
+  // The reference each backend's nested publishFiles got from bee dev, and
+  // the Content-Type bee dev gives each nested path.
   const refs = {};
+  const beeTypes = {};
 
   beforeAll(async () => {
     shared.gnosis = await startFakeGnosis({ owner: new Wallet(`0x${POSTAGE_KEY}`).address });
@@ -764,7 +770,7 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
       expect(world.exits).toEqual([]);
     });
 
-    test("a nested publishFiles to a node that keeps it (bee dev): the reference it answers is the root antd assembled from bee-js's tar", async () => {
+    test("a nested publishFiles to a node that keeps it (bee dev): the reference it answers is the manifest of exactly the page's files, antd's root where the node types them as antd does", async () => {
       const { answer, upload } = await publishToBee(world);
       expect(answer.error).toBeUndefined();
       expect(answer.result.reference).toMatch(/^[0-9a-f]{64}$/);
@@ -773,9 +779,24 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
       expect(upload).toMatchObject({ whole: true, status: 201 });
       expect(upload.headers['swarm-postage-batch-id']).toBe(shared.bee.batch);
       expect(upload.headers['swarm-index-document']).toBe(INDEX);
-      // antd's root from the same tar, which names exactly the page's paths.
-      expect(answer.result.reference).toBe(roots.js);
-      expect(answer.result.reference).toBe(collectionManifest(NESTED, INDEX).root);
+      // The type the node gives each path, from its extension: Go's table
+      // and the host's (antd's on Linux; `.js` is application/javascript on
+      // Windows and macOS).
+      for (const file of NESTED) {
+        const res = await fetch(`${shared.beeTap.url}/bzz/${answer.result.reference}/${file.path}`);
+        expect(res.status).toBe(200);
+        beeTypes[file.path] = res.headers.get('content-type');
+        expect(beeTypes[file.path]).toMatch(/^[a-z]+\/[a-z0-9.+-]+/);
+      }
+      // The manifest of exactly the page's paths, bytes and index document,
+      // with those types; and the root antd assembled from the same tar
+      // exactly where the node's types are antd's.
+      expect(answer.result.reference).toBe(
+        collectionManifest(NESTED, INDEX, (filePath) => beeTypes[filePath]).root
+      );
+      expect(answer.result.reference === roots.js).toBe(
+        NESTED.every((file) => beeTypes[file.path] === contentTypeOf(file.path))
+      );
       refs.js = answer.result.reference;
       expect(world.prompts).toEqual([]);
     });
@@ -862,8 +883,6 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
         expect(refs.js).toMatch(/^[0-9a-f]{64}$/);
         expect(answer.result.reference).toBe(refs.js);
         expect(answer.result.bzzUrl).toBe(`bzz://${refs.js}`);
-        // The root antd assembled from the same tar, offline.
-        expect(answer.result.reference).toBe(roots.core);
         expect(world.prompts).toEqual([]);
       });
 
@@ -878,7 +897,7 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
           for (const file of NESTED) {
             const found = await walker.resolve(root, file.path);
             expect(found?.metadata).toEqual({
-              'Content-Type': contentTypeOf(file.path),
+              'Content-Type': beeTypes[file.path],
               Filename: file.path.split('/').pop(),
             });
             expect((await walker.readChunk(found.target)).equals(Buffer.from(file.bytes))).toBe(
@@ -917,7 +936,7 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
           const { res, body } = await bzz(file.path);
           expect(res.status).toBe(200);
           expect(body.equals(Buffer.from(file.bytes))).toBe(true);
-          expect(res.headers.get('content-type')).toBe(contentTypeOf(file.path));
+          expect(res.headers.get('content-type')).toBe(beeTypes[file.path]);
           expect(res.headers.get('content-disposition')).toBe(
             `inline; filename="${file.path.split('/').pop()}"`
           );

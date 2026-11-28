@@ -662,9 +662,14 @@ function serializeNode(node, chunks) {
  * The manifest antd writes for a tar of `files` (`{ path, bytes }`, each of
  * at most one chunk) with `swarm-index-document: indexDocument`: `{ root,
  * chunks }`, `chunks` the files' and the manifest's, as `[addressHex,
- * wire]`.
+ * wire]`. `typeOf(filePath)` is each file's `Content-Type`: antd's table
+ * (`contentTypeOf`) unless given. Bee's writer is the same, but it takes a
+ * file's type from Go's `mime.TypeByExtension`, which reads the host's own
+ * table too (the Windows registry, macOS's `/etc/apache2/mime.types`): there
+ * a `.js` file is `application/javascript`, not antd's
+ * `text/javascript; charset=utf-8`.
  */
-function collectionManifest(files, indexDocument = null) {
+function collectionManifest(files, indexDocument = null, typeOf = contentTypeOf) {
   const chunks = [];
   const root = newNode();
   for (const { path: filePath, bytes } of files) {
@@ -672,7 +677,7 @@ function collectionManifest(files, indexDocument = null) {
     const data = cac(Buffer.from(bytes));
     chunks.push([data.address, data.wire]);
     trieInsert(root, Buffer.from(filePath, 'utf8'), Buffer.from(data.address, 'hex'), {
-      'Content-Type': contentTypeOf(filePath),
+      'Content-Type': typeOf(filePath),
       Filename: filePath.split('/').pop(),
     });
   }

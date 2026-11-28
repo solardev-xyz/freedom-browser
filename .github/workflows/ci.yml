@@ -1769,9 +1769,10 @@ jobs:
       # chunks the push would have stored in antd's cache each nested file
       # resolves through the node (the manifest walked over readChunk). To
       # bee dev, which keeps the upload, both backends' page calls succeed
-      # with the same reference (antd's root), and every nested path
-      # resolves from it with the chunks bee dev stored, nothing seeded
-      # (window.swarm's readChunk and readData, and the node's /bzz). A
+      # with the same reference (the manifest of exactly the page's files;
+      # antd's root where bee dev types them as antd does, Linux), and every
+      # nested path resolves from it with the chunks bee dev stored, nothing
+      # seeded (window.swarm's readChunk and readData, and the node's /bzz). A
       # feed read past a site's read window: refused once its SOC is read,
       # no GET /bytes. F-4's 10 MiB + 1 feed entry: refused with nothing sent
       # to the node (page-requests refuses it from a page; at the dispatcher
