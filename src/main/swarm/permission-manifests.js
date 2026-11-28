@@ -370,6 +370,9 @@ function manifestUrlOf(committedUrl) {
 }
 
 async function discover(committedUrl, fetchManifest = handleBzzRequest, fetchContext = {}) {
+  // The JS check's own fetch: on the core's backend its ask is
+  // `shell.swarm_manifest` (`answerManifestAsk`), and this refuses first.
+  assertMainStore();
   const manifestUrl = manifestUrlOf(committedUrl);
   if (manifestUrl === null) return { status: 'unsupported' };
 
@@ -551,6 +554,12 @@ async function pruneRecord(origin) {
 }
 
 function detachManaged(origin, projection) {
+  // Refused before its arguments are read, as a rejection like the rest.
+  try {
+    assertMainStore();
+  } catch (err) {
+    return Promise.reject(err);
+  }
   const key = normalizeOrigin(origin);
   if (projection === 'connection') return disconnect(key);
   return inOrder(async () => {
@@ -864,6 +873,12 @@ async function useIndividualInOrder(origin, capability) {
 }
 
 function disconnect(origin) {
+  // Refused before its arguments are read, as a rejection like the rest.
+  try {
+    assertMainStore();
+  } catch (err) {
+    return Promise.reject(err);
+  }
   const key = normalizeOrigin(origin);
   return inOrder(async () => {
     await replayPending();
