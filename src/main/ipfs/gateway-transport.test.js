@@ -307,6 +307,48 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
     expect(requestImpl).not.toHaveBeenCalled();
   });
 
+  // Main's Ant writes are "possibly sent" from this point only (#1369).
+  test('`onRequest` runs once, as the request is made, never for a gate refusal or an abort before it', async () => {
+    const order = [];
+    const onRequest = jest.fn(() => order.push('onRequest'));
+    const requestImpl = jest.fn((options) => {
+      order.push('request');
+      const request = new FakeClientRequest(options);
+      setImmediate(() => request.emit('response', new FakeIncomingMessage({ statusCode: 204 })));
+      return request;
+    });
+    await netGatewayFetch(
+      ONION,
+      { redirect: 'manual' },
+      { requestImpl, resolveProxy: async () => ONION_ROUTED, onRequest }
+    );
+    expect(order).toEqual(['onRequest', 'request']);
+
+    onRequest.mockClear();
+    const refused = netGatewayFetch(
+      ONION,
+      { redirect: 'manual' },
+      { requestImpl, resolveProxy: async () => 'DIRECT', onRequest }
+    );
+    await expect(refused).rejects.toBeInstanceOf(OnionGateRefusal);
+    const controller = new AbortController();
+    const aborted = netGatewayFetch(
+      ONION,
+      { redirect: 'manual', signal: controller.signal },
+      {
+        requestImpl,
+        resolveProxy: async () => {
+          controller.abort();
+          return ONION_ROUTED;
+        },
+        onRequest,
+      }
+    );
+    await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+    expect(onRequest).not.toHaveBeenCalled();
+    expect(requestImpl).toHaveBeenCalledTimes(1);
+  });
+
   // The check costs a session round-trip, so it stays on the one host class
   // that needs it: everything else dials exactly as before.
   test.each([
