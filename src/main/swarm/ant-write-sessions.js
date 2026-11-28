@@ -39,6 +39,14 @@
  * gate (`ipfs/gateway-transport.js`) asks the write session, which answers
  * as the request's would.
  *
+ * WHAT IT CARRIES
+ *
+ * A POST (main's Swarm executor's uploads and sends, ant-storage-api's
+ * storage and deposit writes) or a PUT (ant-storage-api's
+ * `/v0/settlement/swap`), with a body or none. A lease for any other method
+ * is refused before it takes a session: a read stays on its request session,
+ * announced to its guard, and main sends the node nothing else.
+ *
  * NOTHING ELSE GOES OUT
  *
  * A write session carries its lease's write and nothing else. It has a
@@ -64,6 +72,9 @@
  */
 
 const { dialKey } = require('./ant-api-main-dials');
+
+/** The methods a write session carries (see WHAT IT CARRIES). */
+const WRITE_METHODS = new Set(['POST', 'PUT']);
 
 /** Concurrent writes a request session sends at once; more wait their turn. */
 const MAX_WRITE_SESSIONS = 8;
@@ -187,16 +198,20 @@ async function prepare(slot, source, url) {
  * guard admits that one request and nothing else. `release()` (idempotent)
  * disarms the guard and hands the session back once the write is over, its
  * reply's body included. Rejects when `signal` aborts the wait for a free
- * one, or the session couldn't be prepared (nothing was dialled).
+ * one, or the session couldn't be prepared (nothing was dialled), and at
+ * once for a method other than POST or PUT.
  *
  * @param {Electron.Session|null} source - the request's session (the
  *   default session when null)
  * @param {string} url
- * @param {string} method - the write's, as its dial sends it
+ * @param {'POST'|'PUT'} method - the write's, as its dial sends it
  * @param {AbortSignal} [signal]
  * @returns {Promise<{ session: Electron.Session, release: () => void }>}
  */
 async function leaseWriteSession(source, url, method, signal) {
+  if (!WRITE_METHODS.has(method)) {
+    throw new TypeError(`a write session carries a POST or a PUT (got ${method})`);
+  }
   const from = source || require('electron').session.defaultSession;
   const pool = poolOf(from);
   const slot = await take(pool, signal);

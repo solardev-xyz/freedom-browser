@@ -1111,6 +1111,46 @@ describe('a non-loopback Ant', () => {
       expect(announced).toBe(true);
       expect(mockWriteSessions).toHaveLength(0);
     });
+
+    test("a PUT (ant-storage-api's swap switch) goes the same way; another write method is refused undialled", async () => {
+      const source = writeSource();
+      const seen = [];
+      mockNetGatewayFetch.mockImplementation(async (url, init, deps) => {
+        seen.push({
+          url,
+          method: init.method,
+          session: deps.session,
+          announced: ['GET', 'HEAD', 'POST', 'PUT'].some((m) => isMainProcessAntDial(url, m)),
+        });
+        return new Response('{"swapEnabled":true}', { status: 200 });
+      });
+      const send = (method) =>
+        antBackend({ session: source }).request({
+          path: '/v0/settlement/swap',
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: new TextEncoder().encode('{"swapEnabled":true}'),
+          signal: new AbortController().signal,
+          headersTimeoutMs: null,
+        });
+      await expect((await send('PUT')).json()).resolves.toEqual({ swapEnabled: true });
+      expect(seen).toEqual([
+        {
+          url: `${REMOTE}/v0/settlement/swap`,
+          method: 'PUT',
+          session: mockWriteSessions[0],
+          announced: false,
+        },
+      ]);
+      expect(source.resolveProxy).toHaveBeenCalledWith(`${REMOTE}/v0/settlement/swap`);
+      for (const method of ['DELETE', 'PATCH']) {
+        await expect(send(method)).rejects.toThrow(
+          `a write session carries a POST or a PUT (got ${method})`
+        );
+      }
+      expect(seen).toHaveLength(1);
+      expect(mockWriteSessions).toHaveLength(1);
+    });
   });
 
   test('a body on a GET is refused before anything is announced or dialled', async () => {

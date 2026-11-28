@@ -76,9 +76,10 @@ let abandonedDials = 0;
  *     (`ant-api-main-dials.js`) and released once the dial settles.
  *     Chromium may send a read again when a reused connection closes before
  *     its headers, which is idempotent.
- *   - A write (POST) goes on a write session of its own, on the request
- *     session's proxy, with no connection open before it, whose own guard
- *     admits that write and nothing else (`ant-write-sessions.js`):
+ *   - A write (POST, or ant-storage-api's PUT) goes on a write session of
+ *     its own, on the request session's proxy, with no connection open
+ *     before it, whose own guard admits that write and nothing else
+ *     (`ant-write-sessions.js`, which refuses any other method undialled):
  *     Chromium sends it once, whole or streamed, and it fails when the node
  *     hangs up (freedom-core design 0015, point 6; #1344). It holds that
  *     session until its reply is over.
@@ -389,15 +390,21 @@ function verifiesExternalAnt() {
  * one dial of `path` on this node, with no retry: the dweb plan's executor
  * retries around it, and main's Swarm executor never does
  * (`ant-api-call.js`). `body` is bytes or a `ReadableStream` of bytes (a
- * POST's; design 0015, The transport), pulled only as the node takes it. A
- * remote node's POST goes on a write session (`dialAnt`), so it is sent once.
+ * POST's or a PUT's; design 0015, The transport), pulled only as the node
+ * takes it. A remote node's POST or PUT goes on a write session (`dialAnt`),
+ * so it is sent once. Main's own calls (`ant-storage-api.js`) use it too.
+ *
+ * `url` is the node's root without a trailing slash, which `request()` joins
+ * `path` to (`ant-manager.js` registers none; ant-storage-api always dropped
+ * one).
  *
  * @param {object} [transport]
  * @param {Electron.Session} [transport.session] - the request's session
  * @param {typeof fetch} [transport.fetchImpl] - the loopback dial
  */
 function antBackend({ session = null, fetchImpl = fetch } = {}) {
-  const url = getAntApiUrl() || null;
+  const api = getAntApiUrl();
+  const url = (typeof api === 'string' && api.replace(/\/+$/, '')) || null;
   const mode = getService('ant')?.mode === MODE.BUNDLED ? 'bundled' : 'external';
   // An external Ant, against a core whose verifier is attached.
   const attached = mode === 'external' && dwebVerifier() !== null;

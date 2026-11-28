@@ -1,5 +1,15 @@
 const mockGetAntApiUrl = jest.fn();
-jest.mock('../service-registry', () => ({ getAntApiUrl: () => mockGetAntApiUrl() }));
+jest.mock('../service-registry', () => ({
+  MODE: { BUNDLED: 'bundled', EXTERNAL: 'external', REUSED: 'reused' },
+  getAntApiUrl: () => mockGetAntApiUrl(),
+  getService: () => ({ mode: 'bundled' }),
+}));
+jest.mock('../logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+}));
 
 const api = require('./ant-storage-api');
 
@@ -145,18 +155,19 @@ describe('storage routes', () => {
     expect(init).toMatchObject({
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: '{"swapEnabled":false}',
     });
+    // The JSON's bytes: the node's transport takes bytes or a stream.
+    expect(new TextDecoder().decode(init.body)).toBe('{"swapEnabled":false}');
     // No `Origin` from the main process: antd's web-page guard lets it through.
     expect(init.headers).not.toHaveProperty('Origin');
-    expect(second.body).toBe('{"swapEnabled":false}');
+    expect(new TextDecoder().decode(second.body)).toBe('{"swapEnabled":false}');
   });
 
   test('a read sends no body and no content type', async () => {
     const fetchImpl = respond({});
     await api.getNode({ fetchImpl });
     expect(fetchImpl.mock.calls[0][1]).not.toHaveProperty('body');
-    expect(fetchImpl.mock.calls[0][1]).not.toHaveProperty('headers');
+    expect(fetchImpl.mock.calls[0][1].headers).toBeUndefined();
   });
 });
 

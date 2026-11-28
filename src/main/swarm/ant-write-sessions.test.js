@@ -221,6 +221,28 @@ describe("a write session's guard", () => {
     release();
   });
 
+  test("a PUT is a write too (ant-storage-api's swap switch): admitted once, as itself only", async () => {
+    const swap = 'http://ant.example.test:1633/v0/settlement/swap';
+    const { session, release } = await leaseWriteSession(requestSession(), swap, 'PUT');
+    expect(await session.sends('POST', swap)).toBe(false);
+    expect(await session.sends('PUT', OTHER)).toBe(false);
+    expect(await session.sends('PUT', swap)).toBe(true);
+    expect(await session.sends('PUT', swap)).toBe(false);
+    release();
+  });
+
+  test.each(['GET', 'HEAD', 'DELETE', 'PATCH', 'OPTIONS', 'put', undefined])(
+    'a lease for %s is refused before it takes or makes a session',
+    async (method) => {
+      const source = requestSession();
+      await expect(leaseWriteSession(source, URL_, method)).rejects.toThrow(
+        `a write session carries a POST or a PUT (got ${method})`
+      );
+      expect(mockMade).toHaveLength(0);
+      expect(source.resolveProxy).not.toHaveBeenCalled();
+    }
+  );
+
   test('a lease that fails leaves it disarmed', async () => {
     const source = requestSession();
     const first = await leaseWriteSession(source, URL_, 'POST');
