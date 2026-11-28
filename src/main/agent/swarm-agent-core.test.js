@@ -5,7 +5,10 @@
  * each call sends as `shell`, the parent it opens from `onSent` (its row,
  * params, parts, transport, deadline), its watchdog, the answer read from
  * the typed form, what the core threw thrown with its fields, and the
- * result's charge released. The batch choice over the core's list is
+ * result's charge released. The requests are core/swarm-own-calls.js's
+ * (PR 8.3), so a result of `swarm.publish`, `swarm.stamps` or
+ * `swarm.upload_status` not exactly in the core's shape, and a parent main
+ * can't open, are `CoreError` `internal`. The batch choice over the core's list is
  * swarm-service.js's: for each node's `/stamps`, bee-js's choice (the JS
  * backend's) and this one over the same batches as the core normalizes
  * them pick the same batch, or throw the same error.
@@ -103,7 +106,8 @@ describe('swarm.publish without history', () => {
           backend: h.backend,
           signal: options.signal,
           deadlineAt: null,
-          parts: null,
+          // Inline: no part to stream.
+          parts: new Map(),
         },
       },
     ]);
@@ -190,15 +194,23 @@ describe('swarm.publish without history', () => {
     await expect(node.core.publishData('x', {})).rejects.toMatchObject({ message: 'Bad Request: {"code":400}', status: 400 });
   });
 
-  test("an answer in another form is the core's fault", async () => {
+  test("an answer in another form, or a result not exactly the core's, is the core's fault", async () => {
+    const { tag_uid: _tag, ...noTag } = UPLOAD;
     for (const answer of [
       { result: 1 },
       { result_typed: writeTyped(1), error_typed: writeTyped({ message: 'x' }) },
       thrown({ message: 'x', extra: 1 }),
       thrown({ message: 'x', status: '400' }),
-      thrown({ message: 'x', capacity: { uploadBytes: 1 } }),
+      thrown({ message: 'x', capacity: 5 }),
       typed({ ...UPLOAD, bytes: '5' }),
       { result_typed: { nonsense: true } },
+      // swarm-own-calls.js's strict reader: one member more, one missing,
+      // a reference that isn't 64 or 128 lowercase hex, a size below 0.
+      typed({ ...UPLOAD, extra: 1 }),
+      typed(noTag),
+      typed({ ...UPLOAD, reference: REFERENCE.toUpperCase() }),
+      typed({ ...UPLOAD, reference: REFERENCE.slice(2) }),
+      typed({ ...UPLOAD, bytes: -1 }),
     ]) {
       const h = harness(async () => answer);
       const err = await h.core.publishData('x', {}).catch((e) => e);
@@ -223,7 +235,12 @@ describe('swarm.publish without history', () => {
         },
       }
     );
-    await expect(h.core.publishData('x', {})).rejects.toThrow("couldn't be opened");
+    // swarm-own-calls.js's: the core's calls failing main, `internal`.
+    await expect(h.core.publishData('x', {})).rejects.toMatchObject({
+      name: 'CoreError',
+      code: 'internal',
+      message: "The request couldn't be opened for the identity core's calls",
+    });
     expect(signal.aborted).toBe(true);
   });
 
@@ -248,12 +265,56 @@ describe('swarm.upload_status and swarm.stamps', () => {
     expect(options.signal.aborted).toBe(false);
   });
 
+  /** A batch as the core's `swarm.stamps` gives it (fc-swarm-provider `batch_value`). */
+  const coreBatch = (fields = {}) => ({
+    batchID: BATCH,
+    utilization: 0,
+    usable: true,
+    label: '',
+    depth: 22,
+    amount: '100000000000',
+    bucketDepth: 16,
+    blockNumber: 1000,
+    immutableFlag: true,
+    usage: 0,
+    usageText: '0%',
+    size: 100,
+    remainingSize: 100,
+    theoreticalSize: 100,
+    duration: 5,
+    exists: true,
+    batchTTL: 5,
+    ...fields,
+  });
+
   test('one batch: swarm.stamps { id }', async () => {
-    const batch = { batchID: BATCH, usable: true, remainingSize: 100, duration: 5 };
+    const batch = coreBatch();
     const h = harness(async () => typed(batch));
     expect(await h.core.getStamp(BATCH)).toEqual(batch);
     expect(h.sent[0].params).toEqual({ id: BATCH });
     expect(h.opened[0].capture.row).toBe('swarm.stamps');
+  });
+
+  test("a batch, a list or a tag not exactly in the core's shape is the core's fault", async () => {
+    const { duration: _duration, ...noDuration } = coreBatch();
+    const tag = { tagUid: 7, split: 4, seen: 0, stored: 4, sent: 4, synced: 4, progress: 100, done: true };
+    const { done: _done, ...notDone } = tag;
+    const cases = [
+      ['getStamp', () => typed(noDuration), (core) => core.getStamp(BATCH)],
+      ['getStamp', () => typed(coreBatch({ remainingSize: '100' })), (core) => core.getStamp(BATCH)],
+      ['getStamp', () => typed(coreBatch({ batchID: BATCH.toUpperCase() })), (core) => core.getStamp(BATCH)],
+      ['selectBestBatch', () => typed([coreBatch(), { batchID: BATCH }]), (core) => core.selectBestBatch(10)],
+      ['selectBestBatch', () => typed(coreBatch()), (core) => core.selectBestBatch(10)],
+      ['getUploadStatus', () => typed(notDone), (core) => core.getUploadStatus(7)],
+      ['getUploadStatus', () => typed({ ...tag, extra: 1 }), (core) => core.getUploadStatus(7)],
+    ];
+    for (const [, answer, run] of cases) {
+      const h = harness(async () => answer());
+      await expect(run(h.core)).rejects.toMatchObject({ name: 'CoreError', code: 'internal' });
+      expect(h.released).toHaveLength(1);
+    }
+    const listed = harness(async () => typed([coreBatch({ duration: 9 }), coreBatch({ batchID: 'c3'.repeat(32) })]));
+    expect(await listed.core.selectBestBatch(10)).toBe(BATCH);
   });
 });
 

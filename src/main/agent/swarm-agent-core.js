@@ -37,34 +37,27 @@
  *   `selectBestBatch(bytes, { requireCapacity })`: swarm-service.js's choice
  *   over `swarm.stamps {}`'s list, with its errors, codes and capacity.
  *
- * **The parent:** from each request's `onSent`, before the core can ask
- * anything for it, main opens it in its executor (core/swarm-shell.js) with
- * its grammar row (`rowFor`), the params it sent, the node's transport
- * captured as it is sent (`antBackend()`: the default session's), its
- * signal and, but for `swarm.publish` (an idle method), the `swarm`
- * deadline, and a publish's parts. The parent closes with the request. A
- * parent main can't open ends the request, which fails.
- *
- * **The answer** is the core's typed form: `{ result_typed }`, read plain,
- * or `{ error_typed: { message, code?, status?, capacity? } }` (D5), thrown
- * as an Error with those fields, which the agent reads (`status` for a
- * known failure, `code` and `capacity` for postage). Any other form is the
- * core's fault, `CoreError` `internal`. The result's charge on the Swarm
- * I/O pool goes back once it is read. The protocol's own errors (`busy`,
- * `cancelled`, `core_unavailable`, …) are the client's `CoreError`s.
+ * **The request** is core/swarm-own-calls.js's (PR 8.3), as freedom://publish
+ * sends its own: `swarm.publish`'s params from `publishParams`, each request
+ * sent as `shell` under its watchdog (`swarm.publish` an idle method, which
+ * the executor moves on with its progress) and opened in main's executor
+ * (core/swarm-shell.js) from its `onSent`, its answer read by
+ * `readOwnAnswer`: the result of `swarm.publish`, `swarm.stamps` and
+ * `swarm.upload_status` only in exactly the core's shape, what the core
+ * threw as an Error with `message`, `code`, `status` and `capacity` (the
+ * agent reads `status` for a known failure, `code` and `capacity` for
+ * postage), anything else, and a parent main can't open, `CoreError`
+ * `internal`. This module keeps only the agent's own: the feed ops under
+ * the Bee wallet key and their owner checks, the batch choice, and each
+ * answer mapped to what the agent's modules read.
  *
  * `swarm.publish` carries no total deadline: an upload the controller gave
  * up on can still answer, and the controller keeps that late receipt.
  */
 
 const { keccak256, toUtf8Bytes, getAddress } = require('ethers');
-const { CoreError } = require('../core/service-client');
-const { idleWatchdogMs, isIdleMethod, watchdogMs, SWARM_DEADLINE_MS } = require('../core/core-deadlines');
-const { rowFor } = require('../core/swarm-grammar');
-const { readPlain, TypedFormError } = require('../core/swarm-typed');
+const { createSwarmOwnCalls, swarmOwnCalls } = require('../core/swarm-own-calls');
 
-// A part of `swarm.publish` goes inline up to this (the core's INLINE_BYTES).
-const INLINE_BYTES = 64 * 1024;
 // bee-js's `{ timeout: 10_000 }` on a stamp read and a tag read.
 const READ_TIMEOUT_MS = 10_000;
 // How long the controller waits for a feed write (its FEED_TIMEOUT_MS) and
@@ -76,8 +69,6 @@ const SIZE_SAFETY_MARGIN = 1.5;
 const VAULT_LOCKED_MESSAGE = 'Vault is locked';
 const BEE_WALLET = Object.freeze({ kind: 'bee_wallet' });
 
-const isPlainObject = (value) =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
 const finite = (value) => typeof value === 'number' && Number.isFinite(value);
 const nonEmpty = (value) => typeof value === 'string' && value.length > 0;
 
@@ -86,74 +77,14 @@ function topicHex(text) {
   return keccak256(toUtf8Bytes(String(text))).slice(2);
 }
 
-function malformed(method, why) {
-  return new CoreError('internal', `The core's ${method} answer is malformed: ${why}`);
-}
-
-/** What a shell method threw (`{ message, code?, status?, capacity? }`), as an Error. */
-function thrownError(method, value) {
-  if (!isPlainObject(value)) throw malformed(method, 'error_typed is not an object');
-  const { message, code, status, capacity } = value;
-  const known = ['message', 'code', 'status', 'capacity'];
-  if (
-    typeof message !== 'string' ||
-    Object.keys(value).some((key) => !known.includes(key)) ||
-    (Object.hasOwn(value, 'code') && typeof code !== 'string') ||
-    (Object.hasOwn(value, 'status') && !Number.isSafeInteger(status)) ||
-    (Object.hasOwn(value, 'capacity') &&
-      !(
-        isPlainObject(capacity) &&
-        ['uploadBytes', 'requiredBytes', 'largestRemainingBytes'].every((key) => finite(capacity[key]))
-      ))
-  ) {
-    throw malformed(method, 'error_typed is not { message, code?, status?, capacity? }');
-  }
-  const err = new Error(message);
-  if (Object.hasOwn(value, 'code')) err.code = code;
-  if (Object.hasOwn(value, 'status')) err.status = status;
-  if (Object.hasOwn(value, 'capacity')) {
-    err.capacity = {
-      uploadBytes: capacity.uploadBytes,
-      requiredBytes: capacity.requiredBytes,
-      largestRemainingBytes: capacity.largestRemainingBytes,
-    };
-  }
-  return err;
-}
-
-/** The core's answer to `method`: its result, or what it threw, thrown. */
-function readShellAnswer(method, answer) {
-  if (!isPlainObject(answer)) throw malformed(method, 'not an object');
-  const keys = Object.keys(answer);
-  if (keys.length !== 1 || (keys[0] !== 'result_typed' && keys[0] !== 'error_typed')) {
-    throw malformed(method, 'not { result_typed } or { error_typed }');
-  }
-  let value;
-  try {
-    value = readPlain(answer[keys[0]]);
-  } catch (err) {
-    if (err instanceof TypedFormError) throw malformed(method, err.message);
-    throw err;
-  }
-  if (keys[0] === 'error_typed') throw thrownError(method, value);
-  return value;
-}
-
-/** publish-service.js's `normalizeUploadResult` of the core's answer. */
+/**
+ * publish-service.js's `normalizeUploadResult` of the core's answer, which
+ * `readOwnAnswer` read as exactly `{ reference, tag_uid, batch, bytes }`.
+ */
 function uploadResult(result) {
-  if (
-    !isPlainObject(result) ||
-    typeof result.reference !== 'string' ||
-    !(result.tag_uid === null || finite(result.tag_uid)) ||
-    typeof result.batch !== 'string' ||
-    !Number.isSafeInteger(result.bytes)
-  ) {
-    throw malformed('swarm.publish', 'not { reference, tag_uid, batch, bytes }');
-  }
-  const { reference } = result;
   return {
-    reference,
-    bzzUrl: reference ? `bzz://${reference}` : null,
+    reference: result.reference,
+    bzzUrl: `bzz://${result.reference}`,
     tagUid: result.tag_uid || null,
     batchIdUsed: result.batch || null,
     bytesSize: result.bytes,
@@ -227,96 +158,26 @@ function chooseBatch(batches, estimatedSizeBytes, { requireCapacity = false } = 
   return String(best.batchID || '');
 }
 
-function defaultDependencies() {
-  return {
-    coreClient: () => require('../core/core-process').getCoreClient(),
-    swarmShell: () => require('../core/core-process').getSwarmShell(),
-    // The node's transport, captured as each request is sent.
-    nodeBackend: () => require('../swarm/bzz-protocol').antBackend(),
-    beeWalletAddress: () => require('../identity-manager').getBeeWalletAddress(),
-    pool: require('../core/swarm-io-pool').swarmIoPool,
-    now: () => Date.now(),
-    log: require('../logger'),
-  };
-}
+// The seams core/swarm-own-calls.js takes; each defaults to main's own.
+const OWN_CALL_SEAMS = ['coreClient', 'swarmShell', 'nodeBackend', 'pool', 'now', 'log'];
 
 /**
  * The agent's calls over main's core (core-process.js's client and Swarm
  * shell by default).
  *
- * @param {object} [deps] injected for tests; each defaults to main's own
+ * @param {object} [deps] injected for tests, each defaulting to main's own:
+ *   swarm-own-calls.js's seams (`coreClient()`, `swarmShell()`,
+ *   `nodeBackend()`, `pool`, `now()`, `log`) and `beeWalletAddress()`
  */
 function createAgentSwarmCore(deps = {}) {
-  const { coreClient, swarmShell, nodeBackend, beeWalletAddress, pool, now, log } = {
-    ...defaultDependencies(),
-    ...deps,
-  };
-
-  /**
-   * Sends `method` as `shell` with `params` and opens it in the executor
-   * from its `onSent`; resolves with its result, or rejects with what the
-   * core threw or the protocol's error.
-   */
-  async function call(method, params, { parts = null, signal = null } = {}) {
-    const client = coreClient();
-    const shell = swarmShell();
-    if (!client || !shell) throw new CoreError('core_unavailable', 'The identity core is not running');
-    const row = rowFor(method, params);
-    if (row === null) throw new TypeError(`${method} has no grammar row for these params`);
-    const idle = isIdleMethod(method);
-    // Ends the request if its parent can't be opened: the core is told.
-    const own = new AbortController();
-    const merged = signal ? AbortSignal.any([signal, own.signal]) : own.signal;
-    let parent = null;
-    let unheld = false;
-    let reply;
-    try {
-      reply = await client.request(
-        method,
-        params,
-        { caller: 'shell' },
-        {
-          ...(idle ? { idleWatchdogMs: idleWatchdogMs(method) } : { watchdogMs: watchdogMs(method) }),
-          signal: merged,
-          pool,
-          onSent: (id, generation) => {
-            try {
-              parent = shell.open(
-                { generation, id },
-                {
-                  row,
-                  params,
-                  backend: nodeBackend(),
-                  signal: merged,
-                  deadlineAt: idle ? null : now() + SWARM_DEADLINE_MS,
-                  parts,
-                }
-              );
-            } catch (err) {
-              unheld = true;
-              log.warn('[SwarmPublication] a request could not be opened for the core', {
-                row,
-                reason: err?.name || 'Error',
-              });
-              own.abort();
-            }
-          },
-        }
-      );
-    } catch (err) {
-      if (unheld) throw new Error("The request couldn't be opened for the identity core's calls", { cause: err });
-      throw err;
-    } finally {
-      parent?.close();
-    }
-    // Pooled, the result comes with its release (service-client.js).
-    const { result, release } = pool ? reply : { result: reply, release: () => {} };
-    try {
-      return readShellAnswer(method, result);
-    } finally {
-      release();
-    }
-  }
+  const beeWalletAddress =
+    deps.beeWalletAddress || (() => require('../identity-manager').getBeeWalletAddress());
+  const log = deps.log || require('../logger');
+  // freedom://publish's own calls, unless a test gives seams of its own.
+  const seams = Object.fromEntries(
+    OWN_CALL_SEAMS.filter((seam) => deps[seam] !== undefined).map((seam) => [seam, deps[seam]])
+  );
+  const own = Object.keys(seams).length > 0 ? createSwarmOwnCalls(seams) : swarmOwnCalls();
 
   /** The Bee wallet's owner now, checksummed; a locked vault throws. */
   async function walletOwner() {
@@ -333,50 +194,44 @@ function createAgentSwarmCore(deps = {}) {
   }
 
   return Object.freeze({
-    /** publish-service.js's `publishData`: `{ name?, contentType?, batchId?, encrypt? }`. */
+    /**
+     * publish-service.js's `publishData`: `{ name?, contentType?, batchId?,
+     * encrypt? }`, one `data` part (inline up to 64 KiB), not deferred.
+     */
     async publishData(data, options = {}) {
-      const bytes = bytesOf(data);
-      const inline = bytes.byteLength <= INLINE_BYTES;
-      const part = inline
-        ? { bytes: bytes.byteLength, base64: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64') }
-        : { bytes: bytes.byteLength, part: 0 };
-      const params = {
-        kind: 'data',
-        parts: [part],
-        ...(nonEmpty(options.name) && { name: options.name }),
-        ...(nonEmpty(options.contentType) && { content_type: options.contentType }),
-        ...(options.encrypt === true && { encrypt: true }),
-        ...(options.batchId && { batch: options.batchId }),
-        pin: true,
-        deferred: false,
-      };
-      const parts = inline ? null : new Map([[0, bytes]]);
-      return uploadResult(await call('swarm.publish', params, { parts }));
+      return uploadResult(
+        await own.publish({
+          kind: 'data',
+          parts: [{ bytes: bytesOf(data) }],
+          name: nonEmpty(options.name) ? options.name : undefined,
+          contentType: nonEmpty(options.contentType) ? options.contentType : undefined,
+          encrypt: options.encrypt === true,
+          batch: options.batchId || undefined,
+          deferred: false,
+        })
+      );
     },
 
-    /** publish-service.js's `publishCollection`: `[{ path, bytes }]`, `{ indexDocument?, batchId?, encrypt? }`. */
+    /**
+     * publish-service.js's `publishCollection`: `[{ path, bytes }]`,
+     * `{ indexDocument?, batchId?, encrypt? }`, a part per file, deferred.
+     */
     async publishCollection(files, options = {}) {
-      const parts = new Map();
-      const entries = files.map((file, k) => {
-        const bytes = bytesOf(file.bytes);
-        parts.set(k, bytes);
-        return { path: file.path, bytes: bytes.byteLength, part: k };
-      });
-      const params = {
-        kind: 'collection',
-        parts: entries,
-        ...(nonEmpty(options.indexDocument) && { index_document: options.indexDocument }),
-        ...(options.encrypt === true && { encrypt: true }),
-        ...(options.batchId && { batch: options.batchId }),
-        pin: true,
-        deferred: true,
-      };
-      return uploadResult(await call('swarm.publish', params, { parts }));
+      return uploadResult(
+        await own.publish({
+          kind: 'collection',
+          parts: files.map((file) => ({ path: file.path, bytes: bytesOf(file.bytes) })),
+          indexDocument: nonEmpty(options.indexDocument) ? options.indexDocument : undefined,
+          encrypt: options.encrypt === true,
+          batch: options.batchId || undefined,
+          deferred: true,
+        })
+      );
     },
 
     /** publish-service.js's `getUploadStatus`. */
     getUploadStatus(tagUid) {
-      return call('swarm.upload_status', { tag_uid: tagUid }, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+      return own.uploadStatus(tagUid, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
     },
 
     /** The agent's signer: the Bee wallet's owner, which the core signs for. */
@@ -388,7 +243,7 @@ function createAgentSwarmCore(deps = {}) {
     /** feed-service.js's `createFeed(signer, topicString, batchId)`. */
     async createFeed(signer, topicString, batchId) {
       await sameOwner(signer?.owner);
-      const result = await call(
+      const result = await own.call(
         'swarm.feed',
         { op: 'create', key: BEE_WALLET, topic: topicHex(topicString), ...(batchId && { batch: batchId }) },
         { signal: AbortSignal.timeout(FEED_WRITE_TIMEOUT_MS) }
@@ -404,7 +259,7 @@ function createAgentSwarmCore(deps = {}) {
       const minIndex =
         Number.isSafeInteger(options.minIndex) && options.minIndex > 0 ? options.minIndex : 0;
       await sameOwner(signer?.owner);
-      return call(
+      return own.call(
         'swarm.feed',
         {
           op: 'update',
@@ -421,7 +276,7 @@ function createAgentSwarmCore(deps = {}) {
     /** feed-service.js's `readFeedState(owner, topicString)`, for the Bee wallet's owner. */
     async readFeedState(owner, topicString) {
       await sameOwner(owner);
-      return call(
+      return own.call(
         'swarm.feed',
         { op: 'read', key: BEE_WALLET, topic: topicHex(topicString) },
         { signal: AbortSignal.timeout(FEED_READ_TIMEOUT_MS) }
@@ -430,13 +285,12 @@ function createAgentSwarmCore(deps = {}) {
 
     /** bee-js's `stamp.get(id)` as the core normalizes it. */
     getStamp(id) {
-      return call('swarm.stamps', { id }, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+      return own.stamps({ id }, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
     },
 
     /** swarm-service.js's `selectBestBatch(bytes, { requireCapacity })` over the core's list. */
     async selectBestBatch(estimatedSizeBytes, options = {}) {
-      const batches = await call('swarm.stamps', {}, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
-      if (!Array.isArray(batches)) throw malformed('swarm.stamps', 'not a list');
+      const batches = await own.stamps({}, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
       return chooseBatch(batches, estimatedSizeBytes, options, log);
     },
   });
@@ -451,12 +305,10 @@ function agentSwarmCore() {
 }
 
 module.exports = {
-  INLINE_BYTES,
   READ_TIMEOUT_MS,
   agentSwarmCore,
   chooseBatch,
   createAgentSwarmCore,
-  readShellAnswer,
   topicHex,
   uploadResult,
 };
