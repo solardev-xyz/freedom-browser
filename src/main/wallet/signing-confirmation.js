@@ -35,7 +35,11 @@
  *     nothing but the confirmed digest.
  *   - safe-send: the Safe, chainId, to, value, data of the SafeTx, and the
  *     site a dApp's SafeTx is for (`origin`, as a permission key), or none
- *     for the wallet's own: adding, removing or changing it refuses.
+ *     for the wallet's own: adding, removing or changing it refuses. On the
+ *     core's Safe backend (FREEDOM_SAFE_BACKEND=core; freedom-core design
+ *     0016, SAFE-3) only design 0016's form: the wallet's SafeTx as the core
+ *     built it at `safe.prepare`, all ten fields (its nonce included) and its
+ *     hash, which `safe.propose` spends (safe/core-sends.js).
  *   - safe-message: the Safe and a digest of the dApp's {method, params}.
  *   - intent-resend: one held wallet intent as the user saw it: its id,
  *     chainId, sender, nonce and the hash of the signed bytes to be sent
@@ -326,6 +330,72 @@ function txFields(tx) {
   };
 }
 
+/** Whether the process's Safes run on the core (safe/safe-backend-kind.js). */
+function safeOnCore() {
+  return require('./safe/safe-backend-kind').safeBackendKind() === 'core';
+}
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+// A SafeTx's ten fields as the core's `safe.prepare` answers them
+// (fc-safe's `fields`), and what Freedom's SafeTx has in the six it fixes:
+// one CALL, no refund.
+const SAFE_TX_FIXED = Object.freeze({
+  operation: 0,
+  safeTxGas: '0',
+  baseGas: '0',
+  gasPrice: '0',
+  gasToken: ZERO_ADDRESS,
+  refundReceiver: ZERO_ADDRESS,
+});
+const SAFE_TX_FIELDS = Object.freeze(['to', 'value', 'data', ...Object.keys(SAFE_TX_FIXED), 'nonce']);
+
+/**
+ * A SafeTx's ten fields, as the core built them at `safe.prepare` (design
+ * 0016, SAFE-3): exactly those, its call read as today's, the six fixed
+ * fields Freedom's, and its nonce a safe integer, as `safe-pending.json`
+ * keeps it. Anything else is refused.
+ */
+function safeTxFields(safeTx) {
+  if (!safeTx || typeof safeTx !== 'object' || Array.isArray(safeTx)) {
+    throw new Error('Transaction is required');
+  }
+  const keys = Object.keys(safeTx);
+  if (keys.length !== SAFE_TX_FIELDS.length || !SAFE_TX_FIELDS.every((key) => keys.includes(key))) {
+    throw new Error('Invalid Safe transaction');
+  }
+  const to = address(safeTx.to, 'to');
+  if (!to) throw new Error('Invalid to');
+  for (const [key, fixed] of Object.entries(SAFE_TX_FIXED)) {
+    const value = typeof safeTx[key] === 'string' ? safeTx[key].toLowerCase() : safeTx[key];
+    if (value !== fixed) throw new Error(`Invalid ${key}`);
+  }
+  return {
+    to,
+    value: quantity(safeTx.value, 'value') ?? '0',
+    data: hexData(safeTx.data),
+    ...SAFE_TX_FIXED,
+    nonce: nonce(safeTx.nonce),
+  };
+}
+
+/**
+ * A wallet `safe-send` in design 0016's form (D6; SAFE-3's PR 4): the
+ * SafeTx the core built at `safe.prepare`, all ten fields and its hash, as
+ * `safe.propose` spends it. The wallet's own: a site's goes through its
+ * page's prompt.
+ */
+function builtSafeSend(accountIndex, payload) {
+  if (payload?.origin !== undefined && payload?.origin !== null) {
+    throw new Error("A site's Safe transaction is confirmed for its page");
+  }
+  return {
+    safeIndex: index(accountIndex, 'Safe index'),
+    chainId: chain(payload?.chainId),
+    safeTx: safeTxFields(payload?.safeTx),
+    safeTxHash: txHash(payload?.safeTxHash),
+  };
+}
+
 /**
  * The canonical facts a confirmation of `kind` binds. Used both when the
  * token is issued and when it is spent, so the two can't drift.
@@ -355,6 +425,8 @@ function bindingFor(kind, accountIndex, payload) {
         payloadHash: sha256(stableStringify(payload)),
       };
     case KINDS.SAFE_SEND: {
+      // On the core's Safe backend, design 0016's form only (D6).
+      if (safeOnCore()) return builtSafeSend(accountIndex, payload);
       const tx = payload?.tx;
       if (!tx || typeof tx !== 'object') {
         throw new Error('Transaction is required');
@@ -578,6 +650,19 @@ function corePayload(kind, accountIndex, payload, { chainId, remember } = {}) {
       return { account: facts.walletIndex, payload: body };
     }
     case KINDS.SAFE_SEND:
+      // Design 0016's form (D6), on the core's Safe backend: the SafeTx as
+      // `safe.prepare` answered it, which only `safe.propose` spends.
+      if (facts.safeTx) {
+        return {
+          account: facts.safeIndex,
+          payload: {
+            safe: safeAddress(facts.safeIndex),
+            chain_id: String(facts.chainId),
+            safe_tx: facts.safeTx,
+            safe_tx_hash: facts.safeTxHash,
+          },
+        };
+      }
       return {
         account: facts.safeIndex,
         payload: {

@@ -60,6 +60,10 @@
  * (`wallet-approvals.js`), whose token is spent for a new approval, and
  * the owner signs with it. Its executor with none asks for its fee, as an
  * 'executor-send' token (`wallet.executor_send`).
+ *
+ * On the core's Safe backend (freedom-core design 0016, SAFE-3) a send
+ * board's state and steps are the core's (`coreSends`): its proposal
+ * authorized every owner, so none is confirmed again.
  */
 
 const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
@@ -148,9 +152,10 @@ function defaultWatchWindow(windowId, onClosed) {
  * @param {(chainId: number) => string|null} [deps.chainName]
  * @param {(chainId: number) => string|null} [deps.nativeSymbol]
  * @param {object} deps.sends `{ state(i), sign(i, owner?, safeTxHash), execute(i, options),
- *   cancel(i, safeTxHash), tx(i, safeTxHash) }` (`safe-transactions.js`): `state` and `tx` read
- *   synchronously, `tx` the SafeTx main holds while it is `safeTxHash`'s; `sign`, `cancel` and
- *   `execute` (`options.safeTxHash`) refuse another SafeTx with SAFE_DISCARDED.
+ *   cancel(i, safeTxHash), tx(i, safeTxHash), refresh?(i) }` (`safe-transactions.js`): `state`
+ *   and `tx` read synchronously, `tx` the SafeTx main holds while it is `safeTxHash`'s; `sign`,
+ *   `cancel` and `execute` (`options.safeTxHash`) refuse another SafeTx with SAFE_DISCARDED.
+ *   `refresh`, where the state is the core's (SAFE-3), reads it again before each turn reads it.
  * @param {object} deps.messages `{ state(i, token), sign(i, owner?, token) }` (`safe-messages.js`).
  * @param {(err: Error) => boolean} [deps.isVaultLocked]
  * @param {(windowId: number, spec: object) => Promise<object>} deps.walletPrompt
@@ -355,6 +360,7 @@ function createSafeBoards({
     };
     const readState = async () => {
       try {
+        if (board !== 'message' && sends.refresh) await sends.refresh(safeIndex);
         return (await api.state()) || null;
       } catch {
         return null;
@@ -669,6 +675,34 @@ async function confirmSafeSend(windowId, safeIndex, call) {
   return outcome?.approved && typeof outcome.token === 'string' ? outcome.token : null;
 }
 
+/**
+ * A send board's steps on the core's Safe backend (freedom-core design 0016,
+ * SAFE-3; `safe/core-sends.js`): its state the core's board, read again
+ * before each turn (`refresh`, `safe.pending`) and in between as last read
+ * (`state`), its SafeTx's call as the core's state shows it (`tx`), and
+ * each step the core's, naming the board's SafeTx. No owner is confirmed
+ * again (`call`): its proposal authorized every owner.
+ */
+function coreSends(transactions) {
+  const cached = (safeIndex) => require('../wallet/safe/core-sends').cachedState(safeIndex);
+  return {
+    refresh: (safeIndex) => transactions().getSafeSendState(safeIndex),
+    state: (safeIndex) => cached(safeIndex),
+    sign: (safeIndex, owner, safeTxHash) => transactions().signSafePending(safeIndex, owner, { safeTxHash }),
+    execute: (safeIndex, options) => transactions().executeSafePending(safeIndex, options),
+    cancel: (safeIndex, safeTxHash) => transactions().cancelSafeSend(safeIndex, { safeTxHash }),
+    call: () => null,
+    signConfirmed: async (_safeIndex, _owner, _safeTxHash, token) => {
+      require('../wallet/signing-confirmation').discardConfirmation(token);
+      throw new Error('This transaction needs no new confirmation');
+    },
+    tx: (safeIndex, safeTxHash) => {
+      const state = cached(safeIndex);
+      return state && state.safeTxHash === safeTxHash ? (state.call ?? null) : null;
+    },
+  };
+}
+
 let shared = null;
 /** The app's one instance, or null while the approvals document is off. */
 function getSafeBoards() {
@@ -679,6 +713,7 @@ function getSafeBoards() {
     const transactions = () => require('../wallet/safe/safe-transactions');
     const safeMessages = () => require('../wallet/safe/safe-messages');
     const pageRequests = () => require('../page/page-requests').getPageRequests();
+    const { safeBackendKind } = require('../wallet/safe/safe-backend-kind');
     shared = createSafeBoards({
       getDerivedWallets: () => require('../identity-manager').getDerivedWallets(),
       chainName: (chainId) => registry()?.[chainId]?.name ?? null,
@@ -686,7 +721,7 @@ function getSafeBoards() {
         const symbol = registry()?.[chainId]?.nativeSymbol;
         return typeof symbol === 'string' ? symbol : null;
       },
-      sends: {
+      sends: safeBackendKind() === 'core' ? coreSends(transactions) : {
         state: (safeIndex) => transactions().getSafeSendState(safeIndex),
         sign: (safeIndex, owner, safeTxHash) => transactions().signSafePending(safeIndex, owner, { safeTxHash }),
         execute: (safeIndex, options) => transactions().executeSafePending(safeIndex, options),
