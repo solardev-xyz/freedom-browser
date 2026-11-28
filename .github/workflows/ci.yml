@@ -389,8 +389,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     # The two freedom-ipfsd sections (integration/rust-core's former
     # freedom-ipfsd-contract and freedom-ipfsd-smoke jobs, 20 minutes each)
-    # ride along, so the budget is 15 minutes above main's.
-    timeout-minutes: 60
+    # ride along, so the budget is 15 minutes above main's; window.swarm's
+    # two contract steps (about 1 and 4 minutes) take 10 more.
+    timeout-minutes: 70
 
     steps:
       - name: Check out repository
@@ -621,9 +622,10 @@ jobs:
           FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
 
       # The node on the service takes its key from the identity core (design
-      # 0008, "The sealed release"), so its real-binary test needs both.
+      # 0008, "The sealed release"), so its real-binary test needs both; and
+      # window.swarm's contract runs on the core below, on every target.
       - name: Download freedom-cored binaries
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os != 'Windows' }}
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
@@ -673,6 +675,46 @@ jobs:
         run: npx jest src/main/radicle/radicled-network.integration.test.js
         env:
           FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
+
+      # window.swarm's contract (freedom-core design 0015, SWM-7; the SWM-6
+      # to SWM-9 plan's point 9 and PR 7.6): the pinned core's
+      # vectors/swarm.json `methods` cases replayed through main's dispatcher
+      # (page/page-swarm.js), once per backend, each case's node scripted on
+      # loopback (test/helpers/swarm-contract-node.js): the JS backend, held
+      # to the reference exactly, and the core's (page-swarm-core.js's
+      # deps, the real freedom-cored downloaded above, main's executor
+      # carrying its node calls), held to it with the vectors' deviations
+      # asserted as such. Its keys are keys.json's test keys, its vectors
+      # those of the `test` job's commit, moved with them. Nothing leaves
+      # the machine. On the core's step a missing binary or a missing
+      # vectors file fails the suite.
+      - name: Check out freedom-core's Swarm contract vectors
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: 7eea60baaedd425a4956d7b8f5eddc137241673b
+          path: .freedom-core
+          persist-credentials: false
+          sparse-checkout: |
+            vectors/swarm.json
+            vectors/keys.json
+          sparse-checkout-cone-mode: false
+
+      - name: window.swarm contract suite (the JS backend)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-swarm.contract.test.js
+        env:
+          FREEDOM_SWARM_CONTRACT_BACKEND: js
+          FREEDOM_CORE_SWARM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
+
+      - name: window.swarm contract suite (the core's backend, real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-swarm.contract.test.js
+        env:
+          FREEDOM_SWARM_CONTRACT_BACKEND: core
+          FREEDOM_CORE_SWARM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
+          FREEDOM_CORED_PATH: ${{ github.workspace }}/freedom-cored-bin/${{ matrix.target }}/${{ runner.os == 'Windows' && 'freedom-cored.exe' || 'freedom-cored' }}
 
       # No hosted arm64 Windows runner exists, so the asset is at least proven
       # to be published and to match the pinned SHA256SUMS.
