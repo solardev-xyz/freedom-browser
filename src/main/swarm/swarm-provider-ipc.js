@@ -2334,10 +2334,14 @@ async function subscribeForPage({ kind, key: givenKey, topic }, origin, meta) {
   // a proxy or Tor gets no subscription, refused before the probe (which
   // would go around them too) and before any mining. The registry tests the
   // route again just before it opens the socket.
-  const refused = await subscriptionRegistry.checkRoute(getAntApiUrl() || null, origin);
+  const nodeUrl = getAntApiUrl() || null;
+  const refused = await subscriptionRegistry.checkRoute(nodeUrl, origin);
   if (refused) return nodeUnavailable(refused.reason);
+  // The probe goes to the node whose route was just tested and no other: a
+  // node changed during the check gets neither the probe nor a socket.
+  if ((getAntApiUrl() || null) !== nodeUrl) return nodeUnavailable('subscription_cancelled');
 
-  const reachable = await checkBeeReachable();
+  const reachable = await checkBeeReachable(nodeUrl);
   if (!reachable.ok) return nodeUnavailable(reachable.reason);
 
   let key = givenKey;
@@ -2403,12 +2407,12 @@ function handleUnsubscribe(params, origin, meta) {
  * mode, readiness, or stamp checks.
  * @returns {{ ok: boolean, reason?: string }}
  */
-async function checkBeeReachable() {
+async function checkBeeReachable(beeUrl = getAntApiUrl()) {
   // Global `fetch` (undici), which never sees `session.setProxy` — so an
   // external Ant API on a `.onion` host is handed to the system resolver
   // instead of Tor, the shape #355 fixed for the external IPFS gateway.
-  // Tracked for every Swarm call site in #360.
-  const beeUrl = getAntApiUrl();
+  // Tracked for every Swarm call site in #360. A subscribe passes the node
+  // whose route it tested.
   if (!beeUrl) return { ok: false, reason: 'node-stopped' };
   try {
     const res = await fetch(`${beeUrl}/node`, {

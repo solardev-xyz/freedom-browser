@@ -169,6 +169,26 @@ describe('question 4 on the JS backend: refused before any socket', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ['an onion node', 'http://abcdefghijklmnop.onion'],
+    ['a proxied remote node', 'https://other.example:1633'],
+  ])('the node changed to %s during the first route check: neither the probe nor a socket reaches it', async (_case, next) => {
+    let answer;
+    mockResolveProxy.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    mockResolveProxy.mockImplementation(async (url) => (url === REMOTE ? 'DIRECT' : 'PROXY proxy.example:8080'));
+    const pending = subscribe(page().meta);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(typeof answer).toBe('function');
+    mockServices.url = next;
+    answer('DIRECT');
+    const out = await pending;
+    expect(out.error).toMatchObject({ code: 4900, data: { reason: 'subscription_cancelled' } });
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(WebSocketSpy).not.toHaveBeenCalled();
+    expect(registry.countByOrigin(ORIGIN)).toBe(0);
+  });
+
   test('checked again just before the open: a proxy turned on after the first check refuses', async () => {
     mockResolveProxy.mockResolvedValueOnce('DIRECT').mockResolvedValue('PROXY proxy.example:8080');
     expect(await subscribe(page().meta)).toEqual(UNAVAILABLE);
