@@ -22,6 +22,10 @@
  *   and today's main reads them back, with no row twice, in the profile's
  *   root layout and in the Freedom root layout (a moved profile, the legacy
  *   file at the profile's root).
+ * - core→js (D10's hand-over): in a moved profile the core imports the
+ *   legacy file's copy and leaves the original for its next start; a start
+ *   on main's own history before then retires the original, unimported,
+ *   so the legacy row is there once; the root layout is unchanged.
  * - The agent's publication controller writes its `freedom://agent` row
  *   into the core's history before the upload and updates it after.
  *
@@ -99,6 +103,22 @@ function loadReference(userDataDir) {
   return loadMainModule(require.resolve('../../../test/helpers/reference-publish-history'), {
     userDataDir,
     extraMocks: {
+      [require.resolve('../logger')]: quietLog,
+    },
+  }).mod;
+}
+
+/**
+ * Main's publish-history.js with the move off (the build's
+ * `swarmStoresNamed()`, false before PR 7.4), on `userDataDir`'s history,
+ * alone in a fresh registry: a start on main's own history.
+ */
+function loadMainHistory(userDataDir) {
+  return loadMainModule(require.resolve('./publish-history'), {
+    userDataDir,
+    extraMocks: {
+      // An earlier load's chosen hello is still registered: the build's own.
+      [require.resolve('../core/core-client')]: () => jest.requireActual('../core/core-client'),
       [require.resolve('../logger')]: quietLog,
     },
   }).mod;
@@ -374,6 +394,85 @@ describeIfCurrent('publish-history.js on the pinned freedom-cored (a hello namin
       } finally {
         js.closeDb();
       }
+    });
+  });
+
+  describe("core→js: the core's legacy import stands (D10's hand-over)", () => {
+    const ONE_ROW = JSON.stringify({
+      version: 1,
+      entries: [
+        {
+          type: 'data',
+          name: 'legacy',
+          status: 'completed',
+          timestamp: '2026-04-15T19:30:32.540Z',
+        },
+      ],
+    });
+
+    /** A start on main's own history: its rows. */
+    function jsStart(userDataDir) {
+      const js = loadMainHistory(userDataDir);
+      try {
+        return js.getEntries();
+      } finally {
+        js.closeDb();
+      }
+    }
+
+    test('in the Freedom root layout: the original retired, one legacy row', async () => {
+      const userData = tempDir('handover');
+      const freedom = path.join(userData, 'freedom');
+      fs.mkdirSync(freedom);
+      fs.writeFileSync(path.join(freedom, 'layout.json'), JSON.stringify({ version: 1 }));
+      fs.writeFileSync(path.join(userData, LEGACY_FILE), ONE_ROW);
+      const moved = { grantRoot: freedom, userDataDir: userData };
+
+      // The core's start: it copies the file into the Freedom root and
+      // imports the copy, which it renames there; the original stays at the
+      // profile's root until its next start.
+      let { core, modules } = await startNamed(userData, tempDir('elsewhere'), moved);
+      try {
+        const rows = await modules.history.coreOps.getEntries();
+        expect(rows.map((row) => row.name)).toEqual(['legacy']);
+      } finally {
+        await core.stop();
+      }
+      expect(legacyFiles(userData)).toEqual({ legacy: true, migrated: false });
+      expect(legacyFiles(freedom)).toEqual({ legacy: false, migrated: true });
+      expect(fs.readFileSync(path.join(freedom, `${LEGACY_FILE}.migrated`), 'utf8')).toBe(ONE_ROW);
+
+      // The next start on main's own history: the core's import stands, so
+      // the original is retired, as the core's next start would, unimported.
+      const rows = jsStart(userData);
+      expect(rows.map((row) => row.name)).toEqual(['legacy']);
+      expect(legacyFiles(userData)).toEqual({ legacy: false, migrated: false });
+      expect(legacyFiles(freedom)).toEqual({ legacy: false, migrated: true });
+      expect(jsStart(userData)).toEqual(rows);
+
+      // And the core again: nothing to hand over, the same one row.
+      ({ core, modules } = await startNamed(userData, tempDir('elsewhere'), moved));
+      try {
+        expect(await modules.history.coreOps.getEntries()).toEqual(rows);
+      } finally {
+        await core.stop();
+      }
+    });
+
+    test("in the profile's root layout: unchanged, the core renamed it, one legacy row", async () => {
+      const root = tempDir('handover-root');
+      fs.writeFileSync(path.join(root, LEGACY_FILE), ONE_ROW);
+      const { core, modules } = await startNamed(root, tempDir('elsewhere'));
+      try {
+        const rows = await modules.history.coreOps.getEntries();
+        expect(rows.map((row) => row.name)).toEqual(['legacy']);
+      } finally {
+        await core.stop();
+      }
+      expect(legacyFiles(root)).toEqual({ legacy: false, migrated: true });
+      const rows = jsStart(root);
+      expect(rows.map((row) => row.name)).toEqual(['legacy']);
+      expect(legacyFiles(root)).toEqual({ legacy: false, migrated: true });
     });
   });
 

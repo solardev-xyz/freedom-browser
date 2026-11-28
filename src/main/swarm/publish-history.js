@@ -37,6 +37,11 @@ const fs = require('fs');
 const Database = require('better-sqlite3');
 
 const HISTORY_FILE = 'publish-history.sqlite';
+const LEGACY_FILE = 'publish-history.json';
+// The most of a legacy file the core's hand-over reads (freedom-core
+// payments_store.rs `PUBLISH_HISTORY.max_bytes`); a larger one it never
+// copies or imports.
+const LEGACY_MAX_BYTES = 16 * 1024 * 1024;
 const SCHEMA_VERSION = 1;
 const ORPHAN_SWEEP_MESSAGE = 'interrupted by app exit';
 const MIGRATED_SUFFIX = '.migrated';
@@ -122,6 +127,106 @@ function migrateDatabase() {
   }
 }
 
+/**
+ * `file` read as the core's hand-over reads a legacy file (fc-store's
+ * `read_file`): `{ bytes }` for a regular file, not a link, that this user
+ * owns (on POSIX) and that holds at most `LEGACY_MAX_BYTES`; `'missing'`;
+ * or `'unreadable'` for anything else.
+ */
+function readAsCore(file) {
+  let stat;
+  try {
+    stat = fs.lstatSync(file);
+  } catch (err) {
+    return err.code === 'ENOENT' ? 'missing' : 'unreadable';
+  }
+  const owned = typeof process.getuid !== 'function' || stat.uid === process.getuid();
+  if (!stat.isFile() || !owned || stat.size > LEGACY_MAX_BYTES) return 'unreadable';
+  try {
+    const bytes = fs.readFileSync(file);
+    return bytes.length > LEGACY_MAX_BYTES ? 'unreadable' : { bytes };
+  } catch {
+    return 'unreadable';
+  }
+}
+
+/**
+ * `file`, in `dir`, made durable as the core's step 4 syncs its `.migrated`
+ * before it drops the original: the file's fsync, then, but on Windows,
+ * the directory's.
+ */
+function syncMarker(dir, file) {
+  const fd = fs.openSync(file, process.platform === 'win32' ? 'r+' : 'r');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (process.platform === 'win32') return;
+  const dirFd = fs.openSync(dir, 'r');
+  try {
+    fs.fsyncSync(dirFd);
+  } finally {
+    fs.closeSync(dirFd);
+  }
+}
+
+/**
+ * Whether the core imported the profile's legacy file already, and so
+ * nothing is left to import: the core's D10 hand-over (freedom-core design
+ * 0015, D10; design 0017, C5; `payments_store.rs` `hand_over_of`, step 4).
+ * In a moved profile the core copies `jsonPath` into the Freedom root,
+ * imports the copy there and renames it `.migrated`, and drops the original
+ * only at its own next start, once that `.migrated` holds exactly the
+ * original's bytes and no other file there under either name conflicts. A
+ * start on this module before then would import the original again (the
+ * SWM-6 to SWM-9 plan, point 2). So, in that state, the original is
+ * retired as the core's step 4 retires it: the `.migrated` made durable,
+ * then the original removed; if the sync fails it stays, for a later start,
+ * unimported. Any other state (the profile's root layout, no `.migrated`
+ * there, other bytes, a file the core wouldn't read) is left to the import
+ * below, as before.
+ *
+ * @param {string} jsonPath - the profile's legacy file, present
+ * @returns {boolean} true when the core's import stands and nothing is imported
+ */
+function retireIfCoreImported(jsonPath) {
+  const markerPath = getFreedomDataPath(LEGACY_FILE + MIGRATED_SUFFIX);
+  const freedomRoot = path.dirname(markerPath);
+  // The profile's root layout: its own `.migrated` is the stray case above.
+  if (freedomRoot === path.dirname(jsonPath)) return false;
+  const original = readAsCore(jsonPath);
+  if (typeof original === 'string') return false;
+  const found = (file) => {
+    const read = readAsCore(file);
+    if (read === 'missing') return 'missing';
+    return typeof read === 'object' && read.bytes.equals(original.bytes) ? 'same' : 'other';
+  };
+  const copy = found(getFreedomDataPath(LEGACY_FILE));
+  if (found(markerPath) !== 'same' || copy === 'other') return false;
+  try {
+    syncMarker(freedomRoot, markerPath);
+  } catch (err) {
+    log.error(
+      "[PublishHistory] Cannot sync the Freedom root's publish-history.json.migrated; the original stays:",
+      err.message
+    );
+    return true;
+  }
+  try {
+    fs.unlinkSync(jsonPath);
+    log.info(
+      '[PublishHistory] Dropped publish-history.json at the profile root (the core imported its copy)'
+    );
+  } catch (err) {
+    log.error(
+      '[PublishHistory] Failed to remove publish-history.json at the profile root:',
+      err.message
+    );
+  }
+  return true;
+}
+
 // Renamed to .migrated on success; left in place on parse failure as a
 // recovery breadcrumb.
 function migrateFromJson() {
@@ -140,6 +245,10 @@ function migrateFromJson() {
     }
     return;
   }
+
+  // The core's hand-over imported it already (a moved profile, back on
+  // main's own history before the core's next start).
+  if (retireIfCoreImported(jsonPath)) return;
 
   try {
     const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));

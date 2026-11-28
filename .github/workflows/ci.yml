@@ -1093,9 +1093,10 @@ jobs:
       # chrome's handlers and main's own calls, each answer equal to the
       # reference's and the rows and legacy files ending as the reference's;
       # an fs and better-sqlite3 spy shows main opens no publish-history
-      # file; js→core→js leaves no row twice, in both profile layouts; the
-      # agent's freedom://agent row is the core's before the upload and
-      # updated after it.
+      # file; js→core→js leaves no row twice, in both profile layouts, and
+      # so does core→js, main retiring a legacy file the core's hand-over
+      # imported; the agent's freedom://agent row is the core's before the
+      # upload and updated after it.
       - name: The publish history through the core (real freedom-cored, a chosen hello)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/swarm/publish-history.integration.test.js
