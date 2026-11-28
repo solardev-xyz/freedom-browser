@@ -31,6 +31,15 @@
  *   and before the upload reads it: on `core` freedom://publish answers
  *   `Internal error` and the row keeps that text; on `js` bee-js's
  *   transport text shows instead.
+ * - **A folder past one request frame** (26,200 empty files, a named
+ *   difference pending the user's decision): on `core` refused before
+ *   anything is sent, `This folder has too many files to publish through
+ *   the core`, its row failed with that text, the node asked nothing; on
+ *   `js` bee-js uploads it, and its row is kept.
+ * - **A history row that can't be inserted** (a corrupt
+ *   publish-history.sqlite): each handler's invoke rejects on both
+ *   backends, as js's `addEntry` throws before the handler's `try`, and
+ *   the node is asked nothing.
  *
  * Skipped without the binary; FREEDOM_CORED_STORES_TEST=1 requires it (npm
  * run core:download), as FREEDOM_CORED_PATH names one. The vector cases
@@ -91,6 +100,11 @@ const STAMPS = {
 };
 const REFERENCE = 'b2'.repeat(32);
 const TAG = 101;
+/** The core's text for a history it can't open, read or write (stores.rs `HISTORY_FAILED`). */
+const HISTORY_FAILED = 'The publish history could not be read or written';
+const FOLDER_TOO_LARGE = 'This folder has too many files to publish through the core';
+/** Codex's folder: this many empty files, f0 onwards. */
+const MANY_FILES = 26_200;
 
 /** freedom://publish's handler cases, the stamps' and the upload status's. */
 const CASES = VECTORS ? VECTORS.shell : [];
@@ -321,10 +335,13 @@ function mockBoundaries() {
  * FREEDOM_SWARM_BACKEND, the IPC handlers registered as index.js does, and
  * on `core` the pinned core started with the build's own hello and main's
  * executor registered on it. Each request main sends the core is kept in
- * `sent` (`{ method, params }`).
+ * `sent` (`{ method, params }`). `beforeStart(dir)` sees the profile's
+ * directory first.
  */
-async function loadBackend(backend) {
+async function loadBackend(backend, { beforeStart = null } = {}) {
   const dir = fs.mkdtempSync(path.join(world.root, `${backend}-`));
+  // The profile as it is before the build starts (its stores' files).
+  beforeStart?.(dir);
   const current = { backend, dir, ipc: new Map(), pick: null, client: null, shell: null, sent: [] };
   world.current = current;
   process.env.FREEDOM_SWARM_BACKEND = backend;
@@ -479,6 +496,16 @@ async function publishChangingFile(change) {
   } finally {
     world.node.state.onRequest = null;
   }
+}
+
+/** Codex's picked folder, made once: MANY_FILES empty files, f0 onwards. */
+function manyFilesFolder() {
+  const folder = path.join(world.root, 'many');
+  if (!fs.existsSync(folder)) {
+    fs.mkdirSync(folder);
+    for (let i = 0; i < MANY_FILES; i += 1) fs.writeFileSync(path.join(folder, `f${i}`), '');
+  }
+  return folder;
 }
 
 /** The answers both backends gave, by case. */
@@ -744,6 +771,67 @@ describeIfCore('freedom://publish on js and on the core (real freedom-cored)', (
         );
       }
 
+      test(
+        backend === 'core'
+          ? `a folder of ${MANY_FILES} files, past one request frame: refused before anything is sent, its row failed (a named difference)`
+          : `a folder of ${MANY_FILES} files: bee-js uploads it, and its row is kept`,
+        async () => {
+          const folder = manyFilesFolder();
+          const token = await pick('directory', folder);
+          await invoke('swarm:clear-publish-history');
+          world.node.state.seen = [];
+          world.node.state.answer = storingScript;
+          const before = world.current.sent.length;
+          const answer = await invoke('swarm:publish-directory', token);
+          const row = rowOf(await newestRow());
+          if (backend === 'core') {
+            expect(answer).toEqual({ success: false, error: FOLDER_TOO_LARGE });
+            expect(row).toMatchObject({
+              type: 'directory',
+              name: 'many',
+              status: 'failed',
+              errorMessage: FOLDER_TOO_LARGE,
+              origin: 'freedom://publish',
+            });
+            expect(world.node.state.seen).toEqual([]);
+            // No swarm.publish went; the row is the core's swarm.history's.
+            const sent = world.current.sent.slice(before).map((s) => s.method);
+            expect(sent).not.toContain('swarm.publish');
+            expect(sent).toContain('swarm.history');
+            // Its request, as the client would have framed it, passes 1 MiB.
+            const own = require(SRC_PATH('core/swarm-own-calls.js'));
+            const parts = (await own.walkDirectory(folder)).map(({ path: p, file, size }) => ({
+              path: p,
+              file,
+              size,
+            }));
+            expect(parts).toHaveLength(MANY_FILES);
+            const { params } = own.publishParams({
+              kind: 'collection',
+              parts,
+              deferred: true,
+              history: { type: 'directory', name: 'many' },
+            });
+            expect(own.requestBytes('swarm.publish', params)).toBeGreaterThan(1024 * 1024);
+          } else {
+            expect(answer).toEqual({
+              success: true,
+              reference: REFERENCE,
+              bzzUrl: `bzz://${REFERENCE}`,
+              tagUid: TAG,
+            });
+            const upload = world.node.state.seen.find((r) => r.method === 'POST');
+            expect(tarEntries(upload.body)).toHaveLength(MANY_FILES);
+            expect(row).toMatchObject({
+              type: 'directory',
+              name: 'many',
+              status: 'completed',
+              reference: REFERENCE,
+            });
+          }
+        }
+      );
+
       if (backend === 'core') {
         test('the core never restarted, and every request went with its parent', () => {
           expect(world.current.exits).toEqual([]);
@@ -755,6 +843,58 @@ describeIfCore('freedom://publish on js and on the core (real freedom-cored)', (
           });
         });
       }
+
+      // Last: on a build of its own, whose profile has a corrupt history.
+      test(
+        backend === 'core'
+          ? "a row the core can't insert rejects each handler's invoke, as js's addEntry throws, and the node is asked nothing"
+          : "a row main can't insert rejects each handler's invoke (addEntry throws before the handler's try)",
+        async () => {
+          await unload(world.current);
+          await loadBackend(backend, {
+            beforeStart: (dir) =>
+              fs.writeFileSync(path.join(dir, 'publish-history.sqlite'), Buffer.alloc(4096, 0x78)),
+          });
+          const dir = fs.mkdtempSync(path.join(world.current.dir, 'unkept-'));
+          const file = path.join(dir, 'notes.txt');
+          fs.writeFileSync(file, 'notes');
+          const folder = path.join(dir, 'site');
+          fs.mkdirSync(folder);
+          fs.writeFileSync(path.join(folder, 'index.html'), '<h1>site</h1>');
+          const inputs = [
+            ['swarm:publish-data', 'hello'],
+            ['swarm:publish-file', await pick('file', file)],
+            ['swarm:publish-directory', await pick('directory', folder)],
+          ];
+          world.node.state.seen = [];
+          world.node.state.answer = storingScript;
+          const before = world.current.sent.length;
+          for (const [channel, arg] of inputs) {
+            const played = await invoke(channel, arg).then(
+              (answer) => ({ channel, answer }),
+              (error) => ({ channel, error })
+            );
+            // Rejected, never a publish result.
+            expect({ channel, answer: played.answer }).toEqual({ channel, answer: undefined });
+            expect(played.error).toBeInstanceOf(Error);
+            if (backend === 'core') expect(played.error.message).toBe(HISTORY_FAILED);
+            else expect(played.error.message).toMatch(/not a database/);
+          }
+          expect(world.node.state.seen).toEqual([]);
+          if (backend === 'core') {
+            // Each went as its swarm.publish with history, which the core
+            // answered before it asked main anything.
+            const sent = world.current.sent.slice(before);
+            expect(sent.map((s) => [s.method, s.params.history?.type])).toEqual([
+              ['swarm.publish', 'data'],
+              ['swarm.publish', 'file'],
+              ['swarm.publish', 'directory'],
+            ]);
+            expect(world.current.exits).toEqual([]);
+            expect(world.current.shell.stats()).toMatchObject({ parents: 0, calls: 0 });
+          }
+        }
+      );
     });
   }
 

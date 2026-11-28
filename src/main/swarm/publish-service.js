@@ -27,8 +27,15 @@
  * Two differ, as the design records: a picked file that changes size while
  * it is read shows `Internal error` where bee-js gave its transport's text
  * (`picked-read-text`, U13), and a name over 100 UTF-8 bytes in a folder is
- * kept whole in the tar, where bee-js cut it (`tar-paths`, F-3). On `js`
- * nothing changes.
+ * kept whole in the tar, where bee-js cut it (`tar-paths`, F-3). A history
+ * row the core can't insert rejects the invoke, as js's `addEntry` throws
+ * before the handler's `try` (core/swarm-own-calls.js
+ * `HistoryInsertError`); a later write of the row that fails is the core's
+ * to retry (`history-retry`), and answers its error. One more differs,
+ * pending the user's decision: a picked folder whose parts don't fit one
+ * request frame (1 MiB; tens of thousands of files) is refused before
+ * anything is sent, `FOLDER_TOO_LARGE_MESSAGE`, its row failed, where
+ * bee-js uploads it. On `js` nothing changes.
  */
 
 const fs = require('fs');
@@ -84,6 +91,16 @@ function publishesOnCore() {
 /** `swarm:get-upload-status`'s bound on the core, as bee-js's `tag.get` had it. */
 const UPLOAD_STATUS_MS = 10_000;
 
+/**
+ * What freedom://publish answers on the core for a picked folder whose
+ * `swarm.publish` params don't fit one request frame (1 MiB; each file is
+ * a part named in them): refused before anything is sent, its row failed
+ * with this text. On js bee-js uploads it. A named difference until the
+ * user decides between a designed folder limit on both backends and a
+ * parts list streamed through the core.
+ */
+const FOLDER_TOO_LARGE_MESSAGE = 'This folder has too many files to publish through the core';
+
 // What the user reads when a publish fails. A batch bought moments ago that
 // storer peers have not synced yet gets a "try again shortly" sentence
 // instead of the node's raw pushsync error.
@@ -130,7 +147,8 @@ function publishedOnCore(result) {
 /**
  * The row of a freedom://publish upload that failed on the core's backend
  * before `swarm.publish` was sent (its text not readable as bytes, its
- * file or folder not read): the core's `swarm.history` `add` and `update`,
+ * file or folder not read, a folder past one frame): the core's
+ * `swarm.history` `add` and `update`,
  * as `shell` (publish-history.js `coreOps`), the row the handler keeps on
  * `js`, where it is written before the upload. `message` is its text.
  */
@@ -157,6 +175,15 @@ function dataBytes(data) {
   throw new TypeError('The data must be a string or bytes');
 }
 
+/**
+ * A core publish's failure, rethrown where its history row wasn't
+ * inserted (core/swarm-own-calls.js `HistoryInsertError`): js's `addEntry`
+ * throws before the handler's `try`, so the invoke rejects there, as here.
+ */
+function rethrowRowInsert(err) {
+  if (err instanceof coreCalls().HistoryInsertError) throw err;
+}
+
 /** `swarm:publish-data` on the core's backend. */
 async function publishDataOnCore(data) {
   let bytes;
@@ -176,6 +203,7 @@ async function publishDataOnCore(data) {
     });
     return publishedOnCore(result);
   } catch (err) {
+    rethrowRowInsert(err);
     log.error('[PublishService] Failed to publish data:', err.message);
     return publishFailure(err);
   }
@@ -202,6 +230,7 @@ async function publishFileOnCore(filePath, name) {
     });
     return publishedOnCore(result);
   } catch (err) {
+    rethrowRowInsert(err);
     log.error('[PublishService] Failed to publish file:', err.message);
     return publishFailure(err, describePickedPathError(err, filePath));
   }
@@ -218,15 +247,24 @@ async function publishDirectoryOnCore(dirPath, name) {
     await unsentRowOnCore('directory', name, message);
     return publishFailure(err, message);
   }
+  const spec = {
+    kind: 'collection',
+    parts: files.map(({ path: entry, file, size }) => ({ path: entry, file, size })),
+    deferred: true,
+    history: { type: 'directory', name },
+  };
+  // Its params name every file: past one request frame it is refused
+  // here, unsent, its row failed as the other unsent failures' are.
+  if (!coreCalls().publishFits(spec)) {
+    log.error('[PublishService] Failed to publish directory:', FOLDER_TOO_LARGE_MESSAGE);
+    await unsentRowOnCore('directory', name, FOLDER_TOO_LARGE_MESSAGE);
+    return { success: false, error: FOLDER_TOO_LARGE_MESSAGE };
+  }
   try {
-    const result = await coreCalls().swarmOwnCalls().publish({
-      kind: 'collection',
-      parts: files.map(({ path: entry, file, size }) => ({ path: entry, file, size })),
-      deferred: true,
-      history: { type: 'directory', name },
-    });
+    const result = await coreCalls().swarmOwnCalls().publish(spec);
     return publishedOnCore(result);
   } catch (err) {
+    rethrowRowInsert(err);
     log.error('[PublishService] Failed to publish directory:', err.message);
     return publishFailure(err, describePickedPathError(err, dirPath));
   }
@@ -772,5 +810,6 @@ module.exports = {
   publishFilesFromContent,
   getUploadStatus,
   registerPublishIpc,
+  FOLDER_TOO_LARGE_MESSAGE,
   USER_ORIGIN,
 };

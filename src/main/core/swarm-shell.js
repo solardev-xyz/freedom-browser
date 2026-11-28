@@ -30,7 +30,8 @@
  *   (`close()`, the signal, the stop, the deadline) stops every call of it,
  *   dialling or streaming, and nothing more is admitted for it. A `for` at
  *   or below the highest ID opened in its generation has ended (a race);
- *   one above it was never sent (a core fault).
+ *   one above it was never sent (a core fault). Its handle's `asked()`
+ *   says whether any ask has named it while it was live.
  * - **Read strictly:** `shell.swarm_ready` is exactly `{ for, check }`;
  *   `shell.swarm_api` exactly the core's members (`for`, `form`, `method`,
  *   `path`, `query`, `headers`, `max_bytes`, `stream`, and `body`, `feed`
@@ -1185,7 +1186,7 @@ class SwarmShell {
    *   a page's `subscribe`: the document its subscription is bound to and
    *   how its messages go there, as page-swarm.js gives them (`page.document`,
    *   `page.deliverTo`), which `shell.swarm_subscribe` opens it for
-   * @returns {{ close(): void }}
+   * @returns {{ close(): void, asked(): boolean }}
    */
   open(
     { generation, id } = {},
@@ -1240,6 +1241,8 @@ class SwarmShell {
       subscriber,
       // `shell.swarm_subscribe` came for it.
       subscribed: false,
+      // An ask named it while it was live (`parentOf`).
+      asked: false,
     };
     this.live.set(parent, entry);
     if (id > (this.highest.get(generation) ?? 0)) this.highest.set(generation, id);
@@ -1266,7 +1269,9 @@ class SwarmShell {
     if (deadlineAt !== null && !entry.ended) {
       entry.timer = this.setTimer(close, Math.max(0, deadlineAt - this.now()));
     }
-    return { close };
+    // `asked()`: whether the core asked anything naming it, so far
+    // (swarm-own-calls.js reads it at the request's end).
+    return { close, asked: () => entry.asked };
   }
 
   /** What the shell holds, for diagnostics and tests. */
@@ -1301,10 +1306,17 @@ class SwarmShell {
     onAnswer?.(() => this.progressed(entry));
   }
 
-  /** The live parent `id` of `generation`, or whether it has ended. */
+  /**
+   * The live parent `id` of `generation`, or whether it has ended. Each
+   * call is an ask's (`shell.swarm_ready`, `_api`, `_part`, `_subscribe`):
+   * a live parent it finds is marked asked.
+   */
   parentOf(generation, id) {
     const entry = id === null ? undefined : this.live.get(keyOf(generation, id));
-    if (entry) return { entry, ended: false };
+    if (entry) {
+      entry.asked = true;
+      return { entry, ended: false };
+    }
     return { entry: null, ended: id !== null && id <= (this.highest.get(generation) ?? 0) };
   }
 

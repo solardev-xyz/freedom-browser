@@ -36,9 +36,19 @@
  *   reference's service threw as its callers read it, thrown here again
  *   as an Error with those members (`isNoUsableBatchError` reads `code`,
  *   the agent `status` and `capacity`). Anything else is the core's
- *   fault, `CoreError` `internal`. The protocol's own errors (`cancelled`,
- *   `busy`, `core_unavailable`, `not_moved`, …) stay the client's
- *   `CoreError`s.
+ *   fault, `CoreError` `internal`: so is a result of `swarm.publish`,
+ *   `swarm.stamps` or `swarm.upload_status` that isn't exactly the shape
+ *   the core gives (a member missing, one more, or one of another type).
+ *   The protocol's own errors (`cancelled`, `busy`, `core_unavailable`,
+ *   `not_moved`, …) stay the client's `CoreError`s.
+ * - **The row's insert:** a `swarm.publish` with `history` that the core
+ *   answers with its history store's fixed error (`HISTORY_FAILED_MESSAGE`,
+ *   no other member) before it asked main anything for it failed at the
+ *   row's insert (or the bound's trim that follows it), where js's
+ *   `addEntry` throws before the handler's `try`: it is thrown as a
+ *   `HistoryInsertError`, which freedom://publish's handlers let reject the
+ *   invoke, as on js. The same error after an ask is a later row write's,
+ *   which the core retries (`history-retry`): an Error like any other.
  *
  * **Parts** (`publish()`): `{ path?, bytes }` (held, a Uint8Array) or
  * `{ path?, file, size }` (a picked file's absolute path and the size main
@@ -47,18 +57,48 @@
  * so a collection's params stay one frame whatever its files hold, as the
  * vectors' `shell` cases send them. `walkDirectory()` gives a picked
  * folder's parts as bee-js's `makeCollectionFromFS` finds its files.
+ *
+ * **One frame:** the params still name every part, so a folder of many
+ * files can pass the request frame (frame.js `MAX_PAYLOAD`, 1 MiB), which
+ * the client refuses unsent. `publishFits()` measures the request as the
+ * client frames it, with the widest ID, so a caller can refuse it first,
+ * the same way whatever ID it would get.
  */
 
 const fs = require('fs');
 const nodePath = require('path');
 const { CoreError } = require('./core-client');
 const { SWARM_DEADLINE_MS, idleWatchdogMs, isIdleMethod, watchdogMs } = require('./core-deadlines');
+const { MAX_ID, MAX_PAYLOAD } = require('./frame');
 const { rowFor } = require('./swarm-grammar');
 const { INLINE_BYTES, TypedFormError, readPlain } = require('./swarm-typed');
 const { swarmIoPool } = require('./swarm-io-pool');
 
 const SHELL = Object.freeze({ caller: 'shell' });
 const HEX = /^[0-9a-f]+$/;
+
+/**
+ * The core's text for a publish history it can't open, read or write
+ * (freedom-cored `swarm/stores.rs` `HISTORY_FAILED`). `swarm.publish`
+ * answers it as `{ error_typed: { message } }`, with no `code`, `status`
+ * or `capacity`, where its row's insert fails (fc-swarm-provider
+ * `shell_publish.rs`: "`addEntry` throws before the handler's `try`"), and
+ * where a later write of the row fails as well.
+ */
+const HISTORY_FAILED_MESSAGE = 'The publish history could not be read or written';
+
+/**
+ * `swarm.publish`'s history row not inserted: the core's history store
+ * failed the insert, or the bound's trim right after it, before anything
+ * else of the publish ran (`readOwnAnswer`'s caller saw no ask naming it).
+ * js's `addEntry` throws before the handler's `try` there, so the handlers
+ * let this reject the invoke.
+ */
+class HistoryInsertError extends Error {
+  constructor(message = HISTORY_FAILED_MESSAGE) {
+    super(message);
+  }
+}
 
 /** A part the params name, to the executor's source of it. */
 function isHeld(part) {
@@ -176,6 +216,32 @@ async function walkDirectory(dir) {
   return walk('');
 }
 
+/**
+ * The bytes of `method`'s request with `params` as the client frames it
+ * (service-client.js: `{ type, id, method, params, context }` as JSON, the
+ * context `shell`), with the widest ID (frame.js `MAX_ID`): whatever ID
+ * the request gets, its frame is no longer.
+ */
+function requestBytes(method, params) {
+  const request = { type: 'request', id: MAX_ID, method, params, context: SHELL };
+  return Buffer.byteLength(JSON.stringify(request), 'utf8');
+}
+
+/**
+ * Whether the `swarm.publish` of `spec` (`publishParams`' spec) fits one
+ * request frame (frame.js `MAX_PAYLOAD`, 1 MiB), measured by
+ * `requestBytes`. One that doesn't is refused unsent by the client
+ * (`Request too large`), and only past a bound that depends on its ID's
+ * digits; a caller that checks this first refuses it the same way every
+ * time.
+ *
+ * @param {object} spec
+ * @returns {boolean}
+ */
+function publishFits(spec) {
+  return requestBytes('swarm.publish', publishParams(spec).params) <= MAX_PAYLOAD;
+}
+
 const isPlainObject = (value) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
@@ -230,15 +296,114 @@ function publishResult(method, value) {
   return value;
 }
 
+const isNumber = (value) => typeof value === 'number';
+const isBoolean = (value) => typeof value === 'boolean';
+const isString = (value) => typeof value === 'string';
+/** A batch's ID as the core writes it: 64 lowercase hex (`hex()`). */
+const isBatchId = (value) => isString(value) && /^[0-9a-f]{64}$/.test(value);
+/** `asNumberString(amount)`: an integer's decimal text. */
+const isIntegerText = (value) => isString(value) && /^-?[0-9]+$/.test(value);
+/** `normalizeTag`'s `reference`: 64 or 128 hex, in lower case. */
+const isReference = (value) => isString(value) && /^[0-9a-f]{64}(?:[0-9a-f]{64})?$/.test(value);
+
+/**
+ * Whether `value` is an object with exactly the members `required` names,
+ * each of its type, and of `optional`'s only those it names, each of its
+ * type.
+ */
+function shaped(value, required, optional) {
+  if (!isPlainObject(value)) return false;
+  for (const [key, typed] of Object.entries(required)) {
+    if (!Object.hasOwn(value, key) || !typed(value[key])) return false;
+  }
+  return Object.keys(value).every(
+    (key) =>
+      Object.hasOwn(required, key) || (Object.hasOwn(optional, key) && optional[key](value[key]))
+  );
+}
+
+/**
+ * A `swarm.stamps` batch (fc-swarm-provider `shell_stamps.rs`
+ * `batch_value`): bee-js's `mapPostageBatch` fields, as numbers and
+ * strings, then the node's own `exists`, `propagating` and `batchTTL`
+ * where it sent them.
+ */
+const BATCH = Object.freeze({
+  batchID: isBatchId,
+  utilization: isNumber,
+  usable: isBoolean,
+  label: isString,
+  depth: isNumber,
+  amount: isIntegerText,
+  bucketDepth: isNumber,
+  blockNumber: isNumber,
+  immutableFlag: isBoolean,
+  usage: isNumber,
+  usageText: isString,
+  size: isNumber,
+  remainingSize: isNumber,
+  theoreticalSize: isNumber,
+  duration: isNumber,
+});
+const BATCH_RAW = Object.freeze({
+  exists: isBoolean,
+  propagating: isBoolean,
+  batchTTL: isNumber,
+});
+
+/**
+ * `swarm.upload_status`'s result (fc-swarm-provider `replies.rs`
+ * `normalize_tag`): `normalizeTag`'s object, its `reference` only where
+ * the tag's address is one.
+ */
+const TAG = Object.freeze({
+  tagUid: isNumber,
+  split: isNumber,
+  seen: isNumber,
+  stored: isNumber,
+  sent: isNumber,
+  synced: isNumber,
+  progress: isNumber,
+  done: isBoolean,
+});
+const TAG_REFERENCE = Object.freeze({ reference: isReference });
+
+const isBatch = (value) => shaped(value, BATCH, BATCH_RAW);
+
+/**
+ * `swarm.stamps`' result read strictly: a list of batches, or, for an
+ * `id`, the one batch.
+ */
+function stampsResult(method, value, params) {
+  if (params !== null && typeof params === 'object' && Object.hasOwn(params, 'id')) {
+    if (!isBatch(value)) throw malformed(method, 'not a batch');
+    return value;
+  }
+  // Indexed, so a hole is no batch.
+  const ok = Array.isArray(value) && Array.from(value, (batch) => isBatch(batch)).every(Boolean);
+  if (!ok) throw malformed(method, 'not a list of batches');
+  return value;
+}
+
+/** `swarm.upload_status`'s result read strictly: `normalizeTag`'s object. */
+function uploadStatusResult(method, value) {
+  if (!shaped(value, TAG, TAG_REFERENCE)) throw malformed(method, "not normalizeTag's object");
+  return value;
+}
+
 /**
  * `method`'s answer read: its result, or what the service threw, thrown
- * again (`thrownError`). Throws `CoreError` `internal` for any other form.
+ * again (`thrownError`). Throws `CoreError` `internal` for any other form,
+ * and for a result of `swarm.publish`, `swarm.stamps` (by `params`: a
+ * list, or one batch for an `id`) or `swarm.upload_status` that isn't
+ * exactly the core's shape.
  *
  * @param {string} method
  * @param {*} answer - the request's result
+ * @param {object} [params] - the params it was sent with
  * @returns {*}
  */
-function readOwnAnswer(method, answer) {
+function readOwnAnswer(method, answer, params = {}) {
   if (!isPlainObject(answer)) throw malformed(method, 'not an object');
   const keys = Object.keys(answer);
   if (keys.length !== 1 || (keys[0] !== 'result_typed' && keys[0] !== 'error_typed')) {
@@ -252,7 +417,36 @@ function readOwnAnswer(method, answer) {
     throw err;
   }
   if (keys[0] === 'error_typed') throw thrownError(method, value);
-  return method === 'swarm.publish' ? publishResult(method, value) : value;
+  switch (method) {
+    case 'swarm.publish':
+      return publishResult(method, value);
+    case 'swarm.stamps':
+      return stampsResult(method, value, params);
+    case 'swarm.upload_status':
+      return uploadStatusResult(method, value);
+    default:
+      return value;
+  }
+}
+
+/**
+ * Whether `err`, what `readOwnAnswer` threw for a `swarm.publish` with
+ * `history`, is its row's insert failing: exactly the core's history
+ * store error, with no other member, answered before the core asked main
+ * anything for the request (`asked` false: the insert, and the bound's
+ * trim after it, come before any node call).
+ */
+function isRowInsert(method, params, err, asked) {
+  return (
+    method === 'swarm.publish' &&
+    params?.history !== undefined &&
+    !asked &&
+    !(err instanceof CoreError) &&
+    err?.message === HISTORY_FAILED_MESSAGE &&
+    !Object.hasOwn(err, 'code') &&
+    !Object.hasOwn(err, 'status') &&
+    !Object.hasOwn(err, 'capacity')
+  );
 }
 
 function defaultDependencies() {
@@ -311,6 +505,9 @@ function createSwarmOwnCalls(deps = {}) {
     const life = signal ? AbortSignal.any([signal, own.signal]) : own.signal;
     let parent = null;
     let unheld = false;
+    // Whether the core asked anything naming it (the executor's count),
+    // as it ended; taken as asked where the executor can't say.
+    let asked = true;
     let reply;
     try {
       reply = await client.request(method, params, SHELL, {
@@ -349,13 +546,17 @@ function createSwarmOwnCalls(deps = {}) {
       }
       throw err;
     } finally {
+      if (typeof parent?.asked === 'function') asked = parent.asked();
       parent?.close();
     }
     // Pooled, the result comes with its release (service-client.js): held
     // until it is read.
     const { result, release } = pool ? reply : { result: reply, release: () => {} };
     try {
-      return readOwnAnswer(method, result);
+      return readOwnAnswer(method, result, params);
+    } catch (err) {
+      if (isRowInsert(method, params, err, asked)) throw new HistoryInsertError(err.message);
+      throw err;
     } finally {
       release();
     }
@@ -390,9 +591,13 @@ function swarmOwnCalls() {
 }
 
 module.exports = {
+  HISTORY_FAILED_MESSAGE,
+  HistoryInsertError,
   createSwarmOwnCalls,
+  publishFits,
   publishParams,
   readOwnAnswer,
+  requestBytes,
   swarmOwnCalls,
   walkDirectory,
 };

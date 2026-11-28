@@ -14,7 +14,12 @@
  *   again shortly", `needsStorage` for no usable batch, a picked path by its
  *   basename only;
  * - a publish that fails before anything is sent has its row written
- *   through the core's `swarm.history`, as js writes it;
+ *   through the core's `swarm.history`, as js writes it; so does a picked
+ *   folder whose params pass one request frame, refused unsent with
+ *   `FOLDER_TOO_LARGE_MESSAGE`;
+ * - a row the core couldn't insert (`HistoryInsertError`) rejects the
+ *   invoke, as js's `addEntry` throws before the handler's `try`; the same
+ *   text from a later write is answered as a failure;
  * - the upload status within the reference's 10 s.
  */
 
@@ -59,6 +64,7 @@ const mockWalk = { fn: null };
 jest.mock('../core/swarm-own-calls', () => {
   const actual = jest.requireActual('../core/swarm-own-calls');
   return {
+    ...actual,
     swarmOwnCalls: () => mockCalls,
     walkDirectory: (dir) => (mockWalk.fn ? mockWalk.fn(dir) : actual.walkDirectory(dir)),
   };
@@ -68,10 +74,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { CoreError } = require('../core/core-client');
+const { HISTORY_FAILED_MESSAGE, HistoryInsertError } = require('../core/swarm-own-calls');
 const publishHistory = require('./publish-history');
 const swarmService = require('./swarm-service');
 const { isPrivateWebContents } = require('../private/private-windows');
-const { registerPublishIpc, USER_ORIGIN } = require('./publish-service');
+const { registerPublishIpc, FOLDER_TOO_LARGE_MESSAGE, USER_ORIGIN } = require('./publish-service');
 
 registerPublishIpc();
 
@@ -323,6 +330,95 @@ describe('swarm:publish-directory', () => {
       status: 'failed',
       errorMessage: 'Could not read "private" (EACCES)',
     });
+  });
+});
+
+describe('a picked folder past one request frame', () => {
+  test('is refused before anything is sent, with one fixed text, its row failed through the core', async () => {
+    expect(FOLDER_TOO_LARGE_MESSAGE).toBe(
+      'This folder has too many files to publish through the core'
+    );
+    const folder = path.join(dir, 'many');
+    fs.mkdirSync(folder);
+    const token = await pick('directory', folder);
+    // Codex's case: 26,200 empty files f0 to f26199.
+    mockWalk.fn = async (walked) =>
+      Array.from({ length: 26_200 }, (_, i) => ({
+        path: `f${i}`,
+        file: path.join(walked, `f${i}`),
+        size: 0,
+      }));
+    expect(await invoke('swarm:publish-directory', token)).toEqual({
+      success: false,
+      error: FOLDER_TOO_LARGE_MESSAGE,
+    });
+    expect(mockCalls.publish).not.toHaveBeenCalled();
+    expect(publishHistory.coreOps.addEntry).toHaveBeenCalledWith({
+      type: 'directory',
+      name: 'many',
+      status: 'uploading',
+      origin: USER_ORIGIN,
+    });
+    expect(publishHistory.coreOps.updateEntry).toHaveBeenCalledWith(9, {
+      status: 'failed',
+      errorMessage: FOLDER_TOO_LARGE_MESSAGE,
+    });
+    // 20,000 of them fit, and go.
+    jest.clearAllMocks();
+    const all = await mockWalk.fn(folder);
+    mockWalk.fn = async () => all.slice(0, 20_000);
+    mockCalls.publish.mockResolvedValueOnce(PUBLISHED);
+    expect((await invoke('swarm:publish-directory', await pick('directory', folder))).success).toBe(
+      true
+    );
+    expect(mockCalls.publish.mock.calls[0][0].parts).toHaveLength(20_000);
+    expect(publishHistory.coreOps.addEntry).not.toHaveBeenCalled();
+  });
+});
+
+describe("a row the core couldn't insert", () => {
+  async function eachHandler(error) {
+    const file = path.join(dir, 'row.txt');
+    fs.writeFileSync(file, 'row');
+    const folder = path.join(dir, 'row-site');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'index.html'), 'row');
+    const out = [];
+    for (const [channel, arg] of [
+      ['swarm:publish-data', 'hello'],
+      ['swarm:publish-file', await pick('file', file)],
+      ['swarm:publish-directory', await pick('directory', folder)],
+    ]) {
+      mockCalls.publish.mockRejectedValueOnce(error());
+      out.push(
+        await invoke(channel, arg).then(
+          (answer) => ({ channel, answer }),
+          (thrown) => ({ channel, thrown })
+        )
+      );
+    }
+    return out;
+  }
+
+  test("rejects the invoke, as js's addEntry throws before the handler's try", async () => {
+    const played = await eachHandler(() => new HistoryInsertError());
+    for (const { channel, answer, thrown } of played) {
+      expect({ channel, answer }).toEqual({ channel, answer: undefined });
+      expect(thrown).toBeInstanceOf(HistoryInsertError);
+      expect(thrown.message).toBe('The publish history could not be read or written');
+    }
+    expect(publishHistory.coreOps.addEntry).not.toHaveBeenCalled();
+    expect(publishHistory.coreOps.updateEntry).not.toHaveBeenCalled();
+  });
+
+  test("the same text from a later write of the row (the core's retry) is answered as a failure", async () => {
+    const played = await eachHandler(() => serviceError(HISTORY_FAILED_MESSAGE));
+    for (const { channel, answer } of played) {
+      expect({ channel, answer }).toEqual({
+        channel,
+        answer: { success: false, error: HISTORY_FAILED_MESSAGE },
+      });
+    }
   });
 });
 

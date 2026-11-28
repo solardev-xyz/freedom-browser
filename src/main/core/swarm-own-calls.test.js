@@ -9,7 +9,14 @@
  * - **a picked folder** walked as bee-js's `makeCollectionFromFS` walks
  *   it, its paths joined with `/`;
  * - **the answer** read strictly: the result, the service's error as an
- *   Error with its members, anything else `internal`;
+ *   Error with its members, anything else `internal`; `swarm.publish`'s,
+ *   `swarm.stamps`' and `swarm.upload_status`' results exactly the core's
+ *   shapes, a member missing, one more or one of another type `internal`;
+ * - **one frame:** a `swarm.publish` whose params pass the request frame,
+ *   measured as the client frames it with the widest ID;
+ * - **the row's insert:** the core's history-store error before any ask
+ *   naming the publish is a `HistoryInsertError`; after one, or any other
+ *   error, it is the error it was;
  * - **the request:** its watchdog, its pool, its parent opened in the
  *   executor from `onSent` (row, params, backend, signal, deadline,
  *   parts) and closed at its end, the result's charge released once read.
@@ -26,13 +33,19 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { CoreError } = require('./core-client');
+const { MAX_ID, MAX_PAYLOAD, encodeFrame } = require('./frame');
 const { writeTyped } = require('./swarm-typed');
 const {
+  HISTORY_FAILED_MESSAGE,
+  HistoryInsertError,
   createSwarmOwnCalls,
+  publishFits,
   publishParams,
   readOwnAnswer,
+  requestBytes,
   walkDirectory,
 } = require('./swarm-own-calls');
+const { swarmVectors } = require('../../../test/helpers/swarm-vectors');
 
 /**
  * bee-js 13.2.0's `makeCollectionFromFS` (`dist/cjs/utils/collection.node.js`),
@@ -71,6 +84,48 @@ const BATCH = 'c3'.repeat(32);
 const typed = (value) => writeTyped(value);
 const resultOf = (value) => ({ result_typed: typed(value) });
 const errorOf = (value) => ({ error_typed: typed(value) });
+
+/** A `swarm.stamps` batch as the core gives it (shell_stamps.rs `batch_value`). */
+const A_BATCH = Object.freeze({
+  batchID: BATCH,
+  utilization: 0,
+  usable: true,
+  label: 'freedom',
+  depth: 22,
+  amount: '100000000000',
+  bucketDepth: 16,
+  blockNumber: 1000,
+  immutableFlag: true,
+  usage: 0,
+  usageText: '0%',
+  size: 7070000000,
+  remainingSize: 7070000000,
+  theoreticalSize: 17179869184,
+  duration: 2000,
+  exists: true,
+  propagating: false,
+  batchTTL: 2000,
+});
+/** `swarm.upload_status`'s result as the core gives it (replies.rs `normalize_tag`). */
+const A_TAG = Object.freeze({
+  tagUid: 101,
+  reference: REFERENCE,
+  split: 10,
+  seen: 0,
+  stored: 10,
+  sent: 5,
+  synced: 10,
+  progress: 50,
+  done: true,
+});
+const BATCH_RAW = ['exists', 'propagating', 'batchTTL'];
+/** A value of another type than `value`'s. */
+const otherType = (value) => (typeof value === 'string' ? 1 : 'x');
+const without = (object, key) => {
+  const { [key]: _gone, ...rest } = object;
+  return rest;
+};
+const INTERNAL = expect.objectContaining({ name: 'CoreError', code: 'internal' });
 
 describe("swarm.publish's params", () => {
   test('text of at most 64 KiB goes inline; past it, as a part main holds', () => {
@@ -245,9 +300,7 @@ describe('the answer, read strictly', () => {
       ...published,
       tag_uid: null,
     });
-    expect(readOwnAnswer('swarm.stamps', resultOf([{ batchID: BATCH }]))).toEqual([
-      { batchID: BATCH },
-    ]);
+    expect(readOwnAnswer('swarm.stamps', resultOf([A_BATCH]))).toEqual([A_BATCH]);
     for (const odd of [
       { ...published, reference: 'AB'.repeat(32) },
       { ...published, reference: 'ab' },
@@ -304,12 +357,166 @@ describe('the answer, read strictly', () => {
       );
     }
   });
+
+  test("swarm.stamps' batches are exactly the core's: a member missing, one more, or one of another type is internal", () => {
+    const list = (batch) => readOwnAnswer('swarm.stamps', resultOf([batch]), {});
+    const one = (batch) => readOwnAnswer('swarm.stamps', resultOf(batch), { id: BATCH });
+    // The node's own members are there only where it sent them.
+    const bare = BATCH_RAW.reduce(without, A_BATCH);
+    for (const batch of [A_BATCH, bare, without(A_BATCH, 'propagating')]) {
+      expect(list(batch)).toEqual([batch]);
+      expect(one(batch)).toEqual(batch);
+    }
+    expect(readOwnAnswer('swarm.stamps', resultOf([]))).toEqual([]);
+    expect(readOwnAnswer('swarm.stamps', resultOf([A_BATCH, bare]))).toEqual([A_BATCH, bare]);
+    const odd = [
+      {},
+      { ...A_BATCH, extra: 1 },
+      { ...A_BATCH, batchID: BATCH.toUpperCase() },
+      { ...A_BATCH, batchID: 'c3' },
+      { ...A_BATCH, amount: '1e21' },
+      { ...A_BATCH, size: undefined },
+      { ...A_BATCH, depth: 22n },
+    ];
+    for (const key of Object.keys(A_BATCH)) {
+      if (!BATCH_RAW.includes(key)) odd.push(without(A_BATCH, key));
+      odd.push({ ...A_BATCH, [key]: otherType(A_BATCH[key]) }, { ...A_BATCH, [key]: null });
+    }
+    for (const batch of odd) {
+      expect(() => list(batch)).toThrow(INTERNAL);
+      expect(() => one(batch)).toThrow(INTERNAL);
+    }
+    // A list for an id, one batch for the list, a hole, anything else.
+    const hole = { array: [{ hole: true }] };
+    for (const [answer, params] of [
+      [resultOf([A_BATCH]), { id: BATCH }],
+      [resultOf(A_BATCH), {}],
+      [{ result_typed: hole }, {}],
+      [resultOf([A_BATCH, null]), {}],
+      [resultOf(null), {}],
+      [resultOf({ stamps: [A_BATCH] }), {}],
+    ]) {
+      expect(() => readOwnAnswer('swarm.stamps', answer, params)).toThrow(INTERNAL);
+    }
+  });
+
+  test("swarm.upload_status' result is exactly normalizeTag's: a member missing, one more, or one of another type is internal", () => {
+    const read = (tag) => readOwnAnswer('swarm.upload_status', resultOf(tag), { tag_uid: 101 });
+    const plain = without(A_TAG, 'reference');
+    const encrypted = { ...A_TAG, reference: 'ef'.repeat(64) };
+    for (const tag of [A_TAG, plain, encrypted]) expect(read(tag)).toEqual(tag);
+    const odd = [
+      {},
+      { ...A_TAG, extra: 1 },
+      { ...A_TAG, reference: REFERENCE.toUpperCase() },
+      { ...A_TAG, reference: 'ab'.repeat(48) },
+      { ...A_TAG, reference: undefined },
+      { ...A_TAG, progress: 50n },
+      [A_TAG],
+      null,
+    ];
+    for (const key of Object.keys(A_TAG)) {
+      if (key !== 'reference') odd.push(without(A_TAG, key));
+      odd.push({ ...A_TAG, [key]: otherType(A_TAG[key]) }, { ...A_TAG, [key]: null });
+    }
+    for (const tag of odd) expect(() => read(tag)).toThrow(INTERNAL);
+  });
+
+  const vectors = swarmVectors('swarm.json');
+  (vectors ? test : test.skip)(
+    "the core's recorded swarm.stamps and swarm.upload_status answers read as the reference's",
+    () => {
+      const cases = vectors.shell.filter((c) =>
+        ['swarm.stamps', 'swarm.upload_status'].includes(c.method)
+      );
+      expect(cases.length).toBeGreaterThanOrEqual(9);
+      // bee-js's batches, without the node's own members the core adds.
+      const mapped = (batch) => BATCH_RAW.reduce(without, batch);
+      for (const c of cases) {
+        const [step] = c.steps;
+        let read;
+        try {
+          const result = readOwnAnswer(c.method, step.answer, step.params);
+          if (c.method === 'swarm.upload_status') read = { result };
+          else read = { result: Array.isArray(result) ? result.map(mapped) : mapped(result) };
+        } catch (err) {
+          read = { error: err.message, internal: err instanceof CoreError };
+        }
+        const expected = step.reference.error
+          ? { error: step.reference.error.message, internal: false }
+          : { result: step.reference.result };
+        expect({ id: c.id, read }).toEqual({ id: c.id, read: expected });
+      }
+    }
+  );
+});
+
+describe("a publish's request in one frame", () => {
+  test('measured as the client frames it, with the widest ID', () => {
+    const { params } = publishParams({
+      kind: 'collection',
+      parts: [{ path: 'é/index.html', file: path.join(os.tmpdir(), 'index.html'), size: 3 }],
+      deferred: true,
+      history: { type: 'directory', name: 'site' },
+    });
+    const framed = encodeFrame({
+      type: 'request',
+      id: MAX_ID,
+      method: 'swarm.publish',
+      params,
+      context: { caller: 'shell' },
+    });
+    // The frame's five bytes of length and kind, then the payload.
+    expect(requestBytes('swarm.publish', params)).toBe(framed.length - 5);
+  });
+
+  test('a folder fits up to the frame, and from a byte past it is refused, whatever ID it would get', () => {
+    const spec = (name) => ({
+      kind: 'collection',
+      parts: [{ path: 'index.html', file: path.join(os.tmpdir(), 'index.html'), size: 3 }],
+      deferred: true,
+      history: { type: 'directory', name },
+    });
+    const bytes = (name) => requestBytes('swarm.publish', publishParams(spec(name)).params);
+    const name = 'n'.repeat(MAX_PAYLOAD - bytes(''));
+    expect(bytes(name)).toBe(MAX_PAYLOAD);
+    expect(publishFits(spec(name))).toBe(true);
+    expect(publishFits(spec(`${name}n`))).toBe(false);
+    // With ID 1 it would still have gone: the bound is the widest ID's.
+    const { params } = publishParams(spec(`${name}n`));
+    const small = encodeFrame({
+      type: 'request',
+      id: 1,
+      method: 'swarm.publish',
+      params,
+      context: { caller: 'shell' },
+    });
+    expect(small.length - 5).toBeLessThanOrEqual(MAX_PAYLOAD);
+  });
+
+  test("26,200 empty files f0 to f26199 pass the frame (Codex's case)", () => {
+    const parts = Array.from({ length: 26_200 }, (_, i) => ({
+      path: `f${i}`,
+      file: path.join(os.tmpdir(), 'many', `f${i}`),
+      size: 0,
+    }));
+    const spec = {
+      kind: 'collection',
+      parts,
+      deferred: true,
+      history: { type: 'directory', name: 'many' },
+    };
+    expect(requestBytes('swarm.publish', publishParams(spec).params)).toBeGreaterThan(MAX_PAYLOAD);
+    expect(publishFits(spec)).toBe(false);
+    expect(publishFits({ ...spec, parts: parts.slice(0, 20_000) })).toBe(true);
+  });
 });
 
 describe('the request and its parent', () => {
   function harness({
     answer = resultOf({ reference: REFERENCE, tag_uid: 1, batch: BATCH, bytes: 5 }),
     open,
+    asked,
   } = {}) {
     const seen = { requests: [], opened: [], closed: 0, released: 0 };
     const client = {
@@ -318,7 +525,7 @@ describe('the request and its parent', () => {
         options.onSent(41, 3);
         if (options.signal.aborted) throw new CoreError('cancelled', 'cancelled');
         return {
-          result: typeof answer === 'function' ? answer() : answer,
+          result: typeof answer === 'function' ? answer(method, params) : answer,
           release: () => {
             seen.released += 1;
           },
@@ -333,6 +540,8 @@ describe('the request and its parent', () => {
           close: () => {
             seen.closed += 1;
           },
+          // The executor's count of asks naming it, where the test says.
+          ...(asked !== undefined && { asked: () => asked }),
         };
       }),
     };
@@ -377,7 +586,12 @@ describe('the request and its parent', () => {
   });
 
   test('swarm.stamps and swarm.upload_status: their hang watchdog, and the parent their 300 s deadline', async () => {
-    const { calls, seen } = harness({ answer: resultOf([]) });
+    const { calls, seen } = harness({
+      answer: (method, params) => {
+        if (method === 'swarm.upload_status') return resultOf(A_TAG);
+        return resultOf(params.id ? A_BATCH : []);
+      },
+    });
     expect(await calls.stamps()).toEqual([]);
     expect(seen.requests[0]).toMatchObject({ method: 'swarm.stamps', params: {} });
     expect(seen.requests[0].options).toMatchObject({ watchdogMs: 315_000 });
@@ -386,9 +600,9 @@ describe('the request and its parent', () => {
       deadlineAt: 301_000,
       parts: null,
     });
-    await calls.stamps({ id: BATCH });
+    expect(await calls.stamps({ id: BATCH })).toEqual(A_BATCH);
     expect(seen.requests[1].params).toEqual({ id: BATCH });
-    await calls.uploadStatus(9);
+    expect(await calls.uploadStatus(9)).toEqual(A_TAG);
     expect(seen.requests[2]).toMatchObject({
       method: 'swarm.upload_status',
       params: { tag_uid: 9 },
@@ -418,5 +632,52 @@ describe('the request and its parent', () => {
     const none = createSwarmOwnCalls({ coreClient: () => null, swarmShell: () => null });
     await expect(none.stamps()).rejects.toMatchObject({ code: 'core_unavailable' });
     await expect(none.call('swarm.nothing', {})).rejects.toThrow(TypeError);
+  });
+
+  test("a malformed swarm.stamps or swarm.upload_status result is the core's fault, released once read", async () => {
+    // Codex's cases: a list of one empty object; an empty object.
+    const { calls, seen } = harness({
+      answer: (method) => resultOf(method === 'swarm.stamps' ? [{}] : {}),
+    });
+    await expect(calls.stamps()).rejects.toThrow(INTERNAL);
+    await expect(calls.uploadStatus(9)).rejects.toThrow(INTERNAL);
+    expect(seen.released).toBe(2);
+  });
+
+  describe("the core's history-store error for a publish with history", () => {
+    const spec = {
+      kind: 'data',
+      parts: [{ bytes: new Uint8Array([1]) }],
+      deferred: false,
+      history: { type: 'data', name: 'Text' },
+    };
+    const failed = errorOf({ message: HISTORY_FAILED_MESSAGE });
+
+    test('before any ask naming it, the row was never inserted: a HistoryInsertError', async () => {
+      const { calls, seen } = harness({ answer: failed, asked: false });
+      const thrown = await calls.publish(spec).catch((err) => err);
+      expect(thrown).toBeInstanceOf(HistoryInsertError);
+      expect(thrown).not.toBeInstanceOf(CoreError);
+      expect(thrown.message).toBe('The publish history could not be read or written');
+      expect(seen.released).toBe(1);
+    });
+
+    test('after an ask, without history, with another member or text, or with no count, it is the error it was', async () => {
+      for (const [options, publish] of [
+        [{ answer: failed, asked: true }, spec],
+        [{ answer: failed, asked: false }, without(spec, 'history')],
+        [{ answer: errorOf({ message: HISTORY_FAILED_MESSAGE, code: 'X' }), asked: false }, spec],
+        [{ answer: errorOf({ message: `${HISTORY_FAILED_MESSAGE}.` }), asked: false }, spec],
+        [{ answer: failed }, spec],
+      ]) {
+        const { calls } = harness(options);
+        const thrown = await calls.publish(publish).catch((err) => err);
+        expect(thrown).toBeInstanceOf(Error);
+        expect(thrown).not.toBeInstanceOf(HistoryInsertError);
+      }
+      // A malformed answer is the core's fault, whatever the count.
+      const { calls } = harness({ answer: { result_typed: { nonsense: true } }, asked: false });
+      await expect(calls.publish(spec)).rejects.toThrow(INTERNAL);
+    });
   });
 });

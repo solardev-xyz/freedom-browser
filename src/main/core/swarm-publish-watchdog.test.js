@@ -15,6 +15,11 @@
  *   for the node's reply plus the margin, and so does its upload's body
  *   terminal, after which the core waits that long for the node's answer.
  * - **Never held, ended by its answer.**
+ * - **The row's insert:** the core's history-store error, answered before
+ *   it asked anything naming the publish, is the row's insert failing
+ *   (`HistoryInsertError`, which freedom://publish lets reject the invoke);
+ *   answered after an ask (here a ready check main refuses), it is a later
+ *   write's, the error it was. The executor counts the asks.
  */
 
 jest.mock('electron', () => ({ app: { isPackaged: false } }), { virtual: true });
@@ -44,7 +49,11 @@ const {
   PUBLISH_PROGRESS_MS,
   PUBLISH_WHOLE_CALL_MS,
 } = require('./swarm-shell');
-const { createSwarmOwnCalls } = require('./swarm-own-calls');
+const {
+  HISTORY_FAILED_MESSAGE,
+  HistoryInsertError,
+  createSwarmOwnCalls,
+} = require('./swarm-own-calls');
 const { SwarmIoPool } = require('./swarm-io-pool');
 const { antBackend } = require('../swarm/bzz-protocol');
 const { fakeClock, startSwarmCore, until } = require('../../../test/helpers/fake-swarm-core');
@@ -342,5 +351,43 @@ describe("swarm.publish's watchdog: 75 s after its last progress, 315 s for a wh
     await clock.advance(75_000);
     expect(core.killed).toBe('SIGKILL');
     hold();
+  });
+
+  describe("the core's history-store error: the row's insert before any ask, a later write's after one", () => {
+    const historyFailed = {
+      error_typed: { object: [['message', { string: HISTORY_FAILED_MESSAGE }]] },
+    };
+
+    test('answered before the core asked anything naming it: a HistoryInsertError', async () => {
+      await start();
+      const core = harness.core();
+      const p = await publishing();
+      core.respond(p.id, historyFailed);
+      const { error } = await p.answer;
+      expect(error).toBeInstanceOf(HistoryInsertError);
+      expect(error.message).toBe('The publish history could not be read or written');
+      expect(harness.shell.stats().parents).toBe(0);
+    });
+
+    test('answered after an ask naming it: the error it was', async () => {
+      await start();
+      const core = harness.core();
+      const p = await publishing();
+      const ready = core.ready(p.id, 'publish');
+      await until(() => core.reply(ready), 'the refusal');
+      core.respond(p.id, historyFailed);
+      const { error } = await p.answer;
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(HistoryInsertError);
+      expect(error.message).toBe(HISTORY_FAILED_MESSAGE);
+      // An ask for another request, here the one that ended (a race),
+      // names this one not.
+      const q = await publishing();
+      const other = core.api(p.id, calls.stamps());
+      await until(() => core.reply(other), 'the other refusal');
+      expect(core.reply(other).error).toMatchObject({ code: 'invalid_argument' });
+      core.respond(q.id, historyFailed);
+      expect((await q.answer).error).toBeInstanceOf(HistoryInsertError);
+    });
   });
 });
