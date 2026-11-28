@@ -559,6 +559,26 @@ describe("the board's calls, named by main's token", () => {
   });
 });
 
+describe('a busy Safe', () => {
+  test('a start while a step holds the Safe is refused with nothing sent, and leaves no page listener behind', async () => {
+    await setup();
+    const contents = fakeWebContents(3);
+    safeApprovals.beginStep(5);
+    try {
+      for (let i = 0; i < 3; i++) {
+        await expect(startByToken()).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+      }
+      expect(contents.listenerCount('destroyed')).toBe(0);
+      expect(contents.listenerCount('did-navigate')).toBe(0);
+      expect(sent('safe.message_start')).toHaveLength(0);
+    } finally {
+      safeApprovals.endStep(5);
+    }
+    // The step over, the same request starts.
+    await startByToken();
+  });
+});
+
 describe("the session follows its page", () => {
   test('navigating or closing the page cancels it in the core', async () => {
     await setup();

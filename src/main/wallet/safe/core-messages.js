@@ -216,7 +216,13 @@ async function start({ safeIndex, request, display, requester, authorization, pa
     if (getSession(safeIndex)) throw codedError(EXISTS, SAFE_MESSAGE_EXISTS);
   }
   const watch = watchRequester(requester);
-  safeApprovals.beginStep(safeIndex);
+  try {
+    safeApprovals.beginStep(safeIndex);
+  } catch (err) {
+    // A busy Safe: nothing started, and the page's listeners go with it.
+    watch.stop();
+    throw err;
+  }
   try {
     if (watch.gone()) throw pageWentAway();
     const answer = await vault().safe.messageStart(
