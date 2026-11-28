@@ -34,9 +34,9 @@
  *     succeeds, and window.swarm on the core answers the reference the JS
  *     backend's call got: the manifest of exactly the page's paths, bytes
  *     and index document with the types the node gives them (Bee takes a
- *     file's type from Go's table and the host's, so on Windows and macOS
- *     a `.js` file is `application/javascript`), which is the root antd
- *     assembled exactly where those types are antd's (Linux). From that
+ *     file's type from Go's table and the host's, so on Windows a `.js`
+ *     file is `application/javascript`), which is the root antd assembled
+ *     exactly where those types are antd's (Linux, macOS). From that
  *     uploaded root every nested path resolves with the chunks the node
  *     stored, nothing seeded (only the two uploads ever wrote to it):
  *     the manifest walked over window.swarm's `readChunk` through the core
@@ -780,8 +780,8 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
       expect(upload.headers['swarm-postage-batch-id']).toBe(shared.bee.batch);
       expect(upload.headers['swarm-index-document']).toBe(INDEX);
       // The type the node gives each path, from its extension: Go's table
-      // and the host's (antd's on Linux; `.js` is application/javascript on
-      // Windows and macOS).
+      // and the host's (antd's on Linux and macOS; on Windows the registry's,
+      // where `.js` is application/javascript).
       for (const file of NESTED) {
         const res = await fetch(`${shared.beeTap.url}/bzz/${answer.result.reference}/${file.path}`);
         expect(res.status).toBe(200);
