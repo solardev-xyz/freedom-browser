@@ -118,6 +118,24 @@ const MAIN_HEADERS = [
 const isMain = ([name, value]) => MAIN_HEADERS.some(([n, v]) => n === name && v === value);
 
 /**
+ * Main's own headers on a request the core's executor sent, before `wire`
+ * leaves them out (Codex round 3 on #1390): both are required, so a
+ * regression that stops sending one fails. A ranged read's
+ * `accept-encoding` reaches the node as `identity, identity`, Node's fetch
+ * adding its own to a request with `Range` (the Fetch standard).
+ */
+function mainHeadersMissing(request) {
+  const headers = request.headers || [];
+  const value = (name) => headers.find(([n]) => n === name)?.[1];
+  const missing = [];
+  if (value('accept') !== MAIN_HEADERS[0][1]) missing.push('accept');
+  const encoding = value('accept-encoding');
+  const ranged = value('range') !== undefined;
+  if (!(encoding === 'identity' || (ranged && encoding === 'identity, identity'))) missing.push('accept-encoding');
+  return missing.length ? `lacks main's ${missing.join(' and ')}` : null;
+}
+
+/**
  * A request as both backends are compared: what crossed to the node. On
  * `core`, main's executor makes every call, with main's own headers
  * first, so those headers are left out on both sides, and so is the
@@ -422,6 +440,12 @@ function compareCase(backend, kase, record) {
     const ran = record.steps[k];
     if (ran.skipped) return;
     const got = 'error' in ran ? { error: ran.error } : { result: ran.result };
+    if (backend === 'core') {
+      for (const r of ran.requests) {
+        const lack = mainHeadersMissing(r);
+        if (lack) problems.push(`step ${k}: ${r.method} ${r.path} ${lack}`);
+      }
+    }
     const gotRequests = ran.requests.map((r) => wire(r, backend));
     for (const r of gotRequests) if (r.soc_valid === false) problems.push(`step ${k}: a SOC whose signature isn't its owner's: ${r.path}`);
     let wantRequests = backend === 'core' ? coreWants(step.requests || []) : (step.requests || []).map((r) => wire(r));
