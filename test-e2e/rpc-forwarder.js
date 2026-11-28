@@ -15,6 +15,13 @@
 // broadcast goes to one endpoint (Direct walks them in order), so the other
 // fork never sees the Safe's deployment and the two never agree on its code;
 // and each mines its own blocks, so their receipts never agree either.
+//
+// A spec can have a forwarder refuse some methods for a while (`refuse`):
+// each call of one is answered with a JSON-RPC error, never forwarded. On
+// the core's Safe backend that is how a spec gives the identity core the fee
+// evidence it wants (safe-accounts.spec.js): the core judges an executor's
+// fee on the fee reads it made itself, through these endpoints, never on a
+// figure main sends.
 
 const http = require('http');
 
@@ -29,6 +36,27 @@ function describeCall(body) {
   } catch {
     return '(unparsed body)';
   }
+}
+
+/** The methods a JSON-RPC body calls (a batch's each). */
+function methodsOf(body) {
+  try {
+    const call = JSON.parse(body.toString('utf8'));
+    return (Array.isArray(call) ? call : [call]).map((c) => c?.method);
+  } catch {
+    return [];
+  }
+}
+
+/** A refusal of each call in `body`: the error a node gives a method it doesn't serve. */
+function refusalOf(body) {
+  const answer = (c) => ({
+    jsonrpc: '2.0',
+    id: c?.id ?? null,
+    error: { code: -32601, message: `${c?.method} is refused by this forwarder` },
+  });
+  const call = JSON.parse(body.toString('utf8'));
+  return JSON.stringify(Array.isArray(call) ? call.map(answer) : answer(call));
 }
 
 /** The JSON-RPC error in an answer, if any, for the log. */
@@ -49,15 +77,32 @@ function describeError(body) {
  * the target took, and its status or error, so a failed attempt's
  * diagnostics show what the fork answered (#1101).
  *
- * @returns {Promise<{url: string, close: () => Promise<void>}>}
+ * `refuse(methods)` makes it refuse those methods from then on (a body
+ * calling any of them is answered with an error for each call, logged as
+ * refused); `refuse([])` forwards everything again.
+ *
+ * @returns {Promise<{url: string, refuse: (methods: string[]) => void, close: () => Promise<void>}>}
  */
 function startRpcForwarder(targetUrl, port, { log = () => {} } = {}) {
+  let refused = new Set();
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', async () => {
       const request = Buffer.concat(chunks);
       const started = Date.now();
+      if (methodsOf(request).some((method) => refused.has(method))) {
+        let body;
+        try {
+          body = refusalOf(request);
+        } catch {
+          body = JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'unparsed' } });
+        }
+        log(`${describeCall(request)} -> refused`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(body);
+        return;
+      }
       try {
         const upstream = await fetch(targetUrl, {
           method: 'POST',
@@ -86,6 +131,10 @@ function startRpcForwarder(targetUrl, port, { log = () => {} } = {}) {
     server.listen(port, '127.0.0.1', () =>
       resolve({
         url: `http://127.0.0.1:${port}`,
+        refuse: (methods) => {
+          refused = new Set(methods);
+          log(`refusing ${methods.length ? methods.join(', ') : 'nothing'} from now on`);
+        },
         close: () =>
           new Promise((done) => {
             server.close(() => done());

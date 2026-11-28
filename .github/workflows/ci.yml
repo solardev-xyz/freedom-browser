@@ -1366,6 +1366,31 @@ jobs:
           FREEDOM_CORED_LEDGER_TEST: '1'
           FREEDOM_CORE_LEDGER_VECTORS: ${{ github.workspace }}/.freedom-core-ledger/vectors
 
+      # freedom-core design 0016, SAFE-3's gates (the plan's PR 10): every
+      # Safe flow main drives on the core's Safe and Ledger backends, end to
+      # end through the pinned core, over a JSON-RPC stub with two distinct
+      # endpoints (one Gnosis behind both, so the core's quorum agrees and its
+      # eight Safe reads are verified; it runs a deployment and an
+      # execTransaction as the factory and the Safe check them). Create;
+      # status; the activation signed with the core's executor-send token and
+      # marked on both endpoints' receipt; the wallet's own send prepared
+      # ("Safe transaction #0"), approved and proposed; a Ledger owner's
+      # signature through main's relay and HID layer, the reference's device
+      # (ledger.json's typed-safe-tx) signing the live SafeTx; a vault owner's;
+      # the rollback (on js, main's pending-store.js reads the core's file and
+      # shows the same entry, mark and signatures); the execution; a discard;
+      # a page's personal_sign through the core's prompt; and a site's send,
+      # read before its prompt, proposed under the page and executed past the
+      # site's guard. Only Electron, the switches and identity-manager.js's
+      # reads of the wallet list are stand-ins.
+      - name: SAFE-3's gates, Safes on the core (real freedom-cored, two-endpoint stub)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 10
+        run: npx jest src/main/wallet/safe/safe-core.integration.test.js
+        env:
+          FREEDOM_CORED_SAFE_TEST: '1'
+          FREEDOM_CORE_LEDGER_VECTORS: ${{ github.workspace }}/.freedom-core-ledger/vectors
+
       # The key store through main (freedom-core design 0013, PRF-2): main's
       # `shell.keystore` executor and the drain of the forget file, against
       # the same binary. On macOS, the helper against a temporary keychain
@@ -2114,8 +2139,9 @@ jobs:
       # `swarm-shell-proxy` (freedom-core design 0015, SWM-5's gates) plays
       # every honest scenario of the pinned core's Swarm grammar through
       # main's executor against a remote node behind a session proxy, so it
-      # needs the `test` job's Swarm vectors, at the same commit.
-      - name: Check out freedom-core's Swarm vectors
+      # needs the `test` job's Swarm vectors, at the same commit. The Safe
+      # fork test below (SAFE-3's PR 10) plays ledger.json's Ledger.
+      - name: Check out freedom-core's Swarm and Ledger vectors
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2127,6 +2153,7 @@ jobs:
             vectors/swarm-grammar.json
             vectors/swarm.json
             vectors/dweb-verify.json
+            vectors/ledger.json
           sparse-checkout-cone-mode: false
 
       - name: Run the external gateway, ENS CCIP-Read, Colibri fetch and Swarm POST and executor proxy integration tests
@@ -2248,22 +2275,52 @@ jobs:
             test-e2e/safe-dapp.spec.js \
             test-e2e/approvals-safe.spec.js
 
-      # A dApp's Safe on the core's Safe backend (freedom-core design 0016,
-      # SAFE-3's PR 7): main's hello declares `safe3`, so the site's send is
-      # prepared by the real freedom-cored before its prompt ("Safe
-      # transaction #0" in the panel), its token, bound to the page and that
-      # SafeTx, is proposed under the page, and the board executes it with
-      # the core's executor-send token, against the same anvil fork and its
-      # forwarder (two endpoints for the core's verified reads). The other
-      # Safe specs join it on the core with SAFE-3's PR 10.
-      - name: Run Safe dApp E2E on the core's Safe backend
+      # The Safe specs on the core's Safe and Ledger backends (freedom-core
+      # design 0016, SAFE-3's gates, the plan's PR 10): main's hello declares
+      # `safe3`, and every Safe step is the real freedom-cored's, against the
+      # same anvil fork through two forwarders (two endpoints for the core's
+      # verified reads). The wizard's create, the activation and a send
+      # (`safe-accounts`), with the fee check the core makes on its own
+      # evidence: the spec gives it none, then one endpoint's word, through
+      # the forwarders, and the card and the panel ask as on js; a dApp's
+      # EIP-1271 signature and send (`safe-dapp`: prepared before its prompt,
+      # "Safe transaction #0", proposed under the page, executed with the
+      # core's executor-send token); the boards in the approvals document
+      # (`approvals-safe`); and the send screen pinned to Gnosis
+      # (`safe-send-chain`). `safe-phone.spec.js` stays out: the core refuses
+      # a phone owner, and whether Safes wait for one is the user's question
+      # (the plan's point 13), besides #452.
+      - name: Run Safe E2E on the core's Safe and Ledger backends
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           FREEDOM_SAFE_E2E_REQUIRED: '1'
           FREEDOM_SAFE_BACKEND: core
+          FREEDOM_LEDGER_BACKEND: core
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-safe-core \
-            test-e2e/safe-dapp.spec.js
+            test-e2e/safe-accounts.spec.js \
+            test-e2e/safe-dapp.spec.js \
+            test-e2e/approvals-safe.spec.js \
+            test-e2e/safe-send-chain.spec.js
+
+      # A Safe on the anvil fork through the real freedom-cored (SAFE-3's PR
+      # 10, the plan's point 11): main's own modules on the core's Safe and
+      # Ledger backends, the vault's accounts and the reference's Ledger
+      # (behind main's relay and HID layer over a fake node-hid) as owners,
+      # anvil and a forwarder as chain 100's two endpoints. The core's record
+      # names the address the real factory deploys at, and the deployment
+      # keeps funds sent there before it; a 2-of-3 SafeTx the Ledger and a
+      # vault owner signed, executed by the real Safe with the core's token,
+      # moves them; a page's personal_sign passes the real Safe's
+      # isValidSignature. FREEDOM_SAFE_FORK_REQUIRED=1 turns a missing anvil,
+      # fork RPC, binary or vector into a failure, not a green skip.
+      - name: Safe on the fork through the core (real freedom-cored, anvil)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 10
+        env:
+          FREEDOM_SAFE_FORK_REQUIRED: '1'
+          FREEDOM_CORE_LEDGER_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
+        run: npx jest src/main/wallet/safe/__tests__/integration/safe-fork.test.js
 
       # ── was the `e2e-settings` job ──
       # Settings navigation, persistence, and chain policy are shipped control

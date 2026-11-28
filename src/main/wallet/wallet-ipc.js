@@ -717,11 +717,12 @@ function registerWalletIpc() {
   // the fee check stopped for, with that fee (safe-executor.js).
   //
   // On the core's Safe backend (freedom-core design 0016, SAFE-3) the core
-  // judges the fee and mints the executor's token itself: the fee is asked
-  // in this window's approvals document (`sender`), or, with it off, on the
-  // card, whose confirmation returns the ask's ID, `options.feeAskId`, which
-  // main checks against the ask it holds for this Safe and this window
-  // (safe/core-accounts.js). A confirmation of the chrome's is burnt unused.
+  // judges the fee and mints the executor's token itself: the fee is shown
+  // on the card, whose confirmation returns the ask's ID, `options.feeAskId`,
+  // which main checks against the ask it holds for this Safe and this window
+  // (`sender`), then asked in this window's approvals document while it is
+  // on (safe/core-accounts.js). A confirmation of the chrome's is burnt
+  // unused.
   handle('wallet:activate-safe', async (event, index, options) => {
     try {
       const { activateSafe } = require('./safe/safe-service');

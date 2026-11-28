@@ -3,9 +3,13 @@
 // Boots freedom in test-harness mode with a PRE-SEEDED vault holding two
 // mnemonic accounts (a Safe needs two owners), and points EVERY Gnosis
 // RPC the app resolves at a local anvil fork of the real chain: the
-// registry's user-layer network-config.json adds the anvil endpoint and
-// removes the builtin public ones, so the whole app — status quotes,
-// deployment, execTransaction, balance display — runs against the fork.
+// registry's user-layer network-config.json adds two endpoints for the
+// fork, each a forwarder to anvil (rpc-forwarder.js), and removes the
+// builtin public ones, so the whole app — status quotes, deployment,
+// execTransaction, balance display — runs against the fork. A spec can
+// have either endpoint refuse the fee reads (`anvil.refuseFeeReads`), which
+// is how it gives the identity core, which judges a Safe executor's fee on
+// its own reads, the evidence it wants.
 //
 // Needs `anvil` (foundry) on PATH and network access to the public fork
 // RPC; the spec skips cleanly otherwise (CI has neither).
@@ -28,9 +32,12 @@ const { startRpcForwarder } = require('./rpc-forwarder');
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-2026!';
 const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
 const ANVIL_PORT = 18847; // distinct from the jest fork tests (18845/6)
-// The fork's second endpoint, a forwarder (rpc-forwarder.js).
+// The fork's two endpoints, each a forwarder to it (rpc-forwarder.js).
+const FRONT_PORT = 18851;
 const FORWARDER_PORT = 18849;
 const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
+// The reads a fee quote and the fee check's evidence are made of.
+const FEE_READS = ['eth_gasPrice', 'eth_maxPriorityFeePerGas', 'eth_feeHistory'];
 
 // Builtin keyless Gnosis rpc sources to remove so nothing escapes to the
 // live chain (keyed sources resolve to nothing without API keys).
@@ -253,13 +260,25 @@ const test = base.extend({
     }
   },
 
+  // `url` is anvil itself, for the spec's own reads; the app reads the fork
+  // through `frontUrl` and `forwarderUrl`. `refuseFeeReads(endpoints)` has
+  // the endpoints named ('first', 'second') refuse FEE_READS from then on,
+  // and the others forward them again (`[]`: both forward).
   anvil: async ({ diagnostics }, use) => {
     const proc = await startAnvilFork(diagnostics);
+    const front = await startRpcForwarder(ANVIL_URL, FRONT_PORT, {
+      log: (line) => diagnostics.add('front', line),
+    });
     const forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT, {
       log: (line) => diagnostics.add('forwarder', line),
     });
-    await use({ url: ANVIL_URL, forwarderUrl: forwarder.url, rpc });
+    const refuseFeeReads = (endpoints) => {
+      front.refuse(endpoints.includes('first') ? FEE_READS : []);
+      forwarder.refuse(endpoints.includes('second') ? FEE_READS : []);
+    };
+    await use({ url: ANVIL_URL, frontUrl: front.url, forwarderUrl: forwarder.url, rpc, refuseFeeReads });
     await forwarder.close();
+    await front.close();
     diagnostics.add('fixture', `stopping anvil pid ${proc.pid}`);
     proc.kill();
   },
@@ -295,11 +314,11 @@ const test = base.extend({
     fs.writeFileSync(
       freedomPath(userDataDir, 'network-config.json'),
       JSON.stringify({
-        // Two endpoints for the one fork: anvil itself and a forwarder on a
-        // second loopback port (rpc-forwarder.js says why not two anvils),
+        // Two endpoints for the one fork: a forwarder to anvil on each of
+        // two loopback ports (rpc-forwarder.js says why not two anvils),
         // named as two providers by FREEDOM_E2E_PROVIDER_IDENTITIES below.
         endpointSources: {
-          'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.url } },
+          'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.frontUrl } },
           'e2e-anvil-gnosis-forwarder': {
             role: 'rpc',
             keyed: false,
@@ -351,13 +370,13 @@ const test = base.extend({
         FREEDOM_TEST_MODE: '1',
         FREEDOM_TEST_USER_DATA: userDataDir,
         // Test-only seam (src/main/networks/e2e-provider-identities.js).
-        // Every loopback endpoint is one provider, so anvil and the
-        // forwarder in front of it would be one quorum member; this names
-        // them as two, so the fork's answers make the verified quorum a
-        // Safe's activation needs. Only an unpackaged app honors it, and the
-        // label it yields is this fixture's say-so, not two providers.
+        // Every loopback endpoint is one provider, so the two forwarders
+        // in front of anvil would be one quorum member; this names them as
+        // two, so the fork's answers make the verified quorum a Safe's
+        // activation needs. Only an unpackaged app honors it, and the label
+        // it yields is this fixture's say-so, not two providers.
         FREEDOM_E2E_PROVIDER_IDENTITIES: JSON.stringify({
-          [anvil.url]: 'e2e-anvil',
+          [anvil.frontUrl]: 'e2e-anvil',
           [anvil.forwarderUrl]: 'e2e-anvil-forwarder',
         }),
         FREEDOM_IDENTITY_DATA: identityDir,
