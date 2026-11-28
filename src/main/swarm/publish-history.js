@@ -9,7 +9,7 @@
  * SWM-9 plan's PR 6.4): main's own database, publish-history.sqlite, unless
  * this process's hello names `swarm_stores` (core-client.js
  * `swarmStoresNamed()`: a process on the core's Swarm backend, from SWM-7's
- * flip, PR 7.4; until then only tests). Then the history is the core's, and
+ * flip, PR 7.4; on `js`, no build's). Then the history is the core's, and
  * main never opens the database, its `-wal` and `-shm` files or the legacy
  * publish-history.json, whose one-shot import is the core's too (D10):
  * - the chrome's handlers (`registerPublishHistoryIpc`) relay to the core's
@@ -24,8 +24,8 @@
  * - every function below that opens the database throws, unrun (`getDb`).
  *   Among them are the JS provider's direct calls (swarm-provider-ipc.js's
  *   `addEntry` and `updateEntry`), which have no place on such a process:
- *   the JS provider can't run there (the plan's point 1; PR 7.4 sends its
- *   methods to the core).
+ *   the JS provider can't run there (the plan's point 1; from PR 7.4 its
+ *   methods go to the core, and it refuses to run there).
  */
 
 const log = require('../logger');
@@ -365,6 +365,8 @@ function rowToEntry(row) {
 }
 
 function addEntry(entry = {}) {
+  // Refused before its arguments are read, as every path here is.
+  assertMainStore();
   const startedAt = Date.now();
   const status = entry.status || 'uploading';
   const finalized = isFinalStatus(status);
@@ -388,6 +390,7 @@ function addEntry(entry = {}) {
 }
 
 function updateEntry(id, updates = {}) {
+  assertMainStore();
   const status = updates.status || null;
   const finalized = isFinalStatus(status);
 

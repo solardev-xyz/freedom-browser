@@ -8,9 +8,11 @@
  * freedom-cored as `swarm.request` in place of the JS backend's
  * `executeSwarmMethod`.
  *
- * **Unused until SWM-7's flip.** page-swarm.js's `execute` stays on the JS
- * backend (swarm-provider-ipc.js) until PR 7.4 selects this one on the
- * core's backend (`swarmCoreDependencies`); only tests select it before.
+ * **On the core's backend from SWM-7's flip** (PR 7.4): page-swarm.js's
+ * default deps select this one (`swarmCoreDependencies`) in a process
+ * whose Swarm backend is `core` (swarm/swarm-backend-kind.js, read once),
+ * whose hello names `swarm_stores`; on `js` its `execute` is the JS
+ * provider's (swarm-provider-ipc.js), which refuses to run on `core`.
  *
  *   - **The request** goes as `swarm.request { method, params, approval,
  *     deadline_ms }` under `page`, with the request's PageContext and, for a
@@ -358,9 +360,9 @@ function createSwarmCoreExecute(deps = {}) {
 
 /**
  * The deps page-swarm.js's `createSwarmDispatchers` takes on the core's
- * backend (PR 7.4 selects them): `execute` here, and a document's
- * subscriptions ended in the subscription registry itself, never through
- * the JS backend.
+ * backend, which its default deps select there (PR 7.4): `execute` here,
+ * and a document's subscriptions ended in the subscription registry
+ * itself, never through the JS backend.
  *
  * @param {object} [deps] `createSwarmCoreExecute`'s
  */

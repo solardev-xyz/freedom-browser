@@ -26,9 +26,15 @@
 // is terminated, that job fails, and the next job spawns a fresh worker.
 // A worker error/exit fails the in-flight job the same way. Every promise
 // returned by `mineSigner` therefore settles.
+//
+// Only on the JS backend: in a process whose Swarm backend is the core's
+// (swarm-backend-kind.js; SWM-7's flip, the SWM-6 to SWM-9 plan's PR 7.4)
+// the core derives GSOC keys itself, so `mineSigner` refuses there before
+// it queues a job, and no worker is ever started.
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const log = require('../logger');
+const { assertJsBackend } = require('./swarm-backend-kind');
 
 const WORKER_PATH = path.join(__dirname, 'gsoc-miner-worker.js');
 const MINE_TIMEOUT_MS = 15_000;
@@ -188,7 +194,9 @@ function enqueue(ownerKey, job) {
 }
 
 /**
- * Mine a GSOC signer off the main thread.
+ * Mine a GSOC signer off the main thread. On the core's Swarm backend it
+ * rejects with swarm-backend-kind.js's `SwarmBackendError`, nothing queued
+ * and no worker started: mining is the core's there.
  * @param {Uint8Array} targetOverlay
  * @param {Uint8Array} identifier
  * @param {number} proximity
@@ -198,6 +206,11 @@ function enqueue(ownerKey, job) {
  * @returns {Promise<string>} the signer's private key, hex
  */
 function mineSigner(targetOverlay, identifier, proximity, { owner, key } = {}) {
+  try {
+    assertJsBackend("Main's GSOC miner");
+  } catch (err) {
+    return Promise.reject(err);
+  }
   const ownerKey = String(owner || '');
   return new Promise((resolve, reject) => {
     const job = {

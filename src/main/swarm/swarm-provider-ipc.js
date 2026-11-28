@@ -49,6 +49,7 @@ const { isNoUsableBatchError } = require('./batch-errors');
 const { resolveSwarmSigner, getIdentityMode } = require('./swarm-signer');
 const { ETHEREUM_WALLET_MODE, ETHEREUM_WALLET_UNAVAILABLE } = require('./removed-identity-mode');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
+const { assertJsBackend } = require('./swarm-backend-kind');
 const log = require('electron-log');
 
 const LIMITS = {
@@ -445,7 +446,12 @@ function permissionFreeReadMeter(origin) {
 }
 
 /**
- * Execute a Swarm provider method.
+ * Execute a Swarm provider method: the JS backend's, which runs only in a
+ * process whose Swarm backend is `js` (swarm-backend-kind.js). On `core`
+ * (SWM-7's flip, PR 7.4) window.swarm goes through the core
+ * (page/page-swarm-core.js), and the feed store and publish history this
+ * provider writes are the core's: a call that reaches it there is main's
+ * bug, answered `-32603` with nothing read or written, never run.
  * @param {string} method
  * @param {*} params
  * @param {string} origin - The requester's attested key (page/page-swarm.js)
@@ -469,6 +475,8 @@ function permissionFreeReadMeter(origin) {
  */
 async function executeSwarmMethod(method, params, origin, meta) {
   try {
+    assertJsBackend('The JS Swarm provider');
+
     if (!method || typeof method !== 'string') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'Method is required' } };
     }

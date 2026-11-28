@@ -23,10 +23,19 @@
  * The executor's handlers are registered whichever runs, so a stray ask of
  * the core's is answered `ended` (an `unknown_method` would end the
  * connection); its registry admits no parent unless this says `core`.
+ *
+ * **The JS backend's own paths refuse to run on `core`** (SWM-7's flip, the
+ * SWM-6 to SWM-9 plan's PR 7.4 and section 5): there window.swarm goes
+ * through the core, the hello names `swarm_stores`, and the core mines GSOC
+ * keys, so the JS provider (swarm-provider-ipc.js `executeSwarmMethod`)
+ * and main's GSOC miner (gsoc-miner.js) assert the backend
+ * (`assertJsBackend`) before anything of theirs runs. A call that reaches
+ * one is main's bug, answered as an internal error, never run as a
+ * fallback. Main's writers of the three Swarm stores refuse the same way,
+ * by the hello's list (core-client.js `swarmStoresNamed()`).
  */
 
 const { app } = require('electron');
-const log = require('../logger');
 
 const KINDS = new Set(['js', 'core']);
 
@@ -40,7 +49,9 @@ function readSwarmBackendKind({ packaged = Boolean(app?.isPackaged), env = proce
   if (KINDS.has(kind)) return kind;
   if (warnedBackend !== kind) {
     warnedBackend = kind;
-    log.warn(`[Swarm] Unknown FREEDOM_SWARM_BACKEND=${kind}; using the JS backend`);
+    // Loaded only to warn: the modules that assert the backend
+    // (`assertJsBackend`) load this one with them.
+    require('../logger').warn(`[Swarm] Unknown FREEDOM_SWARM_BACKEND=${kind}; using the JS backend`);
   }
   return 'js';
 }
@@ -51,4 +62,20 @@ function swarmBackendKind() {
   return chosen;
 }
 
-module.exports = { swarmBackendKind, readSwarmBackendKind };
+/**
+ * Throws, before anything of `what` runs, in a process whose Swarm backend
+ * is the core's: `what` is one of the JS backend's own paths, which can't
+ * run there (PR 7.4). The error is a `SwarmBackendError`, code
+ * `swarm_backend_core`, whose message names `what`.
+ *
+ * @param {string} what - the path, as its message names it
+ */
+function assertJsBackend(what) {
+  if (swarmBackendKind() !== 'core') return;
+  const err = new Error(`${what} can't run on the core's Swarm backend`);
+  err.name = 'SwarmBackendError';
+  err.code = 'swarm_backend_core';
+  throw err;
+}
+
+module.exports = { swarmBackendKind, readSwarmBackendKind, assertJsBackend };

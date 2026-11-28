@@ -192,13 +192,17 @@ const STORES = Object.freeze([...SET_A_STORES, SWARM_STORES]);
 const STORE_MOVED = Object.freeze([...SET_A_STORES]);
 
 /**
- * Whether a hello names `swarm_stores` on the core's Swarm backend: false
- * until SWM-7's flip (the SWM-6 to SWM-9 plan's PR 7.4), which sets it in
- * the change that makes main's writers of the three files unable to run on
- * `core`. Until then only tests name the Swarm stores
- * (`storeMovedFor(backend, { swarmStores: true })`).
+ * Whether a hello names `swarm_stores` on the core's Swarm backend: true
+ * from SWM-7's flip (the SWM-6 to SWM-9 plan's PR 7.4), the change that
+ * sends window.swarm through the core (page/page-swarm.js's default deps
+ * select page/page-swarm-core.js's there) and makes main's writers of the
+ * three files unable to run on `core`: the JS provider
+ * (swarm/swarm-provider-ipc.js `executeSwarmMethod`) and the store modules'
+ * own paths refuse there, unrun. On `js` no hello names them until SWM-9.
+ * Tests may still choose another list (`storeMovedFor(backend, {
+ * swarmStores })`).
  */
-const SWARM_STORES_NAMED = false;
+const SWARM_STORES_NAMED = true;
 
 /**
  * The stores a hello names in `store_moved` for a process whose Swarm
@@ -214,8 +218,10 @@ const SWARM_STORES_NAMED = false;
  * backend is read once, at the process's first ask
  * (`swarmBackendKind()`), so the list is fixed for the process, and every
  * hello it sends names the same stores. `swarm_stores` is named only for
- * `core`, and only once `swarmStores` is true (`SWARM_STORES_NAMED`, false
- * in every build until PR 7.4). Throws a TypeError for another backend.
+ * `core`, and only while `swarmStores` is true (`SWARM_STORES_NAMED` by
+ * default: from PR 7.4, every development build on `core`; a packaged
+ * build always runs `js` until SWM-9). Throws a TypeError for another
+ * backend.
  *
  * @param {'js'|'core'} backend
  * @param {{ swarmStores?: boolean }} [options]
@@ -237,9 +243,8 @@ function storeMovedFor(backend, { swarmStores = SWARM_STORES_NAMED } = {}) {
  * to pick their writer: their own file on the JS backend, the core's typed
  * calls (core/swarm-stores.js) once it is true. It is the hello's own
  * list, `storeMovedFor` the latched backend, so it is fixed for the
- * process. While no backend names the stores (`SWARM_STORES_NAMED` false,
- * every build until PR 7.4) it is false without reading the switch, so a
- * module that asks neither latches it nor loads it.
+ * process: true exactly on `core` (from PR 7.4), false on `js`. Asking it
+ * latches the switch if nothing has yet.
  *
  * @returns {boolean}
  */
@@ -497,8 +502,8 @@ class CoreClient extends ServiceClient {
     const grantArgs = options.grantArgs !== false;
     const args = grantArgs ? withGrantArgs(options.args, root, userData) : options.args;
     // The hello's stores: set A, and the Swarm stores for a process the
-    // switch, read once, runs on the core (`storeMovedFor`; none until
-    // SWM-7's flip).
+    // switch, read once, runs on the core (`storeMovedFor`; from SWM-7's
+    // flip).
     const backend = require('../swarm/swarm-backend-kind').swarmBackendKind();
     // SAFE-3's `safe3` (design 0016, C1): for a process the Safe switch,
     // read once, runs on the core, and never on js.

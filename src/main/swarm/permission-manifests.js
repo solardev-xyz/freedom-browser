@@ -8,7 +8,7 @@
  * to SWM-9 plan's PR 6.3 and its points 5 and 6): main's own file,
  * swarm-manifest-grants.json, unless this process's hello names
  * `swarm_stores` (core-client.js `swarmStoresNamed()`: a process on the
- * core's Swarm backend, from SWM-7's flip, PR 7.4; until then only tests).
+ * core's Swarm backend, from SWM-7's flip, PR 7.4; on `js`, no build's).
  * Then the store, its decisions and its projections onto the Swarm grants
  * are the core's `swarm.manifest`, and main never opens the file:
  * - the page path (page/page-swarm.js) runs `check`, `decide` and
@@ -30,7 +30,8 @@
  *   a projection the user changed (D17) and replays its own journal;
  * - every function below that reads or writes the file throws, unrun
  *   (`loadStore`, `saveStore`).
- * Off (every build until PR 7.4), all of this behaves as before the move.
+ * Off (the JS backend, every packaged build until SWM-9), all of this
+ * behaves as before the move.
  */
 
 const { ipcMain } = require('electron');

@@ -118,6 +118,18 @@
  * With PRQ-7d every window.swarm method is main's: the chrome's route
  * (`swarm:provider-execute`) and its manifest check and decide are gone,
  * and none of its channels writes a Swarm grant.
+ *
+ * **The backend** (freedom-core design 0015, SWM-7; the SWM-6 to SWM-9
+ * plan's PR 7.4, the flip): the dispatcher's checks, prompts and grant
+ * writes are the same on both, and only its backend call (`execute`) and a
+ * document's subscriptions differ, picked by the process's Swarm backend
+ * (swarm/swarm-backend-kind.js, read once per process). On `js` they are
+ * the JS provider's (swarm-provider-ipc.js `executeSwarmMethod`, with its
+ * four arguments). On `core` they are page-swarm-core.js's
+ * (`swarmCoreDependencies()`): each method goes to freedom-cored as
+ * `swarm.request`, the hello names `swarm_stores`, and the feed prompt's
+ * ops and the manifest check go to the core's stores; the JS provider and
+ * main's writers of the three files refuse to run there.
  */
 
 /** PRQ-7a: the methods that need no prompt and no manifest check. */
@@ -412,17 +424,42 @@ function feedChoices(view) {
   };
 }
 
+/**
+ * The backend's own deps for a process on `backend` (swarm-backend-kind.js):
+ * on `core`, page-swarm-core.js's (each method a `swarm.request`, a
+ * document's subscriptions ended in the subscription registry); on `js`,
+ * the JS provider's, its `executeSwarmMethod` with exactly its four
+ * arguments.
+ */
+function backendDependencies(backend) {
+  if (backend === 'core') return require('./page-swarm-core').swarmCoreDependencies();
+  const provider = () => require('../swarm/swarm-provider-ipc');
+  return {
+    execute: (method, params, key, meta) => provider().executeSwarmMethod(method, params, key, meta),
+    endDocumentSubscriptions: (document) => provider().endDocumentSubscriptions(document),
+    endDocumentSubscription: (document, id) => provider().endDocumentSubscription(document, id),
+  };
+}
+
 function defaultDependencies() {
   const permissions = () => require('../swarm/swarm-permissions');
-  const provider = () => require('../swarm/swarm-provider-ipc');
   const manifests = () => require('../swarm/permission-manifests');
   const feeds = () => require('../swarm/feed-store');
   const storeIsCore = () => require('../core/core-client').swarmStoresNamed();
+  // The backend's deps, picked at their first use by the process's Swarm
+  // backend, which is read once per process (swarm-backend-kind.js) and so
+  // never changes after: the two backends never serve one process.
+  let picked = null;
+  const backend = () => {
+    if (picked === null) picked = backendDependencies(require('../swarm/swarm-backend-kind').swarmBackendKind());
+    return picked;
+  };
   return {
     identityWalletEnabled: () => require('../settings-store').loadSettings()?.enableIdentityWallet === true,
-    // The JS backend's, with exactly its four arguments, until SWM-7's flip
-    // (PR 7.4) selects page-swarm-core.js's on the core's backend.
-    execute: (method, params, key, meta) => provider().executeSwarmMethod(method, params, key, meta),
+    // On `js` the JS provider's, with exactly its four arguments; on `core`
+    // page-swarm-core.js's, which also takes the request (SWM-7's flip, PR
+    // 7.4).
+    execute: (...args) => backend().execute(...args),
     // The grants the identity core writes (design 0012, APB-3), read as main
     // last read them; each write under `page` with the requester's
     // PageContext.
@@ -440,8 +477,8 @@ function defaultDependencies() {
     releaseManifest: (token) => manifests().releasePageManifest(token),
     guestContents: (id) => require('electron').webContents.fromId(id),
     inCustody: (guest) => require('./page-custody').guestInCustody(guest),
-    endDocumentSubscriptions: (document) => provider().endDocumentSubscriptions(document),
-    endDocumentSubscription: (document, id) => provider().endDocumentSubscription(document, id),
+    endDocumentSubscriptions: (document) => backend().endDocumentSubscriptions(document),
+    endDocumentSubscription: (document, id) => backend().endDocumentSubscription(document, id),
     isVaultUnlocked: () => require('../identity-manager').isVaultUnlocked(),
     // The feed prompt's ops: feed-store.js's own functions, each answered in
     // the run, while main writes swarm-feeds.json; once the feed store is
