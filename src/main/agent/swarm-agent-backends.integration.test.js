@@ -93,10 +93,14 @@ const chainBatch = (batchID, fields = {}) => ({
   ...fields,
 });
 
-/** The node's state at the start of each case: one batch, ready (block 100 ≥ 80 + 10). */
+/**
+ * The node's state at the start of each case: the batch the agent picks,
+ * a quarter used (so its room is below its size), and a shorter one; both
+ * ready (block 100 ≥ 80 + 10).
+ */
 function freshState() {
   return {
-    stamps: [stamp(BATCH, { batchTTL: 864000 }), stamp(OTHER_BATCH, { batchTTL: 86400 })],
+    stamps: [stamp(BATCH, { batchTTL: 864000, utilization: 16 }), stamp(OTHER_BATCH, { batchTTL: 86400 })],
     global: { [BATCH]: chainBatch(BATCH), [OTHER_BATCH]: chainBatch(OTHER_BATCH) },
     chain: { block: 100, chainTip: 100, totalAmount: '5000', currentPrice: '24000' },
     tag: 41,
@@ -174,9 +178,9 @@ const CASES = [
       world.node.state.global[BATCH].batchTTL = 0;
       const expired = await settle(readiness.inspect(BATCH, 10));
       world.node.state.global[BATCH].batchTTL = 864000;
-      world.node.state.stamps[0].depth = 17;
+      Object.assign(world.node.state.stamps[0], { depth: 17, utilization: 0 });
       const full = await settle(readiness.inspect(BATCH, 1_000_000));
-      world.node.state.stamps[0].depth = 22;
+      Object.assign(world.node.state.stamps[0], { depth: 22, utilization: 16 });
       world.node.state.chain = { block: '100', chainTip: 100, totalAmount: '5000', currentPrice: '24000' };
       // Thrown where bee-js's schema throws, its text zod's on js.
       const { error } = await settle(readiness.inspect(BATCH, 10));
@@ -212,6 +216,9 @@ const CASES = [
         estimatedCostPlur: String(100_000_000_000n * 6n),
         expiry: 'ok',
       });
+      // The room left, not the batch's size.
+      expect(record.preview.value.remainingBytes).toBeGreaterThan(0);
+      expect(record.preview.value.remainingBytes).toBeLessThan(7_070_000_000);
       expect(record.tight.error.code).toBe('POSTAGE_CAPACITY_INSUFFICIENT');
       expect(record.none.error.code).toBe('POSTAGE_UNAVAILABLE');
     },
@@ -245,14 +252,15 @@ const CASES = [
     },
   },
   {
-    name: 'publishes a folder with nested files and its index document',
+    name: 'publishes a folder with nested files and a nested index document',
     core: ['swarm.history', 'swarm.publish', 'swarm.stamps', 'swarm.upload_status'],
     run: (world) =>
-      world.publish([{ input: { resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa', indexDocument: 'index.html' }, source: SITE }]),
+      // Not index.html, which a node is told by default when one is at the top.
+      world.publish([{ input: { resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa', indexDocument: 'about/index.html' }, source: SITE }]),
     check(record) {
-      expect(record.outcomes[0].value.publication).toMatchObject({ state: 'completed', kind: 'folder', indexDocument: 'index.html' });
+      expect(record.outcomes[0].value.publication).toMatchObject({ state: 'completed', kind: 'folder', indexDocument: 'about/index.html' });
       expect(record.uploads[0].entries.map((e) => e.name)).toEqual(['index.html', 'assets/app.js', 'about/index.html']);
-      expect(record.uploads[0].headers['swarm-index-document']).toBe('index.html');
+      expect(record.uploads[0].headers['swarm-index-document']).toBe('about/index.html');
     },
   },
   {
@@ -457,7 +465,15 @@ async function startWorld(world, backend) {
   world.client = new CoreClient({
     spawn,
     command: BINARY,
-    args: ['serve', '--data-dir', path.join(world.dir, 'identity'), '--lock-dir', path.join(world.dir, 'locks')],
+    args: [
+      'serve',
+      '--data-dir',
+      path.join(world.dir, 'identity'),
+      '--lock-dir',
+      path.join(world.dir, 'locks'),
+      '--parent-pid',
+      String(process.pid),
+    ],
     log: SILENT,
     shellVersion: 'jest',
     grantRoot: world.dir,
@@ -508,7 +524,9 @@ async function startWorld(world, backend) {
       preparePublication: async (descriptor) => preparePublication(descriptor),
       postageReadiness: world.readiness(),
       publicationIdFactory: () => `swarm_pub_${publicationId.repeat(23)}${(ids++).toString(16)}`,
-      interactiveTimeoutMs: 60_000,
+      // A case that never gets its postage ends at the job's deadline.
+      interactiveTimeoutMs: 30_000,
+      jobTimeoutMs: 15_000,
       readinessPollMs: 10,
       retryDelayMs: 10,
       progressPollMs: 10,
