@@ -1,8 +1,9 @@
 /**
  * The wallet's own Safe sends on the core's Safe backend (freedom-core
- * design 0016, SAFE-3's PR 4a; FREEDOM_SAFE_BACKEND=core, development
- * builds only: safe-backend-kind.js). safe-transactions.js routes its steps
- * here on the core, and keeps today's protocol-kit path on js.
+ * design 0016, SAFE-3's PRs 4a and 4b; FREEDOM_SAFE_BACKEND=core,
+ * development builds only: safe-backend-kind.js). safe-transactions.js
+ * routes its steps here on the core, and keeps today's protocol-kit path
+ * on js.
  *
  * - **Prepared, approved, then minted.** A send the chrome composed is
  *   built by the core first, `safe.prepare` as main's own (`shell`): the
