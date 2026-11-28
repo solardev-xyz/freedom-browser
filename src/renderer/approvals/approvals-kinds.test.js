@@ -815,6 +815,7 @@ describe('the Safe signing boards (APS-3b)', () => {
     expect(asked.body.textContent).toContain("This transaction was started in an older version of Freedom, so its owners can't sign it here.");
     expect(asked.body.textContent).toContain('Discard it and send it again.');
     expect(asked.body.textContent).not.toContain('It executes once enough owners have signed');
+    expect(asked.body.textContent).not.toContain('Network fee');
     expect(radiosOf(asked.body)).toHaveLength(0);
     expect(asked.form.choices()).toEqual({ action: 'discard' });
     expect(boardChoices('send', below)({ action: 'send' })).toBeNull();
@@ -825,6 +826,7 @@ describe('the Safe signing boards (APS-3b)', () => {
     expect(sendable.approve).toBe('Send');
     expect(sendable.body.textContent).toContain('It already has enough signatures, so you can still send it.');
     expect(sendable.body.textContent).not.toContain('Sign with');
+    expect(sendable.body.textContent).toContain('Paid by Main Wallet');
     const labels = [];
     sendable.form.watch((label) => labels.push(label));
     expect(radiosOf(sendable.body)).toHaveLength(2);

@@ -1296,7 +1296,8 @@
         body.append(ui.note(lead), ui.own('From', accountText(view.safe)));
         txLines(ui, body, view);
         boardRows(view, ui, body);
-        if (view.step !== 'changed') {
+        // No fee where nothing can execute: a changed Safe, an older entry below its threshold.
+        if (view.step !== 'changed' && (view.step !== 'older' || olderSendable(view))) {
           body.append(
             ui.own('Network fee', view.executor ? `Paid by ${accountText(view.executor)} when it executes` : 'Paid by an owner account when it executes')
           );
