@@ -818,8 +818,9 @@ function ensureAntWalletIdentity(origin, options = {}) {
   return getOriginEntry(origin);
 }
 
-function activateIdentity(origin, identityId, { source = 'user' } = {}) {
+function activateIdentity(origin, identityId, options = {}) {
   const store = loadFeeds();
+  const { source = 'user' } = options;
   const key = normalizeOrigin(origin);
   const entry = store.origins[key];
   if (!entry) {
@@ -1053,8 +1054,9 @@ function assertFeedGrantable(origin) {
  * @param {string} origin
  * @param {{source?: string}} [options]
  */
-function grantFeedAccess(origin, { source = 'user' } = {}) {
+function grantFeedAccess(origin, options = {}) {
   const store = loadFeeds();
+  const { source = 'user' } = options;
   const key = normalizeOrigin(origin);
   if (!store.origins[key]) return;
   assertFeedGrantable(key);
@@ -1069,8 +1071,9 @@ function grantFeedAccess(origin, { source = 'user' } = {}) {
  * @param {string} origin
  * @param {{source?: string}} [options]
  */
-function revokeFeedAccess(origin, { source = 'user' } = {}) {
+function revokeFeedAccess(origin, options = {}) {
   const store = loadFeeds();
+  const { source = 'user' } = options;
   const key = normalizeOrigin(origin);
   if (!store.origins[key]) return;
   store.origins[key].feedGranted = false;

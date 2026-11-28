@@ -43,6 +43,7 @@ const {
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError } = require('./batch-errors');
 const { mineSigner, joinJob } = require('./gsoc-miner');
+const { assertJsBackend } = require('./swarm-backend-kind');
 const log = require('electron-log');
 
 // GSOC topic → address derivation (Freedom profile v1).
@@ -61,6 +62,12 @@ const log = require('electron-log');
 // Cross-provider convergence is not guaranteed by the SWIP; interop across
 // implementations exchanges the resolved `address` out of band.
 const GSOC_TARGET_CONTEXT = 'freedom-gsoc-v1:';
+// The JS backend's messaging (SWM-7's flip, PR 7.4): on the core's backend
+// its sends, derivation and identity refuse before reading their arguments
+// or calling the node (`assertJsBackend`); the core does them. The
+// subscription socket (`openSubscriptionSocket`) stays: the core's
+// `shell.swarm_subscribe` opens it through the registry.
+const MESSAGING = "Main's Swarm messaging";
 const GSOC_PROXIMITY = 12; // bee-js default; ~4k keccak attempts worst case
 
 // Ant enforces 4096 − 3×32 = 4000 bytes of usable PSS/GSOC payload
@@ -183,7 +190,9 @@ async function mineDerivation(topic, origin) {
  *   new-topic budget, or with the miner's `gsoc_mining_timeout` /
  *   `gsoc_mining_failed`.
  */
-async function deriveGsoc(topic, { origin } = {}) {
+async function deriveGsoc(topic, options = {}) {
+  assertJsBackend(MESSAGING);
+  const { origin } = options;
   const cached = gsocDerivationCache.get(topic);
   if (cached) return cached;
   const inFlight = gsocInFlight.get(topic);
@@ -231,6 +240,7 @@ function resolvePssTopicHex(topic) {
  * @returns {Promise<{ pssPublicKey: string, overlay: string }>}
  */
 async function getMessagingIdentity() {
+  assertJsBackend(MESSAGING);
   const bee = getBee();
   const addresses = await bee.connectivity.getNodeAddresses();
   return {
@@ -318,7 +328,9 @@ async function postPssSend(baseUrl, { batchId, topicHex, targets, recipient, dat
  * @param {{ topic: string, targets: string, recipient: string, data: string|Buffer }} params
  *   `targets` is lowercase hex; `recipient` is the 66-hex compressed key.
  */
-async function sendPss({ topic, targets, recipient, data }) {
+async function sendPss(params) {
+  assertJsBackend(MESSAGING);
+  const { topic, targets, recipient, data } = params;
   const bee = getBee();
   const batchId = await selectMessageBatch();
   // The checks bee-js's pssSend made, kept so their errors stay the same: the
@@ -341,7 +353,9 @@ async function sendPss({ topic, targets, recipient, data }) {
  * @param {{ topic: string, data: string|Buffer, origin?: string }} params
  * @returns {Promise<{ address: string }>}
  */
-async function sendGsoc({ topic, data, origin }) {
+async function sendGsoc(params) {
+  assertJsBackend(MESSAGING);
+  const { topic, data, origin } = params;
   const bee = getBee();
   const { identifier, signer, address } = await deriveGsoc(topic, { origin });
   const batchId = await selectMessageBatch();

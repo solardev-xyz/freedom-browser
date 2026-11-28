@@ -81,6 +81,55 @@ const METHODS = [
   [undefined, {}],
 ];
 
+/**
+ * Arguments whose every member read throws (non-enumerable, so a test's
+ * name, which JSON-encodes its arguments, doesn't read them): a path that
+ * reads its arguments before it refuses fails with this error instead of
+ * its refusal (Codex round 1 on #1392).
+ */
+const READ_TRAP = Object.defineProperties(
+  {},
+  Object.fromEntries(
+    ['source', 'owner', 'key', 'origin', 'committedUrl', 'eager', 'label', 'activate', 'identityMode', 'type', 'name', 'status'].map(
+      (member) => [
+        member,
+        {
+          enumerable: false,
+          get() {
+            throw new Error(`argument member ${member} read before the refusal`);
+          },
+        },
+      ]
+    )
+  )
+);
+
+/**
+ * An argument any use of which throws (a Proxy trapping every operation):
+ * a property read, a `typeof`-free coercion, an own-keys walk. A path that
+ * handles an argument before it refuses meets this error instead of its
+ * refusal (Codex round 2 on #1392). Every store path below is also played
+ * with each argument, and one more, replaced by it.
+ */
+const ARG_TRAP = new Proxy(
+  {},
+  Object.fromEntries(
+    ['get', 'has', 'ownKeys', 'getOwnPropertyDescriptor', 'getPrototypeOf', 'set', 'defineProperty', 'deleteProperty', 'apply'].map(
+      (trap) => [
+        trap,
+        () => {
+          throw new Error(`an argument was used (${trap}) before the refusal`);
+        },
+      ]
+    )
+  )
+);
+/** An argument as a test's name shows it (the traps are never encoded: that would use them). */
+const shown = (arg) => (arg === ARG_TRAP ? '<trap>' : arg === READ_TRAP ? '<getters>' : (JSON.stringify(arg) ?? 'undefined'));
+
+/** `args` with each one, and one more after them, replaced by `ARG_TRAP`. */
+const trapped = (args) => [...args.map((_, i) => args.map((arg, j) => (i === j ? ARG_TRAP : arg))), [...args, ARG_TRAP]];
+
 const dirs = [];
 const savedBackend = process.env.FREEDOM_SWARM_BACKEND;
 // The requests a test mocked: a mock outlives `jest.resetModules()`, so
@@ -198,6 +247,15 @@ function providerCollaborators() {
 }
 
 describe("the JS provider on the core's backend", () => {
+  test('executeSwarmMethod with every argument a trap answers -32603, none of them used', async () => {
+    const { mocks, calls } = providerCollaborators();
+    const { mod } = processOn('core', { mocks, request: './swarm-provider-ipc' });
+    expect(await mod.executeSwarmMethod(ARG_TRAP, ARG_TRAP, ARG_TRAP, ARG_TRAP)).toEqual({
+      error: { code: -32603, message: PROVIDER_REFUSAL },
+    });
+    expect(calls).toEqual([]);
+  });
+
   test.each(METHODS.map(([method, params]) => [String(method), method, params]))(
     '%s answers -32603 naming it, with nothing of its own run',
     async (_name, method, params) => {
@@ -237,6 +295,44 @@ describe("the JS provider on the core's backend", () => {
   });
 });
 
+describe("the JS provider's exported probes on the core's backend", () => {
+  test.each([
+    ['checkBeeReachable()', 'checkBeeReachable', [], "The JS Swarm provider's node probe"],
+    ['checkBeeReachable(url)', 'checkBeeReachable', ['http://127.0.0.1:1633'], "The JS Swarm provider's node probe"],
+    ['checkBeeReachable(<trap>)', 'checkBeeReachable', [ARG_TRAP], "The JS Swarm provider's node probe"],
+    ['checkSwarmPreFlight()', 'checkSwarmPreFlight', [], "The JS Swarm provider's publish pre-flight"],
+    ['checkSwarmPreFlight(<trap>)', 'checkSwarmPreFlight', [ARG_TRAP], "The JS Swarm provider's publish pre-flight"],
+  ])('%s rejects before it reads the node URL or asks readiness', async (_name, probe, args, what) => {
+    const { mocks, calls } = providerCollaborators();
+    const { mod } = processOn('core', { mocks, request: './swarm-provider-ipc' });
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+    try {
+      await expect(mod[probe](...args)).rejects.toMatchObject({
+        name: 'SwarmBackendError',
+        code: 'swarm_backend_core',
+        message: `${what} can't run on the core's Swarm backend`,
+      });
+      expect(calls).toEqual([]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test.each([
+    ['js', false],
+    ['core', true],
+  ])('FREEDOM_SWARM_BACKEND=%s, packaged %s: both probes run as before', async (backend, packaged) => {
+    const { mocks, calls } = providerCollaborators();
+    const { mod } = processOn(backend, { packaged, mocks, request: './swarm-provider-ipc' });
+    // No node URL: the probe reads it and answers node-stopped undialled.
+    expect(await mod.checkBeeReachable()).toEqual({ ok: false, reason: 'node-stopped' });
+    // Readiness asked (its spy answers nothing, read as node-stopped).
+    expect(await mod.checkSwarmPreFlight()).toEqual({ ok: false, reason: 'node-stopped' });
+    expect(calls).toEqual(['services.getAntApiUrl', 'setup.getPublishReadiness']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Main's GSOC miner.
 
@@ -267,6 +363,20 @@ describe("main's GSOC miner on the core's backend", () => {
     });
     // No job was named for a joiner either.
     expect(miner.joinJob('chat', { owner: 'https://other.example' })).toBe(false);
+    expect(Worker).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['options null', [overlay, identifier, 12, null]],
+    ['options whose members throw when read', [overlay, identifier, 12, READ_TRAP]],
+    ...trapped([overlay, identifier, 12, {}]).map((args) => [`(${args.map(shown).join(', ')})`, args]),
+  ])('mineSigner with %s rejects before using its arguments, no worker started', async (_name, args) => {
+    const { miner, Worker } = minerOn('core');
+    let refused;
+    expect(() => {
+      refused = miner.mineSigner(...args);
+    }).not.toThrow();
+    await expect(refused).rejects.toMatchObject({ name: 'SwarmBackendError', message: MINER_REFUSAL });
     expect(Worker).not.toHaveBeenCalled();
   });
 
@@ -310,6 +420,78 @@ describe("main's GSOC miner on the core's backend", () => {
     const job = miner.mineSigner(overlay, identifier, 12, { owner: KEY });
     await expect(job).rejects.toMatchObject({ reason: 'gsoc_mining_failed' });
     expect(Worker).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The JS backend's messaging.
+
+describe("main's Swarm messaging on the core's backend", () => {
+  const MESSAGING_REFUSAL = "Main's Swarm messaging can't run on the core's Swarm backend";
+  const SENDS = [
+    ['getMessagingIdentity', []],
+    ['deriveGsoc', ['chat', { origin: KEY }]],
+    ['sendPss', [{ topic: 'chat', targets: 'abcd', recipient: `02${'28'.repeat(32)}`, data: new Uint8Array([1]) }]],
+    ['sendGsoc', [{ topic: 'chat', data: new Uint8Array([1]), origin: KEY }]],
+  ];
+  const ROWS = SENDS.flatMap(([name, args]) => [[name, args], ...trapped(args).map((variant) => [name, variant])]);
+
+  /** messaging-service on `backend`: its node reachable through a fetch spy, its miner's Worker a spy. */
+  function messagingOn(backend, options = {}) {
+    const Worker = jest.fn(() => {
+      throw new Error('a GSOC worker was started');
+    });
+    const { mod } = processOn(backend, {
+      ...options,
+      mocks: {
+        'node:worker_threads': () => ({ Worker }),
+        [require.resolve('../service-registry')]: () => ({
+          getAntApiUrl: () => 'http://127.0.0.1:1633',
+          getService: () => ({ mode: 'bundled' }),
+        }),
+      },
+      request: './messaging-service',
+    });
+    return { messaging: mod, Worker };
+  }
+
+  test.each(ROWS.map(([name, args]) => [`${name}(${args.map(shown).join(', ')})`, name, args]))(
+    '%s rejects before using its arguments or calling the node',
+    async (_label, name, args) => {
+      const { messaging, Worker } = messagingOn('core');
+      const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        throw new Error(`a node call ${url}`);
+      });
+      try {
+        await expect(messaging[name](...args)).rejects.toMatchObject({
+          name: 'SwarmBackendError',
+          code: 'swarm_backend_core',
+          message: MESSAGING_REFUSAL,
+        });
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(Worker).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    }
+  );
+
+  test.each([
+    ['js', false],
+    ['core', true],
+  ])('FREEDOM_SWARM_BACKEND=%s, packaged %s: the identity asks the node, as before', async (backend, packaged) => {
+    const { messaging } = messagingOn(backend, { packaged });
+    const asked = [];
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      asked.push(new URL(String(url)).pathname);
+      return new Response('{}', { status: 500 });
+    });
+    try {
+      await expect(messaging.getMessagingIdentity()).rejects.toBeInstanceOf(Error);
+      expect(asked).toEqual(['/addresses']);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
 
@@ -413,6 +595,21 @@ const FEED_PATHS = [
   ['hasFeedGrant', [KEY]],
   ['grantFeedAccess', [KEY, { source: 'user' }]],
   ['revokeFeedAccess', [KEY, { source: 'user' }]],
+  // Refused before their arguments are read: null, or members that throw
+  // when read (`READ_TRAP`).
+  ['setOriginEntry', [KEY, null]],
+  ['setOriginEntry', [KEY, READ_TRAP]],
+  ['previewAppScopedIdentity', [KEY, READ_TRAP]],
+  ['createAppScopedIdentity', [KEY, READ_TRAP]],
+  ['createAppScopedIdentityAt', [KEY, 3, READ_TRAP]],
+  ['ensureAntWalletIdentity', [KEY, READ_TRAP]],
+  ['activateIdentity', [KEY, 'bee-wallet', null]],
+  ['activateIdentity', [KEY, 'bee-wallet', READ_TRAP]],
+  ['isIdentitySharedWithOtherOrigins', [KEY, READ_TRAP]],
+  ['grantFeedAccess', [KEY, null]],
+  ['grantFeedAccess', [KEY, READ_TRAP]],
+  ['revokeFeedAccess', [KEY, null]],
+  ['revokeFeedAccess', [KEY, READ_TRAP]],
 ].map(([name, args]) => ['feed-store', name, args, 'swarm-feeds.json']);
 const MANIFEST_PATHS = [
   ['checkManifest', [{ origin: KEY, committedUrl: `${KEY}/`, eager: true }]],
@@ -422,12 +619,21 @@ const MANIFEST_PATHS = [
   ['disconnect', [KEY]],
   ['getRecord', [KEY]],
   ['useIndividual', [KEY, 'publish']],
+  // Refused before their arguments are read.
+  ['checkManifest', [null]],
+  ['checkManifest', [READ_TRAP]],
+  ['checkManifest', [{ origin: KEY, committedUrl: `${KEY}/` }, READ_TRAP]],
+  ['decideManifest', ['c'.repeat(32), 'allow', READ_TRAP]],
+  // The JS check's own manifest fetch (the core's ask is answerManifestAsk).
+  ['discover', [`${KEY}/`]],
 ].map(([name, args]) => ['permission-manifests', name, args, 'swarm-manifest-grants.json']);
 const HISTORY_PATHS = [
   ['addEntry', [{ type: 'data', name: 'a.txt', origin: KEY }]],
   ['addEntry', [null]],
   ['updateEntry', [1, { status: 'completed' }]],
   ['updateEntry', [1, null]],
+  ['addEntry', [READ_TRAP]],
+  ['updateEntry', [1, READ_TRAP]],
   ['getEntries', []],
   ['clearEntries', []],
   ['removeEntry', [1]],
@@ -509,12 +715,13 @@ describe("main's writers of the Swarm stores on the core's backend", () => {
     }
   }
 
-  test.each(
-    [...FEED_PATHS, ...MANIFEST_PATHS, ...HISTORY_PATHS].map((row) => [
-      `${row[0]} ${row[1]}(${row[2].map((arg) => JSON.stringify(arg) ?? 'undefined').join(', ')})`,
-      ...row,
-    ])
-  )(
+  // Each path as written, then with each argument, and one more, a trap.
+  const STORE_ROWS = [...FEED_PATHS, ...MANIFEST_PATHS, ...HISTORY_PATHS].flatMap(([module, name, args, file]) => [
+    [module, name, args, file],
+    ...trapped(args).map((variant) => [module, name, variant, file]),
+  ]);
+
+  test.each(STORE_ROWS.map((row) => [`${row[0]} ${row[1]}(${row[2].map(shown).join(', ')})`, ...row]))(
     '%s refuses unrun, naming its file',
     async (_name, module, name, args, file) => {
       const dir = seededProfile();
