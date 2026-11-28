@@ -49,7 +49,6 @@ jest.mock('./safe/safe-transactions', () => ({
   getSafeSendState: jest.fn(() => null),
   getAllSafeSendStates: jest.fn(() => []),
   pendingCall: jest.fn(() => null),
-  executeSafePending: jest.fn(async () => ({ status: 'executed' })),
   executeChromeSafeSend: jest.fn(async () => ({ status: 'executed' })),
 }));
 let mockWalletApprovals = null;
