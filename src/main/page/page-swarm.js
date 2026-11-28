@@ -269,6 +269,22 @@ function failure(err, fallback) {
   return { code: INTERNAL_ERROR_CODE, message };
 }
 
+/** Whether `value` is a promise (any thenable). */
+function isThenable(value) {
+  return (typeof value === 'object' || typeof value === 'function') && typeof value?.then === 'function';
+}
+
+/**
+ * `next(value)`: in this run for a plain value, once it resolves for a
+ * promise. The feed store's ops answer in the run while main writes
+ * swarm-feeds.json, and with promises once the store is the core's
+ * (feed-store.js `coreOps`); a plain answer is never awaited, so main's own
+ * store keeps its checks and writes in one run.
+ */
+function andThen(value, next) {
+  return isThenable(value) ? value.then(next) : next(value);
+}
+
 const documentKeyOf = (requester) => `${requester.guest}:${requester.navigation}`;
 
 /** A message's size, as the chrome's prompt showed it, or null. */
@@ -401,6 +417,7 @@ function defaultDependencies() {
   const provider = () => require('../swarm/swarm-provider-ipc');
   const manifests = () => require('../swarm/permission-manifests');
   const feeds = () => require('../swarm/feed-store');
+  const storeIsCore = () => require('../core/core-client').swarmStoresNamed();
   return {
     identityWalletEnabled: () => require('../settings-store').loadSettings()?.enableIdentityWallet === true,
     execute: (method, params, key, meta) => provider().executeSwarmMethod(method, params, key, meta),
@@ -424,15 +441,32 @@ function defaultDependencies() {
     endDocumentSubscriptions: (document) => provider().endDocumentSubscriptions(document),
     endDocumentSubscription: (document, id) => provider().endDocumentSubscription(document, id),
     isVaultUnlocked: () => require('../identity-manager').isVaultUnlocked(),
-    hasFeedGrant: (key) => feeds().hasFeedGrant(key),
-    identityState: (key) => feeds().getOriginIdentityStateWithOwners(key),
-    previewIdentity: (key) => feeds().previewAppScopedIdentity(key),
+    // The feed prompt's ops: feed-store.js's own functions, each answered in
+    // the run, while main writes swarm-feeds.json; once the feed store is
+    // the core's (its hello names `swarm_stores`, design 0015, D3 and D7),
+    // its `swarm.identities` shell ops (`coreOps`), each a promise, `source`
+    // always the user's.
+    hasFeedGrant: (key) => (storeIsCore() ? feeds().coreOps.hasFeedGrant(key) : feeds().hasFeedGrant(key)),
+    identityState: (key) =>
+      storeIsCore()
+        ? feeds().coreOps.getOriginIdentityStateWithOwners(key)
+        : feeds().getOriginIdentityStateWithOwners(key),
+    previewIdentity: (key) =>
+      storeIsCore() ? feeds().coreOps.previewAppScopedIdentity(key) : feeds().previewAppScopedIdentity(key),
     createIdentityAt: (key, publisherKeyIndex) =>
-      feeds().createAppScopedIdentityAt(key, publisherKeyIndex, { activate: true, source: 'user' }),
-    ensureAntWalletIdentity: (key) => feeds().ensureAntWalletIdentity(key, { activate: true, source: 'user' }),
-    activateIdentity: (key, id) => feeds().activateIdentity(key, id, { source: 'user' }),
-    assertFeedGrantable: (key) => feeds().assertFeedGrantable(key),
-    grantFeedAccess: (key) => feeds().grantFeedAccess(key, { source: 'user' }),
+      storeIsCore()
+        ? feeds().coreOps.createAppScopedIdentityAt(key, publisherKeyIndex, { activate: true })
+        : feeds().createAppScopedIdentityAt(key, publisherKeyIndex, { activate: true, source: 'user' }),
+    ensureAntWalletIdentity: (key) =>
+      storeIsCore()
+        ? feeds().coreOps.ensureAntWalletIdentity(key, { activate: true })
+        : feeds().ensureAntWalletIdentity(key, { activate: true, source: 'user' }),
+    activateIdentity: (key, id) =>
+      storeIsCore() ? feeds().coreOps.activateIdentity(key, id) : feeds().activateIdentity(key, id, { source: 'user' }),
+    assertFeedGrantable: (key) =>
+      storeIsCore() ? feeds().coreOps.assertFeedGrantable(key) : feeds().assertFeedGrantable(key),
+    grantFeedAccess: (key) =>
+      storeIsCore() ? feeds().coreOps.grantFeedAccess(key) : feeds().grantFeedAccess(key, { source: 'user' }),
     routeToSetup: (requester, reason) => {
       const { BrowserWindow } = require('electron');
       const win = BrowserWindow.fromId(requester.window);
@@ -907,14 +941,21 @@ function createSwarmDispatchers(deps = {}) {
    * exactly the key the prompt showed (it throws `identity_taken`, with
    * nothing written, if another identity took that key meanwhile), or one
    * the site already has. A stored identity of the removed mode is never
-   * granted (#89). Synchronous: it runs in the run of the checks before it.
+   * granted (#89). While main writes the feed store it is synchronous: it
+   * runs in the run of the checks before it, and returns nothing. Once the
+   * store is the core's, each op is a request (feed-store.js `coreOps`):
+   * it returns a promise, each op sent once the one before it has answered.
    */
   function grantFeedIdentity(key, picked, view, preview) {
-    if (picked === 'bee-wallet') ensureAntWalletIdentity(key);
-    else if (picked === view.newIdentity.id) createIdentityAt(key, preview.publisherKeyIndex);
-    else activateIdentity(key, picked);
-    assertFeedGrantable(key);
-    if (hasFeedGrant(key) !== true) grantFeedAccess(key);
+    let chosen;
+    if (picked === 'bee-wallet') chosen = ensureAntWalletIdentity(key);
+    else if (picked === view.newIdentity.id) chosen = createIdentityAt(key, preview.publisherKeyIndex);
+    else chosen = activateIdentity(key, picked);
+    return andThen(chosen, () =>
+      andThen(assertFeedGrantable(key), () =>
+        andThen(hasFeedGrant(key), (granted) => (granted !== true ? grantFeedAccess(key) : undefined))
+      )
+    );
   }
 
   /**
@@ -942,7 +983,9 @@ function createSwarmDispatchers(deps = {}) {
     // Agent custody, read live now. A request that goes to its prompt keeps
     // it, whatever custody does next; one the rule answers reads custody
     // again just before its write.
-    const ruled = hasFeedGrant(key) === true && getAutoApprove(key, rule) === true && !custody(requester.guest);
+    let feedGranted = hasFeedGrant(key);
+    if (isThenable(feedGranted)) feedGranted = await feedGranted;
+    const ruled = feedGranted === true && getAutoApprove(key, rule) === true && !custody(requester.guest);
     // The identity core signs with the vault's keys, and the prompt shows
     // their owners: a locked vault is unlocked first, on main's own prompt.
     if (!(await vaultUnlocked())) {
@@ -975,7 +1018,8 @@ function createSwarmDispatchers(deps = {}) {
         let written;
         try {
           written = await writeUnderKey(context, nameCheck, async (page) => {
-            grantFeedIdentity(key, decision.choices.identity, view, preview);
+            const granting = grantFeedIdentity(key, decision.choices.identity, view, preview);
+            if (isThenable(granting)) await granting;
             if (decision.choices.alwaysAllow) await setAutoApprove(key, rule, true, page);
           });
         } catch (err) {

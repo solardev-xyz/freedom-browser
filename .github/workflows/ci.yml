@@ -1071,6 +1071,20 @@ jobs:
         env:
           FREEDOM_CORED_STORES_TEST: '1'
 
+      # freedom-core design 0015, D3, D7 and D8 (the SWM-6 to SWM-9 plan's
+      # PR 6.2): with a hello the test chooses naming `swarm_stores` (no
+      # build names it before PR 7.4), main's feed store is a client of the
+      # pinned core's `swarm.identities`: feed-store.test.js's store cases
+      # through the chrome's handlers and main's own ops, each answer equal
+      # to the reference's for the same sequence and swarm-feeds.json ending
+      # as the reference's; an fs spy shows main opens no feed-store file;
+      # the references come in the core's ICU root order.
+      - name: The feed store through the core (real freedom-cored, a chosen hello)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/swarm/feed-store.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+
       # freedom-core design 0013, "The intent journal" (PRF-6(b2)): this
       # build names `intents`, so the core is wallet-intents.jsonl's one
       # writer. Main's intent store, nonce reservations and send path

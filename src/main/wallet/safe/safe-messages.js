@@ -36,6 +36,13 @@
  * again before the signatures are joined, before a cancel, and before a
  * session whose page went away is dropped: each waits for the core's end,
  * and does nothing if it fails (SAFE_APPROVAL_END_FAILED).
+ *
+ * On the core's Safe backend (FREEDOM_SAFE_BACKEND=core, development builds
+ * only; freedom-core design 0016, SAFE-3's PR 5) every call here is the
+ * core's (`core-messages.js`): the session opened by `safe.message_start`,
+ * which spends the page's token or checks its site's rule itself, and the
+ * board's calls `safe.message_*`, under main's own token for the session.
+ * On js, everything here is as it was.
  */
 
 const { randomUUID } = require('crypto');
@@ -59,11 +66,23 @@ const {
   collectFreeSignatures,
   signEntryOwner,
 } = require('./signature-collection');
-const { getSession, setSession, discardSession } = require('./message-sessions');
+const {
+  getSession,
+  setSession,
+  discardSession,
+  requesterWebContents,
+  requesterGone,
+  watchRequester,
+} = require('./message-sessions');
 const safeApprovals = require('./safe-approvals');
 const { codedError, SAFE_BUSY, SAFE_DISCARDED, SAFE_MESSAGE_EXISTS } = require('./errors');
 
 const MESSAGE = safeApprovals.KINDS.MESSAGE;
+
+// Whether the process's Safes run on the core (`core-messages.js`).
+const onCore = () => require('./safe-backend-kind').safeBackendKind() === 'core';
+const core = () => require('./core-messages');
+
 const store = {
   get: getSession,
   set: setSession,
@@ -151,59 +170,6 @@ function sameRequester(a, b) {
   );
 }
 
-/** The Electron webContents behind a requester, when still around. */
-function requesterWebContents(requester) {
-  if (requester?.webContentsId == null) {
-    return null;
-  }
-  try {
-    return require('electron').webContents?.fromId?.(requester.webContentsId) || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * A session whose requesting page provably no longer exists is a dead
- * leftover (its promise died with the page) — safe to replace. Unknown
- * liveness counts as ALIVE: the new request is refused rather than a
- * possibly-live ceremony hijacked.
- */
-function requesterGone(entry) {
-  if (entry.requester?.webContentsId == null) {
-    return false;
-  }
-  const contents = requesterWebContents(entry.requester);
-  return !contents || contents.isDestroyed();
-}
-
-/**
- * Notes whether the requesting page navigates or closes during an await.
- * @returns {{ gone: () => boolean, stop: () => void }}
- */
-function watchRequester(requester) {
-  if (requester?.webContentsId == null) {
-    return { gone: () => false, stop: () => {} };
-  }
-  const contents = requesterWebContents(requester);
-  if (!contents) {
-    return { gone: () => true, stop: () => {} };
-  }
-  let left = false;
-  const mark = () => {
-    left = true;
-  };
-  contents.on('destroyed', mark);
-  contents.on('did-navigate', mark);
-  return {
-    gone: () => left || contents.isDestroyed(),
-    stop: () => {
-      contents.removeListener('destroyed', mark);
-      contents.removeListener('did-navigate', mark);
-    },
-  };
-}
-
 /**
  * Drop the session when its requesting page goes away — closed tab or
  * a main-frame navigation (including reload): either way the dApp's
@@ -281,6 +247,8 @@ function sessionState(safeIndex, entry = getSession(safeIndex)) {
  * exactly like "nothing to show" for that caller.
  */
 function getSafeMessageState(safeIndex, token) {
+  // On the core, a promise of the core's state.
+  if (onCore()) return core().state(safeIndex, token);
   const entry = getSession(safeIndex);
   if (!entry || token !== entry.token || entry.dead) {
     return null;
@@ -317,9 +285,22 @@ function getSafeMessageState(safeIndex, token) {
  *   owner's from the board (`signSafeMessage`). Its refusal ends the
  *   session (its approval ended first), nothing more signed, and rejects
  *   with the caller's own error.
+ * @param {{token: string, handle: string}|{standing: object}} [params.authorization]
+ *   - On the core only, in place of `approval`: the page's `safe-message`
+ *   token and the handle it was minted for, or its site's rule, which
+ *   `safe.message_start` spends or checks (`core-messages.js`)
+ * @param {object} [params.page] - On the core only: the request's
+ *   PageContext, under which `safe.message_start` is sent
  * @returns {Promise<Object>} SafeMessageState (including `token`)
  */
-async function startSafeMessage({ safeIndex, request, display, requester, owner = null, approval, beforeSign = null }) {
+async function startSafeMessage(options) {
+  // On the core: the page's `authorization` and PageContext (`page`), which
+  // `safe.message_start` presents itself; no approval of main's.
+  if (onCore()) return core().start(options);
+  return startOnJs(options);
+}
+
+async function startOnJs({ safeIndex, request, display, requester, owner = null, approval, beforeSign = null }) {
   // Set once a session holds the approval: otherwise it is ended here.
   const progress = { held: false };
   try {
@@ -480,6 +461,7 @@ async function openWatched({ safeIndex, request, display, requester, mainOwned, 
  * @returns {Promise<Object>} SafeMessageState
  */
 async function signSafeMessage(safeIndex, ownerIndex, token) {
+  if (onCore()) return core().sign(safeIndex, ownerIndex, token);
   const record = getSafeRecord(safeIndex);
   requireSession(safeIndex, token);
   await signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes: record.owners });
@@ -499,6 +481,7 @@ async function signSafeMessage(safeIndex, ownerIndex, token) {
  * @returns {Promise<{signature: string}>}
  */
 async function completeSafeMessage(safeIndex, token) {
+  if (onCore()) return core().complete(safeIndex, token);
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
@@ -531,6 +514,7 @@ async function completeSafeMessage(safeIndex, token) {
  * owner signs it again.
  */
 async function cancelSafeMessage(safeIndex, token) {
+  if (onCore()) return core().cancel(safeIndex, token);
   if (!getSession(safeIndex)) {
     return; // already gone — cancelling twice is fine
   }

@@ -266,9 +266,10 @@ async function startCore() {
   // `{ verify }` plans' `dweb.verify`, and `dweb.forget` as a private
   // partition closes.
   attachDwebVerify(client, dwebShell);
-  // The core's Swarm asks (`shell.swarm_ready`, `shell.swarm_api`), whichever
-  // backend serves Swarm: on the JS backend (FREEDOM_SWARM_BACKEND, design
-  // 0015's switch) no parent is admitted, and a stray ask is answered
+  // The core's Swarm asks (`shell.swarm_ready`, `shell.swarm_api`,
+  // `shell.swarm_part`, `shell.swarm_subscribe`, `shell.swarm_unsubscribe`),
+  // whichever backend serves Swarm: on the JS backend (FREEDOM_SWARM_BACKEND,
+  // design 0015's switch) no parent is admitted, and a stray ask is answered
   // `ended`, where no handler would end the connection.
   swarmShell = registerSwarmShell(client);
   // The core's Ledger APDUs (`shell.ledger_apdu`), whichever backend drives

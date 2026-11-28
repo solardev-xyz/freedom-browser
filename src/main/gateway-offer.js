@@ -39,11 +39,11 @@
  * contenthash, a failed lookup — yields no offer at all, so the user simply
  * keeps the gateway page they asked for.
  *
- * Parsing lives here rather than in the renderer because the CID form is
- * decoded with bee-js's `Reference`, which only the main process can load.
+ * Parsing lives here, in main, beside the ENS lookup it feeds. The CID form
+ * is decoded by `swarm/swarm-cid.js`.
  */
 const { domainToUnicode } = require('url');
-const { Reference } = require('@ethersphere/bee-js');
+const { SWARM_CID_LABEL, decodeSwarmCid } = require('./swarm/swarm-cid');
 const log = require('./logger');
 const IPC = require('../shared/ipc-channels');
 const { runWithPrivateLogContext, redactForLog } = require('./private/private-log-context');
@@ -58,40 +58,9 @@ const GATEWAYS = [
   { suffix: '.bzz.link', gateway: 'bzz.link', kind: 'bzz' },
 ];
 
-// A CID label: multibase `b` (base32 lower), then the `ah5` the CIDv1 +
-// Swarm codec header always encodes to. The shape test only routes the label
-// to the decoder; `decodeSwarmCid` is what decides it is real.
-const SWARM_CID_LABEL = /^bah5[a-z2-7]+$/;
-
 // Transports a native destination can use. ENS contenthashes of any other
 // kind (http, onion, …) have no `<protocol>://<name>` form here to offer.
 const NATIVE_PROTOCOLS = new Set(['ipfs', 'ipns', 'bzz']);
-
-/**
- * Decode a `bah5…` Swarm CID label to its 64-hex reference, or null.
- *
- * bee-js's `Reference` decodes any `bah5` string it is given, but it does
- * not check the CID header and silently accepts a truncated or overlong one
- * (a label one character short decodes to a different, wrong reference). So
- * the decoded reference must encode back to exactly this label as a manifest
- * or a feed CID — the two codecs the Swarm gateway takes — which rejects a
- * wrong version, codec, multihash, length or trailing garbage in one check.
- *
- * @param {string} label - lower-case DNS label
- * @returns {string|null} 64-hex reference
- */
-const decodeSwarmCid = (label) => {
-  if (typeof label !== 'string' || !SWARM_CID_LABEL.test(label)) return null;
-  let reference;
-  try {
-    reference = new Reference(label);
-  } catch {
-    return null;
-  }
-  if (reference.length !== Reference.LENGTH) return null;
-  if (reference.toCid('manifest') !== label && reference.toCid('feed') !== label) return null;
-  return reference.toHex();
-};
 
 // An ENS name taken from a hostname: every label a real DNS label (1–63
 // characters — the URL parser takes longer ones, DNS never resolves them, so
