@@ -81,6 +81,9 @@ function createMirror(store) {
     wholeAt: 0,
     keyAt: new Map(),
     reading: new Map(),
+    // The keys whose latest read to land failed: dropped until the core
+    // answers for them again.
+    unread: new Set(),
     state,
   });
   let gen = generation();
@@ -154,9 +157,11 @@ function createMirror(store) {
   function refresh(key) {
     const g = gen;
     const n = ++asked;
-    const apply = (record) => {
+    const apply = (record, ok = true) => {
       if (g !== gen || n < g.wholeAt || n < (g.keyAt.get(key) || 0)) return;
       g.keyAt.set(key, n);
+      if (ok) g.unread.delete(key);
+      else g.unread.add(key);
       if (record) g.records.set(key, record);
       else g.records.delete(key);
     };
@@ -172,7 +177,7 @@ function createMirror(store) {
         },
         (err) => {
           log.warn(`${label} could not read a grant from the identity core:`, err.message);
-          apply(null);
+          apply(null, false);
         }
       )
       .finally(() => {
@@ -288,6 +293,22 @@ function createMirror(store) {
      * (x402's payments), which the core decides again at each payment.
      */
     reread: refresh,
+    /**
+     * The key read back after a change the core made itself, outside main's
+     * grant writes (a Swarm manifest's projection, which the core writes
+     * inside its `swarm.manifest` decide: design 0012's amendment for
+     * 0015): a read asked now, then every read of the key in flight landed,
+     * an `approval.changed` one among them. Resolves true once the mirror
+     * holds the core's answer for the key, false when the read that landed
+     * last failed (the key reads as no grant) or the core process changed
+     * meanwhile. Never rejects.
+     */
+    async readBack(key) {
+      const g = gen;
+      await refresh(key);
+      await settled(key);
+      return g === gen && !g.unread.has(key);
+    },
     /**
      * `approval.grant { store, change }`: a page's for its own key, or main's
      * (`shell`, `change.key`).
