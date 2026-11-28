@@ -524,7 +524,9 @@ class FakeSafeCore extends EventEmitter {
       this.safe3 = this.takesSafe3 && message.params?.safe3 === true;
       this.answer(message.id, {
         protocol: 2,
-        core_version: this.takesSafe3 ? '0.32.0' : '0.31.0',
+        // The pinned core (0.33.0) when it takes safe3; a core from before
+        // C1 (0.31.0) when it doesn't (SAFE-3's PR 7).
+        core_version: this.takesSafe3 ? '0.33.0' : '0.31.0',
         capabilities: ['vault.status', 'streams'],
         store_moved: this.moved,
         ...(this.safe3 ? { safe3: true } : {}),

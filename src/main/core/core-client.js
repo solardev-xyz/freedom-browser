@@ -12,7 +12,7 @@
  *   recovery couldn't finish.
  * - **`grant_root`** (design 0012, "The files (Q10)") is the directory of
  *   the profile's four permission files, as an absolute, normalized path:
- *   the core reads them there at its checks. The pinned core (0.32.0)
+ *   the core reads them there at its checks. The pinned core (0.33.0)
  *   requires it, as every core from 0.14.0 (APR-3) does, and answers a hello
  *   without it, or with a relative path, with `invalid_argument` and exits
  *   76, so a client can't be made without one.
@@ -27,7 +27,7 @@
  *   `.migrated` shows the import committed. Cores from 0.24.0 (PRF-8-lite)
  *   take it; an older core ignores it, as it ignores every hello member it
  *   doesn't know, and reads the receipts under `grant_root`. From 0.29.0
- *   (freedom-core design 0015 D10), so the pinned 0.32.0 too, the core
+ *   (freedom-core design 0015 D10), so the pinned 0.33.0 too, the core
  *   copies a moved profile's legacy `publish-history.json` into the
  *   Freedom root the same way, and imports the copy only once a hello
  *   names `swarm_stores` in
@@ -37,7 +37,7 @@
  *   client appends `--grant-root <grant_root>` and, with `user_data_dir`,
  *   `--user-data-dir <user_data_dir>` to the spawn's arguments itself,
  *   from the same normalized values the hello sends, so the two can't
- *   disagree. The pinned core (0.32.0) requires `--grant-root`, confines
+ *   disagree. The pinned core (0.33.0) requires `--grant-root`, confines
  *   itself to it before it reads the hello, and answers a hello whose
  *   `grant_root` or `user_data_dir` differs from them (one given on only
  *   one side included) with `invalid_argument`, then exits 76. 0.27.0 took
@@ -95,7 +95,7 @@
  *   hello.
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
- *   (0.32.0) speaks only 2: it answers a hello at any other protocol,
+ *   (0.33.0) speaks only 2: it answers a hello at any other protocol,
  *   1 included, with `protocol_mismatch` and exits 76. A core that answers
  *   another protocol is a mismatch too: main fails, and doesn't restart it.
  *   Protocol 1 is gone (design 0009, Streams in the core), and a client

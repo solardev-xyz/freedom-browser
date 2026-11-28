@@ -170,7 +170,7 @@ It asks for the firmware version (or takes `--firmware <version>`), then says wh
 - `src/main/x402/sign-flow-ledger.integration.test.js`: an x402 payment the panel approved, from the detector to the header, with main's rebuild checked before the device and `x402.settle { reservation, typed_data }` through the relay.
 - `src/main/core/ledger-relay.integration.test.js` and `src/main/wallet/ledger/core-accounts.integration.test.js`: each form of the relay's answer, and discovery and adding as `core-accounts.js` sends them.
 
-The core ends the connection (exit 76) on any reply of main's its strict reader doesn't take, so each case checks the core is still the process it started, and the last case of the gates shows that check catching a reply with one member too many. Main's deadlines are fired by the test while the device waits, never by the clock, so no case depends on timing. They need the binary and the Ledger vectors at CI's pin (freedom-core `0e01b95b`, the commit cored 0.32.0 was built from); CI's `e2e-desktop` job runs them on each OS.
+The core ends the connection (exit 76) on any reply of main's its strict reader doesn't take, so each case checks the core is still the process it started, and the last case of the gates shows that check catching a reply with one member too many. Main's deadlines are fired by the test while the device waits, never by the clock, so no case depends on timing. They need the binary and the Ledger vectors at CI's pin (freedom-core `7eea60ba`, the commit cored 0.33.0 was built from); CI's `e2e-desktop` job runs them on each OS.
 
 ```bash
 node scripts/fetch-freedom-cored.js
