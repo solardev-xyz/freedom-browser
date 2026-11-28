@@ -12,6 +12,7 @@ const {
   APPROVALS_RENDERER_ARG,
 } = require('../approvals/approvals-document');
 const { ledgerBackendKind, LEDGER_CORE_RENDERER_ARG } = require('../wallet/ledger/ledger-backend-kind');
+const { safeBackendKind, SAFE_CORE_RENDERER_ARG } = require('../wallet/safe/safe-backend-kind');
 
 let currentWindowTitle = 'Freedom';
 
@@ -82,6 +83,9 @@ function createMainWindow(initialUrl = null, options = {}) {
     // The core's Ledger backend (freedom-core design 0016, LDG-3): a
     // Ledger's wait can be cancelled, so the chrome offers it.
     ...(ledgerBackendKind() === 'core' ? [LEDGER_CORE_RENDERER_ARG] : []),
+    // The core's Safe backend (freedom-core design 0016, SAFE-3): the Safe
+    // card reads a deployed Safe's setup too (safe-status.js).
+    ...(safeBackendKind() === 'core' ? [SAFE_CORE_RENDERER_ARG] : []),
   ];
 
   const window = new BrowserWindow({
