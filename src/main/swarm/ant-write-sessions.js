@@ -47,6 +47,10 @@
  * is refused before it takes a session: a read stays on its request session,
  * announced to its guard, and main sends the node nothing else.
  *
+ * A lease that fails before its write could be dialled (its method refused,
+ * its session not prepared) rejects with an `AntNotDialled`, so a caller can
+ * tell the write was never sent (ant-storage-api's `refused`).
+ *
  * NOTHING ELSE GOES OUT
  *
  * A write session carries its lease's write and nothing else. It has a
@@ -72,6 +76,24 @@
  */
 
 const { dialKey } = require('./ant-api-main-dials');
+
+/**
+ * A dial of the node main refused before any request of it existed: a write
+ * whose lease refused its method or whose session couldn't be prepared (the
+ * request session's proxy unknown or not read back, a session call that
+ * failed or didn't settle in time), or one past the transport's cap on
+ * abandoned dials (bzz-protocol.js). Only main makes one, before the request
+ * exists, so an instance is evidence that nothing of it was sent, as
+ * `OnionGateRefusal` is for the onion gate; `code` names it for a caller
+ * that reads codes.
+ */
+class AntNotDialled extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'AntNotDialled';
+    this.code = 'ERR_ANT_NOT_DIALLED';
+  }
+}
 
 /** The methods a write session carries (see WHAT IT CARRIES). */
 const WRITE_METHODS = new Set(['POST', 'PUT']);
@@ -184,7 +206,7 @@ async function prepare(slot, source, url) {
   const mirrored = await slot.session.resolveProxy(url);
   if (mirrored !== proxy) {
     slot.proxy = null;
-    throw new Error(
+    throw new AntNotDialled(
       `a write session resolves its proxy as ${mirrored || '(empty)'}, its request session as ${
         proxy || '(empty)'
       }: not dialled`
@@ -198,8 +220,8 @@ async function prepare(slot, source, url) {
  * guard admits that one request and nothing else. `release()` (idempotent)
  * disarms the guard and hands the session back once the write is over, its
  * reply's body included. Rejects when `signal` aborts the wait for a free
- * one, or the session couldn't be prepared (nothing was dialled), and at
- * once for a method other than POST or PUT.
+ * one; with an `AntNotDialled` when the session couldn't be prepared, and at
+ * once for a method other than POST or PUT (nothing was dialled).
  *
  * @param {Electron.Session|null} source - the request's session (the
  *   default session when null)
@@ -210,7 +232,7 @@ async function prepare(slot, source, url) {
  */
 async function leaseWriteSession(source, url, method, signal) {
   if (!WRITE_METHODS.has(method)) {
-    throw new TypeError(`a write session carries a POST or a PUT (got ${method})`);
+    throw new AntNotDialled(`a write session carries a POST or a PUT (got ${method})`);
   }
   const from = source || require('electron').session.defaultSession;
   const pool = poolOf(from);
@@ -226,7 +248,7 @@ async function leaseWriteSession(source, url, method, signal) {
   let timer = null;
   const late = new Promise((_resolve, reject) => {
     timer = setTimeout(
-      () => reject(new Error('a write session was not ready in time: not dialled')),
+      () => reject(new AntNotDialled('a write session was not ready in time: not dialled')),
       PREPARE_TIMEOUT_MS
     );
   });
@@ -236,7 +258,11 @@ async function leaseWriteSession(source, url, method, signal) {
     // Handed back once its preparation is over, never while a call of it is
     // still pending: a late `closeAllConnections` would cut the next write.
     preparing.then(release, release);
-    throw err;
+    if (err instanceof AntNotDialled) throw err;
+    throw new AntNotDialled(
+      `a write session could not be prepared (${err?.message || err}): not dialled`,
+      { cause: err }
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -244,4 +270,4 @@ async function leaseWriteSession(source, url, method, signal) {
   return { session: slot.session, release };
 }
 
-module.exports = { leaseWriteSession, MAX_WRITE_SESSIONS, PREPARE_TIMEOUT_MS };
+module.exports = { leaseWriteSession, AntNotDialled, MAX_WRITE_SESSIONS, PREPARE_TIMEOUT_MS };

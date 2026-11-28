@@ -32,7 +32,7 @@ const { loadsOnlyVerifiedContent } = require('../dweb/strict-mode');
 const { getActiveProfile } = require('../profile-resolver');
 const { isLoopbackGatewayUrl, netGatewayFetch } = require('../ipfs/gateway-transport');
 const { announceMainProcessAntDial } = require('./ant-api-main-dials');
-const { leaseWriteSession } = require('./ant-write-sessions');
+const { leaseWriteSession, AntNotDialled } = require('./ant-write-sessions');
 const { unlessAborted } = require('../lib/unless-aborted');
 const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/private-log-context');
 const { serveLabelled } = require('../dweb/content-trust');
@@ -95,7 +95,7 @@ async function dialAnt(url, init, { session, fetchImpl }) {
     return isStreamBody(init.body) ? dialWithUpload(url, init, fetchImpl) : fetchImpl(url, init);
   }
   if (abandonedDials >= MAX_ABANDONED_DIALS) {
-    const err = new Error('too many abandoned Ant dials');
+    const err = new AntNotDialled('too many abandoned Ant dials');
     if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
     throw err;
   }

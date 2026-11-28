@@ -54,9 +54,18 @@ jest.mock('electron', () => ({
 
 const {
   leaseWriteSession,
+  AntNotDialled,
   MAX_WRITE_SESSIONS,
   PREPARE_TIMEOUT_MS,
 } = require('./ant-write-sessions');
+
+// What a lease rejects with when nothing of its write was dialled.
+const notDialled = (message) =>
+  expect.objectContaining({
+    name: 'AntNotDialled',
+    code: 'ERR_ANT_NOT_DIALLED',
+    message: expect.stringContaining(message),
+  });
 
 const URL_ = 'http://ant.example.test:1633/pss/send/topic/ab';
 const SOCKS = 'SOCKS5 127.0.0.1:9150';
@@ -138,9 +147,11 @@ describe('a write session', () => {
     const first = await leaseWriteSession(source, URL_, 'POST');
     first.release();
     first.session.resolveProxy.mockResolvedValueOnce('DIRECT');
-    await expect(leaseWriteSession(source, URL_, 'POST')).rejects.toThrow(
+    const refusal = leaseWriteSession(source, URL_, 'POST');
+    await expect(refusal).rejects.toThrow(
       `a write session resolves its proxy as DIRECT, its request session as ${SOCKS}: not dialled`
     );
+    await expect(refusal).rejects.toBeInstanceOf(AntNotDialled);
     // Handed back, its proxy unknown: the next lease sets it again.
     await new Promise(setImmediate);
     const next = await leaseWriteSession(source, URL_, 'POST');
@@ -156,12 +167,28 @@ describe('a write session', () => {
 
   test('a request session whose proxy lookup fails fails the lease', async () => {
     const source = requestSession();
-    source.resolveProxy.mockRejectedValueOnce(new Error('session.resolveProxy failed'));
-    await expect(leaseWriteSession(source, URL_, 'POST')).rejects.toThrow(
-      'session.resolveProxy failed'
-    );
+    const failure = new Error('session.resolveProxy failed');
+    source.resolveProxy.mockRejectedValueOnce(failure);
+    const refusal = leaseWriteSession(source, URL_, 'POST');
+    await expect(refusal).rejects.toEqual(notDialled('session.resolveProxy failed'));
+    await expect(refusal).rejects.toHaveProperty('cause', failure);
     expect(mockMade[0].calls).toEqual(['spellCheckerLanguages', 'spellCheckerEnabled', 'guard']);
   });
+
+  test.each(['setProxy', 'forceReloadProxyConfig', 'closeAllConnections'])(
+    'a %s that fails fails the lease as not dialled',
+    async (call) => {
+      const source = requestSession();
+      const first = await leaseWriteSession(source, URL_, 'POST');
+      first.release();
+      // Another proxy, so the lease sets it again.
+      source.proxy = 'PROXY 127.0.0.1:3128';
+      first.session[call].mockRejectedValueOnce(new Error(`${call} failed`));
+      await expect(leaseWriteSession(source, URL_, 'POST')).rejects.toEqual(
+        notDialled(`${call} failed`)
+      );
+    }
+  );
 
   test('no request session: the default session is the one whose proxy it takes', async () => {
     mockDefaultSession.resolveProxy.mockResolvedValueOnce(SOCKS);
@@ -235,8 +262,8 @@ describe("a write session's guard", () => {
     'a lease for %s is refused before it takes or makes a session',
     async (method) => {
       const source = requestSession();
-      await expect(leaseWriteSession(source, URL_, method)).rejects.toThrow(
-        `a write session carries a POST or a PUT (got ${method})`
+      await expect(leaseWriteSession(source, URL_, method)).rejects.toEqual(
+        notDialled(`a write session carries a POST or a PUT (got ${method})`)
       );
       expect(mockMade).toHaveLength(0);
       expect(source.resolveProxy).not.toHaveBeenCalled();
@@ -323,8 +350,8 @@ describe('the pool', () => {
       () => new Promise((resolve) => (settle = resolve))
     );
     const stuck = leaseWriteSession(source, URL_, 'POST');
-    const failed = expect(stuck).rejects.toThrow(
-      'a write session was not ready in time: not dialled'
+    const failed = expect(stuck).rejects.toEqual(
+      notDialled('a write session was not ready in time: not dialled')
     );
     await jest.advanceTimersByTimeAsync(PREPARE_TIMEOUT_MS);
     await failed;

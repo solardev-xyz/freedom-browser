@@ -1089,7 +1089,10 @@ describe('a non-loopback Ant', () => {
       // The write session reads back another proxy than its request session's.
       while (mockWriteSessions.length === 0) await Promise.resolve();
       mockWriteSessions[0].resolveProxy.mockResolvedValueOnce('DIRECT');
-      await expect(pending).rejects.toThrow('not dialled');
+      await expect(pending).rejects.toMatchObject({
+        name: 'AntNotDialled',
+        message: expect.stringContaining('not dialled'),
+      });
       expect(mockNetGatewayFetch).not.toHaveBeenCalled();
       expect(cancelled).toBeInstanceOf(Error);
     });
@@ -1312,7 +1315,12 @@ describe("a remote Ant's dial is bounded by its attempt", () => {
     expect(abandonedAntDials()).toBe(MAX_ABANDONED_DIALS);
     const calls = mockNetGatewayFetch.mock.calls.length;
 
-    expect((await attempt()).message).toBe('too many abandoned Ant dials');
+    // Refused before any request exists: nothing of it was sent.
+    expect(await attempt()).toMatchObject({
+      name: 'AntNotDialled',
+      code: 'ERR_ANT_NOT_DIALLED',
+      message: 'too many abandoned Ant dials',
+    });
     expect(mockNetGatewayFetch.mock.calls).toHaveLength(calls);
     stalled.reject(new Error('aborted'));
     await new Promise(setImmediate);

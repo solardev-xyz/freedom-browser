@@ -31,8 +31,11 @@ jest.mock('../logger', () => ({
 
 // Chromium, as these tests play it: each `net.request` is handed to
 // `mockChromium.onDial` once it is ended, with the session it went out on.
-// `events` orders each session's connection closes and dials.
-const mockChromium = { onDial: null, events: [] };
+// `events` orders each session's connection closes and dials. `writeSession`
+// makes a write session misbehave: `readBack`, the proxy it resolves whatever
+// it was set to; `setProxy` or `closeAllConnections`, an error its next such
+// call fails with.
+const mockChromium = { onDial: null, events: [], writeSession: {} };
 const mockWriteSessions = [];
 const mockDefaultSession = {
   name: 'default',
@@ -64,14 +67,24 @@ jest.mock('electron', () => {
           setSpellCheckerLanguages: jest.fn(),
           setSpellCheckerEnabled: jest.fn(),
           setProxy: jest.fn(async ({ pacScript }) => {
+            const failure = mockChromium.writeSession.setProxy;
+            if (failure) {
+              delete mockChromium.writeSession.setProxy;
+              throw failure;
+            }
             const script = Buffer.from(pacScript.split(',')[1], 'base64').toString('utf-8');
             proxy = JSON.parse(script.match(/return (".*");/)[1]);
           }),
           forceReloadProxyConfig: jest.fn(async () => {}),
           closeAllConnections: jest.fn(async () => {
+            const failure = mockChromium.writeSession.closeAllConnections;
+            if (failure) {
+              delete mockChromium.writeSession.closeAllConnections;
+              throw failure;
+            }
             mockChromium.events.push(`close ${partition}`);
           }),
-          resolveProxy: jest.fn(async () => proxy),
+          resolveProxy: jest.fn(async () => mockChromium.writeSession.readBack ?? proxy),
         };
         mockWriteSessions.push(ses);
         return ses;
@@ -129,7 +142,8 @@ const sessionGuardSends = (method, url) =>
  * Chromium's side of each dial: the session's `onBeforeRequest` (the Ant
  * guard on the request session, its own on a write session), then
  * `answer(dial)`: `{ status, json }`, `{ error }` (a net error), `{ stall }`
- * (headers and a first chunk, then nothing) or null (no answer at all).
+ * (headers and a first chunk, then nothing; with `abort`, then the node
+ * cuts the connection) or null (no answer at all).
  * `during(dial)` runs while the dial is in flight. Every dial is recorded.
  */
 function playChromium({ answer = (dial) => ({ status: 200, json: echo(dial) }), during } = {}) {
@@ -164,7 +178,9 @@ function playChromium({ answer = (dial) => ({ status: 200, json: echo(dial) }), 
       return;
     }
     if (reply.stall) {
-      emitResponse(request, { status: 200, chunks: [reply.stall], end: false });
+      const response = emitResponse(request, { status: 200, chunks: [reply.stall], end: false });
+      // Chromium's `aborted` on the response: the connection closed mid-body.
+      if (reply.abort) setImmediate(() => response.emit('aborted'));
       return;
     }
     emitResponse(request, {
@@ -187,6 +203,7 @@ beforeEach(() => {
   mockDefaultSession.proxy = SOCKS;
   mockDefaultSession.resolveProxy.mockClear();
   mockChromium.events.length = 0;
+  mockChromium.writeSession = {};
   mockChromium.onDial = () => {
     throw new Error('no dial expected');
   };
@@ -441,6 +458,104 @@ describe('a remote node: every call on the default session’s stack, through it
       message: null,
     });
     expect(dials).toHaveLength(1);
+  });
+});
+
+// Codex round 1 on #1369, 1: an abort that isn't the call's own deadline.
+describe('a reply the node cuts off mid-body', () => {
+  const CUT_OFF = {
+    ok: false,
+    status: 0,
+    data: null,
+    message: null,
+    timedOut: false,
+    unreachable: true,
+    refused: false,
+  };
+
+  test('is unreachable, as undici’s `terminated` was on a loopback node, never a timeout', async () => {
+    const dials = playChromium({ answer: () => ({ stall: '{"stamps":[', abort: true }) });
+    const remote = await api.getStamps();
+    expect(dials).toHaveLength(1);
+
+    const node = await startFakeHttpNode({
+      handler: (_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.write('{"stamps":[', () => setImmediate(() => res.socket.destroy()));
+      },
+    });
+    mockRegistry.url = node.origin;
+    let loopback;
+    try {
+      loopback = await api.getStamps();
+    } finally {
+      await node.close();
+    }
+    expect(remote).toEqual(CUT_OFF);
+    expect(loopback).toEqual(CUT_OFF);
+  });
+
+  test('a write cut off mid-reply may have landed: uncertain, not timed out', async () => {
+    playChromium({ answer: () => ({ stall: '{"swapEnabled":', abort: true }) });
+    const res = await api.setSwapEnabled(true);
+    expect(res).toEqual(CUT_OFF);
+    expect(api.isUncertainWrite(res)).toBe(true);
+    expect(api.describeAntError(res)).toBe('Cannot reach the Swarm node.');
+  });
+});
+
+// Codex round 1 on #1369, 2: a write session that fails before its dial.
+describe('a write whose session could not be prepared was never sent', () => {
+  const NEVER_SENT = {
+    ok: false,
+    status: 0,
+    data: null,
+    message: null,
+    timedOut: false,
+    unreachable: true,
+    refused: true,
+  };
+
+  test.each([
+    [
+      'its write session reads back another proxy than the request session’s',
+      () => {
+        mockChromium.writeSession.readBack = 'DIRECT';
+      },
+    ],
+    [
+      'the request session’s proxy lookup fails',
+      () => {
+        mockDefaultSession.resolveProxy.mockRejectedValueOnce(new Error('resolveProxy failed'));
+      },
+    ],
+    [
+      'setting the write session’s proxy fails',
+      () => {
+        mockDefaultSession.proxy = 'PROXY 127.0.0.1:3128';
+        mockChromium.writeSession.setProxy = new Error('setProxy failed');
+      },
+    ],
+    [
+      'closing the write session’s connections fails',
+      () => {
+        mockChromium.writeSession.closeAllConnections = new Error('closeAllConnections failed');
+      },
+    ],
+  ])('%s: refused, not dialled, never uncertain', async (_case, arrange) => {
+    playChromium();
+    for (const call of [
+      () => api.buyStorage({ depth: 20, amountPerChunk: '1' }),
+      () => api.setSwapEnabled(true),
+    ]) {
+      // Each failure is spent by the call it fails.
+      arrange();
+      const res = await call();
+      expect(res).toEqual(NEVER_SENT);
+      expect(api.isUncertainWrite(res)).toBe(false);
+      expect(api.describeAntError(res, 'Buying storage')).toBe('Cannot reach the Swarm node.');
+    }
+    expect(mockChromium.events.filter((e) => e.startsWith('dial'))).toEqual([]);
   });
 });
 

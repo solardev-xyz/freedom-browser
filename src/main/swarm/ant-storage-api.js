@@ -39,6 +39,7 @@
 
 const { getAntApiUrl } = require('../service-registry');
 const { OnionGateRefusal } = require('../ipfs/onion-gate');
+const { AntNotDialled } = require('./ant-write-sessions');
 
 const READ_TIMEOUT_MS = 10_000;
 // A quote reads the price oracle, both wallet balances and the chequebook
@@ -105,8 +106,10 @@ const CHROMIUM_CONNECT_FAILURES = new Set([
 ]);
 
 function isConnectFailure(err) {
-  // The onion gate's refusal comes before the request exists (onion-gate.js).
-  if (err instanceof OnionGateRefusal) return true;
+  // Main's own refusals before the request existed: the onion gate's
+  // (onion-gate.js), and a write session that couldn't be prepared or the
+  // transport's cap on abandoned dials (ant-write-sessions.js).
+  if (err instanceof OnionGateRefusal || err instanceof AntNotDialled) return true;
   const causes = [err, err?.cause, err?.cause?.cause];
   return causes.some(
     (e) =>
@@ -179,7 +182,10 @@ async function antRequest(
     });
     text = await readText(response, signal);
   } catch (err) {
-    const timedOut = signal.aborted || err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    // The call's own deadline, never any abort: the session's stack fails a
+    // reply the node cut off mid-body with an AbortError, which undici
+    // reported as `terminated` (unreachable).
+    const timedOut = signal.aborted || err?.name === 'TimeoutError';
     return {
       ok: false,
       status: 0,
