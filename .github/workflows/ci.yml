@@ -1152,6 +1152,37 @@ jobs:
         env:
           FREEDOM_CORED_STORES_TEST: '1'
 
+      # freedom-core design 0015, SWM-8 (the SWM-6 to SWM-9 plan's PR 8.3):
+      # freedom://publish's IPC handlers on both Swarm backends, a
+      # development build on js (bee-js) and on core (the build's own hello,
+      # the pinned core's swarm.publish, swarm.stamps and
+      # swarm.upload_status through main's executor), against one node on
+      # loopback. Each of the pinned vectors' freedom://publish handler
+      # cases answers the reference's on both, its history row and its node
+      # requests the reference's (the core's text for picked-read-text), and
+      # main sends the case's swarm.publish params; the stamps and upload
+      # status cases answer the same on both. F-3: a folder's 124-byte names
+      # reach the node whole on core (bee-js cuts them on js). U13: a picked
+      # file that changes size mid-upload shows "Internal error" on core.
+      - name: Check out freedom-core's Swarm vectors (freedom://publish on both backends)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: solardev-xyz/freedom-core
+          ref: 7eea60baaedd425a4956d7b8f5eddc137241673b
+          path: .freedom-core-publish
+          persist-credentials: false
+          sparse-checkout: |
+            vectors/swarm.json
+          sparse-checkout-cone-mode: false
+
+      - name: freedom://publish on js and on the core (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/swarm/publish-service-core.integration.test.js
+        env:
+          FREEDOM_CORED_STORES_TEST: '1'
+          FREEDOM_CORE_SWARM_VECTORS: ${{ github.workspace }}/.freedom-core-publish/vectors
+
       # freedom-core design 0013, "The intent journal" (PRF-6(b2)): this
       # build names `intents`, so the core is wallet-intents.jsonl's one
       # writer. Main's intent store, nonce reservations and send path

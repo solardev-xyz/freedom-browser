@@ -271,7 +271,10 @@ const METHOD_CLASSES = Object.freeze({
   // uploads) are main's, with idle bounds only, at protocol 2 only. The
   // stores' ops, `swarm.identities` and `swarm.history` (the chrome's and
   // main's) and `swarm.manifest` (main's), are answered at once. Main sends
-  // none of them yet (SWM-5 to SWM-8).
+  // them on the core's Swarm backend only (from SWM-7's flip); its own
+  // `swarm.publish`, `swarm.stamps` and `swarm.upload_status` go through
+  // core/swarm-own-calls.js (SWM-8), `swarm.publish`'s watchdog moved on by
+  // its progress (core/swarm-shell.js).
   'swarm.request': SWARM,
   'swarm.body': IDLE,
   'swarm.publish': IDLE,
