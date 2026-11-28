@@ -369,8 +369,10 @@ function toPayloadBuffer(wsData) {
  *   passed (freedom-core design 0015, question 4), else the node's now.
  * @param {{ onMessage: (payload: Buffer) => void, beforeReconnect?: () => Promise<boolean> }} handlers -
  *   with `beforeReconnect`, each reconnect waits for it, and the socket
- *   dials again only when it resolves true: otherwise it stops for good
- *   (the registry's route test refused, and ended its subscriptions)
+ *   dials again only when it resolves true; `'later'` asks again after the
+ *   next backoff, dialling nothing (no node is configured now); anything
+ *   else stops it for good (the registry ended its subscriptions: the route
+ *   test refused, or the node is no longer the configured one)
  * @returns {{ established: Promise<void>, cancel: () => void }}
  */
 function openSubscriptionSocket({ kind, key, url: nodeUrl }, { onMessage, beforeReconnect = null }) {
@@ -447,13 +449,18 @@ function openSubscriptionSocket({ kind, key, url: nodeUrl }, { onMessage, before
       log.warn(
         `[MessagingService] Subscription socket closed (${kind}:${key}, code=${code}${reason ? `, ${reason}` : ''}); reconnecting in ${reconnectDelay}ms`
       );
-      reconnectTimer = setTimeout(reconnect, reconnectDelay);
-      reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
+      retry();
     };
   };
 
-  // Each reconnect asks `beforeReconnect` first, when there is one: a no
-  // (or its failure) stops the socket for good.
+  // The next reconnect, after the backoff.
+  const retry = () => {
+    reconnectTimer = setTimeout(reconnect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
+  };
+  // Each reconnect asks `beforeReconnect` first, when there is one: a yes
+  // dials, `'later'` dials nothing and asks again after the next backoff,
+  // and a no (or its failure) stops the socket for good.
   const stop = () => {
     if (cancelled) return;
     cancelled = true;
@@ -472,7 +479,11 @@ function openSubscriptionSocket({ kind, key, url: nodeUrl }, { onMessage, before
     Promise.resolve()
       .then(beforeReconnect)
       .then(
-        (go) => (go === true ? connect() : stop()),
+        (go) => {
+          if (go === true) connect();
+          else if (go === 'later' && !cancelled) retry();
+          else stop();
+        },
         () => stop()
       );
   };

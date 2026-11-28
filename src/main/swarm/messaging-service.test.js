@@ -563,6 +563,34 @@ describe('openSubscriptionSocket', () => {
     expect(sockets).toHaveLength(2);
   });
 
+  test("a 'later' dials nothing now and asks again after the next backoff", async () => {
+    const answers = ['later', 'later', true];
+    const beforeReconnect = jest.fn(async () => answers.shift());
+    const handle = openSubscriptionSocket({ kind: 'gsoc', key: 'ab'.repeat(32) }, { onMessage: jest.fn(), beforeReconnect });
+
+    sockets[0].emitOpen();
+    jest.advanceTimersByTime(600);
+    await handle.established;
+    sockets[0].emitClose(1006);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(beforeReconnect).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(beforeReconnect).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(4000);
+    expect(beforeReconnect).toHaveBeenCalledTimes(3);
+    expect(sockets).toHaveLength(2);
+
+    // Cancelled while it waits: no more asks, no dial.
+    sockets[1].emitClose(1006);
+    answers.push('later');
+    await jest.advanceTimersByTimeAsync(1000);
+    handle.cancel();
+    await jest.advanceTimersByTimeAsync(60000);
+    expect(sockets).toHaveLength(2);
+  });
+
   test('a no before establishment rejects the established promise, and a failed ask is a no', async () => {
     const handle = openSubscriptionSocket(
       { kind: 'gsoc', key: 'ab'.repeat(32) },

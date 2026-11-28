@@ -389,9 +389,10 @@ describe('subscription-registry: the route test', () => {
       { onMessage: expect.any(Function), beforeReconnect: expect.any(Function) }
     );
     expect(resolveProxy).toHaveBeenLastCalledWith(REMOTE);
-    await openOne({ key: 'ef'.repeat(32), nodeUrl: 'https://other.example' });
-    expect(opened[1].target.url).toBe('https://other.example');
-    expect(resolveProxy).toHaveBeenLastCalledWith('https://other.example');
+    // The given one (the parent's node, on the core) when it is the node now.
+    await openOne({ key: 'ef'.repeat(32), nodeUrl: `${REMOTE}/` });
+    expect(opened[1].target.url).toBe(`${REMOTE}/`);
+    expect(resolveProxy).toHaveBeenLastCalledWith(`${REMOTE}/`);
   });
 
   test('the slot is held through the test, and an end meanwhile opens nothing', async () => {
@@ -458,6 +459,8 @@ describe('subscription-registry: the route test', () => {
       await openOne();
       await jest.advanceTimersByTimeAsync(registry.ROUTE_RECHECK_MS * 2);
       expect(resolveProxy).not.toHaveBeenCalled();
+      expect(opened[0].cancel).not.toHaveBeenCalled();
+      registry.cancelByDocument('7:1');
 
       nodeUrl = REMOTE;
       await openOne({ key: 'ef'.repeat(32), document: '8:1' });
@@ -467,7 +470,6 @@ describe('subscription-registry: the route test', () => {
       proxy = 'PROXY proxy.example:8080';
       await jest.advanceTimersByTimeAsync(registry.ROUTE_RECHECK_MS);
       expect(opened[1].cancel).toHaveBeenCalledTimes(1);
-      expect(opened[0].cancel).not.toHaveBeenCalled();
       // No remote socket left: no more tests.
       await jest.advanceTimersByTimeAsync(registry.ROUTE_RECHECK_MS * 3);
       expect(resolveProxy).toHaveBeenCalledTimes(3);
@@ -484,6 +486,96 @@ describe('subscription-registry: the route test', () => {
     expect(refused).toEqual([{ origin: 'a.eth', via: 'proxy', ended: false }]);
     registry.configure({ openSocket, deliver: jest.fn(), route: null });
     expect(await registry.checkRoute(REMOTE, 'a.eth')).toBeNull();
+  });
+
+  describe("the node's URL changes (Codex round 1 on #1375)", () => {
+    const OTHER = 'https://other.example';
+
+    test.each([
+      ['another node reached directly', OTHER, `${OTHER}`],
+      ['a node on loopback', LOOPBACK, LOOPBACK],
+    ])('to %s: the old socket ends at the recheck, unreported, and a same-key subscription opens on the new node', async (_label, next) => {
+      await openOne();
+      await openOne({ origin: 'b.eth', document: '8:1' });
+      expect(openSocket).toHaveBeenCalledTimes(1);
+      nodeUrl = next;
+      await registry.recheckRoutes();
+      expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+      expect(registry.countByOrigin('a.eth')).toBe(0);
+      expect(registry.countByOrigin('b.eth')).toBe(0);
+      // The old node's route still holds: no refusal to report.
+      expect(refused).toEqual([]);
+      await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(false);
+      await openOne();
+      expect(openSocket).toHaveBeenCalledTimes(2);
+      expect(opened[1].target).toEqual({ kind: 'pss', key: KEY, url: next });
+    });
+
+    test('to an onion node: the old socket ends, and a same-key subscription is refused with no socket', async () => {
+      await openOne();
+      nodeUrl = 'http://abcdefghijklmnop.onion';
+      await registry.recheckRoutes();
+      expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+      await expect(
+        registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY })
+      ).rejects.toMatchObject({ reason: 'proxy-or-tor', via: 'tor' });
+      expect(openSocket).toHaveBeenCalledTimes(1);
+    });
+
+    test("a same-key subscription never joins a socket to another node, even before the recheck", async () => {
+      await openOne();
+      nodeUrl = OTHER;
+      await openOne({ origin: 'b.eth', document: '8:1' });
+      expect(openSocket).toHaveBeenCalledTimes(2);
+      expect(opened[1].target.url).toBe(OTHER);
+      await registry.recheckRoutes();
+      expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+      expect(opened[1].cancel).not.toHaveBeenCalled();
+      expect(registry.countByOrigin('b.eth')).toBe(1);
+    });
+
+    test('a reconnect to a node that is no longer the configured one ends the socket, before any route test', async () => {
+      await openOne();
+      resolveProxy.mockClear();
+      nodeUrl = OTHER;
+      await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(false);
+      expect(resolveProxy).not.toHaveBeenCalled();
+      expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+      expect(registry.countByOrigin('a.eth')).toBe(0);
+    });
+
+    test('a node URL given for the open that is no longer the configured one opens nothing', async () => {
+      await expect(
+        registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY, nodeUrl: OTHER })
+      ).rejects.toMatchObject({ reason: 'subscription_cancelled' });
+      expect(openSocket).not.toHaveBeenCalled();
+      expect(registry.countByOrigin('a.eth')).toBe(0);
+      // A trailing slash is the same node.
+      await openOne({ nodeUrl: `${REMOTE}/` });
+      expect(openSocket).toHaveBeenCalledTimes(1);
+    });
+
+    test('a socket establishing on the old node is cancelled, not refused', async () => {
+      const promise = registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY });
+      await socketAfter(0);
+      nodeUrl = OTHER;
+      await registry.recheckRoutes();
+      await expect(promise).rejects.toMatchObject({ reason: 'subscription_cancelled' });
+      expect(refused).toEqual([]);
+    });
+
+    test('while no node is configured (a restart), a reconnect waits and ends nothing; the same node back goes ahead', async () => {
+      await openOne();
+      nodeUrl = null;
+      await registry.recheckRoutes();
+      await expect(opened[0].handlers.beforeReconnect()).resolves.toBe('later');
+      expect(opened[0].cancel).not.toHaveBeenCalled();
+      expect(registry.countByOrigin('a.eth')).toBe(1);
+      nodeUrl = REMOTE;
+      await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(true);
+      nodeUrl = OTHER;
+      await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(false);
+    });
   });
 
   test('its signal ends a subscription that establishes; only its opener closes it by id', async () => {

@@ -60,7 +60,9 @@
  *   document (`subscriber`, its key the site's), on the parent's node, the
  *   route tested again just before the socket opens: `{ id }` once it is
  *   open, or `{ failed: { reason?, message } }` with the registry's reason
- *   and text (`proxy-or-tor` among them, with no socket made). The core's
+ *   and text (`proxy-or-tor` among them, with no socket made; and
+ *   `subscription_cancelled` when the parent's node is no longer the
+ *   configured one). The core's
  *   cancel, or the parent's end, while it opens ends it; an `{ id }` that
  *   would answer after either is closed, never sent. The subscription then
  *   is main's: its messages, its limits, its later end.

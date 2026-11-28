@@ -250,3 +250,63 @@ describe('question 4 on the JS backend: a proxy that comes on ends what is open'
     expect(WebSocketSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("the node's URL changes (Codex round 1 on #1375)", () => {
+  const OTHER = 'https://other.example:1633';
+  const nodeChanged = async () => {
+    for (const listener of mockServices.listeners) listener('ant');
+    await jest.advanceTimersByTimeAsync(0);
+  };
+
+  test.each([
+    ['another node reached directly', OTHER, `wss://other.example:1633/pss/subscribe/${TOPIC_HEX}`],
+    ['the node on loopback', LOOPBACK, `ws://127.0.0.1:1633/pss/subscribe/${TOPIC_HEX}`],
+  ])('to %s: the old socket closes for good, and the same topic opens on the new node', async (_label, next, url) => {
+    const { socket } = await subscribed(page().meta);
+    mockServices.url = next;
+    await nodeChanged();
+    expect(socket.closed).toEqual([1000]);
+    expect(registry.countByOrigin(ORIGIN)).toBe(0);
+    socket.drop(1000);
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(WebSocketSpy).toHaveBeenCalledTimes(1);
+
+    const again = await subscribed(page('8:1').meta);
+    expect(WebSocketSpy).toHaveBeenCalledTimes(2);
+    expect(again.socket.url).toBe(url);
+    expect(again.socket).not.toBe(socket);
+  });
+
+  test('to an onion node: the old socket closes, and the same topic is refused with no socket', async () => {
+    const { socket } = await subscribed(page().meta);
+    mockServices.url = 'http://abcdefghijklmnop.onion';
+    await nodeChanged();
+    expect(socket.closed).toEqual([1000]);
+    expect(await subscribe(page('8:1').meta)).toEqual(UNAVAILABLE);
+    expect(WebSocketSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('with no event: a drop after the change never reconnects to the old node', async () => {
+    const { socket } = await subscribed(page().meta);
+    mockServices.url = OTHER;
+    socket.drop();
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(WebSocketSpy).toHaveBeenCalledTimes(1);
+    expect(registry.countByOrigin(ORIGIN)).toBe(0);
+  });
+
+  test('a restart (no node, then the same one back): nothing dialled meanwhile, then it reconnects', async () => {
+    const { socket } = await subscribed(page().meta);
+    mockServices.url = null;
+    await nodeChanged();
+    socket.drop();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(WebSocketSpy).toHaveBeenCalledTimes(1);
+    expect(registry.countByOrigin(ORIGIN)).toBe(1);
+    mockServices.url = REMOTE;
+    await nodeChanged();
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(WebSocketSpy).toHaveBeenCalledTimes(2);
+    expect(FakeWebSocket.made[1].url).toBe(socket.url);
+  });
+});

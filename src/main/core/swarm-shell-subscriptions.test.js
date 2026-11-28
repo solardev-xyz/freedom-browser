@@ -185,6 +185,7 @@ describe('through the client: question 4 and D16', () => {
 
   test('a loopback node still subscribes with a proxy on', async () => {
     proxy = 'PROXY proxy.example:8080';
+    mockRegistry.url = 'http://127.0.0.1:1633';
     const { parent, ready, at } = await readyParent({ at: node('http://127.0.0.1:1633') });
     expect(ready.result).toEqual({ ok: true });
     expect(at.dials.map((dial) => dial.path)).toEqual(['/node']);
@@ -220,6 +221,19 @@ describe('through the client: question 4 and D16', () => {
     expect(WebSocketSpy).not.toHaveBeenCalled();
     expect(registry.countByOrigin(KEY)).toBe(0);
     expect(refused).toEqual([{ origin: KEY, via: 'proxy', ended: false }]);
+  });
+
+  test("a parent whose node is no longer the configured one: the open fails, with no socket", async () => {
+    const { parent, ready } = await readyParent();
+    expect(ready.result).toEqual({ ok: true });
+    mockRegistry.url = 'https://other.example';
+    const ask = core.ask('shell.swarm_subscribe', { for: parent.id, kind: 'pss', key: TOPIC_HEX });
+    await until(() => core.reply(ask), 'the subscribe answer');
+    expect(core.reply(ask).result).toEqual({
+      failed: { reason: 'subscription_cancelled', message: 'The Swarm node changed before the subscription opened' },
+    });
+    expect(WebSocketSpy).not.toHaveBeenCalled();
+    expect(refused).toEqual([]);
   });
 
   test('a proxy that comes on ends the open subscription, with no reconnect', async () => {
@@ -288,6 +302,7 @@ describe('through the client: question 4 and D16', () => {
   });
 
   test("a close of a subscription this connection didn't open (a JS page's) closes nothing, and answers {}", async () => {
+    mockRegistry.url = 'http://127.0.0.1:1633';
     const pending = registry.subscribe({
       origin: KEY,
       document: '9:1',

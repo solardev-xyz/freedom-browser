@@ -9,8 +9,9 @@
  *
  * Multiplexing: the Ant node caps live pull pipelines at a small
  * node-wide pool (8 neighborhoods), so the registry opens at most one
- * socket per (kind, key) and fans messages out to every subscription on
- * it. The socket is closed when its last subscription goes away.
+ * socket per (kind, key) on a node and fans messages out to every
+ * subscription on it. The socket is closed when its last subscription goes
+ * away.
  *
  * Establishment is bounded: the socket layer reconnects forever, so a
  * node that stops answering would otherwise leave a subscription pending
@@ -36,7 +37,13 @@
  *   ROUTE_RECHECK_MS while a socket to a node not on loopback is open (a
  *   system or PAC proxy changes with no event).
  * A socket the test refuses ends with every subscription on it
- * (`cancelWhere`) and is never reconnected. `checkRoute` gives the same
+ * (`cancelWhere`) and is never reconnected. So does a socket to a node that
+ * is no longer the configured one (the node's URL changed): each socket
+ * keeps the URL it dials, and a recheck or a reconnect ends it, before any
+ * route test, whatever that node's route. While no node is configured (a
+ * restart), a socket dials nothing, and asks again at its next try. A
+ * subscription never joins a socket to another node: sockets are shared
+ * per node. `checkRoute` gives the same
  * test to the first check, before the caller's waits (`shell.swarm_ready`'s
  * `subscribe`, the JS provider's before its probe). `onRefused` hears each
  * refused open and each subscription a refusal ended, with the site's key
@@ -70,8 +77,9 @@ const PROXY_OR_TOR_MESSAGE = `Node not available: ${PROXY_OR_TOR}`;
 // `cancelByOpener`); `attached` says it is on its socket; `endedBy` is the
 // route refusal that ended it; `onEnd` ends its subscribe()'s wait.
 const subscriptions = new Map();
-// socketKey (`${kind}:${key}`) → { handle, subIds: Set, url }, `url` the
-// node it dials (null when the socket layer chose it).
+// socketKey (`${kind}:${key}@${url}`, or `${kind}:${key}` with no URL) →
+// { handle, subIds: Set, url }, `url` the node it dials (null when the
+// socket layer chose it: no route configured).
 const sockets = new Map();
 
 let openSocket = null;
@@ -174,7 +182,8 @@ function report(origin, refusal, ended) {
  * @param {(target: {kind, key, url?}, handlers: {onMessage, beforeReconnect?}) => {established, cancel}} config.openSocket -
  *   `url` the node to dial, the one the route test passed; the socket asks
  *   `beforeReconnect()` before each reconnect, and dials again only when it
- *   resolves true
+ *   resolves true (`'later'`: ask again at the next try; anything else:
+ *   stop for good)
  * @param {(subscription: Object, payload: Buffer) => void} config.deliver
  * @param {number} config.maxSubscriptionsPerOrigin
  * @param {number} [config.establishTimeoutMs]
@@ -252,6 +261,23 @@ function cancelledError() {
   return semanticError('subscription_cancelled', 'Subscription was cancelled before it was established');
 }
 
+/** Whether two node URLs name the same node (a trailing slash aside). */
+function sameNode(a, b) {
+  return a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
+}
+
+/**
+ * Whether a socket to `url` goes to a node other than the configured one
+ * now. Not while no node is configured (null: a restart, which may come
+ * back at the same URL), nor for a socket the socket layer chose the node
+ * of (no route configured).
+ */
+function staleNode(url) {
+  if (!route || !url) return false;
+  const now = route.nodeUrl?.() ?? null;
+  return typeof now === 'string' && now !== '' && !sameNode(url, now);
+}
+
 /**
  * Open (or join) a subscription. With a route configured, the route test
  * runs just before the open, after every wait of the caller's, on the URL
@@ -277,7 +303,9 @@ async function subscribe({ origin, document, deliverTo, kind, key, nodeUrl, sign
   }
   if (signal?.aborted) throw cancelledError();
 
-  const socketKey = `${kind}:${key}`;
+  // The node it dials, which its socket is shared on.
+  const url = (nodeUrl === undefined ? route?.nodeUrl?.() : nodeUrl) || null;
+  const socketKey = url ? `${kind}:${key}@${url}` : `${kind}:${key}`;
   const subscriptionId = crypto.randomBytes(16).toString('hex');
   const subscription = {
     id: subscriptionId,
@@ -305,11 +333,13 @@ async function subscribe({ origin, document, deliverTo, kind, key, nodeUrl, sign
   signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
-    let url = null;
     if (route) {
-      url = nodeUrl === undefined ? (route.nodeUrl?.() ?? null) : nodeUrl;
       const refusal = await routeRefusal(url, route);
       if (!subscriptions.has(subscriptionId)) throw cancelledError();
+      // A node that is no longer the configured one gets no socket.
+      if (staleNode(url)) {
+        throw semanticError('subscription_cancelled', 'The Swarm node changed before the subscription opened');
+      }
       if (refusal) {
         subscription.endedBy = refusal;
         throw proxyOrTorError(refusal);
@@ -352,41 +382,58 @@ function attach(subscription, url) {
 }
 
 /**
- * The socket layer's ask before it dials `socket` again: the route test on
- * its URL. A refusal ends the socket with every subscription on it, so it
- * never dials again. Resolves whether it may.
+ * The socket layer's ask before it dials `socket` again: true to dial,
+ * `'later'` to dial nothing now and ask again at its next try (no node is
+ * configured: a restart), false to stop for good. A socket to a node that
+ * is no longer the configured one, or one the route test refuses, ends with
+ * every subscription on it, so it never dials again.
  */
 async function mayReconnect(socketKey, socket) {
   if (sockets.get(socketKey) !== socket) return false;
+  if (staleNode(socket.url)) {
+    endSocket(socketKey, socket, null);
+    return false;
+  }
+  if (route && socket.url && !route.nodeUrl?.()) return 'later';
   const refusal = route ? await routeRefusal(socket.url, route) : null;
   if (sockets.get(socketKey) !== socket) return false;
-  if (refusal) {
+  if (refusal || staleNode(socket.url)) {
     endSocket(socketKey, socket, refusal);
     return false;
   }
   return true;
 }
 
-/** Ends `socket` and every subscription on it, for the route refusal `refusal`. */
+/**
+ * Ends `socket` and every subscription on it: for the route refusal
+ * `refusal`, reported, or with none for a node that is no longer the
+ * configured one (one still establishing is then `subscription_cancelled`).
+ */
 function endSocket(socketKey, socket, refusal) {
-  for (const subId of socket.subIds) {
-    const sub = subscriptions.get(subId);
-    if (!sub) continue;
-    sub.endedBy = refusal;
-    // One still establishing is refused from its subscribe(), which reports
-    // it as a refused open.
-    if (!sub.pending) report(sub.origin, refusal, true);
+  if (refusal) {
+    for (const subId of socket.subIds) {
+      const sub = subscriptions.get(subId);
+      if (!sub) continue;
+      sub.endedBy = refusal;
+      // One still establishing is refused from its subscribe(), which
+      // reports it as a refused open.
+      if (!sub.pending) report(sub.origin, refusal, true);
+    }
   }
   cancelWhere((sub) => sub.attached && sub.socketKey === socketKey && sockets.get(socketKey) === socket);
 }
 
 /**
- * Tests the route of every open socket again (question 4): Tor's state or
- * the node's URL changed, or ROUTE_RECHECK_MS passed. Each socket the test
- * now refuses ends with its subscriptions, and isn't reconnected.
+ * Tests every open socket again (question 4): Tor's state or the node's
+ * URL changed, or ROUTE_RECHECK_MS passed. First each socket to a node that
+ * is no longer the configured one ends, whatever that node's route; then
+ * each socket the route test now refuses. Neither is reconnected.
  */
 async function recheckRoutes() {
   if (!route) return;
+  for (const [socketKey, socket] of [...sockets]) {
+    if (staleNode(socket.url)) endSocket(socketKey, socket, null);
+  }
   const byUrl = new Map();
   for (const [socketKey, socket] of sockets) {
     if (!socket.url) continue;
@@ -396,9 +443,10 @@ async function recheckRoutes() {
   await Promise.all(
     [...byUrl].map(async ([url, held]) => {
       const refusal = await routeRefusal(url, route);
-      if (!refusal) return;
+      const stale = staleNode(url);
+      if (!refusal && !stale) return;
       for (const [socketKey, socket] of held) {
-        if (sockets.get(socketKey) === socket) endSocket(socketKey, socket, refusal);
+        if (sockets.get(socketKey) === socket) endSocket(socketKey, socket, stale ? null : refusal);
       }
     })
   );
