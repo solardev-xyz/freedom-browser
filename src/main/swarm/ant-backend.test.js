@@ -86,6 +86,17 @@ describe("the Ant backend's verification", () => {
     expect(antBackend().ref).toEqual({ ant: 'external', up: true });
   });
 
+  test("the node's root keeps no trailing slash, which a path is joined to", async () => {
+    mockRegistry.url = 'http://127.0.0.1:1633/';
+    const fetchImpl = jest.fn(async () => new Response('{}'));
+    const backend = antBackend({ fetchImpl });
+    expect(backend.url).toBe('http://127.0.0.1:1633');
+    await backend.request({ path: '/health', method: 'GET', signal: new AbortController().signal });
+    expect(fetchImpl.mock.calls[0][0]).toBe('http://127.0.0.1:1633/health');
+    mockRegistry.url = '';
+    expect(antBackend().url).toBeNull();
+  });
+
   test('Ant has no probe and no `car`: capturing dials nothing', () => {
     mockRegistry.mode = 'external';
     const fetchImpl = jest.fn();

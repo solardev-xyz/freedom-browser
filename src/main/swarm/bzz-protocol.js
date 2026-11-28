@@ -32,7 +32,7 @@ const { loadsOnlyVerifiedContent } = require('../dweb/strict-mode');
 const { getActiveProfile } = require('../profile-resolver');
 const { isLoopbackGatewayUrl, netGatewayFetch } = require('../ipfs/gateway-transport');
 const { announceMainProcessAntDial } = require('./ant-api-main-dials');
-const { leaseWriteSession } = require('./ant-write-sessions');
+const { leaseWriteSession, AntNotDialled } = require('./ant-write-sessions');
 const { unlessAborted } = require('../lib/unless-aborted');
 const { isPrivateLogContext, runWithPrivateLogContext } = require('../private/private-log-context');
 const { serveLabelled } = require('../dweb/content-trust');
@@ -76,9 +76,10 @@ let abandonedDials = 0;
  *     (`ant-api-main-dials.js`) and released once the dial settles.
  *     Chromium may send a read again when a reused connection closes before
  *     its headers, which is idempotent.
- *   - A write (POST) goes on a write session of its own, on the request
- *     session's proxy, with no connection open before it, whose own guard
- *     admits that write and nothing else (`ant-write-sessions.js`):
+ *   - A write (POST, or ant-storage-api's PUT) goes on a write session of
+ *     its own, on the request session's proxy, with no connection open
+ *     before it, whose own guard admits that write and nothing else
+ *     (`ant-write-sessions.js`, which refuses any other method undialled):
  *     Chromium sends it once, whole or streamed, and it fails when the node
  *     hangs up (freedom-core design 0015, point 6; #1344). It holds that
  *     session until its reply is over.
@@ -88,20 +89,30 @@ let abandonedDials = 0;
  * even while the session's proxy lookup ignores it. That work is abandoned:
  * the transport refuses to dial an aborted request once the lookup returns,
  * anything it still brings is discarded, and it is counted until it settles.
+ * A write that ends so before its request exists was never sent, and never
+ * will be: it fails with an `AntNotDialled`, its cause the abort, so a caller
+ * can tell. Its request exists from the moment the transport makes it
+ * (`netGatewayFetch`'s `onRequest`), the one point a byte of it can leave;
+ * every wait before (for a write session, the session's preparation, the
+ * onion gate's lookup) is undialled.
  */
 async function dialAnt(url, init, { session, fetchImpl }) {
   if (isLoopbackGatewayUrl(url)) {
     return isStreamBody(init.body) ? dialWithUpload(url, init, fetchImpl) : fetchImpl(url, init);
   }
   if (abandonedDials >= MAX_ABANDONED_DIALS) {
-    const err = new Error('too many abandoned Ant dials');
+    const err = new AntNotDialled('too many abandoned Ant dials');
     if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
     throw err;
   }
   const write = init.method !== 'GET' && init.method !== 'HEAD';
   const release = write ? () => {} : announceMainProcessAntDial(url, init.method);
+  // A write's stage: `dialled` once the transport makes its request.
+  const stage = { dialled: false };
   const dialling = Promise.resolve().then(() =>
-    write ? dialWrite(url, init, session) : netGatewayFetch(url, init, session ? { session } : {})
+    write
+      ? dialWrite(url, init, session, stage)
+      : netGatewayFetch(url, init, session ? { session } : {})
   );
   try {
     return await unlessAborted(dialling, init.signal);
@@ -116,6 +127,13 @@ async function dialAnt(url, init, { session, fetchImpl }) {
         .finally(() => {
           abandonedDials -= 1;
         });
+      // No request yet, and none to come: the transport makes none for an
+      // aborted signal.
+      if (write && !stage.dialled && !(err instanceof AntNotDialled)) {
+        throw new AntNotDialled('a write ended before it was dialled: not dialled', {
+          cause: err,
+        });
+      }
     }
     throw withChromiumCode(err);
   } finally {
@@ -128,8 +146,9 @@ async function dialAnt(url, init, { session, fetchImpl }) {
  * (`ant-write-sessions.js`) and handed back once its reply is over: its
  * body's end, failure or cancel, or the dial's failure. A stream body is
  * cancelled when no session could be prepared, since nothing will pull it.
+ * `stage.dialled` is set as the transport makes its request.
  */
-async function dialWrite(url, init, source) {
+async function dialWrite(url, init, source, stage) {
   let lease;
   try {
     lease = await leaseWriteSession(source, url, init.method, init.signal);
@@ -137,8 +156,22 @@ async function dialWrite(url, init, source) {
     if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
     throw err;
   }
+  // Ended while its session was prepared: given back, and never dialled.
+  if (init.signal.aborted) {
+    lease.release();
+    const err = new AntNotDialled('a write ended before it was dialled: not dialled', {
+      cause: init.signal.reason,
+    });
+    if (isStreamBody(init.body)) init.body.cancel(err).catch(() => {});
+    throw err;
+  }
   try {
-    const response = await netGatewayFetch(url, init, { session: lease.session });
+    const response = await netGatewayFetch(url, init, {
+      session: lease.session,
+      onRequest: () => {
+        stage.dialled = true;
+      },
+    });
     return endingWith(response, lease.release);
   } catch (err) {
     lease.release();
@@ -389,15 +422,21 @@ function verifiesExternalAnt() {
  * one dial of `path` on this node, with no retry: the dweb plan's executor
  * retries around it, and main's Swarm executor never does
  * (`ant-api-call.js`). `body` is bytes or a `ReadableStream` of bytes (a
- * POST's; design 0015, The transport), pulled only as the node takes it. A
- * remote node's POST goes on a write session (`dialAnt`), so it is sent once.
+ * POST's or a PUT's; design 0015, The transport), pulled only as the node
+ * takes it. A remote node's POST or PUT goes on a write session (`dialAnt`),
+ * so it is sent once. Main's own calls (`ant-storage-api.js`) use it too.
+ *
+ * `url` is the node's root without a trailing slash, which `request()` joins
+ * `path` to (`ant-manager.js` registers none; ant-storage-api always dropped
+ * one).
  *
  * @param {object} [transport]
  * @param {Electron.Session} [transport.session] - the request's session
  * @param {typeof fetch} [transport.fetchImpl] - the loopback dial
  */
 function antBackend({ session = null, fetchImpl = fetch } = {}) {
-  const url = getAntApiUrl() || null;
+  const api = getAntApiUrl();
+  const url = (typeof api === 'string' && api.replace(/\/+$/, '')) || null;
   const mode = getService('ant')?.mode === MODE.BUNDLED ? 'bundled' : 'external';
   // An external Ant, against a core whose verifier is attached.
   const attached = mode === 'external' && dwebVerifier() !== null;

@@ -1027,7 +1027,7 @@ describe('a non-loopback Ant', () => {
       const [ses] = mockWriteSessions;
       const [url, init, deps] = mockNetGatewayFetch.mock.calls[0];
       expect(url).toBe(dialled);
-      expect(deps).toEqual({ session: ses });
+      expect(deps).toEqual({ session: ses, onRequest: expect.any(Function) });
       expect(source.resolveProxy).toHaveBeenCalledWith(dialled);
       expect(seen.proxy).toBe(SOCKS);
       expect(ses.closeAllConnections).toHaveBeenCalledTimes(1);
@@ -1089,7 +1089,10 @@ describe('a non-loopback Ant', () => {
       // The write session reads back another proxy than its request session's.
       while (mockWriteSessions.length === 0) await Promise.resolve();
       mockWriteSessions[0].resolveProxy.mockResolvedValueOnce('DIRECT');
-      await expect(pending).rejects.toThrow('not dialled');
+      await expect(pending).rejects.toMatchObject({
+        name: 'AntNotDialled',
+        message: expect.stringContaining('not dialled'),
+      });
       expect(mockNetGatewayFetch).not.toHaveBeenCalled();
       expect(cancelled).toBeInstanceOf(Error);
     });
@@ -1110,6 +1113,139 @@ describe('a non-loopback Ant', () => {
       expect(deps).toEqual({ session });
       expect(announced).toBe(true);
       expect(mockWriteSessions).toHaveLength(0);
+    });
+
+    // Codex round 2 on #1369: a write that ends before its session is ready
+    // has no request, and never gets one.
+    describe('a write that ends before it was dialled', () => {
+      const { MAX_WRITE_SESSIONS } = jest.requireActual('./ant-write-sessions');
+      // A reply whose body never ends: its write holds its session.
+      const openReply = () =>
+        new Response(new ReadableStream({ pull: () => new Promise(() => {}) }), { status: 201 });
+
+      test(`while it waits for one of the ${MAX_WRITE_SESSIONS} sessions, all held: not dialled, the abort its cause`, async () => {
+        const source = writeSource();
+        mockNetGatewayFetch.mockImplementation(async () => openReply());
+        const held = [];
+        for (let n = 0; n < MAX_WRITE_SESSIONS; n++)
+          held.push(await post(source, new Uint8Array(1)));
+        expect(mockNetGatewayFetch).toHaveBeenCalledTimes(MAX_WRITE_SESSIONS);
+        const cancel = new AbortController();
+        let cancelled = null;
+        const body = new ReadableStream({ cancel: (reason) => (cancelled = reason) });
+        const queued = post(source, body, { signal: cancel.signal });
+        await new Promise(setImmediate);
+        cancel.abort();
+        try {
+          await expect(queued).rejects.toMatchObject({
+            name: 'AntNotDialled',
+            code: 'ERR_ANT_NOT_DIALLED',
+            cause: expect.objectContaining({ name: 'AbortError' }),
+          });
+          expect(mockNetGatewayFetch).toHaveBeenCalledTimes(MAX_WRITE_SESSIONS);
+          expect(mockWriteSessions).toHaveLength(MAX_WRITE_SESSIONS);
+          expect(cancelled).not.toBeNull();
+        } finally {
+          // A session coming back later dials nothing for it.
+          for (const reply of held) await reply.body.cancel();
+          await new Promise(setImmediate);
+        }
+        expect(mockNetGatewayFetch).toHaveBeenCalledTimes(MAX_WRITE_SESSIONS);
+      });
+
+      test('while its session is prepared: not dialled, at once, and not once the preparation ends', async () => {
+        let lookedUp;
+        const source = {
+          resolveProxy: jest.fn(() => new Promise((resolve) => (lookedUp = resolve))),
+        };
+        const cancel = new AbortController();
+        const pending = post(source, new Uint8Array(1), { signal: cancel.signal });
+        while (!lookedUp) await new Promise(setImmediate);
+        cancel.abort();
+        try {
+          await expect(pending).rejects.toMatchObject({ name: 'AntNotDialled' });
+        } finally {
+          // The preparation ends, and its abandoned dial settles.
+          lookedUp('DIRECT');
+          await new Promise(setImmediate);
+          await new Promise(setImmediate);
+        }
+        expect(mockNetGatewayFetch).not.toHaveBeenCalled();
+        expect(abandonedAntDials()).toBe(0);
+      });
+
+      test('before its request exists (the onion gate still asking), not dialled either', async () => {
+        const source = writeSource();
+        // The transport waits on the write session's lookup, the request not made yet.
+        mockNetGatewayFetch.mockImplementation(
+          (_url, init) =>
+            new Promise((_resolve, reject) =>
+              init.signal.addEventListener('abort', () => reject(init.signal.reason))
+            )
+        );
+        const cancel = new AbortController();
+        const pending = post(source, new Uint8Array(1), { signal: cancel.signal });
+        while (mockNetGatewayFetch.mock.calls.length === 0) await new Promise(setImmediate);
+        cancel.abort();
+        await expect(pending).rejects.toMatchObject({ name: 'AntNotDialled' });
+      });
+
+      test('once dialled, its end is the abort itself: it may have been sent', async () => {
+        const source = writeSource();
+        // The transport makes the request (`onRequest`), which the node never answers.
+        mockNetGatewayFetch.mockImplementation((_url, init, deps) => {
+          deps.onRequest();
+          return new Promise((_resolve, reject) =>
+            init.signal.addEventListener('abort', () => reject(init.signal.reason))
+          );
+        });
+        const cancel = new AbortController();
+        const pending = post(source, new Uint8Array(1), { signal: cancel.signal });
+        while (mockNetGatewayFetch.mock.calls.length === 0) await new Promise(setImmediate);
+        cancel.abort();
+        const err = await pending.catch((e) => e);
+        expect(err.name).toBe('AbortError');
+      });
+    });
+
+    test("a PUT (ant-storage-api's swap switch) goes the same way; another write method is refused undialled", async () => {
+      const source = writeSource();
+      const seen = [];
+      mockNetGatewayFetch.mockImplementation(async (url, init, deps) => {
+        seen.push({
+          url,
+          method: init.method,
+          session: deps.session,
+          announced: ['GET', 'HEAD', 'POST', 'PUT'].some((m) => isMainProcessAntDial(url, m)),
+        });
+        return new Response('{"swapEnabled":true}', { status: 200 });
+      });
+      const send = (method) =>
+        antBackend({ session: source }).request({
+          path: '/v0/settlement/swap',
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: new TextEncoder().encode('{"swapEnabled":true}'),
+          signal: new AbortController().signal,
+          headersTimeoutMs: null,
+        });
+      await expect((await send('PUT')).json()).resolves.toEqual({ swapEnabled: true });
+      expect(seen).toEqual([
+        {
+          url: `${REMOTE}/v0/settlement/swap`,
+          method: 'PUT',
+          session: mockWriteSessions[0],
+          announced: false,
+        },
+      ]);
+      expect(source.resolveProxy).toHaveBeenCalledWith(`${REMOTE}/v0/settlement/swap`);
+      for (const method of ['DELETE', 'PATCH']) {
+        await expect(send(method)).rejects.toThrow(
+          `a write session carries a POST or a PUT (got ${method})`
+        );
+      }
+      expect(seen).toHaveLength(1);
+      expect(mockWriteSessions).toHaveLength(1);
     });
   });
 
@@ -1272,7 +1408,12 @@ describe("a remote Ant's dial is bounded by its attempt", () => {
     expect(abandonedAntDials()).toBe(MAX_ABANDONED_DIALS);
     const calls = mockNetGatewayFetch.mock.calls.length;
 
-    expect((await attempt()).message).toBe('too many abandoned Ant dials');
+    // Refused before any request exists: nothing of it was sent.
+    expect(await attempt()).toMatchObject({
+      name: 'AntNotDialled',
+      code: 'ERR_ANT_NOT_DIALLED',
+      message: 'too many abandoned Ant dials',
+    });
     expect(mockNetGatewayFetch.mock.calls).toHaveLength(calls);
     stalled.reject(new Error('aborted'));
     await new Promise(setImmediate);

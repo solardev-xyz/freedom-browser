@@ -359,10 +359,12 @@ function defaultNetRequest(options) {
  *
  * @param {string} url
  * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string, body?: string|Uint8Array|ReadableStream}} init
- * @param {{requestImpl?: Function, resolveProxy?: Function, session?: Electron.Session}} deps -
+ * @param {{requestImpl?: Function, resolveProxy?: Function, session?: Electron.Session, onRequest?: Function}} deps -
  *   test seams for `net.request` and `session.resolveProxy`, and the session to
  *   dial on (the default session when none is given): its proxy policy decides
- *   the route, and the onion gate asks it
+ *   the route, and the onion gate asks it. `onRequest()` runs once, as the
+ *   request is made: from there a byte of it may leave, never before (a
+ *   caller's "not sent", main's Ant writes)
  * @returns {Promise<Response>}
  */
 async function netGatewayFetch(url, init = {}, deps = {}) {
@@ -433,6 +435,7 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     const releaseDial = trackInFlightDial(url);
     let request;
     try {
+      deps.onRequest?.();
       request = requestImpl({
         method,
         url,
