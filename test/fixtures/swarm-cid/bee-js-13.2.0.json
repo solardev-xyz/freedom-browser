@@ -1,0 +1,801 @@
+{
+  "description": [
+    "Swarm references as CIDs, recorded from bee-js 13.2.0 (@ethersphere/core-sdk 0.2.2): Reference#toCid, new Reference(label), and gateway-offer.js's decodeSwarmCid as it was before freedom-core design 0015 SWM-8 PR 8.2 moved it off bee-js (src/main/swarm/swarm-cid.js).",
+    "references: each 32-byte reference with its manifest CID (codec 0xfa) and feed CID (0xfb); the decoder gave hex for both.",
+    "encodings: what Reference#toCid made of a 32-byte reference in each hex form bee-js takes, and of a 64-byte (encrypted) one, which has no CID form.",
+    "invalid: labels the decoder gave null for (expected), with what bee-js's Reference alone made of each (beeJsReference): it decodes some of them to another reference, which is why the decoder checks that the reference encodes back to exactly the label.",
+    "topics: Topic.fromString(value) as hex, keccak256 of the UTF-8 bytes."
+  ],
+  "beeJs": "13.2.0",
+  "coreSdk": "0.2.2",
+  "references": [
+    {
+      "name": "the gateway-offer suite’s reference",
+      "hex": "abababababababababababababababababababababababababababababababab",
+      "manifest": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "feed": "bah5qcgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+    },
+    {
+      "name": "the e2e suite’s sample reference",
+      "hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifest": "bah5acgzavkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkva",
+      "feed": "bah5qcgzavkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkvkva"
+    },
+    {
+      "name": "all zero bits",
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "manifest": "bah5acgzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "feed": "bah5qcgzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "all one bits",
+      "hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "manifest": "bah5acgza777777777777777777777777777777777777777777777777777q",
+      "feed": "bah5qcgza777777777777777777777777777777777777777777777777777q"
+    },
+    {
+      "name": "every hex digit",
+      "hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "manifest": "bah5acgzaaerukz4jvpg66ajdivtytk6n54asgrlhrgv433ybencwpcnlzxxq",
+      "feed": "bah5qcgzaaerukz4jvpg66ajdivtytk6n54asgrlhrgv433ybencwpcnlzxxq"
+    },
+    {
+      "name": "alternating bits",
+      "hex": "55aa55aa55aa55aa55aa55aa55aa55aa55aa55aa55aa55aa55aa55aa55aa55aa",
+      "manifest": "bah5acgzakwvflksvvjk2uvnkkwvflksvvjk2uvnkkwvflksvvjk2uvnkkwva",
+      "feed": "bah5qcgzakwvflksvvjk2uvnkkwvflksvvjk2uvnkkwvflksvvjk2uvnkkwva"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 0\")",
+      "hex": "2264df2f5c4772876f112ebdc653fbb32832cfd4823c291217d13a45cca558d5",
+      "manifest": "bah5acgzaejsn6l24i5zio3yrf264mu73wmudft6uqi6cseqx2e5eltffldkq",
+      "feed": "bah5qcgzaejsn6l24i5zio3yrf264mu73wmudft6uqi6cseqx2e5eltffldkq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 1\")",
+      "hex": "c403e2d6a88d0daee1b870deb31c50438dac264ddcb7515f2a9bd95cc07113eb",
+      "manifest": "bah5acgzayqb6fvvirug25ynyodplghcqiog2yjsn3s3vcxzktpmvzqdrcpvq",
+      "feed": "bah5qcgzayqb6fvvirug25ynyodplghcqiog2yjsn3s3vcxzktpmvzqdrcpvq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 2\")",
+      "hex": "77d8a5231348ad6c22a237b1ac4842cc9dacf1e0ca1d1681da512504e824b596",
+      "manifest": "bah5acgzao7mkkiytjcwwyivcg6y2yscczso2z4paziornao2kesqj2bewwla",
+      "feed": "bah5qcgzao7mkkiytjcwwyivcg6y2yscczso2z4paziornao2kesqj2bewwla"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 3\")",
+      "hex": "91d5f36f3c5146992206dc64e95f702ac4f6f6c814f9a152a9c918a9c0e4093c",
+      "manifest": "bah5acgzashk7g3z4kfdjsiqg3rsosx3qflcpn5wict42cuvjzemktqhebe6a",
+      "feed": "bah5qcgzashk7g3z4kfdjsiqg3rsosx3qflcpn5wict42cuvjzemktqhebe6a"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 4\")",
+      "hex": "c6cf642dd3203e7800631299a0bc289344e0dde36b6763812b5a1b221c298579",
+      "manifest": "bah5acgzay3hwilotea7hqaddckm2bpbisncobxpdnntwhajllinsehbjqv4q",
+      "feed": "bah5qcgzay3hwilotea7hqaddckm2bpbisncobxpdnntwhajllinsehbjqv4q"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 5\")",
+      "hex": "eb15ee666dcb07338d878ba3e0248a5d37e7f674d4a4f9bc65a56f73e0427799",
+      "manifest": "bah5acgza5mk64ztnzmdthdmhror6ajeklu36p5tu2ssptpdfuvxxhycco6mq",
+      "feed": "bah5qcgza5mk64ztnzmdthdmhror6ajeklu36p5tu2ssptpdfuvxxhycco6mq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 6\")",
+      "hex": "c8bdc3075a156342602cd899aef8328bbbb8e3ec321ce0c8ea8ed6a2efa13d25",
+      "manifest": "bah5acgzazc64gb22cvrueybm3cm256bsro53ry7mgioobshkr3lkf35bhusq",
+      "feed": "bah5qcgzazc64gb22cvrueybm3cm256bsro53ry7mgioobshkr3lkf35bhusq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 7\")",
+      "hex": "5070e16c2565a655b3fd5dd32dc745304676bf6b3cd2f68c7233b6022bb6eb53",
+      "manifest": "bah5acgzakbyoc3bfmwtflm75lxjs3r2fgbdhnp3lhtjpnddsgo3aek5w5njq",
+      "feed": "bah5qcgzakbyoc3bfmwtflm75lxjs3r2fgbdhnp3lhtjpnddsgo3aek5w5njq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 8\")",
+      "hex": "6f950ef8444747a604fed07e39792eec1fe2c03ca43e53f7642c1757ccded1e9",
+      "manifest": "bah5acgzan6kq56cei5d2mbh62b7ds6jo5qp6fqb4uq7fh53efqlvptg62huq",
+      "feed": "bah5qcgzan6kq56cei5d2mbh62b7ds6jo5qp6fqb4uq7fh53efqlvptg62huq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 9\")",
+      "hex": "f011ec9b1134f2afe29de8c2909d64e6af4738339601d8afac1e0cdea71ec8f3",
+      "manifest": "bah5acgza6ai6zgyrgtzk7yu55dbjbhle42xuoobtsya5rl5mdygn5jy6zdzq",
+      "feed": "bah5qcgza6ai6zgyrgtzk7yu55dbjbhle42xuoobtsya5rl5mdygn5jy6zdzq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 10\")",
+      "hex": "314e556959bf7827e41103f7e6495c74ad3256b7e16d71ef157730e072c26f18",
+      "manifest": "bah5acgzagfhfk2kzx54cpzarap36msk4oswtevvx4fwxd3yvo4yoa4wcn4ma",
+      "feed": "bah5qcgzagfhfk2kzx54cpzarap36msk4oswtevvx4fwxd3yvo4yoa4wcn4ma"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 11\")",
+      "hex": "9f6cd6258d833fe12c5da2a2231122ba04abaa2e1fcb81e9b87c926e9a4ed7fd",
+      "manifest": "bah5acgzat5wnmjmnqm76clc5ukrcgejcxickxkrod7fyd2nypsjg5gso276q",
+      "feed": "bah5qcgzat5wnmjmnqm76clc5ukrcgejcxickxkrod7fyd2nypsjg5gso276q"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 12\")",
+      "hex": "193da707b9a56d8c5dbe2e016e51d1c4b6d4f998363c45ed9d6458810e26cc04",
+      "manifest": "bah5acgzade62ob5zuvwyyxn6fyaw4uorys3nj6mygy6el3m5mrmicdrgzqca",
+      "feed": "bah5qcgzade62ob5zuvwyyxn6fyaw4uorys3nj6mygy6el3m5mrmicdrgzqca"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 13\")",
+      "hex": "2efb3b28d115d47f33087b57aa851d35e633e777c7b3abe5297e065f732537b0",
+      "manifest": "bah5acgzaf35twkgrcxkh6myipnl2vbi5gxtdhz3xy6z2xzjjpydf64zfg6ya",
+      "feed": "bah5qcgzaf35twkgrcxkh6myipnl2vbi5gxtdhz3xy6z2xzjjpydf64zfg6ya"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 14\")",
+      "hex": "c73934272efc98ff867f8e2aab45fe558f327cb7a1a1793f541efa72319ff2fb",
+      "manifest": "bah5acgzay44tijzo7smp7bt7ryvkwrp6kwhte7fxugqxsp2ud35hemm76l5q",
+      "feed": "bah5qcgzay44tijzo7smp7bt7ryvkwrp6kwhte7fxugqxsp2ud35hemm76l5q"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 15\")",
+      "hex": "025c4a44f6e2eda0aa9e513b19ffb5da17cae32acb4257ffa864d32a1f3bdfc0",
+      "manifest": "bah5acgzaajoeurhw4lw2bku6ke5rt75v3il4vyzkznbfp75imtjsuhz337aa",
+      "feed": "bah5qcgzaajoeurhw4lw2bku6ke5rt75v3il4vyzkznbfp75imtjsuhz337aa"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 16\")",
+      "hex": "a4a932a7b670bccc5bfc9344290fbb469320efed9b1411f680e654abd8d57f8a",
+      "manifest": "bah5acgzausutfj5woc6myw74snccsd53i2jsb37ntmkbd5ua4zkkxwgvp6fa",
+      "feed": "bah5qcgzausutfj5woc6myw74snccsd53i2jsb37ntmkbd5ua4zkkxwgvp6fa"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 17\")",
+      "hex": "f831306f4d352ec6b2cc840c4753689e04b93707345e672810590ac5f7809078",
+      "manifest": "bah5acgza7ayta32nguxmnmwmqqgeou3ityclsnyhgrpgokaqlefml54asb4a",
+      "feed": "bah5qcgza7ayta32nguxmnmwmqqgeou3ityclsnyhgrpgokaqlefml54asb4a"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 18\")",
+      "hex": "0b92dd91e5348b9617c4d1b3540321e09ae5a1361fd9e02c2b2de638a2d05d37",
+      "manifest": "bah5acgzabojn3epfgsfzmf6e2gzviazb4cnolijwd7m6alblfxtdriwqlu3q",
+      "feed": "bah5qcgzabojn3epfgsfzmf6e2gzviazb4cnolijwd7m6alblfxtdriwqlu3q"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 19\")",
+      "hex": "7dac1070ee9ddd0b2739665afa312c2863108b5cc41ad827d86c7dd529d656dd",
+      "manifest": "bah5acgzapwwba4hotxoqwjzzmznpumjmfbrrbc24yqnnqj6ynr65kkowk3oq",
+      "feed": "bah5qcgzapwwba4hotxoqwjzzmznpumjmfbrrbc24yqnnqj6ynr65kkowk3oq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 20\")",
+      "hex": "b5fdba1063e91c0b3cd97c9a477c25d77645dfaf4976d1a44721f9d6afd9fdda",
+      "manifest": "bah5acgzawx63uedd5eoawpgzpsneo7bf253elx5pjf3ndjcheh45nl6z7xna",
+      "feed": "bah5qcgzawx63uedd5eoawpgzpsneo7bf253elx5pjf3ndjcheh45nl6z7xna"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 21\")",
+      "hex": "730051d8b684779f3863626fa2f7c2bd9c4e5f1dd4e9efc9e492dad8b1232483",
+      "manifest": "bah5acgzaomafdwfwqr3z6oddmjx2f56cxwoe4xy52tu67speslnnrmjdesbq",
+      "feed": "bah5qcgzaomafdwfwqr3z6oddmjx2f56cxwoe4xy52tu67speslnnrmjdesbq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 22\")",
+      "hex": "39e35aca263fca52b78f2a408bfb82bcfd39369829cc77d85ca8b232d2bbaaa1",
+      "manifest": "bah5acgzahhrvvsrgh7fffn4pfjaix64cxt6tsnuyfhghpwc4vczdfuv3vkqq",
+      "feed": "bah5qcgzahhrvvsrgh7fffn4pfjaix64cxt6tsnuyfhghpwc4vczdfuv3vkqq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 23\")",
+      "hex": "bfaa4554e5cd91250d830ef0a4a61508cd3d81b5e168fd1918627812248e0536",
+      "manifest": "bah5acgzax6vekvhfzwiskdmdb3ykjjqvbdgt3anv4fup2giymj4bejeoau3a",
+      "feed": "bah5qcgzax6vekvhfzwiskdmdb3ykjjqvbdgt3anv4fup2giymj4bejeoau3a"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 24\")",
+      "hex": "5a6fbcab7b49ed9b0fe46f977f4b94aefdba8c1d6c38a0950c8c6dc827f1f59c",
+      "manifest": "bah5acgzaljx3zk33jhwzwd7en6lx6s4uv363vda5nq4kbfimrrw4qj7r6woa",
+      "feed": "bah5qcgzaljx3zk33jhwzwd7en6lx6s4uv363vda5nq4kbfimrrw4qj7r6woa"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 25\")",
+      "hex": "cc6e40808e6a7741245d61ae0f261adf1383245502f540053fc744d2b58a3037",
+      "manifest": "bah5acgzazrxebaeonj3ucjc5mgxa6jq234jygjcval2uabj7y5cnfnmkga3q",
+      "feed": "bah5qcgzazrxebaeonj3ucjc5mgxa6jq234jygjcval2uabj7y5cnfnmkga3q"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 26\")",
+      "hex": "6835b1c51c9ef03414b932b21134fd7389c007bd500aff4aaaaeda42904fb56a",
+      "manifest": "bah5acgzana23dri4t3ydiffzgkzbcnh5ooe4ab55kafp6svkv3nefecpwvva",
+      "feed": "bah5qcgzana23dri4t3ydiffzgkzbcnh5ooe4ab55kafp6svkv3nefecpwvva"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 27\")",
+      "hex": "536f1f08260ca0fef9c37d387a4d0f30b655d2acefa2ac6cf62081c03bcdc2f7",
+      "manifest": "bah5acgzaknxr6cbgbsqp56odpu4hutipgc3fluvm56rky3hweca4ao6nyl3q",
+      "feed": "bah5qcgzaknxr6cbgbsqp56odpu4hutipgc3fluvm56rky3hweca4ao6nyl3q"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 28\")",
+      "hex": "2d82a35c5537b541d63fcfa60279653dddbe4eea205b8a5e8d10ecfa39163110",
+      "manifest": "bah5acgzafwbkgxcvg62udvr7z6tae6lfhxo34txkebnyuxuncdwpuoiwgeia",
+      "feed": "bah5qcgzafwbkgxcvg62udvr7z6tae6lfhxo34txkebnyuxuncdwpuoiwgeia"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 29\")",
+      "hex": "969f57cedb02bf9a0d3d8e7898b03d19d5697a78cda6e2e1b7d299533f450208",
+      "manifest": "bah5acgzas2pvptw3ak7zudj5rz4jrmb5dhkws6tyzwtofynx2kmvgp2faiea",
+      "feed": "bah5qcgzas2pvptw3ak7zudj5rz4jrmb5dhkws6tyzwtofynx2kmvgp2faiea"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 30\")",
+      "hex": "441214d995b7581cc3204fe8f81986effdba27ca72eb72e4d694f4c98abb8a0f",
+      "manifest": "bah5acgzaiqjbjwmvw5mbzqzaj7upqgmg5763uj6kolvxfzgwst2mtcv3rihq",
+      "feed": "bah5qcgzaiqjbjwmvw5mbzqzaj7upqgmg5763uj6kolvxfzgwst2mtcv3rihq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 31\")",
+      "hex": "6db8ed7baca6502baf801cb0734ecff4ec02cae679566413d878aff0f43806e1",
+      "manifest": "bah5acgzanw4o265muzicxl4adsyhgtwp6twafsxgpflgie6ypcx7b5bya3qq",
+      "feed": "bah5qcgzanw4o265muzicxl4adsyhgtwp6twafsxgpflgie6ypcx7b5bya3qq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 32\")",
+      "hex": "1229007ec34c23fb02bf9d581dd1938cc8ddf8947ef6efab6023a58aafd63d10",
+      "manifest": "bah5acgzaciuqa7wdjqr7wav7tvmb3umtrten36eup33o7k3aeosyvl6whuia",
+      "feed": "bah5qcgzaciuqa7wdjqr7wav7tvmb3umtrten36eup33o7k3aeosyvl6whuia"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 33\")",
+      "hex": "49ddcf854b5665094d62af726f057b24fd7fd652d41269499c7e470ec20ea3c0",
+      "manifest": "bah5acgzajho47bklkzsqstlcv5zg6bl3et6x7vss2qjgssm4pzdq5qqoupaa",
+      "feed": "bah5qcgzajho47bklkzsqstlcv5zg6bl3et6x7vss2qjgssm4pzdq5qqoupaa"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 34\")",
+      "hex": "37bd5d6806018f4c6f2a340b0b05a9cf9ca2bc44fffc619b1a997da27c095fce",
+      "manifest": "bah5acgzag66v22agaghuy3zkgqfqwbnjz6okfpce776gdgy2tf62e7ajl7ha",
+      "feed": "bah5qcgzag66v22agaghuy3zkgqfqwbnjz6okfpce776gdgy2tf62e7ajl7ha"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 35\")",
+      "hex": "ef40691986c94423a8df79a9618c8e3619b5debf1e30e364d02ed6c8942468d6",
+      "manifest": "bah5acgza55agsgmgzfcchkg7pguwddeogym3lxv7dyyogzgqf3lmrfbendla",
+      "feed": "bah5qcgza55agsgmgzfcchkg7pguwddeogym3lxv7dyyogzgqf3lmrfbendla"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 36\")",
+      "hex": "2b186074c8862a8070a25b76d73347685aac6bf1b6e4d2eefe4975347037ec91",
+      "manifest": "bah5acgzafmmga5giqyvia4fcln3nom2hnbnky27rw3snf3x6jf2ti4bx5siq",
+      "feed": "bah5qcgzafmmga5giqyvia4fcln3nom2hnbnky27rw3snf3x6jf2ti4bx5siq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 37\")",
+      "hex": "61cf1825cf0209e50da93f1811fc081ceb05074df60765d20d179c70d8fc0e49",
+      "manifest": "bah5acgzamhhrqjopaie6kdnjh4mbd7aidtvqkb2n6ydwluqnc6ohbwh4bzeq",
+      "feed": "bah5qcgzamhhrqjopaie6kdnjh4mbd7aidtvqkb2n6ydwluqnc6ohbwh4bzeq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 38\")",
+      "hex": "655a8161ead9ff55584b678f3f1a41c1a44fbe4f20938180148b0f0ccc153e95",
+      "manifest": "bah5acgzamvnicypk3h7vkwclm6ht6gsbygse7pspecjydaaurmhqztavh2kq",
+      "feed": "bah5qcgzamvnicypk3h7vkwclm6ht6gsbygse7pspecjydaaurmhqztavh2kq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 39\")",
+      "hex": "5254523b23ce353411798debe4c473a045815452064a64fc002bd41afa65039e",
+      "manifest": "bah5acgzakjkfeozdzy2tielzrxv6jrdtubcycvcsazfgj7aafpkbv6tfaopa",
+      "feed": "bah5qcgzakjkfeozdzy2tielzrxv6jrdtubcycvcsazfgj7aafpkbv6tfaopa"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 40\")",
+      "hex": "4d877e3b1820859e63ecae7e266268a3b95e1e99bb8ff4d91f34745e1810c028",
+      "manifest": "bah5acgzajwdx4oyyeccz4y7mvz7cmytiuo4v4huzxoh7jwi7gr2f4gaqyaua",
+      "feed": "bah5qcgzajwdx4oyyeccz4y7mvz7cmytiuo4v4huzxoh7jwi7gr2f4gaqyaua"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 41\")",
+      "hex": "3f3101d59e874acde3e476f9c952881a1114d04bf4fc65c6b6c77ef10b13ba31",
+      "manifest": "bah5acgzah4yqdvm6q5fm3y7eo344suuidiirjucl6t6glrvwy57pccytxiyq",
+      "feed": "bah5qcgzah4yqdvm6q5fm3y7eo344suuidiirjucl6t6glrvwy57pccytxiyq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 42\")",
+      "hex": "53eaf2a0959cad0ff5c791d8c47350668d0963980c110cce3db5b3b4ab5b131a",
+      "manifest": "bah5acgzakpvpfievtswq75ohshmmi42qm2gqsy4ybqiqztr5wwz3jk23cmna",
+      "feed": "bah5qcgzakpvpfievtswq75ohshmmi42qm2gqsy4ybqiqztr5wwz3jk23cmna"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 43\")",
+      "hex": "c71132ec49c1bb3eb7acf632771f0796096d4954487a825e4c7d886e5411a794",
+      "manifest": "bah5acgzay4itf3cjyg5t5n5m6yzhohyhsyew2skujb5iexsmpweg4varu6ka",
+      "feed": "bah5qcgzay4itf3cjyg5t5n5m6yzhohyhsyew2skujb5iexsmpweg4varu6ka"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 44\")",
+      "hex": "ee46f36d54913b5bb4fab3d7b3cfa144ac36db89d4ce735cc788fbe0ddd58652",
+      "manifest": "bah5acgza5zdpg3kuse5vxnh2wpl3ht5biswdnw4j2thhgxghrd56bxovqzja",
+      "feed": "bah5qcgza5zdpg3kuse5vxnh2wpl3ht5biswdnw4j2thhgxghrd56bxovqzja"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 45\")",
+      "hex": "ca0cf74d01f75a8e824a84378fecdf3a0d255c063523ed987ed5ef143ffddbb2",
+      "manifest": "bah5acgzazigpotib65ni5askqq3y73g7higskxaggur63gd62xxrip753oza",
+      "feed": "bah5qcgzazigpotib65ni5askqq3y73g7higskxaggur63gd62xxrip753oza"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 46\")",
+      "hex": "0a456e8c6f799cb751fb6a827b1663b31407ebb2f24b455658ecff4edc0bff27",
+      "manifest": "bah5acgzabjcw5ddppgoloup3nkbhwftdwmkap25s6jfukvsy5t7u5xal74tq",
+      "feed": "bah5qcgzabjcw5ddppgoloup3nkbhwftdwmkap25s6jfukvsy5t7u5xal74tq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 47\")",
+      "hex": "aa04ddf13fb19ff06e07b4dcb43884dd570b5152b80c0c579f16669d25c25ec5",
+      "manifest": "bah5acgzavicn34j7wgp7a3qhwtolioee3vlqwuksxagayv47cztj2jocl3cq",
+      "feed": "bah5qcgzavicn34j7wgp7a3qhwtolioee3vlqwuksxagayv47cztj2jocl3cq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 48\")",
+      "hex": "81acd02e17840bac19ff7ba7387c2bd096df11a1d9444df2413ab92dc7fd9ae3",
+      "manifest": "bah5acgzaqgwnalqxqqf2ygp7pottq7bl2cln6enb3fce34sbhk4s3r75tlrq",
+      "feed": "bah5qcgzaqgwnalqxqqf2ygp7pottq7bl2cln6enb3fce34sbhk4s3r75tlrq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 49\")",
+      "hex": "f1ba3e2adb9790de977688750159110f3d3220de299a7cc40aabb4aafe1651f3",
+      "manifest": "bah5acgza6g5d4kw3s6in5f3wrb2qcwirb46teig6fgnhzrakvo2kv7qwkhzq",
+      "feed": "bah5qcgza6g5d4kw3s6in5f3wrb2qcwirb46teig6fgnhzrakvo2kv7qwkhzq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 50\")",
+      "hex": "49e9e904cfc006ee9b4d67ac22208b1a3c8f6840bd9b6faed068af07cbc2671e",
+      "manifest": "bah5acgzajhu6sbgpyado5g2nm6wceieldi6i62caxwnw7lwqncxqps6cm4pa",
+      "feed": "bah5qcgzajhu6sbgpyado5g2nm6wceieldi6i62caxwnw7lwqncxqps6cm4pa"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 51\")",
+      "hex": "21f7f84600c7592c4a1096ccce4474da70becf1faf9f5fcd8ff5ee73ca97b58c",
+      "manifest": "bah5acgzaeh37qrqay5msysqqs3gm4rdu3jyl5ty7v6pv7tmp6xxhhsuxwwga",
+      "feed": "bah5qcgzaeh37qrqay5msysqqs3gm4rdu3jyl5ty7v6pv7tmp6xxhhsuxwwga"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 52\")",
+      "hex": "76dcd12114d7aadd9bf973d804fd84be26585f47730f3aee5d7241332f829866",
+      "manifest": "bah5acgzao3onciiu26vn3g7zopmaj7mexytfqx2homhtv3s5ojatgl4ctbta",
+      "feed": "bah5qcgzao3onciiu26vn3g7zopmaj7mexytfqx2homhtv3s5ojatgl4ctbta"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 53\")",
+      "hex": "5b1eefb069d8c4931064b6675463fa2ce281a4d20fd99dcdab95a385ef7df71f",
+      "manifest": "bah5acgzalmpo7mdj3dcjgedewztviy72ftridjgsb7mz3tnlswryl33564pq",
+      "feed": "bah5qcgzalmpo7mdj3dcjgedewztviy72ftridjgsb7mz3tnlswryl33564pq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 54\")",
+      "hex": "45724101f86bb6a3230f4481a465b26b81e6370067d463326c5279228e035f1f",
+      "manifest": "bah5acgzaivzecapyno3kgiypisa2iznsnoa6mnyam7kggmtmkj4sfdqdl4pq",
+      "feed": "bah5qcgzaivzecapyno3kgiypisa2iznsnoa6mnyam7kggmtmkj4sfdqdl4pq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 55\")",
+      "hex": "34d7c3dbdb7ee755c2b0ff62418f7a5a584551ac9cd0e41ad0b7387aecdcebab",
+      "manifest": "bah5acgzagtl4hw63p3tvlqvq75redd32ljmekunmttioigwqw44hv3g45ovq",
+      "feed": "bah5qcgzagtl4hw63p3tvlqvq75redd32ljmekunmttioigwqw44hv3g45ovq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 56\")",
+      "hex": "854a88449cf4b84c523cd7a8a619202177797da1776585826b675166fe02a2c9",
+      "manifest": "bah5acgzaqvfiqre46s4eyur426ukmgjaef3xs7nbo5sylatlm5iwn7qculeq",
+      "feed": "bah5qcgzaqvfiqre46s4eyur426ukmgjaef3xs7nbo5sylatlm5iwn7qculeq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 57\")",
+      "hex": "90a3bb705ee3eb178a2cc6e9793d3336c2a51239a2c97e977749852f1e39b339",
+      "manifest": "bah5acgzascr3w4c64pvrpcrmy3uxspjtg3bkkerzulex5f3xjgcs6hrzwm4q",
+      "feed": "bah5qcgzascr3w4c64pvrpcrmy3uxspjtg3bkkerzulex5f3xjgcs6hrzwm4q"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 58\")",
+      "hex": "c1a57db4f27bf019aab674b23603e931a1ca1fb0e5df1ca08a80515dc28276c3",
+      "manifest": "bah5acgzaygsx3nhsppybtkvwoszdma7jggq4uh5q4xprziekqbiv3quco3bq",
+      "feed": "bah5qcgzaygsx3nhsppybtkvwoszdma7jggq4uh5q4xprziekqbiv3quco3bq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 59\")",
+      "hex": "e037dbbc1029c7c7141d4540afa23bc4590295d61ba7d57a48ac936bd58f5192",
+      "manifest": "bah5acgza4a35xpaqfhd4ofa5ivak7ir3yrmqffowdot5k6sivsjwxvmpkgja",
+      "feed": "bah5qcgza4a35xpaqfhd4ofa5ivak7ir3yrmqffowdot5k6sivsjwxvmpkgja"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 60\")",
+      "hex": "bbbd6797bf140b71ed9895847030fc1a150da7553b363afdffdf06b0238995d4",
+      "manifest": "bah5acgzaxo6wpf57cqfxd3myswchamh4dikq3j2vhm3dv7p734dlai4jsxka",
+      "feed": "bah5qcgzaxo6wpf57cqfxd3myswchamh4dikq3j2vhm3dv7p734dlai4jsxka"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 61\")",
+      "hex": "033369dce0958ff3d12372f428e19bd556e0e77a0c4f823c0534b805b17e249e",
+      "manifest": "bah5acgzaamzwtxhaswh7hujdol2crym32vlobz32brhyepafgs4alml6espa",
+      "feed": "bah5qcgzaamzwtxhaswh7hujdol2crym32vlobz32brhyepafgs4alml6espa"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 62\")",
+      "hex": "4fe524c4a8cac291f2a9e680e2f73d04260a3b182fb9bd68adce6782fe13b681",
+      "manifest": "bah5acgzaj7ssjrfizlbjd4vj42aof5z5aqtauoyyf64322fnzztyf7qtw2aq",
+      "feed": "bah5qcgzaj7ssjrfizlbjd4vj42aof5z5aqtauoyyf64322fnzztyf7qtw2aq"
+    },
+    {
+      "name": "sha256(\"swarm-cid fixture 63\")",
+      "hex": "efa97696d57b2b78150c870f47716d7d44961f4cee07f7b6679b591b33fd17f0",
+      "manifest": "bah5acgza56uxnfwvpmvxqfimq4huo4lnpvcjmh2m5yd7pnthtnmrwm75c7ya",
+      "feed": "bah5qcgza56uxnfwvpmvxqfimq4huo4lnpvcjmh2m5yd7pnthtnmrwm75c7ya"
+    }
+  ],
+  "encodings": [
+    {
+      "name": "a 32-byte reference, lower-case hex",
+      "reference": "abababababababababababababababababababababababababababababababab",
+      "manifest": {
+        "cid": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      },
+      "feed": {
+        "cid": "bah5qcgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      }
+    },
+    {
+      "name": "a 32-byte reference, upper-case hex",
+      "reference": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+      "manifest": {
+        "cid": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      },
+      "feed": {
+        "cid": "bah5qcgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      }
+    },
+    {
+      "name": "a 32-byte reference with 0x",
+      "reference": "0xabababababababababababababababababababababababababababababababab",
+      "manifest": {
+        "cid": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      },
+      "feed": {
+        "cid": "bah5qcgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      }
+    },
+    {
+      "name": "a 64-byte (encrypted) reference: no CID form",
+      "reference": "cede313ac1c54ef686b40dbf6c58502cbe18696eebc8a497d236ab463766ee09e3831ad885c124a518ca8928362439438723193bd497922b3fb9bdc9ef1921a8",
+      "manifest": {
+        "error": "Reference#toCid: only 32-byte references can be encoded as a CID, got 64 bytes"
+      },
+      "feed": {
+        "error": "Reference#toCid: only 32-byte references can be encoded as a CID, got 64 bytes"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a manifest CID one character short",
+      "label": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "20ababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a feed CID one character short",
+      "label": "bah5qcgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "20ababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID one character long",
+      "label": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovqa",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "ababababababababababababababababababababababababababababababab00"
+      }
+    },
+    {
+      "name": "a feed CID one character long",
+      "label": "bah5qcgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovqq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "ababababababababababababababababababababababababababababababab08"
+      }
+    },
+    {
+      "name": "a manifest CID eight characters long",
+      "label": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovqaaaaaaaa",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "ababababababababababababababababababababababababababab0000000000"
+      }
+    },
+    {
+      "name": "a manifest CID with non-zero padding bits in its last character",
+      "label": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovr",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a feed CID with non-zero padding bits in its last character",
+      "label": "bah5qcgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovr",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID with base32 padding",
+      "label": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq===",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID with the multihash code’s first byte changed",
+      "label": "bah5begzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID with a sha2-256 multihash",
+      "label": "bah5aceravov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a feed CID with a sha2-256 multihash",
+      "label": "bah5qceravov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID claiming a 33-byte digest",
+      "label": "bah5acgzbvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID claiming a 64-byte digest",
+      "label": "bah5acg2avov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID with a 31-byte digest",
+      "label": "bah5acgy7vov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvm",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "1fababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID with a 33-byte digest",
+      "label": "bah5acgzbvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovqa",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "ababababababababababababababababababababababababababababababab00"
+      }
+    },
+    {
+      "name": "a manifest header and 32 bytes, then one more byte",
+      "label": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovqa",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "ababababababababababababababababababababababababababababababab00"
+      }
+    },
+    {
+      "name": "the header alone",
+      "label": "bah5acgza",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#checkByteLength: bytes length is 5 but expected 32"
+      }
+    },
+    {
+      "name": "another codec (0xfc)",
+      "label": "bah6acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#constructor: invalid hex string: bah6acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      }
+    },
+    {
+      "name": "CID version 0 bytes",
+      "label": "bad5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#constructor: invalid hex string: bad5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      }
+    },
+    {
+      "name": "a manifest CID in upper case",
+      "label": "BAH5ACGZAVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOVQ",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#constructor: invalid hex string: BAH5ACGZAVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOVQ"
+      }
+    },
+    {
+      "name": "a manifest CID in mixed case",
+      "label": "bah5acgzavOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOVQ",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a manifest CID with a leading space",
+      "label": " bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#constructor: invalid hex string:  bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq"
+      }
+    },
+    {
+      "name": "a manifest CID with a trailing newline",
+      "label": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq\n",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Invalid character: \n"
+      }
+    },
+    {
+      "name": "a manifest CID with a non-base32 last character",
+      "label": "bah5acgzavov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov1",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Invalid character: 1"
+      }
+    },
+    {
+      "name": "a manifest CID with an 8 in it",
+      "label": "bah5acgzavov2xk5lvov8xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvovq",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Invalid character: 8"
+      }
+    },
+    {
+      "name": "bah5 alone",
+      "label": "bah5",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Unknown codec"
+      }
+    },
+    {
+      "name": "bah5 and four characters",
+      "label": "bah5zzzz",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#checkByteLength: bytes length is 4 but expected 32"
+      }
+    },
+    {
+      "name": "the empty string",
+      "label": "",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#constructor: constructor parameter is falsy: "
+      }
+    },
+    {
+      "name": "a 64-hex reference",
+      "label": "abababababababababababababababababababababababababababababababab",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a 64-hex reference with 0x",
+      "label": "0xabababababababababababababababababababababababababababababababab",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "name": "a 128-hex (encrypted) reference",
+      "label": "cede313ac1c54ef686b40dbf6c58502cbe18696eebc8a497d236ab463766ee09e3831ad885c124a518ca8928362439438723193bd497922b3fb9bdc9ef1921a8",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": true,
+        "hex": "cede313ac1c54ef686b40dbf6c58502cbe18696eebc8a497d236ab463766ee09e3831ad885c124a518ca8928362439438723193bd497922b3fb9bdc9ef1921a8"
+      }
+    },
+    {
+      "name": "an IPFS CIDv1",
+      "label": "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#constructor: invalid hex string: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+      }
+    },
+    {
+      "name": "an IPFS CIDv0",
+      "label": "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#constructor: invalid hex string: QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+      }
+    },
+    {
+      "name": "an ENS name",
+      "label": "vitalik.eth",
+      "expected": null,
+      "beeJsReference": {
+        "decodes": false,
+        "error": "Bytes#constructor: invalid hex string: vitalik.eth"
+      }
+    }
+  ],
+  "topics": [
+    {
+      "value": "freedom/adblock/lists/v1",
+      "hex": "96741f799248290fa67445649f572f1c773238c1f07e2e98643c625370f9bc15"
+    },
+    {
+      "value": "",
+      "hex": "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    },
+    {
+      "value": "münchen/ünïcödé",
+      "hex": "b8a2fb0355b0e4e7c2f05e857da875fd0e43629d4572bd35c98bcabfe6de7d4a"
+    },
+    {
+      "value": "emoji 😀",
+      "hex": "de86ed78ae355fd4da9dabd5474c00a50cf8c7ace511b08c84766c4cd228521b"
+    }
+  ]
+}
