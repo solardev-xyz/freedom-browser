@@ -29,21 +29,28 @@
  *     alone the core marks the record. The token is burnt once the send
  *     ends, spent or not.
  *   - `{ fee_check }`, the core's verdict on a fee its check didn't approve
- *     on its own (the SAFE-3 plan's point 8): asked in the approvals
- *     document's `wallet.executor_send` panel of the window that asked
- *     (wallet-approvals.js `confirmCoreFee`), twice for a fee above the
- *     threshold; on the approval `safe.deploy { fee_ack: true }` mints the
- *     token for exactly the offered transaction. With the document off (a
- *     development build's FREEDOM_APPROVALS_DOCUMENT=0), the chrome's card
- *     shows the verdict (FEE_CHECK_NEEDS_CONFIRMATION with `feeAskId`), and
- *     its confirmation returns that ID: main takes it only for the ask it
- *     holds for that Safe, from the chrome it was shown in, twice for a fee
- *     above the threshold, before `safe.deploy { fee_ack: true }`. Main
- *     holds one ask per Safe, so another activation of it (another window's
- *     included) leaves an earlier ID confirming nothing, and it counts the
- *     asks across the card's round trips (MAX_FEE_ASKS). Either way the
- *     send that follows must be the offer shown: its executor, and the
- *     verdict's most it can cost.
+ *     on its own (the SAFE-3 plan's point 8). The chrome's card shows it
+ *     first, as it shows main's own verdict on js
+ *     (FEE_CHECK_NEEDS_CONFIRMATION with `feeAskId`, the ID of the ask main
+ *     holds), and its confirmation returns that ID: main takes it only for
+ *     the ask it holds for that Safe, from the chrome it was shown in.
+ *     - With the approvals document on, the confirmed ask is then asked in
+ *       the document's `wallet.executor_send` panel of that window
+ *       (wallet-approvals.js `confirmCoreFee`), twice for a fee above the
+ *       threshold, and on its approval `safe.deploy { fee_ack: true }`
+ *       mints the token for exactly the offered transaction; a fee that
+ *       changed by then is asked in the panel again. A held deployment's
+ *       speed-up (below) has no card: its fee goes to the panel at once,
+ *       and an ask ID counts for nothing.
+ *     - With the document off (a development build's
+ *       FREEDOM_APPROVALS_DOCUMENT=0), the card's confirmation is the
+ *       user's, twice for a fee above the threshold (the first press is
+ *       asked again under a new ID), before `safe.deploy { fee_ack: true }`.
+ *     Main holds one ask per Safe, so another activation of it (another
+ *     window's included) leaves an earlier ID confirming nothing, and an ID
+ *     is spent once taken; it counts the asks across the round trips
+ *     (MAX_FEE_ASKS). Either way the send that follows must be the offer
+ *     shown: its executor, and the verdict's most it can cost.
  *   - A deployment already journaled under the key (an activation retried
  *     after its first send) is sent again as it was, at its nonce: from a
  *     `{ send }` the held bytes go again and the new token is burnt
@@ -252,7 +259,7 @@ function holdAsk(index, verdict, sender, record) {
   return ask;
 }
 
-/** The card's ask (approvals document off): the verdict, the ask's ID, and whether it asks again. */
+/** The card's ask: the verdict, the ask's ID, and whether it asks again (document off, above the threshold). */
 function cardAsk(ask) {
   const { FEE_CHECK_NEEDS_CONFIRMATION, feeCheckError } = require('../fee-check');
   return Object.assign(feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, ask.verdict), {
@@ -262,17 +269,24 @@ function cardAsk(ask) {
 }
 
 /**
- * The card's confirmation of ask `id` for Safe `index` (approvals document
- * off): the ask main holds for the Safe, shown in the same chrome; anything
- * else is refused. A fee above the threshold takes two presses: the first
- * is asked again, under a new ID. Resolves with the ask the fee_ack
- * confirms, its ID spent.
+ * The card's confirmation of ask `id` for Safe `index`: the ask main holds
+ * for the Safe, shown in the same chrome; anything else is refused. Its ID
+ * is spent. With the approvals document off (`panel` false) the card's
+ * press is the user's confirmation: a fee above the threshold takes two
+ * presses, the first asked again under a new ID, and the ask is then the
+ * one the fee_ack confirms. With the document on (`panel`), the panel asks
+ * next (`askInPanel`, twice above the threshold): the ask is held under a
+ * new ID the card never sees, so a press again confirms nothing.
  */
-function confirmedAsk(index, id, sender) {
+function confirmedAsk(index, id, sender, { panel = false } = {}) {
   const ask = asks.get(index);
   const asker = askerOf(sender);
   if (!ask || typeof id !== 'string' || ask.id !== id || asker === null || ask.asker !== asker) {
     throw notShown();
+  }
+  if (panel) {
+    ask.id = crypto.randomUUID();
+    return ask;
   }
   if (ask.verdict?.above === true && ask.presses === 0) {
     ask.presses = 1;
@@ -284,7 +298,8 @@ function confirmedAsk(index, id, sender) {
 }
 
 /**
- * Ask `ask`'s fee in the approvals document, then `safe.deploy { fee_ack:
+ * Ask `ask`'s fee in the approvals document (once the card's confirmation
+ * took it, or a fee that changed since), then `safe.deploy { fee_ack:
  * true }` on its approval, while the ask is still the one main holds for
  * the Safe (another activation meanwhile replaces it). Resolves with that
  * answer.
@@ -317,9 +332,10 @@ async function askInPanel(index, record, ask, { approvals, sender, deploy }) {
  *
  * @param {number} index - Wallet index of the Safe record
  * @param {object} [options]
- * @param {string} [options.feeAskId] - With the approvals document off, the
- *   card's confirmation of the ask it showed (`confirmedAsk`); ignored
- *   while the document is on, which asks itself
+ * @param {string} [options.feeAskId] - The card's confirmation of the ask
+ *   it showed (`confirmedAsk`): with the approvals document on, asked next
+ *   in the panel; ignored for a speed-up while the document is on, whose
+ *   fee the panel asks at once
  * @param {object} [options.sender] - The asking chrome's webContents: its
  *   approvals document asks about a fee, and an ask is bound to it
  * @param {object} [options.feeConfirmation] - A chrome's executor-send
@@ -347,12 +363,18 @@ async function activateSafe(
   const deploy = (feeAck) =>
     vault().safe.deploy(feeAck ? { safe: index, fee_ack: true } : { safe: index });
 
+  // The card shows an activation's first fee ask, with the document on as
+  // with it off (as on js); a speed-up's, with the document on, goes to the
+  // panel at once (the held-payments list has no card to show it).
+  const cardFirst = !approvals || toSpeedUp === null;
   // The fee the user confirmed, which the send must then be.
   let shown = null;
   let answer;
-  if (!approvals && feeAskId !== null) {
-    shown = confirmedAsk(index, feeAskId, sender);
-    answer = await deploy(true);
+  if (feeAskId !== null && cardFirst) {
+    shown = confirmedAsk(index, feeAskId, sender, { panel: Boolean(approvals) });
+    answer = approvals
+      ? await askInPanel(index, record, shown, { approvals, sender, deploy })
+      : await deploy(true);
   } else {
     // A new activation: its own asks, and no earlier ask confirms anything.
     asks.delete(index);
@@ -370,7 +392,9 @@ async function activateSafe(
     // user confirmed it, as today's activation reads the executor first.
     await executorAddress(record);
     const ask = holdAsk(index, answer.fee_check, sender, record);
-    if (!approvals) throw cardAsk(ask);
+    // The card's, unless the user confirmed one there already and the
+    // panel asks from then on (a fee that changed since).
+    if (!approvals || (cardFirst && shown === null)) throw cardAsk(ask);
     shown = ask;
     answer = await askInPanel(index, record, ask, { approvals, sender, deploy });
   }
