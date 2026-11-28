@@ -33,7 +33,7 @@
 const crypto = require('crypto');
 const http = require('http');
 const { startFakeHttpNode } = require('./fake-http-node');
-const { content, dataOf } = require('./swarm-vectors');
+const { dataOf } = require('./swarm-vectors');
 
 const SEQ_HEADER = 'x-swarm-contract-seq';
 // Header names a transport adds on its own, never a caller's.
@@ -666,12 +666,8 @@ function testKeys(keysJson) {
 
 module.exports = {
   ContractNode,
-  NODE_URL,
-  batch,
-  content,
   nodeWorld,
   requestRecord,
-  sha256,
   splitTree,
   testKeys,
 };
