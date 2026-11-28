@@ -94,12 +94,14 @@ export function describeFeeCheck(verdict, symbol = 'ETH') {
  * verdict when the fee is newly above at the press.
  *
  * On the core's Safe backend (freedom-core design 0016, SAFE-3) the offer
- * is the identity core's (`feeAck`): confirmed by acknowledging it, `{
- * feeAck: true }`, which main sends as the core's `fee_ack`, asking in the
- * approvals panel first when it is on. No token is minted for it.
+ * is the identity core's, held by main as an ask (`feeAskId`): confirmed
+ * by that ask's ID, `{ feeAskId }`, which main takes only for the ask it
+ * holds, shown on this screen, and only on the second press for a fee
+ * above the threshold (the first is asked again, under a new ID, with
+ * `feeAskAgain`). No token is minted for it.
  */
 export async function confirmOfferedFee(offer, verdict) {
-  if (offer?.feeAck === true) return { feeAck: true };
+  if (typeof offer?.feeAskId === 'string') return { feeAskId: offer.feeAskId };
   const { executorIndex, ...payload } = offer;
   const { confirmation } = await confirmSigning(
     'executor-send',

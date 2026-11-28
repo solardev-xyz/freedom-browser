@@ -815,8 +815,8 @@ function registerWalletIpc() {
     safeStateHandler((index, given) => {
       // On the core's Safe backend: the SafeTx the board shows (required,
       // before anything is asked), executed by the core's prepared send; the
-      // executor's fee acknowledged, asked in the window's approvals document
-      // when it is on (safe/core-sends.js).
+      // executor's fee confirmed by the ask main showed this chrome, asked in
+      // the window's approvals document when it is on (safe/core-sends.js).
       if (safeBackendKind() === 'core') {
         const { executeChromeSafeSend } = require('./safe/safe-transactions');
         return executeChromeSafeSend({

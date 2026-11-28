@@ -17,8 +17,10 @@
  *   core's `executor-send` token, journaled under `execIntentKey` (the real
  *   transaction service, over a simulated intent journal) and broadcast,
  *   then `safe.executed`; the executor's fee the core's check stops is
- *   shown in the approvals document with the core's verdict and
- *   acknowledged (`fee_ack`), never minted; a superseded SafeTx is told,
+ *   shown in the approvals document with the core's verdict (or on the
+ *   chrome's board with it off, twice above the threshold) and confirmed
+ *   by the single-use ask main holds for it, bound to the SafeTx and the
+ *   window that asked (`fee_ack`), never minted; a superseded SafeTx is told,
  *   nothing signed; a failed signature or broadcast leaves it for "Try
  *   again", which sends the held execution's bytes again;
  * - a site's send (PR 7) is refused, nothing sent; and the hello still
@@ -818,21 +820,39 @@ describe('the execution: safe.execute (PR 4b)', () => {
     dropped.mockRestore();
   });
 
-  test("the fee the core's check stops: asked in the approvals document with the core's verdict, acknowledged with fee_ack, nothing minted", async () => {
+  // The approvals document's panel (`panel`), and the chrome's board with
+  // the document off: its execution through wallet:safe-execute's route.
+  const WINDOW_A = { id: 501 };
+  const WINDOW_B = { id: 502 };
+  const chromeExecute = (sender, feeConfirmation = null, approvals = null) =>
+    transactions.executeChromeSafeSend({ sender, safeIndex: 5, safeTxHash: SAFE_TX_HASH, feeConfirmation, approvals });
+  // A fee the core's check stops without being above the threshold: one press.
+  const ONE_SOURCE = Object.freeze({ ...VERDICT, ratio: '1', above: false, oneEndpoint: true, askAgain: false });
+  const acked = () => fake.sent('safe.execute').filter((m) => m.params.fee_ack === true).length;
+
+  test("the fee the core's check stops: asked in the approvals document with the core's verdict, its ask's ID taken by fee_ack, nothing minted", async () => {
     await setup({
       'safe.pending': { states: [READY] },
       'safe.execute': (message) => (message.params.fee_ack === true ? prepared() : { fee_check: VERDICT }),
     });
     const error = await failure(execute);
     expect(error).toMatchObject({ code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeCheck: VERDICT });
-    expect(error.offer).toEqual({ feeAck: true, safeIndex: 5, executorIndex: 0, chainId: 100, to: SAFE, value: '0' });
+    expect(error.offer).toEqual({
+      feeAskId: expect.any(String),
+      feeAskAgain: false,
+      safeIndex: 5,
+      executorIndex: 0,
+      chainId: 100,
+      to: SAFE,
+      value: '0',
+    });
     expect(steps()).toEqual(['safe.pending', 'safe.execute']);
 
     // The panel: wallet.executor_send with the core's verdict, asked again
     // above the threshold, and nothing minted on the approval.
     const { approvals, prompts } = panel();
-    const outcome = await coreSends.confirmOfferedFee({ approvals, windowId: 1, safeIndex: 5 });
-    expect(outcome).toEqual({ approved: true, feeConfirmation: { feeAck: true } });
+    const outcome = await coreSends.confirmOfferedFee({ approvals, windowId: 1, safeIndex: 5, askId: error.offer.feeAskId });
+    expect(outcome).toEqual({ approved: true, feeConfirmation: { feeAskId: error.offer.feeAskId } });
     expect(prompts.map((p) => [p.kind, p.view.feeAskAgain])).toEqual([
       ['wallet.executor_send', false],
       ['wallet.executor_send', true],
@@ -860,71 +880,151 @@ describe('the execution: safe.execute (PR 4b)', () => {
     expect(state.status).toBe('executed');
     expect(fake.sent('sign.transaction')).toHaveLength(1);
     expect(fake.sent('approval.issue')).toEqual([]);
+    // Taken once: the same confirmation again confirms nothing.
+    await expect(execute({ feeConfirmation: outcome.feeConfirmation })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(acked()).toBe(1);
   });
 
-  test('a fee declined in the panel sends nothing more; an acknowledgement main holds no offer for is no fee_ack', async () => {
+  test('declined in the panel, nothing more is sent; a confirmation that is no ask main holds is refused unsent', async () => {
     await setup({ 'safe.pending': { states: [READY] }, 'safe.execute': () => ({ fee_check: VERDICT }) });
-    await failure(execute);
+    const { offer } = await failure(execute);
     const { approvals } = panel([{ approve: false, choices: {} }]);
-    expect(await coreSends.confirmOfferedFee({ approvals, windowId: 1, safeIndex: 5 })).toEqual({
+    expect(await coreSends.confirmOfferedFee({ approvals, windowId: 1, safeIndex: 5, askId: offer.feeAskId })).toEqual({
       approved: false,
       error: 'User rejected the request',
       code: 'USER_REJECTED',
     });
     expect(steps()).toEqual(['safe.pending', 'safe.execute']);
-    // The chrome's acknowledgement, with the document on, is asked there
-    // first: declined, nothing sent.
+    // The chrome's confirmation with the document on is asked there: declined, nothing sent.
+    const chromeAsk = await failure(() => chromeExecute(WINDOW_A, null, panel().approvals));
     await expect(
-      transactions.executeChromeSafeSend({
-        sender: CHROME,
-        safeIndex: 5,
-        safeTxHash: SAFE_TX_HASH,
-        feeConfirmation: { feeAck: true },
-        approvals: panel([{ approve: false, choices: {} }]).approvals,
-      })
+      chromeExecute(WINDOW_A, { feeAskId: chromeAsk.offer.feeAskId }, panel([{ approve: false, choices: {} }]).approvals)
     ).rejects.toMatchObject({ code: 'USER_REJECTED' });
-    expect(fake.sent('safe.execute')).toHaveLength(1);
-
-    // No offer held (another Safe's, none shown): no fee_ack goes to the core.
-    coreSends._reset();
-    await failure(() => execute({ feeConfirmation: { feeAck: true } }));
-    expect(fake.sent('safe.execute').at(-1).params).toEqual({ safe: 5, safe_tx_hash: SAFE_TX_HASH });
-    // A token for the executor's fee is no confirmation on the core: burnt.
-    await expect(execute({ feeConfirmation: { confirmation: 'chrome-token', gasLimit: '1', fees: {} } })).rejects.toMatchObject({
-      code: 'SIGNING_NOT_CONFIRMED',
-    });
+    expect(acked()).toBe(0);
+    // A bare acknowledgement, an ID main doesn't hold, a token: refused unsent (the token burnt).
+    const sentBefore = fake.sent('safe.execute').length;
+    for (const feeConfirmation of [{ feeAck: true }, { feeAskId: 'not-an-ask' }, { confirmation: 'chrome-token', gasLimit: '1', fees: {} }]) {
+      await expect(execute({ feeConfirmation })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    }
+    expect(fake.sent('safe.execute')).toHaveLength(sentBefore);
     await arrived();
     expect(fake.sent('approval.discard').map((m) => m.params)).toEqual([{ token: 'chrome-token' }]);
     expect(fake.sent('sign.transaction')).toEqual([]);
   });
 
-  test('a fee that changes between the quote and the acknowledgement: asked again, or refused before signing', async () => {
+  test('with the document off, another window can\'t confirm the fee one window was shown', async () => {
+    await setup({
+      'safe.pending': { states: [READY] },
+      'safe.execute': (message) => (message.params.fee_ack === true ? prepared() : { fee_check: ONE_SOURCE }),
+    });
+    const { offer } = await failure(() => chromeExecute(WINDOW_A));
+    // Window B, which was shown nothing: neither A's ask nor a bare acknowledgement.
+    await expect(chromeExecute(WINDOW_B, { feeAskId: offer.feeAskId })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    await expect(chromeExecute(WINDOW_B, { feeAck: true })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(acked()).toBe(0);
+    expect(fake.sent('safe.execute')).toHaveLength(1);
+    // A's own confirmation of what A was shown: one press, fee_ack, executed.
+    expect((await chromeExecute(WINDOW_A, { feeAskId: offer.feeAskId })).status).toBe('executed');
+    expect(acked()).toBe(1);
+  });
+
+  test("an ask another window's execution replaced confirms nothing: A approves O1, B's execution offers O2, A's confirmation is refused", async () => {
+    const O2 = { ...VERDICT, maxCost: '450000000000000', ratio: '30' };
+    let next = VERDICT;
+    await setup({
+      'safe.pending': { states: [READY] },
+      'safe.execute': (message) => (message.params.fee_ack === true ? prepared() : { fee_check: next }),
+    });
+    // A's board: O1 asked and approved in A's panel.
+    const first = await failure(execute);
+    const approvedO1 = await coreSends.confirmOfferedFee({ approvals: panel().approvals, windowId: 1, safeIndex: 5, askId: first.offer.feeAskId });
+    expect(approvedO1.approved).toBe(true);
+    // Before A's execution, B's (another window, the document on) replaces the core's offer with O2.
+    next = O2;
+    const second = await failure(() => chromeExecute(WINDOW_B, null, panel().approvals));
+    expect(second.feeCheck).toEqual(O2);
+    // A's approval of O1 confirms nothing now: refused, no fee_ack, nothing signed.
+    await expect(execute({ feeConfirmation: approvedO1.feeConfirmation })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(acked()).toBe(0);
+    expect(fake.sent('sign.transaction')).toEqual([]);
+    // The same while A's prompt is still open: B's execution meanwhile leaves A's approval confirming nothing.
+    const third = await failure(execute);
+    const racing = createWalletApprovals({
+      walletPrompt: async () => {
+        await failure(() => chromeExecute(WINDOW_B, null, panel().approvals));
+        return { approve: true, choices: {} };
+      },
+      chromeWindowOf: () => 1,
+      getDerivedWallets: async () => Object.values(mockRecords),
+      checkFees: jest.fn(),
+      checkAtApproval: jest.fn(),
+    });
+    expect(await coreSends.confirmOfferedFee({ approvals: racing, windowId: 1, safeIndex: 5, askId: third.offer.feeAskId })).toMatchObject({
+      approved: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+    expect(acked()).toBe(0);
+  });
+
+  test('with the document off, a fee above the threshold takes two presses: the first is asked again under a new ID, sending nothing', async () => {
+    await setup({
+      'safe.pending': { states: [READY] },
+      'safe.execute': (message) => (message.params.fee_ack === true ? prepared() : { fee_check: VERDICT }),
+    });
+    const { offer } = await failure(() => chromeExecute(WINDOW_A));
+    const again = await failure(() => chromeExecute(WINDOW_A, { feeAskId: offer.feeAskId }));
+    expect(again).toMatchObject({ code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeCheck: VERDICT });
+    expect(again.offer).toMatchObject({ feeAskAgain: true, safeIndex: 5 });
+    expect(again.offer.feeAskId).not.toBe(offer.feeAskId);
+    expect(fake.sent('safe.execute')).toHaveLength(1);
+    // The first press's ID confirms nothing now; the second press's does.
+    await expect(chromeExecute(WINDOW_A, { feeAskId: offer.feeAskId })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(acked()).toBe(0);
+    expect((await chromeExecute(WINDOW_A, { feeAskId: again.offer.feeAskId })).status).toBe('executed');
+    expect(acked()).toBe(1);
+  });
+
+  test("the SafeTx's asks are counted across round trips: past three, the execution stops and the last ID is dead", async () => {
+    await setup({ 'safe.pending': { states: [READY] }, 'safe.execute': () => ({ fee_check: ONE_SOURCE }) });
+    let ask = await failure(() => chromeExecute(WINDOW_A));
+    for (let n = 2; n <= 3; n += 1) {
+      ask = await failure(() => chromeExecute(WINDOW_A, { feeAskId: ask.offer.feeAskId }));
+      expect(ask.code).toBe('FEE_CHECK_NEEDS_CONFIRMATION');
+    }
+    const stopped = await failure(() => chromeExecute(WINDOW_A, { feeAskId: ask.offer.feeAskId }));
+    expect(stopped.message).toMatch('kept changing');
+    expect(acked()).toBe(3);
+    await expect(chromeExecute(WINDOW_A, { feeAskId: ask.offer.feeAskId })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(acked()).toBe(3);
+  });
+
+  test('a fee that changes between the quote and the confirmation: asked again, or a send at another fee refused before signing', async () => {
     const NEWER = { ...VERDICT, maxCost: '450000000000000', ratio: '30' };
     let answer = { fee_check: VERDICT };
     await setup({ 'safe.pending': { states: [READY] }, 'safe.execute': () => (typeof answer === 'function' ? answer() : answer) });
-    await failure(execute);
+    const first = await failure(execute);
+    const confirmFirst = await coreSends.confirmOfferedFee({ approvals: panel().approvals, windowId: 1, safeIndex: 5, askId: first.offer.feeAskId });
 
-    // The core's offer replaced meanwhile: quoted again, its new fee asked.
+    // The core's offer replaced meanwhile: quoted again, its new fee asked under a new ask.
     answer = { fee_check: NEWER };
-    const again = await failure(() => execute({ feeConfirmation: { feeAck: true } }));
+    const again = await failure(() => execute({ feeConfirmation: confirmFirst.feeConfirmation }));
     expect(again).toMatchObject({ code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeCheck: NEWER });
     expect(fake.sent('safe.execute').at(-1).params.fee_ack).toBe(true);
     const { prompts, approvals } = panel();
-    await coreSends.confirmOfferedFee({ approvals, windowId: 1, safeIndex: 5 });
+    const confirmNewer = await coreSends.confirmOfferedFee({ approvals, windowId: 1, safeIndex: 5, askId: again.offer.feeAskId });
     expect(prompts[0].view.feeCheck.maxCost).toBe(NEWER.maxCost);
 
-    // A send costing another fee than the one confirmed: nothing signed, its token burnt.
+    // A send costing another fee than the one that ask showed: nothing signed, its token burnt.
     answer = () => prepared({ ...SEND_TX, gas_limit: '160000' });
-    const refused = await failure(() => execute({ feeConfirmation: { feeAck: true } }));
-    expect(refused).toMatchObject({ code: 'FEE_NOT_SHOWN' });
+    await expect(execute({ feeConfirmation: confirmNewer.feeConfirmation })).rejects.toMatchObject({ code: 'FEE_NOT_SHOWN' });
     await arrived();
     expect(fake.sent('sign.transaction')).toEqual([]);
     expect(fake.sent('approval.discard').map((m) => m.params.token)).toEqual([`exec-${sends}`]);
     expect(mockChain.broadcastRawTransaction).not.toHaveBeenCalled();
-    // The offer is gone: the next acknowledgement is no fee_ack.
-    answer = { fee_check: VERDICT };
-    await failure(() => execute({ feeConfirmation: { feeAck: true } }));
-    expect(fake.sent('safe.execute').at(-1).params).toEqual({ safe: 5, safe_tx_hash: SAFE_TX_HASH });
+    // The ask is gone: its confirmation again is refused, nothing sent.
+    const sentBefore = fake.sent('safe.execute').length;
+    await expect(execute({ feeConfirmation: confirmNewer.feeConfirmation })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(fake.sent('safe.execute')).toHaveLength(sentBefore);
   });
 
   test("a failed signature: the core's refusal keeps its code; nothing journaled, broadcast or told", async () => {

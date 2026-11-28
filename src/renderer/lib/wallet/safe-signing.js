@@ -892,12 +892,16 @@ function renderExecuteError() {
 function renderFeeAsk() {
   const lines = describeFeeCheck(feeAsk.feeCheck, 'xDAI');
   const warning = feeAsk.feeCheck?.above ? ' warning' : '';
+  // Main asked again (a fee above the threshold, on the core's Safe
+  // backend): the next press confirms it.
+  const again = feeAsk.offer?.feeAskAgain === true;
+  if (again) lines.push(FEE_CHECK.askAgain);
   return `
     <div class="safe-signing-banner safe-signing-fee${warning}">
       <div><strong>${escapeHtml(FEE_CHECK.confirmFee)}</strong></div>
       ${lines.map((line) => `<div class="safe-signing-banner-hint">${escapeHtml(line)}</div>`).join('')}
       <button type="button" class="safe-status-btn primary" id="safe-signing-confirm-fee"
-        ${feeAsk.busy ? 'disabled' : ''}>${escapeHtml(FEE_CHECK.confirmExecute)}</button>
+        ${feeAsk.busy ? 'disabled' : ''}>${escapeHtml(again ? FEE_CHECK.sendAnyway : FEE_CHECK.confirmExecute)}</button>
     </div>
   `;
 }

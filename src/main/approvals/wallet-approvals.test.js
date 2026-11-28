@@ -259,38 +259,105 @@ describe('a step main runs in a window: a Safe board\'s executor fee (APS-3b)', 
     expect(env.prompts.map((prompt) => prompt.windowId)).toEqual([4]);
     expect((await env.approvals.confirm({ kind: 'executor-send', index, payload, feeChecked: true })).code).toBe('NO_WINDOW');
   });
+});
 
-  // freedom-core design 0016, SAFE-3 (the plan's point 8): the identity
-  // core's offer, with its verdict (`safe.execute`'s `{ fee_check }`).
-  test("the core's offer: shown with the core's verdict, judged by main no more, asked again above the threshold", async () => {
-    const env = setup({ verdict: BELOW });
-    const offer = { chainId: 100, to: SAFE, value: '0' };
-    const done = jest.fn(() => ({}));
-    expect(
-      await env.approvals.confirm({ windowId: 4, kind: 'executor-send', index: 0, payload: offer, verdict: { ...ABOVE, askAgain: true } }, done)
-    ).toEqual({ approved: true });
-    expect(env.prompts.map((prompt) => [prompt.kind, prompt.view.feeAskAgain])).toEqual([
-      ['wallet.executor_send', false],
-      ['wallet.executor_send', true],
-    ]);
-    expect(env.prompts[0].view).toEqual({
+// freedom-core design 0016, SAFE-3 (the plan's point 8): a Safe activation's
+// executor fee the core's own check stopped (`safe.deploy`'s `{ fee_check }`)
+// is asked as `wallet.executor_send` with the core's verdict, and the core's
+// `fee_ack` runs on the approval: main runs no fee check and mints nothing.
+describe("the core's executor fee (SAFE-3)", () => {
+  const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+  const CORE_VERDICT = { ...BELOW, comparable: false, ratio: null, basis: null, autoApprove: false, askAgain: false };
+  const request = (overrides = {}) => ({ sender: chrome, index: 0, safe: SAFE_ADDRESS, chainId: 100, verdict: CORE_VERDICT, ...overrides });
+
+  test("the core's verdict, the Safe and its payer, fitting the template; the fee_ack on the approval", async () => {
+    const env = setup();
+    const ack = jest.fn(async ({ feeAcknowledged }) => ({ answer: { send: { feeAcknowledged } } }));
+    expect(await env.approvals.confirmCoreFee(request(), ack)).toEqual({ approved: true, answer: { send: { feeAcknowledged: false } } });
+    expect(env.prompts).toHaveLength(1);
+    const [prompt] = env.prompts;
+    expect(prompt.windowId).toBe(1);
+    expect(prompt.kind).toBe('wallet.executor_send');
+    expect(prompt.view).toEqual({
       account: { index: 0, name: 'Main Wallet', address: ACTIVE, type: 'mnemonic' },
       chain: { id: 100, name: 'Gnosis Chain', symbol: 'xDAI' },
-      tx: { to: SAFE, value: '0', data: '0x' },
+      tx: { to: SAFE_ADDRESS, value: '0', data: '0x' },
       fee: null,
-      feeCheck: ABOVE,
+      // The verdict's own fields: the core's at-approval flag isn't shown.
+      feeCheck: { maxCost: BELOW.maxCost, comparable: false, ratio: null, above: false, oneEndpoint: false, basis: null, autoApprove: false },
       feeAskAgain: false,
     });
-    expect(kinds.checkMessage(message('wallet.executor_send', env.prompts[1].view)).valid).toBe(true);
-    expect(done).toHaveBeenCalledWith({ feeAcknowledged: true });
+    expect(kinds.checkMessage(message(prompt.kind, prompt.view)).valid).toBe(true);
+    expect(prompt.choices({})).toEqual({});
+    expect(prompt.choices({ feeAcknowledged: true })).toBeNull();
+    // Main judges nothing of its own here.
     expect(env.checkAtApproval).not.toHaveBeenCalled();
+    expect(ack).toHaveBeenCalledTimes(1);
+  });
 
-    // Within the threshold: one press. A rejection says no.
-    const below = setup();
-    expect(await below.approvals.confirm({ windowId: 4, kind: 'executor-send', index: 0, payload: offer, verdict: BELOW })).toEqual({ approved: true });
-    expect(below.prompts).toHaveLength(1);
-    below.decisions.push({ approve: false, choices: {} });
-    expect(await below.approvals.confirm({ windowId: 4, kind: 'executor-send', index: 0, payload: offer, verdict: BELOW })).toEqual(REJECTED);
+  test('above the threshold: asked again in the panel, and the second press acknowledges it', async () => {
+    const env = setup();
+    const ack = jest.fn(async () => ({ answer: 'sent' }));
+    const above = { ...CORE_VERDICT, comparable: true, ratio: '4.5', above: true, basis: 'quote', askAgain: true };
+    expect(await env.approvals.confirmCoreFee(request({ verdict: above }), ack)).toEqual({ approved: true, answer: 'sent' });
+    expect(env.prompts.map((prompt) => [prompt.view.feeCheck.above, prompt.view.feeAskAgain])).toEqual([
+      [true, false],
+      [true, true],
+    ]);
+    expect(kinds.checkMessage(message('wallet.executor_send', env.prompts[1].view)).valid).toBe(true);
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(ack).toHaveBeenCalledWith({ feeAcknowledged: true });
+
+    // Rejected at the second press: no fee_ack.
+    const rejected = setup();
+    rejected.decisions.push({ approve: true, choices: {} }, { approve: false, choices: {} });
+    const none = jest.fn();
+    expect(await rejected.approvals.confirmCoreFee(request({ verdict: above }), none)).toEqual(REJECTED);
+    expect(none).not.toHaveBeenCalled();
+  });
+
+  test('a rejection, no window, no account or a full budget: no fee_ack; each prompt released', async () => {
+    const ack = jest.fn();
+    const rejected = setup();
+    rejected.decisions.push({ approve: false, choices: {} });
+    expect(await rejected.approvals.confirmCoreFee(request(), ack)).toEqual(REJECTED);
+    const released = jest.fn();
+    rejected.prompts[0].released.then(released);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(released).toHaveBeenCalled();
+
+    const env = setup();
+    expect((await env.approvals.confirmCoreFee(request({ sender: { id: 7 } }), ack)).code).toBe('NO_WINDOW');
+    expect(await env.approvals.confirmCoreFee(request({ index: 7 }), ack)).toEqual(NO_ACCOUNT);
+    expect(env.prompts).toHaveLength(0);
+    // A window id wins over a sender.
+    await env.approvals.confirmCoreFee(request({ windowId: 4 }), async () => ({}));
+    expect(env.prompts.map((prompt) => prompt.windowId)).toEqual([4]);
+
+    const limited = setup();
+    limited.decisions.push({ error: 'limit' });
+    expect((await limited.approvals.confirmCoreFee(request(), ack)).code).toBe('LIMIT_EXCEEDED');
+    expect(ack).not.toHaveBeenCalled();
+  });
+
+  test('a fee_ack that throws is released all the same, and the error reaches the caller', async () => {
+    const env = setup();
+    await expect(
+      env.approvals.confirmCoreFee(request(), () => {
+        throw Object.assign(new Error('Fund it'), { code: 'SAFE_NEEDS_FUNDS' });
+      })
+    ).rejects.toMatchObject({ code: 'SAFE_NEEDS_FUNDS' });
+    const released = jest.fn();
+    env.prompts[0].released.then(released);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(released).toHaveBeenCalled();
+  });
+
+  test('no verdict, or no Safe address, asks nothing', async () => {
+    const env = setup();
+    await expect(env.approvals.confirmCoreFee(request({ verdict: null }))).rejects.toThrow('no fee verdict');
+    await expect(env.approvals.confirmCoreFee(request({ safe: 'Team' }))).rejects.toThrow('no Safe address');
+    expect(env.prompts).toHaveLength(0);
   });
 });
 
