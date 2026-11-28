@@ -147,6 +147,8 @@ function seedChunks(file, chunks) {
   const { DatabaseSync } = require('node:sqlite');
   const db = new DatabaseSync(file);
   try {
+    // antd holds the cache open (WAL): wait out its write lock.
+    db.exec('PRAGMA busy_timeout = 10000');
     db.exec(`CREATE TABLE IF NOT EXISTS chunks (
       address BLOB PRIMARY KEY, data BLOB NOT NULL, size INTEGER NOT NULL,
       last_access INTEGER NOT NULL, inserted_at INTEGER NOT NULL,

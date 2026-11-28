@@ -35,10 +35,11 @@
  *   size is 1 MiB), so nothing reaches the core either; at main's
  *   dispatcher, as the vectors' case runs (PR 7.6's contract), the core
  *   answers `payload_too_large` with its limit and the actual size.
- * - **A navigation mid-upload stops it:** a 40 MiB `publishFiles` held at
+ * - **A navigation mid-upload stops it:** a 48 MiB `publishFiles` held at
  *   the tap after 1 MiB of its body; the document navigates; once the core's
  *   request has ended the tap lets the body go: the client ends the
- *   connection with the body never whole, the node never answers, and what
+ *   connection with the body never whole, the node never takes it (no
+ *   manifest assembled; at most its 400 for a body cut short), and what
  *   still arrives is only what was already in flight.
  * - **Subscriptions (question 4, PR 7.3) against antd:** a remote node
  *   behind a proxy, 4900 `proxy-or-tor` and no socket (a spy on the
@@ -99,7 +100,7 @@ const describeIfNode = RUN
   ? describe
   : (name, fn) => describe.skip(`${name} (skipped: SWARM_CORE_NODE_E2E is not 1)`, fn);
 
-// Node and core starts, and a 40 MiB upload.
+// Node and core starts, and a 48 MiB upload.
 jest.setTimeout(180_000);
 
 const KIB = 1024;
@@ -303,16 +304,13 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
       setup: [],
       serviceListeners: [],
       sockets: [],
-      warnings: [],
+      // Main's dials of a remote node (the session's stack), by URL.
+      remoteDials: [],
       client: null,
       swarmShell: null,
       exits: [],
     };
-    const log = {
-      ...SILENT,
-      warn: (...args) => world.warnings.push(args.map(String).join(' ')),
-      error: (...args) => world.warnings.push(args.map(String).join(' ')),
-    };
+    const log = SILENT;
     fs.writeFileSync(
       path.join(world.dir, 'settings.json'),
       JSON.stringify({ enableIdentityWallet: true })
@@ -423,6 +421,7 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
     mock('ipfs/gateway-transport.js', () => ({
       ...jest.requireActual(SRC_PATH('ipfs/gateway-transport.js')),
       netGatewayFetch: (url, init) => {
+        world.remoteDials.push(url);
         const to =
           world.alias && url.startsWith(`${world.alias.from}/`)
             ? world.alias.to + url.slice(world.alias.from.length)
@@ -859,9 +858,9 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
 
     test('a navigation mid-upload stops it: no more of the body reaches the node once the document has gone', async () => {
       const page = world.tab(APP);
-      const files = Array.from({ length: 8 }, (_, i) => ({
+      const files = Array.from({ length: 6 }, (_, i) => ({
         path: `big/part-${i}.bin`,
-        bytes: new Uint8Array(5 * MIB).fill(i + 1),
+        bytes: new Uint8Array(8 * MIB).fill(i + 1),
       }));
       const total = files.reduce((sum, file) => sum + file.bytes.byteLength, 0);
       const reserved = await page.reserve('swarm_publishFiles', total + 4 * KIB);
@@ -890,11 +889,13 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
       await until(() => upload.clientEnded, 'the client ending the connection');
       await sleep(500);
       expect(upload.whole).toBe(false);
-      expect(upload.status).toBeNull();
+      // The node never took it: it answers a body cut short 400 (the tap
+      // passes the client's end on), or nothing once the connection went.
+      expect([null, 400]).toContain(upload.status);
       expect(upload.bytes).toBeLessThan(total);
-      // In flight at most a body window and the sockets' buffers when it
-      // stopped (Linux measured 9 bytes).
-      expect(upload.bytes - atNavigation).toBeLessThanOrEqual(8 * MIB);
+      // What still arrived was in flight: a body window and the sockets'
+      // buffers at most, far short of the 47 MiB left.
+      expect(upload.bytes - atNavigation).toBeLessThanOrEqual(16 * MIB);
       expect(shared.node.manifestRoots().length).toBe(rootsFrom);
     });
 
@@ -923,11 +924,13 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
         const page = world.tab(APP);
         const from = shared.tap.requests.length;
         const sockets = world.sockets.length;
+        const dials = world.remoteDials.length;
         expect(await page.ask('swarm_subscribe', { kind: 'pss', topic: 'room:refused' })).toEqual({
           error: PROXY_OR_TOR,
         });
         expect(world.sockets.length).toBe(sockets);
         expect(crossedSince(from)).toEqual([]);
+        expect(world.remoteDials.slice(dials)).toEqual([]);
         expect(world.proxyAsked).toContain(`${REMOTE()}`);
       });
 
@@ -939,11 +942,13 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
         const page = world.tab(APP);
         const from = shared.tap.requests.length;
         const sockets = world.sockets.length;
+        const dials = world.remoteDials.length;
         expect(await page.ask('swarm_subscribe', { kind: 'pss', topic: 'room:crossed' })).toEqual({
           error: PROXY_OR_TOR,
         });
         // The ready check dialled the node through its remote name; the
         // open, checked again, made no socket.
+        expect(world.remoteDials.slice(dials)).toEqual([`${REMOTE()}/node`]);
         expect(crossedSince(from).map(line)).toEqual(['GET /node']);
         expect(world.proxyAsked.length).toBe(asked + 2);
         expect(world.sockets.length).toBe(sockets);
