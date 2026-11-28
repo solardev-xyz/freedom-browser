@@ -370,6 +370,8 @@ class ContractNode {
     this.frames = new Map();
     this.seq = 0;
     this.websockets = [];
+    this.sockets = [];
+    this.socketClose = null;
     this.bzzTag = 101;
     this.onWorld = null;
     this.abortPage = null;
@@ -434,10 +436,17 @@ class ContractNode {
         this.url = url;
         this.readyState = 0;
         node.websockets.push(node.normalize(String(url)));
+        node.sockets.push(this);
         setImmediate(() => {
           if (this.readyState !== 0) return;
           this.readyState = 1;
           this.onopen?.({});
+          // A node that refuses the subscription closes at once, before
+          // the subscriber's grace (Ant's 1013 when its pool is full).
+          if (node.socketClose) {
+            this.readyState = 3;
+            this.onclose?.({ code: node.socketClose.code, reason: node.socketClose.reason });
+          }
         });
       }
 
@@ -456,6 +465,45 @@ class ContractNode {
       http.request = realRequest;
       globalThis.WebSocket = realWebSocket;
     };
+  }
+
+  /**
+   * A node-side gate: holds `request`'s answer until a later request that
+   * `other` takes has reached the node, or for at most 1,000 turns of 5 ms
+   * (turns, not Date: the JS backend's runs freeze it), and notes on the
+   * request which ended the hold (`held`: the releasing request's path, or
+   * `timed out`).
+   */
+  async holdUntil(request, other) {
+    for (let turn = 0; turn < 1000; turn++) {
+      const by = this.requests.find((r) => r !== request && other(r));
+      if (by) {
+        request.held = by.path;
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    request.held = 'timed out';
+  }
+
+  /**
+   * The node sends `base64`'s bytes as one frame on every open subscription
+   * socket, then waits (at most 5 s) until `delivered()`, the document's
+   * count of messages, has grown by one per socket. Resolves the sockets
+   * it sent on.
+   */
+  async sendOnSockets(base64, delivered) {
+    const open = this.sockets.filter((socket) => socket.readyState === 1);
+    const before = delivered();
+    const bytes = Buffer.from(base64, 'base64');
+    for (const socket of open) {
+      socket.onmessage?.({ data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) });
+    }
+    // Counted in turns, not by Date: the JS backend's runs freeze it.
+    for (let turn = 0; turn < 1000 && delivered() < before + open.length; turn++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    return open.length;
   }
 
   /** A chunked reply's body as the caller reads it: one frame per scripted piece (swarm-node.js `reframe`). */
@@ -779,7 +827,11 @@ class ContractNode {
   }
 }
 
-/** A request as the vectors write it (swarm-run.js `requestRecord`), its body whole up to 8 KiB. */
+/**
+ * A request as the vectors write it (swarm-run.js `requestRecord`), its
+ * body whole up to 8 KiB; and what ended its hold where a case's gate held
+ * it (`holdUntil`).
+ */
 function requestRecord(r, node) {
   const out = { via: r.via, method: r.method, path: r.path };
   if (r.query.length) out.query = r.query;
@@ -791,6 +843,7 @@ function requestRecord(r, node) {
   const feed = r.method === 'GET' && r.path.startsWith('/chunks/') ? node.feedIndex.get(r.path.slice(8)) : undefined;
   if (feed) out.feed = feed;
   if (r.socValid !== undefined) out.soc_valid = r.socValid;
+  if (r.held !== undefined) out.held = r.held;
   out.framing = r.framing;
   return out;
 }
@@ -811,6 +864,8 @@ function testKeys(keysJson) {
 
 module.exports = {
   ContractNode,
+  feedIdentifier,
+  libraries,
   nodeWorld,
   requestRecord,
   splitTree,

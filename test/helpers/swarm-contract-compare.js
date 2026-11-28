@@ -6,7 +6,10 @@
  *
  * `compareCase(backend, kase, record, deviations)` gives `{ problems,
  * deviations }`: every way the run differs from what the contract wants,
- * as text (empty when it holds), and the deviation ids asserted.
+ * as text (empty when it holds), and the deviation ids asserted. Its
+ * request checks (`requestProblems`, `referenceWants`, `sameRequestsOn`,
+ * and `interleaves` for calls made at once) hold the behaviour cases
+ * (swarm-contract-cases.js) too.
  */
 
 const crypto = require('crypto');
@@ -226,6 +229,35 @@ function onlySig(query) {
   return at.length === 1 ? at[0] : -1;
 }
 
+/** Whether a request is a SOC upload, `POST /soc/<owner>/<identifier>`. */
+const isSocUpload = (request) => request?.method === 'POST' && request.path.startsWith('/soc/');
+
+/**
+ * What every request a step made must hold on `backend`, whichever case
+ * made it (the vectors' and the behaviour cases', Codex round 3 on #1391):
+ * on `core` main's own two headers (`mainHeadersMissing`); on both its
+ * framing (`framingProblem`); and a SOC upload's one `sig`, 65 bytes in
+ * lower-case hex, that the node found its owner's (`soc_valid`).
+ * `requests` are runCase's records of step `k`'s; each problem as text.
+ */
+function requestProblems(backend, k, requests) {
+  const problems = [];
+  for (const r of requests) {
+    const at = `step ${k}: ${r.method} ${r.path}`;
+    if (backend === 'core') {
+      const lack = mainHeadersMissing(r);
+      if (lack) problems.push(`${at} ${lack}`);
+    }
+    const framing = framingProblem(backend, r);
+    if (framing) problems.push(`${at} ${framing}`);
+    if (!isSocUpload(r)) continue;
+    const sig = onlySig(r.query);
+    if (sig === -1 || !SIG.test(r.query[sig][1])) problems.push(`${at}: not one sig of 65 bytes in lower-case hex: ${show(r.query)}`);
+    if (r.soc_valid !== true) problems.push(`step ${k}: a SOC whose signature isn't its owner's: ${r.path}`);
+  }
+  return problems;
+}
+
 /**
  * A feed update's SOC as the reference's clock would have written it: its
  * payload is the update's time (8 bytes, seconds) and a reference, so the
@@ -297,6 +329,72 @@ function sameRequests(got, wants, { window, walks = {} } = {}) {
     at += 1;
   }
   return at === got.length;
+}
+
+/** The reference's requests (as the vectors record them) as `backend` must make them: `coreWants` on `core`, else `wire`. */
+const referenceWants = (backend, requests) => (backend === 'core' ? coreWants(requests) : requests.map((r) => wire(r)));
+
+/**
+ * Whether a step's requests (`got`, as `wire` gives them) are `wants`
+ * (`referenceWants`'), as compareCase compares a vectors step: in order,
+ * on `core` with `sameRequests` (the run's `window` for a feed update's
+ * clock, its `walks`), on `js` exactly.
+ */
+function sameRequestsOn(backend, got, wants, { window, walks } = {}) {
+  if (backend === 'core') return sameRequests(got, wants, { window, walks });
+  return isDeepStrictEqual(got.map(strip), wants);
+}
+
+/**
+ * Whether `got` (a step's requests, as `wire` gives them) is the requests
+ * of `sequences` made at once (each a list of `referenceWants`'): every
+ * request one of theirs, exactly, each sequence's in its own order, none
+ * missing and none over. Only the order between sequences is free. A
+ * `{ walk }` mark (on `core`) is that root's verified walk (`walks`): the
+ * requests that are the walk's must be it (`sameWalk`, the calls it holds
+ * open at once in any order), all after what comes before the mark in its
+ * sequence and before what comes after it.
+ */
+function interleaves(got, sequences, { walks = {} } = {}) {
+  let rest = got;
+  let seqs = sequences;
+  for (const root of sequences.flat().flatMap((want) => (want.walk ? [want.walk] : []))) {
+    const walk = walks[root];
+    if (!walk) return false;
+    const ofWalk = (one) => walk.some((w) => isDeepStrictEqual(strip(one), w.request));
+    const mine = rest.filter(ofWalk);
+    if (!sameWalk(mine, walk)) return false;
+    const start = { walk: root, at: 'start' };
+    const end = { walk: root, at: 'end' };
+    seqs = seqs.map((seq) => seq.flatMap((want) => (want.walk === root ? (walk.length ? [start, end] : []) : [want])));
+    if (!walk.length) continue;
+    // The walk's span in `got`, as two marks where it begins and ends.
+    const first = rest.findIndex(ofWalk);
+    const last = rest.length - 1 - [...rest].reverse().findIndex(ofWalk);
+    rest = rest.flatMap((one, i) => {
+      if (!ofWalk(one)) return [one];
+      return [...(i === first ? [start] : []), ...(i === last ? [end] : [])];
+    });
+  }
+  const seen = new Map();
+  const from = (places) => {
+    const at = places.reduce((sum, n) => sum + n, 0);
+    if (at === rest.length) return places.every((n, i) => n === seqs[i].length);
+    const key = places.join(',');
+    if (!seen.has(key)) {
+      seen.set(
+        key,
+        seqs.some(
+          (seq, i) =>
+            places[i] < seq.length &&
+            isDeepStrictEqual(strip(rest[at]), strip(seq[places[i]])) &&
+            from(places.map((n, j) => (j === i ? n + 1 : n)))
+        )
+      );
+    }
+    return seen.get(key);
+  };
+  return from(seqs.map(() => 0));
 }
 
 /** Whether a node rule's `match` takes request `r` (swarm-contract-node.js `matches`). */
@@ -438,6 +536,17 @@ function walletLabels(prompt, want, mainWallet) {
   return { ...prompt, view: { ...prompt.view, identities } };
 }
 
+/**
+ * `(got, want) => got` with each time the core's clock wrote within the
+ * run taken as the case's (`clockFixer`); the identity on `js`, whose
+ * clock is the case's.
+ */
+function timeFixer(backend, kase, record) {
+  if (backend !== 'core') return (got) => got;
+  const clocks = [kase.clock, ...kase.steps.map((step) => step.clock).filter((t) => t !== undefined)];
+  return clockFixer(clocks, record.window);
+}
+
 /** History rows in insertion order: the reference's fixed clock gave them all one time, so its newest-first order is by id. */
 const byId = (rows) => [...rows].sort((a, b) => a.id - b.id);
 
@@ -495,19 +604,9 @@ function compareCase(backend, kase, record) {
     const ran = record.steps[k];
     if (ran.skipped) return;
     const got = 'error' in ran ? { error: ran.error } : { result: ran.result };
-    if (backend === 'core') {
-      for (const r of ran.requests) {
-        const lack = mainHeadersMissing(r);
-        if (lack) problems.push(`step ${k}: ${r.method} ${r.path} ${lack}`);
-      }
-    }
-    for (const r of ran.requests) {
-      const framing = framingProblem(backend, r);
-      if (framing) problems.push(`step ${k}: ${r.method} ${r.path} ${framing}`);
-    }
+    problems.push(...requestProblems(backend, k, ran.requests));
     const gotRequests = ran.requests.map((r) => wire(r, backend));
-    for (const r of gotRequests) if (r.soc_valid === false) problems.push(`step ${k}: a SOC whose signature isn't its owner's: ${r.path}`);
-    let wantRequests = backend === 'core' ? coreWants(step.requests || []) : (step.requests || []).map((r) => wire(r));
+    let wantRequests = referenceWants(backend, step.requests || []);
     let want = expectedAnswer(step);
     if (how === 'exact' && k === last) {
       want = 'error' in kase.core ? { error: kase.core.error } : { result: kase.core.result };
@@ -562,10 +661,7 @@ function compareCase(backend, kase, record) {
     } else if (!sameAnswer(fix(got, want), want)) {
       problems.push(`step ${k} answer: ${show(got)} against ${show(want)}`);
     }
-    const same =
-      backend === 'core'
-        ? sameRequests(gotRequests, wantRequests, { window: record.window, walks: ran.walks })
-        : isDeepStrictEqual(gotRequests.map(strip), wantRequests);
+    const same = sameRequestsOn(backend, gotRequests, wantRequests, { window: record.window, walks: ran.walks });
     if (!same) problems.push(`step ${k} requests: ${show(gotRequests)} against ${show(wantRequests)}`);
     if (deviation === 'stamps-one-read') {
       const reads = gotRequests.filter((r) => r.method === 'GET' && r.path === '/stamps').length;
@@ -629,4 +725,18 @@ function summary(backend, seen, outside) {
   return lines.join('\n');
 }
 
-module.exports = { KNOWN_CORE_VECTOR_DIFFERENCES, LEFT_OUT_ON_CORE, compareCase, deviationOn, expectedAnswer, sameAnswer, summary, wire };
+module.exports = {
+  KNOWN_CORE_VECTOR_DIFFERENCES,
+  LEFT_OUT_ON_CORE,
+  compareCase,
+  deviationOn,
+  expectedAnswer,
+  interleaves,
+  referenceWants,
+  requestProblems,
+  sameAnswer,
+  sameRequestsOn,
+  summary,
+  timeFixer,
+  wire,
+};
