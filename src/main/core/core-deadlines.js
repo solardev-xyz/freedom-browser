@@ -28,9 +28,12 @@
  * doesn't, a vault key's `sign.*` and x402's settle by outcome or by
  * signature, keeps the immediate 15 s, and the one that does gets the
  * lane's watchdog, which each APDU resets (`deviceWatchdogMs`,
- * `apduWatchdogMs`). The table is kept whole, but `core.hello` and
- * `core.shutdown` are the client's own: its 10 s handshake timeout and 3 s
- * shutdown grace bound them instead.
+ * `apduWatchdogMs`); `safe.sign_owner` and `safe.message_sign` read the
+ * chain first, so each adds the chain machine's 120 s: 135 s for vault
+ * owners, 7 minutes and 15 s for a Ledger owner until its first APDU.
+ * The table is kept whole, but `core.hello` and `core.shutdown` are the
+ * client's own: its 10 s handshake timeout and 3 s shutdown grace bound
+ * them instead.
  *
  * Main's copy, checked against the core's file when it is found
  * (core-deadlines.test.js). It holds the rows the file marks
@@ -199,7 +202,7 @@ const METHOD_CLASSES = Object.freeze({
   // chrome's and main's but `safe.deployed`, main's alone after its
   // receipt. `safe.prepare` and `safe.propose` build and propose a Safe
   // transaction from the chain's reads (`session`), a page's, the chrome's
-  // and main's. Main sends none of them yet (SAFE-3).
+  // and main's. Main sends none of them yet (SAFE-3's PRs 3 to 9).
   'safe.create': VAULT,
   'safe.status': SESSION,
   'safe.deploy': SESSION,
@@ -208,6 +211,27 @@ const METHOD_CLASSES = Object.freeze({
   'safe.discard': IMMEDIATE,
   'safe.prepare': SESSION,
   'safe.propose': SESSION,
+  // cored-v0.31.0 (design 0016, SAFE-2's S4 to S6), pinned from 0.32.0
+  // (SAFE-3). `safe.execute` reads the setup and the nonce first (`session`)
+  // and answers the executor's prepared send, the chrome's and main's;
+  // `safe.executed`, main's alone after its broadcast, reads no chain. A
+  // page's Safe message: `safe.message_start` is the page's alone and
+  // reads the chain (`session`); the board's calls are the chrome's and
+  // main's, `safe.message_sign` reading the chain before each owner's
+  // signature (`device`: a Ledger owner signs on the lane), the other three
+  // answered at once. `safe.sign_owner`, the chrome's and main's, signs a
+  // proposed SafeTx after its reads, a Ledger owner on the lane
+  // (`device`). The two `device` rows' watchdog is `deviceWatchdogMs`'s,
+  // from main's record of the owner. Main sends none of them yet (SAFE-3's
+  // PRs 3 to 9).
+  'safe.execute': SESSION,
+  'safe.executed': IMMEDIATE,
+  'safe.message_start': SESSION,
+  'safe.message_sign': DEVICE,
+  'safe.message_state': IMMEDIATE,
+  'safe.message_cancel': IMMEDIATE,
+  'safe.message_complete': IMMEDIATE,
+  'safe.sign_owner': DEVICE,
   'payments.append': IMMEDIATE,
   'payments.update': IMMEDIATE,
   'payments.mark_confirmed': IMMEDIATE,
@@ -349,22 +373,18 @@ const LANE_QUEUE_MS = 300_000;
 const APDU_DEADLINES_MS = Object.freeze([15_000, 300_000]);
 
 /** The Safe methods that sign with an owner, and so may drive the device
- * for a Ledger owner (design 0016, D7): `device` in the design, after the
- * verified setup reads, under the chain machine's 120 s, that come before
- * each owner's signature. cored-v0.30.0's table has no row for either yet
- * (SAFE-2's S5 and S6), so they aren't in METHOD_CLASSES, and main sends
- * neither before SAFE-3. */
+ * for a Ledger owner (design 0016, D7): the `device` class's two Safe rows
+ * (cored-v0.31.0), after the verified setup reads, under the chain
+ * machine's 120 s, that come before each owner's signature. Whether one
+ * drives the device is main's record of the owner its params name
+ * (`ledgerOwner`), never its params alone. */
 const SAFE_OWNER_METHODS = Object.freeze(['safe.sign_owner', 'safe.message_sign']);
 
 /** Whether `method` may drive the device (design 0016, D7): one of the
- * `device` class, or one of the two Safe methods 0016 gives it before the
- * table has their rows. Its watchdog is `deviceWatchdogMs`'s, from its
- * params. */
+ * `device` class. Its watchdog is `deviceWatchdogMs`'s, from its params
+ * (and, for the two Safe owner methods, main's record of the owner). */
 function isDeviceMethod(method) {
-  return (
-    (Object.hasOwn(METHOD_CLASSES, method) && METHOD_CLASSES[method] === DEVICE) ||
-    SAFE_OWNER_METHODS.includes(method)
-  );
+  return Object.hasOwn(METHOD_CLASSES, method) && METHOD_CLASSES[method] === DEVICE;
 }
 
 /**
@@ -409,8 +429,8 @@ function drivesDevice(method, params, { ledgerOwner = false } = {}) {
  *   `safe.message_sign` with vault owners, the chain machine's 120 s plus
  *   the margin, 135 s. It goes as the client's plain watchdog.
  *
- * Throws for a method outside the device class and those two Safe
- * methods, whose watchdog is `watchdogMs`'s.
+ * Throws for a method outside the device class, whose watchdog is
+ * `watchdogMs`'s.
  * @param {string} method
  * @param {object} params - the request's params, as main sends them
  * @param {{ ledgerOwner?: boolean }} [options] - whether a Safe method's
@@ -461,7 +481,10 @@ function ownDeadline(deadlineMs, longest) {
  * params, so it can't tell the other kind. A request that drives the
  * device gets `deviceWatchdogMs` instead, from its params. A `ledger.*`
  * request always drives it, so asking for its watchdog here throws, and
- * none goes out under 15 s.
+ * none goes out under 15 s. So does asking for `safe.sign_owner`'s or
+ * `safe.message_sign`'s: their setup reads come first, and whether one
+ * drives the device is main's record of its owner, so theirs is
+ * `deviceWatchdogMs`'s, 135 s at the least, never 15 s.
  * @param {string} method
  * @param {number} [deadlineMs] - a session or Swarm request's own
  *   `deadline_ms`
@@ -485,6 +508,11 @@ function watchdogMs(method, deadlineMs) {
       if (DEVICE_ONLY.includes(method)) {
         throw new Error(
           `${method} drives the device: its watchdog is deviceWatchdogMs's (design 0016, D7)`
+        );
+      }
+      if (SAFE_OWNER_METHODS.includes(method)) {
+        throw new Error(
+          `${method} reads the chain before an owner's signature: its watchdog is deviceWatchdogMs's, from main's record of the owner (design 0016, D7)`
         );
       }
       return IMMEDIATE_WATCHDOG_MS;

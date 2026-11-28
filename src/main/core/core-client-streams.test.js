@@ -8,7 +8,7 @@
  * handler gives its own (design 0015: a `shell.swarm_api` body's
  * `too_large`, a part's error code), as main's own requests may give the
  * codes their bodies take (`swarm.body`'s). Protocol 2 is the only one
- * CoreClient speaks: the pinned core (0.30.0) refuses 1.
+ * CoreClient speaks: the pinned core (0.32.0) refuses 1.
  */
 
 const { EventEmitter } = require('events');
@@ -175,7 +175,7 @@ class FakeCore extends EventEmitter {
 }
 
 function hello(protocol, capabilities = ['vault.status', 'fragments', 'streams']) {
-  return { protocol, core_version: '0.30.0', capabilities };
+  return { protocol, core_version: '0.32.0', capabilities };
 }
 
 /** Answers the hello at `protocol` (with `result` if given), shutdown, and
@@ -315,7 +315,7 @@ describe('the hello at protocol 2', () => {
     const ready = await client.start();
     expect(ready).toEqual({
       protocol: 2,
-      core_version: '0.30.0',
+      core_version: '0.32.0',
       capabilities: ['vault.status', 'fragments', 'streams'],
       node_recovery: null,
       store_moved: [],

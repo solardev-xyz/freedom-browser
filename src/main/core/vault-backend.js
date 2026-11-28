@@ -22,17 +22,26 @@
  *   past it is killed and restarted, which fails the request
  *   `core_unavailable`, so a mutation reconciles as after a crash. A
  *   request that drives a Ledger (design 0016) goes only through
- *   `ledgerCall`, under the device watchdog its params give it. A Ledger
- *   key's `sign.*` (LDG-3, on the core's Ledger backend) is sent so by
- *   `deviceCall`, opened in main's relay for the core's `shell.ledger_apdu`
- *   (ledger-relay.js) as it is written.
+ *   `ledgerCall`, under the device watchdog its params give it, and so
+ *   does a Safe owner's signature (SAFE-3), whose watchdog main's record
+ *   of the owner decides too. A Ledger key's `sign.*` (LDG-3, on the
+ *   core's Ledger backend) is sent so by `deviceCall`, opened in main's
+ *   relay for the core's `shell.ledger_apdu` (ledger-relay.js) as it is
+ *   written.
  */
 
 const log = require('../logger');
 const { getCoreClient, getLedgerRelay } = require('./core-process');
-const { deviceWatchdogMs, drivesDevice, isDeviceMethod, watchdogMs } = require('./core-deadlines');
+const {
+  SAFE_OWNER_METHODS,
+  deviceWatchdogMs,
+  drivesDevice,
+  isDeviceMethod,
+  watchdogMs,
+} = require('./core-deadlines');
 const { keyStoreMessage } = require('./key-store-messages');
 const { requiresStore } = require('./core-client');
+const { coreSafeCode } = require('../wallet/safe/errors');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
 // The intent journal is the core's (design 0013, PRF-6(b)): its requests go
@@ -50,6 +59,10 @@ const VAULT_META = requiresStore('vault_meta');
 // `safe-pending.json` is the core's (design 0013, PRF-6(d)): its requests go
 // only to a core whose hello echoed `safe_pending`.
 const SAFE_PENDING = requiresStore('safe_pending');
+// A Safe's requests that read or write `safe-pending.json` through the
+// core's store (design 0016, SAFE-3): they read the Safe's record from
+// `vault-meta.json` too, so they go only to a core whose hello echoed both.
+const SAFE_RECORD_AND_PENDING = (hello) => VAULT_META(hello) && SAFE_PENDING(hello);
 // The RPC-key requests' `requires` (PRF-6(e)).
 const RPC_KEYS = Object.freeze({ requires: requiresStore('rpc_api_keys') });
 // The mutations that write vault-meta.json with the vault, and so their
@@ -142,13 +155,22 @@ function backendError(err) {
  * request that drives a Ledger (design 0016, `drivesDevice`: a Ledger
  * key's `sign.*`, every `ledger.*`, `x402.settle { reservation,
  * typed_data }`) would be killed at its 15 s, so it is refused here,
- * `invalid_argument`, unsent: it goes through `ledgerCall`.
+ * `invalid_argument`, unsent: it goes through `ledgerCall`. So is a Safe
+ * owner's signature (`safe.sign_owner`, `safe.message_sign`), whose
+ * watchdog is the chain reads' at the least and main's record of the
+ * owner decides the rest.
  */
 async function call(method, params = {}, page = null, { requires = null } = {}) {
   const context = contextOf(page);
   try {
     if (isDeviceMethod(method) && drivesDevice(method, params)) {
       throw new VaultBackendError('invalid_argument', 'A Ledger request goes through ledgerCall');
+    }
+    if (SAFE_OWNER_METHODS.includes(method)) {
+      throw new VaultBackendError(
+        'invalid_argument',
+        "A Safe owner's signature goes through ledgerCall"
+      );
     }
     return await client().request(method, params, context, {
       watchdogMs: watchdogMs(method),
@@ -392,6 +414,89 @@ async function accountsCall(method, params, caller = null) {
 /** `params` with `name` when one is given: absent means the core's default. */
 function named(params, name) {
   return name === undefined ? params : { ...params, name };
+}
+
+/** `members` without the ones left undefined: an optional member is sent
+ * only when it is given (JSON has no undefined, and the core reads only
+ * the members it names). */
+function given(members) {
+  return Object.fromEntries(Object.entries(members).filter(([, value]) => value !== undefined));
+}
+
+/** A Safe refusal with main's code (design 0016, API, "Errors"):
+ * `invalid_argument` whose `data.safe` wallet/safe/errors.js names takes
+ * that code (`coreSafeCode`), the core's message and data kept; any other
+ * error is as it came. */
+function safeError(err) {
+  const code = coreSafeCode(err);
+  return code ? new VaultBackendError(code, err.message, err.data) : err;
+}
+
+/**
+ * A `safe.*` request (freedom-core design 0016, SAFE-3) under its method's
+ * watchdog (`call`), with `requires` (`VAULT_META`, or
+ * `SAFE_RECORD_AND_PENDING`), its refusals with main's codes
+ * (`safeError`).
+ */
+async function safeCall(method, params, caller, requires) {
+  try {
+    return await call(method, params, caller, { requires });
+  } catch (err) {
+    throw safeError(err);
+  }
+}
+
+/**
+ * `safe.message_start`'s `authorization` in one of its two forms: the
+ * site's standing rule, `{ standing: { paused? } }`, or its token, `{
+ * token, handle }`. Both at once is refused here, `invalid_argument`,
+ * unsent: the core reads either form whole, and would refuse the two.
+ */
+function messageAuthorization(authorization) {
+  const { token, handle, standing } = authorization ?? {};
+  if (standing === undefined) return given({ token, handle });
+  if (token !== undefined || handle !== undefined) {
+    throw new VaultBackendError(
+      'invalid_argument',
+      'A Safe message’s authorization is its token or the site’s rule, not both'
+    );
+  }
+  const rule = standing !== null && typeof standing === 'object';
+  return { standing: rule ? given({ paused: standing.paused }) : standing };
+}
+
+/**
+ * Whether wallet index `owner` is a Ledger's account, by main's own record
+ * of it (identity-manager.js `getWalletRecord`): what a Safe owner's
+ * signature's watchdog turns on (core-deadlines.js `deviceWatchdogMs`),
+ * since its params name only the index. No owner (the vault owners'
+ * sweep) is none.
+ */
+function ledgerOwner(owner) {
+  if (owner === undefined || owner === null) return false;
+  // Required here: identity-manager.js requires this module.
+  const { getWalletRecord, WALLET_TYPES } = require('../identity-manager');
+  return getWalletRecord(owner)?.type === WALLET_TYPES.LEDGER;
+}
+
+/**
+ * A Safe owner's signature, `safe.sign_owner` or `safe.message_sign`
+ * (design 0016, D7), through `ledgerCall` with `ledgerOwner` from main's
+ * record of `params.owner`: 135 s for vault owners, and for a Ledger
+ * owner the client's device watchdog, 7 minutes and 15 s until its first
+ * `shell.ledger_apdu`. Its refusals take main's codes (`safeError`).
+ */
+async function safeOwnerCall(method, params, caller, { onSent, signal, requires }) {
+  try {
+    return await ledgerCall(method, params, caller, {
+      ledgerOwner: ledgerOwner(params.owner),
+      onSent,
+      signal,
+      requires,
+    });
+  } catch (err) {
+    throw safeError(err);
+  }
 }
 
 /**
@@ -937,6 +1042,163 @@ const vaultBackend = {
     },
   },
 
+  /**
+   * A Safe in the core (freedom-core design 0016, API; SAFE-3's base, the
+   * plan's PR 2): the 16 `safe.*` methods. Main sends them only with
+   * FREEDOM_SAFE_BACKEND=core (wallet/safe/safe-backend-kind.js), from
+   * SAFE-3's PRs 3 to 9 on; nothing calls them yet. `safe` and `owner` are
+   * wallet indices, and hashes `0x` and 64 hex digits. Each method takes
+   * the members the core reads (cored 0.32.0's `safe::methods`), in its
+   * names, and sends only those, an optional one only when it is given: the
+   * core refuses any other member, so it reads each request whole.
+   * - **Callers:** `caller` is `'chrome'` (the chrome's request, relayed)
+   *   or null (main's own, `shell`); `prepare` and `propose` also take a
+   *   page's PageContext (a site's send), and `messageStart` takes only
+   *   that. `deployed` and `executed` are main's alone.
+   * - **Stores:** each goes with `requires: vault_meta` (the core reads the
+   *   Safe's record), and `discard`, `propose`, `execute`, `executed` and
+   *   `signOwner` with `safe_pending` too, so a core that didn't take them
+   *   fails the request `requirement_unmet` in main, unsent.
+   * - **Watchdogs:** the method's (core-deadlines.js): 45 s for `create`
+   *   (the vault queue), 135 s for the rows that read the chain, 15 s for
+   *   the board's reads and calls. `signOwner` and `messageSign` go through
+   *   `ledgerCall` (`safeOwnerCall`): 135 s for vault owners, and 7 minutes
+   *   and 15 s for a Ledger owner until its first `shell.ledger_apdu`, by
+   *   main's own record of the owner. Their `onSent` and `signal` are the
+   *   client's, for main's relay, which admits a Safe's parents only from
+   *   SAFE-3's PR 8.
+   * - **Refusals:** `invalid_argument` with `data.safe` takes the code
+   *   wallet/safe/errors.js gives it (`safeError`); `create`'s with
+   *   `data.code` that code, as `accounts.*`'s do.
+   * - **Secrets:** `authorization`'s token and a message session's ID
+   *   (`session`) are bearer secrets: never logged. The session's ID never
+   *   leaves main (the SAFE-3 plan's point 7).
+   */
+  safe: {
+    /** `{ name, owners: [index], threshold }` → `{ wallet, durable? }`, written on the vault queue. */
+    create({ name, owners, threshold }, caller = null) {
+      return accountsCall('safe.create', given({ name, owners, threshold }), caller);
+    },
+    /** `{ safe }` → `getSafeStatus`'s fields and `setup`. */
+    status({ safe }, caller = null) {
+      return safeCall('safe.status', { safe }, caller, VAULT_META);
+    },
+    /** `{ safe, fee_ack? }` → `{ send }`, `{ fee_check }` or `{ deployed: true }`. */
+    deploy({ safe, fee_ack }, caller = null) {
+      return safeCall('safe.deploy', given({ safe, fee_ack }), caller, VAULT_META);
+    },
+    /** Main's own, after its receipt: `{ safe, hash }` → `{ deployed, verified? }`. */
+    deployed({ safe, hash }) {
+      return safeCall('safe.deployed', { safe, hash }, null, VAULT_META);
+    },
+    /** `{}` → `{ states }`, the board's (`getAllSafeSendStates`). */
+    pending(caller = null) {
+      return safeCall('safe.pending', {}, caller, VAULT_META);
+    },
+    /** `{ safe, safe_tx_hash? }` → `{ durable? }` (`cancelSafeSend`). */
+    discard({ safe, safe_tx_hash }, caller = null) {
+      return safeCall(
+        'safe.discard',
+        given({ safe, safe_tx_hash }),
+        caller,
+        SAFE_RECORD_AND_PENDING
+      );
+    },
+    /**
+     * `{ safe, chain_id, tx: { to, value, data } }` → `{ safe_tx,
+     * safe_tx_hash, view }`; `page` is a PageContext, `'chrome'` or null.
+     */
+    prepare({ safe, chain_id, tx }, page = null) {
+      const { to, value, data } = tx ?? {};
+      return safeCall(
+        'safe.prepare',
+        { safe, chain_id, tx: { to, value, data } },
+        page,
+        VAULT_META
+      );
+    },
+    /**
+     * `{ safe, safe_tx_hash, authorization: { token, handle? }, display? }`
+     * → the board's state: a site's under `page` with its handle, the
+     * wallet's as `shell`. The token is burnt however it ends.
+     */
+    propose({ safe, safe_tx_hash, authorization, display }, page = null) {
+      const { token, handle } = authorization ?? {};
+      return safeCall(
+        'safe.propose',
+        given({ safe, safe_tx_hash, authorization: given({ token, handle }), display }),
+        page,
+        SAFE_RECORD_AND_PENDING
+      );
+    },
+    /** `{ safe, fee_ack?, safe_tx_hash? }` → `{ send }`, `{ fee_check }` or `{ superseded }`. */
+    execute({ safe, fee_ack, safe_tx_hash }, caller = null) {
+      return safeCall(
+        'safe.execute',
+        given({ safe, fee_ack, safe_tx_hash }),
+        caller,
+        SAFE_RECORD_AND_PENDING
+      );
+    },
+    /** Main's own, after its broadcast: `{ safe, safe_tx_hash, hash }` → `{ durable? }`. */
+    executed({ safe, safe_tx_hash, hash }) {
+      return safeCall('safe.executed', { safe, safe_tx_hash, hash }, null, SAFE_RECORD_AND_PENDING);
+    },
+    /**
+     * A page's Safe message, under `page` with its PageContext alone: `{
+     * safe, request: { method, params }, display?, authorization: { token,
+     * handle } | { standing: { paused? } } }` → `{ session, state }`.
+     */
+    async messageStart({ safe, request, display, authorization }, page) {
+      if (!page || page === 'chrome') {
+        throw new VaultBackendError('invalid_argument', 'A Safe message is a page’s request');
+      }
+      const { method, params } = request ?? {};
+      return safeCall(
+        'safe.message_start',
+        given({
+          safe,
+          request: { method, params },
+          display,
+          authorization: messageAuthorization(authorization),
+        }),
+        page,
+        VAULT_META
+      );
+    },
+    /** `{ safe, session, owner? }` → the state; `owner` signs, or the vault owners' sweep. */
+    messageSign({ safe, session, owner }, { caller = null, onSent = null, signal = null } = {}) {
+      return safeOwnerCall('safe.message_sign', given({ safe, session, owner }), caller, {
+        onSent,
+        signal,
+        requires: VAULT_META,
+      });
+    },
+    /** `{ safe, session }` → the state, or null. */
+    messageState({ safe, session }, caller = null) {
+      return safeCall('safe.message_state', { safe, session }, caller, VAULT_META);
+    },
+    /** `{ safe, session }` → `{}`. */
+    messageCancel({ safe, session }, caller = null) {
+      return safeCall('safe.message_cancel', { safe, session }, caller, VAULT_META);
+    },
+    /** `{ safe, session }` → `{ signature }`, the owners' joined. */
+    messageComplete({ safe, session }, caller = null) {
+      return safeCall('safe.message_complete', { safe, session }, caller, VAULT_META);
+    },
+    /**
+     * `{ safe, owner?, safe_tx_hash? }` → the board's state: a proposed
+     * SafeTx signed by `owner`, or by the vault owners' sweep.
+     */
+    signOwner({ safe, owner, safe_tx_hash }, { caller = null, onSent = null, signal = null } = {}) {
+      return safeOwnerCall('safe.sign_owner', given({ safe, owner, safe_tx_hash }), caller, {
+        onSent,
+        signal,
+        requires: SAFE_RECORD_AND_PENDING,
+      });
+    },
+  },
+
   /** Public data only; needs the vault unlocked. */
   addresses({ accounts = [], publishers = [] } = {}) {
     return call('keys.addresses', { accounts, publishers });
@@ -1458,6 +1720,7 @@ module.exports = {
     call,
     ledgerCall,
     deviceCall,
+    ledgerOwner,
     wordsFor,
     reset() {
       locks = 0;

@@ -177,7 +177,7 @@ function coreWith(extra = () => {}) {
         id: message.id,
         result: {
           protocol: 2,
-          core_version: '0.30.0',
+          core_version: '0.32.0',
           capabilities: ['vault.status', 'fragments', 'streams'],
         },
       });

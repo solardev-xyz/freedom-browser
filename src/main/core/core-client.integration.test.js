@@ -118,7 +118,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     expect(hello.protocol).toBe(2);
     expect(hello.capabilities).toContain('vault.status');
     expect(hello.capabilities).toContain('streams');
-    // Design 0017: the pinned core (0.30.0) confines itself and reports what
+    // Design 0017: the pinned core (0.32.0) confines itself and reports what
     // it got.
     expect(hello.confinement).not.toBeNull();
     expect(hello.confinement).toMatchObject({
@@ -151,7 +151,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   });
 
   test('protocol 1 is refused: protocol_mismatch naming 2, then exit 76', async () => {
-    // From 0.11.0 (freedom-core #265), so the pinned 0.30.0 too: only protocol 2.
+    // From 0.11.0 (freedom-core #265), so the pinned 0.32.0 too: only protocol 2.
     // CoreClient can't ask for 1, so this is a raw hello, as main's was.
     const child = spawn(binary, rawServeArgs(root), { stdio: ['pipe', 'pipe', 'ignore'] });
     const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
@@ -205,7 +205,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   // Design 0017, C1: the hello must name serve's --grant-root and
   // --user-data-dir, which CoreClient passes from the hello's own values; a
   // raw hello shows what a main whose two disagree would get. The pinned
-  // core (0.30.0) refuses either one given on one side only, too.
+  // core (0.32.0) refuses either one given on one side only, too.
   test.each([
     ['another grant_root', [], (dir) => ({ grant_root: path.join(dir, 'other') })],
     [
