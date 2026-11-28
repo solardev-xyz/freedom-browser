@@ -61,6 +61,15 @@ function referenceOutcome(reference) {
   return { error: reference.error };
 }
 
+/**
+ * The chrome's handler's answer around a step: `answer`, or `answer_typed`
+ * read back (the generator's `handler { channel, answer | answer_typed }`;
+ * core PR K1's cases give the typed form).
+ */
+function handlerAnswer(handler) {
+  return Object.hasOwn(handler, 'answer_typed') ? readTyped(handler.answer_typed) : handler.answer;
+}
+
 /** The core's answer for step `i`: the case's own where it marks a deviation. */
 function coreAnswer(testCase, i) {
   const answers = testCase.core?.answers;
@@ -83,8 +92,10 @@ describeIfVectors("the Swarm store calls against vectors/swarm.json's shell case
   test('the identities, history and manifest cases are all here', () => {
     const counts = {};
     for (const c of cases) counts[c.method] = (counts[c.method] || 0) + 1;
-    expect(counts).toEqual({ 'swarm.identities': 21, 'swarm.history': 2, 'swarm.manifest': 15 });
-    expect(cases).toHaveLength(38);
+    // cored 0.33.0's (core PR K1): history-add-update and
+    // history-update-blob join the history's two.
+    expect(counts).toEqual({ 'swarm.identities': 21, 'swarm.history': 4, 'swarm.manifest': 15 });
+    expect(cases).toHaveLength(40);
   });
 
   test.each(cases.map((c) => [c.id, c]))('%s', async (_id, testCase) => {
@@ -143,7 +154,7 @@ describeIfVectors("the Swarm store calls against vectors/swarm.json's shell case
           : step.params.op === 'list'
             ? { success: true, entries: outcome.result }
             : { success: true };
-        expect([label, wrapped]).toEqual([label, step.handler.answer]);
+        expect([label, wrapped]).toEqual([label, handlerAnswer(step.handler)]);
       }
     }
   });
