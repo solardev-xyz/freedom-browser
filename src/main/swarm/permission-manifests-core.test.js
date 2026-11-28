@@ -743,14 +743,28 @@ describe("shell.swarm_manifest: main fetches a running check's manifest on its w
         }),
         { status: 200 }
       );
-    // One 64 KiB piece: the answer's backing store is the cap, not the piece.
-    const one = await readAskedBody(stream([new Uint8Array(64 * KIB).fill(0x61)]));
-    expect(one.length).toBe(cap);
-    expect(one.buffer.byteLength).toBe(cap);
-    // Many small pieces past the cap: the same.
-    const many = await readAskedBody(stream(Array.from({ length: 20 }, () => new Uint8Array(KIB).fill(0x62))));
-    expect(many.length).toBe(cap);
-    expect(many.buffer.byteLength).toBe(cap);
+    // No piece is ever copied whole: a Buffer made from more than the cap,
+    // or a concat of pieces, would be memory the pool never charged.
+    const from = jest.spyOn(Buffer, 'from');
+    const concat = jest.spyOn(Buffer, 'concat');
+    const lengthOf = (value) => value?.byteLength ?? value?.length ?? 0;
+    const copiedPast = () => from.mock.calls.filter(([value]) => lengthOf(value) > cap).length;
+    try {
+      // One 64 KiB piece: the answer's backing store is the cap, not the piece.
+      const one = await readAskedBody(stream([new Uint8Array(64 * KIB).fill(0x61)]));
+      expect(one.length).toBe(cap);
+      expect(one.buffer.byteLength).toBe(cap);
+      expect(copiedPast()).toBe(0);
+      // Many small pieces past the cap: the same, and no concat.
+      const many = await readAskedBody(stream(Array.from({ length: 20 }, () => new Uint8Array(KIB).fill(0x62))));
+      expect(many.length).toBe(cap);
+      expect(many.buffer.byteLength).toBe(cap);
+      expect(copiedPast()).toBe(0);
+      expect(concat).not.toHaveBeenCalled();
+    } finally {
+      from.mockRestore();
+      concat.mockRestore();
+    }
     // A short body keeps its own bytes in the cap's storage.
     const short = await readAskedBody(stream([new Uint8Array(100).fill(0x63)]));
     expect(short.toString()).toBe('c'.repeat(100));
