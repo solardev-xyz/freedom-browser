@@ -205,12 +205,14 @@ function enqueue(ownerKey, job) {
  *   owners. `key`: names the job for `joinJob` until it settles.
  * @returns {Promise<string>} the signer's private key, hex
  */
-function mineSigner(targetOverlay, identifier, proximity, { owner, key } = {}) {
+function mineSigner(targetOverlay, identifier, proximity, options = {}) {
+  // Refused before its options are read.
   try {
     assertJsBackend("Main's GSOC miner");
   } catch (err) {
     return Promise.reject(err);
   }
+  const { owner, key } = options;
   const ownerKey = String(owner || '');
   return new Promise((resolve, reject) => {
     const job = {
