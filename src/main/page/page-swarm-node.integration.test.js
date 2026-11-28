@@ -620,6 +620,9 @@ describeIfNode('window.swarm on the core against the bundled antd (SWARM_CORE_NO
     world.close = async () => {
       try {
         world.registry._reset?.();
+        // The JS backend's publish history holds its database open, which
+        // Windows won't let the directory's removal past.
+        require(SRC_PATH('swarm/publish-history.js')).closeDb();
       } finally {
         Object.assign(console, consoleWas);
         world.restoreWebSocket();
