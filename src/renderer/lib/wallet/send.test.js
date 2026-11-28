@@ -743,6 +743,52 @@ describe('send screen sidebar ownership', () => {
   });
 });
 
+// freedom-core design 0016, SAFE-3: on the core's Safe backend, a deployed
+// Safe whose setup the card's check didn't find unchanged (safe-status.js)
+// can't send, as a Safe not yet activated can't.
+describe("Send for a deployed Safe whose setup isn't settled", () => {
+  afterEach(() => {
+    jest.dontMock('./balance-display.js');
+    jest.dontMock('../tabs.js');
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+    jest.useRealTimers();
+  });
+
+  test('blocked, saying why, while unsettled; available again once a check clears it', async () => {
+    const { mod, state, elements } = await loadSendScreen();
+    const utils = await import('./wallet-utils.js');
+    state.walletState.derivedWallets = [{ index: 7, type: 'safe', deployed: { 100: true } }];
+    state.walletState.activeWalletIndex = 7;
+    const button = elements['wallet-send-btn'];
+
+    mod.updateSendAvailability();
+    expect(button.disabled).toBe(false);
+
+    const reason = "This account was changed outside Freedom, so Freedom can't sign for it.";
+    utils.setSafeSetupUnsettled(7, reason);
+    mod.updateSendAvailability();
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(reason);
+    await expect(mod.openSend()).resolves.toEqual({ opened: false, reason });
+    expect(elements['sidebar-send'].classList.contains('hidden')).toBe(true);
+
+    // Another Safe's unsettled setup blocks only that Safe.
+    utils.setSafeSetupUnsettled(7, null);
+    utils.setSafeSetupUnsettled(8, reason);
+    mod.updateSendAvailability();
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe('');
+
+    // A Safe not yet activated says so first, as before.
+    state.walletState.derivedWallets = [{ index: 8, type: 'safe', deployed: {} }];
+    state.walletState.activeWalletIndex = 8;
+    mod.updateSendAvailability();
+    expect(button.title).toBe('Activate this account on Gnosis before sending');
+  });
+});
+
 describe('send again after a failed send (5)', () => {
   afterEach(() => {
     jest.dontMock('./balance-display.js');

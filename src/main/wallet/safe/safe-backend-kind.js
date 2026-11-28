@@ -18,13 +18,24 @@
  * Only with `core` does main send a `safe.*` request, or declare the
  * hello's `safe3` (the plan's section 5); a core Safe whose Ledger runs on
  * `js` (ledger-backend-kind.js) shows its Ledger owners' rows unavailable.
- * Nothing reads the switch yet: SAFE-3's PRs 3 to 9 route by it.
+ * SAFE-3's PRs 3 to 9 route by it.
+ *
+ * **The chrome hears it** through SAFE_CORE_RENDERER_ARG on its command
+ * line (mainWindow.js; preload.js's `wallet.safeCoreBackend`): only on the
+ * core's backend does the Safe card read the setup of a Safe already
+ * marked deployed (`safe.status`), since there a setup changed elsewhere,
+ * or a read unverified, keeps the core from signing for it.
  */
 
 const { app } = require('electron');
 const log = require('../../logger');
 
 const KINDS = new Set(['js', 'core']);
+
+// On the chrome's command line on the core's backend (preload.js; a
+// sandboxed preload can't require this module, so preload.test.js pins
+// the two together).
+const SAFE_CORE_RENDERER_ARG = '--freedom-safe-core';
 
 let warnedBackend = null;
 let chosen = null;
@@ -47,4 +58,4 @@ function safeBackendKind() {
   return chosen;
 }
 
-module.exports = { safeBackendKind, readSafeBackendKind };
+module.exports = { safeBackendKind, readSafeBackendKind, SAFE_CORE_RENDERER_ARG };
