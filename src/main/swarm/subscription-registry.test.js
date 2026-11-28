@@ -302,6 +302,7 @@ describe('subscription-registry: the route test', () => {
   let resolveProxy;
   let refused;
   let nodeUrl;
+  let restarting;
 
   function configure(extra = {}) {
     registry.configure({
@@ -309,7 +310,7 @@ describe('subscription-registry: the route test', () => {
       deliver: jest.fn(),
       maxSubscriptionsPerOrigin: 3,
       establishTimeoutMs: 5000,
-      route: { nodeUrl: () => nodeUrl, resolveProxy, torEndpoint: () => ARTI },
+      route: { nodeUrl: () => nodeUrl, resolveProxy, torEndpoint: () => ARTI, restartingUrl: () => restarting },
       onRefused: (event) => refused.push(event),
       ...extra,
     });
@@ -322,6 +323,7 @@ describe('subscription-registry: the route test', () => {
     resolveProxy = jest.fn(async () => proxy);
     refused = [];
     nodeUrl = REMOTE;
+    restarting = null;
     configure();
   });
 
@@ -564,17 +566,95 @@ describe('subscription-registry: the route test', () => {
       expect(refused).toEqual([]);
     });
 
-    test('while no node is configured (a restart), a reconnect waits and ends nothing; the same node back goes ahead', async () => {
+    test.each([
+      ['a stop of the external node'],
+      ['the node disabled'],
+    ])('no node configured after %s: the socket ends at the recheck and at a reconnect, unreported', async () => {
+      await openOne();
+      await openOne({ key: 'ef'.repeat(32), document: '8:1' });
+      nodeUrl = null;
+      await registry.recheckRoutes();
+      expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+      expect(registry.countByOrigin('a.eth')).toBe(0);
+      await expect(opened[1].handlers.beforeReconnect()).resolves.toBe(false);
+      expect(refused).toEqual([]);
+      // Nor does a new subscription open while there is none.
+      await expect(
+        registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY })
+      ).rejects.toMatchObject({ reason: 'subscription_cancelled' });
+      expect(openSocket).toHaveBeenCalledTimes(2);
+    });
+
+    describe('the node cleared while resolveProxy is held (Codex round 2)', () => {
+      let answer;
+      beforeEach(() => {
+        resolveProxy = jest.fn(() => new Promise((resolve) => (answer = resolve)));
+        configure();
+      });
+
+      test('an open dials nothing', async () => {
+        const promise = registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY });
+        nodeUrl = null;
+        answer('DIRECT');
+        await expect(promise).rejects.toMatchObject({ reason: 'subscription_cancelled' });
+        expect(openSocket).not.toHaveBeenCalled();
+        expect(registry.countByOrigin('a.eth')).toBe(0);
+      });
+
+      test('a reconnect dials nothing, and its socket ends', async () => {
+        const opening = registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY });
+        answer('DIRECT');
+        (await socketAfter(0)).resolveEstablished();
+        await opening;
+        const asked = opened[0].handlers.beforeReconnect();
+        nodeUrl = null;
+        answer('DIRECT');
+        await expect(asked).resolves.toBe(false);
+        expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+        expect(registry.countByOrigin('a.eth')).toBe(0);
+      });
+
+      test('a recheck ends the socket', async () => {
+        const opening = registry.subscribe({ origin: 'a.eth', document: '7:1', kind: 'pss', key: KEY });
+        answer('DIRECT');
+        (await socketAfter(0)).resolveEstablished();
+        await opening;
+        const checking = registry.recheckRoutes();
+        nodeUrl = null;
+        answer('DIRECT');
+        await checking;
+        expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    test("the bundled node's restart (ant-manager's restartingUrl): its socket waits, and goes ahead when it is back at that URL", async () => {
+      nodeUrl = LOOPBACK;
       await openOne();
       nodeUrl = null;
+      restarting = LOOPBACK;
       await registry.recheckRoutes();
       await expect(opened[0].handlers.beforeReconnect()).resolves.toBe('later');
       expect(opened[0].cancel).not.toHaveBeenCalled();
       expect(registry.countByOrigin('a.eth')).toBe(1);
-      nodeUrl = REMOTE;
+      nodeUrl = LOOPBACK;
+      restarting = null;
       await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(true);
-      nodeUrl = OTHER;
+    });
+
+    test.each([
+      ['back at another URL', 'http://127.0.0.1:1733', null],
+      ['not back when the restart is over', null, null],
+      ['a restart of another node', null, 'http://127.0.0.1:1733'],
+    ])("the bundled node's restart, %s: its socket ends", async (_label, back, restartUrl) => {
+      nodeUrl = LOOPBACK;
+      await openOne();
+      nodeUrl = null;
+      restarting = restartUrl ?? LOOPBACK;
+      if (restartUrl === null) await expect(opened[0].handlers.beforeReconnect()).resolves.toBe('later');
+      nodeUrl = back;
+      if (restartUrl === null) restarting = null;
       await expect(opened[0].handlers.beforeReconnect()).resolves.toBe(false);
+      expect(opened[0].cancel).toHaveBeenCalledTimes(1);
     });
   });
 

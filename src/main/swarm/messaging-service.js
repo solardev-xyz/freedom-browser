@@ -370,7 +370,7 @@ function toPayloadBuffer(wsData) {
  * @param {{ onMessage: (payload: Buffer) => void, beforeReconnect?: () => Promise<boolean> }} handlers -
  *   with `beforeReconnect`, each reconnect waits for it, and the socket
  *   dials again only when it resolves true; `'later'` asks again after the
- *   next backoff, dialling nothing (no node is configured now); anything
+ *   next backoff, dialling nothing (the bundled node restarts); anything
  *   else stops it for good (the registry ended its subscriptions: the route
  *   test refused, or the node is no longer the configured one)
  * @returns {{ established: Promise<void>, cancel: () => void }}

@@ -30,12 +30,15 @@ jest.mock('./swarm-permissions', () => ({
   onRevoke: (listener) => mockOnRevoke(listener),
 }));
 
-const mockServices = { url: null, tor: null, listeners: [] };
+const mockServices = { url: null, tor: null, restarting: null, listeners: [] };
 jest.mock('../service-registry', () => ({
   getAntApiUrl: () => mockServices.url,
   getService: (name) => (name === 'tor' ? mockServices.tor : null),
   onServiceChange: (listener) => mockServices.listeners.push(listener),
 }));
+
+// ant-manager's explicit restart of the bundled node.
+jest.mock('../ant-manager', () => ({ restartingUrl: () => mockServices.restarting }));
 
 // The provider's other collaborators, which a subscribe never reaches.
 jest.mock('./publish-setup-service', () => ({ getPublishReadiness: jest.fn() }));
@@ -131,6 +134,7 @@ beforeEach(() => {
   mockResolveProxy.mockImplementation(async () => proxy);
   mockServices.url = REMOTE;
   mockServices.tor = null;
+  mockServices.restarting = null;
   global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({}) }));
 });
 
@@ -295,15 +299,44 @@ describe("the node's URL changes (Codex round 1 on #1375)", () => {
     expect(registry.countByOrigin(ORIGIN)).toBe(0);
   });
 
-  test('a restart (no node, then the same one back): nothing dialled meanwhile, then it reconnects', async () => {
+  test.each([['stopped'], ['disabled']])('an external node %s (its URL cleared): its socket closes for good', async () => {
     const { socket } = await subscribed(page().meta);
     mockServices.url = null;
+    await nodeChanged();
+    expect(socket.closed).toEqual([1000]);
+    expect(registry.countByOrigin(ORIGIN)).toBe(0);
+    socket.drop(1000);
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(WebSocketSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('cleared while the open waits on resolveProxy: nothing is dialled', async () => {
+    let answer;
+    mockResolveProxy.mockResolvedValueOnce('DIRECT').mockImplementationOnce(
+      () => new Promise((resolve) => (answer = resolve))
+    );
+    const pending = subscribe(page().meta);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(typeof answer).toBe('function');
+    mockServices.url = null;
+    answer('DIRECT');
+    const out = await pending;
+    expect(out.error).toMatchObject({ code: 4900, data: { reason: 'subscription_cancelled' } });
+    expect(WebSocketSpy).not.toHaveBeenCalled();
+  });
+
+  test("the bundled node's restart at the same URL: nothing dialled meanwhile, then it reconnects", async () => {
+    mockServices.url = LOOPBACK;
+    const { socket } = await subscribed(page().meta);
+    mockServices.url = null;
+    mockServices.restarting = LOOPBACK;
     await nodeChanged();
     socket.drop();
     await jest.advanceTimersByTimeAsync(10_000);
     expect(WebSocketSpy).toHaveBeenCalledTimes(1);
     expect(registry.countByOrigin(ORIGIN)).toBe(1);
-    mockServices.url = REMOTE;
+    mockServices.url = LOOPBACK;
+    mockServices.restarting = null;
     await nodeChanged();
     await jest.advanceTimersByTimeAsync(30_000);
     expect(WebSocketSpy).toHaveBeenCalledTimes(2);

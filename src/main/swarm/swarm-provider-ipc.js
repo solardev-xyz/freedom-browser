@@ -2463,6 +2463,8 @@ function registerSwarmProviderIpc() {
       nodeUrl: () => getAntApiUrl() || null,
       resolveProxy: (url) => require('electron').session.defaultSession.resolveProxy(url),
       torEndpoint: () => services.getService('tor')?.socks || null,
+      // The bundled node's restart, the one clear its subscriptions wait through.
+      restartingUrl: () => require('../ant-manager').restartingUrl(),
     },
   });
 
