@@ -1300,6 +1300,12 @@ describe('an entry from an older version, and a changed setup (PR 9)', () => {
     // A step the core refused `changed`: the wallet's text, the Safe changed.
     await expect(sign(1)).rejects.toMatchObject({ code: 'SAFE_CHANGED', message: PLAIN_TEXTS.SAFE_CHANGED });
     expect(coreSends.cachedState(5).setupChanged).toEqual([]);
+    // A later refusal replaces what an earlier status named: the owners
+    // restored and only the threshold changed, the board no longer says owners.
+    coreSends.noteSetup(5, { state: 'changed', changed: ['owners'] });
+    expect(coreSends.cachedState(5).setupChanged).toEqual(['owners']);
+    await expect(sign(1)).rejects.toMatchObject({ code: 'SAFE_CHANGED' });
+    expect(coreSends.cachedState(5).setupChanged).toEqual([]);
     expect((await transactions.getAllSafeSendStates())[0].setupChanged).toEqual([]);
     // A step that read the Safe and went on (the core's execution): unchanged again.
     await execute();

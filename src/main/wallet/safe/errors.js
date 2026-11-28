@@ -110,7 +110,8 @@ const PLAIN_TEXTS = Object.freeze({
     "There's no room to save another multi-owner transaction. " +
     'Finish or discard a waiting one, then try again.',
   [CODES.SAFE_SELF_CALL]:
-    "This transaction would change the account's own owners or settings, which Freedom doesn't do.",
+    "Freedom doesn't send a transaction from this account to the account itself, since such a " +
+    'transaction could change its owners or settings. Nothing was signed or sent; choose another recipient.',
   [CODES.SAFE_CHANGED]:
     "This account was changed outside Freedom, so Freedom can't sign or send for it. " +
     'Discard this transaction.',

@@ -318,7 +318,9 @@ function noteSetup(safeIndex, setup) {
  */
 function learned(safeIndex, safeTxHash, err) {
   if (err?.code === SAFE_NOT_PROPOSED && typeof safeTxHash === 'string') unmarked.set(safeIndex, safeTxHash);
-  if (err?.code === SAFE_CHANGED && !setups.has(safeIndex)) setups.set(safeIndex, []);
+  // The core's current refusal names nothing: it replaces whatever an
+  // earlier status named, which may no longer be what changed.
+  if (err?.code === SAFE_CHANGED) setups.set(safeIndex, []);
   const text = plainText(err?.code);
   if (text && err instanceof Error) err.message = text;
   return err;
