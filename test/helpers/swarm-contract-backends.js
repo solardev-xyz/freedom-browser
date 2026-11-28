@@ -804,7 +804,11 @@ async function runCase(backend, kase, env) {
   if (backend === 'js') globalThis.Date = FixedDate;
   let loaded = null;
   const record = { steps: [], window: { from: RealDate.now(), to: null } };
-  world.node.retime = { seconds: Math.floor(kase.clock / 1000), from: Math.floor(record.window.from / 1000) - 2 };
+  world.node.retime = {
+    seconds: Math.floor(kase.clock / 1000),
+    from: Math.floor(record.window.from / 1000) - 2,
+    now: () => RealDate.now(),
+  };
   try {
     loaded = await loadBackend(backend, world, env);
     world.node.onWorld = (changes) => loaded.change(changes);

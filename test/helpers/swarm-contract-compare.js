@@ -178,24 +178,38 @@ function coreWants(requests) {
   return out;
 }
 
+// A SOC signature as the query carries it: 65 bytes, hex.
+const SIG = /^[0-9a-f]{130}$/;
+
+/** The one `sig` member's place in a query, else -1 (none, or more than one). */
+function onlySig(query) {
+  const at = (query || []).flatMap(([name], i) => (name === 'sig' ? [i] : []));
+  return at.length === 1 ? at[0] : -1;
+}
+
 /**
  * A feed update's SOC as the reference's clock would have written it: its
  * payload is the update's time (8 bytes, seconds) and a reference, so the
- * core's clock gives another time and so another signature. Taken as the
- * reference's when only those differ, the time is the run's (`window`), and
- * the node found the signature the owner's (`soc_valid`).
+ * core's clock gives another time and so another signature. When the
+ * bodies differ only in those 8 bytes, the time is the run's (`window`),
+ * both queries have exactly one `sig` in the same place and the core's is
+ * a signature the node found the owner's (`soc_valid`), the core's request
+ * gets the reference's time and signature and nothing else: its query's
+ * other members, headers and status are compared as they came (Codex
+ * round 4 on #1390).
  */
 function retimedSoc(got, want, window) {
-  if (got?.method !== 'POST' || !got.path.startsWith('/soc/') || got.path !== want?.path || !got.soc_valid) return got;
+  if (got?.method !== 'POST' || !got.path.startsWith('/soc/') || got.path !== want?.path || got.soc_valid !== true) return got;
   const a = Buffer.from(got.body?.base64 ?? '', 'base64');
   const b = Buffer.from(want.body?.base64 ?? '', 'base64');
   if (a.length !== b.length || a.length < 16 || !a.subarray(0, 8).equals(b.subarray(0, 8))) return got;
   if (!a.subarray(16).equals(b.subarray(16))) return got;
   const seconds = Number(a.readBigUInt64BE(8));
   if (seconds < Math.floor(window.from / 1000) - 2 || seconds > Math.ceil(window.to / 1000) + 2) return got;
-  const sig = (r) => r.query?.filter(([name]) => name !== 'sig');
-  if (!isDeepStrictEqual(sig(got), sig(want))) return got;
-  return { ...want };
+  const at = onlySig(got.query);
+  if (at === -1 || at !== onlySig(want.query) || !SIG.test(got.query[at][1])) return got;
+  const query = got.query.map((member, i) => (i === at ? want.query[at] : member));
+  return { ...got, query, body: { ...got.body, base64: want.body.base64 } };
 }
 
 // The verified walk's chunk calls the core holds open at once
@@ -365,7 +379,8 @@ function deviationWant(kase) {
  * (index 0, `Main Wallet`, which can't be removed), where the generator's
  * vault listed no account, so the reference showed no owner and the label
  * `Ethereum wallet`. Only those two, only for the main wallet's identity
- * (`mainWallet`: its address in the core's vault).
+ * (`mainWallet`: its address in the core's vault), and only when the
+ * core's label is `Main Wallet` (Codex round 4 on #1390).
  */
 function walletLabels(prompt, want, mainWallet) {
   const ids = prompt?.view?.identities;
@@ -373,6 +388,7 @@ function walletLabels(prompt, want, mainWallet) {
   if (!Array.isArray(ids) || !Array.isArray(wanted)) return prompt;
   const identities = ids.map((identity, i) =>
     identity?.id === 'ethereum-wallet:0' &&
+    identity.label === 'Main Wallet' &&
     wanted[i]?.id === 'ethereum-wallet:0' &&
     wanted[i].label === 'Ethereum wallet' &&
     wanted[i].owner === null &&

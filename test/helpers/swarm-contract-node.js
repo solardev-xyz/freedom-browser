@@ -115,28 +115,42 @@ function batch(over = {}) {
 }
 
 /**
- * A tar the core wrote, with its clock's mtimes as the reference's fixed
- * clock wrote them: each ustar header whose mtime is at or past `from`
- * (seconds, the run's start: only the core's own clock writes one there)
- * gets `seconds`, in the same width, and its checksum again. Anything else
- * is left as it came.
+ * A ustar header's checksum (POSIX ustar): the sum of its bytes with the
+ * checksum field taken as eight spaces.
  */
-function retimeTar(body, { seconds, from }) {
+function headerSum(header) {
+  let total = 0;
+  for (let i = 0; i < 512; i++) total += i >= 148 && i < 156 ? 0x20 : header[i];
+  return total;
+}
+
+/**
+ * A tar the core wrote, with its clock's mtimes as the reference's fixed
+ * clock wrote them: each ustar header whose checksum is right and whose
+ * mtime is within the run so far, at or past `from` (seconds, the run's
+ * start: only the core's own clock writes one there) and at or before
+ * `now()` (milliseconds, when the tar reached the node), gets `seconds`,
+ * in the same width, and its checksum again (Codex round 4 on #1390: only
+ * a valid header the core's clock wrote is retimed). Anything else is left
+ * as it came, so it differs from the reference's.
+ */
+function retimeTar(body, { seconds, from, now }) {
   const out = Buffer.from(body);
+  const to = Math.ceil(now() / 1000);
   for (let at = 0; at + 512 <= out.length; ) {
     const header = out.subarray(at, at + 512);
     if (header.every((byte) => byte === 0)) break;
     const field = header.subarray(136, 148);
     const digits = field.indexOf(0) === -1 ? 11 : field.indexOf(0);
     const mtime = parseInt(field.subarray(0, digits).toString('latin1'), 8);
-    if (Number.isFinite(mtime) && mtime >= from) {
+    const sum = header.subarray(148, 156);
+    const sumDigits = sum.indexOf(0) === -1 ? 6 : sum.indexOf(0);
+    const sumText = sum.subarray(0, sumDigits).toString('latin1');
+    const stored = /^[0-7]+$/.test(sumText) ? parseInt(sumText, 8) : NaN;
+    if (Number.isFinite(mtime) && mtime >= from && mtime <= to && stored === headerSum(header)) {
       field.write(seconds.toString(8).padStart(digits, '0'), 0, digits, 'latin1');
-      const sum = header.subarray(148, 156);
-      const sumDigits = sum.indexOf(0) === -1 ? 6 : sum.indexOf(0);
       sum.fill(0x20);
-      let total = 0;
-      for (const byte of header) total += byte;
-      sum.write(total.toString(8).padStart(sumDigits, '0'), 0, sumDigits, 'latin1');
+      sum.write(headerSum(header).toString(8).padStart(sumDigits, '0'), 0, sumDigits, 'latin1');
       sum[sumDigits] = 0;
       sum[sumDigits + 1] = 0x20;
     }
@@ -350,8 +364,8 @@ class ContractNode {
     this.onWorld = null;
     this.abortPage = null;
     this.alias = null;
-    // `{ seconds, from }`: the case's clock and the run's start, for a tar
-    // the core's clock wrote (`retimeTar`).
+    // `{ seconds, from, now }`: the case's clock, the run's start and the
+    // real clock, for a tar the core's clock wrote (`retimeTar`).
     this.retime = null;
   }
 
