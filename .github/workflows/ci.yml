@@ -1108,19 +1108,22 @@ jobs:
       # gates of the store move, with a hello the test chooses naming
       # `swarm_stores`. The feed store's, the manifest store's and the
       # publish history's suites against the pinned core, each answer and
-      # file equal to the reference's; an fs and better-sqlite3 spy over the
-      # whole run, every path-taking call and the stack it came from, shows
-      # main touches none of the three stores' files (.bak, temporary,
-      # -wal, -shm and the legacy publish-history.json included), and on
-      # Linux holds none open; rollback both ways, in both profile layouts:
+      # file equal to the reference's (the manifest store's .bak too); an fs
+      # and better-sqlite3 spy over the whole run, every path-taking call and
+      # the stack it came from, shows main touches none of the three stores'
+      # files (.bak, temporary, -wal, -shm and the legacy
+      # publish-history.json included), and on Linux holds none open;
+      # rollback both ways, in both profile layouts:
       # one core run makes identities, a page's feed (swarm_createFeed
       # through main's dispatcher, a node on loopback), grants, manifest
       # records and history rows with the legacy file imported, and the next
       # start on js (this build's modules, then the reference's) gives the
       # core's answers; the core gives the answers of what the reference
-      # wrote; no row twice, js→core→js or core→js; history-bound's trim,
-      # store-shapes' repairs and D10's import each asserted as that
-      # difference.
+      # wrote; the whole Swarm grant document compared at each boundary (the
+      # core's grant store, the file, the next start's read); no row twice,
+      # js→core→js or core→js; history-bound's trim, store-shapes' repairs
+      # and D10's import each asserted as that difference, and a restart
+      # recovering again from the manifest .bak a recovery left.
       - name: The Swarm stores' move gates (real freedom-cored, a chosen hello)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/swarm/swarm-stores.integration.test.js
