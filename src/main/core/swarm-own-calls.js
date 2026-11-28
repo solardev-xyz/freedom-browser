@@ -35,7 +35,9 @@
  *   `{ error_typed: { message, code?, status?, capacity? } }`, what the
  *   reference's service threw as its callers read it, thrown here again
  *   as an Error with those members (`isNoUsableBatchError` reads `code`,
- *   the agent `status` and `capacity`). Anything else is the core's
+ *   the agent `status` and `capacity`), `capacity` only as the core writes
+ *   it, exactly `{ uploadBytes, requiredBytes, largestRemainingBytes }`,
+ *   each a finite number at least 0. Anything else is the core's
  *   fault, `CoreError` `internal`: so is a result of `swarm.publish`,
  *   `swarm.stamps` or `swarm.upload_status` that isn't exactly the shape
  *   the core gives (a member missing, one more, or one of another type).
@@ -255,7 +257,8 @@ function malformed(method, why) {
 
 /**
  * What a shell method threw (`{ message, code?, status?, capacity? }`), as
- * an Error with those members; anything else is malformed.
+ * an Error with those members, its `capacity` exactly the core's
+ * (`CAPACITY`); anything else is malformed.
  */
 function thrownError(method, value) {
   if (!isPlainObject(value)) throw malformed(method, 'error_typed is not an object');
@@ -267,7 +270,7 @@ function thrownError(method, value) {
     typeof message !== 'string' ||
     (Object.hasOwn(value, 'code') && typeof code !== 'string') ||
     (Object.hasOwn(value, 'status') && !Number.isSafeInteger(status)) ||
-    (Object.hasOwn(value, 'capacity') && !isPlainObject(capacity)) ||
+    (Object.hasOwn(value, 'capacity') && !shaped(capacity, CAPACITY, {})) ||
     extra.length > 0
   ) {
     throw malformed(method, 'error_typed is not { message, code?, status?, capacity? }');
@@ -275,7 +278,13 @@ function thrownError(method, value) {
   const err = new Error(message);
   if (Object.hasOwn(value, 'code')) err.code = code;
   if (Object.hasOwn(value, 'status')) err.status = status;
-  if (Object.hasOwn(value, 'capacity')) err.capacity = { ...capacity };
+  if (Object.hasOwn(value, 'capacity')) {
+    err.capacity = {
+      uploadBytes: capacity.uploadBytes,
+      requiredBytes: capacity.requiredBytes,
+      largestRemainingBytes: capacity.largestRemainingBytes,
+    };
+  }
   return err;
 }
 
@@ -369,6 +378,22 @@ const TAG = Object.freeze({
 const TAG_REFERENCE = Object.freeze({ reference: isReference });
 
 const isBatch = (value) => shaped(value, BATCH, BATCH_RAW);
+
+/** A byte count `selectBestBatch` gives: a finite number, at least 0. */
+const isByteCount = (value) => isNumber(value) && Number.isFinite(value) && value >= 0;
+
+/**
+ * A thrown `capacity` (fc-swarm-provider `stamps.rs` `Capacity`, written
+ * by `machine/shell.rs` `ShellError::to_value`): `selectBestBatch`'s
+ * refusal under `requireCapacity`, the upload's size, `Math.ceil` of 1.5
+ * times it, and the largest room a usable batch has (a max over finite
+ * values from 0), each an f64.
+ */
+const CAPACITY = Object.freeze({
+  uploadBytes: isByteCount,
+  requiredBytes: isByteCount,
+  largestRemainingBytes: isByteCount,
+});
 
 /**
  * `swarm.stamps`' result read strictly: a list of batches, or, for an

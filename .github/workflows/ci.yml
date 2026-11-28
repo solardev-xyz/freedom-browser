@@ -1433,6 +1433,25 @@ jobs:
         env:
           FREEDOM_CORED_SWARM_TEST: '1'
 
+      # freedom-core design 0015, SWM-8 (the SWM-6 to SWM-9 plan's PR 8.4):
+      # the agent's publication controller and postage readiness with their
+      # own Swarm calls, on FREEDOM_SWARM_BACKEND=js and then =core, against
+      # the pinned core (on js for the vault's feed signatures alone) and a
+      # node on loopback that stores what it is sent. Text, a file, a folder
+      # with its index, a private draft (and one the node didn't encrypt),
+      # a stable address created and moved on, a propagation retry, a
+      # refused upload, a failed retrieval, a batch without room, and the
+      # readiness's reads: each case's receipt, cards, progress, history
+      # rows, uploads and node calls on core equal js's. On core the agent
+      # sends swarm.publish (without history), swarm.feed, swarm.stamps and
+      # swarm.upload_status, reads /batches, /chainstate and /bytes on the
+      # node's transport, and never loads bee-js; the same core throughout.
+      - name: The agent's Swarm work on both backends (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/agent/swarm-agent-backends.integration.test.js
+        env:
+          FREEDOM_CORED_SWARM_TEST: '1'
+
       # freedom-core design 0016, LDG-3's PR 6: main's Ledger relay with the
       # switch on, a scripted device behind it, against the pinned core,
       # whose strict reader of `shell.ledger_apdu`'s replies ends the
