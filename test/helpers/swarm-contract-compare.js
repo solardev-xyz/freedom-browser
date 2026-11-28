@@ -309,6 +309,17 @@ function walletLabels(prompt, want, mainWallet) {
   return { ...prompt, view: { ...prompt.view, identities } };
 }
 
+/**
+ * `(got, want) => got` with each time the core's clock wrote within the
+ * run taken as the case's (`clockFixer`); the identity on `js`, whose
+ * clock is the case's.
+ */
+function timeFixer(backend, kase, record) {
+  if (backend !== 'core') return (got) => got;
+  const clocks = [kase.clock, ...kase.steps.map((step) => step.clock).filter((t) => t !== undefined)];
+  return clockFixer(clocks, record.window);
+}
+
 /** History rows in insertion order: the reference's fixed clock gave them all one time, so its newest-first order is by id. */
 const byId = (rows) => [...rows].sort((a, b) => a.id - b.id);
 
@@ -443,4 +454,4 @@ function summary(backend, seen, outside) {
   return lines.join('\n');
 }
 
-module.exports = { KNOWN_CORE_VECTOR_DIFFERENCES, LEFT_OUT_ON_CORE, compareCase, deviationOn, expectedAnswer, sameAnswer, summary, wire };
+module.exports = { KNOWN_CORE_VECTOR_DIFFERENCES, LEFT_OUT_ON_CORE, compareCase, timeFixer, deviationOn, expectedAnswer, sameAnswer, summary, wire };

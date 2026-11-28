@@ -30,8 +30,17 @@
  * - **Left out on `core`** (`LEFT_OUT_ON_CORE`), each with why, and on
  *   both the cases that call `executeSwarmMethod` with no page.
  *
- * The provider suites' behaviour the vectors lack, and SW-1's cases, are
- * contract cases in the same form (PR 7.6b).
+ * - **The provider suites' behaviour the vectors lack**
+ *   (test/helpers/swarm-contract-cases.js `contractCases`): feed writes to
+ *   one feed at once and to two, every subscription frame delivered, the
+ *   node's subscription limit, GSOC's per-origin topic budget and its cache,
+ *   a feed read on a node that is down, and two blob reads at once past the
+ *   read budget: both backends must pass each with the same answers.
+ * - **SW-1 through the pipe** (`SW1`): the vectors' raw-SOC cases under the
+ *   Bee wallet, a shared index, an index only this site holds, a missing
+ *   index and an Ethereum wallet identity first, each held to its recorded
+ *   answer, and each reaching the backend; on `core` as one `swarm.request`
+ *   the core answered, so the answer is the core's own check's.
  *
  * The vectors are found as the other Swarm vector suites find them
  * (test/helpers/swarm-vectors.js): FREEDOM_CORE_SWARM_VECTORS names
@@ -51,7 +60,9 @@ const {
   LEFT_OUT_ON_CORE,
   compareCase,
   summary,
+  timeFixer,
 } = require('../../../test/helpers/swarm-contract-compare');
+const { SW1, contractCases } = require('../../../test/helpers/swarm-contract-cases');
 
 const vectors = BACKEND ? contractVectors() : null;
 if (BACKEND && process.env.FREEDOM_CORE_SWARM_VECTORS && !vectors) {
@@ -101,6 +112,69 @@ describeIf(`window.swarm's contract on the ${BACKEND} backend: vectors/swarm.jso
     const verdict = compareCase(BACKEND, kase, record);
     seen.played += 1;
     for (const id of verdict.deviations) seen.deviations.set(id, (seen.deviations.get(id) || 0) + 1);
+    expect(verdict.problems).toEqual([]);
+  });
+});
+
+describeIf(`window.swarm's contract on the ${BACKEND} backend: the provider suites' behaviour beyond the vectors`, () => {
+  let extra;
+
+  beforeAll(async () => {
+    extra = await contractCases(vectors.swarm);
+  });
+
+  afterAll(() => {
+    removeCoreTemplate();
+    process.stdout.write(`[swarm contract] ${BACKEND}: ${extra?.length ?? 0} behaviour cases played\n`);
+  });
+
+  test.each([
+    'contract/feed-writes-one-feed-at-once',
+    'contract/feed-writes-two-feeds-at-once',
+    'contract/subscribe-frames-delivered',
+    'contract/subscribe-node-limit',
+    'contract/gsoc-budget-cache-hit-and-other-site',
+    'contract/read-feed-node-unreachable',
+    'contract/read-data-two-at-once-past-the-budget',
+  ])('%s', async (id) => {
+    const kase = extra.find((one) => one.id === id);
+    const record = await runCase(BACKEND, kase, env);
+    const problems = kase.check(record, { fixAt: timeFixer(BACKEND, kase, record) });
+    if (record.exits?.length) problems.push(`the core exited: ${JSON.stringify(record.exits)}`);
+    expect(problems).toEqual([]);
+  });
+
+  test('every behaviour case is played', () => {
+    expect(extra.map((kase) => kase.id).sort()).toEqual(
+      [
+        'contract/feed-writes-one-feed-at-once',
+        'contract/feed-writes-two-feeds-at-once',
+        'contract/subscribe-frames-delivered',
+        'contract/subscribe-node-limit',
+        'contract/gsoc-budget-cache-hit-and-other-site',
+        'contract/read-feed-node-unreachable',
+        'contract/read-data-two-at-once-past-the-budget',
+      ].sort()
+    );
+  });
+});
+
+describeIf(`window.swarm's contract on the ${BACKEND} backend: SW-1 through the pipe`, () => {
+  afterAll(() => removeCoreTemplate());
+
+  test.each(Object.entries(SW1))('%s (%s)', async (id) => {
+    const kase = vectors.swarm.methods.find((one) => one.id === id);
+    const record = await runCase(BACKEND, kase, env);
+    const verdict = compareCase(BACKEND, kase, record);
+    const step = record.steps[0];
+    // It reached the backend: the refusal is the backend's own.
+    expect(step.events.filter((e) => e.service)).toEqual([{ service: 'swarm_writeSingleOwnerChunk' }]);
+    if (BACKEND === 'core') {
+      // One swarm.request, which the core answered.
+      expect(step.sent).toEqual([
+        { method: 'swarm_writeSingleOwnerChunk', answer: 'error' in step ? 'error_typed' : 'result_typed' },
+      ]);
+    }
     expect(verdict.problems).toEqual([]);
   });
 });

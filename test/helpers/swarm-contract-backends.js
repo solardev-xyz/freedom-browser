@@ -206,7 +206,7 @@ function pageContext(world, { method, params, key, id }) {
     },
     liveDocuments: () => [requester],
     sendEvent: async (_target, event, data) => {
-      world.events.push(event === 'message' ? { delivered: true } : { page_event: { event, data } });
+      world.events.push(event === 'message' ? { delivered: data } : { page_event: { event, data } });
       return { ok: true };
     },
     onDocumentEnded: () => () => {},
@@ -520,9 +520,14 @@ async function worldOf(kase, { keys, trees }) {
     unlocked: kase.vault !== 'locked',
     grants: structuredClone(kase.grants ?? connected(kase.origin, kase.clock)),
     events: [],
+    // The core's requests main made, each with the method it carried: the
+    // core's backend only.
+    coreCalls: [],
     ipc: new Map(),
     abortPage: null,
   };
+  // How the node answers a subscription's socket: a refusal it closes with.
+  node.socketClose = kase.websocket_close || null;
   node.abortPage = () => world.abortPage?.();
   return world;
 }
@@ -568,6 +573,7 @@ function loadJs(world, keys) {
   const registry = require(SRC_PATH('swarm/subscription-registry.js'));
   const dispatchers = dispatchersOver(world, {
     execute: async (method, params, key, meta) => {
+      world.events.push({ service: method });
       if (world.atExecute) await change(world.atExecute);
       return provider.executeSwarmMethod(method, params, key, meta);
     },
@@ -629,6 +635,22 @@ async function loadCore(world, keys, binary) {
     swarmStoresNamed: () => true,
   }));
   client = startClient(binary, world.dir, storeMoved);
+  // Each page request main sends the core, and what the core answered.
+  const request = client.request.bind(client);
+  client.request = async (method, params, ...rest) => {
+    if (method !== 'swarm.request') return request(method, params, ...rest);
+    const call = { method: params?.method?.string ?? null };
+    world.coreCalls.push(call);
+    try {
+      const reply = await request(method, params, ...rest);
+      const answer = reply && typeof reply === 'object' && 'result' in reply && 'release' in reply ? reply.result : reply;
+      call.answer = Object.keys(answer || {})[0] ?? null;
+      return reply;
+    } catch (err) {
+      call.failed = err?.code ?? 'error';
+      throw err;
+    }
+  };
   const { attachGrants } = require(SRC_PATH('core/grants.js'));
   attachGrants(client);
   const { registerSwarmShell } = require(SRC_PATH('core/swarm-shell.js'));
@@ -692,6 +714,7 @@ async function loadCore(world, keys, binary) {
     // Main's grant mirror, which a case may find not loaded.
     grantsLoaded: async () => world.grantsLoaded !== false && (await permissions.whenLoaded()),
     execute: async (method, params, key2, meta, request) => {
+      world.events.push({ service: method });
       if (world.atExecute) await change(world.atExecute);
       return core.execute(method, params, key2, meta, request);
     },
@@ -761,6 +784,9 @@ function recordedIds(out, ids) {
   return walk(out);
 }
 
+/** How many messages the document has been sent. */
+const countDelivered = (world) => world.events.filter((e) => e.delivered).length;
+
 /** Whether a step is a page's request through main's dispatcher. */
 const viaDispatcher = (step) => typeof step.method === 'string' && step.page !== false;
 
@@ -789,31 +815,41 @@ async function runCase(backend, kase, env) {
     loaded = await loadBackend(backend, world, env);
     world.node.onWorld = (changes) => loaded.change(changes);
     const ids = new Map();
-    for (const [k, step] of kase.steps.entries()) {
-      if (!viaDispatcher(step)) {
-        record.steps.push({ skipped: 'not a page request through the dispatcher' });
-        continue;
-      }
-      let params = heldOf(step.params, step.parts || []);
+    // One request through the dispatcher, as page-requests.js makes it.
+    const dispatchOne = async (step, k) => {
+      let params = step.plain !== undefined ? step.plain : heldOf(step.params, step.parts || []);
       if (params && typeof params === 'object' && typeof params.subscriptionId === 'string' && ids.has(params.subscriptionId)) {
         params = { ...params, subscriptionId: ids.get(params.subscriptionId) };
       }
-      if (step.clock !== undefined) world.clock.now = step.clock;
-      const before = world.node.requests.length;
-      const eventsBefore = world.events.length;
       const dispatch = loaded.dispatchers[`swarm:${step.method}`];
-      let value;
-      if (!dispatch) {
-        value = { error: { code: -32601, message: 'no dispatcher' } };
-      } else {
-        const key = kase.keyless ? null : (step.origin ?? kase.origin);
-        const { context, after } = pageContext(world, { method: step.method, params, key, id: k + 1 });
-        value = await dispatch(context);
-        if (after()) await after()();
-      }
+      if (!dispatch) return { error: { code: -32601, message: 'no dispatcher' } };
+      const key = kase.keyless ? null : (step.origin ?? kase.origin);
+      const { context, after } = pageContext(world, { method: step.method, params, key, id: k + 1 });
+      const value = await dispatch(context);
+      if (after()) await after()();
       const recorded = step.result?.subscriptionId;
       if (recorded && typeof value?.result?.subscriptionId === 'string') ids.set(recorded, value.result.subscriptionId);
-      const out = recordedIds(outcomeOf(value, world.node), ids);
+      return value;
+    };
+    for (const [k, step] of kase.steps.entries()) {
+      const before = world.node.requests.length;
+      const eventsBefore = world.events.length;
+      const sentBefore = world.coreCalls.length;
+      let out;
+      if (step.concurrent) {
+        // Requests the page makes at once: each answer, in the step's order.
+        const values = await Promise.all(step.concurrent.map((one) => dispatchOne(one, k)));
+        out = { answers: values.map((value) => recordedIds(outcomeOf(value, world.node), ids)) };
+      } else if (step.socket) {
+        // The node sends a frame on every open subscription socket.
+        out = { delivered: await world.node.sendOnSockets(step.socket.message, () => countDelivered(world)) };
+      } else if (!viaDispatcher(step)) {
+        record.steps.push({ skipped: 'not a page request through the dispatcher' });
+        continue;
+      } else {
+        if (step.clock !== undefined) world.clock.now = step.clock;
+        out = recordedIds(outcomeOf(await dispatchOne(step, k), world.node), ids);
+      }
       record.steps.push({
         ...out,
         requests: world.node.requests.slice(before).map((r) => requestRecord(r, world.node)),
@@ -821,7 +857,8 @@ async function runCase(backend, kase, env) {
           .slice(eventsBefore)
           .filter((e) => e.prompt)
           .map((e) => e.prompt),
-        events: world.events.slice(eventsBefore),
+        events: world.events.slice(eventsBefore).map((e) => recordedIds(e, ids)),
+        sent: world.coreCalls.slice(sentBefore),
       });
     }
     record.window.to = RealDate.now();

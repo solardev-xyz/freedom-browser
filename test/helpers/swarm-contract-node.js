@@ -303,6 +303,8 @@ class ContractNode {
     this.frames = new Map();
     this.seq = 0;
     this.websockets = [];
+    this.sockets = [];
+    this.socketClose = null;
     this.bzzTag = 101;
     this.onWorld = null;
     this.abortPage = null;
@@ -367,10 +369,17 @@ class ContractNode {
         this.url = url;
         this.readyState = 0;
         node.websockets.push(node.normalize(String(url)));
+        node.sockets.push(this);
         setImmediate(() => {
           if (this.readyState !== 0) return;
           this.readyState = 1;
           this.onopen?.({});
+          // A node that refuses the subscription closes at once, before
+          // the subscriber's grace (Ant's 1013 when its pool is full).
+          if (node.socketClose) {
+            this.readyState = 3;
+            this.onclose?.({ code: node.socketClose.code, reason: node.socketClose.reason });
+          }
         });
       }
 
@@ -389,6 +398,26 @@ class ContractNode {
       http.request = realRequest;
       globalThis.WebSocket = realWebSocket;
     };
+  }
+
+  /**
+   * The node sends `base64`'s bytes as one frame on every open subscription
+   * socket, then waits (at most 5 s) until `delivered()`, the document's
+   * count of messages, has grown by one per socket. Resolves the sockets
+   * it sent on.
+   */
+  async sendOnSockets(base64, delivered) {
+    const open = this.sockets.filter((socket) => socket.readyState === 1);
+    const before = delivered();
+    const bytes = Buffer.from(base64, 'base64');
+    for (const socket of open) {
+      socket.onmessage?.({ data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) });
+    }
+    // Counted in turns, not by Date: the JS backend's runs freeze it.
+    for (let turn = 0; turn < 1000 && delivered() < before + open.length; turn++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    return open.length;
   }
 
   /** A chunked reply's body as the caller reads it: one frame per scripted piece (swarm-node.js `reframe`). */
