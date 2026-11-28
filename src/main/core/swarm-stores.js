@@ -49,15 +49,26 @@
  *   chrome's three IPC handlers' `get`, `use-individual` and `disconnect`,
  *   which main proxies as `shell`.
  *
- * Each goes under its method's hang watchdog (core-deadlines.js: all three
- * are answered at once). `createSwarmStores({ request })` makes the calls
+ * **The watchdog** (design 0001's hang watchdog, main's only: the methods
+ * stay deadline-less, D5). An op that takes no place in the swarm thread's
+ * gate is answered at once, under its method's immediate watchdog
+ * (core-deadlines.js). The ops that do (design 0015, Budgets: the identity
+ * ops that read owners, and `manifest`'s `check`; fc-swarm-provider's
+ * `Call::gated`) may wait as D13 lets them, each wait 60 s at most before
+ * the core answers `busy` (freedom-cored's `engine/store_ops.rs`): for a
+ * place and its base, together, and, for `check`, for its fetch's charge
+ * and then the fetch itself (`shell.swarm_manifest`, 60 s in all). Their
+ * watchdog is those waits, in turn, plus the margin (`storeWatchdogMs`): a
+ * healthy core that answers after its waits is never taken for hung.
+ *
+ * `createSwarmStores({ request })` makes the calls
  * over another sender (a test's simulated core,
  * test/helpers/simulated-swarm-stores-core.js); the module's own
  * `identities`, `history` and `manifest` send to the running core.
  */
 
 const { CoreError, requiresStore, SWARM_STORES } = require('./core-client');
-const { watchdogMs } = require('./core-deadlines');
+const { WATCHDOG_MARGIN_MS, watchdogMs } = require('./core-deadlines');
 const { readPlain, writeTyped, TypedFormError } = require('./swarm-typed');
 
 const IDENTITIES = 'swarm.identities';
@@ -67,12 +78,25 @@ const MANIFEST = 'swarm.manifest';
 const BOTH = Object.freeze(['chrome', 'shell']);
 const SHELL = Object.freeze(['shell']);
 
-function op(members, callers) {
-  return Object.freeze({ members: Object.freeze(members), callers });
+/**
+ * D13's bound on each wait of a store op with no total deadline: a place in
+ * the swarm thread's gate and its base, together; a fetch's charge; and
+ * `shell.swarm_manifest` in all. Past it the core answers `busy` (the fetch:
+ * failed).
+ */
+const STORE_WAIT_MS = 60_000;
+
+// The D13 waits a gated op can make, in turn.
+const OWNERS = Object.freeze(['place']);
+const CHECK = Object.freeze(['place', 'charge', 'fetch']);
+
+function op(members, callers, waits = []) {
+  return Object.freeze({ members: Object.freeze(members), callers, waits });
 }
 
 /**
- * Each method's ops: their members (the core's names) and their callers.
+ * Each method's ops: their members (the core's names), their callers, and
+ * the D13 waits of those that take a place in the swarm thread's gate.
  * Members a site's key (`origin`, `key`), a token, a URL or an outcome are
  * strings to the core, and `eager` and `live` booleans; every other member
  * is the JavaScript value the reference reads.
@@ -83,15 +107,15 @@ const OPS = Object.freeze({
     'get-all-origins': op([], BOTH),
     'has-feed-identity': op(['origin'], BOTH),
     'get-identity-mode': op(['origin'], BOTH),
-    'get-origin-identities': op(['origin'], BOTH),
-    'create-app-scoped-identity': op(['origin', 'options'], BOTH),
-    'ensure-ant-wallet-identity': op(['origin', 'options'], BOTH),
-    'activate-feed-identity': op(['origin', 'identity_id'], BOTH),
+    'get-origin-identities': op(['origin'], BOTH, OWNERS),
+    'create-app-scoped-identity': op(['origin', 'options'], BOTH, OWNERS),
+    'ensure-ant-wallet-identity': op(['origin', 'options'], BOTH, OWNERS),
+    'activate-feed-identity': op(['origin', 'identity_id'], BOTH, OWNERS),
     'set-feed-identity': op([], BOTH),
     'revoke-feed-access': op(['origin'], BOTH),
     // Main's own (D7, D8).
-    getOriginIdentityStateWithOwners: op(['key'], SHELL),
-    previewAppScopedIdentity: op(['key', 'options'], SHELL),
+    getOriginIdentityStateWithOwners: op(['key'], SHELL, OWNERS),
+    previewAppScopedIdentity: op(['key', 'options'], SHELL, OWNERS),
     createAppScopedIdentityAt: op(['key', 'index', 'options'], SHELL),
     ensureAntWalletIdentity: op(['key', 'options'], SHELL),
     activateIdentity: op(['key', 'identity_id'], SHELL),
@@ -109,7 +133,7 @@ const OPS = Object.freeze({
     update: op(['id', 'updates'], SHELL),
   }),
   [MANIFEST]: Object.freeze({
-    check: op(['key', 'url', 'eager'], SHELL),
+    check: op(['key', 'url', 'eager'], SHELL, CHECK),
     decide: op(['key', 'token', 'outcome', 'live'], SHELL),
     release: op(['token'], SHELL),
     get: op(['origin'], SHELL),
@@ -156,6 +180,25 @@ function storeParams(method, name, members = {}, caller = 'shell') {
     if (members[key] !== undefined) params[key] = writeTyped(members[key]);
   }
   return params;
+}
+
+/**
+ * The hang watchdog of `method`'s `op`, in ms: the method's immediate one
+ * for an op that takes no place in the gate, else each of its D13 waits
+ * (`STORE_WAIT_MS`) in turn plus the margin: 75 s for an identity op that
+ * reads owners, 195 s for `check`. Throws a TypeError for an op `OPS`
+ * doesn't list.
+ *
+ * @param {string} method
+ * @param {string} name - the op
+ * @returns {number}
+ */
+function storeWatchdogMs(method, name) {
+  const ops = Object.hasOwn(OPS, method) ? OPS[method] : null;
+  const spec = ops && typeof name === 'string' && Object.hasOwn(ops, name) ? ops[name] : null;
+  if (!spec) throw new TypeError(`${method} has no op ${name}`);
+  if (spec.waits.length === 0) return watchdogMs(method);
+  return spec.waits.length * STORE_WAIT_MS + WATCHDOG_MARGIN_MS;
 }
 
 /** A malformed answer: the core's fault. */
@@ -242,7 +285,7 @@ function createSwarmStores({ request = coreRequest } = {}) {
         method,
         params,
         { caller },
-        { watchdogMs: watchdogMs(method), requires: REQUIRES, signal }
+        { watchdogMs: storeWatchdogMs(method, name), requires: REQUIRES, signal }
       );
       return readStoreAnswer(method, answer);
     };
@@ -260,10 +303,12 @@ module.exports = {
   HISTORY,
   MANIFEST,
   OPS,
+  STORE_WAIT_MS,
   identities: stores.identities,
   history: stores.history,
   manifest: stores.manifest,
   createSwarmStores,
   storeParams,
+  storeWatchdogMs,
   readStoreAnswer,
 };

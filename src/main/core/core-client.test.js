@@ -921,6 +921,69 @@ describe('CoreClient', () => {
     expect(children).toHaveLength(2);
   });
 
+  // freedom-core design 0015, D13: a Swarm store op that takes a place in
+  // the swarm thread's gate may wait 60 s for it and its base before the
+  // core runs it (`check` may wait for its fetch's charge, then its fetch,
+  // too); the methods stay deadline-less (D5), so only main's watchdog
+  // allows it.
+  test("a gated Swarm store op is kept past the immediate bound, and its core killed only past D13's waits", async () => {
+    const { createSwarmStores, storeWatchdogMs } = require('./swarm-stores');
+    const chosen = storeMovedFor('core', { swarmStores: true });
+    const held = [];
+    const handler = (message, core) => {
+      if (message.method === 'core.hello') {
+        const result = helloResult({ store_moved: [...chosen] });
+        core.reply({ type: 'response', id: message.id, result });
+      } else if (message.method.startsWith('swarm.')) {
+        held.push(message);
+      }
+    };
+    const { client, children, runTimers, timers } = makeClient([handler, handler]);
+    client.service = coreInternal.coreService(chosen);
+    await client.start();
+    const stores = createSwarmStores({ request: (...args) => client.request(...args) });
+    const OWNERS = storeWatchdogMs('swarm.identities', 'getOriginIdentityStateWithOwners');
+    const CHECK = storeWatchdogMs('swarm.manifest', 'check');
+    expect([OWNERS, CHECK]).toEqual([75_000, 195_000]);
+    const armed = (ms) => timers.filter((t) => t.ms === ms && !t.cleared).length;
+
+    // Waiting for a place, answered after 20 s: the immediate bound passes
+    // and nothing is killed.
+    const waited = stores.identities('getOriginIdentityStateWithOwners', { key: 'k' });
+    await tick();
+    expect(armed(OWNERS)).toBe(1);
+    expect(armed(15_000)).toBe(0);
+    runTimers(15_000);
+    expect(children[0].killed).toBeNull();
+    children[0].reply({
+      type: 'response',
+      id: held[0].id,
+      result: { result_typed: { null: true } },
+    });
+    await expect(waited).resolves.toBeNull();
+    expect(armed(OWNERS)).toBe(0);
+
+    // A check goes with its three waits' bound.
+    const check = stores.manifest('check', { key: 'k', url: 'bzz://a/' }).catch((e) => e);
+    await tick();
+    expect(armed(CHECK)).toBe(1);
+
+    // Silent past its waits and the margin: hung, killed and restarted.
+    const hung = stores
+      .identities('get-origin-identities', { origin: 'k' }, { caller: 'chrome' })
+      .catch((e) => e);
+    await tick();
+    runTimers(15_000);
+    expect(children[0].killed).toBeNull();
+    runTimers(OWNERS);
+    expect(children[0].killed).toBe('SIGKILL');
+    expect((await hung).code).toBe('core_unavailable');
+    expect((await check).code).toBe('core_unavailable');
+    runTimers(RESTART_DELAYS_MS[0]);
+    await client.whenReady();
+    expect(children).toHaveLength(2);
+  });
+
   test('a held watchdog counts only the time outside its holds (0012 Steps, APB-4a)', async () => {
     const WATCHDOG = 135_000;
     let clock = 0;

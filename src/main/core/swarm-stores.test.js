@@ -37,11 +37,11 @@ jest.mock('../identity-manager', () => ({
 }));
 
 const { CoreError, SWARM_STORES } = require('./core-client');
-const { watchdogMs } = require('./core-deadlines');
+const { WATCHDOG_MARGIN_MS, watchdogMs } = require('./core-deadlines');
 const swarmStores = require('./swarm-stores');
 const { readTyped, TypedFormError } = require('./swarm-typed');
 
-const { createSwarmStores, storeParams, readStoreAnswer, OPS } = swarmStores;
+const { createSwarmStores, storeParams, storeWatchdogMs, readStoreAnswer, OPS } = swarmStores;
 
 /** A recording sender answering `answer` (a function of the request, or a value). */
 function recorder(answer = { result_typed: { undefined: true } }) {
@@ -199,12 +199,46 @@ describe('the ops, as the core defines them', () => {
 });
 
 describe('sending', () => {
-  test("each call goes with its caller, requires swarm_stores and its method's watchdog", async () => {
+  // Design 0015, D13 and Budgets: the ops that take a place in the swarm
+  // thread's gate may wait 60 s for it and its base (and `check` 60 s for
+  // its fetch's charge, then 60 s for the fetch); the rest are answered at
+  // once. The methods stay deadline-less (D5): only main's watchdog moves.
+  test('each op has its watchdog: D13 waits in turn plus the margin where it takes a place, else immediate', () => {
+    expect(swarmStores.STORE_WAIT_MS).toBe(60_000);
+    const gated = {};
+    for (const [method, ops] of Object.entries(OPS)) {
+      for (const name of Object.keys(ops)) {
+        const ms = storeWatchdogMs(method, name);
+        if (ms === watchdogMs(method)) continue;
+        gated[`${method} ${name}`] = ms;
+      }
+      expect(watchdogMs(method)).toBe(WATCHDOG_MARGIN_MS);
+    }
+    expect(gated).toEqual({
+      'swarm.identities get-origin-identities': 75_000,
+      'swarm.identities create-app-scoped-identity': 75_000,
+      'swarm.identities ensure-ant-wallet-identity': 75_000,
+      'swarm.identities activate-feed-identity': 75_000,
+      'swarm.identities getOriginIdentityStateWithOwners': 75_000,
+      'swarm.identities previewAppScopedIdentity': 75_000,
+      'swarm.manifest check': 195_000,
+    });
+    expect(() => storeWatchdogMs('swarm.history', 'drop')).toThrow(TypeError);
+    expect(() => storeWatchdogMs('swarm.feed', 'list')).toThrow(TypeError);
+  });
+
+  test("each call goes with its caller, requires swarm_stores and its op's watchdog", async () => {
     const { sent, stores } = recorder({ result_typed: { array: [] } });
     const controller = new AbortController();
     await stores.identities('get-all-origins', {}, { caller: 'chrome' });
     await stores.history('list', {}, { signal: controller.signal });
     await stores.manifest('release', { token: 't' });
+    await stores.identities('getOriginIdentityStateWithOwners', { key: 'k' });
+    await stores.manifest('check', { key: 'k', url: 'bzz://a/' });
+    expect(sent.map(({ options }) => options.watchdogMs)).toEqual([
+      15_000, 15_000, 15_000, 75_000, 195_000,
+    ]);
+    sent.splice(3);
     expect(sent.map(({ method, context }) => [method, context])).toEqual([
       ['swarm.identities', { caller: 'chrome' }],
       ['swarm.history', { caller: 'shell' }],
@@ -232,7 +266,7 @@ describe('sending', () => {
       'swarm.history',
       { op: 'clear' },
       { caller: 'chrome' },
-      expect.objectContaining({ watchdogMs: watchdogMs('swarm.history') })
+      expect.objectContaining({ watchdogMs: storeWatchdogMs('swarm.history', 'clear') })
     );
   });
 

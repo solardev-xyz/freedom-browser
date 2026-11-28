@@ -7,7 +7,7 @@
  * - **encode:** the step's members, read back as JavaScript held them
  *   (`readTyped`), passed to the call for the step's caller, give the
  *   step's params exactly, in the wire form (`{ op, ...typed members }`),
- *   sent as `{ caller }` with `requires: swarm_stores` and the method's
+ *   sent as `{ caller }` with `requires: swarm_stores` and its op's
  *   watchdog;
  * - **decode:** the core's answer (the step's, or the case's `core.answers`
  *   where it marks a deviation) comes back as JavaScript holds it: a
@@ -23,8 +23,7 @@
 
 const { swarmVectors, swarmVectorsRequired } = require('../../../test/helpers/swarm-vectors');
 const { SWARM_STORES } = require('./core-client');
-const { watchdogMs } = require('./core-deadlines');
-const { createSwarmStores } = require('./swarm-stores');
+const { createSwarmStores, storeWatchdogMs } = require('./swarm-stores');
 const { readTyped } = require('./swarm-typed');
 
 const swarm = swarmVectors('swarm.json');
@@ -115,7 +114,7 @@ describeIfVectors("the Swarm store calls against vectors/swarm.json's shell case
       expect([label, request.params]).toEqual([label, step.params]);
       expect(Object.keys(request.params)[0]).toBe('op');
       expect([label, request.context]).toEqual([label, { caller: step.caller }]);
-      expect(request.options.watchdogMs).toBe(watchdogMs(testCase.method));
+      expect(request.options.watchdogMs).toBe(storeWatchdogMs(testCase.method, step.params.op));
       expect(request.options.requires({ store_moved: [SWARM_STORES] })).toBe(true);
       expect(request.options.requires({ store_moved: ['vault_meta'] })).toBe(false);
 
