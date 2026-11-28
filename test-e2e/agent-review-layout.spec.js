@@ -129,13 +129,19 @@ test('a short narrow window keeps the bottom sheet inside the page area, below F
       await window.locator('#agent-run').scrollIntoViewIfNeeded();
       await expect.poll(() => hit(window, '#agent-run')).toBe(true);
       await expect.poll(() => hit(window, '#agent-sidebar-close')).toBe(true);
-      // The sheet settles after the resize and the shelf: read its place once
-      // it has (a single read right after could catch it mid-move, ~11.5px).
-      await expect.poll(async () => {
-        const { panel, status } = await geometry();
-        return panel.top - status.bottom;
-      }).toBeGreaterThanOrEqual(12);
-      const { body, panel, find, status } = await geometry();
+      // The sheet settles after the resize and the shelf, whose heights reach
+      // it through ResizeObservers: measure once two reads two frames apart
+      // agree, not at the first read that happens to pass (a single read
+      // right after could catch it mid-move, ~11.5px on CI).
+      const settled = async () => {
+        const before = await geometry();
+        await window.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const after = await geometry();
+        return JSON.stringify(before) === JSON.stringify(after) ? after : null;
+      };
+      let steady = null;
+      await expect.poll(async () => (steady = await settled()) !== null).toBe(true);
+      const { body, panel, find, status } = steady;
       expect(panel.top).toBeGreaterThanOrEqual(body.top);
       expect(panel.top).toBeGreaterThanOrEqual(find.bottom);
       // Same 14px gap above the sheet with or without the download shelf.
