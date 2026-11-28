@@ -34,6 +34,8 @@ export async function confirmSigning(kind, accountIndex, payload, options) {
     const error = new Error(result?.error || 'Could not confirm this request');
     if (result?.code) error.code = result.code;
     if (result?.feeCheck) error.feeCheck = result.feeCheck;
+    // A Safe send main prepared for this screen to confirm (SAFE_TX_PREPARED).
+    if (result?.prepared) error.prepared = result.prepared;
     throw error;
   }
   return { confirmation: result.token };

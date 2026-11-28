@@ -167,10 +167,12 @@ const FEE_CHECKED_KINDS = new Set([
 /**
  * `wallet:confirm-signing` for the wallet's own Safe send on the core's Safe
  * backend (freedom-core design 0016, SAFE-3; safe/core-sends.js): the
- * SafeTx prepared by the core, approved in the approvals document (or on
- * the chrome's word with it off), then its token minted. A refusal keeps
- * its code: the core's (SAFE_*, VAULT_LOCKED's `vault_locked`), the
- * document's, or SIGNING_NOT_CONFIRMED.
+ * SafeTx prepared by the core, approved in the approvals document, then its
+ * token minted. With the document off, the chrome confirms that SafeTx's
+ * nonce first: the answer is SAFE_TX_PREPARED with `prepared` (`{ id,
+ * nonce }`), and the token comes for the request again with `prepared:
+ * id`. A refusal keeps its code: the core's (SAFE_*, VAULT_LOCKED's
+ * `vault_locked`), the document's, or SIGNING_NOT_CONFIRMED.
  */
 async function confirmCoreSafeSend(sender, safeIndex, payload) {
   try {
@@ -181,12 +183,29 @@ async function confirmCoreSafeSend(sender, safeIndex, payload) {
       request: payload,
       approvals: require('../approvals/wallet-approvals').getWalletApprovals(),
     });
-    if (!outcome.approved) return { success: false, error: outcome.error, code: outcome.code };
+    if (!outcome.approved) {
+      return {
+        success: false,
+        error: outcome.error,
+        code: outcome.code,
+        ...(outcome.prepared ? { prepared: outcome.prepared } : {}),
+      };
+    }
     return { success: true, token: outcome.token, expiresAt: outcome.expiresAt };
   } catch (err) {
     const code = isVaultLockedError(err) ? 'VAULT_LOCKED' : err?.code;
     return { success: false, error: err.message, ...(typeof code === 'string' ? { code } : {}) };
   }
+}
+
+/**
+ * The SafeTx a step of the chrome's Safe board names, the one it shows, on
+ * the core's Safe backend: required, or the step is refused unsent
+ * (SAFE_DISCARDED), as for one that was replaced.
+ */
+function shownSafeTx(safeTxHash) {
+  if (typeof safeTxHash === 'string' && /^0x[0-9a-fA-F]{64}$/.test(safeTxHash)) return safeTxHash;
+  throw Object.assign(new Error('This transaction was discarded or replaced'), { code: 'SAFE_DISCARDED' });
 }
 
 /** Whether `walletIndex` is a phone account, which signs and pays itself. */
@@ -757,20 +776,29 @@ function registerWalletIpc() {
     })
   );
 
+  // On the core's Safe backend (freedom-core design 0016, SAFE-3) each step of
+  // the chrome's board names the SafeTx it shows (`safeTxHash`, from its
+  // state), its sweep included: required, so that a step never acts on one
+  // that replaced it (the core refuses another, SAFE_DISCARDED). On js, as
+  // before.
+  //
   // `authorization`: with no Safe approval held for the pending SafeTx
   // (SAFE_APPROVAL_NEEDED: main restarted since it was confirmed, or the
   // approval ended), the board confirms it again, a wallet 'safe-send'
   // token for the SafeTx's call (design 0012), spent here for a new one.
   handle(
     'wallet:safe-sign',
-    safeStateHandler(async (safeIndex, ownerIndex, authorization) => {
+    safeStateHandler(async (safeIndex, ownerIndex, authorization, shownHash) => {
       const { signSafePending, getSafeSendState, pendingCall } = require('./safe/safe-transactions');
-      if (!authorization?.confirmation) return signSafePending(safeIndex, ownerIndex);
-      // On the core no owner is confirmed again: its proposal authorized them.
       if (safeBackendKind() === 'core') {
-        discardConfirmation(authorization.confirmation);
-        throw notAuthorized('this transaction needs no new confirmation');
+        // No owner is confirmed again: its proposal authorized them.
+        if (authorization?.confirmation) {
+          discardConfirmation(authorization.confirmation);
+          throw notAuthorized('this transaction needs no new confirmation');
+        }
+        return signSafePending(safeIndex, ownerIndex ?? undefined, { safeTxHash: shownSafeTx(shownHash) });
       }
+      if (!authorization?.confirmation) return signSafePending(safeIndex, ownerIndex);
       const safeTxHash = getSafeSendState(safeIndex)?.safeTxHash ?? null;
       const call = safeTxHash ? pendingCall(safeIndex, safeTxHash) : null;
       if (!call) {
@@ -787,6 +815,12 @@ function registerWalletIpc() {
     'wallet:safe-execute',
     safeStateHandler((safeIndex, options) => {
       const { executeSafePending } = require('./safe/safe-transactions');
+      if (safeBackendKind() === 'core') {
+        return executeSafePending(safeIndex, {
+          feeConfirmation: options?.feeConfirmation,
+          safeTxHash: shownSafeTx(options?.safeTxHash),
+        });
+      }
       return executeSafePending(safeIndex, { feeConfirmation: options?.feeConfirmation });
     })
   );
@@ -801,8 +835,12 @@ function registerWalletIpc() {
 
   handle(
     'wallet:safe-cancel-pending',
-    safeStateHandler(async (safeIndex) => {
+    safeStateHandler(async (safeIndex, safeTxHash) => {
       const { cancelSafeSend } = require('./safe/safe-transactions');
+      if (safeBackendKind() === 'core') {
+        await cancelSafeSend(safeIndex, { safeTxHash: shownSafeTx(safeTxHash) });
+        return;
+      }
       await cancelSafeSend(safeIndex);
     })
   );

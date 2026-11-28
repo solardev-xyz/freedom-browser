@@ -9,8 +9,9 @@
  *   Safe's eight verified reads and the SafeTx at its nonce. The approval
  *   then shows the SafeTx its token will bind: the approvals document's
  *   `wallet.safe_send` with main's view of the core's SafeTx
- *   (wallet-approvals.js), or, with the document off, the chrome's own
- *   confirmation. On the approval main mints design 0016's `safe-send`
+ *   (wallet-approvals.js), or, with the document off, a second confirmation
+ *   of the chrome's showing that SafeTx's nonce (SAFE_TX_PREPARED, below).
+ *   On the approval main mints design 0016's `safe-send`
  *   (D6) under `shell`, `{ safe, chain_id, safe_tx, safe_tx_hash }`
  *   (signing-confirmation.js), and keeps the SafeTx it minted each token
  *   for (`prepared`), never the chrome's copy. Nothing mints the legacy
@@ -32,6 +33,9 @@
  *   records): no device is asked for a Safe owner before then. A phone
  *   owner is the core's own refusal.
  * - **A discard** is `safe.discard`, naming the SafeTx the board showed.
+ *   Every board step names that SafeTx, its sweep included: one that names
+ *   none is refused here, unsent, so a step never acts on a SafeTx that
+ *   replaced the one shown (the core refuses another, SAFE_DISCARDED).
  * - **The execution** (`safe.execute`, the executor's signature, the
  *   journal and the broadcast, then `safe.executed`) is SAFE-3's PR 4b:
  *   refused here, nothing sent.
@@ -45,7 +49,8 @@
  * PR 6 hooks the approval records in at `approvalRecords`, below.
  */
 
-const { codedError, SAFE_BUSY, SAFE_UNSUPPORTED } = require('./errors');
+const crypto = require('crypto');
+const { codedError, SAFE_BUSY, SAFE_DISCARDED, SAFE_UNSUPPORTED } = require('./errors');
 const safeApprovals = require('./safe-approvals');
 
 // The SafeTxs main minted a wallet `safe-send` for, by token: { safeIndex,
@@ -53,6 +58,15 @@ const safeApprovals = require('./safe-approvals');
 // core bounds its outstanding tokens; one main no longer holds is refused.
 const MAX_PREPARED = 32;
 const prepared = new Map();
+
+// The SafeTxs prepared for the chrome's own confirmation (the approvals
+// document off), by the id the chrome confirms them with: { safeIndex,
+// payload, expiresAt }, for a token's life at most, bounded likewise.
+const PREPARED_TTL_MS = 2 * 60 * 1000;
+const awaiting = new Map();
+// The chrome's answer to a send prepared for its own confirmation: the
+// SafeTx's nonce shown, then confirmed again with its id.
+const SAFE_TX_PREPARED = 'SAFE_TX_PREPARED';
 
 // The board's last state of each Safe, by its index, as the core gave it.
 const boards = new Map();
@@ -109,22 +123,30 @@ function chainOf(chainId) {
   return n;
 }
 
-function hold(token, safeIndex, payload, expiresAt) {
-  if (prepared.size >= MAX_PREPARED) {
+function hold(map, key, safeIndex, payload, expiresAt) {
+  if (map.size >= MAX_PREPARED) {
     const now = Date.now();
-    for (const [held, entry] of prepared) {
-      if (entry.expiresAt <= now) prepared.delete(held);
+    for (const [held, entry] of map) {
+      if (entry.expiresAt <= now) map.delete(held);
     }
   }
-  while (prepared.size >= MAX_PREPARED) prepared.delete(prepared.keys().next().value);
-  prepared.set(token, { safeIndex, payload, expiresAt });
+  while (map.size >= MAX_PREPARED) map.delete(map.keys().next().value);
+  map.set(key, { safeIndex, payload, expiresAt });
 }
 
-/** The SafeTx main minted `token` for, taken: held once. */
-function take(token) {
-  const entry = typeof token === 'string' ? prepared.get(token) : undefined;
-  prepared.delete(token);
+/** The SafeTx held under `key` (a token, or a prepared id), taken: held once. */
+function take(key, map = prepared) {
+  const entry = typeof key === 'string' ? map.get(key) : undefined;
+  map.delete(key);
   return entry && entry.expiresAt > Date.now() ? entry : null;
+}
+
+/** A step's SafeTx, the one the caller showed: required, or nothing is sent. */
+function shown(safeTxHash) {
+  if (typeof safeTxHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(safeTxHash)) {
+    throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
+  }
+  return safeTxHash;
 }
 
 /** The core's entry for the Safe into main's read-only copy; never rejects. */
@@ -178,22 +200,62 @@ async function prepare(safeIndex, request) {
  *   approvals: object|null }} options
  */
 async function confirmWalletSend({ sender, safeIndex, request, approvals }) {
+  if (!approvals) return confirmOnChrome(safeIndex, request);
   const payload = await prepare(safeIndex, request);
-  const { KINDS, issueConfirmation } = signing();
-  const mint = async () => {
-    await approvalRecords.decided(safeIndex, payload);
-    const { token, expiresAt } = await issueConfirmation(KINDS.SAFE_SEND, safeIndex, payload);
-    hold(token, safeIndex, payload, expiresAt);
-    return { token, expiresAt };
-  };
-  if (!approvals) return { approved: true, ...(await mint()) };
   const outcome = await approvals.confirm(
-    { sender, kind: KINDS.SAFE_SEND, index: safeIndex, payload, feeChecked: false, built: true },
-    mint
+    { sender, kind: signing().KINDS.SAFE_SEND, index: safeIndex, payload, feeChecked: false, built: true },
+    () => mint(safeIndex, payload)
   );
   return outcome.approved
     ? { approved: true, token: outcome.token, expiresAt: outcome.expiresAt }
     : { approved: false, error: outcome.error, code: outcome.code };
+}
+
+/** The user's decision recorded (PR 6), then the token minted for `payload` and held. */
+async function mint(safeIndex, payload) {
+  await approvalRecords.decided(safeIndex, payload);
+  const { KINDS, issueConfirmation } = signing();
+  const { token, expiresAt } = await issueConfirmation(KINDS.SAFE_SEND, safeIndex, payload);
+  hold(prepared, token, safeIndex, payload, expiresAt);
+  return { token, expiresAt };
+}
+
+/**
+ * The chrome's own confirmation, with the approvals document off: its
+ * review showed the call, not the SafeTx the core builds after it. So the
+ * first request (`{ tx, chainId }`) is prepared and answered
+ * `{ approved: false, code: SAFE_TX_PREPARED, prepared: { id, nonce } }`,
+ * nothing minted, for the chrome to show "Safe transaction #N"; the token
+ * is minted only for its second (`{ tx, chainId, prepared: id }`), for
+ * exactly the SafeTx it showed, with no new prepare. An id is taken once,
+ * and refused for another Safe or another call.
+ */
+async function confirmOnChrome(safeIndex, request) {
+  if (request?.prepared === undefined) {
+    const payload = await prepare(safeIndex, request);
+    const id = crypto.randomBytes(16).toString('hex');
+    hold(awaiting, id, safeIndex, payload, Date.now() + PREPARED_TTL_MS);
+    const nonce = payload.safeTx.nonce;
+    return {
+      approved: false,
+      code: SAFE_TX_PREPARED,
+      error: `Confirm Safe transaction #${nonce}`,
+      prepared: { id, nonce },
+    };
+  }
+  const held = take(request.prepared, awaiting);
+  if (!held || held.safeIndex !== safeIndex) throw notConfirmed('unknown or already used confirmation');
+  const facts = signing().bindingFor(signing().KINDS.SAFE_SEND, safeIndex, held.payload);
+  let call;
+  try {
+    call = callOf(request.tx);
+  } catch (err) {
+    throw notConfirmed(err.message);
+  }
+  if (!sameCall(call, callOf(facts.safeTx)) || Number(request.chainId) !== facts.chainId) {
+    throw notConfirmed('request differs from what was confirmed');
+  }
+  return { approved: true, ...(await mint(safeIndex, held.payload)) };
 }
 
 /**
@@ -286,12 +348,14 @@ function isLedgerOwner(ownerIndex) {
 /**
  * One owner's signature (`ownerIndex`), or the vault owners' sweep (none),
  * through `safe.sign_owner` as main's own, naming the SafeTx the caller
- * showed (`safeTxHash`: another pending is SAFE_DISCARDED). Resolves the
+ * showed (`safeTxHash`, required: none is refused unsent, and another
+ * pending is the core's SAFE_DISCARDED). Resolves the
  * board's state. No owner needs a confirmation of its own on the core: its
  * proposal authorized them, so `approval` is refused.
  */
 async function signOwner(safeIndex, ownerIndex, { safeTxHash = null, approval = null } = {}) {
   if (approval !== null) throw new Error('This transaction was not confirmed');
+  const named = shown(safeTxHash);
   const owner = ownerIndex === undefined || ownerIndex === null ? undefined : ownerIndex;
   if (owner !== undefined && isLedgerOwner(owner)) {
     // SAFE-3's PR 8: a Ledger owner signs on the core only under main's
@@ -300,7 +364,7 @@ async function signOwner(safeIndex, ownerIndex, { safeTxHash = null, approval = 
   }
   safeApprovals.beginStep(safeIndex);
   try {
-    const answer = await vault().safe.signOwner({ safe: safeIndex, owner, safe_tx_hash: safeTxHash ?? undefined });
+    const answer = await vault().safe.signOwner({ safe: safeIndex, owner, safe_tx_hash: named });
     return remember(safeIndex, answer);
   } finally {
     safeApprovals.endStep(safeIndex);
@@ -310,27 +374,26 @@ async function signOwner(safeIndex, ownerIndex, { safeTxHash = null, approval = 
 
 /**
  * The Safe's pending SafeTx discarded (`safe.discard`): the one named
- * (`safeTxHash`, the board's: another pending, or none, is SAFE_DISCARDED),
- * or, unnamed, the one the core's board shows now. Refused (SAFE_BUSY)
- * while a step of the Safe runs. Resolves the outcome to tell (`{
- * safeIndex, safeTxHash, outcome: 'discarded' }`), or null when no SafeTx
- * was named or shown.
+ * (`safeTxHash`, the board's, required: none is refused unsent, and
+ * another pending, or none, is the core's SAFE_DISCARDED). Refused
+ * (SAFE_BUSY) while a step of the Safe runs. Resolves the outcome to tell
+ * (`{ safeIndex, safeTxHash, outcome: 'discarded' }`).
  */
 async function discard(safeIndex, { safeTxHash = null } = {}) {
   if (safeApprovals.stepRunning(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
-  const named = safeTxHash ?? (await readState(safeIndex))?.safeTxHash ?? null;
+  const named = shown(safeTxHash);
   safeApprovals.beginStep(safeIndex);
   try {
-    if (named) await approvalRecords.dropped(safeIndex, named, 'discard');
-    await vault().safe.discard({ safe: safeIndex, safe_tx_hash: named ?? undefined });
+    await approvalRecords.dropped(safeIndex, named, 'discard');
+    await vault().safe.discard({ safe: safeIndex, safe_tx_hash: named });
     boards.delete(safeIndex);
   } finally {
     safeApprovals.endStep(safeIndex);
     await refreshCopy(safeIndex);
   }
-  return named ? { safeIndex, safeTxHash: named, outcome: 'discarded' } : null;
+  return { safeIndex, safeTxHash: named, outcome: 'discarded' };
 }
 
 /**
@@ -362,10 +425,12 @@ function siteSendRefused() {
 /** Tests: nothing held. */
 function _reset() {
   prepared.clear();
+  awaiting.clear();
   boards.clear();
 }
 
 module.exports = {
+  SAFE_TX_PREPARED,
   approvalRecords,
   cachedState,
   confirmWalletSend,
