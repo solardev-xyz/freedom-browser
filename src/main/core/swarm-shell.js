@@ -5,7 +5,11 @@
  * `shell.swarm_api`, `shell.swarm_part`, `shell.swarm_subscribe` and
  * `shell.swarm_unsubscribe`, for the Swarm requests main sends the core
  * (the **parents**: `swarm.request`, `swarm.publish`, `swarm.feed`,
- * `swarm.stamps`, `swarm.upload_status`).
+ * `swarm.stamps`, `swarm.upload_status`). `registerSwarmShell` also
+ * registers `shell.swarm_manifest`, a manifest check's fetch (D6; the
+ * SWM-6 to SWM-9 plan's point 6), whose `for` is main's `swarm.manifest`
+ * check: swarm/permission-manifests.js answers it (`answerManifestAsk`),
+ * on the Swarm I/O pool, its failures `{ failed: true }`.
  * Each call is admitted by the operation grammar (swarm-grammar.js) before
  * anything is dialled, and dialled once on the node's transport the parent
  * captured (`antBackend()`, swarm/ant-api-call.js).
@@ -1776,12 +1780,24 @@ function partRule(entry, number) {
  * failure forms, and a part answers every failure past its rules in its
  * stream. The shell sends `swarm.body` on `client`.
  *
+ * And `shell.swarm_manifest { for, url }` (design 0015, D6): `manifestAsk`,
+ * permission-manifests.js's `answerManifestAsk` by default, which fetches
+ * the manifest of main's running check `for` on its window's session. Its
+ * charge goes on the Swarm I/O pool, a throw answers `{ failed: true }`
+ * (the check's transport failure), and the core's cancel `cancelled` at
+ * once.
+ *
  * @param {import('./core-client').CoreClient} client
- * @param {object} [deps] - SwarmShell's test seams
+ * @param {object} [deps] - SwarmShell's test seams, and `manifestAsk`
  * @returns {SwarmShell}
  */
 function registerSwarmShell(client, deps = {}) {
-  const shell = new SwarmShell({ client, ...deps });
+  const {
+    manifestAsk = (params, context) =>
+      require('../swarm/permission-manifests').answerManifestAsk(params, context),
+    ...shellDeps
+  } = deps;
+  const shell = new SwarmShell({ client, ...shellDeps });
   const { pool } = shell;
   const callFailed = () => ({ failed: 'error' });
   client.handle('shell.swarm_ready', (params, context) => shell.ready(params, context), {
@@ -1817,6 +1833,11 @@ function registerSwarmShell(client, deps = {}) {
   client.handle('shell.swarm_unsubscribe', (params, context) => shell.unsubscribe(params, context), {
     pool,
     failure: () => ({}),
+  });
+  client.handle('shell.swarm_manifest', (params, context) => manifestAsk(params, context), {
+    pool,
+    failure: () => ({ failed: true }),
+    race: true,
   });
   return shell;
 }
