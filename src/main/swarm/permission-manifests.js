@@ -43,6 +43,7 @@ const { handleBzzRequest } = require('./bzz-protocol');
 const permissions = require('./swarm-permissions');
 const feeds = require('./feed-store');
 const { withOriginLock } = require('./origin-mutation-lock');
+const { watchdogMs } = require('../core/core-deadlines');
 
 const STORE_FILE = 'swarm-manifest-grants.json';
 const MAX_BYTES = 8 * 1024;
@@ -59,6 +60,10 @@ const TOKEN_TTL_MS = 5 * 60 * 1000;
 const MAX_PAGE_TOKENS = 64;
 const MAX_RECEIPTS = 20;
 const UNRESOLVED_BACKOFF_MS = [2_000, 10_000, 30_000, 60_000];
+// How long an allowed decide on the core's store waits for main's mirror to
+// read the site's grant back: a grant read's own watchdog, past which the
+// core is taken for hung.
+const GRANT_READ_BACK_MS = watchdogMs('approval.grants');
 const CAPABILITY_KEYS = ['publish', 'feeds', 'signing', 'messaging'];
 const CAPABILITY_META = {
   publish: { label: 'Publish content', detail: 'Use your postage stamps and bandwidth.' },
@@ -1105,7 +1110,36 @@ async function decideThroughCore(key, token, outcome, { recheck, holds }) {
   // No token is no consent of the core's, as no page consent is the key's.
   if (typeof token !== 'string') throw new Error('Manifest consent expired');
   const live = Boolean(await recheck()) && Boolean(holds());
-  return coreManifest('decide', { key: normalizeOrigin(key), token, outcome, live });
+  const origin = normalizeOrigin(key);
+  const decided = await coreManifest('decide', { key: origin, token, outcome, live });
+  if (decided?.allowed) await grantReadBack(origin);
+  return decided;
+}
+
+/**
+ * After an allowed decide, the site's grant as the core now holds it, in
+ * main's mirror (swarm-permissions.js `readBack`). The core writes the
+ * decision's projection, the connection among it, inside the decide, and
+ * main's mirror would read the key again only at the core's
+ * `approval.changed`, a moment later: a caller reading the grant at once
+ * (page-swarm.js's requestAccess, after the consent) would find none and
+ * ask the user to connect a second time. As main's own grant writes
+ * resolve once main has read the key back, so does the decide. Bounded by
+ * a grant read's own watchdog: a mirror that doesn't catch up, or a read
+ * that fails, rejects, so nothing is asked again and no grant is assumed.
+ */
+async function grantReadBack(origin) {
+  let timer = null;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), GRANT_READ_BACK_MS);
+  });
+  try {
+    if (!(await Promise.race([permissions.readBack(origin), late]))) {
+      throw new Error("The permission manifest decision was saved, but main couldn't read the site's grant back");
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
