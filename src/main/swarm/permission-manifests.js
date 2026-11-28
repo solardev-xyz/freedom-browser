@@ -625,7 +625,10 @@ function buildConsentModel(origin, record, manifest, changed, removed) {
  * request: `checkPageManifest`), or none (in-process callers that decide
  * themselves, tests).
  */
-async function checkManifest({ origin, committedUrl, eager = false }, deps = {}) {
+async function checkManifest(params, deps = {}) {
+  // Refused before its arguments are read, as every path to the file is.
+  assertMainStore();
+  const { origin, committedUrl, eager = false } = params;
   const forPage = deps.owner === 'page';
   await recoverPending();
   const key = normalizeOrigin(origin);

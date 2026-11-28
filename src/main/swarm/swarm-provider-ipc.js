@@ -2413,10 +2413,15 @@ function handleUnsubscribe(params, origin, meta) {
 /**
  * Read-only pre-flight: is the Bee HTTP API reachable?
  * Intentionally separate from checkSwarmPreFlight — reads don't need
- * mode, readiness, or stamp checks.
+ * mode, readiness, or stamp checks. The JS provider's own: on the core's
+ * backend it rejects before it reads the node's URL (`assertJsBackend`).
+ * @param {string|null} [givenUrl] - the node to probe; the session's Ant API
+ *   URL when omitted
  * @returns {{ ok: boolean, reason?: string }}
  */
-async function checkBeeReachable(beeUrl = getAntApiUrl()) {
+async function checkBeeReachable(givenUrl) {
+  assertJsBackend("The JS Swarm provider's node probe");
+  const beeUrl = givenUrl === undefined ? getAntApiUrl() : givenUrl;
   // Global `fetch` (undici), which never sees `session.setProxy` — so an
   // external Ant API on a `.onion` host is handed to the system resolver
   // instead of Tor, the shape #355 fixed for the external IPFS gateway.
@@ -2444,9 +2449,12 @@ async function checkBeeReachable(beeUrl = getAntApiUrl()) {
  * setup service, the one place that reads the node's chain init, mode, peer
  * readiness and usable stamps (publish-setup-service.js). `reason` is one of
  * `node-stopped`, `node-not-ready`, `ultra-light-mode`, `no-usable-stamps`.
+ * The JS provider's own: on the core's backend it rejects before asking
+ * (`assertJsBackend`); the core's ready check is swarm-shell.js's.
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
 async function checkSwarmPreFlight() {
+  assertJsBackend("The JS Swarm provider's publish pre-flight");
   try {
     const readiness = await getPublishReadiness();
     return readiness.ok ? { ok: true } : { ok: false, reason: readiness.reason };

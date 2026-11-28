@@ -81,6 +81,29 @@ const METHODS = [
   [undefined, {}],
 ];
 
+/**
+ * Arguments whose every member read throws (non-enumerable, so a test's
+ * name, which JSON-encodes its arguments, doesn't read them): a path that
+ * reads its arguments before it refuses fails with this error instead of
+ * its refusal (Codex round 1 on #1392).
+ */
+const READ_TRAP = Object.defineProperties(
+  {},
+  Object.fromEntries(
+    ['source', 'owner', 'key', 'origin', 'committedUrl', 'eager', 'label', 'activate', 'identityMode', 'type', 'name', 'status'].map(
+      (member) => [
+        member,
+        {
+          enumerable: false,
+          get() {
+            throw new Error(`argument member ${member} read before the refusal`);
+          },
+        },
+      ]
+    )
+  )
+);
+
 const dirs = [];
 const savedBackend = process.env.FREEDOM_SWARM_BACKEND;
 // The requests a test mocked: a mock outlives `jest.resetModules()`, so
@@ -237,6 +260,42 @@ describe("the JS provider on the core's backend", () => {
   });
 });
 
+describe("the JS provider's exported probes on the core's backend", () => {
+  test.each([
+    ['checkBeeReachable()', 'checkBeeReachable', [], "The JS Swarm provider's node probe"],
+    ['checkBeeReachable(url)', 'checkBeeReachable', ['http://127.0.0.1:1633'], "The JS Swarm provider's node probe"],
+    ['checkSwarmPreFlight()', 'checkSwarmPreFlight', [], "The JS Swarm provider's publish pre-flight"],
+  ])('%s rejects before it reads the node URL or asks readiness', async (_name, probe, args, what) => {
+    const { mocks, calls } = providerCollaborators();
+    const { mod } = processOn('core', { mocks, request: './swarm-provider-ipc' });
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+    try {
+      await expect(mod[probe](...args)).rejects.toMatchObject({
+        name: 'SwarmBackendError',
+        code: 'swarm_backend_core',
+        message: `${what} can't run on the core's Swarm backend`,
+      });
+      expect(calls).toEqual([]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test.each([
+    ['js', false],
+    ['core', true],
+  ])('FREEDOM_SWARM_BACKEND=%s, packaged %s: both probes run as before', async (backend, packaged) => {
+    const { mocks, calls } = providerCollaborators();
+    const { mod } = processOn(backend, { packaged, mocks, request: './swarm-provider-ipc' });
+    // No node URL: the probe reads it and answers node-stopped undialled.
+    expect(await mod.checkBeeReachable()).toEqual({ ok: false, reason: 'node-stopped' });
+    // Readiness asked (its spy answers nothing, read as node-stopped).
+    expect(await mod.checkSwarmPreFlight()).toEqual({ ok: false, reason: 'node-stopped' });
+    expect(calls).toEqual(['services.getAntApiUrl', 'setup.getPublishReadiness']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Main's GSOC miner.
 
@@ -267,6 +326,19 @@ describe("main's GSOC miner on the core's backend", () => {
     });
     // No job was named for a joiner either.
     expect(miner.joinJob('chat', { owner: 'https://other.example' })).toBe(false);
+    expect(Worker).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['null', null],
+    ['whose members throw when read', READ_TRAP],
+  ])('mineSigner with options %s rejects before reading them, no worker started', async (_name, options) => {
+    const { miner, Worker } = minerOn('core');
+    let refused;
+    expect(() => {
+      refused = miner.mineSigner(overlay, identifier, 12, options);
+    }).not.toThrow();
+    await expect(refused).rejects.toMatchObject({ name: 'SwarmBackendError', message: MINER_REFUSAL });
     expect(Worker).not.toHaveBeenCalled();
   });
 
@@ -413,6 +485,21 @@ const FEED_PATHS = [
   ['hasFeedGrant', [KEY]],
   ['grantFeedAccess', [KEY, { source: 'user' }]],
   ['revokeFeedAccess', [KEY, { source: 'user' }]],
+  // Refused before their arguments are read: null, or members that throw
+  // when read (`READ_TRAP`).
+  ['setOriginEntry', [KEY, null]],
+  ['setOriginEntry', [KEY, READ_TRAP]],
+  ['previewAppScopedIdentity', [KEY, READ_TRAP]],
+  ['createAppScopedIdentity', [KEY, READ_TRAP]],
+  ['createAppScopedIdentityAt', [KEY, 3, READ_TRAP]],
+  ['ensureAntWalletIdentity', [KEY, READ_TRAP]],
+  ['activateIdentity', [KEY, 'bee-wallet', null]],
+  ['activateIdentity', [KEY, 'bee-wallet', READ_TRAP]],
+  ['isIdentitySharedWithOtherOrigins', [KEY, READ_TRAP]],
+  ['grantFeedAccess', [KEY, null]],
+  ['grantFeedAccess', [KEY, READ_TRAP]],
+  ['revokeFeedAccess', [KEY, null]],
+  ['revokeFeedAccess', [KEY, READ_TRAP]],
 ].map(([name, args]) => ['feed-store', name, args, 'swarm-feeds.json']);
 const MANIFEST_PATHS = [
   ['checkManifest', [{ origin: KEY, committedUrl: `${KEY}/`, eager: true }]],
@@ -422,12 +509,19 @@ const MANIFEST_PATHS = [
   ['disconnect', [KEY]],
   ['getRecord', [KEY]],
   ['useIndividual', [KEY, 'publish']],
+  // Refused before their arguments are read.
+  ['checkManifest', [null]],
+  ['checkManifest', [READ_TRAP]],
+  ['checkManifest', [{ origin: KEY, committedUrl: `${KEY}/` }, READ_TRAP]],
+  ['decideManifest', ['c'.repeat(32), 'allow', READ_TRAP]],
 ].map(([name, args]) => ['permission-manifests', name, args, 'swarm-manifest-grants.json']);
 const HISTORY_PATHS = [
   ['addEntry', [{ type: 'data', name: 'a.txt', origin: KEY }]],
   ['addEntry', [null]],
   ['updateEntry', [1, { status: 'completed' }]],
   ['updateEntry', [1, null]],
+  ['addEntry', [READ_TRAP]],
+  ['updateEntry', [1, READ_TRAP]],
   ['getEntries', []],
   ['clearEntries', []],
   ['removeEntry', [1]],
