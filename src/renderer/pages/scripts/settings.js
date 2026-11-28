@@ -1492,11 +1492,24 @@ const applyVerifySetting = (row, mode) => {
 // "Live messages are off while Tor is on: …" (freedom-core design 0015,
 // Messaging, question 4): under an external Swarm node while main refuses
 // live messages to it because the session reaches it through a proxy or Tor.
-// Main words it and says when (`getSwarmMessagesRoute`'s `settings`, read
-// with the rest of the section); its test passes the bundled node and an
-// external node on loopback, so the note never shows for either. It shows
-// only under a row set to external: switching the row away hides it at once.
+// Main words it and says when (`getSwarmMessagesRoute`'s `settings`, read at
+// each section refresh but apart from it, so a slow route test never holds
+// the section back nor is dropped with an overtaken refresh; Codex round 4
+// on #1382); its test passes the bundled node and an external node on
+// loopback, so the note never shows for either. It shows only under a row set
+// to external: switching the row away hides it at once. Main numbers each
+// read (`revision`): an answer older than the last taken is dropped.
 let swarmMessagesRoute = null;
+let swarmMessagesRouteRevision = 0;
+const takeSwarmMessagesRoute = (route) => {
+  if (!route || typeof route !== 'object') return false;
+  if (Number.isSafeInteger(route.revision)) {
+    if (route.revision < swarmMessagesRouteRevision) return false;
+    swarmMessagesRouteRevision = route.revision;
+  }
+  swarmMessagesRoute = route;
+  return true;
+};
 const messagesOffText = (protocol, mode) =>
   protocol === 'bee' && mode === 'external' && typeof swarmMessagesRoute?.settings === 'string'
     ? swarmMessagesRoute.settings
@@ -1514,6 +1527,21 @@ const applyMessagesOffNote = (row, mode) => {
   const field = row.querySelector('[data-endpoint-field]');
   if (text) field?.setAttribute('aria-describedby', note.id);
   else field?.removeAttribute('aria-describedby');
+};
+
+// Main's answer read on its own, however slow; taken if it is the newest,
+// and the Swarm row's note set from it as the row stands. A failed read
+// keeps the last answer.
+const refreshSwarmMessagesRoute = async () => {
+  let route;
+  try {
+    route = await freedomAPI.getSwarmMessagesRoute?.();
+  } catch {
+    return;
+  }
+  if (!takeSwarmMessagesRoute(route)) return;
+  const row = profileFields.nodesCard?.querySelector('.profile-node[data-protocol="bee"]');
+  if (row) applyMessagesOffNote(row, row.querySelector('[data-node-mode]')?.value);
 };
 
 const renderProfileNodes = (profile, registry, settings) => {
@@ -1600,15 +1628,14 @@ const refreshProfileSection = async (force = false) => {
   }
 
   const seq = ++profileRefreshSeq;
+  refreshSwarmMessagesRoute();
   try {
-    const [profile, registry, settings, messagesRoute] = await Promise.all([
+    const [profile, registry, settings] = await Promise.all([
       freedomAPI.getActiveProfile?.(),
       freedomAPI.getServiceRegistry().catch(() => null),
       freedomAPI.getSettings?.().catch(() => null),
-      freedomAPI.getSwarmMessagesRoute?.().catch(() => swarmMessagesRoute),
     ]);
     if (seq !== profileRefreshSeq) return;
-    swarmMessagesRoute = messagesRoute ?? null;
     const profileId = profile?.id || null;
     if (profileId !== activeProfileId) nodeDrafts.clear();
     activeProfileId = profileId;

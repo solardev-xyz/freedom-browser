@@ -30,16 +30,18 @@ const PROXY = {
 };
 const OFF = { panel: null, settings: null };
 
-function loadHelpers() {
+function loadHelpers({ freedomAPI = {}, profileFields = {} } = {}) {
   const start = SCRIPT.indexOf('let swarmMessagesRoute = null;');
   expect(start).toBeGreaterThanOrEqual(0);
-  const applyAt = SCRIPT.indexOf('const applyMessagesOffNote = ', start);
-  expect(applyAt).toBeGreaterThan(start);
-  const end = SCRIPT.indexOf('\n};\n', applyAt) + '\n};\n'.length;
+  const refreshAt = SCRIPT.indexOf('const refreshSwarmMessagesRoute = ', start);
+  expect(refreshAt).toBeGreaterThan(start);
+  const end = SCRIPT.indexOf('\n};\n', refreshAt) + '\n};\n'.length;
   const body = SCRIPT.slice(start, end);
   return new Function(
-    `${body}\nreturn { setRoute: (route) => { swarmMessagesRoute = route; }, messagesOffText, applyMessagesOffNote };`
-  )();
+    'freedomAPI',
+    'profileFields',
+    `${body}\nreturn { setRoute: (route) => { swarmMessagesRoute = route; }, takeSwarmMessagesRoute, messagesOffText, applyMessagesOffNote, refreshSwarmMessagesRoute };`
+  )(freedomAPI, profileFields);
 }
 
 function row(protocol = 'bee') {
@@ -133,14 +135,44 @@ describe('the live messages note under the external Swarm node', () => {
     expect(SCRIPT).toContain('  applyMessagesOffNote(row, modeSelect.value);\n  commitNodeRow(row);');
   });
 
-  test("main's answer is read with the rest of the section, every refresh, keeping the last on a failure", () => {
-    expect(SCRIPT).toContain(
-      'freedomAPI.getSwarmMessagesRoute?.().catch(() => swarmMessagesRoute),'
-    );
-    expect(SCRIPT).toContain('swarmMessagesRoute = messagesRoute ?? null;');
+  test("main's answer is read at each refresh but apart from the section, so neither holds the other back", () => {
+    expect(SCRIPT).toMatch(/const seq = \+\+profileRefreshSeq;\n\s+refreshSwarmMessagesRoute\(\);/);
+    const refresh = SCRIPT.slice(SCRIPT.indexOf('const refreshProfileSection = '));
+    expect(refresh.slice(0, refresh.indexOf('\n};\n'))).not.toContain('getSwarmMessagesRoute');
     // Settings only, as the policy has it.
     expect(PRELOAD).toMatch(
       /getSwarmMessagesRoute: guardSettingsPage\('getSwarmMessagesRoute', \(\) =>\s+ipcRenderer\.invoke\('swarm:messages-route-get'\)/
     );
+  });
+
+  test('route reads slower than the poll each land, the newest kept (Codex round 4 on #1382)', async () => {
+    const pending = [];
+    const swarm = row();
+    swarm.querySelector = ((inner) => (selector) =>
+      selector === '[data-node-mode]' ? { value: 'external' } : inner(selector))(swarm.querySelector);
+    const helpers = loadHelpers({
+      freedomAPI: { getSwarmMessagesRoute: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) },
+      profileFields: { nodesCard: { querySelector: () => swarm } },
+    });
+    // Three polls start before any read settles, as a route test slower
+    // than the 5 s poll gives.
+    const reads = [helpers.refreshSwarmMessagesRoute(), helpers.refreshSwarmMessagesRoute(), helpers.refreshSwarmMessagesRoute()];
+    // The second lands first, then the third, then the first, late.
+    pending[1].resolve({ ...PROXY, revision: 2 });
+    await reads[1];
+    expect(swarm.note.textContent).toBe(PROXY.settings);
+    pending[2].resolve({ ...TOR, revision: 3 });
+    await reads[2];
+    expect(swarm.note.textContent).toBe(TOR.settings);
+    pending[0].resolve({ ...OFF, revision: 1 });
+    await reads[0];
+    // The late, older answer is dropped: the note keeps the newest.
+    expect(swarm.note.hidden).toBe(false);
+    expect(swarm.note.textContent).toBe(TOR.settings);
+    // A failed read keeps it too.
+    const failed = helpers.refreshSwarmMessagesRoute();
+    pending[3].reject(new Error('gone'));
+    await failed;
+    expect(swarm.note.textContent).toBe(TOR.settings);
   });
 });
