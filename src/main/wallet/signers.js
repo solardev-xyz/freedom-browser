@@ -236,8 +236,10 @@ function createVaultBackend(walletIndex, authorized = {}) {
  *   PageContext, page-devices.js; the plan's point 10); a standing rule's
  *   `{ standing }` under `page`, which skips the browser's prompt, never
  *   the device's; a Safe owner's Safe approval under the caller it was
- *   recorded for (point 11: a Ledger owner's SafeTx or SafeMessage goes as
- *   `sign.typed_data`, never `safe.sign_owner`); main's own, none.
+ *   recorded for (point 11, the JS Safe backend's alone: a Ledger owner's
+ *   SafeTx or SafeMessage goes as `sign.typed_data`; on the core's Safe
+ *   backend it goes through `safe.sign_owner` or `safe.message_sign`,
+ *   SAFE-3's PR 8, and this path is refused); main's own, none.
  *   Nothing is spent through `approval.spend` first.
  * - **`beforeSign`**, the caller's last check, is held by the relay before
  *   the first APDU after `B0 01` (point 7): after the lane's queue, the
@@ -466,9 +468,13 @@ function phoneJobTx({
  * page }`, `safe/safe-approvals.js`): a vault signature presents it to the
  * core (design 0012, APB-1c), and so does a Ledger owner's on the core's
  * backend, its SafeTx or SafeMessage as `sign.typed_data` with the Ledger
- * key (design 0016, "Approvals: enforced"; until SAFE-3). On the JS backend
- * a device owner signs as before: the core doesn't make its signature, and
- * has no check of a Safe approval for it.
+ * key (design 0016, "Approvals: enforced"), but only on the JS Safe
+ * backend: on the core's (FREEDOM_SAFE_BACKEND=core, SAFE-3's PR 8) a
+ * Safe's Ledger owner signs through `safe.sign_owner` or
+ * `safe.message_sign` (safe/ledger-owners.js), and a Safe approval here is
+ * refused. On the JS Ledger backend a device owner signs as before: the
+ * core doesn't make its signature, and has no check of a Safe approval
+ * for it.
  *
  * @param {{confirmation?: object, page?: object, standing?: {paused?: boolean},
  *   chainId?: number, onRule?: (rule: object|null) => void,
@@ -541,6 +547,11 @@ function getSigner(walletIndex, authorized = {}) {
   // before each signing APDU (`ledger/signer.js`).
   let backendChecks = false;
   if (record && record.type === WALLET_TYPES.LEDGER && ledgerBackendKind() === 'core') {
+    if (authorized?.safe && require('./safe/safe-backend-kind').safeBackendKind() === 'core') {
+      // LDG-3's point-11 path is the JS Safe backend's: on the core's, a
+      // Safe's Ledger owner signs through the core's Safe methods.
+      throw new Error("A Safe's Ledger owner signs through the Safe's own steps here");
+    }
     backend = createCoreLedgerBackend(walletIndex, record, authorized || {});
     coreSigned = true;
   } else if (record && record.type === WALLET_TYPES.LEDGER) {

@@ -10,8 +10,9 @@
  *   chrome's call must be the prepared one, and nothing mints the legacy
  *   form, spends a token through `approval.spend` or writes the store;
  * - the board is `safe.pending`'s; owners sign through `safe.sign_owner`
- *   (the sweep, or one vault owner; a Ledger owner refused, unsent, until
- *   PR 8); a discard is `safe.discard`;
+ *   (the sweep, or one vault owner; a Ledger owner refused, unsent, on the
+ *   JS Ledger backend: its path on the core's is ledger-owners.test.js's);
+ *   a discard is `safe.discard`;
  * - the execution (PR 4b) is `safe.execute` naming the board's SafeTx:
  *   the core's prepared send checked, signed by the executor with the
  *   core's `executor-send` token, journaled under `execIntentKey` (the real
@@ -622,7 +623,7 @@ describe("owners: safe.sign_owner", () => {
     expect(coreSends.cachedState(5).collected).toBe(2);
   });
 
-  test('a Ledger owner is refused, unsent, until PR 8', async () => {
+  test("a Ledger owner on the JS Ledger backend is refused, unsent (the SAFE-3 plan's point 4)", async () => {
     await setup();
     await expect(transactions.signSafePending(5, 2, { safeTxHash: SAFE_TX_HASH })).rejects.toMatchObject({ code: 'SAFE_UNSUPPORTED' });
     expect(methods()).toEqual([]);

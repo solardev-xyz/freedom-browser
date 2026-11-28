@@ -63,9 +63,14 @@
  *
  * On the core's Safe backend (freedom-core design 0016, SAFE-3) a send
  * board's state and steps are the core's (`coreSends`): its proposal
- * authorized every owner, so none is confirmed again, and its executor's
+ * authorized every owner, so no token is minted again, and its executor's
  * fee is the core's offer, confirmed in the panel by the ask main holds for
- * it (`fee_ack`), with no 'executor-send' token.
+ * it (`fee_ack`), with no 'executor-send' token. A Ledger owner signs only
+ * under main's approval record of the SafeTx (SAFE-3's PR 8): with none
+ * (main restarted since the approval), the same "confirm again" step shows
+ * `wallet.safe_send` from the pending entry's fields, and the user's
+ * approval there is main's decision alone, which records the SafeTx anew
+ * (`confirmLedgerOwnerAgain`); the owner then signs under it.
  */
 
 const { withHashOnlyTarget } = require('../wallet/ledger/hash-only-warning');
@@ -689,12 +694,32 @@ async function confirmSafeSend(windowId, safeIndex, call) {
 }
 
 /**
+ * A Ledger owner's SafeTx confirmed again on the core's Safe backend
+ * (freedom-core design 0016, "Approval records"; SAFE-3's PR 8, the plan's
+ * point 6), in window `windowId`'s panel as `wallet.safe_send`, shown from
+ * the pending entry's fields that main reads itself (`call` names only the
+ * board's SafeTx): main's decision only, nothing minted, which records the
+ * approval (`safe/core-sends.js` `confirmAgain`). Resolves the board's
+ * confirmation, `{ recorded: safeTxHash }`, or null.
+ */
+async function confirmLedgerOwnerAgain(windowId, safeIndex, call) {
+  const approvals = require('./wallet-approvals').getWalletApprovals();
+  if (!approvals || !Number.isInteger(windowId) || typeof call?.safeTxHash !== 'string') return null;
+  const { confirmAgain } = require('../wallet/safe/core-sends');
+  const approved = await confirmAgain({ approvals, windowId, safeIndex, safeTxHash: call.safeTxHash });
+  return approved ? { recorded: call.safeTxHash } : null;
+}
+
+/**
  * A send board's steps on the core's Safe backend (freedom-core design 0016,
  * SAFE-3; `safe/core-sends.js`): its state the core's board, read again
  * before each turn (`refresh`, `safe.pending`) and in between as last read
  * (`state`), its SafeTx's call as the core's state shows it (`tx`), and
- * each step the core's, naming the board's SafeTx. No owner is confirmed
- * again (`call`): its proposal authorized every owner.
+ * each step the core's, naming the board's SafeTx. No token is minted
+ * again: its proposal authorized every owner. A Ledger owner with no
+ * approval record main holds (SAFE_APPROVAL_NEEDED) is confirmed again
+ * (`call` names the board's SafeTx for `confirmLedgerOwnerAgain`), and
+ * then signs (`signConfirmed`) under the record that decision made.
  */
 function coreSends(transactions) {
   const cached = (safeIndex) => require('../wallet/safe/core-sends').cachedState(safeIndex);
@@ -704,10 +729,16 @@ function coreSends(transactions) {
     sign: (safeIndex, owner, safeTxHash) => transactions().signSafePending(safeIndex, owner, { safeTxHash }),
     execute: (safeIndex, options) => transactions().executeSafePending(safeIndex, options),
     cancel: (safeIndex, safeTxHash) => transactions().cancelSafeSend(safeIndex, { safeTxHash }),
-    call: () => null,
-    signConfirmed: async (_safeIndex, _owner, _safeTxHash, token) => {
-      require('../wallet/signing-confirmation').discardConfirmation(token);
-      throw new Error('This transaction needs no new confirmation');
+    call: (_safeIndex, safeTxHash) => (typeof safeTxHash === 'string' ? { safeTxHash } : null),
+    signConfirmed: async (safeIndex, owner, safeTxHash, confirmation) => {
+      // A token is never presented on the core.
+      if (typeof confirmation === 'string') {
+        require('../wallet/signing-confirmation').discardConfirmation(confirmation);
+        throw new Error('This transaction needs no new confirmation');
+      }
+      // Main's own record of the decision (`confirmLedgerOwnerAgain`) is
+      // what the owner signs under, read again by the step itself.
+      return transactions().signSafePending(safeIndex, owner, { safeTxHash });
     },
     tx: (safeIndex, safeTxHash) => {
       const state = cached(safeIndex);
@@ -727,6 +758,7 @@ function getSafeBoards() {
     const safeMessages = () => require('../wallet/safe/safe-messages');
     const pageRequests = () => require('../page/page-requests').getPageRequests();
     const { safeBackendKind } = require('../wallet/safe/safe-backend-kind');
+    const onCore = safeBackendKind() === 'core';
     shared = createSafeBoards({
       getDerivedWallets: () => require('../identity-manager').getDerivedWallets(),
       chainName: (chainId) => registry()?.[chainId]?.name ?? null,
@@ -734,7 +766,7 @@ function getSafeBoards() {
         const symbol = registry()?.[chainId]?.nativeSymbol;
         return typeof symbol === 'string' ? symbol : null;
       },
-      sends: safeBackendKind() === 'core' ? coreSends(transactions) : {
+      sends: onCore ? coreSends(transactions) : {
         state: (safeIndex) => transactions().getSafeSendState(safeIndex),
         sign: (safeIndex, owner, safeTxHash) => transactions().signSafePending(safeIndex, owner, { safeTxHash }),
         execute: (safeIndex, options) => transactions().executeSafePending(safeIndex, options),
@@ -768,7 +800,7 @@ function getSafeBoards() {
       walletPrompt: (windowId, spec) => pageRequests().walletPrompt(windowId, spec),
       walletUnlock: (windowId, view) => pageRequests().walletUnlock(windowId, view),
       confirmExecutorFee,
-      confirmSafeSend,
+      confirmSafeSend: onCore ? confirmLedgerOwnerAgain : confirmSafeSend,
       transferOf: (tx) => require('./wallet-approvals').transferOf(tx),
     });
   }
@@ -782,6 +814,8 @@ module.exports = {
   boardChoices,
   createSafeBoards,
   confirmExecutorFee,
+  confirmLedgerOwnerAgain,
   confirmSafeSend,
+  coreSends,
   getSafeBoards,
 };

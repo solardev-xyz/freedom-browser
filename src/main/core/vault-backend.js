@@ -233,15 +233,40 @@ function unprepared({ rule, reason }) {
  *
  * `page` is `call`'s.
  */
-async function deviceCall(
+function deviceCall(
   method,
   params,
   page = null,
   { beforeSign = null, hashOnlySurface = null, signal = null } = {}
 ) {
+  return relayedCall(method, params, page, {
+    capture: { path: params?.key?.path },
+    requires: VAULT_META,
+    beforeSign,
+    hashOnlySurface,
+    signal,
+  });
+}
+
+/**
+ * A request that drives a Ledger through main's relay (`deviceCall`'s, and
+ * a Safe's Ledger owner's, `safeDeviceCall`): its stream prepared from
+ * `capture` (ledger-relay.js `prepare`, beside `method` and `params`) and
+ * refused unsent when main can't derive it (`unprepared`), then sent with
+ * `ledgerCall` (`ledgerOwner` and `requires` its own) and opened in the
+ * relay from its `onSent`; closed there whatever the response. A response
+ * that fails after the relay refused one of its APDUs carries that rule
+ * (`relayRefused`).
+ */
+async function relayedCall(
+  method,
+  params,
+  page,
+  { capture, ledgerOwner = false, requires, beforeSign = null, hashOnlySurface = null, signal = null }
+) {
   const relay = getLedgerRelay();
   if (!relay) throw new VaultBackendError(CORE_UNAVAILABLE, 'The identity core is not running');
-  const prepared = relay.prepare({ method, params, path: params?.key?.path });
+  const prepared = relay.prepare({ method, params, ...capture });
   if (!prepared.ok) throw unprepared(prepared);
   const controller = new AbortController();
   const cancel = () => controller.abort();
@@ -251,8 +276,9 @@ async function deviceCall(
   let unopened = null;
   try {
     return await ledgerCall(method, params, page, {
+      ledgerOwner,
       signal: controller.signal,
-      requires: VAULT_META,
+      requires,
       onSent: (id, generation) => {
         try {
           handle = relay.open({ id, generation }, { prepared, controller, beforeSign, hashOnlySurface });
@@ -267,6 +293,7 @@ async function deviceCall(
     // The caller's last check refused it: its own error, not the cancel.
     if (handle?.stopped) throw handle.stopped;
     if (unopened) throw unopened;
+    if (handle?.refused && err && typeof err === 'object') err.relayRefused = handle.refused;
     throw err;
   } finally {
     signal?.removeEventListener('abort', cancel);
@@ -493,6 +520,32 @@ async function safeOwnerCall(method, params, caller, { onSent, signal, requires 
       onSent,
       signal,
       requires,
+    });
+  } catch (err) {
+    throw safeError(err);
+  }
+}
+
+/**
+ * A Safe's Ledger owner's signature (SAFE-3's PR 8; design 0016, Main's
+ * typed-data binding): `safe.sign_owner` or `safe.message_sign` naming a
+ * Ledger owner, through main's relay (`relayedCall`) under the device
+ * watchdog (`ledgerOwner`: 7 minutes and 15 s until its first
+ * `shell.ledger_apdu`, then each APDU's), the relay admitting the core's
+ * stream only as `device` binds it: `{ path, typedData, expectedHash,
+ * hashOnlySurface?, signal? }`, the owner's path from main's record and the
+ * SafeTx or SafeMessage main itself holds (wallet/safe/ledger-owners.js).
+ * Its refusals take main's codes (`safeError`).
+ */
+async function safeDeviceCall(method, params, caller, device, requires) {
+  const { path, typedData, expectedHash, hashOnlySurface = null, signal = null } = device;
+  try {
+    return await relayedCall(method, params, caller, {
+      capture: { path, typedData, expectedHash },
+      ledgerOwner: true,
+      requires,
+      hashOnlySurface,
+      signal,
     });
   } catch (err) {
     throw safeError(err);
@@ -1064,9 +1117,9 @@ const vaultBackend = {
    *   the board's reads and calls. `signOwner` and `messageSign` go through
    *   `ledgerCall` (`safeOwnerCall`): 135 s for vault owners, and 7 minutes
    *   and 15 s for a Ledger owner until its first `shell.ledger_apdu`, by
-   *   main's own record of the owner. Their `onSent` and `signal` are the
-   *   client's, for main's relay, which admits a Safe's parents only from
-   *   SAFE-3's PR 8.
+   *   main's own record of the owner. A Ledger owner's goes with `device`,
+   *   main's binding of the SafeTx or SafeMessage (`safeDeviceCall`), and
+   *   is opened in main's relay as it is sent (SAFE-3's PR 8).
    * - **Refusals:** `invalid_argument` with `data.safe` takes the code
    *   wallet/safe/errors.js gives it (`safeError`); `create`'s with
    *   `data.code` that code, as `accounts.*`'s do.
@@ -1166,9 +1219,14 @@ const vaultBackend = {
         VAULT_META
       );
     },
-    /** `{ safe, session, owner? }` → the state; `owner` signs, or the vault owners' sweep. */
-    messageSign({ safe, session, owner }, { caller = null, onSent = null, signal = null } = {}) {
-      return safeOwnerCall('safe.message_sign', given({ safe, session, owner }), caller, {
+    /**
+     * `{ safe, session, owner? }` → the state; `owner` signs, or the vault
+     * owners' sweep. `device`: a Ledger owner's binding (`safeDeviceCall`).
+     */
+    messageSign({ safe, session, owner }, { caller = null, onSent = null, signal = null, device = null } = {}) {
+      const params = given({ safe, session, owner });
+      if (device) return safeDeviceCall('safe.message_sign', params, caller, device, VAULT_META);
+      return safeOwnerCall('safe.message_sign', params, caller, {
         onSent,
         signal,
         requires: VAULT_META,
@@ -1188,10 +1246,13 @@ const vaultBackend = {
     },
     /**
      * `{ safe, owner?, safe_tx_hash? }` → the board's state: a proposed
-     * SafeTx signed by `owner`, or by the vault owners' sweep.
+     * SafeTx signed by `owner`, or by the vault owners' sweep. `device`: a
+     * Ledger owner's binding (`safeDeviceCall`).
      */
-    signOwner({ safe, owner, safe_tx_hash }, { caller = null, onSent = null, signal = null } = {}) {
-      return safeOwnerCall('safe.sign_owner', given({ safe, owner, safe_tx_hash }), caller, {
+    signOwner({ safe, owner, safe_tx_hash }, { caller = null, onSent = null, signal = null, device = null } = {}) {
+      const params = given({ safe, owner, safe_tx_hash });
+      if (device) return safeDeviceCall('safe.sign_owner', params, caller, device, SAFE_RECORD_AND_PENDING);
+      return safeOwnerCall('safe.sign_owner', params, caller, {
         onSent,
         signal,
         requires: SAFE_RECORD_AND_PENDING,

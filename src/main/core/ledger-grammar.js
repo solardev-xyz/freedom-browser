@@ -48,8 +48,7 @@
  *   other than `9000` (but the hash-only one), a `{ failed }`, a cancel or
  *   the parent's end, and for every APDU after a refusal. `parent` is the
  *   relay's: `operationOf` names the operation a parent opens, null for one
- *   that opens none (a vault key's `sign.*`, and `safe.sign_owner` and
- *   `safe.message_sign` until SAFE-3, plan point 11).
+ *   that opens none (a vault key's `sign.*`, a Safe's vault owners).
  * - **The hash-only gate** (Q23): `E0 0C 00 00 P ‖ domainSeparator ‖
  *   structHash` is admitted only as the APDU after the operation's first
  *   `E0 1A`, once main answered that APDU's `6D00` with
@@ -57,10 +56,13 @@
  *   which only that answer may carry: `isHashOnlyAnswer`).
  *
  * **The typed-data stream** (main's typed-data binding, LDG-3's PR 2,
- * `wallet/ledger/apdu-binding.js`): an Admission for `sign.typed_data` or
- * `x402.settle { reservation, typed_data }` takes `typedData`, built by the
- * binding from the typed data main sent (for x402, main's own rebuild),
- * never from the core:
+ * `wallet/ledger/apdu-binding.js`): an Admission for `sign.typed_data`,
+ * `x402.settle { reservation, typed_data }`, or a Safe's Ledger owner's
+ * `safe.sign_owner` or `safe.message_sign` (SAFE-3's PR 8) takes
+ * `typedData`, built by the binding from the typed data main holds (the
+ * request main sent; for x402, main's own rebuild; for a SafeTx, the
+ * pending entry's fields under main's approval record; for a SafeMessage,
+ * the page's own request), never from the core:
  *
  *     { apdus: Buffer[], domainSeparator: Buffer, structHash: Buffer }
  *
@@ -77,11 +79,14 @@
  * The binding refuses whatever it can't encode before the parent is sent;
  * a stream not of this shape, or one that makes more than
  * `BOUNDS.apdus_per_operation` APDUs with the address check, `B0 01` and
- * `E0 0C`, is a `GrammarError`. The Safe rows join with SAFE-3's binding.
+ * `E0 0C`, is a `GrammarError`. The two Safe rows' streams are
+ * `sign.typed_data`'s, as the design's rows have them: the rows a
+ * parent's APDUs are admitted under are `sign.typed_data`'s, and anything
+ * outside them (a transaction's or a message's APDU, the address shown, a
+ * second `E0 0C`) is refused as for any typed data.
  *
  * Its caller is main's relay for `shell.ledger_apdu` (LDG-3's PR 6,
- * core/ledger-relay.js), one Admission per parent it opens. Nothing calls
- * it yet.
+ * core/ledger-relay.js), one Admission per parent it opens.
  */
 
 const { Transaction, encodeRlp, toBeArray } = require('ethers');
@@ -610,7 +615,13 @@ function bounded(count) {
   }
 }
 
-/** The operations an Admission opens; the Safe rows join with SAFE-3's binding. */
+/**
+ * The Safe rows (SAFE-3's PR 8): a Safe's Ledger owner signing a pending
+ * SafeTx, or a page's SafeMessage, each as `sign.typed_data`'s stream.
+ */
+const SAFE_OPERATIONS = Object.freeze(['safe.sign_owner', 'safe.message_sign']);
+
+/** The operations an Admission opens. */
 const OPERATIONS = Object.freeze([
   'ledger.accounts',
   'ledger.add',
@@ -618,15 +629,20 @@ const OPERATIONS = Object.freeze([
   'sign.message',
   'sign.typed_data',
   'x402.settle',
+  ...SAFE_OPERATIONS,
 ]);
-const TYPED = new Set(['sign.typed_data', 'x402.settle']);
+const TYPED = new Set(['sign.typed_data', 'x402.settle', ...SAFE_OPERATIONS]);
 
 /**
  * The operation a parent main sent opens on the device, or null when it
  * opens none, which the relay refuses as `parent`: a `sign.*` with a key
  * that isn't a Ledger's, `x402.settle` but its Ledger form
- * (`{ reservation, typed_data }`), any other method, and, until SAFE-3,
- * `safe.sign_owner` and `safe.message_sign` (plan point 11).
+ * (`{ reservation, typed_data }`), `safe.sign_owner` and
+ * `safe.message_sign` without an owner (the vault owners' sweep), and any
+ * other method. A Safe row names its owner by index alone: whether that
+ * owner is a Ledger's is main's own record's, which its sender reads, and
+ * the relay admits the row only with main's binding of its SafeTx or
+ * SafeMessage (`ledger-relay.js` `prepare`).
  */
 function operationOf(method, params) {
   switch (method) {
@@ -641,6 +657,9 @@ function operationOf(method, params) {
       return params && typeof params === 'object' && Object.hasOwn(params, 'typed_data')
         ? method
         : null;
+    case 'safe.sign_owner':
+    case 'safe.message_sign':
+      return Number.isSafeInteger(params?.owner) && params.owner >= 0 ? method : null;
     default:
       return null;
   }
@@ -664,8 +683,9 @@ class Admission {
    * @param {object[]} [options.records] - `ledger.accounts`: main's list of
    *   the records no device has matched (`getLedgerRecordsToCheck`)
    * @param {{ apdus: Buffer[], domainSeparator: Buffer, structHash: Buffer }} [options.typedData]
-   *   - `sign.typed_data` and `x402.settle`: main's typed-data binding's
-   *   stream (the module's comment)
+   *   - `sign.typed_data`, `x402.settle`, `safe.sign_owner` and
+   *   `safe.message_sign`: main's typed-data binding's stream (the
+   *   module's comment)
    * @throws {GrammarError} when main can't derive the operation's stream
    */
   constructor({ operation, params, path, records, typedData }) {
@@ -822,6 +842,7 @@ module.exports = {
   OPERATIONS,
   ROWS,
   RULES,
+  SAFE_OPERATIONS,
   SCHEMES,
   apdu,
   checkedRecords,
