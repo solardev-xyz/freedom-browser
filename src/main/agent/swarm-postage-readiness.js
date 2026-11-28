@@ -1,7 +1,24 @@
 'use strict';
 
+/**
+ * Whether the postage batch an agent publication uses can stamp it yet, and
+ * what the approval card shows about it.
+ *
+ * Its reads follow the Swarm switch (swarm/swarm-backend-kind.js, read
+ * once; freedom-core design 0015, "Every bee-js call, mapped"; the SWM-6 to
+ * SWM-9 plan's PR 8.4), chosen at each call:
+ * - on `js`, bee-js through swarm-service.js: `selectBestBatch` over
+ *   `stamp.getAll`, `stamp.get`, `stamp.getGlobal` and
+ *   `status.getChainState`;
+ * - on `core`, the core's `swarm.stamps` for the batch list (the same
+ *   choice, swarm-agent-core.js) and for one batch (`{ id }`), and `GET
+ *   /batches/<id>` and `GET /chainstate` on the node's transport
+ *   (swarm-node-reads.js), mapped as bee-js maps them.
+ * Either way the batch reads as `{ usable, amount, ttlSeconds,
+ * remainingBytes }` and the rest as bee-js gives it.
+ */
+
 const crypto = require('crypto');
-const { getBee, selectBestBatch } = require('../swarm/swarm-service');
 const { getAntApiUrl } = require('../service-registry');
 
 const SETTLEMENT_BLOCKS = 10;
@@ -33,10 +50,85 @@ function backendKey() {
   return crypto.createHash('sha256').update(getAntApiUrl() || '').digest('hex');
 }
 
+/**
+ * The reads over bee-js (the JS backend): `getBee()` and `selectBestBatch`,
+ * swarm-service.js's unless a test gives its own.
+ */
+function beePostage({ getBee, selectBestBatch } = {}) {
+  const service = () => require('../swarm/swarm-service');
+  const bee = () => (getBee || service().getBee)();
+  const options = { timeout: READ_TIMEOUT_MS };
+  return {
+    selectBestBatch: (bytes) =>
+      (selectBestBatch || service().selectBestBatch)(bytes, { requireCapacity: true, requestOptions: options }),
+    async stamp(batchId) {
+      const local = await bee().stamp.get(batchId, options);
+      return {
+        usable: local.usable,
+        amount: local.amount,
+        ttlSeconds: durationSeconds(local.duration),
+        remainingBytes: local.remainingSize?.toBytes?.(),
+      };
+    },
+    globalBatch: (batchId) => bee().stamp.getGlobal(batchId, options),
+    chainState: () => bee().status.getChainState(options),
+  };
+}
+
+/**
+ * The reads on the core's backend: the core's `swarm.stamps`
+ * (swarm-agent-core.js), and `/batches` and `/chainstate` on the node's
+ * transport (swarm-node-reads.js).
+ */
+function corePostage() {
+  const core = () => require('./swarm-agent-core').agentSwarmCore();
+  const node = () => require('./swarm-node-reads');
+  return {
+    selectBestBatch: (bytes) => core().selectBestBatch(bytes, { requireCapacity: true }),
+    async stamp(batchId) {
+      const local = await core().getStamp(batchId);
+      return {
+        usable: local.usable,
+        amount: local.amount,
+        ttlSeconds: durationSeconds(local.duration),
+        remainingBytes: local.remainingSize,
+      };
+    },
+    globalBatch: (batchId) => node().getGlobalBatch(batchId),
+    chainState: () => node().getChainState(),
+  };
+}
+
+/** The reads on the process's Swarm backend, chosen at each call. */
+function backendPostage() {
+  const js = beePostage();
+  const core = corePostage();
+  const pick = () => (require('../swarm/swarm-backend-kind').swarmBackendKind() === 'core' ? core : js);
+  return {
+    selectBestBatch: (...args) => pick().selectBestBatch(...args),
+    stamp: (...args) => pick().stamp(...args),
+    globalBatch: (...args) => pick().globalBatch(...args),
+    chainState: (...args) => pick().chainState(...args),
+  };
+}
+
 class SwarmPostageReadiness {
+  /**
+   * @param {object} [options]
+   * @param {object} [options.postage] - the reads (`selectBestBatch`,
+   *   `stamp`, `globalBatch`, `chainState`); the process's backend's by
+   *   default
+   * @param {Function} [options.getBee] - a bee-js client of the test's own,
+   *   for the JS backend's reads
+   * @param {Function} [options.selectBestBatch] - the JS backend's choice,
+   *   the test's own
+   */
   constructor(options = {}) {
-    this.getBee = options.getBee || getBee;
-    this.selectBestBatch = options.selectBestBatch || selectBestBatch;
+    this.postage =
+      options.postage ||
+      (options.getBee || options.selectBestBatch
+        ? beePostage({ getBee: options.getBee, selectBestBatch: options.selectBestBatch })
+        : backendPostage());
     this.backendKey = options.backendKey || backendKey;
     this.operationStore = options.operationStore;
   }
@@ -54,7 +146,7 @@ class SwarmPostageReadiness {
         if (/^[a-f0-9]{64}$/i.test(id)) return id.toLowerCase();
       } catch { /* A malformed receipt cannot identify a batch. */ }
     }
-    return this.selectBestBatch(bytes, { requireCapacity: true, requestOptions: { timeout: READ_TIMEOUT_MS } });
+    return this.postage.selectBestBatch(bytes);
   }
 
   // What the approval card shows about postage before anything is uploaded:
@@ -63,14 +155,14 @@ class SwarmPostageReadiness {
   async preview(ownerId, bytes, options = {}) {
     const batchId = await this.select(ownerId, bytes);
     if (!batchId) return { status: 'none' };
-    const local = await this.getBee().stamp.get(batchId, { timeout: READ_TIMEOUT_MS });
-    const ttlSeconds = Math.max(0, Math.floor(durationSeconds(local.duration)));
+    const local = await this.postage.stamp(batchId);
+    const ttlSeconds = Math.max(0, Math.floor(local.ttlSeconds));
     const chunks = estimateChunks(bytes, options);
     // `amount` is the batch's per-chunk balance in PLUR. Without it the card
     // shows the time left without a cost.
     const amount = String(local.amount ?? '');
     const estimatedCostPlur = /^\d{1,40}$/.test(amount) ? (BigInt(amount) * BigInt(chunks)).toString() : null;
-    const remainingBytes = local.remainingSize?.toBytes?.();
+    const { remainingBytes } = local;
     return {
       status: 'ready',
       batchId: String(batchId).toLowerCase(),
@@ -85,17 +177,14 @@ class SwarmPostageReadiness {
   }
 
   async inspect(batchId, bytes, firstConfirmedBlock) {
-    const bee = this.getBee();
-    const options = { timeout: READ_TIMEOUT_MS };
     const [local, chainBatch, chain] = await Promise.all([
-      bee.stamp.get(batchId, options), bee.stamp.getGlobal(batchId, options),
-      bee.status.getChainState(options),
+      this.postage.stamp(batchId), this.postage.globalBatch(batchId), this.postage.chainState(),
     ]);
     if (!Number.isSafeInteger(chain.block) || chain.block < 1) throw new Error('Chain height is unavailable');
     if (!Number.isFinite(chainBatch.batchTTL) || chainBatch.batchTTL <= 0) {
       throw Object.assign(new Error('The postage batch has expired. Inspect postage before publishing.'), { code: 'POSTAGE_UNAVAILABLE', permanent: true });
     }
-    const remaining = local.remainingSize?.toBytes();
+    const remaining = local.remainingBytes;
     if (!Number.isFinite(remaining) || remaining < bytes * 1.5) {
       throw Object.assign(new Error('The selected postage batch lacks sufficient effective capacity. Inspect postage; do not repeat a purchase automatically.'), { code: 'POSTAGE_CAPACITY_INSUFFICIENT', permanent: true });
     }

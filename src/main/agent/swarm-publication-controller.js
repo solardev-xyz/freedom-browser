@@ -59,6 +59,72 @@ function mainHistoryWriters() {
 }
 
 /**
+ * The agent's Swarm calls on the JS backend: publish-service.js's uploads
+ * and tag reads, feed-service.js's feeds, swarm-signer.js's Bee wallet
+ * signer and bee-js's `data.download`, each loaded at its first call.
+ */
+function jsSwarmCalls() {
+  const publishService = () => require('../swarm/publish-service');
+  const feedService = () => require('../swarm/feed-service');
+  return {
+    publishData: (...args) => publishService().publishData(...args),
+    publishCollection: (...args) => publishService().publishCollection(...args),
+    getUploadStatus: (...args) => publishService().getUploadStatus(...args),
+    createFeed: (...args) => feedService().createFeed(...args),
+    updateFeed: (...args) => feedService().updateFeed(...args),
+    readFeedState: (...args) => feedService().readFeedState(...args),
+    // The user's Swarm identity: the Ant node's wallet, whose key stays in
+    // the identity core, which signs each feed update (swarm/swarm-signer.js).
+    // Its address needs the unlocked vault, so a locked vault is refused here.
+    async feedSigner() {
+      const signer = await require('../swarm/swarm-signer').resolveSwarmSigner({ mode: 'bee-wallet' });
+      return { address: signer.owner, signer };
+    },
+    async verifyPublication(reference) {
+      const { getBee } = require('../swarm/swarm-service');
+      await getBee().data.download(reference);
+      return true;
+    },
+  };
+}
+
+/**
+ * The agent's Swarm calls on the core's backend (freedom-core design 0015;
+ * the SWM-6 to SWM-9 plan's PR 8.4): `swarm.publish` without history (the
+ * row is the agent's own, above), `swarm.upload_status` and `swarm.feed`
+ * under the Bee wallet key (swarm-agent-core.js, whose signer is the Bee
+ * wallet's owner: the core signs), and the retrieval check, `GET /bytes`,
+ * on the node's transport (swarm-node-reads.js).
+ */
+function coreSwarmCalls() {
+  const core = () => require('./swarm-agent-core').agentSwarmCore();
+  return {
+    publishData: (...args) => core().publishData(...args),
+    publishCollection: (...args) => core().publishCollection(...args),
+    getUploadStatus: (...args) => core().getUploadStatus(...args),
+    createFeed: (...args) => core().createFeed(...args),
+    updateFeed: (...args) => core().updateFeed(...args),
+    readFeedState: (...args) => core().readFeedState(...args),
+    feedSigner: () => core().feedSigner(),
+    verifyPublication: (reference) => require('./swarm-node-reads').verifyReachable(reference),
+  };
+}
+
+/**
+ * The agent's Swarm calls on the process's Swarm backend
+ * (swarm/swarm-backend-kind.js, read once), chosen at each call: the JS
+ * backend's services over bee-js on `js`, the core's on `core`. Each
+ * answers as the JS backend's does, so the controller runs the same on
+ * both.
+ */
+function backendSwarmCalls() {
+  const js = jsSwarmCalls();
+  const core = coreSwarmCalls();
+  const pick = () => (require('../swarm/swarm-backend-kind').swarmBackendKind() === 'core' ? core : js);
+  return Object.fromEntries(Object.keys(js).map((name) => [name, (...args) => pick()[name](...args)]));
+}
+
+/**
  * A history update no caller waits for (inside a step that can't): main's
  * own store has answered in the run, or thrown there as it always has; the
  * core's answer is a promise, and its failure is logged. Each such update
@@ -237,15 +303,9 @@ class SwarmPublicationController {
     ) {
       throw new TypeError('Swarm publications require an attachment source resolver');
     }
-    const publishService =
-      options.publishService ||
-      (options.publishData &&
-      options.publishFile &&
-      options.publishDirectory &&
-      options.publishCollection &&
-      options.getUploadStatus
-        ? {}
-        : require('../swarm/publish-service'));
+    // The process's backend's calls, unless a caller gives its own.
+    const swarm = backendSwarmCalls();
+    const publishService = options.publishService || {};
     const publishHistory =
       options.publishHistory ||
       (options.addHistoryEntry && options.updateHistoryEntry ? {} : mainHistoryWriters());
@@ -259,30 +319,20 @@ class SwarmPublicationController {
       return { ...source, sourceType: 'attachment', workspacePath: undefined, name: descriptor.name };
     });
     this.workspaceSourceReader = options.workspaceSourceReader || null;
-    this.publishData = options.publishData || publishService.publishData;
-    this.publishFile = options.publishFile || publishService.publishFile;
-    this.publishDirectory = options.publishDirectory || publishService.publishDirectory;
-    this.publishCollection = options.publishCollection || publishService.publishCollection;
-    this.getUploadStatus = options.getUploadStatus || publishService.getUploadStatus;
+    this.publishData = options.publishData || publishService.publishData || swarm.publishData;
+    this.publishCollection =
+      options.publishCollection || publishService.publishCollection || swarm.publishCollection;
+    this.getUploadStatus = options.getUploadStatus || publishService.getUploadStatus || swarm.getUploadStatus;
     this.addHistoryEntry = options.addHistoryEntry || publishHistory.addEntry;
     this.updateHistoryEntry = options.updateHistoryEntry || publishHistory.updateEntry;
-    this.createFeed = options.createFeed || ((...args) => require('../swarm/feed-service').createFeed(...args));
-    this.updateFeed = options.updateFeed || ((...args) => require('../swarm/feed-service').updateFeed(...args));
-    this.readFeedState = options.readFeedState || ((...args) => require('../swarm/feed-service').readFeedState(...args));
-    // The user's Swarm identity: the Ant node's wallet, whose key stays in
-    // the identity core, which signs each feed update (swarm/swarm-signer.js).
-    // Its address needs the unlocked vault, so a locked vault is refused here.
-    this.feedSigner = options.feedSigner || (async () => {
-      const signer = await require('../swarm/swarm-signer').resolveSwarmSigner({ mode: 'bee-wallet' });
-      return { address: signer.owner, signer };
-    });
-    this.verifyPublication =
-      options.verifyPublication ||
-      (async (reference) => {
-        const { getBee } = require('../swarm/swarm-service');
-        await getBee().data.download(reference);
-        return true;
-      });
+    this.createFeed = options.createFeed || swarm.createFeed;
+    this.updateFeed = options.updateFeed || swarm.updateFeed;
+    this.readFeedState = options.readFeedState || swarm.readFeedState;
+    // The user's Swarm identity, the Ant node's wallet, which signs each
+    // feed update: its address needs the unlocked vault, so a locked vault
+    // is refused here.
+    this.feedSigner = options.feedSigner || swarm.feedSigner;
+    this.verifyPublication = options.verifyPublication || swarm.verifyPublication;
     this.publicationIdFactory = options.publicationIdFactory || opaquePublicationId;
     this.sleep = options.sleep || delay;
     this.interactiveTimeoutMs = options.interactiveTimeoutMs || DEFAULT_INTERACTIVE_TIMEOUT_MS;
