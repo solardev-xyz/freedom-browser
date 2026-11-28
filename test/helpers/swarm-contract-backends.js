@@ -791,6 +791,26 @@ const countDelivered = (world) => world.events.filter((e) => e.delivered).length
 const viaDispatcher = (step) => typeof step.method === 'string' && step.page !== false;
 
 /**
+ * The verified walks a step's `read-data-verified` marks stand for on
+ * `core`, by root (the node's `verifiedWalk`): each built from the root's
+ * tree, with the reference's status for its join and what the node
+ * streamed for the core's ranged read of it (`from`: the step's first node
+ * request), whose leaves the walk checks.
+ */
+function walksOf(step, node, from) {
+  const walks = {};
+  for (const request of step.requests || []) {
+    if (request.deviation !== 'read-data-verified') continue;
+    const root = request.path.slice('/bytes/'.length);
+    const ranged = node.requests
+      .slice(from)
+      .find((r) => r.method === 'GET' && r.path === request.path && r.headers.some(([name]) => name === 'range'));
+    walks[root] = node.verifiedWalk(root, { status: request.status ?? null, served: ranged?.served ?? null });
+  }
+  return walks;
+}
+
+/**
  * Runs a `methods` case (or a contract case in the same form) on
  * `backend`: each step through main's dispatcher, as page-requests.js
  * calls it. Subscription ids are random on both backends, so a later
@@ -859,6 +879,7 @@ async function runCase(backend, kase, env) {
           .map((e) => e.prompt),
         events: world.events.slice(eventsBefore).map((e) => recordedIds(e, ids)),
         sent: world.coreCalls.slice(sentBefore),
+        ...(backend === 'core' ? { walks: walksOf(step, world.node, before) } : {}),
       });
     }
     record.window.to = RealDate.now();

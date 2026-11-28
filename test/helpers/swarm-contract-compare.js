@@ -180,20 +180,45 @@ function retimedSoc(got, want, window) {
   return { ...want };
 }
 
+// The verified walk's chunk calls the core holds open at once
+// (fc-swarm-provider's read_data.rs `OPEN_AT_ONCE`; the grammar's "8 open
+// at once"): those may reach the node in any order.
+const OPEN_AT_ONCE = 8;
+
 /**
- * Whether the core's requests are `wants`: each in order, a `{ walk }`
- * mark standing for any run of chunk reads and `/bytes` reads of that
- * reference's tree. With `prefix`, the core may stop before the last (a
- * refusal of its own, mid-way).
+ * Whether `got` is the verified walk `walk` (swarm-contract-node.js
+ * `verifiedWalk`): request for request, each path, header and status, as
+ * many as the walk has, in its groups' order (the tree's chunks, the
+ * ranged `/bytes`, the leaves fetched again), and within a group in the
+ * walk's order but for the calls open at once, which may arrive at most
+ * seven places from it.
  */
-function sameRequests(got, wants, { window, prefix = false } = {}) {
+function sameWalk(got, walk) {
+  if (got.length !== walk.length) return false;
+  const used = new Set();
+  return got.every((one, i) => {
+    const j = walk.findIndex(
+      (w, n) =>
+        !used.has(n) && w.group === walk[i].group && Math.abs(n - i) < OPEN_AT_ONCE && isDeepStrictEqual(strip(one), w.request)
+    );
+    if (j === -1) return false;
+    used.add(j);
+    return true;
+  });
+}
+
+/**
+ * Whether the core's requests are `wants`, each in order, a `{ walk }`
+ * mark standing for that root's verified walk (`walks`, by root: the
+ * step's, from runCase).
+ */
+function sameRequests(got, wants, { window, walks = {} } = {}) {
   let at = 0;
   for (const want of wants) {
-    if (prefix && at === got.length) return true;
     if (want.walk) {
-      const start = at;
-      while (at < got.length && got[at].method === 'GET' && /^\/(chunks|bytes)\//.test(got[at].path)) at += 1;
-      if (at === start) return false;
+      const walk = walks[want.walk];
+      if (!walk || !sameWalk(got.slice(at, at + walk.length), walk)) return false;
+      at += walk.length;
       continue;
     }
     const one = window ? retimedSoc(got[at], want, window) : got[at];
@@ -201,6 +226,30 @@ function sameRequests(got, wants, { window, prefix = false } = {}) {
     at += 1;
   }
   return at === got.length;
+}
+
+/** Whether a node rule's `match` takes request `r` (swarm-contract-node.js `matches`). */
+const ruleTakes = (match, r) =>
+  (!match.method || match.method === r.method) &&
+  (!match.path || match.path === r.path) &&
+  (!match.prefix || r.path.startsWith(match.prefix));
+
+/**
+ * Where among `wants` (the reference's requests as the core makes them)
+ * the core's own refusal is: the last request whose reply the case
+ * scripts, by a node rule or by `stamps_label_bytes` (the stamps reply
+ * past the cap); a `{ walk }` mark is its root's `GET /bytes`. -1 when the
+ * case scripts none.
+ */
+function failingAt(kase, wants) {
+  const rules = kase.node?.rules || [];
+  const scripted = (r) =>
+    rules.some(({ match }) => ruleTakes(match, r)) ||
+    (kase.node?.stamps_label_bytes !== undefined && r.method === 'GET' && r.path === '/stamps');
+  for (let i = wants.length - 1; i >= 0; i--) {
+    if (scripted(wants[i].walk ? { method: 'GET', path: `/bytes/${wants[i].walk}` } : wants[i])) return i;
+  }
+  return -1;
 }
 
 /** A request without what isn't compared: the node's own SOC check. */
@@ -323,6 +372,47 @@ function timeFixer(backend, kase, record) {
 /** History rows in insertion order: the reference's fixed clock gave them all one time, so its newest-first order is by id. */
 const byId = (rows) => [...rows].sort((a, b) => a.id - b.id);
 
+// What the page gets when the core cancels its request at the page's timer
+// (`deadlines`): the core's `cancelled` (service-client.js `cancelled()`),
+// which page-swarm-core.js's `failure` hands on as -32603 with its text.
+const CANCELLED = Object.freeze({ code: -32603, message: 'Cancelled' });
+// The text a cancelled request's history row ends with (design 0015,
+// "Main cancels": "A history row ends `failed` with the text
+// `cancelled`").
+const CANCELLED_ROW = 'cancelled';
+
+/**
+ * The stores a deviation leaves, from the recorded ones and the core's
+ * answer (`answer`: the case's `core`, or for `cancelled` and `transport`,
+ * what the step answered, whose code and data are already held to the
+ * reference's): the case's own `core.after` where it names one; else the
+ * feed store as recorded, and each history row as recorded, but ended as
+ * the core's answer ends it. A failed answer fails the row: status
+ * `failed`, the answer's text as its error (`cancelled` for a cancel), and
+ * no reference, URL, tag or batch, as every failed row the reference
+ * writes has none. A refusal before any node call (`core_before`) comes
+ * before the row too, as the reference's own size refusals write none
+ * (`publish-data-too-large`). The core's times are held to the run's
+ * window by the caller. Every such deviation is one step, so its rows are
+ * that step's.
+ */
+function deviationAfter(kase, how, answer) {
+  if (how === 'exact' && kase.core.after) return kase.core.after;
+  if (kase.core_before === 'any node call') return { feeds: kase.after.feeds, history: [] };
+  if (!('error' in answer)) return kase.after;
+  const text = how === 'cancelled' ? CANCELLED_ROW : answer.error.message;
+  const failed = (row) => ({
+    ...row,
+    status: 'failed',
+    reference: null,
+    bzzUrl: null,
+    tagUid: null,
+    batchIdUsed: null,
+    errorMessage: text,
+  });
+  return { feeds: kase.after.feeds, history: kase.after.history.map(failed) };
+}
+
 function compareCase(backend, kase, record) {
   const problems = [];
   const deviation = deviationOn(backend, kase);
@@ -330,6 +420,8 @@ function compareCase(backend, kase, record) {
   const fix = backend === 'core' ? clockFixer(clocks, record.window) : (got) => got;
   const how = deviation ? deviationWant(kase) : 'reference';
   const last = kase.steps.length - 1;
+  // The core's answer in the deviation's place, for its stores.
+  let deviated = null;
   kase.steps.forEach((step, k) => {
     const ran = record.steps[k];
     if (ran.skipped) return;
@@ -338,54 +430,58 @@ function compareCase(backend, kase, record) {
     for (const r of gotRequests) if (r.soc_valid === false) problems.push(`step ${k}: a SOC whose signature isn't its owner's: ${r.path}`);
     let wantRequests = backend === 'core' ? coreWants(step.requests || []) : (step.requests || []).map((r) => wire(r));
     let want = expectedAnswer(step);
-    // A deviation of the core's own, mid-way: it may stop before the
-    // reference's last request.
-    let prefix = false;
     if (how === 'exact' && k === last) {
       want = 'error' in kase.core ? { error: kase.core.error } : { result: kase.core.result };
-      if (kase.core.requests) wantRequests = kase.core.requests.map((r) => wire(r, backend));
-      prefix = 'error' in kase.core;
-      // Refused before any node call: F-4's bound before the upload; the
-      // route test before the subscribe's probe (subscription-registry.js
-      // `checkRoute`, both backends).
-      if (kase.core_before === 'any node call' || deviation === 'subscribe-proxy') wantRequests = [];
+      deviated = want;
+      if (kase.core.requests) {
+        // The vector names the core's requests.
+        wantRequests = kase.core.requests.map((r) => wire(r, backend));
+      } else if (kase.core_before === 'any node call' || deviation === 'subscribe-proxy') {
+        // Refused before any node call: F-4's bound before the upload; the
+        // route test before the subscribe's probe (subscription-registry.js
+        // `checkRoute`, both backends).
+        wantRequests = [];
+      } else if ('error' in kase.core) {
+        // A refusal of the core's own, mid-way: the reference's requests
+        // through the one the core refuses, exactly.
+        const at = failingAt(kase, wantRequests);
+        if (at === -1) problems.push(`step ${k}: no request the case scripts for the core's refusal ${show(kase.core.error)}`);
+        else wantRequests = wantRequests.slice(0, at + 1);
+      }
     }
     if (how === 'cancelled' && k === last) {
       // The page gave up as a request reached the node: the core answers
       // cancelled, and asks nothing more. That request's own reply, which
       // comes after, is nobody's.
       const rules = (kase.node.rules || []).filter((rule) => rule.reply?.abortPage);
-      const hit = (r) =>
-        rules.some(
-          ({ match }) =>
-            (!match.method || match.method === r.method) &&
-            (!match.path || match.path === r.path) &&
-            (!match.prefix || r.path.startsWith(match.prefix))
-        );
+      const hit = (r) => rules.some(({ match }) => ruleTakes(match, r));
       const upTo = wantRequests
         .slice(0, wantRequests.findIndex(hit) + 1)
         .map((r, i, all) => (i === all.length - 1 ? { ...r, status: null } : r));
       const seen = gotRequests.map((r, i) => (i === gotRequests.length - 1 ? { ...r, status: null } : r));
-      if (!upTo.length || !sameRequests(seen, upTo, { window: record.window })) {
+      if (!upTo.length || !sameRequests(seen, upTo, { window: record.window, walks: ran.walks })) {
         problems.push(`step ${k}: requests until the page gave up: ${show(gotRequests)} against ${show(upTo)}`);
       }
-      if (!('error' in got)) problems.push(`step ${k}: cancelled at the page's timer, yet answered ${show(got)}`);
+      if (!isDeepStrictEqual(got, { error: CANCELLED })) {
+        problems.push(`step ${k}: cancelled at the page's timer, yet answered ${show(got)} against ${show({ error: CANCELLED })}`);
+      }
+      deviated = got;
       return;
     }
     if (how === 'transport' && k === last) {
       // One text per failure class: the reference's code and data, the
-      // core's text; and its requests up to the failure.
-      prefix = true;
+      // core's text; and the reference's requests, which end at the failure.
       const same = 'error' in got && got.error.code === want.error?.code && typeof got.error.message === 'string';
       if (!same || !isDeepStrictEqual(got.error.data, want.error?.data)) {
         problems.push(`step ${k}: a transport failure answered ${show(got)} against code ${want.error?.code}`);
       }
+      deviated = got;
     } else if (!sameAnswer(fix(got, want), want)) {
       problems.push(`step ${k} answer: ${show(got)} against ${show(want)}`);
     }
     const same =
       backend === 'core'
-        ? sameRequests(gotRequests, wantRequests, { window: record.window, prefix })
+        ? sameRequests(gotRequests, wantRequests, { window: record.window, walks: ran.walks })
         : isDeepStrictEqual(gotRequests.map(strip), wantRequests);
     if (!same) problems.push(`step ${k} requests: ${show(gotRequests)} against ${show(wantRequests)}`);
     if (deviation === 'stamps-one-read') {
@@ -402,24 +498,20 @@ function compareCase(backend, kase, record) {
   if (!isDeepStrictEqual(record.websockets, wantSockets)) {
     problems.push(`websockets: ${show(record.websockets)} against ${show(wantSockets)}`);
   }
-  if (how === 'reference') {
-    if (fixedText(record.after.feeds, kase.after.feeds, fix) !== kase.after.feeds) {
-      problems.push(`feeds after: ${show(record.after.feeds)} against ${show(kase.after.feeds)}`);
-    }
-    const rows = backend === 'core' ? byId(record.after.history) : record.after.history;
-    const wantRows = backend === 'core' ? byId(kase.after.history) : kase.after.history;
-    if (!isDeepStrictEqual(fix(rows.map(sqliteName), wantRows), wantRows)) {
-      problems.push(`history after: ${show(record.after.history)} against ${show(kase.after.history)}`);
-    }
-  } else {
-    // The deviation's answer is the core's own, and so is what it stored:
-    // each history row ends as the page's answer did.
-    const failed = 'error' in record.steps[last];
-    for (const row of record.after.history) {
-      if (row.status !== (failed ? 'failed' : 'completed')) {
-        problems.push(`history after: a row ${row.status} for an answer that ${failed ? 'failed' : 'succeeded'}`);
-      }
-    }
+  // The stores: the reference's, or what the deviation leaves.
+  let wantAfter = kase.after;
+  if (how !== 'reference') {
+    if (kase.steps.length !== 1) problems.push(`a deviation (${how}) of ${kase.steps.length} steps: its rows can't be told apart`);
+    if (deviated) wantAfter = deviationAfter(kase, how, deviated);
+    else problems.push(`no answer in the deviation's place (${how})`);
+  }
+  if (fixedText(record.after.feeds, wantAfter.feeds, fix) !== wantAfter.feeds) {
+    problems.push(`feeds after: ${show(record.after.feeds)} against ${show(wantAfter.feeds)}`);
+  }
+  const rows = backend === 'core' ? byId(record.after.history) : record.after.history;
+  const wantRows = backend === 'core' ? byId(wantAfter.history) : wantAfter.history;
+  if (!isDeepStrictEqual(fix(rows.map(sqliteName), wantRows), wantRows)) {
+    problems.push(`history after: ${show(record.after.history)} against ${show(wantAfter.history)}`);
   }
   if (record.exits?.length) problems.push(`the core exited: ${show(record.exits)}`);
   const deviations = deviation ? [deviation, ...(kase.also || [])] : [];
