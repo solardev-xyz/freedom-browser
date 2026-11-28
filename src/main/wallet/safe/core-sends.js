@@ -63,7 +63,16 @@
  * PR 8's binding reads). A refusal of the core's keeps its code
  * (wallet/safe/errors.js): nothing here falls back to main's own path.
  *
- * PR 6 hooks the approval records in at `approvalRecords`, below.
+ * - **The approval records** (SAFE-3's PR 6, the plan's point 5;
+ *   approval-records.js, in memory only): at the user's decision, before
+ *   the token is minted, main records the SafeTx approved for the Safe,
+ *   `{ address, chainId: 100, hash }`, only once ethers' hash of the fields
+ *   `safe.prepare` answered is the core's `safe_tx_hash` (checked at the
+ *   prepare too, so a SafeTx that doesn't hash to it is never shown). The
+ *   record is dropped on a failed mint or propose, before `safe.discard`,
+ *   when `safe.execute` answers the SafeTx superseded, and before
+ *   `safe.executed` (`approvalRecords`, below). PR 8's binding of a Ledger
+ *   owner's SafeTx reads it.
  */
 
 const crypto = require('crypto');
@@ -75,6 +84,7 @@ const {
   SAFE_NEEDS_FUNDS,
   SAFE_UNSUPPORTED,
 } = require('./errors');
+const records = require('./approval-records');
 const safeApprovals = require('./safe-approvals');
 
 // The SafeTxs main minted a wallet `safe-send` for, by token: { safeIndex,
@@ -120,22 +130,34 @@ const EXEC_INTERFACE = new Interface([
 const DECIMAL = /^(?:0|[1-9][0-9]{0,77})$/;
 
 /**
- * PR 6's seam (the SAFE-3 plan's point 5, approval records). Today each
- * does nothing. PR 6 records `{ address, chainId: 100, hash }` for the Safe
- * on the user's decision (`decided`, before the token is minted, and only
- * once ethers' hash of the prepared fields is the core's `safe_tx_hash`:
- * a throw there mints nothing), and drops it (`dropped`) on a failed
- * propose, before `safe.discard`, when `safe.execute` answers the SafeTx
- * superseded, and before `safe.executed`.
+ * The approval records (SAFE-3's PR 6, the plan's point 5;
+ * approval-records.js): `{ address, chainId: 100, hash }` recorded for the
+ * Safe on the user's decision (`decided`, before the token is minted, and
+ * only once ethers' hash of the prepared fields, for the Safe's address as
+ * main's record holds it now, is the core's `safe_tx_hash`: a throw there
+ * mints nothing), and dropped (`dropped`) on a failed mint or propose,
+ * before `safe.discard`, when `safe.execute` answers the SafeTx superseded,
+ * and before `safe.executed`. Both synchronous, in memory.
  */
 const approvalRecords = {
-  /** The user approved the SafeTx `payload` for Safe `safeIndex`. */
-  decided(_safeIndex, _payload) {},
+  /** The user approved the SafeTx `payload` (`{ chainId, safeTx, safeTxHash }`) for Safe `safeIndex`. */
+  decided(safeIndex, payload) {
+    const { address } = safeRecord(safeIndex);
+    records.record(safeIndex, {
+      address,
+      chainId: payload?.chainId,
+      safeTx: payload?.safeTx,
+      safeTxHash: payload?.safeTxHash,
+    });
+  },
   /**
-   * The Safe's record for `safeTxHash` ends (`why`: `propose_failed`,
-   * `discard`, `superseded`, `executed`).
+   * The Safe's record for `safeTxHash` ends (`why`: `mint_failed`,
+   * `propose_failed`, `discard`, `superseded`, `executed`); another
+   * SafeTx's stays.
    */
-  dropped(_safeIndex, _safeTxHash, _why) {},
+  dropped(safeIndex, safeTxHash, _why) {
+    records.drop(safeIndex, safeTxHash);
+  },
 };
 
 function vault() {
@@ -237,6 +259,10 @@ async function prepare(safeIndex, request) {
   if (!sameCall(callOf(facts.safeTx), call)) {
     throw new Error('The identity core prepared another transaction than the one composed');
   }
+  // The binding its approval will record (PR 6), checked before anything
+  // is shown: a SafeTx whose fields don't hash to the core's
+  // `safe_tx_hash` is never asked about.
+  records.verify({ address: safeRecord(safeIndex).address, ...payload });
   return payload;
 }
 
@@ -262,11 +288,21 @@ async function confirmWalletSend({ sender, safeIndex, request, approvals }) {
     : { approved: false, error: outcome.error, code: outcome.code };
 }
 
-/** The user's decision recorded (PR 6), then the token minted for `payload` and held. */
+/**
+ * The user's decision recorded (PR 6), then the token minted for `payload`
+ * and held. A mint that fails drops the record: no token, no approval.
+ */
 async function mint(safeIndex, payload) {
   await approvalRecords.decided(safeIndex, payload);
   const { KINDS, issueConfirmation } = signing();
-  const { token, expiresAt } = await issueConfirmation(KINDS.SAFE_SEND, safeIndex, payload);
+  let minted;
+  try {
+    minted = await issueConfirmation(KINDS.SAFE_SEND, safeIndex, payload);
+  } catch (err) {
+    await approvalRecords.dropped(safeIndex, payload.safeTxHash, 'mint_failed');
+    throw err;
+  }
+  const { token, expiresAt } = minted;
   hold(prepared, token, safeIndex, payload, expiresAt);
   return { token, expiresAt };
 }
@@ -323,8 +359,14 @@ async function propose({ safeIndex, tx, chainId, display, authorization }) {
   const token = typeof authorization?.confirmation === 'string' ? authorization.confirmation : '';
   // Taken at once: a token is presented once, whatever becomes of it.
   const held = token ? take(token) : null;
+  // A token main holds a SafeTx for, refused before the core is asked: a
+  // failed propose, so its approval's record (PR 6) goes with it.
+  const dropHeld = () => {
+    if (held) approvalRecords.dropped(held.safeIndex, held.payload.safeTxHash, 'propose_failed');
+  };
   const refuse = (reason) => {
     if (token) signing().discardConfirmation(token);
+    dropHeld();
     return notConfirmed(reason);
   };
   if (authorization?.autoApprove !== undefined) throw refuse("main reads a page's rules itself");
@@ -343,12 +385,19 @@ async function propose({ safeIndex, tx, chainId, display, authorization }) {
   }
   // Main's record of the kind it minted the token as, checked (and the
   // token burnt otherwise) before the core is asked.
-  const confirmation = confirmationFor(token, KINDS.SAFE_SEND, safeIndex, held.payload);
+  let confirmation;
+  try {
+    confirmation = confirmationFor(token, KINDS.SAFE_SEND, safeIndex, held.payload);
+  } catch (err) {
+    dropHeld();
+    throw err;
+  }
   let reservation;
   try {
     reservation = safeApprovals.reserveSend(safeIndex);
   } catch (err) {
     signing().discardConfirmation(token);
+    dropHeld();
     throw err;
   }
   const safeTxHash = facts.safeTxHash;
