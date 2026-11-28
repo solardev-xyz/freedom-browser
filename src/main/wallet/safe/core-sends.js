@@ -57,6 +57,18 @@
  *   A "Try again" while the execution is held sends its bytes again, at
  *   its nonce, with nothing signed anew.
  *
+ * - **A site's send** (SAFE-3's PR 7; design 0016, C1, the hello's
+ *   `safe3`): the core prepares it before its own prompt and answers the
+ *   page's request `{ device }` with design 0016's `safe-send`, minted for
+ *   the page and the handle main approved that prompt on, binding the
+ *   SafeTx the prompt showed (page-eip1193.js checks the payload against
+ *   it). `proposeForSite` records the user's decision for that SafeTx (PR
+ *   6, only once ethers' hash of its fields is the core's), takes the
+ *   Safe's send reservation and presents `{ token, handle }` to
+ *   `safe.propose` under `page`, with the page's PageContext; the page's
+ *   board follows (page-core-sends.js). Its execution runs past the site's
+ *   guard (`execute`, below), as main's own path's does.
+ *
  * Each step holds main's own step exclusion for the Safe, as today's path
  * does, and then reads the core's entry into main's read-only copy
  * (pending-store.js `refreshPending`; the SAFE-3 plan's point 3, the copy
@@ -82,6 +94,7 @@ const {
   SAFE_BUSY,
   SAFE_DISCARDED,
   SAFE_NEEDS_FUNDS,
+  SAFE_SITE_WITHDRAWN,
   SAFE_UNSUPPORTED,
 } = require('./errors');
 const records = require('./approval-records');
@@ -123,6 +136,13 @@ const asks = new Map();
 // only, as the core keeps no executed mark: after a restart the verified
 // nonce decides.
 const unfinished = new Map();
+
+// A site's SafeTxs whose site no longer holds them (`withdrawSite`), by
+// hash, lowercase: each is the wallet's own from then on, executed with no
+// site's guard. In memory only, as main can't rewrite the core's entry:
+// after a restart the first attempt finds no guard and withdraws it again.
+const withdrawn = new Set();
+const MAX_WITHDRAWN = 256;
 
 const EXEC_INTERFACE = new Interface([
   'function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)',
@@ -413,6 +433,96 @@ async function propose({ safeIndex, tx, chainId, display, authorization }) {
     await approvalRecords.dropped(safeIndex, safeTxHash, 'propose_failed');
     // Burnt by the core however its propose ended; one never sent is burnt here.
     signing().discardConfirmation(token);
+    throw err;
+  } finally {
+    reservation.release();
+    await refreshCopy(safeIndex);
+  }
+}
+
+// D6's `safe-send` payload, as the core mints it for a site's send.
+const SITE_PAYLOAD_KEYS = Object.freeze(['safe', 'chain_id', 'safe_tx', 'safe_tx_hash']);
+
+/**
+ * A site's Safe send on the core (SAFE-3's PR 7; design 0016, C1): the
+ * core's `{ device }` answer under the hello's `safe3`, its `token` minted
+ * for the page (`page`, the PageContext main sent the request under) and
+ * the `handle` main approved the core's prompt on, binding D6's `payload`,
+ * `{ safe, chain_id, safe_tx, safe_tx_hash }`: the SafeTx that prompt
+ * showed, which page-eip1193.js checked the payload against. In order:
+ * - the user's decision recorded (PR 6, `approvalRecords.decided`), at the
+ *   first point main holds the minted SafeTx and before its token is
+ *   spent, only once ethers' hash of its ten fields, for the Safe's
+ *   address as main's record holds it, is the core's `safe_tx_hash`;
+ * - the Safe's send reservation taken (safe-approvals.js), so its
+ *   deletion waits;
+ * - `safe.propose` under `page`, presenting `{ token, handle }` and naming
+ *   `safe_tx_hash` (only to a core that took `safe3`): the core spends the
+ *   token for that SafeTx, reads the Safe again, signs with the vault
+ *   owners while the vault is unlocked and writes the entry with its
+ *   proposal mark and `display`, the board's text for the site.
+ * Refused, the token burnt and nothing proposed, for another Safe or
+ * chain, a payload of another shape, no page or handle, and a SafeTx that
+ * doesn't hash to its hash. A failed propose drops the record; the token
+ * is burnt however it ends. Resolves the board's state.
+ *
+ * @param {{ safeIndex: number, payload: object, token: string, handle: string,
+ *   page: object, display?: object }} options
+ */
+async function proposeForSite({ safeIndex, payload, token, handle, page, display }) {
+  const burn = () => {
+    if (typeof token === 'string' && token) signing().discardConfirmation(token);
+  };
+  const refuse = (reason) => {
+    burn();
+    return notConfirmed(reason);
+  };
+  if (typeof token !== 'string' || !token) throw refuse('no confirmation token');
+  if (typeof handle !== 'string' || !handle || !isObject(page)) throw refuse("the site's request is not this one");
+  let record;
+  try {
+    record = safeRecord(safeIndex);
+  } catch (err) {
+    burn();
+    throw err;
+  }
+  const shaped =
+    isObject(payload) &&
+    Object.keys(payload).length === SITE_PAYLOAD_KEYS.length &&
+    SITE_PAYLOAD_KEYS.every((key) => Object.hasOwn(payload, key)) &&
+    typeof payload.safe === 'string' &&
+    payload.safe.toLowerCase() === record.address.toLowerCase() &&
+    String(payload.chain_id) === String(records.SAFE_CHAIN_ID);
+  if (!shaped) throw refuse('request differs from what was confirmed');
+  const safeTxHash = payload.safe_tx_hash;
+  try {
+    await approvalRecords.decided(safeIndex, {
+      chainId: records.SAFE_CHAIN_ID,
+      safeTx: payload.safe_tx,
+      safeTxHash,
+    });
+  } catch (err) {
+    burn();
+    throw err;
+  }
+  let reservation;
+  try {
+    reservation = safeApprovals.reserveSend(safeIndex);
+  } catch (err) {
+    await approvalRecords.dropped(safeIndex, safeTxHash, 'propose_failed');
+    burn();
+    throw err;
+  }
+  try {
+    const answer = await vault().safe.propose(
+      { safe: safeIndex, safe_tx_hash: safeTxHash, authorization: { token, handle }, display },
+      page
+    );
+    return remember(safeIndex, answer);
+  } catch (err) {
+    await approvalRecords.dropped(safeIndex, safeTxHash, 'propose_failed');
+    // Burnt by the core however its propose ended; one never sent is burnt here.
+    burn();
     throw err;
   } finally {
     reservation.release();
@@ -780,8 +890,13 @@ async function finishExecuted(safeIndex, done) {
  *   bytes sent again; then PR 6's record dropped and `safe.executed` told
  *   (`finishExecuted`). Resolves the board's state, `status: 'executed'`,
  *   with `executed: { hash, explorerUrl }`.
- * The token is burnt however it ends. A failed signature or broadcast
- * leaves the SafeTx pending for "Try again".
+ * A site's SafeTx (its board's `display.site`, SAFE-3's PR 7) runs these
+ * steps only past its page request's guard (`underSiteGuard`), which runs
+ * again before the commit; the site's turn is held until the commit and
+ * the payment recorded under the site. With no guard, or one that
+ * refuses, nothing is sent and the SafeTx becomes the wallet's own
+ * (SAFE_SITE_WITHDRAWN). The token is burnt however it ends. A failed
+ * signature or broadcast leaves the SafeTx pending for "Try again".
  */
 async function execute(safeIndex, { feeConfirmation = null, safeTxHash = null, asker = null } = {}) {
   if (feeConfirmation !== null && typeof feeConfirmation?.feeAskId !== 'string') {
@@ -808,93 +923,21 @@ async function execute(safeIndex, { feeConfirmation = null, safeTxHash = null, a
     if (state?.safeTxHash?.toLowerCase() !== named) {
       throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
     }
-    // SAFE-3's PR 7: a site's SafeTx executes on the core only with its
-    // site's guard.
-    if (state.display?.site !== undefined && state.display?.site !== null) throw siteSendRefused();
     const chainId = state.chainId;
     if (!Number.isSafeInteger(chainId) || chainId <= 0) {
       throw new Error("The identity core answered no state of this account's transaction");
     }
     const intentKey = require('./safe-executor').execIntentKey(chainId, named);
-    const { heldIntentFor } = require('../transaction-service');
-    const held = await heldIntentFor(intentKey);
-    const answer = await vault().safe.execute({
-      safe: safeIndex,
-      safe_tx_hash: state.safeTxHash,
-      ...(confirmed ? { fee_ack: true } : {}),
-    });
-
-    if (isObject(answer?.superseded)) {
-      asks.delete(safeIndex);
-      await approvalRecords.dropped(safeIndex, state.safeTxHash, 'superseded');
-      return remember(safeIndex, answer.superseded);
-    }
-
-    let params;
-    let executorIndex;
-    if (isObject(answer?.fee_check)) {
-      executorIndex = executorOf(record);
-      // Asked, unless the execution is held: its bytes go again unsigned,
-      // and a send that would sign anew refuses without a gas limit.
-      if (!held) {
-        throw feeAsk(
-          holdAsk(safeIndex, {
-            safeTxHash: named,
-            verdict: answer.fee_check,
-            asker: askerOf(asker),
-            executorIndex,
-            safeAddress: record.address,
-            chainId,
-          })
-        );
-      }
-      asks.delete(safeIndex);
-      params = { to: record.address, value: '0', data: '0x', chainId };
-    } else {
-      const send = answer?.send;
-      token = typeof send?.token === 'string' ? send.token : null;
-      params = checkedSend(send, { record, state });
-      asks.delete(safeIndex);
-      // The fee confirmed: the send must be the offer that ask showed.
-      if (confirmed && (send.account !== confirmed.executorIndex || maxCostOf(send.tx) !== confirmed.verdict?.maxCost)) {
-        throw require('../fee-check').feeNotShownError();
-      }
-      executorIndex = send.account;
-    }
-
-    const { getSigner } = require('../signers');
-    const executor = getSigner(
-      executorIndex,
-      token ? { confirmation: { token, kind: signing().KINDS.EXECUTOR_SEND, page: null } } : {}
-    );
-    const from = await executor.getAddress();
-    const display = isObject(state.display) ? state.display : {};
-    const { signAndRecord, KINDS: PAYMENT_KINDS } = require('../tx-recorder');
-    let result;
-    try {
-      result = await signAndRecord(
-        params,
-        executor,
-        {
-          kind: PAYMENT_KINDS.SAFE_SEND,
-          fromAddress: record.address,
-          toAddress: display.toAddress,
-          asset: display.asset ?? null,
-          amount: display.amount,
-          metadata: { safeAddress: record.address, safeTxHash: state.safeTxHash, executor: from },
-        },
-        { intentKey }
-      );
-    } catch (err) {
-      if (/insufficient funds/i.test(err?.message ?? '')) err.code = SAFE_NEEDS_FUNDS;
-      throw err;
-    }
-
+    // A site's SafeTx (SAFE-3's PR 7) executes for the site only past its
+    // request's guard (`underSiteGuard`); one withdrawn from its site is
+    // the wallet's own.
+    const site = siteOf(state);
+    const attempt = (guard) =>
+      executeOnce(safeIndex, { state, record, named, chainId, intentKey, confirmed, site, guard, asker, setToken: (t) => (token = t) });
+    const outcome = site === null ? await attempt(null) : await underSiteGuard(state, intentKey, attempt);
+    if (outcome.superseded) return outcome.superseded;
     const { durable: _durable, ...shown } = state;
-    return await finishExecuted(safeIndex, {
-      state: shown,
-      executed: { hash: result.hash, explorerUrl: result.explorerUrl ?? null },
-    });
+    return await finishExecuted(safeIndex, { state: shown, executed: outcome.executed });
   } finally {
     // The core's token, spent at its presentation; one never presented is burnt.
     if (token) signing().discardConfirmation(token);
@@ -904,15 +947,155 @@ async function execute(safeIndex, { feeConfirmation = null, safeTxHash = null, a
 }
 
 /**
- * A site's Safe send, which runs on the core from SAFE-3's PR 7 (the
- * hello's `safe3`, and `safe.propose` under the page): until then refused,
- * before its token is spent, nothing started.
+ * The site a SafeTx's board state names (`display.site`, as the page's
+ * proposal gave it), or null: none, or one withdrawn from it (`withdrawn`).
  */
-function siteSendRefused() {
-  return codedError(
-    "A site's multi-owner transaction isn't available through the identity core in this build yet",
-    SAFE_UNSUPPORTED
+function siteOf(state) {
+  const site = state.display?.site;
+  if (site === undefined || site === null) return null;
+  return withdrawn.has(String(state.safeTxHash).toLowerCase()) ? null : site;
+}
+
+/**
+ * A site's SafeTx executed for the site (SAFE-3's PR 7), as main's own path
+ * runs it (safe-transactions.js `guardSiteSafeSend`): only past its page
+ * request's guard, which checks the site's name and key, its grant and the
+ * requesting document and runs the execution in the same run as its last
+ * check, and again after the executor's signature, before the first commit
+ * (or before a held execution's bytes go out again). With no guard (its
+ * request ended, its page gone, or main restarted since), or one that
+ * refuses, nothing is executed: the SafeTx becomes the wallet's own
+ * (`withdrawSite`) and the attempt throws SAFE_SITE_WITHDRAWN, for the user
+ * to execute it again or discard it.
+ */
+async function underSiteGuard(state, intentKey, attempt) {
+  const transactions = require('./safe-transactions');
+  const guard = transactions.siteGuardFor(state.safeTxHash);
+  try {
+    if (!guard) throw transactions.siteWithdrawn();
+    return await guard(() => attempt(guard));
+  } catch (err) {
+    if (err?.code !== SAFE_SITE_WITHDRAWN) throw err;
+    await withdrawSite(state, intentKey);
+    throw transactions.siteWithdrawn();
+  }
+}
+
+/**
+ * The SafeTx taken from its site: the site of an execution held for it (a
+ * first attempt committed, then not sent) withdrawn first, durably, in the
+ * core's journal, and only then main's mark (`withdrawn`), so its next
+ * attempt runs as the wallet's own. If the held execution's site can't be
+ * withdrawn, nothing changes and nothing is sent (SAFE_SITE_WITHDRAWING):
+ * the next attempt, with no guard, tries again.
+ */
+async function withdrawSite(state, intentKey) {
+  try {
+    const store = require('../intent-store').getIntentStore();
+    await store.ready;
+    const held = await store.byKey(intentKey);
+    if (held) await store.withdrawOrigin(held.intentId);
+  } catch (err) {
+    console.warn('[SafeCore] A held execution kept its site for now:', err?.message);
+    throw require('./safe-transactions').siteWithdrawing();
+  }
+  while (withdrawn.size >= MAX_WITHDRAWN) withdrawn.delete(withdrawn.values().next().value);
+  withdrawn.add(String(state.safeTxHash).toLowerCase());
+}
+
+/**
+ * One execution attempt of the board's SafeTx (`execute`'s steps from
+ * `safe.execute` through the broadcast): `{ superseded }`, the board's
+ * state, or `{ executed: { hash, explorerUrl } }`. For a site's SafeTx
+ * (`site`, past its `guard`), the site's turn is taken until the commit
+ * (D12, as main's own path takes it), the payment is recorded under the
+ * site, and `guard` runs again before the commit.
+ */
+async function executeOnce(safeIndex, { state, record, named, chainId, intentKey, confirmed, site, guard, asker, setToken }) {
+  const { heldIntentFor } = require('../transaction-service');
+  const held = await heldIntentFor(intentKey);
+  const answer = await vault().safe.execute({
+    safe: safeIndex,
+    safe_tx_hash: state.safeTxHash,
+    ...(confirmed ? { fee_ack: true } : {}),
+  });
+
+  if (isObject(answer?.superseded)) {
+    asks.delete(safeIndex);
+    await approvalRecords.dropped(safeIndex, state.safeTxHash, 'superseded');
+    return { superseded: remember(safeIndex, answer.superseded) };
+  }
+
+  let params;
+  let executorIndex;
+  let token = null;
+  if (isObject(answer?.fee_check)) {
+    executorIndex = executorOf(record);
+    // Asked, unless the execution is held: its bytes go again unsigned,
+    // and a send that would sign anew refuses without a gas limit.
+    if (!held) {
+      throw feeAsk(
+        holdAsk(safeIndex, {
+          safeTxHash: named,
+          verdict: answer.fee_check,
+          asker: askerOf(asker),
+          executorIndex,
+          safeAddress: record.address,
+          chainId,
+        })
+      );
+    }
+    asks.delete(safeIndex);
+    params = { to: record.address, value: '0', data: '0x', chainId };
+  } else {
+    const send = answer?.send;
+    token = typeof send?.token === 'string' ? send.token : null;
+    // Burnt by `execute` however the attempt ends.
+    setToken(token);
+    params = checkedSend(send, { record, state });
+    asks.delete(safeIndex);
+    // The fee confirmed: the send must be the offer that ask showed.
+    if (confirmed && (send.account !== confirmed.executorIndex || maxCostOf(send.tx) !== confirmed.verdict?.maxCost)) {
+      throw require('../fee-check').feeNotShownError();
+    }
+    executorIndex = send.account;
+  }
+
+  const { getSigner } = require('../signers');
+  const executor = getSigner(
+    executorIndex,
+    token ? { confirmation: { token, kind: signing().KINDS.EXECUTOR_SEND, page: null } } : {}
   );
+  const from = await executor.getAddress();
+  const display = isObject(state.display) ? state.display : {};
+  const origin = typeof site === 'string' && site ? site : null;
+  const { signAndRecord, KINDS: PAYMENT_KINDS } = require('../tx-recorder');
+  // A site's payment takes the site's turn until it is committed, as its
+  // other payments do (auto-approve-pause.js, D12).
+  const leave = origin ? await require('../auto-approve-pause').takeSiteTurn(origin) : null;
+  let result;
+  try {
+    result = await signAndRecord(
+      params,
+      executor,
+      {
+        kind: PAYMENT_KINDS.SAFE_SEND,
+        fromAddress: record.address,
+        toAddress: display.toAddress,
+        asset: display.asset ?? null,
+        amount: display.amount,
+        ...(origin ? { origin } : {}),
+        metadata: { safeAddress: record.address, safeTxHash: state.safeTxHash, executor: from },
+      },
+      { intentKey, ...(guard ? { guardCommit: guard } : {}), ...(leave ? { onCommitted: leave } : {}) }
+    );
+  } catch (err) {
+    if (/insufficient funds/i.test(err?.message ?? '')) err.code = SAFE_NEEDS_FUNDS;
+    throw err;
+  } finally {
+    leave?.();
+  }
+  return { executed: { hash: result.hash, explorerUrl: result.explorerUrl ?? null } };
 }
 
 /** Tests: nothing held. */
@@ -922,6 +1105,7 @@ function _reset() {
   boards.clear();
   asks.clear();
   unfinished.clear();
+  withdrawn.clear();
 }
 
 module.exports = {
@@ -937,7 +1121,7 @@ module.exports = {
   propose,
   readState,
   readStates,
+  proposeForSite,
   signOwner,
-  siteSendRefused,
   _reset,
 };

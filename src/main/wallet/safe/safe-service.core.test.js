@@ -14,7 +14,9 @@
  *   asked in the approvals document (or on the card with it off) before
  *   `safe.deploy { fee_ack: true }`; a held deployment sent again; a failed
  *   broadcast, a failed receipt and an unverified deployment;
- * - on js nothing reaches the core, and no hello declares `safe3`.
+ * - on js nothing reaches the core, and no hello declares `safe3` (the
+ *   core's backend's does, SAFE-3's PR 7: the activation above passes
+ *   under it, a deployment signed only with its `executor-send` token).
  * The journal and the broadcast are transaction-service's (scripted here
  * at tx-recorder's `signAndRecord`, which signs through the real signer).
  */
@@ -140,9 +142,26 @@ const mockResendAndRecord = jest.fn(async (intentId) => {
     intentId,
   };
 });
+// A held deployment's speed-up (SAFE-3's PR 7), as tx-recorder's
+// `replaceWithAndRecord` runs it: the given transaction signed through the
+// real signer at the held intent's nonce, committed as its replacement, then
+// broadcast (transaction-service.js `replaceIntentWith`, whose fee and
+// payment checks intent-sends.test.js covers).
+const mockReplaceWithAndRecord = jest.fn(async (intentId, params, signer) => {
+  const held = journal.find((entry) => entry.intentId === intentId);
+  const { buildTransaction } = require('../signing-utils');
+  const raw = await signer.signTransaction(buildTransaction({ ...params, nonce: held.nonce ?? 7 }));
+  const hash = keccak256(raw);
+  held.replacements = [...(held.replacements ?? []), { raw, hash }];
+  events.push('replace');
+  await mockBroadcast(raw);
+  events.push('broadcast');
+  return { hash, intentId, nonce: held.nonce ?? 7, replaced: true, outcome: 'sent' };
+});
 jest.mock('../tx-recorder', () => ({
   signAndRecord: (...args) => mockSignAndRecord(...args),
   resendAndRecord: (...args) => mockResendAndRecord(...args),
+  replaceWithAndRecord: (...args) => mockReplaceWithAndRecord(...args),
   KINDS: { SAFE_DEPLOY: 'safe-deploy' },
 }));
 const mockWaitForTransaction = jest.fn(async () => {
@@ -427,6 +446,119 @@ describe('status, on the core', () => {
     await expect(service.getSafeStatus(0)).rejects.toThrow(/not a Safe/);
     expect(sent('safe.status')).toHaveLength(1);
     expectNothingOfTodays();
+  });
+});
+
+describe("a held activation's speed-up, on the core (SAFE-3's PR 7)", () => {
+  // The deployment held under its key: signed at nonce 7 at the old fee,
+  // its broadcast's fate unknown.
+  const OLD_RAW = '0x02';
+  function holdDeployment() {
+    journal.push({ key: INTENT_KEY, raw: OLD_RAW, hash: '0x' + 'cd'.repeat(32), intentId: 'intent-held', nonce: 7, context: {} });
+  }
+  // The core's deployment now: its own estimate and quote, its token.
+  const FASTER = Object.freeze({
+    send: {
+      kind: 'executor-send',
+      account: 0,
+      tx: { ...DEPLOY_TX, gas_limit: '310000', max_fee_per_gas: '3000000000', max_priority_fee_per_gas: '1500000000' },
+      token: TOKEN,
+    },
+  });
+  // The core's verdict on that offer: its most, 310000 × 3 gwei.
+  const FASTER_VERDICT = Object.freeze({ ...VERDICT, maxCost: '930000000000000' });
+
+  test("safe.deploy's send at the core's quote, signed with its executor-send token at the held nonce as the intent's replacement; the receipt; safe.deployed", async () => {
+    holdDeployment();
+    answers['safe.deploy'] = FASTER;
+    answers['safe.deployed'] = { deployed: true };
+    const result = await service.activateSafe(5, { speedUp: true, sender: CHROME });
+
+    expect(events).toEqual(['safe.deploy', 'sign.transaction', 'replace', 'broadcast', 'receipt', 'safe.deployed']);
+    // Exactly the core's transaction, at the held deployment's nonce, under
+    // its token: never the journal's intent-replace, which the core refuses
+    // for a deployment under `safe3`.
+    expect(core.hello.safe3).toBe(true);
+    expect(sent('sign.transaction')).toEqual([
+      {
+        context: SHELL,
+        params: {
+          key: { kind: 'account', index: 0 },
+          tx: { ...FASTER.send.tx, nonce: '7' },
+          authorization: { token: TOKEN, kind: 'executor-send' },
+        },
+      },
+    ]);
+    expect(mockReplaceWithAndRecord.mock.calls[0][0]).toBe('intent-held');
+    expect(mockReplaceWithAndRecord.mock.calls[0][1]).toEqual({
+      to: FACTORY,
+      value: '0',
+      data: DEPLOY_TX.data,
+      chainId: 100,
+      gasLimit: '310000',
+      maxFeePerGas: '3000000000',
+      maxPriorityFeePerGas: '1500000000',
+    });
+    const [replacement] = journal[0].replacements;
+    expect(Transaction.from(replacement.raw).nonce).toBe(7);
+    // Not sent again as it was, nor signed as a new intent.
+    expect(mockResendAndRecord).not.toHaveBeenCalled();
+    expect(mockSignAndRecord).not.toHaveBeenCalled();
+    expect(sent('safe.deployed')).toEqual([{ context: SHELL, params: { safe: 5, hash: replacement.hash } }]);
+    expect(result).toEqual({ safeAddress: SAFE_ADDRESS, hash: replacement.hash });
+    expect(sent('approval.discard')).toEqual([{ context: SHELL, params: { token: TOKEN } }]);
+    expect(core.refused).toEqual([]);
+    expect(core.sent('approval.issue')).toEqual([]);
+  });
+
+  test('its fee asked as an activation\'s when the core\'s check stops it: in the panel, then fee_ack; the held bytes are not what goes', async () => {
+    holdDeployment();
+    answers['safe.deploy'] = inTurn({ fee_check: FASTER_VERDICT }, FASTER);
+    answers['safe.deployed'] = { deployed: true };
+    await service.activateSafe(5, { speedUp: true, sender: CHROME });
+    expect(sent('safe.deploy').map(({ params }) => params)).toEqual([{ safe: 5 }, { safe: 5, fee_ack: true }]);
+    expect(prompts.map((p) => p.kind)).toEqual(['wallet.executor_send']);
+    expect(events).toContain('replace');
+    expect(mockResendAndRecord).not.toHaveBeenCalled();
+  });
+
+  test("with the document off, the card's ask: its ID back, twice above the threshold", async () => {
+    mockDocument.on = false;
+    holdDeployment();
+    const above = { ...FASTER_VERDICT, comparable: true, ratio: '20', above: true, askAgain: true };
+    answers['safe.deploy'] = inTurn({ fee_check: above }, FASTER);
+    answers['safe.deployed'] = { deployed: true };
+    const first = await service.activateSafe(5, { speedUp: true, sender: CHROME }).catch((e) => e);
+    expect(first).toMatchObject({ code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeAskAgain: false });
+    const again = await service
+      .activateSafe(5, { speedUp: true, sender: CHROME, feeAskId: first.feeAskId })
+      .catch((e) => e);
+    expect(again).toMatchObject({ code: 'FEE_CHECK_NEEDS_CONFIRMATION', feeAskAgain: true });
+    expect(events).not.toContain('sign.transaction');
+    const result = await service.activateSafe(5, { speedUp: true, sender: CHROME, feeAskId: again.feeAskId });
+    expect(result.hash).toBe(journal[0].replacements[0].hash);
+    expect(sent('safe.deploy').map(({ params }) => params).at(-1)).toEqual({ safe: 5, fee_ack: true });
+  });
+
+  test('with nothing held, nothing to speed up: refused before anything is asked', async () => {
+    await expect(service.activateSafe(5, { speedUp: true, sender: CHROME })).rejects.toThrow(
+      'This account has no activation waiting to speed up'
+    );
+    expect(events).toEqual([]);
+    expect(core.requests.filter((m) => m.method.startsWith('safe.'))).toEqual([]);
+  });
+
+  test('a speed-up the replacement refuses (its fee not high enough yet): its code passes, the token burnt', async () => {
+    holdDeployment();
+    answers['safe.deploy'] = FASTER;
+    mockReplaceWithAndRecord.mockRejectedValueOnce(
+      Object.assign(new Error('A replacement must raise the fee by at least 10%.'), { code: 'INTENT_FEE_TOO_LOW' })
+    );
+    await expect(service.activateSafe(5, { speedUp: true, sender: CHROME })).rejects.toMatchObject({
+      code: 'INTENT_FEE_TOO_LOW',
+    });
+    expect(sent('safe.deployed')).toEqual([]);
+    expect(sent('approval.discard')).toEqual([{ context: SHELL, params: { token: TOKEN } }]);
   });
 });
 
@@ -880,9 +1012,17 @@ describe('on js', () => {
     expect(core.requests).toEqual([]);
   });
 
-  test('the hello declares no safe3', () => {
-    expect(core.hello).toBeTruthy();
-    expect(Object.keys(core.hello)).not.toContain('safe3');
-    expect(JSON.stringify(core.hello)).not.toMatch(/safe3/);
+  test("the hello declares safe3 on the core's backend only, never on js", async () => {
+    // This suite's client was made on the core's backend.
+    expect(core.hello.safe3).toBe(true);
+    await made.client.stop();
+    mockBackend.kind = 'js';
+    made = await startSafeCore({ script, log: { info: () => {}, warn: () => {}, error: () => {} } });
+    mockCore.client = made.client;
+    const jsCore = made.cores[0];
+    expect(jsCore.hello).toBeTruthy();
+    expect(Object.keys(jsCore.hello)).not.toContain('safe3');
+    expect(JSON.stringify(jsCore.hello)).not.toMatch(/safe3/);
+    expect(made.client.hello.safe3).toBe(false);
   });
 });

@@ -450,6 +450,26 @@ describe('what each template shows and sends', () => {
     );
   });
 
+  // Design 0016, C1 (SAFE-3's PR 7): a Safe's send on the core's Safe
+  // backend shows the SafeTx the core built by its nonce (the plan's [U]
+  // #15), and only that of it.
+  test("eth.send: a Safe's send on the core shows its SafeTx's nonce, \"Safe transaction #N\"", () => {
+    const safe = { ...VIEWS['eth.send'], account: { ...ACCOUNT, type: 'safe' }, fee: { paidBy: 'executor' }, feeCheck: null };
+    const view = { ...safe, safeTx: { nonce: 7 } };
+    expect(checkMessage(message('eth.send', view)).valid).toBe(true);
+    const shown = render('eth.send', view);
+    const texts = shown.body.children.map((child) => child.textContent);
+    expect(texts.join('\n')).toContain('#7');
+    expect(texts.join('\n')).toContain('Safe transaction');
+    expect(shown.form.choices()).toEqual({ alwaysAllow: false, feeAcknowledged: false });
+    // Without it, as before; anything else of the SafeTx is refused.
+    expect(render('eth.send', safe).body.textContent).not.toContain('Safe transaction');
+    for (const safeTx of [{ nonce: -1 }, { nonce: '7' }, { nonce: 7, to: ACCOUNT.address }, {}, null]) {
+      expect(checkMessage(message('eth.send', { ...safe, safeTx })).valid).toBe(false);
+    }
+    expect(checkMessage(message('eth.send', { ...view, safeTxHash: '0x' + 'ab'.repeat(32) })).valid).toBe(false);
+  });
+
   // Design 0012, PHN-2 ("A phone payment's rule"): a phone send's "Always
   // allow" is saved only once its payment shows as the one confirmed, and
   // the prompt says so under the box, for a phone's send alone.

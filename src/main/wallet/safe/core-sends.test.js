@@ -31,8 +31,13 @@
  *   `safe.discard`, on a superseded SafeTx and before `safe.executed`;
  *   nothing written (an fs spy); none after a restart; a crash at each
  *   stage leaves none that binds another SafeTx; a downgraded core;
- * - a site's send (PR 7) is refused, nothing sent; and the hello still
- *   declares no `safe3`.
+ * - main's own start of a SafeTx (`reserveSafeSend`, `startSafeSend`)
+ *   never runs on the core, nothing sent; a site's SafeTx with no guard of
+ *   its request is withdrawn from its site, nothing executed (its sends are
+ *   core-site-sends.test.js's, PR 7); and the hello declares `safe3`,
+ *   under which every step above runs: the scripted core refuses, as cored
+ *   0.32.0 does under it, `approval.issue` of `executor-send` or the legacy
+ *   `safe-send`, and `approval.spend` of the legacy `safe-send`.
  */
 
 const fs = require('fs');
@@ -1161,7 +1166,7 @@ describe('the execution: safe.execute (PR 4b)', () => {
     expect(coreTokens.size).toBe(0);
   });
 
-  test('refused before the core is asked: no SafeTx named, another on the board, a site\'s, a step running', async () => {
+  test('refused before the core is asked: no SafeTx named, another on the board, a site\'s with no guard, a step running', async () => {
     await setup({ 'safe.pending': { states: [READY] } });
     await expect(transactions.executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
     await expect(execute({ safeTxHash: 'nope' })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
@@ -1169,7 +1174,11 @@ describe('the execution: safe.execute (PR 4b)', () => {
     await made.client.stop();
     coreSends._reset();
     await setup({ 'safe.pending': { states: [{ ...READY, display: { ...DISPLAY, site: 'https://app.example' } }] } });
-    await expect(execute()).rejects.toMatchObject({ code: 'SAFE_UNSUPPORTED' });
+    // A site's SafeTx no request guards (PR 7): withdrawn from its site,
+    // nothing executed.
+    await expect(execute()).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+    expect(fake.sent('safe.execute')).toEqual([]);
+    coreSends._reset();
     safeApprovals.beginStep(5);
     await expect(execute()).rejects.toMatchObject({ code: 'SAFE_BUSY' });
     safeApprovals.endStep(5);
@@ -1544,18 +1553,56 @@ describe('the approval records (PR 6): recorded at the decision, dropped at each
   });
 });
 
-describe('what waits for later PRs is refused, nothing sent', () => {
-  test("a site's send (PR 7), before its token is spent", async () => {
+describe("main's own path never runs on the core; the hello declares safe3", () => {
+  test("main's own start of a SafeTx, refused before anything is spent or sent", async () => {
     await setup();
-    expect(() => transactions.reserveSafeSend(5)).toThrow(expect.objectContaining({ code: 'SAFE_UNSUPPORTED' }));
-    await expect(transactions.startSafeSend({ safeIndex: 5 })).rejects.toMatchObject({ code: 'SAFE_UNSUPPORTED' });
+    expect(() => transactions.reserveSafeSend(5)).toThrow("Main's own Safe transactions don't run on the identity core");
+    await expect(transactions.startSafeSend({ safeIndex: 5 })).rejects.toThrow(
+      "Main's own Safe transactions don't run on the identity core"
+    );
     expect(methods()).toEqual([]);
   });
 
-  test('the hello declares no safe3 (PR 7 does)', async () => {
+  test('the hello declares safe3 (PR 7), and the core took it', async () => {
     await setup();
-    expect(fake.hello).not.toBeNull();
-    expect(JSON.stringify(fake.hello)).not.toContain('safe3');
+    expect(fake.hello.safe3).toBe(true);
+    expect(made.client.hello.safe3).toBe(true);
+    expect(fake.safe3).toBe(true);
+  });
+
+  test('under it nothing here mints executor-send or the legacy safe-send, or spends one: the core would refuse each', async () => {
+    await setup({
+      'safe.pending': { states: [READY] },
+      'approval.issue': () => ({ token: 'token-x', expires_in_ms: 120000 }),
+      'approval.spend': () => ({}),
+    });
+    // The wallet's send (PR 4a), its execution (PR 4b): the core's own
+    // tokens, design 0016's form.
+    const { approvals } = panel();
+    await confirm(approvals);
+    await transactions.executeSafePending(5, { safeTxHash: SAFE_TX_HASH });
+    const issued = fake.sent('approval.issue').map((m) => m.params.kind);
+    expect(issued.every((kind) => kind === 'safe-send')).toBe(true);
+    for (const m of fake.sent('approval.issue')) expect(m.params.payload).toHaveProperty('safe_tx');
+    expect(fake.sent('approval.spend')).toEqual([]);
+    expect(fake.refused).toEqual([]);
+    // What the core refuses under the field, as it answers it.
+    const signing = require('../signing-confirmation');
+    await expect(
+      signing.issueConfirmation(signing.KINDS.EXECUTOR_SEND, 0, {
+        chainId: 100,
+        to: SAFE,
+        value: '0',
+        data: '0x',
+        gasLimit: '1',
+        gasPrice: '1',
+      })
+    ).rejects.toMatchObject({ code: signing.NOT_CONFIRMED });
+    expect(fake.refused.map(({ error }) => error.code)).toEqual(['forbidden']);
+    // The legacy form isn't even built on the core: refused in main, unsent.
+    const asked = fake.sent('approval.issue').length;
+    await expect(signing.issueConfirmation(signing.KINDS.SAFE_SEND, 5, REQUEST)).rejects.toThrow();
+    expect(fake.sent('approval.issue')).toHaveLength(asked);
   });
 });
 

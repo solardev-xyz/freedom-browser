@@ -48,6 +48,19 @@
  *     unused; from a `{ fee_check }` nothing is asked, as no new fee would
  *     be paid.
  *
+ * - **A held deployment's speed-up** (SAFE-3's PR 7; design 0016, C1):
+ *   under the hello's `safe3` `sign.transaction` signs a deployment only
+ *   with its `executor-send` token, so the journal's intent-replace, main's
+ *   word, can't re-sign one. `activateSafe(index, { speedUp: true })`
+ *   instead asks `safe.deploy` again: its fee asked as an activation's
+ *   (above), its `{ send }` at the core's own quote checked as above, and
+ *   then signed with its token at the held deployment's nonce, nothing
+ *   else changed (the token leaves the nonce to main), as a replacement of
+ *   the held intent: it must pay what the held one pays, and each fee must
+ *   be at least 10% above its fees, or nothing is signed (a node would
+ *   refuse it). Then the receipt and `safe.deployed`, as above. With no
+ *   held deployment there is nothing to speed up.
+ *
  * Main never mints `executor-send` here (the plan's point 2): the token is
  * the core's, from `safe.deploy`, and a chrome's confirmation of an
  * executor's fee is burnt unused. Nothing falls back to main's own path:
@@ -304,15 +317,25 @@ async function askInPanel(index, record, ask, { approvals, sender, deploy }) {
  *   approvals document asks about a fee, and an ask is bound to it
  * @param {object} [options.feeConfirmation] - A chrome's executor-send
  *   confirmation (today's path): burnt unused
+ * @param {boolean} [options.speedUp] - The held deployment re-signed at its
+ *   nonce with `safe.deploy`'s send (`speedUpHeld`), not sent again as it
+ *   was; refused when none is held
  */
 async function activateSafe(
   index,
-  { feeAskId = null, sender = null, feeConfirmation = null } = {}
+  { feeAskId = null, sender = null, feeConfirmation = null, speedUp = false } = {}
 ) {
   const record = getSafeRecord(index);
   if (feeConfirmation?.confirmation) burn(feeConfirmation.confirmation);
   const { deployIntentKey } = require('./safe-executor');
   const intentKey = deployIntentKey(DEPLOY_CHAIN_ID, record.address);
+  const transactions = require('../transaction-service');
+  // The deployment to speed up: the one journaled under its key, read
+  // before anything is asked, and again (`speedUpHeld`) under its lock.
+  const toSpeedUp = speedUp === true ? await transactions.heldIntentFor(intentKey) : null;
+  if (speedUp === true && !toSpeedUp) {
+    throw new Error('This account has no activation waiting to speed up');
+  }
   const approvals = walletApprovals();
   const deploy = (feeAck) =>
     vault().safe.deploy(feeAck ? { safe: index, fee_ack: true } : { safe: index });
@@ -329,8 +352,9 @@ async function activateSafe(
     answer = await deploy(false);
   }
   while (feeAsked(answer)) {
-    // Journaled already: its bytes go again, and no fee is asked.
-    const held = await require('../transaction-service').heldIntentFor(intentKey);
+    // Journaled already: its bytes go again, and no fee is asked; unless
+    // it is being sped up, whose new fee is the user's to confirm.
+    const held = toSpeedUp ? null : await transactions.heldIntentFor(intentKey);
     if (held) {
       asks.delete(index);
       return sendHeld(record, held);
@@ -350,9 +374,26 @@ async function activateSafe(
   }
   const send = checkedSend(record, answer.send, shown);
   const sent = await signing().withConfirmation(send.token, () =>
-    sendDeployment(record, send, intentKey)
+    toSpeedUp ? speedUpHeld(record, send, toSpeedUp) : sendDeployment(record, send, intentKey)
   );
   return finishDeployment(record, sent.hash);
+}
+
+/**
+ * The core's prepared deployment (`send`, its token's) signed at the held
+ * deployment's nonce as its replacement, nothing else changed: under the
+ * executor's lock, `sign.transaction` with `{ token, kind: "executor-send"
+ * }` (never the journal's intent-replace, which `safe3` refuses for a
+ * deployment), the signed bytes committed as a replacement of the held
+ * intent, then broadcast. It must pay what the held deployment pays, from
+ * its account, and raise each fee at least 10%; otherwise nothing is
+ * signed (transaction-service.js `replaceIntentWith`).
+ */
+async function speedUpHeld(record, { token, account, tx }, held) {
+  const { getSigner } = require('../signers');
+  const { replaceWithAndRecord } = require('../tx-recorder');
+  const executor = getSigner(account, { confirmation: { token, kind: SEND_KIND } });
+  return replaceWithAndRecord(held.intentId, sendParamsOf(tx), executor);
 }
 
 /** The payment-history row of the deployment: the executor paid gas to create the Safe. */

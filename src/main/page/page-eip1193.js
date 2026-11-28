@@ -84,7 +84,12 @@
  *         core offers them. With the approvals document on, a vault
  *         account's prompt asks for the vault unlocked first, as main's own
  *         route did. A fee asked again at the approve is the core's new
- *         prompt (`feeAskAgain`).
+ *         prompt (`feeAskAgain`). On the core's Safe backend (the hello's
+ *         `safe3`, freedom-core design 0016, C1; SAFE-3's PR 7) a Safe's
+ *         view also carries the SafeTx the core built before the prompt
+ *         and its hash, checked here (its hash recomputed for the Safe
+ *         shown) and shown by its nonce; its approve's `{ device }` must
+ *         be design 0016's `safe-send` for exactly that SafeTx.
  *       - `vault.unlock` with reason "send" (APB-4c): a rule's send while
  *         the vault is locked, as for a signature.
  *     In a tab the Agent holds (APB-5, design 0012 "The Agent's answer"),
@@ -155,6 +160,27 @@ const SEND_MISMATCH = Object.freeze({
 });
 const SEND_KEYS = new Set(['kind', 'account', 'tx', 'handle', 'token', 'standing']);
 const SEND_VIEW_KEYS = new Set(['account', 'chain', 'tx', 'fee', 'feeCheck', 'feeAskAgain', 'alwaysAllow']);
+// A Safe's send under the hello's `safe3` (freedom-core design 0016, C1):
+// the core's view adds the SafeTx it built before the prompt and its hash.
+const SAFE_SEND_VIEW_KEYS = new Set([...SEND_VIEW_KEYS, 'safeTx', 'safeTxHash']);
+// The SafeTx's ten fields, as safe-pending.json keeps them (fc-safe's
+// `SafeTx::fields`), and D6's `safe-send` payload that binds one.
+const SAFE_TX_KEYS = Object.freeze([
+  'to',
+  'value',
+  'data',
+  'operation',
+  'baseGas',
+  'gasPrice',
+  'gasToken',
+  'refundReceiver',
+  'nonce',
+  'safeTxGas',
+]);
+const BUILT_SAFE_PAYLOAD_KEYS = new Set(['safe', 'chain_id', 'safe_tx', 'safe_tx_hash']);
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+// The only chain a Safe signs on (design 0016).
+const SAFE_CHAIN_ID = 100;
 const SEND_CHOICES = Object.freeze(['alwaysAllow', 'feeAcknowledged']);
 // `sign.transaction`'s form without a nonce, by type (design 0012).
 const TX_FIELDS = Object.freeze({
@@ -281,6 +307,8 @@ function defaultDependencies() {
       require('../wallet/selected-chain').selectChainForPage(windowId, chainId),
     agentPrompt: async (guestId, prompt, options) =>
       (agentPromptRoute ? agentPromptRoute(guestId, prompt, options) : { handled: false }),
+    // Whether a Safe runs on the core (the hello's `safe3`): the core's Safe backend.
+    safeOnCore: () => require('../wallet/safe/safe-backend-kind').safeBackendKind() === 'core',
   };
 }
 
@@ -377,15 +405,67 @@ function flatCopy(value, isValue) {
 }
 
 /**
+ * The SafeTx the core built before a Safe's send prompt (design 0016, C1),
+ * checked: its ten fields in Freedom's shape (one CALL, no refund, gas
+ * fields "0", a nonce JavaScript reads exactly) whose call is the view's
+ * `tx`, and ethers' EIP-712 hash of them, for the Safe the view shows on
+ * Gnosis, the core's `safeTxHash` (approval-records.js `verify`): a SafeTx
+ * that doesn't hash to it is never shown. Returns `{ safeTx, safeTxHash }`
+ * (a copy, the hash lowercase); throws `invalid()` otherwise.
+ */
+function builtSafeTx(view, account) {
+  const { safeTx, safeTxHash } = view;
+  if (account.type !== 'safe' || typeof account.address !== 'string' || view.chain?.id !== SAFE_CHAIN_ID) {
+    throw invalid();
+  }
+  if (!isPlainObject(safeTx) || Object.keys(safeTx).length !== SAFE_TX_KEYS.length) throw invalid();
+  if (!SAFE_TX_KEYS.every((key) => Object.hasOwn(safeTx, key))) throw invalid();
+  const { to, value, data, nonce } = safeTx;
+  if (typeof to !== 'string' || !ADDRESS.test(to) || typeof data !== 'string' || !HEX.test(data)) throw invalid();
+  if (typeof value !== 'string' || !DECIMAL.test(value)) throw invalid();
+  if (!Number.isSafeInteger(nonce) || nonce < 0 || safeTx.operation !== 0) throw invalid();
+  if (!['safeTxGas', 'baseGas', 'gasPrice'].every((key) => safeTx[key] === '0')) throw invalid();
+  if (safeTx.gasToken !== ZERO_ADDRESS || safeTx.refundReceiver !== ZERO_ADDRESS) throw invalid();
+  const { tx } = view;
+  let sameValue;
+  try {
+    sameValue = BigInt(tx.value) === BigInt(value);
+  } catch {
+    sameValue = false;
+  }
+  if (to.toLowerCase() !== tx.to.toLowerCase() || !sameValue || data.toLowerCase() !== tx.data.toLowerCase()) {
+    throw invalid();
+  }
+  if (typeof safeTxHash !== 'string' || !HASH.test(safeTxHash)) throw invalid();
+  try {
+    require('../wallet/safe/approval-records').verify({
+      address: account.address,
+      chainId: SAFE_CHAIN_ID,
+      safeTx,
+      safeTxHash,
+    });
+  } catch {
+    throw invalid();
+  }
+  return { safeTx: Object.freeze({ ...safeTx }), safeTxHash: safeTxHash.toLowerCase() };
+}
+
+/**
  * The send prompt's view (APB-4c), rebuilt to main's form from the core's
  * (the reference's, `page-sends.js`'s `sendView`): the account, the chain
  * with its native symbol, the transaction (`to` checksummed), the core's
  * quoted fee (or none, or a Safe's executor), the fee check's verdict,
  * whether the fee is asked again, and whether "Always allow" is shown; and
  * the values the core offers for "Always allow" and the fee's
- * confirmation. Throws on anything else.
+ * confirmation. On the core's Safe backend (`safeOnCore`, the hello's
+ * `safe3`; design 0016, C1) a Safe's view carries the SafeTx the core built
+ * before the prompt (`safeTx`, `safeTxHash`), checked (`builtSafeTx`) and
+ * required: the prompt shows its nonce, "Safe transaction #N"
+ * (`view.safeTx`, the SAFE-3 plan's [U] #15), and `safe` keeps the SafeTx
+ * and its hash for the `{ device }` its approve leads to. Anywhere else a
+ * view with a SafeTx is refused. Throws on anything else.
  */
-function sendShown(view, choices) {
+function sendShown(view, choices, { safeOnCore = false } = {}) {
   if (!isPlainObject(view) || !isPlainObject(choices)) throw invalid();
   if (!hasOnlyKeys(choices, new Set(SEND_CHOICES))) throw invalid();
   const offered = {};
@@ -395,7 +475,8 @@ function sendShown(view, choices) {
     if (new Set(values).size !== values.length || !values.includes(false)) throw invalid();
     offered[name] = new Set(values);
   }
-  if (!hasOnlyKeys(view, SEND_VIEW_KEYS)) throw invalid();
+  const built = view.safeTx !== undefined || view.safeTxHash !== undefined;
+  if (!hasOnlyKeys(view, built ? SAFE_SEND_VIEW_KEYS : SEND_VIEW_KEYS)) throw invalid();
   const { chain, tx, fee, feeCheck } = view;
   if (!isPlainObject(chain) || !hasOnlyKeys(chain, new Set(['id', 'name', 'symbol'])) || !positive(chain.id)) {
     throw invalid();
@@ -405,17 +486,25 @@ function sendShown(view, choices) {
   if (![tx.to, tx.value, tx.data].every((field) => typeof field === 'string')) throw invalid();
   if (typeof view.feeAskAgain !== 'boolean' || typeof view.alwaysAllow !== 'boolean') throw invalid();
   const scalar = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
+  const account = accountShown(view.account);
+  // A Safe's send on the core's Safe backend shows the SafeTx the core
+  // built; nowhere else does one come.
+  const safeOnCoreSend = safeOnCore === true && account.type === 'safe';
+  if (built !== safeOnCoreSend) throw invalid();
+  const safe = built ? builtSafeTx(view, account) : null;
   return {
     view: {
-      account: accountShown(view.account),
+      account,
       chain: { id: chain.id, name: chain.name, symbol: chain.symbol },
       tx: { to: tx.to, value: tx.value, data: tx.data },
+      ...(safe ? { safeTx: { nonce: safe.safeTx.nonce } } : {}),
       fee: fee === null ? null : flatCopy(fee, (value) => typeof value === 'string'),
       feeCheck: feeCheck === null ? null : flatCopy(feeCheck, scalar),
       feeAskAgain: view.feeAskAgain,
       alwaysAllow: view.alwaysAllow,
     },
     offered,
+    safe,
   };
 }
 
@@ -449,6 +538,7 @@ function createEip1193Relay(deps = {}) {
     isVaultUnlocked,
     discardToken,
     agentPrompt,
+    safeOnCore,
   } = { ...defaultDependencies(), ...deps };
 
   // `${generation}:${id}` -> the request main sent the core, while it runs.
@@ -640,15 +730,47 @@ function createEip1193Relay(deps = {}) {
   const remembers = (entry, tx) => entry.remember === true && Boolean(selectorOf(tx.data));
 
   /**
+   * A Safe's `safe-send` on the core's Safe backend (design 0016, C1, the
+   * hello's `safe3`), checked: D6's `payload`, `{ safe, chain_id, safe_tx,
+   * safe_tx_hash }`, for the Safe main listed, on the page's chain, binding
+   * exactly the SafeTx the approved prompt showed (`entry.approvedSafe`:
+   * every field, and its hash), whose call is the page's own. Null for
+   * anything else, the legacy form included.
+   */
+  function builtSafeDeviceOf(entry, device) {
+    const { type, kind, account, payload, handle, token } = device;
+    const shown = entry.approvedSafe;
+    if (!shown || !hasOnlyKeys(payload, BUILT_SAFE_PAYLOAD_KEYS)) return null;
+    if (Object.keys(payload).length !== BUILT_SAFE_PAYLOAD_KEYS.size) return null;
+    const { safe_tx: safeTx, safe_tx_hash: safeTxHash } = payload;
+    if (typeof safeTxHash !== 'string' || safeTxHash.toLowerCase() !== shown.safeTxHash) return null;
+    if (!isPlainObject(safeTx) || Object.keys(safeTx).length !== SAFE_TX_KEYS.length) return null;
+    if (!SAFE_TX_KEYS.every((key) => Object.hasOwn(safeTx, key) && safeTx[key] === shown.safeTx[key])) return null;
+    if (String(payload.chain_id) !== String(sendChainOf(entry)) || Number(payload.chain_id) !== SAFE_CHAIN_ID) return null;
+    const asked = askedTx(entry);
+    if (!asked || safeTx.to.toLowerCase() !== asked.to.toLowerCase() || safeTx.value !== asked.value) return null;
+    if (safeTx.data.toLowerCase() !== asked.data.toLowerCase()) return null;
+    const safe = (entry.world?.wallets || []).find((wallet) => wallet?.index === account);
+    if (typeof payload.safe !== 'string' || typeof safe?.address !== 'string') return null;
+    if (payload.safe.toLowerCase() !== safe.address.toLowerCase()) return null;
+    return Object.freeze({ type, kind, account, payload, handle, token, remember: false });
+  }
+
+  /**
    * A send's `{ device }` checked against its request: a Ledger's or a
    * phone's `dapp-send` with `payload: { tx }`, or a Safe's `safe-send` with
    * `payload: { safe, chain_id, tx: { to, value, data } }` for the Safe main
    * listed and the page's chain, each with the token for the handle main
-   * approved the core's prompt on. Null for anything else.
+   * approved the core's prompt on. On the core's Safe backend a Safe's
+   * comes in design 0016's form only (`builtSafeDeviceOf`). Null for
+   * anything else.
    */
   function sendDeviceOf(entry, device) {
     const { type, kind, account, payload, handle, token } = device;
     if (device.expected_hash !== undefined) return null;
+    if (type === 'safe' && read(safeOnCore, false)) {
+      return kind === 'safe-send' ? builtSafeDeviceOf(entry, device) : null;
+    }
     if (type === 'safe') {
       if (kind !== 'safe-send' || !hasOnlyKeys(payload, new Set(['safe', 'chain_id', 'tx']))) return null;
       const { tx } = payload;
@@ -799,6 +921,9 @@ function createEip1193Relay(deps = {}) {
     // for a send the fee that prompt showed and "Always allow" as ticked.
     entry.approved = null;
     entry.approvedFee = null;
+    // A Safe's send on the core's Safe backend: the SafeTx its approved
+    // prompt showed, and its hash (`sendShown`'s `safe`).
+    entry.approvedSafe = null;
     entry.remember = false;
     // Whether the Agent's sheet gave the approve (APB-5a), and the page's
     // answer, which the agent service hears after it.
@@ -1127,6 +1252,7 @@ function createEip1193Relay(deps = {}) {
     // The fee the sheet showed, for the `{ send }` or `{ device }` it leads
     // to; "Always allow" never ticked.
     entry.approvedFee = shown.view.fee;
+    entry.approvedSafe = shown.safe ?? null;
     entry.remember = false;
     return {
       prompt: id,
@@ -1196,6 +1322,7 @@ function createEip1193Relay(deps = {}) {
     }
     entry.approved = decision.handle;
     entry.approvedFee = shown.view.fee;
+    entry.approvedSafe = shown.safe ?? null;
     entry.remember = decision.choices.alwaysAllow === true;
     return {
       prompt: id,
@@ -1222,7 +1349,7 @@ function createEip1193Relay(deps = {}) {
       return { shown, user: () => signAsk(entry, prompt, shown) };
     }
     if (kind === 'eth.send' && method === SEND_METHOD) {
-      const shown = sendShown(view, choices);
+      const shown = sendShown(view, choices, { safeOnCore: read(safeOnCore, false) });
       return { shown, user: () => sendAsk(entry, prompt, shown) };
     }
     if (kind === 'vault.unlock' && UNLOCK_REASONS[method]) {

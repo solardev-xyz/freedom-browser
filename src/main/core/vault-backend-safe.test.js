@@ -11,6 +11,10 @@
  * - the stores' requirements: `vault_meta` for all, `safe_pending` too for
  *   the five that read or write the pending store, refused in main,
  *   unsent;
+ * - a site's `safe.propose` (SAFE-3's PR 7) goes only to a core that took
+ *   the hello's `safe3`, which main declares only on the core's Safe
+ *   backend: on js, and to a core before 0.32.0, it is refused in main,
+ *   unsent;
  * - a refusal's `data.safe` takes main's code (wallet/safe/errors.js);
  * - a Safe owner's signature goes through `ledgerCall` only, `ledgerOwner`
  *   from main's own record of the owner.
@@ -26,9 +30,19 @@ const {
   DEFAULT_RESULTS,
   SAFE_ROWS,
   SESSION_ID,
+  PROXY_FACTORY,
   readSafe,
+  readSafe3,
   startSafeCore,
 } = require('../../../test/helpers/fake-safe-core');
+
+// The process's Safe backend (wallet/safe/safe-backend-kind.js): the
+// core's, whose hello declares `safe3`, unless a test says js.
+const mockSafeBackend = { kind: 'core' };
+jest.mock('../wallet/safe/safe-backend-kind', () => ({
+  safeBackendKind: () => mockSafeBackend.kind,
+  readSafeBackendKind: () => mockSafeBackend.kind,
+}));
 
 const ticks = async (n = 5) => {
   for (let i = 0; i < n; i += 1) await new Promise(setImmediate);
@@ -297,6 +311,7 @@ let made = null;
 afterEach(async () => {
   await made?.client.stop();
   made = null;
+  mockSafeBackend.kind = 'core';
   jest.restoreAllMocks();
 });
 
@@ -494,6 +509,66 @@ describe('the scripted core reads a safe.* request as cored-v0.32.0 does', () =>
   });
 });
 
+describe("the scripted core reads SAFE-3's field as cored 0.32.0 does (design 0016, C1)", () => {
+  const read = (method, params, context, safe3) => {
+    const core = { burnt: [] };
+    try {
+      readSafe3(method, params, context, safe3, core);
+      return { refused: null, burnt: core.burnt };
+    } catch (err) {
+      return { refused: err.body, burnt: core.burnt };
+    }
+  };
+  const LEGACY = { safe: TO, chain_id: '100', tx: { to: TO, value: '0', data: '0x' } };
+  const BUILT = { safe: TO, chain_id: '100', safe_tx: {}, safe_tx_hash: TX_HASH };
+  const DEPLOY = { to: PROXY_FACTORY, data: '0x1688f0b9' };
+
+  test('approval.issue under the field: no executor-send, no legacy safe-send; design 0016 form as before', () => {
+    const issue = (kind, payload) => read('approval.issue', { kind, payload }, SHELL, true).refused;
+    expect(issue('executor-send', {})).toMatchObject({ code: 'forbidden' });
+    expect(issue('safe-send', LEGACY)).toMatchObject({ code: 'forbidden' });
+    expect(issue('safe-send', BUILT)).toBeNull();
+    expect(issue('wallet-send', {})).toBeNull();
+    // Without the field, nothing changes.
+    expect(read('approval.issue', { kind: 'executor-send', payload: {} }, SHELL, false).refused).toBeNull();
+    expect(read('approval.issue', { kind: 'safe-send', payload: LEGACY }, SHELL, false).refused).toBeNull();
+  });
+
+  test('approval.spend: the legacy form under the field, and design 0016 form always, refused mismatch and burnt', () => {
+    const spend = (payload, safe3) => read('approval.spend', { kind: 'safe-send', token: 't', payload }, SHELL, safe3);
+    expect(spend(LEGACY, true)).toEqual({
+      refused: { code: 'not_authorized', message: 'the request is not the one confirmed', data: { reason: 'mismatch' } },
+      burnt: ['t'],
+    });
+    expect(spend(BUILT, false).refused).toMatchObject({ data: { reason: 'mismatch' } });
+    expect(spend(LEGACY, false)).toEqual({ refused: null, burnt: [] });
+  });
+
+  test("sign.transaction under shell to the factory: only with { token, kind: 'executor-send' }, no intent", () => {
+    const sign = (authorization, context = SHELL, safe3 = true, tx = DEPLOY) =>
+      read('sign.transaction', { key: { kind: 'account', index: 0 }, tx, ...(authorization ? { authorization } : {}) }, context, safe3)
+        .refused;
+    expect(sign({ token: 't', kind: 'executor-send' })).toBeNull();
+    for (const authorization of [
+      null,
+      { token: 't', kind: 'intent-replace', intent: { id: 'i' } },
+      { token: 't', kind: 'executor-send', intent: { id: 'i' } },
+      { token: 't', kind: 'wallet-send' },
+      { standing: {} },
+    ]) {
+      expect(sign(authorization)).toMatchObject({ code: 'not_authorized', data: { reason: 'no_token' } });
+    }
+    // The factory's address in any case; another target, another caller, or
+    // no field: nothing changes.
+    expect(sign(null, SHELL, true, { ...DEPLOY, to: PROXY_FACTORY.toUpperCase().replace('0X', '0x') })).toMatchObject({
+      data: { reason: 'no_token' },
+    });
+    expect(sign(null, SHELL, true, { ...DEPLOY, to: TO })).toBeNull();
+    expect(sign(null, { caller: 'chrome' })).toBeNull();
+    expect(sign(null, SHELL, false)).toBeNull();
+  });
+});
+
 describe("the safe namespace's params are the core's", () => {
   test('the 16 methods are the safe.* rows of the core’s table, with main’s classes', () => {
     const rows = Object.keys(METHOD_CLASSES).filter((m) => m.startsWith('safe.'));
@@ -620,10 +695,38 @@ describe("the safe namespace's params are the core's", () => {
     ]);
   });
 
-  test("main's hello declares no safe3 yet", async () => {
+  test("main's hello declares safe3 on the core's Safe backend, and only there", async () => {
+    made = await setup();
+    expect(made.core.hello.safe3).toBe(true);
+    expect(made.client.hello.safe3).toBe(true);
+    expect(made.core.hello.store_moved).toEqual(expect.arrayContaining(BOTH));
+    await made.client.stop();
+    mockSafeBackend.kind = 'js';
     made = await setup();
     expect(made.core.hello).not.toHaveProperty('safe3');
-    expect(made.core.hello.store_moved).toEqual(expect.arrayContaining(BOTH));
+    expect(made.client.hello.safe3).toBe(false);
+  });
+
+  test("a site's propose goes only to a core that took safe3: on js, and to a core before 0.32.0, refused in main, unsent", async () => {
+    const site = (s) =>
+      s.propose({ safe: 7, safe_tx_hash: TX_HASH, authorization: { token: TOKEN, handle: HANDLE } }, PAGE);
+    const wallet = (s) => s.propose({ safe: 7, safe_tx_hash: TX_HASH, authorization: { token: TOKEN } });
+    for (const options of [{ js: true }, { takesSafe3: false }]) {
+      mockSafeBackend.kind = options.js ? 'js' : 'core';
+      made = await setup(options.js ? {} : { takesSafe3: false });
+      const { core, vaultBackend, client } = made;
+      expect(client.hello.safe3).toBe(false);
+      await expect(site(vaultBackend.safe)).rejects.toMatchObject({
+        name: 'VaultBackendError',
+        code: 'requirement_unmet',
+      });
+      expect(core.sent('safe.propose')).toEqual([]);
+      // The wallet's own goes as before.
+      await expect(wallet(vaultBackend.safe)).resolves.toEqual(DEFAULT_RESULTS['safe.propose']);
+      expect(core.sent('safe.propose')).toHaveLength(1);
+      await made.client.stop();
+      made = null;
+    }
   });
 });
 

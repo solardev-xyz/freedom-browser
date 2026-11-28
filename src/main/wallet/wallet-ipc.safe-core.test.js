@@ -241,6 +241,16 @@ describe('on the core', () => {
     );
   });
 
+  test("an executor's fee is never minted by main on the core (SAFE-3's PR 7: the core mints executor-send itself); on js as before", async () => {
+    const offer = { chainId: 100, to: '0x' + '77'.repeat(20), value: '0', data: '0x', gasLimit: '21000', gasPrice: '1000000000' };
+    expect(await handlers['wallet:confirm-signing']({}, 'executor-send', 0, offer)).toEqual({
+      success: false,
+      error: "This fee is confirmed through the identity core's own offer: nothing was minted",
+      code: confirmations.NOT_CONFIRMED,
+    });
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.issue')).toEqual([]);
+  });
+
   test("the pending list and a Safe's state are the core's board, read", async () => {
     transactions.getAllSafeSendStates.mockResolvedValueOnce([BOARD]);
     expect(await handlers['wallet:safe-pending-list']({})).toEqual({ success: true, states: [BOARD] });

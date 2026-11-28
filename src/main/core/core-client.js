@@ -79,6 +79,20 @@
  *   so on a core that didn't take the store they fail `requirement_unmet`
  *   in main and are never written to it. An echo naming a store main
  *   didn't send, or one twice, fails the hello.
+ * - **`safe3`** (freedom-core design 0016, SAFE-3's C1): `true` only on
+ *   the core's Safe backend (wallet/safe/safe-backend-kind.js, read once
+ *   per process, as the Swarm backend is), main's word that its Safe runs
+ *   on the core. Under it a site's Safe send is prepared before its prompt
+ *   and answers design 0016's `safe-send`, `approval.issue` mints no
+ *   `executor-send` and no legacy `safe-send`, `approval.spend` spends no
+ *   legacy `safe-send`, and `sign.transaction` under `shell` signs a
+ *   Safe's deployment only with its `executor-send` token. On js the hello
+ *   never names it, so packaged builds keep main's own Safe path. A core
+ *   that took it echoes `safe3: true` (cored 0.32.0); one before it
+ *   ignores the field, and its answer, without it, reads as not taken
+ *   (`safe3: false`), so a site's `safe.propose` (`requiresSafe3`) fails
+ *   `requirement_unmet` in main. An echo main didn't ask for fails the
+ *   hello.
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
  *   (0.32.0) speaks only 2: it answers a hello at any other protocol,
@@ -234,11 +248,23 @@ function validStoreEcho(value, sent) {
   return value;
 }
 
+/**
+ * The hello answer's `safe3` (design 0016, C1): `true` once the core took
+ * the field main declared (`declared`), `false` for an answer without it
+ * (a core before 0.32.0, or a hello that didn't declare it); undefined for
+ * a malformed one: anything but `true`, or `true` main didn't ask for.
+ */
+function validSafe3Echo(value, declared) {
+  if (value === undefined) return false;
+  return value === true && declared === true ? true : undefined;
+}
+
 /** The public part of a valid hello result, or null: protocol 2, the
  * core's capabilities say `streams`, its `store_moved` echo names only
- * stores in `sent` (the hello's own `store_moved`), each once, and its
- * `confinement`, when it sends one, is a report. */
-function validHello(result, sent = STORE_MOVED) {
+ * stores in `sent` (the hello's own `store_moved`), each once, its `safe3`
+ * echo only one the hello declared (`safe3`), and its `confinement`, when
+ * it sends one, is a report. */
+function validHello(result, sent = STORE_MOVED, safe3 = false) {
   if (!isObject(result) || result.protocol !== PROTOCOL_VERSION) return null;
   if (typeof result.core_version !== 'string' || !CORE_VERSION.test(result.core_version)) {
     return null;
@@ -258,6 +284,8 @@ function validHello(result, sent = STORE_MOVED) {
   if (storeMoved === undefined) return null;
   const confinement = validCoreConfinement(result.confinement);
   if (confinement === undefined) return null;
+  const tookSafe3 = validSafe3Echo(result.safe3, safe3);
+  if (tookSafe3 === undefined) return null;
   return {
     protocol: PROTOCOL_VERSION,
     core_version: result.core_version,
@@ -265,6 +293,7 @@ function validHello(result, sent = STORE_MOVED) {
     node_recovery: nodeRecovery,
     store_moved: Object.freeze([...storeMoved]),
     confinement,
+    safe3: tookSafe3,
   };
 }
 
@@ -324,9 +353,12 @@ function validNodeRecovery(value) {
 /**
  * freedom-cored, as the shared client supervises it, with the hello naming
  * `storeMoved` (the process's `storeMovedFor(swarmBackendKind())`; tests
- * name others) and taking an echo of those names only.
+ * name others) and taking an echo of those names only, and declaring
+ * `safe3` only when `safe3` is true (the process's Safe backend is the
+ * core's), taking its echo only then.
  */
-function coreService(storeMoved = STORE_MOVED) {
+function coreService(storeMoved = STORE_MOVED, { safe3 = false } = {}) {
+  const declared = safe3 === true;
   return Object.freeze({
     label: '[Core]',
     noun: 'core',
@@ -355,8 +387,10 @@ function coreService(storeMoved = STORE_MOVED) {
       // flip, the Swarm stores (design 0015, D3; `storeMovedFor`). The core
       // echoes those it took; 0.22.0 ignores the field.
       store_moved: [...storeMoved],
+      // SAFE-3's field (design 0016, C1): only on the core's Safe backend.
+      ...(declared ? { safe3: true } : {}),
     }),
-    validHello: (result) => validHello(result, storeMoved),
+    validHello: (result) => validHello(result, storeMoved, declared),
     shutdownMethod: 'core.shutdown',
     fragments: (hello) => hello.capabilities.includes('fragments'),
     // Streams both ways once the hello is valid, which says `streams`
@@ -375,11 +409,24 @@ function coreService(storeMoved = STORE_MOVED) {
 const CORE_SERVICE = coreService();
 
 /**
- * The service for a process whose hello names `storeMoved`: the shared one
- * for the build's set A alone.
+ * The service for a process whose hello names `storeMoved`, and declares
+ * `safe3` when it is true: the shared one for the build's set A alone,
+ * without `safe3`.
  */
-function coreServiceFor(storeMoved) {
-  return storeMoved === STORE_MOVED ? CORE_SERVICE : coreService(storeMoved);
+function coreServiceFor(storeMoved, safe3 = false) {
+  return storeMoved === STORE_MOVED && safe3 !== true
+    ? CORE_SERVICE
+    : coreService(storeMoved, { safe3: safe3 === true });
+}
+
+/**
+ * A site's `safe.propose`'s `requires` (design 0016, C1): only to a
+ * process whose hello's `safe3` the core took, so a core that didn't (one
+ * before 0.32.0) never gets one, and the request fails `requirement_unmet`
+ * in main.
+ */
+function requiresSafe3(hello) {
+  return hello?.safe3 === true;
 }
 
 /**
@@ -434,7 +481,10 @@ class CoreClient extends ServiceClient {
     // switch, read once, runs on the core (`storeMovedFor`; none until
     // SWM-7's flip).
     const backend = require('../swarm/swarm-backend-kind').swarmBackendKind();
-    super({ ...options, args, service: coreServiceFor(storeMovedFor(backend)) });
+    // SAFE-3's `safe3` (design 0016, C1): for a process the Safe switch,
+    // read once, runs on the core, and never on js.
+    const safe3 = require('../wallet/safe/safe-backend-kind').safeBackendKind() === 'core';
+    super({ ...options, args, service: coreServiceFor(storeMovedFor(backend), safe3) });
     this.autoLockMs = options.autoLockMs ?? 15 * 60 * 1000;
     this.grantRoot = root;
     this.userDataDir = userData;
@@ -481,6 +531,7 @@ module.exports = {
   STORE_MOVED,
   storeMovedFor,
   requiresStore,
+  requiresSafe3,
   // For tests.
   _internal: { coreService, validHello, withGrantArgs },
 };

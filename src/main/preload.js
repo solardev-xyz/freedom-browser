@@ -899,7 +899,9 @@ contextBridge.exposeInMainWorld('wallet', {
   // `options.feeConfirmation`: the user's 'executor-send' confirmation of a
   // fee the fee check stopped for (design 0005, A), with that fee. On the
   // core's Safe backend, `options.feeAskId`: the card confirmed the core's
-  // fee main asked under that ID (approvals document off); no token.
+  // fee main asked under that ID (approvals document off); no token; and
+  // `options.speedUp`: a held activation re-signed at its nonce at the
+  // core's quote (held-payments.js), instead of sent again as it was.
   activateSafe: (index, options) => ipcRenderer.invoke('wallet:activate-safe', index, options),
   // Safe sends (the signing board): every call returns {success, state}
   // where state is the board's render model (null when nothing pending).

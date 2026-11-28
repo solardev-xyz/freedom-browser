@@ -366,23 +366,31 @@
     { optional: ['askAgain'] }
   );
 
+  // `safeTx`, a Safe's send on the core's Safe backend (freedom-core design
+  // 0016, C1, the hello's `safe3`): what main shows of the SafeTx the core
+  // built before the prompt beyond its call, its nonce (page-eip1193.js
+  // `sendShown`, the SAFE-3 plan's [U] #15).
   const ethSend = Object.freeze({
-    schema: record({
-      account: ACCOUNT,
-      chain: record({ id: integer({ min: 0 }), name: nullable(text(128)), symbol: text(32) }),
-      tx: record({ to: text(42, { pattern: ADDRESS }), value: decimal(), data: text(MAX_HEX, { pattern: HEX }) }),
-      fee: nullable(FEE),
-      feeCheck: nullable(FEE_CHECK),
-      feeAskAgain: boolean(),
-      alwaysAllow: boolean(),
-    }),
+    schema: record(
+      {
+        account: ACCOUNT,
+        chain: record({ id: integer({ min: 0 }), name: nullable(text(128)), symbol: text(32) }),
+        tx: record({ to: text(42, { pattern: ADDRESS }), value: decimal(), data: text(MAX_HEX, { pattern: HEX }) }),
+        safeTx: record({ nonce: integer({ min: 0 }) }),
+        fee: nullable(FEE),
+        feeCheck: nullable(FEE_CHECK),
+        feeAskAgain: boolean(),
+        alwaysAllow: boolean(),
+      },
+      { optional: ['safeTx'] }
+    ),
     heading: () => 'Confirm Transaction',
     approve: (view) => (view.fee === null ? 'Try again' : view.feeAskAgain ? 'Send anyway' : 'Confirm'),
     render(view, ui, body) {
       const symbol = view.chain.symbol;
+      body.append(ui.note('requests a transaction'), ui.own('Account', accountText(view.account)));
+      if (view.safeTx) body.append(ui.own('Safe transaction', `#${view.safeTx.nonce}`));
       body.append(
-        ui.note('requests a transaction'),
-        ui.own('Account', accountText(view.account)),
         ui.page('To', view.tx.to, { mono: true }),
         ui.page('Value', `${units(view.tx.value)} ${symbol}`),
         view.tx.data === '0x' ? ui.own('Data', 'No data') : ui.page('Data', view.tx.data, { mono: true }),
