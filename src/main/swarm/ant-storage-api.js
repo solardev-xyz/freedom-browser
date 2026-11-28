@@ -93,9 +93,10 @@ const CONNECT_FAILURE_CODES = new Set([
 // names them: undici's others (EHOSTUNREACH, ENETUNREACH, EADDRNOTAVAIL, a
 // connect timeout, EAI_AGAIN), and a proxy the connection to the node had to
 // go through refusing or failing it, before the request was written.
+// Not `ERR_INTERNET_DISCONNECTED`: Chromium also ends a request it already
+// sent with it when the connection is lost, so a write may have landed.
 const CHROMIUM_CONNECT_FAILURES = new Set([
   'net::ERR_ADDRESS_UNREACHABLE',
-  'net::ERR_INTERNET_DISCONNECTED',
   'net::ERR_ADDRESS_INVALID',
   'net::ERR_CONNECTION_TIMED_OUT',
   'net::ERR_NAME_RESOLUTION_FAILED',

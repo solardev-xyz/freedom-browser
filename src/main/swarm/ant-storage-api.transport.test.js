@@ -435,7 +435,7 @@ describe('a remote node: every call on the default session’s stack, through it
     expect(mockChromium.events.slice(2)).toEqual([`close ${second}`, `dial ${second}`]);
   });
 
-  test('a refused connection, an unresolved name or a failed proxy never sent the write; a reset or an empty reply may have', async () => {
+  test('a refused connection, an unresolved name or a failed proxy never sent the write; a reset, an empty reply or a lost connection may have', async () => {
     let error = null;
     playChromium({ answer: () => ({ error }) });
     const outcome = async (netError) => {
@@ -465,6 +465,8 @@ describe('a remote node: every call on the default session’s stack, through it
       'net::ERR_EMPTY_RESPONSE',
       'net::ERR_CONNECTION_CLOSED',
       'net::ERR_TIMED_OUT',
+      // Chromium ends a request already written with it too (Codex round 4).
+      'net::ERR_INTERNET_DISCONNECTED',
     ]) {
       await expect(outcome(netError)).resolves.toEqual(maybeSent);
     }
