@@ -1747,6 +1747,50 @@ jobs:
           SWARM_NODE_E2E: '1'
           FREEDOM_CORE_SWARM_VECTORS: ${{ github.workspace }}/.freedom-core/vectors
 
+      # The window.swarm e2e's node that keeps an upload (the next step):
+      # Bee v2.8.0 in its dev mode, offline, with a real local store. Its
+      # SHA-256 per OS is pinned in the script; the binary is the host's only
+      # and never packaged.
+      - name: Download bee dev (the window.swarm e2e's upload node)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-bee-dev.js
+
+      # freedom-core design 0015, SWM-7's e2e (the SWM-6 to SWM-9 plan's PR
+      # 7.7): window.swarm on the core's backend, a development build with
+      # FREEDOM_SWARM_BACKEND=core as main runs it after the flip, the pinned
+      # freedom-cored behind main's page-requests and page dispatcher, and
+      # the antd just downloaded in front, offline (its batch read from a
+      # loopback chain, no peers: it stamps and assembles an upload, then
+      # fails the push). A nested publishFiles: antd assembles the same
+      # manifest root from the JS backend's tar and the core's, the root of
+      # a manifest naming exactly the page's nested paths, and with the
+      # chunks the push would have stored in antd's cache each nested file
+      # resolves through the node (the manifest walked over readChunk). To
+      # bee dev, which keeps the upload, both backends' page calls succeed
+      # with the same reference (the manifest of exactly the page's files;
+      # antd's root where bee dev types them as antd does, not on Windows),
+      # and every nested path resolves from it with the chunks bee dev
+      # stored, nothing seeded (window.swarm's readChunk and readData, and
+      # the node's /bzz). A
+      # feed read past a site's read window: refused once its SOC is read,
+      # no GET /bytes. F-4's 10 MiB + 1 feed entry: refused with nothing sent
+      # to the node (page-requests refuses it from a page; at the dispatcher
+      # the core answers payload_too_large). A navigation mid-upload: the
+      # body held at a tap after 1 MiB, the document gone, the client ends
+      # the connection with the body never whole. Question 4 against antd: a
+      # remote node behind a proxy refused 4900 proxy-or-tor with no socket;
+      # a proxy that comes on between the ready check and the open refused
+      # just before it; a live subscription ended by a proxy, no reconnect;
+      # a loopback node still subscribes. All three OSes; the suite fails,
+      # never skips, without antd, bee dev or freedom-cored.
+      - name: window.swarm on the core against the bundled antd (SWARM_CORE_NODE_E2E)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/page/page-swarm-node.integration.test.js
+        env:
+          SWARM_CORE_NODE_E2E: '1'
+
       - name: Download freedom-ipfsd binaries
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         # The app's IPFS runs on it (freedom-core design 0007). Same bounded

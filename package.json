@@ -82,6 +82,7 @@
     "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential cmake xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
+    "bee-dev:download": "node scripts/fetch-bee-dev.js",
     "core:download": "node scripts/fetch-freedom-cored.js",
     "core:download:previous": "node scripts/fetch-freedom-cored-previous.js",
     "ipfsd:download": "node scripts/fetch-freedom-ipfsd.js",
