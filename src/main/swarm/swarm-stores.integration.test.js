@@ -13,7 +13,8 @@
  *   played through main's handlers and own calls against the pinned core,
  *   each case on a core of its own: each answer equals the reference's
  *   (test/helpers/reference-*.js, on a root of its own) for the same
- *   sequence, and the core's files end as the reference's.
+ *   sequence, and the core's files end as the reference's (the manifest
+ *   store's .bak among them).
  * - **An `fs` spy over the whole run** (store-handover.js
  *   `watchFileTouches`): every `fs` call that takes a path, in every form,
  *   and every better-sqlite3 open, of any of the three stores' files (their
@@ -36,13 +37,22 @@
  *   answers (`get-all-origins`, `get-origin-identities`, manifest `get`,
  *   history `list`) and its feed's record. The other way, the core loads
  *   what the reference wrote and gives the same answers, and the next start
- *   on `js` reads back what the core then wrote. Each row comes back once:
+ *   on `js` reads back what the core then wrote, a grant it changed among
+ *   it. At each boundary the Swarm grants (swarm-permissions.json, the
+ *   core's grant store on both backends) are compared whole: as the core
+ *   holds them (`approval.grants`), as the file has them, and as the next
+ *   start reads them (a core with the JS backend's hello). Each row comes
+ *   back once:
  *   js→core→js, and core→js where the core was the first to import the
  *   legacy file (in the Freedom root layout the build's own start retires
  *   the profile root's original, #1386's fix of what the core's hand-over
  *   leaves there until its next start). Only the deviations the amendment
  *   names differ, each asserted as that difference: `history-bound`'s
- *   trim, `store-shapes`' repairs, and D10's import.
+ *   trim, `store-shapes`' repairs, and D10's import. After the manifest
+ *   store's recovery from its .bak, that .bak is left as it was (the
+ *   journal still pending, the primary past it), and a restart that finds
+ *   the primary torn recovers from it again, the core and the reference to
+ *   the same record, grants and files.
  *
  * Skipped without the binary; FREEDOM_CORED_STORES_TEST=1 requires it (npm
  * run core:download, npm run core:download:previous).
@@ -357,17 +367,23 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
     return dir;
   };
 
+  /** ABANDON's vault on `core`: imported, or unlocked on a restart that finds it. */
   async function importVault(core) {
-    await core.request(
-      'vault.import',
-      {
-        password_b64: b64(PASSWORD),
-        mnemonic_b64: b64(ABANDON),
-        overwrite: false,
-        user_knows_password: true,
-      },
-      shell
-    );
+    try {
+      await core.request(
+        'vault.import',
+        {
+          password_b64: b64(PASSWORD),
+          mnemonic_b64: b64(ABANDON),
+          overwrite: false,
+          user_knows_password: true,
+        },
+        shell
+      );
+    } catch (err) {
+      if (!/already exists/.test(err?.message)) throw err;
+      await core.request('vault.unlock', { password_b64: b64(PASSWORD) }, shell);
+    }
   }
 
   beforeAll(async () => {
@@ -494,7 +510,9 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
   });
 
   describe("permission-manifests' store cases", () => {
-    const MANIFEST_FILES = [MANIFESTS_FILE, GRANTS_FILE, FEEDS_FILE];
+    // The manifest store's .bak too: each write copies the file to it first,
+    // in the core as in the reference.
+    const MANIFEST_FILES = [MANIFESTS_FILE, `${MANIFESTS_FILE}.bak`, GRANTS_FILE, FEEDS_FILE];
     const OWNERS = {
       getBeeWalletAddress: async () => '0xBee0000000000000000000000000000000000000',
       getPublisherAddress: async (index) => `0xPublisher${index}`,
@@ -697,6 +715,44 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
       manifests,
       history: await call('swarm:get-publish-history'),
     };
+  }
+
+  /**
+   * The Swarm grants as `core`'s grant store holds them (`approval.grants`,
+   * main's read), keyed by site as swarm-permissions.json keeps them.
+   */
+  async function grantsOf(core) {
+    const { records } = await core.request('approval.grants', { store: 'swarm' }, shell);
+    return Object.fromEntries(records.map((record) => [record.origin, record]));
+  }
+
+  /** `place`'s swarm-permissions.json as written, parsed, or null. */
+  function grantsFileOf(place) {
+    const file = path.join(place.root, GRANTS_FILE);
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+  }
+
+  /**
+   * The Swarm grants the next start on `js` reads on `place`: the grant
+   * store is the core's on both backends (APB-3), so a core whose hello is
+   * the JS backend's (no `swarm_stores`) loads swarm-permissions.json and
+   * answers `approval.grants`.
+   */
+  async function grantsAtNextStart(place) {
+    const { storeMovedFor } = jest.requireActual('../core/core-client');
+    const core = await startCore({
+      binary: current,
+      root: place.profile,
+      storeMoved: storeMovedFor('js'),
+      grantRoot: place.root,
+      userDataDir: place.profile,
+    });
+    try {
+      expect(core.hello.store_moved).not.toContain('swarm_stores');
+      return await grantsOf(core);
+    } finally {
+      await core.stop();
+    }
   }
 
   /** A js world on `profile` (`loadWorld`'s `'js'` or `'reference'`). */
@@ -927,10 +983,12 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
       const mark = watch.mark();
       let answers;
       let feed;
+      let grants;
       try {
         await importVault(core);
         feed = await makeState(world, world.mainHandlers, coreOps(world));
         answers = await answersOf(world.mainHandlers);
+        grants = await grantsOf(core);
       } finally {
         await core.stop();
         await node.close();
@@ -1014,6 +1072,18 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
         });
         expect(historyCases.legacyFiles(place.root)).toEqual({ legacy: false, migrated: true });
       }
+
+      // The grants: the manifest's connection and its feeds and publish
+      // rules, as the core's grant store held them, are the file it wrote
+      // and what the next start on js reads (its grant store the core's).
+      expect(grants).toEqual({
+        [APP]: expect.objectContaining({
+          origin: APP,
+          autoApprove: { publish: true, feeds: true, signing: false, messaging: false },
+        }),
+      });
+      expect(grantsFileOf(place)).toEqual(grants);
+      expect(await grantsAtNextStart(place)).toEqual(grants);
     });
 
     test('js → core → js: the core loads what the reference wrote, and no row comes back twice', async () => {
@@ -1043,6 +1113,15 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
       expect(written.js).toEqual(written.reference);
       expect(legacyRows(before.history.entries)).toEqual(ONCE);
       expect(record).toMatchObject({ lastReference: 'ef'.repeat(32) });
+      // The grants the reference wrote: the manifest's connection with its
+      // feeds and publish rules.
+      const grantsBefore = grantsFileOf(place);
+      expect(grantsBefore).toEqual({
+        [APP]: expect.objectContaining({
+          origin: APP,
+          autoApprove: { publish: true, feeds: true, signing: false, messaging: false },
+        }),
+      });
 
       // The core: the same answers, the page's feed answered from the
       // reference's record (no node call), then rows and an identity of
@@ -1056,9 +1135,11 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
       const core = await startOnProfile(place, world, { swarm: true });
       const mark = watch.mark();
       let after;
+      let grantsAfter;
       try {
         await importVault(core);
         expect(await answersOf(world.mainHandlers)).toEqual(before);
+        expect(await grantsOf(core)).toEqual(grantsBefore);
         expect(await pageFeed(world, APP, 'notes')).toEqual(feed);
         expect(node.calls).toEqual([]);
         await pause(3);
@@ -1074,7 +1155,17 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
           reference: 'cd'.repeat(32),
         });
         await world.mainHandlers.get(IPC.SWARM_CREATE_APP_SCOPED_IDENTITY)({}, SHOP, {});
+        // A grant the core changes: publish taken out of the manifest's
+        // hands, its rule with it.
+        await world.mainHandlers.get(IPC.SWARM_MANIFEST_USE_INDIVIDUAL)(
+          {},
+          {
+            origin: APP,
+            capability: 'publish',
+          }
+        );
         after = await answersOf(world.mainHandlers);
+        grantsAfter = await grantsOf(core);
       } finally {
         await core.stop();
         await node.close();
@@ -1096,20 +1187,32 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
         expect(legacyRows(back[kind].answers.history.entries)).toEqual(ONCE);
         expect([kind, back[kind].read]).toEqual([kind, record]);
       }
+      // The grants the core left are the file and what the next start on
+      // js reads.
+      expect(grantsAfter).toEqual({
+        [APP]: {
+          ...grantsBefore[APP],
+          autoApprove: { ...grantsBefore[APP].autoApprove, publish: false },
+        },
+      });
+      expect(grantsFileOf(place)).toEqual(grantsAfter);
+      expect(await grantsAtNextStart(place)).toEqual(grantsAfter);
     });
   });
 
   // ---- The differences the amendment names, each as that difference ----
 
   describe('what may differ, each as that difference (js → core)', () => {
-    /** The core's answers on `place`, its vault imported. */
-    async function coreAnswers(place) {
+    /** The core's answers on `place`, its vault imported; its grants in `out.grants`. */
+    async function coreAnswers(place, out = {}) {
       const world = loadWorld({ userDataDir: tempDir('unused'), owners: unlockedOwners() });
       const core = await startOnProfile(place, world);
       const mark = watch.mark();
       try {
         await importVault(core);
-        return await answersOf(world.mainHandlers);
+        const answers = await answersOf(world.mainHandlers);
+        out.grants = await grantsOf(core);
+        return answers;
       } finally {
         await core.stop();
         expect(mainTouchesSince(mark)).toEqual([]);
@@ -1233,7 +1336,7 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
       let individual;
       await watch.allowed(async () => {
         const js = jsWorld(place.profile);
-        await useSimulatedGrantCore();
+        const jsGrants = await useSimulatedGrantCore();
         try {
           js.serving.spec = APP_MANIFEST;
           const ops = jsOps(js);
@@ -1260,6 +1363,9 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
         } finally {
           js.reference.history.closeDb();
         }
+        fs.writeFileSync(path.join(place.root, GRANTS_FILE), jsGrants.file('swarm'), {
+          mode: 0o600,
+        });
       });
       const file = path.join(place.root, MANIFESTS_FILE);
       // The .bak: the first change's record, and the second pending in its
@@ -1284,6 +1390,45 @@ describeIfCurrent('the Swarm stores on the pinned freedom-cored (SWM-6 gates)', 
         manifests: { ...expected.manifests, [APP]: individual },
       });
       expect(JSON.parse(fs.readFileSync(file, 'utf8')).records[APP]).toEqual(individual);
+
+      // The .bak the recovery left: read from it, the store's write didn't
+      // copy the unreadable primary over it (nor does the reference's
+      // saveStore), so it is still the first change's record with the
+      // second pending. The primary is past that journal, the .bak before
+      // it.
+      expect(JSON.parse(fs.readFileSync(`${file}.bak`, 'utf8'))).toEqual(backup);
+      // A torn primary, on the profile and on a copy of it: the core's
+      // restart and the reference each recover from that .bak, replaying
+      // its journal, to the same record, grants and files.
+      const twin = { profile: tempDir('shapes-manifests-twin') };
+      twin.root = twin.profile;
+      for (const name of [MANIFESTS_FILE, `${MANIFESTS_FILE}.bak`, GRANTS_FILE, FEEDS_FILE]) {
+        fs.copyFileSync(path.join(place.root, name), path.join(twin.root, name));
+      }
+      for (const dir of [place.root, twin.root]) {
+        fs.writeFileSync(path.join(dir, MANIFESTS_FILE), '{"version":1,"records":');
+      }
+      const restarted = {};
+      expect((await coreAnswers(place, restarted)).manifests[APP]).toEqual(individual);
+      let recovered;
+      let grantCore;
+      await watch.allowed(async () => {
+        const js = jsWorld(twin.profile);
+        grantCore = await useSimulatedGrantCore({ swarm: grantsFileOf(twin) });
+        try {
+          recovered = await js.referenceHandlers.get(IPC.SWARM_MANIFEST_GET)({}, APP);
+        } finally {
+          js.reference.history.closeDb();
+        }
+      });
+      expect(recovered).toEqual(individual);
+      expect(restarted.grants).toEqual(JSON.parse(grantCore.file('swarm')));
+      const filesOf = (dir) =>
+        [MANIFESTS_FILE, `${MANIFESTS_FILE}.bak`].map((name) =>
+          JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+        );
+      expect(filesOf(place.root)).toEqual(filesOf(twin.root));
+      expect(filesOf(place.root)).toEqual([{ version: 1, records: { [APP]: individual } }, backup]);
     });
   });
 
