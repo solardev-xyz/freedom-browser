@@ -490,7 +490,7 @@ async function startStoresCore({ pool = new SwarmIoPool() } = {}) {
         id: message.id,
         result: {
           protocol: 2,
-          core_version: '0.32.0',
+          core_version: '0.33.0',
           capabilities: ['vault.status', 'fragments', 'streams'],
           store_moved: message.params.store_moved,
         },
