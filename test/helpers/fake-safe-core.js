@@ -34,6 +34,20 @@
  *   `safe.propose` need its page's origin. Anything else is
  *   `invalid_argument`, and the request is kept in `refused`.
  *
+ * - **SAFE-3's field** (design 0016, C1; freedom-core 0e01b95b's
+ *   `serve.rs` hello, `approvals.rs`'s `issue`, `spend` and
+ *   `deployment_check`): a hello that declares `safe3: true` is taken and
+ *   answered with `safe3: true` (unless `takesSafe3` is false: a core
+ *   before 0.32.0, which ignores it). Under it, before the script:
+ *   `approval.issue` of `executor-send`, or of a `safe-send` without
+ *   `safe_tx` (APR-4's legacy form), is `forbidden`, nothing minted;
+ *   `approval.spend` of a legacy `safe-send` is `not_authorized`
+ *   (`mismatch`), the token burnt (`burnt`); and `sign.transaction` under
+ *   `shell` to the pinned proxy factory is `not_authorized` (`no_token`)
+ *   unless its authorization is `{ token, kind: "executor-send" }` with no
+ *   `intent`. Design 0016's `safe-send` (with `safe_tx`) is never spent by
+ *   `approval.spend`, field or not. Each refusal is kept in `refused`.
+ *
  * Then `script(message, core)` answers: a result, `{ error }` for an error
  * body, or undefined to hold the request unanswered (`answer()` and
  * `fail()` reply later). The default script answers each method with a
@@ -98,6 +112,9 @@ const SAFE_ROWS = Object.freeze({
   'safe.message_complete': { callers: [CHROME, SHELL] },
   'safe.sign_owner': { callers: [CHROME, SHELL], pending: 'before' },
 });
+
+// The pinned SafeProxyFactory 1.4.1 (fc-safe's `PROXY_FACTORY`).
+const PROXY_FACTORY = '0x4e1dcf7ad4e460cfd30791ccc4f9c8a4f820ec67';
 
 const SESSION_ID = 'a1'.repeat(16);
 const HASH = '0x' + '5a'.repeat(32);
@@ -396,6 +413,48 @@ function readSafe(method, params, context, moved) {
   }
 }
 
+const forbidden = (message) => new Refused('forbidden', message);
+const notAuthorized = (reason, message) => new Refused('not_authorized', message, { reason });
+
+/**
+ * The refusals SAFE-3's field turns on, and design 0016's `safe-send`
+ * spent outside `safe.propose`, as cored 0.32.0 answers them before
+ * anything else: throws the refusal, or returns.
+ */
+function readSafe3(method, params, context, safe3, core) {
+  const payload = isObject(params) ? params.payload : undefined;
+  const built = isObject(payload) && payload.safe_tx !== undefined;
+  if (method === 'approval.issue' && safe3) {
+    if (params?.kind === 'executor-send') {
+      throw forbidden('under SAFE-3 the core mints executor-send itself, at safe.execute and safe.deploy');
+    }
+    if (params?.kind === 'safe-send' && !built) {
+      throw forbidden(
+        'under SAFE-3 a safe-send binds the SafeTx safe.prepare built: { safe, chain_id, safe_tx, safe_tx_hash }'
+      );
+    }
+  }
+  if (method === 'approval.spend' && params?.kind === 'safe-send' && (built || safe3)) {
+    core.burnt.push(params.token);
+    throw notAuthorized('mismatch', 'the request is not the one confirmed');
+  }
+  if (method === 'sign.transaction' && safe3 && context?.caller === SHELL) {
+    const to = isObject(params?.tx) && typeof params.tx.to === 'string' ? params.tx.to.toLowerCase() : null;
+    const form = params?.authorization;
+    const executor =
+      isObject(form) &&
+      Object.hasOwn(form, 'token') &&
+      !Object.hasOwn(form, 'intent') &&
+      form.kind === 'executor-send';
+    if (to === PROXY_FACTORY && !executor) {
+      throw notAuthorized(
+        'no_token',
+        "a Safe's deployment (createProxyWithNonce to the pinned factory) signs only with the executor-send token safe.deploy minted for it (SAFE-3)"
+      );
+    }
+  }
+}
+
 function defaultScript(message) {
   if (Object.hasOwn(DEFAULT_RESULTS, message.method)) return DEFAULT_RESULTS[message.method];
   return {};
@@ -406,9 +465,16 @@ class FakeSafeCore extends EventEmitter {
    * @param {object} [options]
    * @param {string[]} [options.storeMoved] - the stores it takes, of those main names
    * @param {(message: object, core: FakeSafeCore) => any} [options.script]
+   * @param {boolean} [options.takesSafe3] - false for a core before 0.32.0,
+   *   which ignores the hello's `safe3`
    */
-  constructor({ storeMoved = ['vault_meta', 'safe_pending'], script = defaultScript } = {}) {
+  constructor({ storeMoved = ['vault_meta', 'safe_pending'], script = defaultScript, takesSafe3 = true } = {}) {
     super();
+    this.takesSafe3 = takesSafe3;
+    // Whether the hello's `safe3` was taken (design 0016, C1).
+    this.safe3 = false;
+    // Tokens the field's refusals burnt (`approval.spend`'s).
+    this.burnt = [];
     this.pid = 5016;
     this.stdout = new PassThrough();
     this.stderr = new PassThrough();
@@ -455,11 +521,15 @@ class FakeSafeCore extends EventEmitter {
       this.hello = message.params;
       const named = Array.isArray(message.params?.store_moved) ? message.params.store_moved : [];
       this.moved = named.filter((name) => this.storeMoved.includes(name));
+      this.safe3 = this.takesSafe3 && message.params?.safe3 === true;
       this.answer(message.id, {
         protocol: 2,
-        core_version: '0.33.0',
+        // The pinned core (0.33.0) when it takes safe3; a core from before
+        // C1 (0.31.0) when it doesn't (SAFE-3's PR 7).
+        core_version: this.takesSafe3 ? '0.33.0' : '0.31.0',
         capabilities: ['vault.status', 'streams'],
         store_moved: this.moved,
+        ...(this.safe3 ? { safe3: true } : {}),
       });
       this.decoder.setKinds(CORE_STREAM_KINDS);
       return;
@@ -469,6 +539,14 @@ class FakeSafeCore extends EventEmitter {
       return;
     }
     this.requests.push(message);
+    try {
+      readSafe3(message.method, message.params, message.context, this.safe3, this);
+    } catch (err) {
+      if (!(err instanceof Refused)) throw err;
+      this.refused.push({ message, error: err.body });
+      this.fail(message.id, err.body);
+      return;
+    }
     if (Object.hasOwn(SAFE_ROWS, message.method)) {
       try {
         readSafe(message.method, message.params, message.context, this.moved);
@@ -609,9 +687,11 @@ async function startSafeCore({ log, relay: relayDeps = null, ...options } = {}) 
 
 module.exports = {
   DEFAULT_RESULTS,
+  PROXY_FACTORY,
   FakeSafeCore,
   SAFE_ROWS,
   SESSION_ID,
   readSafe,
+  readSafe3,
   startSafeCore,
 };

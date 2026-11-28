@@ -384,6 +384,11 @@ function defaultDependencies() {
     spendSafe: (confirmation) => require('../wallet/signing-confirmation').spendSafeConfirmation(confirmation),
     startSafeSend: (options) => require('../wallet/safe/safe-transactions').startSafeSend(options),
     reserveSafeSend: (safeIndex) => require('../wallet/safe/safe-transactions').reserveSafeSend(safeIndex),
+    // On the core's Safe backend (SAFE-3's PR 7): the core's token for the
+    // page, recorded and proposed under the page.
+    proposeSiteSafeSend: (options) => require('../wallet/safe/safe-transactions').proposeSiteSafeSend(options),
+    // Whether a Safe runs on the core: the core's Safe backend.
+    safeOnCore: () => require('../wallet/safe/safe-backend-kind').safeBackendKind() === 'core',
     onSafeSendSettled: (listener) => require('../wallet/safe/safe-transactions').onSafeSendSettled(listener),
     guardSiteSafeSend: (safeTxHash, guard) =>
       require('../wallet/safe/safe-transactions').guardSiteSafeSend(safeTxHash, guard),
@@ -746,8 +751,19 @@ function createCoreSends(shared, deps = {}) {
    * spent for the Safe approval its owners present, the SafeTx started, and
    * its board shown (`page-sends.js`'s `safeSend`, its reference, from the
    * spend on). The page gets the execution's hash.
+   *
+   * On the core's Safe backend (SAFE-3's PR 7; freedom-core design 0016,
+   * C1, the hello's `safe3`) the token binds design 0016's form, `{ safe,
+   * chain_id, safe_tx, safe_tx_hash }`, the SafeTx the core built before
+   * its prompt and the prompt showed (page-eip1193.js checked it): after
+   * the same checks, main records the user's decision for exactly that
+   * SafeTx and presents the token with its handle to `safe.propose` under
+   * the page's PageContext (`proposeSiteSafeSend`, core-sends.js), which
+   * spends it; then the same board. Nothing is spent through
+   * `approval.spend` there, and main builds no SafeTx.
    */
   async function safeSend(context, device, page) {
+    if (d.safeOnCore()) return coreSafeSend(context, device, page);
     const { requester } = context;
     const safeIndex = device.account;
     const { tx } = device.payload;
@@ -786,6 +802,52 @@ function createCoreSends(shared, deps = {}) {
       reservation?.release();
       discard(device.token);
     }
+    return safeBoard(context, safeIndex, started);
+  }
+
+  /**
+   * A Safe's send on the core's Safe backend (SAFE-3's PR 7): the name,
+   * the grant and the document checked, then the core's `safe-send` for
+   * the page, its handle and the SafeTx its prompt showed, recorded and
+   * proposed under the page (`proposeSiteSafeSend`), then its board.
+   */
+  async function coreSafeSend(context, device, page) {
+    const { requester } = context;
+    const safeIndex = device.account;
+    const { payload } = device;
+    // Its shape is core-sends.js's to check; the board's text is read from it.
+    const safeTx = payload?.safe_tx !== null && typeof payload?.safe_tx === 'object' ? payload.safe_tx : {};
+    const call = { to: String(safeTx.to ?? ''), value: String(safeTx.value ?? '0'), data: String(safeTx.data ?? '0x') };
+    let started;
+    try {
+      if (!(await context.nameHolds())) return error(NO_ADDRESS);
+      if (!grantExposes(requester.key, safeIndex)) return error(NOT_CONNECTED);
+      if (!context.holdsKey()) return error(NO_ADDRESS);
+      context.traceCoreToken?.('spent', device.kind);
+      started = await d.proposeSiteSafeSend({
+        safeIndex,
+        payload,
+        token: device.token,
+        handle: device.handle,
+        page,
+        display: safeDisplay(call, requester.key),
+      });
+    } catch (err) {
+      return failure(err);
+    } finally {
+      // Spent at its presentation, or burnt.
+      discard(device.token);
+    }
+    return safeBoard(context, safeIndex, started);
+  }
+
+  /**
+   * A site's SafeTx `started` (its board's state), waited on: its board
+   * shown, and the request answered with the execution's hash, or 4001
+   * once it is discarded, or 4100 once the site no longer holds it.
+   */
+  async function safeBoard(context, safeIndex, started) {
+    const { requester } = context;
     const safeTxHash = started?.safeTxHash;
     const settled = settledOutcome(context, safeIndex, safeTxHash);
     // Before each step that can execute the SafeTx: the name, the key, the

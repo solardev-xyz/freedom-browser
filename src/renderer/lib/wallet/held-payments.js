@@ -22,7 +22,12 @@
  *
  * Each is authorized in main by a confirmation of the held payment itself
  * ('intent-resend', 'intent-replace', 'intent-close'), minted at the
- * user's press.
+ * user's press. A Safe's held activation on the identity core's Safe
+ * backend (`safeActivation`, freedom-core design 0016, C1) is sped up as
+ * the activation itself (`activateSafe` with `speedUp`): the core's
+ * deployment at its own quote, signed at the held nonce, its fee asked as
+ * the activation's is (in the approvals panel, or here, twice above the
+ * threshold, with `feeAskId`).
  *
  * `waitingPaymentBehind(chainId, sender)` serves the send review's warning
  * (D11).
@@ -53,7 +58,14 @@ import {
   HELD,
   REPLACE,
 } from './intent-texts.js';
-import { FEE_CHECK, FEE_CHECK_ASK_AGAIN, fetchFeeCheck, panelConfirmsFees } from './fee-check.js';
+import {
+  FEE_CHECK,
+  FEE_CHECK_ASK_AGAIN,
+  FEE_CHECK_NEEDS_CONFIRMATION,
+  describeFeeCheck,
+  fetchFeeCheck,
+  panelConfirmsFees,
+} from './fee-check.js';
 
 const ERC20_TRANSFER = '0xa9059cbb';
 // Where a held payment leaves a gap later sends wait behind (D11).
@@ -288,6 +300,26 @@ function renderPayment(payment) {
       'confirm-resend',
       busy
     );
+  } else if (step?.step === 'activation') {
+    // A Safe's held activation on the core: the core's fee, asked here only
+    // when its check stopped it (`feeAskId`), twice above the threshold.
+    const lines = step.feeAskId ? describeFeeCheck(step.feeCheck, chain.nativeSymbol || 'xDAI') : [];
+    if (step.askAgain) lines.push(FEE_CHECK.askAgain.replace(/\.$/, ''));
+    const text = [REPLACE.activationNote, ...lines].join('. ');
+    const confirmLabel = busy
+      ? REPLACE.replacing
+      : step.askAgain
+        ? FEE_CHECK.sendAnyway
+        : step.feeAskId
+          ? FEE_CHECK.confirmFee
+          : REPLACE.speedUp;
+    stepHtml = renderStep(
+      text,
+      confirmLabel,
+      'confirm-activation',
+      busy,
+      step.feeCheck?.above ? 'warning' : 'info'
+    );
   } else if (step?.step === 'replace' && step.fees) {
     const symbol = chain.nativeSymbol || 'ETH';
     const text = `${REPLACE.newFee(maxFeeOf(payment, step.fees), symbol)}. ${REPLACE.note}`;
@@ -397,6 +429,11 @@ export async function handleAction(action, payment) {
   } else if (action === 'confirm-resend') {
     await sendAgain(payment);
     return;
+  } else if (action === 'replace' && Number.isSafeInteger(payment.safeActivation)) {
+    active = { intentId: payment.intentId, step: 'activation' };
+  } else if (action === 'confirm-activation') {
+    await speedUpActivation(payment);
+    return;
   } else if (action === 'replace') {
     await offerReplacement(payment);
     return;
@@ -458,6 +495,52 @@ async function sendAgain(payment) {
         };
   } catch (err) {
     note = { kind: 'error', text: err.message };
+  }
+  active = { intentId: payment.intentId, note };
+  await refreshHeldPayments();
+}
+
+/**
+ * A Safe's held activation sped up on the identity core (freedom-core
+ * design 0016, C1): `activateSafe` with `speedUp`, and, for a fee the
+ * core's check stopped with the approvals panel off, the ask's ID this
+ * step showed (`feeAskId`): main asks again under a new one on the first
+ * press above the threshold.
+ */
+async function speedUpActivation(payment) {
+  if (isSignatureInFlight()) return;
+  const { feeAskId = null, feeCheck = null, askAgain = false } = active ?? {};
+  active = { intentId: payment.intentId, step: 'activation', feeAskId, feeCheck, askAgain, busy: true };
+  render();
+  const flight = { intentId: payment.intentId };
+  beginSignatureFlight(flight);
+  let note;
+  try {
+    const result = await window.wallet.activateSafe(payment.safeActivation, {
+      speedUp: true,
+      ...(feeAskId ? { feeAskId } : {}),
+    });
+    if (!result.success && result.code === FEE_CHECK_NEEDS_CONFIRMATION && typeof result.feeAskId === 'string') {
+      active = {
+        intentId: payment.intentId,
+        step: 'activation',
+        feeAskId: result.feeAskId,
+        feeCheck: result.feeCheck ?? null,
+        askAgain: result.feeAskAgain === true,
+      };
+      render();
+      return;
+    }
+    note = result.success
+      ? { kind: 'info', text: REPLACE.replaced }
+      : {
+          kind: 'error',
+          text: result.code === 'INTENT_FEE_TOO_LOW' ? REPLACE.activationTooLow : result.error,
+        };
+  } catch (err) {
+    note = { kind: 'error', text: err.message };
+  } finally {
+    endSignatureFlight(flight);
   }
   active = { intentId: payment.intentId, note };
   await refreshHeldPayments();

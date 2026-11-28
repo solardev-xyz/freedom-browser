@@ -47,6 +47,8 @@ let dappTxValue;
 let dappTxData;
 let dappTxDataRow;
 let dappTxNetwork;
+let dappTxSafeNonceRow;
+let dappTxSafeNonce;
 let dappTxFee;
 let dappTxFeeRetryRow;
 let dappTxFeeRetryBtn;
@@ -95,6 +97,8 @@ export function initDappTx() {
   dappTxData = document.getElementById('dapp-tx-data');
   dappTxDataRow = document.getElementById('dapp-tx-data-row');
   dappTxNetwork = document.getElementById('dapp-tx-network');
+  dappTxSafeNonceRow = document.getElementById('dapp-tx-safe-nonce-row');
+  dappTxSafeNonce = document.getElementById('dapp-tx-safe-nonce');
   dappTxFee = document.getElementById('dapp-tx-fee');
   dappTxFeeRetryRow = document.getElementById('dapp-tx-fee-retry-row');
   dappTxFeeRetryBtn = document.getElementById('dapp-tx-fee-retry');
@@ -438,6 +442,11 @@ function renderPageSend(request, prompt, view, tx, chain, symbol) {
     dappTxWarning?.classList.toggle('hidden', !call);
   }
   if (dappTxNetwork) dappTxNetwork.textContent = chain.name || `Chain ${chain.id}`;
+  // A Safe's send on the core's Safe backend (freedom-core design 0016,
+  // C1): the SafeTx the core built before the prompt, by its nonce.
+  const safeNonce = Number.isSafeInteger(view.safeTx?.nonce) ? view.safeTx.nonce : null;
+  if (dappTxSafeNonce) dappTxSafeNonce.textContent = safeNonce === null ? '' : `#${safeNonce}`;
+  dappTxSafeNonceRow?.classList.toggle('hidden', safeNonce === null);
   dappTxFeeCheck?.reset(symbol);
   if (request.safe) {
     // The executor pays the execution fee, checked as it executes.

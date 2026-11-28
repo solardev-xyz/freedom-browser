@@ -118,7 +118,7 @@ function standInCore() {
   return core;
 }
 
-function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {}, coreClient = null } = {}) {
+function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {}, coreClient = null, safeOnCore = false } = {}) {
   const guests = new Map();
   const names = new Map();
   const state = {
@@ -177,6 +177,8 @@ function setup({ approvalsDocument = false, deviceDeps = {}, coreSendDeps = {}, 
     }),
     isVaultUnlocked: async () => state.unlocked,
     discardToken: (token) => state.discarded.push(token),
+    // The core's Safe backend, whose hello declares `safe3` (SAFE-3's PR 7).
+    safeOnCore: () => safeOnCore,
   });
   const sent = [];
   const requests = createPageRequests({
@@ -2571,5 +2573,211 @@ describe('transport_key for a DNS name over IPNS (0012 APR-5f, APB-4e)', () => {
       expect(await env.relay.request(context, { params: [MESSAGE, ACCOUNT] })).toEqual({ error: NO_ADDRESS });
     }
     expect(env.core.sent).toEqual([]);
+  });
+});
+
+// SAFE-3's PR 7 (freedom-core design 0016, C1): on the core's Safe backend
+// main's hello declares `safe3`, and a Safe's send comes prepared: the
+// core's eth.send view carries the SafeTx it built before the prompt and
+// its hash, and the approve answers `{ device }` with design 0016's
+// `safe-send`, `{ safe, chain_id, safe_tx, safe_tx_hash }`, for exactly that
+// SafeTx.
+describe("a Safe's send on the core's Safe backend (SAFE-3's PR 7, the hello's safe3)", () => {
+  const { safeTxHashOf } = require('../wallet/safe/approval-records');
+  const { getAddress } = require('ethers');
+  const ZERO = '0x0000000000000000000000000000000000000000';
+  const SAFE_TX = Object.freeze({
+    to: getAddress(CALL.to),
+    value: '0',
+    data: CALL.data.toLowerCase(),
+    operation: 0,
+    baseGas: '0',
+    gasPrice: '0',
+    gasToken: ZERO,
+    refundReceiver: ZERO,
+    nonce: 7,
+    safeTxGas: '0',
+  });
+  const hashOf = (safeTx) => safeTxHashOf(SAFE_ADDRESS, 100, safeTx);
+  const SAFE_TX_HASH = hashOf(SAFE_TX);
+  const PAYLOAD = Object.freeze({ safe: SAFE_ADDRESS, chain_id: '100', safe_tx: SAFE_TX, safe_tx_hash: SAFE_TX_HASH });
+  const EXEC_HASH = `0x${'12'.repeat(32)}`;
+  const BOARD = { safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, threshold: 1, collected: 1, status: 'ready', proposed: true };
+
+  // The core's eth.send prompt for a Safe's send under `safe3`.
+  const builtAsk = (overrides = {}) => (id, pc) => {
+    const ask = sendAsk(id, pc, { account: SAFE });
+    ask.view.tx = { to: CALL.to, value: '0', data: CALL.data };
+    ask.view.safeTx = { ...SAFE_TX, ...overrides.safeTx };
+    ask.view.safeTxHash = overrides.safeTxHash ?? SAFE_TX_HASH;
+    return ask;
+  };
+  const builtDevice = (answer, payload = PAYLOAD) => ({
+    device: { type: 'safe', kind: 'safe-send', account: SAFE, payload, handle: answer.handle, token: TOKEN },
+  });
+
+  function coreSetup({ safeOnCore = true } = {}) {
+    const paid = payments();
+    const safe = { proposed: [], listeners: new Set(), guards: new Map() };
+    Object.assign(paid.deps, {
+      safeOnCore: () => safeOnCore,
+      proposeSiteSafeSend: async (options) => {
+        safe.proposed.push(options);
+        return { ...BOARD };
+      },
+      onSafeSendSettled: (listener) => {
+        safe.listeners.add(listener);
+        return () => safe.listeners.delete(listener);
+      },
+      guardSiteSafeSend: (safeTxHash, guard) => {
+        safe.guards.set(safeTxHash, guard);
+        return () => safe.guards.delete(safeTxHash);
+      },
+      siteWithdrawn: () => Object.assign(new Error('withdrawn'), { code: 'SAFE_SITE_WITHDRAWN' }),
+      safeBoards: () => null,
+      // Main's own path: never on the core.
+      reserveSafeSend: () => {
+        throw new Error('main reserved a Safe send on the core');
+      },
+      spendSafe: async () => {
+        throw new Error('main spent a Safe token on the core');
+      },
+    });
+    safe.settle = (event) => {
+      for (const listener of [...safe.listeners]) listener(event);
+    };
+    const env = setup({ coreSendDeps: paid.deps, safeOnCore });
+    env.state.wallets = DEVICE_WALLETS;
+    env.state.grants.set('*', { walletIndex: SAFE });
+    return { env, paid, safe };
+  }
+
+  test("the prompt shows the core's SafeTx by its nonce; its approve's safe-send for exactly that SafeTx is proposed under the page with its handle, its board shown; the page gets the execution's hash", async () => {
+    const { env, safe } = coreSetup();
+    const page = env.tab();
+    asking(env, builtAsk(), (answer) => builtDevice(answer));
+    const asked = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    const [shown] = env.prompts();
+    expect(shown.kind).toBe('eth.send');
+    // "Safe transaction #7" beside the call (the plan's [U] #15): the nonce
+    // only, never the hash or the other fields.
+    expect(shown.view).toEqual({
+      ...sendAsk(1, null, { account: SAFE }).view,
+      tx: { to: CALL.to, value: '0', data: CALL.data },
+      safeTx: { nonce: 7 },
+    });
+    // The approve's page:decide waits on the board.
+    const decided = env.decide(shown.handle, true, {});
+    await flush();
+    await flush();
+    const pc = env.core.sent.at(-1).context.page;
+    expect(safe.proposed).toEqual([
+      {
+        safeIndex: SAFE,
+        payload: PAYLOAD,
+        token: TOKEN,
+        handle: shown.handle,
+        page: pc,
+        display: { site: KEY_A, asset: null, toAddress: getAddress(CALL.to), amount: '0', label: expect.stringMatching(/^a contract call to /) },
+      },
+    ]);
+    const board = env.prompts().at(-1);
+    expect(board.kind).toBe('eth.safe_send');
+    expect(board.view).toEqual({ safeIndex: SAFE, state: BOARD });
+    // Its execution, past the page's guard: the hash is the page's.
+    const guard = safe.guards.get(SAFE_TX_HASH);
+    await guard(async () => safe.settle({ safeIndex: SAFE, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: EXEC_HASH }));
+    expect(await asked).toEqual({ result: EXEC_HASH });
+    expect(decided).toBeInstanceOf(Promise);
+  });
+
+  test('a device answer for another SafeTx, another Safe or chain, or in the legacy form: refused, the token burnt, nothing proposed', async () => {
+    const { env, safe } = coreSetup();
+    const page = env.tab();
+    const crossed = [
+      { ...PAYLOAD, safe_tx_hash: hashOf({ ...SAFE_TX, nonce: 8 }) },
+      { ...PAYLOAD, safe_tx: { ...SAFE_TX, nonce: 8 } },
+      { ...PAYLOAD, safe_tx: { ...SAFE_TX, value: '1' } },
+      { ...PAYLOAD, safe: SECOND },
+      { ...PAYLOAD, chain_id: '1' },
+      { ...PAYLOAD, extra: 1 },
+      { safe: SAFE_ADDRESS, chain_id: '100', safe_tx: SAFE_TX },
+      { safe: SAFE_ADDRESS, chain_id: '100', tx: { to: CALL.to, value: '0', data: CALL.data } },
+    ];
+    for (const payload of crossed) {
+      asking(env, builtAsk(), (answer) => builtDevice(answer, payload));
+      const asked = page.ask('eth_sendTransaction', [CALL]);
+      await flush();
+      env.decide(env.prompts().at(-1).handle, true, {});
+      expect(await asked).toEqual({ error: DEVICE_MISMATCH });
+    }
+    expect(safe.proposed).toEqual([]);
+    expect(env.state.discarded.filter((token) => token === TOKEN)).toHaveLength(crossed.length);
+  });
+
+  test("on js the core's prepared form is refused, as the core never sends it without safe3", async () => {
+    const { env, safe } = coreSetup({ safeOnCore: false });
+    const page = env.tab();
+    // A view carrying a SafeTx: refused as a prompt main can't show.
+    asking(env, builtAsk(), (answer) => builtDevice(answer));
+    const viewed = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    await flush();
+    expect(env.prompts()).toEqual([]);
+    expect((await viewed).error).toBeDefined();
+    // The legacy view, answered with the prepared form: mismatch.
+    asking(env, (id, pc) => {
+      const ask = sendAsk(id, pc, { account: SAFE });
+      ask.view.tx = { to: CALL.to, value: '0', data: CALL.data };
+      return ask;
+    }, (answer) => builtDevice(answer));
+    const asked = page.ask('eth_sendTransaction', [CALL]);
+    await flush();
+    env.decide(env.prompts().at(-1).handle, true, {});
+    expect(await asked).toEqual({ error: DEVICE_MISMATCH });
+    expect(safe.proposed).toEqual([]);
+  });
+
+  test("sendShown: the core's SafeTx checked (Freedom's shape, the view's call, its hash for the Safe shown), shown by its nonce; required on the core, refused anywhere else", () => {
+    const choices = { alwaysAllow: [false], feeAcknowledged: [false, true] };
+    const view = () => builtAsk()(1, null).view;
+    const shown = sendShown(view(), choices, { safeOnCore: true });
+    expect(shown.view.safeTx).toEqual({ nonce: 7 });
+    expect(shown.view).not.toHaveProperty('safeTxHash');
+    expect(shown.safe).toEqual({ safeTx: SAFE_TX, safeTxHash: SAFE_TX_HASH.toLowerCase() });
+    // Not on js, and not for an account that isn't a Safe.
+    expect(() => sendShown(view(), choices)).toThrow();
+    expect(() => sendShown({ ...view(), account: accountOf(0) }, choices, { safeOnCore: true })).toThrow();
+    // On the core a Safe's view without its SafeTx is refused.
+    const { safeTx: _safeTx, safeTxHash: _hash, ...bare } = view();
+    expect(() => sendShown(bare, choices, { safeOnCore: true })).toThrow();
+    expect(sendShown(bare, choices).safe).toBeNull();
+    // Each crossed SafeTx, or its hash, is refused.
+    const crossed = [
+      { safeTxHash: hashOf({ ...SAFE_TX, nonce: 8 }) },
+      { safeTx: { nonce: 8 } },
+      { safeTx: { nonce: '7' } },
+      { safeTx: { nonce: 2 ** 53 } },
+      { safeTx: { operation: 1 } },
+      { safeTx: { gasToken: SECOND } },
+      { safeTx: { refundReceiver: SECOND } },
+      { safeTx: { safeTxGas: '1' } },
+      { safeTx: { value: '1' } },
+      { safeTx: { to: SECOND } },
+      { safeTx: { data: '0x' } },
+      { safeTx: { extra: 1 } },
+      { safeTxHash: 'nope' },
+    ];
+    for (const overrides of crossed) {
+      const changed = builtAsk(overrides)(1, null).view;
+      // A changed field with its own hash is still refused unless the call is the view's.
+      expect(() => sendShown(changed, choices, { safeOnCore: true })).toThrow();
+    }
+    // Another chain than Gnosis.
+    expect(() => sendShown({ ...view(), chain: { id: 1, name: 'Ethereum', symbol: 'ETH' } }, choices, { safeOnCore: true })).toThrow();
+    // A SafeTx without its hash, or the reverse.
+    const { safeTxHash: _h, ...noHash } = view();
+    expect(() => sendShown(noHash, choices, { safeOnCore: true })).toThrow();
   });
 });

@@ -124,6 +124,9 @@ const CHROME_REFUSED_KINDS = new Set([
   CONFIRM_KINDS.SAFE_MESSAGE,
 ]);
 const PAGE_KIND_REFUSED = 'This request comes from a page: main confirms it itself';
+// An executor's fee on the core's Safe backend: confirmed by the ask main
+// holds for it, never with a token of main's (freedom-core design 0016, C1).
+const EXECUTOR_FEE_ON_CORE = "This fee is confirmed through the identity core's own offer: nothing was minted";
 
 function notAuthorized(reason) {
   const err = new Error(`Signing was not confirmed: ${reason}`);
@@ -569,6 +572,13 @@ function registerWalletIpc() {
       if (kind === CONFIRM_KINDS.SAFE_SEND && safeBackendKind() === 'core') {
         return await confirmCoreSafeSend(event?.sender, accountIndex, payload);
       }
+      // On the core's Safe backend the executor's token is the core's, minted
+      // at `safe.execute` and `safe.deploy` (design 0016, C1: under the
+      // hello's `safe3` the core mints none on `approval.issue`), and its fee
+      // is confirmed by the ask main holds (`feeAskId`): never minted here.
+      if (kind === CONFIRM_KINDS.EXECUTOR_SEND && safeBackendKind() === 'core') {
+        return { success: false, error: EXECUTOR_FEE_ON_CORE, code: NOT_CONFIRMED };
+      }
       if (kind === CONFIRM_KINDS.X402_PAYMENT && !guestHostedBy(event?.sender, payload?.webContentsId)) {
         return { success: false, error: 'This payment is not on a tab of this window' };
       }
@@ -722,6 +732,9 @@ function registerWalletIpc() {
               feeAskId: typeof options?.feeAskId === 'string' ? options.feeAskId : null,
               sender: event?.sender ?? null,
               feeConfirmation: options?.feeConfirmation,
+              // A held deployment's speed-up (SAFE-3's PR 7): `safe.deploy`'s
+              // send signed at its nonce (safe/core-accounts.js).
+              speedUp: options?.speedUp === true,
             }
           : { feeConfirmation: options?.feeConfirmation }
       );

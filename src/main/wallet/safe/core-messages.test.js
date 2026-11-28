@@ -15,7 +15,8 @@
  * - a Ledger owner on the JS Ledger backend is refused in main, unsent (its
  *   path on the core's is ledger-owners.test.js's);
  * - the core's session ID reaches nothing the renderer or the page gets;
- * - the hello still declares no `safe3`.
+ * - the hello declares `safe3` (SAFE-3's PR 7), and each step above runs
+ *   under it as before.
  */
 
 const crypto = require('crypto');
@@ -330,8 +331,9 @@ describe('a session opened by the core', () => {
     // Main spent nothing, hashed nothing and holds no Safe approval.
     expect(methods()).toEqual(['safe.message_start']);
     expect(safeApprovals.held('message', 5, HASH)).toBeNull();
-    // The hello still declares no `safe3` (SAFE-3's PR 7 does).
-    expect(fake.hello).not.toHaveProperty('safe3');
+    // The hello declares `safe3` on the core's Safe backend (SAFE-3's PR
+    // 7), under which a message's session opens as before.
+    expect(fake.hello.safe3).toBe(true);
   });
 
   test("from a site's standing rule: { standing }, no token", async () => {

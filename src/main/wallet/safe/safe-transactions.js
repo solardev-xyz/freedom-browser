@@ -49,7 +49,11 @@
  * by the executor with the core's token, journaled and broadcast, then
  * told (`safe.executed`): the executor's fee the core's check stops is
  * confirmed by the ask main holds (`fee_ack`), never with a token. A
- * site's send is SAFE-3's PR 7's: on the core it is refused until then.
+ * site's send (SAFE-3's PR 7, under the hello's `safe3`) is the core's too:
+ * its `{ device }` token, minted for the page and bound to the SafeTx the
+ * core's prompt showed, proposed under the page (`proposeSiteSafeSend`),
+ * and its execution run past the site's guard, as here. Main's own start
+ * of a SafeTx (`reserveSafeSend`, `startSafeSend`) never runs on the core.
  * On js, everything here is as it was.
  */
 
@@ -180,6 +184,11 @@ function guardSiteSafeSend(safeTxHash, guard) {
   };
 }
 
+/** The guard a page's request holds for the site's SafeTx `safeTxHash`, or null. */
+function siteGuardFor(safeTxHash) {
+  return typeof safeTxHash === 'string' ? siteGuards.get(safeTxHash) ?? null : null;
+}
+
 function siteWithdrawing() {
   return codedError(
     "The site that asked for this transaction no longer holds it, so it wasn't sent. " +
@@ -300,8 +309,8 @@ function getSafeSendState(safeIndex) {
  */
 async function startSafeSend({ safeIndex, tx, display, chainId, approval, reservation }) {
   // On the core, the wallet's own send is proposed (`proposeSafeSend`), and
-  // a site's waits for SAFE-3's PR 7.
-  if (onCore()) throw core().siteSendRefused();
+  // a site's too (`proposeSiteSafeSend`): main never builds one there.
+  if (onCore()) throw ownPathOnCore();
   let held = false;
   try {
     if (!safeApprovals.isApproval(approval)) throw new Error('This transaction was not confirmed');
@@ -364,6 +373,11 @@ async function startSafeSend({ safeIndex, tx, display, chainId, approval, reserv
   return getSafeSendState(safeIndex);
 }
 
+/** Main's own start of a SafeTx, asked for on the core's Safe backend: refused, nothing done. */
+function ownPathOnCore() {
+  return new Error("Main's own Safe transactions don't run on the identity core");
+}
+
 function pendingExists() {
   return codedError(
     'A transaction is already waiting for signatures — finish or discard it first',
@@ -387,9 +401,9 @@ function pendingExists() {
  * @returns {{ safeIndex: number, release: () => void }}
  */
 function reserveSafeSend(safeIndex) {
-  // A site's send (page/page-core-sends.js), refused on the core before its
-  // token is spent, until SAFE-3's PR 7.
-  if (onCore()) throw core().siteSendRefused();
+  // On the core a send's reservation is core-sends.js's own, taken as it
+  // proposes; main's start of a SafeTx never runs there.
+  if (onCore()) throw ownPathOnCore();
   if (getPending(safeIndex)) throw pendingExists();
   return safeApprovals.reserveSend(safeIndex);
 }
@@ -491,7 +505,8 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
   if (onCore()) {
     // `feeConfirmation`: `{ feeAskId }`, the user's confirmation of the fee
     // ask main holds; `safeTxHash` required; `asker`, the chrome that asks
-    // (core-sends.js).
+    // (core-sends.js). A site's SafeTx runs past its request's guard
+    // (`siteGuardFor`), as below.
     const state = await core().execute(safeIndex, { feeConfirmation, safeTxHash, asker });
     if (state?.status === 'executed') {
       settled({ safeIndex, safeTxHash: state.safeTxHash, outcome: 'executed', hash: state.executed.hash });
@@ -710,6 +725,21 @@ function proposeSafeSend(options) {
 }
 
 /**
+ * The core's Safe backend only (SAFE-3's PR 7; core-sends.js
+ * `proposeForSite`): a site's Safe send, the core's `{ device }` token for
+ * the page and its handle, binding the SafeTx the core's prompt showed,
+ * recorded and proposed under the page. Resolves the board's state.
+ * Refused on js, the token left to its caller.
+ *
+ * @param {{ safeIndex: number, payload: object, token: string, handle: string,
+ *   page: object, display?: object }} options
+ */
+function proposeSiteSafeSend(options) {
+  if (!onCore()) return Promise.reject(new Error("A site's Safe sends don't run on the core here"));
+  return core().proposeForSite(options);
+}
+
+/**
  * The core's Safe backend only: the chrome's execution of the SafeTx
  * `safeTxHash` its board shows (`wallet:safe-execute`). Its fee
  * confirmation is `{ feeAskId }`, the ask main showed that chrome
@@ -738,6 +768,7 @@ async function executeChromeSafeSend({ sender, safeIndex, safeTxHash = null, fee
 module.exports = {
   confirmSafeSend,
   proposeSafeSend,
+  proposeSiteSafeSend,
   executeChromeSafeSend,
   startSafeSend,
   reserveSafeSend,
@@ -749,4 +780,8 @@ module.exports = {
   cancelSafeSend,
   onSafeSendSettled,
   guardSiteSafeSend,
+  // core-sends.js's execution of a site's SafeTx (SAFE-3's PR 7).
+  siteGuardFor,
+  siteWithdrawn,
+  siteWithdrawing,
 };

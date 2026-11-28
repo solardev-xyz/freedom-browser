@@ -5,6 +5,13 @@
 // on an anvil Gnosis fork), and sends a transaction that routes through
 // the signing board and comes back as an execution hash.
 //
+// With FREEDOM_SAFE_BACKEND=core (the `e2e-safe` job runs it both ways) the
+// Safe runs on freedom-cored (design 0016, SAFE-3), whose hello main
+// declares `safe3` (C1): the send is prepared by the core before its prompt,
+// which shows the SafeTx by its nonce ("Safe transaction #0"), and its
+// approval's token, bound to the page and that SafeTx, is proposed under
+// the page (SAFE-3's PR 7).
+//
 // Uses a 1-of-2 vault Safe: the free vault signature meets the
 // threshold, exercising the instant-signature path for messages and the
 // board's auto-execution for transactions. (Device-owner board rows are
@@ -20,6 +27,10 @@ test.skip(
   !safeE2eAvailable(),
   'anvil (foundry) or the Gnosis fork RPC not available — Safe E2E needs both'
 );
+
+// The core's Safe backend (wallet/safe/safe-backend-kind.js), as the app
+// launched here reads it (safe-fixtures.js passes the environment on).
+const SAFE_ON_CORE = process.env.FREEDOM_SAFE_BACKEND === 'core';
 
 const DAPP_HASH = 'd'.repeat(64);
 const DAPP_URL = `bzz://${DAPP_HASH}/`;
@@ -166,6 +177,14 @@ test('a dApp connects a Safe, gets an EIP-1271 signature, and sends through the 
   `);
   await expect(heading).toHaveText('Confirm Transaction', { timeout: 30_000 });
   await expect(body).toContainText('Paid by an owner account', { timeout: 30_000 });
+  if (SAFE_ON_CORE) {
+    // The SafeTx the core built before the prompt, by its nonce: the Safe's
+    // first transaction.
+    await expect(body).toContainText('Safe transaction');
+    await expect(body).toContainText('#0');
+  } else {
+    await expect(body).not.toContainText('Safe transaction');
+  }
   await decideInPanel(electronApp, { panel, windowId });
 
   // Main's board takes over; the free signature meets the threshold and

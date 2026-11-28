@@ -321,6 +321,8 @@ describe('the hello at protocol 2', () => {
       store_moved: [],
       // A core that reports no confinement (before 0.28.0, design 0017).
       confinement: null,
+      // The Safe's backend is js here: no `safe3` declared, none taken.
+      safe3: false,
     });
     expect(core().messages[0].params).toEqual({
       protocol: 2,

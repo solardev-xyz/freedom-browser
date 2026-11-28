@@ -17,6 +17,7 @@ const {
   STORE_MOVED,
   storeMovedFor,
   requiresStore,
+  requiresSafe3,
   _internal: coreInternal,
   RESTART_DELAYS_MS,
   MAX_PENDING,
@@ -259,6 +260,7 @@ describe('CoreClient', () => {
       node_recovery: null,
       store_moved: [],
       confinement: null,
+      safe3: false,
     });
     const [command, args, options] = spawn.mock.calls[0];
     expect(command).toBe('/bin/freedom-cored');
@@ -655,6 +657,124 @@ describe('CoreClient', () => {
     expect(requires(undefined)).toBe(false);
     expect(requires({ store_moved: 'payments' })).toBe(false);
     for (const store of STORES) expect(requiresStore(store)({ store_moved: [store] })).toBe(true);
+  });
+
+  describe("SAFE-3's safe3 (freedom-core design 0016, C1)", () => {
+    test.each(['js', 'core'])("the build's hello on the %s Safe backend: safe3 only on core", (backend) => {
+      const saved = process.env.FREEDOM_SAFE_BACKEND;
+      process.env.FREEDOM_SAFE_BACKEND = backend;
+      try {
+        // A process of its own: made, and its switch read, inside it.
+        jest.isolateModules(() => {
+          const { CoreClient: Isolated } = require('./core-client');
+          const { safeBackendKind } = require('../wallet/safe/safe-backend-kind');
+          const client = new Isolated({
+            spawn: jest.fn(),
+            command: '/bin/freedom-cored',
+            args: ['serve'],
+            log: quietLog(),
+            grantRoot: os.tmpdir(),
+            shellVersion: 'jest',
+          });
+          // The client read the switch as it was made, and latched it.
+          process.env.FREEDOM_SAFE_BACKEND = backend === 'js' ? 'core' : 'js';
+          expect(safeBackendKind()).toBe(backend);
+          const params = client.service.helloParams(client);
+          if (backend === 'core') expect(params.safe3).toBe(true);
+          else expect(params).not.toHaveProperty('safe3');
+          // Nothing else of the hello changes with it.
+          const { safe3: _safe3, ...rest } = params;
+          expect(Object.keys(rest)).toEqual([
+            'protocol',
+            'shell_version',
+            'auto_lock_ms',
+            'frames',
+            'grant_root',
+            'grant_moved',
+            'store_moved',
+          ]);
+        });
+      } finally {
+        if (saved === undefined) delete process.env.FREEDOM_SAFE_BACKEND;
+        else process.env.FREEDOM_SAFE_BACKEND = saved;
+      }
+    });
+
+    test('a packaged build never declares it, whatever FREEDOM_SAFE_BACKEND says', () => {
+      jest.isolateModules(() => {
+        jest.doMock('electron', () => ({ app: { isPackaged: true } }));
+        const saved = process.env.FREEDOM_SAFE_BACKEND;
+        process.env.FREEDOM_SAFE_BACKEND = 'core';
+        try {
+          const { CoreClient: Isolated } = require('./core-client');
+          const client = new Isolated({
+            spawn: jest.fn(),
+            command: '/bin/freedom-cored',
+            args: ['serve'],
+            log: quietLog(),
+            grantRoot: os.tmpdir(),
+          });
+          expect(client.service.helloParams(client)).not.toHaveProperty('safe3');
+        } finally {
+          if (saved === undefined) delete process.env.FREEDOM_SAFE_BACKEND;
+          else process.env.FREEDOM_SAFE_BACKEND = saved;
+          jest.dontMock('electron');
+        }
+      });
+    });
+
+    test("the echo: true only when declared; absent is not taken; anything else fails the hello", () => {
+      const declared = (result) => coreInternal.validHello(helloResult(result), STORE_MOVED, true);
+      const undeclared = (result) => coreInternal.validHello(helloResult(result), STORE_MOVED, false);
+      expect(declared({ safe3: true }).safe3).toBe(true);
+      // A core before 0.32.0 ignores the field: not taken.
+      expect(declared({}).safe3).toBe(false);
+      expect(undeclared({}).safe3).toBe(false);
+      // An echo main didn't ask for, or not `true`, is malformed.
+      expect(undeclared({ safe3: true })).toBeNull();
+      for (const echo of [false, null, 'true', 1, {}]) {
+        expect(declared({ safe3: echo })).toBeNull();
+        expect(undeclared({ safe3: echo })).toBeNull();
+      }
+    });
+
+    test("a declaring client takes the core's echo, and requiresSafe3 holds a request to it", async () => {
+      for (const echo of [true, undefined]) {
+        const { client, children } = makeClient([
+          (m, core) => {
+            if (m.method === 'core.hello') {
+              core.reply({
+                type: 'response',
+                id: m.id,
+                result: helloResult(echo === undefined ? {} : { safe3: echo }),
+              });
+            } else if (m.method === 'core.shutdown') {
+              core.reply({ type: 'response', id: m.id, result: {} });
+            } else {
+              core.reply({ type: 'response', id: m.id, result: {} });
+            }
+          },
+        ]);
+        client.service = coreInternal.coreService(STORE_MOVED, { safe3: true });
+        const hello = await client.start();
+        expect(children[0].requests[0].params.safe3).toBe(true);
+        expect(hello.safe3).toBe(echo === true);
+        expect(requiresSafe3(hello)).toBe(echo === true);
+        const sent = client
+          .request('safe.propose', {}, { caller: 'shell' }, { requires: requiresSafe3 })
+          .catch((e) => e);
+        const outcome = await sent;
+        if (echo === true) expect(outcome).toEqual({});
+        else expect(outcome.code).toBe(REQUIREMENT_UNMET);
+        expect(children[0].requests.map((r) => r.method)).toEqual(
+          echo === true ? ['core.hello', 'safe.propose'] : ['core.hello']
+        );
+      }
+      expect(requiresSafe3({ safe3: true })).toBe(true);
+      for (const hello of [{ safe3: false }, {}, null, undefined, { safe3: 'true' }]) {
+        expect(requiresSafe3(hello)).toBe(false);
+      }
+    });
   });
 
   test('a store request with requires fails requirement_unmet on a hello without its echo', async () => {
