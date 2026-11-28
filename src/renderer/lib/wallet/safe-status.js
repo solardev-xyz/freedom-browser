@@ -11,6 +11,15 @@
  * row — see safe-pending-list.js.) A deployed Safe shows no card. The Send button's
  * availability is owned by send.js; this module just triggers the
  * re-evaluation whenever the active account changes.
+ *
+ * On the core's Safe backend (freedom-core design 0016, SAFE-3), main's
+ * status carries `setup`, what the core's reads show of the Safe. A Safe
+ * the core reports deployed only from an unverified answer (`setup` naming
+ * the code read unverified) is not marked: the card says so, with Try
+ * again, as for an unverified status check. The core judges the
+ * activation's fee itself: the approvals document asks it, or, with the
+ * document off, main's answer carries `feeAck` and the card's confirmation
+ * goes back as `feeAcknowledged`, with no token.
  */
 
 import { walletState } from './wallet-state.js';
@@ -31,6 +40,25 @@ import {
   confirmOfferedFee,
   describeFeeCheck,
 } from './fee-check.js';
+
+/** The core's activation check that no verified source confirmed (design
+ * 0016, Chain reads: `isDeployedOnChain`'s text). */
+const ACTIVATION_UNVERIFIED =
+  "Freedom couldn't verify on Gnosis whether this account is activated. " +
+  'Try again, or add an RPC provider in Settings.';
+
+/**
+ * Whether the core reported the Safe deployed from an unverified answer
+ * alone (`setup` names the code read unverified): its record isn't marked,
+ * so the Safe isn't taken as active.
+ */
+function deployedUnverified(status) {
+  return (
+    status?.deployed === true &&
+    status.setup?.state === 'unverified' &&
+    status.setup.read === 'code'
+  );
+}
 
 let card;
 let refreshToken = 0;
@@ -86,6 +114,10 @@ async function checkSafeStatus(showChecking) {
   if (token !== refreshToken) return; // superseded by an account switch
   if (!statusResult.success) {
     renderStatusError(statusResult.error);
+    return;
+  }
+  if (deployedUnverified(statusResult.status)) {
+    renderStatusError(ACTIVATION_UNVERIFIED);
     return;
   }
 
@@ -204,6 +236,9 @@ async function confirmActivationFee(walletIndex, ask) {
     button.disabled = true;
     button.textContent = 'Activating…';
   }
+  // The core's fee: confirmed on the card's word, and the core sends the
+  // transaction it offered.
+  if (ask.feeAck === true) return handleActivate({ feeAcknowledged: true });
   let feeConfirmation;
   try {
     feeConfirmation = await confirmOfferedFee(ask.offer, ask.feeCheck);
@@ -217,14 +252,16 @@ async function confirmActivationFee(walletIndex, ask) {
     showInlineError(document.getElementById('safe-status-error'), err?.message);
     return;
   }
-  return handleActivate(feeConfirmation);
+  return handleActivate({ feeConfirmation });
 }
 
 /**
- * `feeConfirmation`: the user's confirmation of the executor's fee that
- * the fee check stopped for (confirmActivationFee).
+ * `options`: `{ feeConfirmation }`, the user's confirmation of the
+ * executor's fee that the fee check stopped for, or, on the core's Safe
+ * backend, `{ feeAcknowledged: true }`, that the card confirmed the core's
+ * fee (confirmActivationFee).
  */
-async function handleActivate(feeConfirmation) {
+async function handleActivate(options) {
   const wallet = walletRecord();
   if (!wallet) return;
 
@@ -234,13 +271,18 @@ async function handleActivate(feeConfirmation) {
     button.textContent = 'Activating…';
   }
 
-  const result = await (feeConfirmation
-    ? window.wallet.activateSafe(wallet.index, { feeConfirmation })
+  const result = await (options
+    ? window.wallet.activateSafe(wallet.index, options)
     : window.wallet.activateSafe(wallet.index));
 
   // The executor's fee needs the user: nothing was signed.
   if (!result.success && result.code === FEE_CHECK_NEEDS_CONFIRMATION && result.offer) {
     renderFeeAsk(wallet.index, { feeCheck: result.feeCheck, offer: result.offer });
+    return;
+  }
+  // The core's fee, with the approvals document off: the card confirms it.
+  if (!result.success && result.code === FEE_CHECK_NEEDS_CONFIRMATION && result.feeAck === true) {
+    renderFeeAsk(wallet.index, { feeCheck: result.feeCheck, feeAck: true });
     return;
   }
 

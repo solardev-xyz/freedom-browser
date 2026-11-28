@@ -311,3 +311,115 @@ test("another account shown during Try again: the old check's answer paints noth
   expect(card.classList.contains('hidden')).toBe(true);
   expect(card.innerHTML).not.toContain('Receive-only until activated');
 });
+
+// On the core's Safe backend (freedom-core design 0016, SAFE-3): the core
+// judges the activation's fee, and with the approvals document off main's
+// answer carries `feeAck`, the card's confirmation going back as
+// `feeAcknowledged`, with no token minted by the chrome.
+describe("on the core's Safe backend", () => {
+  const coreStopped = (feeCheck = VERDICT) => ({
+    success: false,
+    code: 'FEE_CHECK_NEEDS_CONFIRMATION',
+    error: "This payment's network fee needs your confirmation.",
+    feeCheck,
+    feeAck: true,
+  });
+
+  test("the core's fee: shown, and confirmed on the card's word, with no token", async () => {
+    const { wallet, card, click } = await loadCard();
+    wallet.activateSafe.mockResolvedValueOnce(coreStopped());
+    await click('safe-status-activate');
+    expect(card.innerHTML).toContain('Confirm the network fee');
+    expect(card.innerHTML).toContain('Up to 0.0005 xDAI.');
+    expect(card.innerHTML).toContain('Confirm fee and activate');
+    wallet.activateSafe.mockResolvedValueOnce({
+      success: true,
+      safeAddress: '0xsafe',
+      hash: '0xhash',
+    });
+    await click('safe-status-confirm-fee');
+    expect(wallet.activateSafe).toHaveBeenLastCalledWith(7, { feeAcknowledged: true });
+    expect(wallet.confirmSigning).not.toHaveBeenCalled();
+  });
+
+  test('above the threshold: the ratio shown, and one press confirms it', async () => {
+    const { wallet, card, click } = await loadCard();
+    wallet.activateSafe.mockResolvedValueOnce(
+      coreStopped({ ...VERDICT, comparable: true, ratio: '20', above: true })
+    );
+    await click('safe-status-activate');
+    expect(card.innerHTML).toContain("This network fee is 20× today's network fee.");
+    wallet.activateSafe.mockResolvedValueOnce({
+      success: true,
+      safeAddress: '0xsafe',
+      hash: '0xhash',
+    });
+    await click('safe-status-confirm-fee');
+    expect(wallet.activateSafe).toHaveBeenLastCalledWith(7, { feeAcknowledged: true });
+    expect(wallet.confirmSigning).not.toHaveBeenCalled();
+  });
+
+  test('the approvals document rejected: the card again, with its error', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const { wallet, card, click, errorEl } = await loadCard();
+    wallet.activateSafe.mockResolvedValueOnce({
+      success: false,
+      code: 'USER_REJECTED',
+      error: 'User rejected the request',
+    });
+    await click('safe-status-activate');
+    expect(card.innerHTML).toContain('Receive-only until activated');
+    expect(errorEl.textContent).toBe('User rejected the request');
+    expect(wallet.confirmSigning).not.toHaveBeenCalled();
+  });
+
+  test('reported deployed from an unverified answer only: not marked, and the card says so, with Try again', async () => {
+    const session = {
+      success: true,
+      status: {
+        ...STATUS,
+        deployed: true,
+        estimatedCost: null,
+        setup: { state: 'unverified', read: 'code', why: 'unverified' },
+      },
+    };
+    const { wallet, card, click, safe } = await loadCard({ status: session });
+    expect(safe.deployed).toEqual({});
+    expect(card.classList.contains('hidden')).toBe(false);
+    expect(card.innerHTML).toContain(UNVERIFIED.error);
+    expect(card.innerHTML).toContain('id="safe-status-retry"');
+
+    // A verified read since: marked, and the card is gone.
+    wallet.getSafeStatus.mockResolvedValueOnce({
+      success: true,
+      status: { ...DEPLOYED.status, setup: { state: 'unchanged' } },
+    });
+    await click('safe-status-retry');
+    expect(safe.deployed).toEqual({ 100: true });
+    expect(card.classList.contains('hidden')).toBe(true);
+  });
+
+  test('deployed with its setup changed or a setup read unverified: deployed, as the core marked it', async () => {
+    for (const setup of [
+      { state: 'changed', changed: ['owners'] },
+      { state: 'unverified', read: 'owners', why: 'unverified' },
+    ]) {
+      const { card, safe } = await loadCard({
+        status: { success: true, status: { ...DEPLOYED.status, setup } },
+      });
+      expect(safe.deployed).toEqual({ 100: true });
+      expect(card.classList.contains('hidden')).toBe(true);
+    }
+  });
+
+  test('not deployed, its code read unverified: Activate is offered, as today', async () => {
+    const { card, safe } = await loadCard({
+      status: {
+        success: true,
+        status: { ...STATUS, setup: { state: 'unverified', read: 'code', why: 'unverified' } },
+      },
+    });
+    expect(safe.deployed).toEqual({});
+    expect(card.innerHTML).toContain('id="safe-status-activate"');
+  });
+});

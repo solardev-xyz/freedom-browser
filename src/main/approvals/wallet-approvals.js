@@ -33,6 +33,12 @@
  * auto-pay within a cap asks nothing, as before. An auto-pay cap's edit asks
  * nothing here: the pane lowers a cap through the core's narrowing, and
  * `wallet:confirm-signing` refuses `x402-cap-update` (X402-2).
+ *
+ * On the core's Safe backend (freedom-core design 0016, SAFE-3), a Safe
+ * activation's executor fee that the core's own check stopped is asked
+ * here too, as `wallet.executor_send` (`confirmCoreFee`): the core's
+ * verdict shown, and the core's `fee_ack` on the approval, nothing minted
+ * by main.
  */
 
 const PROMPT_KINDS = Object.freeze({
@@ -69,6 +75,17 @@ const INDEX_BOUND = new Set(['wallet-send', 'safe-send', 'executor-send', 'x402-
 // The core's refusal of a mint for its fee check (`signing-confirmation.js`),
 // as fee-check.js codes it: the fee is asked again.
 const FEE_CHECK_ASK_AGAIN = 'FEE_CHECK_ASK_AGAIN';
+
+// A fee verdict's fields (the reference's `checkFees`, and the core's).
+const VERDICT_FIELDS = Object.freeze([
+  'maxCost',
+  'comparable',
+  'ratio',
+  'above',
+  'oneEndpoint',
+  'basis',
+  'autoApprove',
+]);
 
 // ERC-20's transfer(address,uint256): the recipient and the amount, read
 // from the data main binds, so the panel says what a token send does.
@@ -442,7 +459,85 @@ function createWalletApprovals({
     }
   }
 
-  return { confirm, viewOf };
+  /**
+   * A Safe's executor fee the core's own check stopped (freedom-core design
+   * 0016, SAFE-3; the SAFE-3 plan's point 8): `safe.deploy`'s `{ fee_check
+   * }`, asked as `wallet.executor_send` in the window's panel. The core
+   * keeps the offer and mints its token itself on `fee_ack`, so nothing is
+   * minted here and main runs no fee check of its own: the panel shows the
+   * core's verdict (`verdict`), the Safe (`safe`, the multi-owner account
+   * the send activates) and the account that pays (`index`, the core's
+   * executor), and a fee above the threshold is confirmed by a second
+   * press, as `confirm` asks. `onApproved` (the core's `fee_ack`) runs on
+   * the approval, before the prompt is released, told whether the user
+   * confirmed a fee above the threshold again; what it returns joins the
+   * answer. Refused, with nothing asked, as `confirm` refuses.
+   *
+   * @param {object} request `{ sender | windowId, index, safe, chainId, verdict }`
+   * @param {(fee: {feeAcknowledged: boolean}) => object} [onApproved]
+   */
+  async function confirmCoreFee({ sender, windowId: inWindow, index, safe, chainId, verdict: given }, onApproved = () => ({})) {
+    if (given === null || typeof given !== 'object' || Array.isArray(given)) {
+      throw new Error('wallet-approvals: the core gave no fee verdict');
+    }
+    if (typeof safe !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(safe)) {
+      throw new Error('wallet-approvals: no Safe address for its executor fee');
+    }
+    let windowId = Number.isInteger(inWindow) ? inWindow : null;
+    if (windowId === null) {
+      try {
+        windowId = chromeWindowOf(sender);
+      } catch {
+        windowId = null;
+      }
+    }
+    if (!Number.isInteger(windowId)) return NO_WINDOW;
+    const account = Number.isSafeInteger(index) ? await accountOf({ index }) : null;
+    if (!account) return NO_ACCOUNT;
+    // The verdict's own fields, as the template reads them.
+    const verdict = Object.fromEntries(
+      VERDICT_FIELDS.filter((name) => Object.hasOwn(given, name)).map((name) => [name, given[name]])
+    );
+    let askAgain = false;
+    for (;;) {
+      // The template's `tx.to` is the multi-owner account the fee is paid
+      // for; the core's transaction is its own, and its fee the verdict's.
+      const view = {
+        account,
+        chain: chainOf(chainId),
+        tx: { to: safe, value: '0', data: '0x' },
+        fee: null,
+        feeCheck: verdict,
+        feeAskAgain: askAgain,
+      };
+      let release;
+      const released = new Promise((resolve) => {
+        release = resolve;
+      });
+      try {
+        const decision = await walletPrompt(windowId, {
+          kind: PROMPT_KINDS['executor-send'],
+          view,
+          choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
+          released,
+          holds: { safe, chainId, verdict },
+        });
+        if (decision?.error) return LIMITED;
+        if (decision?.approve !== true) return REJECTED;
+        // Above the threshold and not yet confirmed again: shown again, asking.
+        if (verdict.above === true && !askAgain) {
+          askAgain = true;
+          continue;
+        }
+        const answered = await onApproved({ feeAcknowledged: askAgain });
+        return { ...answered, approved: true };
+      } finally {
+        release();
+      }
+    }
+  }
+
+  return { confirm, confirmCoreFee, viewOf };
 }
 
 let shared = null;

@@ -12,6 +12,13 @@
  * v1 deploys on Gnosis only (research doc Part B, decision 5); the
  * chainId parameter exists so retroactive deployment on other chains can
  * ship later without reshaping the API.
+ *
+ * On the core's Safe backend (FREEDOM_SAFE_BACKEND=core, development builds
+ * only: safe-backend-kind.js; freedom-core design 0016, SAFE-3's PR 3),
+ * createSafeAccount, getSafeStatus and activateSafe are the core's
+ * `safe.create`, `safe.status` and `safe.deploy` (core-accounts.js), and
+ * nothing below them runs: no chain read, no protocol-kit, no mark written
+ * by main. On js every path is today's.
  */
 
 const crypto = require('crypto');
@@ -38,6 +45,7 @@ const {
 const { KINDS: PAYMENT_KINDS } = require('../tx-recorder');
 const { getEip1193Provider } = require('../provider-manager');
 const chainData = require('../../networks/chain-data');
+const { safeBackendKind } = require('./safe-backend-kind');
 const {
   codedError,
   SAFE_NEEDS_FUNDS,
@@ -47,6 +55,11 @@ const {
 
 /** v1: Safes deploy on Gnosis only (decision 5). */
 const DEPLOY_CHAIN_ID = 100;
+
+/** The core's Safe backend's accounts, when it runs (safe-backend-kind.js). */
+function onCore() {
+  return safeBackendKind() === 'core' ? require('./core-accounts') : null;
+}
 
 /** 128-bit random decimal salt — one per created Safe, then frozen. */
 function generateSaltNonce() {
@@ -90,6 +103,8 @@ function chainRead(chainId, method, params) {
  * @returns {Promise<Object>} The stored record
  */
 async function createSafeAccount({ name, ownerIndexes, threshold }) {
+  const core = onCore();
+  if (core) return core.createSafeAccount({ name, ownerIndexes, threshold });
   const owners = resolveOwnerAddresses(ownerIndexes);
   const saltNonce = generateSaltNonce();
   const address = await predictSafeAddress({
@@ -240,6 +255,8 @@ async function assessActivation(record) {
  *   needsFunds: boolean}>} Balances/costs in wei decimal strings
  */
 async function getSafeStatus(index) {
+  const core = onCore();
+  if (core) return core.getSafeStatus(index);
   const { status } = await assessActivation(getSafeRecord(index));
   return status;
 }
@@ -262,11 +279,17 @@ async function getSafeStatus(index) {
  * (FEE_CHECK_NEEDS_CONFIRMATION), and the activation runs again with
  * `feeConfirmation`, the user's confirmation of that fee.
  *
+ * On the core's Safe backend, `options` are core-accounts.js's
+ * (`feeAcknowledged`, `sender`), and a `feeConfirmation` is burnt unused.
+ *
  * @param {number} index - Wallet index of the safe record
  * @param {{ feeConfirmation?: Object }} [options]
  * @returns {Promise<{safeAddress: string, hash?: string, alreadyDeployed?: boolean}>}
  */
-async function activateSafe(index, { feeConfirmation = null } = {}) {
+async function activateSafe(index, options = {}) {
+  const core = onCore();
+  if (core) return core.activateSafe(index, options);
+  const { feeConfirmation = null } = options ?? {};
   const record = getSafeRecord(index);
   const { status, deployment } = await assessActivation(record);
 
