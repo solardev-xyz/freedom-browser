@@ -145,6 +145,8 @@ describeFork('a Safe on forked Gnosis through the real freedom-cored', () => {
   const world = mockWorld;
   let anvil;
   let forwarder;
+  // The forwarder's exchanges, one line each (`method(first param) -> …`).
+  const forwarded = [];
   let ledger;
   let safe;
   let service;
@@ -153,7 +155,7 @@ describeFork('a Safe on forked Gnosis through the real freedom-cored', () => {
 
   beforeAll(async () => {
     anvil = await startAnvil();
-    forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT);
+    forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT, { log: (line) => forwarded.push(line) });
     // A cold fork reads each account and contract from the public RPC the
     // first time: the Safe contracts, loaded before the core's reads.
     await Promise.all([SINGLETON, PROXY_FACTORY, FALLBACK_HANDLER].map((address) => rpc('eth_getCode', [address, 'latest'])));
@@ -193,7 +195,11 @@ describeFork('a Safe on forked Gnosis through the real freedom-cored', () => {
     safe = await service.createSafeAccount({ name: 'Fork Joint', ownerIndexes: [0, 1, LEDGER_INDEX], threshold: 2 });
     expect(safe).toMatchObject({ type: 'safe', owners: [0, 1, LEDGER_INDEX], threshold: 2 });
     expect(await rpc('eth_getCode', [safe.address, 'latest'])).toBe('0x');
+    const before = forwarded.length;
     const status = await service.getSafeStatus(safe.index);
+    // The second endpoint was asked too: the core's quorum of two.
+    const codeRead = `eth_getcode("${safe.address.toLowerCase()}")`;
+    expect(forwarded.slice(before).some((line) => line.toLowerCase().startsWith(codeRead))).toBe(true);
     expect(status).toMatchObject({ deployed: false, executorIndex: 0, needsFunds: false });
     expect(BigInt(status.executorBalance)).toBe(parseEther('10'));
   });
