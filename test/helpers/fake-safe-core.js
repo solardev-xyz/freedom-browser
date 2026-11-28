@@ -435,7 +435,7 @@ class FakeSafeCore extends EventEmitter {
       this.moved = named.filter((name) => this.storeMoved.includes(name));
       this.answer(message.id, {
         protocol: 2,
-        core_version: '0.32.0',
+        core_version: '0.33.0',
         capabilities: ['vault.status', 'streams'],
         store_moved: this.moved,
       });

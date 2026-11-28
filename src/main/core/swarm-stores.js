@@ -42,8 +42,8 @@
  *   by the function main calls: page-swarm.js's feed prompt, its two reads,
  *   and `getEthereumWalletIdentityReferences` for `accounts.remove` (D8).
  * - `swarm.history` (`ops/history.rs`): `list`, `clear` and `remove`, the
- *   chrome's and main's; `add` and `update`, main's own (core PR K1, in
- *   flight: a core without them answers `invalid_argument`).
+ *   chrome's and main's; `add` and `update`, main's own (core PR K1, from
+ *   cored 0.33.0, the pin: a core before it answers `invalid_argument`).
  * - `swarm.manifest` (`ops/manifest.rs`): main's only (the schema's
  *   callers), the page path's `check`, `decide` and `release`, and the
  *   chrome's three IPC handlers' `get`, `use-individual` and `disconnect`,
