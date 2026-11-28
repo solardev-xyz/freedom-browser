@@ -44,6 +44,8 @@ jest.mock('./safe/safe-transactions', () => ({
   startSafeSend: jest.fn(async () => ({ safeTxHash: '0xsafetx' })),
   reserveSafeSend: jest.fn(() => ({ release: () => {} })),
   signSafePending: jest.fn(async () => ({ collected: 2 })),
+  executeSafePending: jest.fn(async () => ({ status: 'awaiting' })),
+  cancelSafeSend: jest.fn(async () => {}),
   getSafeSendState: jest.fn(() => null),
   getAllSafeSendStates: jest.fn(() => []),
   pendingCall: jest.fn(() => null),
@@ -67,7 +69,8 @@ const TO = '0x2222222222222222222222222222222222222222';
 const SAFE_TX = { to: TO, value: '5', data: '0x' };
 const PAYLOAD = { tx: SAFE_TX, chainId: 100 };
 const CHROME = { id: 41 };
-const BOARD = { safeIndex: 7, safeTxHash: '0x' + 'cd'.repeat(32), collected: 1, threshold: 2 };
+const SHOWN = '0x' + 'cd'.repeat(32);
+const BOARD = { safeIndex: 7, safeTxHash: SHOWN, collected: 1, threshold: 2 };
 let handlers;
 
 beforeEach(() => {
@@ -101,6 +104,24 @@ describe('on the core', () => {
     });
     // Main minted nothing of its own: the legacy form never.
     expect(mockApprovals.calls.filter((call) => call.method === 'approval.issue')).toEqual([]);
+  });
+
+  test("with the approvals document off, the prepared SafeTx goes back to the chrome to confirm: nothing minted", async () => {
+    const prepared = { id: 'a'.repeat(32), nonce: 7 };
+    transactions.confirmSafeSend.mockResolvedValueOnce({ approved: false, code: 'SAFE_TX_PREPARED', error: 'Confirm Safe transaction #7', prepared });
+    expect(await handlers['wallet:confirm-signing']({}, 'safe-send', 7, PAYLOAD)).toEqual({
+      success: false,
+      error: 'Confirm Safe transaction #7',
+      code: 'SAFE_TX_PREPARED',
+      prepared,
+    });
+    // Confirmed with its id, which main reads (`request.prepared`).
+    transactions.confirmSafeSend.mockResolvedValueOnce({ approved: true, token: 'tok', expiresAt: 9 });
+    const again = await handlers['wallet:confirm-signing']({}, 'safe-send', 7, { ...PAYLOAD, prepared: prepared.id });
+    expect(again).toEqual({ success: true, token: 'tok', expiresAt: 9 });
+    expect(transactions.confirmSafeSend).toHaveBeenLastCalledWith(
+      expect.objectContaining({ request: { ...PAYLOAD, prepared: prepared.id }, approvals: null })
+    );
   });
 
   test('a refusal keeps its code: the panel\'s, the core\'s, and a locked vault as VAULT_LOCKED', async () => {
@@ -152,9 +173,44 @@ describe('on the core', () => {
     expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
     expect(transactions.signSafePending).not.toHaveBeenCalled();
     expect(mockApprovals.calls.map((call) => [call.method, call.params])).toEqual([['approval.discard', { token: 'tok' }]]);
-    // Without one, the owner signs (the core's `safe.sign_owner`).
-    expect(await handlers['wallet:safe-sign']({}, 7, 1)).toEqual({ success: true, state: { collected: 2 } });
-    expect(transactions.signSafePending).toHaveBeenCalledWith(7, 1);
+    // Without one, the owner signs (the core's `safe.sign_owner`), naming the SafeTx shown.
+    expect(await handlers['wallet:safe-sign']({}, 7, 1, null, SHOWN)).toEqual({ success: true, state: { collected: 2 } });
+    expect(transactions.signSafePending).toHaveBeenCalledWith(7, 1, { safeTxHash: SHOWN });
+  });
+
+  test("each step of the chrome's board names the SafeTx it shows: passed on, and one naming none refused unsent", async () => {
+    // The sweep, an owner, the execution and the discard, with the SafeTx shown.
+    await handlers['wallet:safe-sign']({}, 7, undefined, null, SHOWN);
+    await handlers['wallet:safe-sign']({}, 7, 1, null, SHOWN);
+    await handlers['wallet:safe-execute']({}, 7, { safeTxHash: SHOWN });
+    await handlers['wallet:safe-cancel-pending']({}, 7, SHOWN);
+    expect(transactions.signSafePending.mock.calls).toEqual([
+      [7, undefined, { safeTxHash: SHOWN }],
+      [7, 1, { safeTxHash: SHOWN }],
+    ]);
+    expect(transactions.executeChromeSafeSend).toHaveBeenCalledWith({
+      sender: undefined,
+      safeIndex: 7,
+      safeTxHash: SHOWN,
+      feeConfirmation: null,
+      approvals: null,
+    });
+    expect(transactions.cancelSafeSend).toHaveBeenCalledWith(7, { safeTxHash: SHOWN });
+    for (const fn of Object.values(transactions)) fn.mockClear();
+    // Naming none, or not a SafeTx hash: refused, nothing asked of the core.
+    for (const result of [
+      await handlers['wallet:safe-sign']({}, 7, undefined),
+      await handlers['wallet:safe-sign']({}, 7, 1, null, 'nope'),
+      await handlers['wallet:safe-execute']({}, 7),
+      await handlers['wallet:safe-execute']({}, 7, { feeConfirmation: { confirmation: 'x' } }),
+      await handlers['wallet:safe-cancel-pending']({}, 7),
+    ]) {
+      expect(result).toMatchObject({ success: false, code: 'SAFE_DISCARDED' });
+    }
+    expect(transactions.signSafePending).not.toHaveBeenCalled();
+    expect(transactions.executeSafePending).not.toHaveBeenCalled();
+    expect(transactions.executeChromeSafeSend).not.toHaveBeenCalled();
+    expect(transactions.cancelSafeSend).not.toHaveBeenCalled();
   });
 
   test("the execution names the board's SafeTx, its fee acknowledged in the window's document when it is on", async () => {
@@ -217,6 +273,15 @@ describe('on js', () => {
     await handlers['wallet:safe-execute']({ sender: CHROME }, 7, { feeConfirmation });
     expect(transactions.executeSafePending).toHaveBeenCalledWith(7, { feeConfirmation });
     expect(transactions.executeChromeSafeSend).not.toHaveBeenCalled();
+  });
+
+  test("the board's steps as before: the SafeTx shown isn't passed on", async () => {
+    await handlers['wallet:safe-sign']({}, 7, 1, null, SHOWN);
+    await handlers['wallet:safe-execute']({}, 7, { safeTxHash: SHOWN });
+    await handlers['wallet:safe-cancel-pending']({}, 7, SHOWN);
+    expect(transactions.signSafePending).toHaveBeenCalledWith(7, 1);
+    expect(transactions.executeSafePending).toHaveBeenCalledWith(7, { feeConfirmation: undefined });
+    expect(transactions.cancelSafeSend).toHaveBeenCalledWith(7);
   });
 
   test('the built form is no binding of js: a payload naming a SafeTx binds its call alone, as today', () => {

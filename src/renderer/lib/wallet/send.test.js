@@ -61,6 +61,63 @@ const loadSendTestApi = async () => {
   return mod.__test__;
 };
 
+// freedom-core design 0016, SAFE-3: on the core's Safe backend with the
+// approvals document off, main prepares the SafeTx after the review, and the
+// user sees its nonce ("Safe transaction #N") before its token is minted.
+describe("a Safe send's confirmation on the chrome", () => {
+  const SAFE_TX = { to: ADDRESS, value: '1000', data: '0x' };
+  const REQUEST = { tx: SAFE_TX, chainId: 100 };
+  const SHOWN = { toAddress: ADDRESS, amount: '0.5', symbol: 'xDAI' };
+  const PREPARED = { success: false, code: 'SAFE_TX_PREPARED', error: 'Confirm Safe transaction #7', prepared: { id: 'p1', nonce: 7 } };
+
+  afterEach(() => {
+    jest.dontMock('./wallet-state.js');
+    jest.dontMock('./balance-display.js');
+    jest.dontMock('../tabs.js');
+    delete global.document;
+    delete global.window;
+  });
+
+  async function load(answers) {
+    installDocument();
+    const confirmSigning = jest.fn();
+    for (const answer of answers) confirmSigning.mockResolvedValueOnce(answer);
+    global.window = { location: { href: 'file:///app/index.html' }, internalPages: { routable: {} }, wallet: { confirmSigning } };
+    const { confirmSafeSend } = await loadSendTestApi();
+    return { confirmSafeSend, confirmSigning };
+  }
+
+  test('the prepared SafeTx: the user sees "Safe transaction #7" with the recipient and amount, then its token is minted', async () => {
+    const { confirmSafeSend, confirmSigning } = await load([PREPARED, { success: true, token: 'tok' }]);
+    const seen = [];
+    const ask = jest.fn(async (text) => {
+      seen.push({ text, calls: confirmSigning.mock.calls.length });
+      return true;
+    });
+    await expect(confirmSafeSend(5, REQUEST, SHOWN, ask)).resolves.toEqual({ confirmation: 'tok' });
+    // Shown after the first request, before the one that mints.
+    expect(seen).toEqual([{ text: `Send Safe transaction #7?\n\nTo: ${ADDRESS}\nAmount: 0.5 xDAI`, calls: 1 }]);
+    expect(confirmSigning.mock.calls).toEqual([
+      ['safe-send', 5, REQUEST],
+      ['safe-send', 5, { ...REQUEST, prepared: 'p1' }],
+    ]);
+  });
+
+  test('declined: nothing more is asked of main, and the send stops', async () => {
+    const { confirmSafeSend, confirmSigning } = await load([PREPARED]);
+    await expect(confirmSafeSend(5, REQUEST, SHOWN, async () => false)).rejects.toMatchObject({ code: 'USER_REJECTED' });
+    expect(confirmSigning).toHaveBeenCalledTimes(1);
+  });
+
+  test('a token at once (the approvals document showed it, or js): nothing more to show', async () => {
+    const { confirmSafeSend, confirmSigning } = await load([{ success: true, token: 'tok' }]);
+    const ask = jest.fn();
+    await expect(confirmSafeSend(5, REQUEST, SHOWN, ask)).resolves.toEqual({ confirmation: 'tok' });
+    expect(ask).not.toHaveBeenCalled();
+    expect(confirmSigning).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('send wallet review', () => {
   afterEach(() => {
     jest.dontMock('./wallet-state.js');

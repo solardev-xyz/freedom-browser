@@ -308,6 +308,11 @@ function panel(decisions = []) {
 const CHROME = { id: 501 };
 const confirm = (approvals, request = REQUEST) =>
   transactions.confirmSafeSend({ sender: CHROME, safeIndex: 5, request, approvals });
+/** With the approvals document off: prepared, its nonce confirmed on the chrome, minted. */
+async function confirmOnChrome(request = REQUEST) {
+  const asked = await confirm(null, request);
+  return confirm(null, { ...request, prepared: asked.prepared.id });
+}
 const propose = (token, overrides = {}) =>
   transactions.proposeSafeSend({ safeIndex: 5, tx: REQUEST.tx, chainId: 100, display: DISPLAY, authorization: { confirmation: token }, ...overrides });
 
@@ -402,13 +407,42 @@ describe("the wallet's own send: prepared, approved, minted, proposed", () => {
     safeApprovals.reserveSend(5).release();
   });
 
-  test('the approvals document off: minted on the chrome\'s confirmation, nothing asked', async () => {
+  test("the approvals document off: the prepared SafeTx's nonce goes to the chrome first, and only its confirmation mints", async () => {
     await setup();
-    const confirmed = await confirm(null);
+    // What the chrome is given to show: "Safe transaction #7", nothing minted.
+    const asked = await confirm(null);
+    expect(asked).toEqual({
+      approved: false,
+      code: 'SAFE_TX_PREPARED',
+      error: 'Confirm Safe transaction #7',
+      prepared: { id: expect.stringMatching(/^[0-9a-f]{32}$/), nonce: 7 },
+    });
+    expect(methods()).toEqual(['safe.prepare']);
+    // Confirmed with its id: minted for exactly that SafeTx, not prepared again.
+    const confirmed = await confirm(null, { ...REQUEST, prepared: asked.prepared.id });
     expect(confirmed).toMatchObject({ approved: true, token: 'token-1' });
     expect(methods()).toEqual(['safe.prepare', 'approval.issue']);
+    expect(fake.sent('approval.issue')[0].params.payload.safe_tx.nonce).toBe(7);
     await propose(confirmed.token);
     expect(methods()).toEqual(['safe.prepare', 'approval.issue', 'safe.propose']);
+    // An id is confirmed once.
+    await expect(confirm(null, { ...REQUEST, prepared: asked.prepared.id })).rejects.toMatchObject({
+      code: 'SIGNING_NOT_CONFIRMED',
+    });
+  });
+
+  test("the approvals document off: an id for another call, another Safe or none known mints nothing", async () => {
+    await setup();
+    const first = await confirm(null);
+    await expect(
+      confirm(null, { tx: { ...REQUEST.tx, value: '1001' }, chainId: 100, prepared: first.prepared.id })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', message: 'Signing was not confirmed: request differs from what was confirmed' });
+    const second = await confirm(null);
+    await expect(
+      transactions.confirmSafeSend({ sender: CHROME, safeIndex: 6, request: { ...REQUEST, prepared: second.prepared.id }, approvals: null })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    await expect(confirm(null, { ...REQUEST, prepared: 'f'.repeat(32) })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(methods()).toEqual(['safe.prepare', 'safe.prepare']);
   });
 
   test('a rejection mints nothing, and holds no SafeTx', async () => {
@@ -459,7 +493,7 @@ describe("the wallet's own send: prepared, approved, minted, proposed", () => {
       ['the chrome\'s auto-approve claim', (t) => propose(t, { authorization: { confirmation: t, autoApprove: true } }), "main reads a page's rules itself"],
     ])('%s', async (name, run, reason) => {
       await setup();
-      const { token } = await confirm(null);
+      const { token } = await confirmOnChrome();
       await expect(run(token)).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', message: `Signing was not confirmed: ${reason}` });
       expect(methods()).not.toContain('safe.propose');
       if (reason === 'no confirmation token') return;
@@ -476,7 +510,7 @@ describe("the wallet's own send: prepared, approved, minted, proposed", () => {
     await setup({ 'safe.propose': refusal('SAFE_PENDING_EXISTS', 'A transaction is already waiting for signatures') });
     const dropped = jest.spyOn(coreSends.approvalRecords, 'dropped');
     const decided = jest.spyOn(coreSends.approvalRecords, 'decided');
-    const { token } = await confirm(null);
+    const { token } = await confirmOnChrome();
     expect(decided).toHaveBeenCalledWith(5, { chainId: 100, safeTx: SAFE_TX, safeTxHash: SAFE_TX_HASH });
     await expect(propose(token)).rejects.toMatchObject({ code: 'SAFE_PENDING_EXISTS' });
     expect(dropped).toHaveBeenCalledWith(5, SAFE_TX_HASH, 'propose_failed');
@@ -488,7 +522,7 @@ describe("the wallet's own send: prepared, approved, minted, proposed", () => {
 
   test("a Safe being deleted: refused before the core is asked, the token burnt", async () => {
     await setup();
-    const { token } = await confirm(null);
+    const { token } = await confirmOnChrome();
     const deletion = safeApprovals.beginDeletion(5);
     await expect(propose(token)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
     deletion.release();
@@ -545,13 +579,14 @@ describe("owners: safe.sign_owner", () => {
     const swept = await transactions.signSafePending(5, undefined, { safeTxHash: SAFE_TX_HASH });
     expect(swept.collected).toBe(2);
     await transactions.signSafePending(5, 1, { safeTxHash: SAFE_TX_HASH });
-    await transactions.signSafePending(5, 1);
+    // One that names no SafeTx is refused, unsent: the sweep and an owner alike.
+    await expect(transactions.signSafePending(5, 1)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    await expect(transactions.signSafePending(5, undefined)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
     expect(fake.sent('safe.sign_owner').map((m) => [m.context.caller, m.params])).toEqual([
       ['shell', { safe: 5, safe_tx_hash: SAFE_TX_HASH }],
       ['shell', { safe: 5, owner: 1, safe_tx_hash: SAFE_TX_HASH }],
-      ['shell', { safe: 5, owner: 1 }],
     ]);
-    expect(pendingStore.refreshPending).toHaveBeenCalledTimes(3);
+    expect(pendingStore.refreshPending).toHaveBeenCalledTimes(2);
     expect(coreSends.cachedState(5).collected).toBe(2);
   });
 
@@ -565,14 +600,14 @@ describe("owners: safe.sign_owner", () => {
     await setup({ 'safe.sign_owner': () => undefined });
     const first = transactions.signSafePending(5, undefined, { safeTxHash: SAFE_TX_HASH });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await expect(transactions.signSafePending(5, 1)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+    await expect(transactions.signSafePending(5, 1, { safeTxHash: SAFE_TX_HASH })).rejects.toMatchObject({ code: 'SAFE_BUSY' });
     await expect(transactions.cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH })).rejects.toMatchObject({ code: 'SAFE_BUSY' });
     expect(fake.sent('safe.sign_owner')).toHaveLength(1);
     fake.answer(fake.sent('safe.sign_owner')[0].id, BOARD);
     await expect(first).resolves.toEqual(BOARD);
     // Ended with its answer: the next step runs.
     fake.script = scripted();
-    await transactions.signSafePending(5, 1);
+    await transactions.signSafePending(5, 1, { safeTxHash: SAFE_TX_HASH });
   });
 
   test.each([
@@ -588,7 +623,7 @@ describe("owners: safe.sign_owner", () => {
 
   test('a locked vault is the core\'s vault_locked', async () => {
     await setup({ 'safe.sign_owner': { error: { code: 'vault_locked', message: 'The vault is locked' } } });
-    await expect(transactions.signSafePending(5, 1)).rejects.toMatchObject({ code: 'vault_locked' });
+    await expect(transactions.signSafePending(5, 1, { safeTxHash: SAFE_TX_HASH })).rejects.toMatchObject({ code: 'vault_locked' });
   });
 
   test('no owner takes a confirmation of its own on the core', async () => {
@@ -620,11 +655,10 @@ describe('a discard: safe.discard', () => {
     dropped.mockRestore();
   });
 
-  test("unnamed (the chrome's own Discard): the SafeTx the core's board shows now", async () => {
+  test('one that names no SafeTx is refused, unsent', async () => {
     await setup();
-    await transactions.cancelSafeSend(5);
-    expect(methods()).toEqual(['safe.pending', 'safe.discard']);
-    expect(fake.sent('safe.discard')[0].params).toEqual({ safe: 5, safe_tx_hash: SAFE_TX_HASH });
+    await expect(transactions.cancelSafeSend(5)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(methods()).toEqual([]);
   });
 
   test("another SafeTx pending: the core's SAFE_DISCARDED, nothing told", async () => {
@@ -634,6 +668,65 @@ describe('a discard: safe.discard', () => {
     await expect(transactions.cancelSafeSend(5, { safeTxHash: OTHER_HASH })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
     expect(heard).toEqual([]);
     stop();
+  });
+});
+
+describe('a SafeTx replaced between a board showing it and its step', () => {
+  const H1 = SAFE_TX_HASH;
+  const H2 = OTHER_HASH;
+  // A core that holds one pending SafeTx, and refuses a step naming another
+  // (SAFE_DISCARDED), as cored's sign_owner and discard do.
+  function pendingCore() {
+    const core = { current: H1 };
+    const named = (message, answer) =>
+      message.params.safe_tx_hash === core.current
+        ? answer()
+        : refusal('SAFE_DISCARDED', 'This transaction was discarded or replaced');
+    core.answers = {
+      'safe.pending': () => ({ states: core.current ? [{ ...BOARD, safeTxHash: core.current }] : [] }),
+      'safe.sign_owner': (m) => named(m, () => ({ ...BOARD, safeTxHash: core.current, collected: 2 })),
+      'safe.discard': (m) =>
+        named(m, () => {
+          core.current = null;
+          return {};
+        }),
+      'safe.execute': (m) => named(m, () => prepared()),
+    };
+    return core;
+  }
+
+  test("window A shows H1; H1 is discarded and H2 proposed elsewhere: A's sign, sweep and discard are refused, H2 untouched", async () => {
+    const core = pendingCore();
+    await setup(core.answers);
+    // Window A's board shows H1.
+    const shown = (await transactions.getSafeSendState(5)).safeTxHash;
+    expect(shown).toBe(H1);
+    // Elsewhere (window B): H1 discarded, H2 proposed.
+    await transactions.cancelSafeSend(5, { safeTxHash: H1 });
+    core.current = H2;
+    // A's steps name the SafeTx A shows: each refused, none acts on H2.
+    await expect(transactions.signSafePending(5, 1, { safeTxHash: shown })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    await expect(transactions.signSafePending(5, undefined, { safeTxHash: shown })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    await expect(transactions.cancelSafeSend(5, { safeTxHash: shown })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(core.current).toBe(H2);
+    const named = [...fake.sent('safe.sign_owner'), ...fake.sent('safe.discard')].map((m) => m.params.safe_tx_hash);
+    expect(named).toEqual([H1, H1, H1, H1]);
+    // A's execution (PR 4b) names H1 too: the core's board shows H2, so it
+    // is refused before the core is asked to execute anything.
+    await expect(transactions.executeSafePending(5, { safeTxHash: shown })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(fake.sent('safe.execute')).toEqual([]);
+  });
+
+  test("A's execution of H1 after H2 replaced it, A's board still showing H1: the core refuses it, nothing signed", async () => {
+    const core = pendingCore();
+    await setup(core.answers);
+    // A's board read H1 (main keeps that state); H2 replaced it elsewhere.
+    expect((await transactions.getSafeSendState(5)).safeTxHash).toBe(H1);
+    core.current = H2;
+    await expect(transactions.executeSafePending(5, { safeTxHash: H1 })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(fake.sent('safe.execute').map((m) => m.params.safe_tx_hash)).toEqual([H1]);
+    expect(fake.sent('sign.transaction')).toEqual([]);
+    expect(core.current).toBe(H2);
   });
 });
 
@@ -940,7 +1033,8 @@ describe('the execution: safe.execute (PR 4b)', () => {
 
   test('refused before the core is asked: no SafeTx named, another on the board, a site\'s, a step running', async () => {
     await setup({ 'safe.pending': { states: [READY] } });
-    await expect(transactions.executeSafePending(5)).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    await expect(transactions.executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    await expect(execute({ safeTxHash: 'nope' })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
     await expect(execute({ safeTxHash: OTHER_HASH })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
     await made.client.stop();
     coreSends._reset();
