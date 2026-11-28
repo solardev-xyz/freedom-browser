@@ -1,5 +1,3 @@
-const { Reference } = require('@ethersphere/bee-js');
-
 jest.mock('./logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
 const {
@@ -10,9 +8,16 @@ const {
   makeGatewayOfferHandler,
 } = require('./gateway-offer');
 
+// CIDs as bee-js 13.2.0's `Reference#toCid` wrote them, and what its
+// `Reference` alone read from labels that aren't one (swarm-cid.test.js).
+const CID_FIXTURE = require('../../test/fixtures/swarm-cid/bee-js-13.2.0.json');
+
 const HEX = 'ab'.repeat(32);
-const MANIFEST_CID = new Reference(HEX).toCid('manifest');
-const FEED_CID = new Reference(HEX).toCid('feed');
+const { manifest: MANIFEST_CID, feed: FEED_CID } = CID_FIXTURE.references.find(
+  (entry) => entry.hex === HEX
+);
+const beeJsRead = (label) =>
+  CID_FIXTURE.invalid.find((entry) => entry.label === label).beeJsReference;
 
 // Re-encode a CID's bytes with one header byte changed, so a test can hand
 // the decoder a well-formed `bah5…`-looking label with a wrong header.
@@ -60,9 +65,11 @@ describe('decodeSwarmCid', () => {
   });
 
   test('rejects a CID one character short or long (bee-js alone would accept both)', () => {
-    // The premise: Reference decodes these to a *different* reference.
-    expect(() => new Reference(MANIFEST_CID.slice(0, -1))).not.toThrow();
-    expect(() => new Reference(`${MANIFEST_CID}a`)).not.toThrow();
+    // The premise: Reference decoded these to a *different* reference.
+    expect(beeJsRead(MANIFEST_CID.slice(0, -1))).toMatchObject({ decodes: true });
+    expect(beeJsRead(MANIFEST_CID.slice(0, -1)).hex).not.toBe(HEX);
+    expect(beeJsRead(`${MANIFEST_CID}a`)).toMatchObject({ decodes: true });
+    expect(beeJsRead(`${MANIFEST_CID}a`).hex).not.toBe(HEX);
     expect(decodeSwarmCid(MANIFEST_CID.slice(0, -1))).toBeNull();
     expect(decodeSwarmCid(`${MANIFEST_CID}a`)).toBeNull();
     expect(decodeSwarmCid(`${MANIFEST_CID}aaaaaaaa`)).toBeNull();
@@ -139,6 +146,18 @@ describe('parseGatewayUrl', () => {
   test('an invalid bah5 label is no offer, never an ENS name bah5….eth', () => {
     expect(parseGatewayUrl(`https://${MANIFEST_CID.slice(0, -1)}.bzz.link/`)).toBeNull();
     expect(parseGatewayUrl('https://bah5abc.bzz.link/')).toBeNull();
+  });
+
+  test('every recorded CID host carries its reference; every recorded bah5 non-CID is no offer', () => {
+    for (const { hex, manifest, feed } of CID_FIXTURE.references) {
+      expect(parseGatewayUrl(`https://${manifest}.bzz.link/`).reference).toBe(hex);
+      expect(parseGatewayUrl(`https://${feed}.bzz.link/`).reference).toBe(hex);
+    }
+    const bah5Labels = CID_FIXTURE.invalid.filter(({ label }) => /^bah5[a-z2-7]+$/.test(label));
+    expect(bah5Labels.length).toBeGreaterThan(10);
+    for (const { label } of bah5Labels) {
+      expect(parseGatewayUrl(`https://${label}.bzz.link/`)).toBeNull();
+    }
   });
 
   test('a 64-hex reference label is not taken (it can not be a DNS label)', () => {
@@ -309,7 +328,13 @@ describe('registerGatewayOfferIpc', () => {
     let logContext;
     const seen = [];
     jest.isolateModules(() => {
-      jest.doMock('electron', () => ({ ipcMain: { handle: (_channel, fn) => { handler = fn; } } }));
+      jest.doMock('electron', () => ({
+        ipcMain: {
+          handle: (_channel, fn) => {
+            handler = fn;
+          },
+        },
+      }));
       jest.doMock('./ens-resolver', () => ({
         resolveEnsContent: async () => {
           seen.push(logContext.isPrivateLogContext());

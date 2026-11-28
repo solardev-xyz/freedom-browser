@@ -9,12 +9,14 @@
  * the browser never regresses on a bad update.
  *
  * The feed read and blob download are injected so the apply pipeline is
- * testable without a live node; the defaults use the browser's Swarm layer.
+ * testable without a live node; the defaults read the node's API on its
+ * transport (ant-storage-api.js).
  */
 
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { keccak256 } = require('ethers');
 const log = require('../logger');
 const { loadSettings } = require('../settings-store');
 const {
@@ -26,27 +28,42 @@ const {
 const { verifyManifest, desktopListsFor } = require('./update-manifest');
 const { refreshEngine, getEnabledFeedCategories } = require('./service');
 
-// The feed read and each list download go through the local Ant node, and
-// bee-js sets no deadline of its own: it waits as long as Ant does. A stuck
-// retrieval must end the cycle (as feed_unavailable / download_failed, which
-// the scheduler retries soon) rather than hold it. The feed read is a couple
-// of small chunks, so it gets this long in total (an abandoned read is left
-// to finish in the background). A list download is multi-MB and can be slow
-// but steady on a cold node, so it is an inactivity limit instead: it ends
-// only after this long with no response headers and no body bytes, and an
+// The feed read and each list download go through the Swarm node, and the
+// node's transport sets no deadline of its own: it waits as long as the node
+// does. A stuck retrieval must end the cycle (as feed_unavailable /
+// download_failed, which the scheduler retries soon) rather than hold it.
+// The feed read is a couple of small chunks, so it gets this long in total,
+// and is cancelled then. A list download is multi-MB and can be slow but
+// steady on a cold node, so it is an inactivity limit instead: it ends only
+// after this long with no response headers and no body bytes, and an
 // aborted download stops pulling bytes.
 const IO_TIMEOUT_MS = 2 * 60 * 1000;
+
+// The signed manifest is a few KB of JSON (a version, a signature and one
+// entry per list). The feed read is held to this, well above any real
+// manifest, so an oversized entry is refused before it is downloaded rather
+// than held whole (browser main's manifest meter).
+const MANIFEST_MAX_BYTES = 1024 * 1024;
 
 function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-function withTimeout(promise, ms) {
+// Run `start(signal)`, failing after `ms` in total; the signal is aborted
+// then, so the read lets its connection go.
+function withTimeout(start, ms) {
+  const controller = new AbortController();
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`timed out after ${ms / 1000} s`)), ms);
+    timer = setTimeout(() => {
+      const err = new Error(`timed out after ${ms / 1000} s`);
+      controller.abort(err);
+      reject(err);
+    }, ms);
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([Promise.resolve().then(() => start(controller.signal)), timeout]).finally(
+    () => clearTimeout(timer)
+  );
 }
 
 // Run a transfer that reports its own progress, failing only after `ms` with
@@ -78,33 +95,168 @@ function withInactivityTimeout(start, ms) {
 }
 
 // ── Default Swarm-backed IO (replaced in tests) ──────────────────────────
-async function defaultReadFeed() {
-  const { Topic } = require('@ethersphere/bee-js');
-  const { readFeedPayload } = require('../swarm/feed-service');
-  const { payload } = await readFeedPayload(FEED_OWNER_ADDRESS, Topic.fromString(FEED_TOPIC));
+//
+// Both read the node's API on its transport (ant-storage-api.js's `antGet`;
+// freedom-core design 0015, SWM-8): the bundled node, or any loopback one,
+// with Node's fetch; a remote one on the default session's stack, through
+// its proxy and Tor, each GET announced to the Ant API guard for its dial.
+// One dial each, never retried, and a redirect is answered, never followed.
+// They read the node as bee-js 13 did, with no bee-js.
+
+// What bee-js's client asks for; the feed read also asks for the body as it
+// is, so a declared length is the entry's (feed-service.js's latest read).
+const ACCEPT = 'application/json, text/plain, */*';
+const FEED_HEADERS = { accept: ACCEPT, 'accept-encoding': 'identity' };
+
+/** The topic as bee-js's `Topic.fromString` makes it: keccak256 of its UTF-8, as hex. */
+function feedTopicHex(topic) {
+  return keccak256(new TextEncoder().encode(topic)).slice(2);
+}
+
+/** 20 bytes of hex, `0x` optional, any case, as bee-js's `EthAddress` takes them. */
+function addressHex(address) {
+  if (typeof address !== 'string' || !/^(0x)?[0-9a-f]{40}$/i.test(address)) {
+    throw new Error(`the feed owner is not an Ethereum address: ${address}`);
+  }
+  return address.replace(/^0x/i, '').toLowerCase();
+}
+
+/** A 32- or 64-byte reference in hex, `0x` optional, any case, as bee-js's `Reference` takes it. */
+function referenceHex(ref) {
+  if (typeof ref !== 'string' || !/^(0x)?(?:[0-9a-f]{64}){1,2}$/i.test(ref)) {
+    throw new Error(`not a Swarm reference: ${ref}`);
+  }
+  return ref.replace(/^0x/i, '').toLowerCase();
+}
+
+// A feed index header as bee-js's `FeedIndex` reads it: 8 bytes of hex.
+const FEED_INDEX = /^(0x)?[0-9a-f]{16}$/i;
+
+/** The body's declared length, or null when it has none it can be held to. */
+function declaredLength(response) {
+  const encoding = response.headers.get('content-encoding');
+  if (encoding && encoding.toLowerCase() !== 'identity') return null;
+  const value = response.headers.get('content-length');
+  if (value === null || !/^\d+$/.test(value.trim())) return null;
+  const length = Number(value.trim());
+  return Number.isSafeInteger(length) ? length : null;
+}
+
+function entryTooLarge(actual) {
+  const err = new Error(`Feed entry exceeds the maximum read size of ${MANIFEST_MAX_BYTES} bytes`);
+  err.reason = 'data_too_large';
+  err.limit = MANIFEST_MAX_BYTES;
+  if (actual !== undefined) err.actual = actual;
+  return err;
+}
+
+/**
+ * A list whose size isn't the one its signed manifest entry gives
+ * (`bytes`): not the list the manifest signed, as a hash mismatch is.
+ */
+function listSizeMismatch(message) {
+  const err = new Error(message);
+  err.reason = 'size_mismatch';
+  return err;
+}
+
+/** A reply that isn't the content: its body let go, the status thrown. */
+function nodeRefused(response, path) {
+  response.body?.cancel().catch(() => {});
+  return new Error(`GET ${path}: ${response.status} ${response.statusText}`.trim());
+}
+
+/**
+ * The feed's latest entry, as the node resolves it (`GET /feeds/<owner>/
+ * <topic>`), parsed as the manifest's JSON: the reply bee-js's feed reader
+ * took (feed-service.js's `readFeedPayload`), checked as it checked it.
+ *
+ * - A 404 or a 500 is an empty feed; any other failure status fails too.
+ * - Both index headers (`swarm-feed-index`, `swarm-feed-index-next`) must be
+ *   there, each 8 bytes of hex.
+ * - The body is held to MANIFEST_MAX_BYTES: a declared length past it is
+ *   refused before the body is read, and the body is held to its declared
+ *   length exactly; a body with none is refused once it passes the cap.
+ */
+async function defaultReadFeed({ signal } = {}) {
+  const { antGet, readBody } = require('../swarm/ant-storage-api');
+  const path = `/feeds/${addressHex(FEED_OWNER_ADDRESS)}/${feedTopicHex(FEED_TOPIC)}`;
+  const response = await antGet(path, { headers: FEED_HEADERS, signal });
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 500) {
+      response.body?.cancel().catch(() => {});
+      throw new Error('Feed is empty — no entries to read');
+    }
+    throw nodeRefused(response, path);
+  }
+  let declared;
+  try {
+    for (const name of ['swarm-feed-index', 'swarm-feed-index-next']) {
+      const value = response.headers.get(name);
+      if (!value) throw new Error(`Response did not contain expected ${name}!`);
+      if (!FEED_INDEX.test(value)) throw new Error(`Response's ${name} is not a feed index`);
+    }
+    declared = declaredLength(response);
+    if (declared !== null && declared > MANIFEST_MAX_BYTES) throw entryTooLarge(declared);
+  } catch (err) {
+    response.body?.cancel().catch(() => {});
+    throw err;
+  }
+  const payload = await readBody(response, signal, (_bytes, total) => {
+    if (declared === null) {
+      if (total > MANIFEST_MAX_BYTES) throw entryTooLarge();
+    } else if (total > declared) {
+      throw new Error(`Node sent more than the ${declared} bytes it declared for the feed entry`);
+    }
+  });
+  if (declared !== null && payload.length !== declared) {
+    throw new Error(
+      `Node sent ${payload.length} of the ${declared} bytes it declared for the feed entry`
+    );
+  }
   return JSON.parse(payload.toString('utf-8'));
 }
 
-// Streams the list so each chunk counts as progress for the inactivity
-// timeout above. `bee` is injectable for tests.
-//
-// bee-js (13.x) downloads over fetch and returns the response body as a
-// WHATWG ReadableStream. The abort signal handed to downloadReadable is what
-// stops the transfer: fetch aborts the request and errors the body, which
-// ends the for-await below with the abort reason. Don't drop it — the stream
-// is locked by the for-await, so it can't be cancelled from outside, and
-// without the signal a stalled download would keep its connection open.
-async function defaultDownloadBlob(ref, { signal, progress = () => {} } = {}, bee = null) {
-  const client = bee || require('../swarm/swarm-service').getBee();
-  const stream = await client.data.downloadReadable(ref, undefined, signal ? { signal } : {});
-  progress();
-  const chunks = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.from(chunk));
-    progress();
+/**
+ * One list (`GET /bytes/<ref>`), streamed so each chunk counts as progress
+ * for the inactivity timeout above: progress() once the headers are in, and
+ * on each chunk. The abort signal handed in is what stops the transfer: it
+ * aborts the dial, and once the headers are in, cancels the body
+ * (ant-storage-api's `readBody`), which releases the connection.
+ *
+ * `bytes` is the list's size from its verified manifest entry, and the body
+ * is held to it, so a node can't grow main's memory with a list that never
+ * ends while it keeps the inactivity timer alive: a declared length that
+ * differs is refused before the body is read, a body is cancelled as soon
+ * as it passes `bytes`, and one that ends short of it is refused. Each
+ * fails with `reason: 'size_mismatch'` (runUpdateOnce's hash_mismatch); the
+ * caller checks the sha256 after.
+ */
+async function defaultDownloadBlob(ref, { signal, progress = () => {}, bytes } = {}) {
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+    throw new TypeError('a list download needs the size its manifest entry signed');
   }
+  const { antGet, readBody } = require('../swarm/ant-storage-api');
+  const path = `/bytes/${referenceHex(ref)}`;
+  const response = await antGet(path, { headers: { accept: ACCEPT }, signal });
+  if (!response.ok) throw nodeRefused(response, path);
+  const declared = declaredLength(response);
+  if (declared !== null && declared !== bytes) {
+    response.body?.cancel().catch(() => {});
+    throw listSizeMismatch(`the node declared ${declared} bytes for a ${bytes}-byte list`);
+  }
+  progress();
+  const blob = await readBody(response, signal, (_bytes, total) => {
+    if (total > bytes) {
+      throw listSizeMismatch(`the node sent more than the ${bytes} bytes of the list`);
+    }
+    progress();
+  });
   if (signal?.aborted) throw signal.reason;
-  return Buffer.concat(chunks);
+  if (blob.length !== bytes) {
+    throw listSizeMismatch(`the node sent ${blob.length} of the list's ${bytes} bytes`);
+  }
+  return blob;
 }
 
 function getUpdateRoot() {
@@ -136,10 +288,13 @@ function readAppliedState(updatedDir) {
  * Run one update cycle.
  *
  * @param {object} [io]
- * @param {() => Promise<object|null>} [io.readFeed]
- * @param {(ref: string, opts: {signal: AbortSignal, progress: () => void}) => Promise<Buffer>} [io.downloadBlob]
+ * @param {(opts: {signal: AbortSignal}) => Promise<object|null>} [io.readFeed]
+ *   - the signal aborts once the read has run timeoutMs
+ * @param {(ref: string, opts: {signal: AbortSignal, progress: () => void, bytes: number}) => Promise<Buffer>} [io.downloadBlob]
  *   - call progress() on each sign of life; the download fails after
  *     timeoutMs without one
+ *   - `bytes` is the list's size from its verified manifest entry; a
+ *     download that finds another size fails with `reason: 'size_mismatch'`
  * @param {string} [io.root] - override userData/adblock (tests)
  * @param {() => Promise<void>} [io.activate] - override refreshEngine (tests)
  * @param {number} [io.timeoutMs] - override IO_TIMEOUT_MS (tests)
@@ -169,7 +324,7 @@ async function runUpdateOnce(io = {}) {
 
   let manifest;
   try {
-    manifest = await withTimeout(readFeed(), timeoutMs);
+    manifest = await withTimeout((signal) => readFeed({ signal }), timeoutMs);
   } catch (err) {
     log.info(`[adblock-update] feed read failed: ${err.message}`);
     return { status: 'feed_unavailable' };
@@ -228,12 +383,20 @@ async function runUpdateOnce(io = {}) {
     }
     if (!blob) {
       try {
-        blob = await withInactivityTimeout((opts) => downloadBlob(entry.ref, opts), timeoutMs);
+        blob = await withInactivityTimeout(
+          (opts) => downloadBlob(entry.ref, { ...opts, bytes: entry.bytes }),
+          timeoutMs
+        );
       } catch (err) {
+        // Not the size the manifest signed: not its list, as below.
+        if (err?.reason === 'size_mismatch') {
+          log.warn(`[adblock-update] size mismatch for ${entry.category}: ${err.message}`);
+          return { status: 'hash_mismatch', reason: entry.category };
+        }
         log.warn(`[adblock-update] download failed for ${entry.category}: ${err.message}`);
         return { status: 'download_failed', reason: entry.category };
       }
-      if (sha256Hex(blob) !== entry.sha256) {
+      if (blob.length !== entry.bytes || sha256Hex(blob) !== entry.sha256) {
         log.warn(`[adblock-update] sha256 mismatch for ${entry.category} — aborting`);
         return { status: 'hash_mismatch', reason: entry.category };
       }
@@ -319,4 +482,10 @@ async function runUpdateOnce(io = {}) {
   return { status: 'applied', version: manifest.version };
 }
 
-module.exports = { runUpdateOnce, _defaultDownloadBlob: defaultDownloadBlob };
+module.exports = {
+  runUpdateOnce,
+  MANIFEST_MAX_BYTES,
+  _defaultReadFeed: defaultReadFeed,
+  _defaultDownloadBlob: defaultDownloadBlob,
+  _feedTopicHex: feedTopicHex,
+};
